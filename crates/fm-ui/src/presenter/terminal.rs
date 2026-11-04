@@ -1,0 +1,263 @@
+//! Terminal choices are input state. Launching and credentials stay external.
+use super::*;
+
+impl Presenter {
+    fn preferred_shell(&self) -> Option<ShellFlavor> {
+        self.desktop.shell.map(|host| match host {
+            ShellFlavor::Posix => ShellFlavor::Posix,
+            ShellFlavor::PowerShell | ShellFlavor::Cmd => {
+                match self.preferences.values.windows_shell {
+                    WindowsShell::PowerShell => ShellFlavor::PowerShell,
+                    WindowsShell::Cmd => ShellFlavor::Cmd,
+                }
+            }
+        })
+    }
+
+    pub(crate) fn effective_shell(&self) -> Option<ShellFlavor> {
+        self.desktop.draft_shell.or_else(|| self.preferred_shell())
+    }
+
+    /// Bind a nonempty draft before any settings event or terminal selection can
+    /// reinterpret it. Clearing the editor releases the saved default for reuse.
+    pub(crate) fn track_draft(&mut self, nonempty: bool) -> bool {
+        let previous = (
+            self.desktop.draft_nonempty,
+            self.desktop.draft_shell,
+            self.desktop.terminal_guidance,
+        );
+        self.desktop.draft_nonempty = nonempty;
+        if nonempty {
+            if self.desktop.draft_shell.is_none() {
+                self.desktop.draft_shell = self.preferred_shell();
+            }
+        } else {
+            self.desktop.draft_shell = None;
+            self.desktop.terminal_guidance = None;
+        }
+        previous
+            != (
+                self.desktop.draft_nonempty,
+                self.desktop.draft_shell,
+                self.desktop.terminal_guidance,
+            )
+    }
+
+    pub(crate) fn bind_inserted_path(&mut self, shell: ShellFlavor) {
+        self.desktop.draft_nonempty = true;
+        self.desktop.draft_shell = Some(shell);
+    }
+
+    pub(crate) fn effective_terminal_mode(&self) -> TerminalMode {
+        if self.effective_shell() == Some(ShellFlavor::Posix) {
+            self.desktop.terminal_mode
+        } else {
+            TerminalMode::Standard
+        }
+    }
+
+    pub(crate) fn terminal_choices(&self) -> &'static [&'static str] {
+        match self.desktop.shell {
+            Some(ShellFlavor::PowerShell | ShellFlavor::Cmd) => &["PowerShell", "cmd"],
+            Some(ShellFlavor::Posix) => &["Terminal", "Terminal (sudo)"],
+            None => &["Terminal"],
+        }
+    }
+
+    pub(crate) fn terminal_index(&self) -> i32 {
+        match self.effective_shell() {
+            Some(ShellFlavor::Cmd) => 1,
+            Some(ShellFlavor::Posix)
+                if self.effective_terminal_mode() == TerminalMode::Elevated =>
+            {
+                1
+            }
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn terminal_hint(&self) -> &'static str {
+        match self.effective_shell() {
+            Some(ShellFlavor::PowerShell) => {
+                "PowerShell · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths"
+            }
+            Some(ShellFlavor::Cmd) => "cmd · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths",
+            Some(ShellFlavor::Posix)
+                if self.effective_terminal_mode() == TerminalMode::Elevated =>
+            {
+                "sudo · Enter opens a terminal password prompt · Ctrl+[ / Ctrl+] paths"
+            }
+            Some(ShellFlavor::Posix) => {
+                "Terminal · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths"
+            }
+            None => "Loading terminal choices…",
+        }
+    }
+
+    pub(crate) fn change_terminal(
+        &mut self,
+        index: i32,
+        has_draft: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.track_draft(has_draft);
+        let requested_shell = match self.desktop.shell {
+            Some(ShellFlavor::Posix) => ShellFlavor::Posix,
+            Some(ShellFlavor::PowerShell | ShellFlavor::Cmd) => {
+                if index == 1 {
+                    ShellFlavor::Cmd
+                } else {
+                    ShellFlavor::PowerShell
+                }
+            }
+            None => return,
+        };
+        if has_draft
+            && self
+                .desktop
+                .draft_shell
+                .is_some_and(|bound| bound != requested_shell)
+        {
+            self.desktop.terminal_guidance =
+                Some("Clear the command line before changing shell type.");
+            return;
+        }
+        match self.desktop.shell {
+            Some(ShellFlavor::Posix) => {
+                self.desktop.terminal_mode = if index == 1 {
+                    TerminalMode::Elevated
+                } else {
+                    TerminalMode::Standard
+                };
+            }
+            Some(ShellFlavor::PowerShell | ShellFlavor::Cmd) => {
+                self.preferences.edited.windows_shell = true;
+                self.update_preferences(
+                    UserPreferences {
+                        windows_shell: if index == 1 {
+                            WindowsShell::Cmd
+                        } else {
+                            WindowsShell::PowerShell
+                        },
+                        ..self.preferences.values.clone()
+                    },
+                    send,
+                );
+            }
+            None => (),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn bound_draft_defers_loaded_defaults_and_rejects_cross_grammar_selection() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.apply(Event::DesktopContext {
+            shell: ShellFlavor::PowerShell,
+            locations: vec![],
+        });
+        p.track_draft(true);
+        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+            windows_shell: WindowsShell::Cmd,
+            ..Default::default()
+        })));
+        assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
+        p.change_terminal(1, true, &|_| {
+            panic!("a blocked switch cannot save or launch")
+        });
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
+        assert!(p.desktop.terminal_guidance.is_some());
+        p.track_draft(false);
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
+        assert!(p.desktop.terminal_guidance.is_none());
+    }
+
+    #[test]
+    fn input_before_desktop_context_binds_as_soon_as_context_arrives() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.track_draft(true);
+        assert_eq!(p.effective_shell(), None);
+        p.apply(Event::DesktopContext {
+            shell: ShellFlavor::PowerShell,
+            locations: vec![],
+        });
+        assert_eq!(p.desktop.draft_shell, Some(ShellFlavor::PowerShell));
+        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+            windows_shell: WindowsShell::Cmd,
+            ..Default::default()
+        })));
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
+    }
+
+    #[test]
+    fn posix_elevation_is_session_only_and_waits_for_explicit_submission() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.apply(Event::DesktopContext {
+            shell: ShellFlavor::Posix,
+            locations: vec![],
+        });
+        p.change_terminal(1, true, &|_| {
+            panic!("selecting sudo must not save or launch")
+        });
+        assert_eq!(p.effective_terminal_mode(), TerminalMode::Elevated);
+        assert_eq!(p.preferences.revision, PreferencesRevision(0));
+        let sent = RefCell::new(vec![]);
+        assert!(p.submit_command("printf '文档 👩🏽‍💻'", &|command| {
+            sent.borrow_mut().push(command);
+            true
+        }));
+        assert!(
+            matches!(&sent.borrow()[0], Command::LaunchTerminal { terminal, .. } if terminal.shell == ShellFlavor::Posix && terminal.mode == TerminalMode::Elevated && terminal.command == "printf '文档 👩🏽‍💻'")
+        );
+        let mut restarted = Presenter::new("left".into(), "right".into());
+        restarted.apply(Event::DesktopContext {
+            shell: ShellFlavor::Posix,
+            locations: vec![],
+        });
+        assert_eq!(restarted.effective_terminal_mode(), TerminalMode::Standard);
+    }
+
+    #[test]
+    fn windows_choice_persists_and_wins_over_late_preferences_loading() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.apply(Event::DesktopContext {
+            shell: ShellFlavor::PowerShell,
+            locations: vec![],
+        });
+        let sent = RefCell::new(vec![]);
+        p.change_terminal(1, false, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
+        assert!(sent.borrow().is_empty(), "saves wait for the first load");
+        p.apply_with_sender(
+            Event::PreferencesLoaded(Ok(UserPreferences::default())),
+            &|command| {
+                sent.borrow_mut().push(command);
+                true
+            },
+        );
+        assert!(matches!(
+            sent.borrow()[0],
+            Command::SavePreferences {
+                preferences: UserPreferences {
+                    windows_shell: WindowsShell::Cmd,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(sent.borrow().len(), 1);
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
+        p.change_preferences(2, 1, -1, &|_| true);
+        assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
+        assert_eq!(p.effective_terminal_mode(), TerminalMode::Standard);
+    }
+}

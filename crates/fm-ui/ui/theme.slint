@@ -1,0 +1,56 @@
+// Semantic application colors and geometry. Native widgets follow Palette's
+// explicit light/dark scheme; file icons keep their original host colors.
+export global Theme {
+    in-out property <int> scheme: 0;
+    in-out property <int> density: 0;
+    in-out property <string> font-family;
+    in-out property <int> desktop-font-size: 11;
+    in-out property <int> touch-font-size: 15;
+    out property <bool> light: scheme == 2;
+    out property <bool> touch: density == 1;
+    out property <color> window-background: light ? #edf1f5 : scheme == 1 ? #171717 : #0e141e;
+    out property <color> pane-background: light ? #ffffff : scheme == 1 ? #202020 : #151c26;
+    out property <color> alternate-row: light ? #f5f7fa : scheme == 1 ? #252525 : #19212d;
+    out property <color> surface: light ? #e5ebf1 : scheme == 1 ? #2a2a2a : #202a38;
+    out property <color> secondary-surface: light ? #f0f3f7 : scheme == 1 ? #242424 : #1a2330;
+    out property <color> header: light ? #e0e7ef : scheme == 1 ? #303030 : #242e3c;
+    out property <color> active-header: light ? #d6e5f3 : scheme == 1 ? #383838 : #26384c;
+    out property <color> frame: light ? #b5c1ce : scheme == 1 ? #484848 : #303b4b;
+    out property <color> active-frame: light ? #4e769b : scheme == 1 ? #929292 : #517398;
+    out property <color> hover: light ? #d2dfec : scheme == 1 ? #454545 : #33445a;
+    out property <color> text: light ? #243347 : scheme == 1 ? #dedede : #c9d2df;
+    out property <color> strong-text: light ? #16283d : scheme == 1 ? #f0f0f0 : #eef4ff;
+    out property <color> secondary-text: light ? #43576f : scheme == 1 ? #bdbdbd : #a0afc3;
+    out property <color> muted-text: light ? #5a6d82 : scheme == 1 ? #a3a3a3 : #7789a1;
+    out property <color> pending-size: light ? #805000 : #ffd27f;
+    out property <color> accent: light ? #235c91 : scheme == 1 ? #d4d4d4 : #8fbcff;
+    out property <color> directory-text: light ? #1b436e : scheme == 1 ? #e0e0e0 : #d5e6ff;
+    out property <color> selected-text: light ? #183f68 : scheme == 1 ? #ffffff : #ffd892;
+    out property <color> cursor-background: light ? #c7dff5 : scheme == 1 ? #4a4a4a : #234d7f;
+    out property <color> inactive-cursor: light ? #dce3eb : scheme == 1 ? #383838 : #344052;
+    out property <color> selected-background: light ? #e0ecf7 : scheme == 1 ? #343434 : #263a50;
+    out property <color> cursor-edge: light ? #3b719f : scheme == 1 ? #bdbdbd : #6bacff;
+    out property <color> error-background: light ? #ffebee : scheme == 1 ? #402d2d : #39262d;
+    out property <color> error-text: light ? #842434 : scheme == 1 ? #ffc3c3 : #ffb7bd;
+    out property <color> selection-background: light ? #c7dff5 : scheme == 1 ? #555555 : #315b86;
+    out property <color> selection-text: light ? #182f49 : #ffffff;
+    out property <length> row-height: max(touch ? 40px : 22px, font-size + (touch ? 12px : 8px));
+    out property <length> control-height: max(touch ? 40px : 24px, font-size + (touch ? 14px : 10px));
+    out property <length> tab-width: min(220px, max(110px, font-size * 8 + tool-width));
+    out property <length> tool-width: touch ? 40px : 26px;
+    // Locations share the navigation toolbar; no separate location band remains.
+    out property <length> locations-height: 0px;
+    out property <length> toolbar-height: max(touch ? 48px : 34px, control-height + (touch ? 8px : 10px));
+    out property <length> path-height: max(touch ? 48px : 32px, control-height + 8px);
+    out property <length> column-height: max(touch ? 40px : 24px, small-font + 10px);
+    out property <length> status-height: touch ? 36px : 24px;
+    out property <length> command-height: max(touch ? 48px : 34px, control-height + (touch ? 8px : 10px));
+    out property <length> bottom-height: max(touch ? 40px : 22px, font-size + (touch ? 12px : 8px));
+    out property <length> window-padding: touch ? 10px : 6px;
+    out property <length> gap: touch ? 6px : 4px;
+    out property <length> control-padding: touch ? 6px : 3px;
+    out property <length> font-size: (touch ? touch-font-size : desktop-font-size) * 1px;
+    out property <length> small-font: max(8px, font-size - (touch ? 2px : 1px));
+    out property <length> hint-font: max(8px, font-size - (touch ? 3px : 1px));
+    out property <length> icon-size: touch ? 20px : 14px;
+}

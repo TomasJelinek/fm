@@ -1,0 +1,122 @@
+//! Pure presentation of cached native metadata; hover never triggers I/O.
+use super::*;
+
+pub(super) fn details<'a>(presenter: &'a Presenter, volume: &Volume) -> Option<&'a VolumeDetails> {
+    presenter
+        .volume_details
+        .get(&volume.id)
+        .filter(|(root, _)| root == &volume.root)
+        .map(|(_, details)| details)
+}
+
+pub(super) fn tooltip(details: Option<&VolumeDetails>) -> String {
+    let Some(details) = details else {
+        return "Loading free space…".into();
+    };
+    let capacity = match &details.space {
+        Ok(space) => format!("{} free", format_size(space.available)),
+        Err(_) => "Free space unavailable".into(),
+    };
+    match &details.label {
+        Ok(Some(label)) if !label.is_empty() => format!("{}\n{capacity}", label.to_string_lossy()),
+        Err(_) => format!("Volume name unavailable\n{capacity}"),
+        _ => capacity,
+    }
+}
+
+pub(super) fn menu_label(volume: &Volume, details: Option<&VolumeDetails>) -> String {
+    let root = volume.root.to_string_lossy();
+    let title = if volume.label == root {
+        volume.label.clone()
+    } else {
+        format!("{} ({root})", volume.label)
+    };
+    format!("{title} — {}", tooltip(details).replace('\n', " — "))
+}
+
+pub(super) fn volume_tooltip(volume: &Volume, details: Option<&VolumeDetails>) -> String {
+    if volume.label == volume.root.to_string_lossy() {
+        tooltip(details)
+    } else {
+        format!(
+            "{}\n{}\n{}",
+            volume.label,
+            volume.root.display(),
+            tooltip(details)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{ffi::OsString, io, path::Path};
+
+    #[test]
+    fn native_name_and_space_are_literal_unicode_without_affecting_the_root() {
+        let label = "文档 <b> & [disk](file:///x) Žluťoučký 👩🏽‍💻";
+        let volume = Volume {
+            id: "v".into(),
+            label: "Q:".into(),
+            root: "Q:".into(),
+        };
+        let info = VolumeDetails {
+            label: Ok(Some(OsString::from(label))),
+            space: Ok(SpaceInfo {
+                available: 1 << 30,
+                total: 2 << 30,
+            }),
+        };
+        assert_eq!(tooltip(Some(&info)), format!("{label}\n1.0 GB free"));
+        assert_eq!(
+            menu_label(&volume, Some(&info)),
+            format!("Q: — {label} — 1.0 GB free")
+        );
+        assert_eq!(volume.root, Path::new("Q:"));
+    }
+
+    #[test]
+    fn unlabeled_platforms_show_capacity_and_missing_data_never_fakes_zero() {
+        let mut info = VolumeDetails {
+            label: Ok(None),
+            space: Ok(SpaceInfo {
+                available: 0,
+                total: 100,
+            }),
+        };
+        assert_eq!(tooltip(Some(&info)), "0 B free");
+        info.space = Err(FsError::from_io(
+            "space",
+            Path::new("raw"),
+            io::Error::other("offline"),
+        ));
+        assert_eq!(tooltip(Some(&info)), "Free space unavailable");
+        assert_eq!(tooltip(None), "Loading free space…");
+        info.label = Err(FsError::from_io(
+            "label",
+            Path::new("raw"),
+            io::Error::other("offline"),
+        ));
+        assert_eq!(
+            tooltip(Some(&info)),
+            "Volume name unavailable\nFree space unavailable"
+        );
+    }
+
+    #[test]
+    fn special_alias_choices_include_their_actual_native_path() {
+        let volume = Volume {
+            id: "home".into(),
+            label: "Home".into(),
+            root: "/users/文档".into(),
+        };
+        assert_eq!(
+            menu_label(&volume, None),
+            "Home (/users/文档) — Loading free space…"
+        );
+        assert_eq!(
+            volume_tooltip(&volume, None),
+            "Home\n/users/文档\nLoading free space…"
+        );
+    }
+}

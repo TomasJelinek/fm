@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.dependencies]
+fm-core = { path = "crates/fm-core" }
+fm-platform = { path = "crates/fm-platform" }
+fm-platform-common = { path = "crates/fm-platform-common" }
+fm-platform-windows = { path = "crates/fm-platform-windows" }
+fm-platform-linux = { path = "crates/fm-platform-linux" }
+fm-engine = { path = "crates/fm-engine" }
+fm-ui = { path = "crates/fm-ui" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg-wgpu", "renderer-software", "compat-1-2"] }
+slint-build = "=1.18.1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

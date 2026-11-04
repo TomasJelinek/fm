@@ -1,0 +1,21 @@
+[package]
+name = "fm-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+fm-core.workspace = true
+slint = { workspace = true, features = ["unstable-winit-030"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+# The native Winit path supplies unmodified key text to disambiguate Ctrl+Alt
+# from AltGr. Native wheel phases and touch inputs likewise require the internal
+# event payload because public PointerScrolled always means immediate pixels.
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"] }

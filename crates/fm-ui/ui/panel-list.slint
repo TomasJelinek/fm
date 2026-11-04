@@ -1,0 +1,106 @@
+import { ScrollView } from "std-widgets.slint";
+
+// Slint 1.18 recognizes virtualized repeaters by the component's original
+// name. Inheriting its ListView under a different name loses virtualization.
+// Match the SDK ListView shell and export an alias to retain that optimization.
+component ListView inherits ScrollView {
+    in property <length> row-height;
+    in property <bool> interaction-active;
+    private property <bool> scroll-pending;
+    private property <bool> settling;
+    private property <length> last-scroll-position;
+
+    function wait-for-idle() {
+        root.last-scroll-position = root.content-y;
+        idle.start();
+        idle.restart();
+    }
+
+    // Imperative cursor reveals must take precedence over an old wheel gesture.
+    public function cancel-scroll-settle() {
+        let position = root.content-y;
+        idle.stop();
+        settled.stop();
+        root.scroll-pending = false;
+        root.settling = false;
+        root.content-y = position;
+    }
+
+    function reconsider-scroll-settle() {
+        if root.scroll-pending {
+            if root.settling {
+                let position = root.content-y;
+                root.settling = false;
+                settled.stop();
+                root.content-y = position;
+            }
+            root.wait-for-idle();
+        }
+    }
+
+    // SDK physics writes content-y directly; retain its wheel animation and
+    // inertia. Only our final imperative assignment uses this short animation.
+    animate content-y { duration: root.settling ? 100ms : 0ms; easing: ease-out; }
+
+    scrolled => {
+        // The SDK has already replaced any previous animation with real input.
+        // Do not write content-y here, which would cancel native inertia.
+        settled.stop();
+        root.settling = false;
+        root.scroll-pending = true;
+        root.wait-for-idle();
+    }
+    changed content-y => {
+        if root.scroll-pending && !root.settling { root.wait-for-idle(); }
+    }
+    changed row-height => { root.reconsider-scroll-settle(); }
+    changed visible-height => { root.reconsider-scroll-settle(); }
+    changed content-height => { root.reconsider-scroll-settle(); }
+    changed interaction-active => { root.reconsider-scroll-settle(); }
+
+    idle := Timer {
+        interval: 80ms;
+        running: false;
+        triggered => {
+            self.stop();
+            if root.interaction-active {
+                return;
+            }
+            if root.row-height <= 0px || !root.scroll-pending { return; }
+            // Timers run before changed handlers in the SDK. A delayed frame
+            // can therefore expose fresh physics motion inside this callback.
+            if abs(root.content-y - root.last-scroll-position) >= 0.01px {
+                root.wait-for-idle();
+                return;
+            }
+            let bottom = min(0px, root.visible-height - root.content-height);
+            let position = clamp(root.content-y, bottom, 0px);
+            // Bounds win: an exact bottom can be a partial row when the
+            // viewport height is not a row multiple. Preserve it without gaps.
+            let target = position == bottom || position == 0px ? position
+                : clamp(-round(-position / root.row-height) * root.row-height, bottom, 0px);
+            if abs(target - root.content-y) < 0.01px {
+                root.scroll-pending = false;
+                return;
+            }
+            root.settling = true;
+            root.content-y = target;
+            settled.start();
+            settled.restart();
+        }
+    }
+    settled := Timer {
+        interval: 110ms;
+        running: false;
+        triggered => {
+            self.stop();
+            root.scroll-pending = false;
+            root.settling = false;
+        }
+    }
+    accessible-role: list;
+    accessible-orientation: vertical;
+    @children
+}
+
+export { ListView as PanelList }

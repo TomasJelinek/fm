@@ -1,0 +1,65 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+
+// Desktop shortcuts show compact drive captions and icon-only special locations.
+// The full name, path and available capacity remain available to assistive tools
+// and through a plain-text tooltip in both density profiles.
+export component CompactLocationButton inherits Rectangle {
+    in property <string> label;
+    in property <string> compact-label;
+    in property <image> icon;
+    in property <string> hint;
+    in property <bool> selected;
+    in property <bool> is-drive;
+    callback clicked();
+    width: root.is-drive
+        ? max(Theme.touch ? 56px : 46px, caption.preferred-width + (Theme.touch ? 40px : 26px))
+        : Theme.tool-width;
+    height: Theme.control-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: focus.has-focus || root.selected ? Theme.active-frame : transparent;
+    background: area.pressed || root.selected ? Theme.selected-background
+        : area.has-hover ? Theme.hover : transparent;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-label: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.clicked(); }
+    Tooltip { TipBody { text: root.hint; } }
+
+    Image {
+        source: root.icon;
+        width: Theme.touch ? 20px : 14px;
+        height: self.width;
+        x: root.is-drive ? (Theme.touch ? 8px : 4px) : (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        image-fit: contain;
+    }
+    caption := Text {
+        visible: root.is-drive;
+        text: root.compact-label;
+        x: Theme.touch ? 32px : 22px;
+        width: max(0px, root.width - self.x - (Theme.touch ? 8px : 4px));
+        height: root.height;
+        color: Theme.text;
+        font-size: Theme.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        area := TouchArea {
+            clicked => { focus.focus(); root.clicked(); }
+        }
+    }
+}

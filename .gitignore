@@ -1,0 +1,41 @@
+/target/
+/.tools/
+/.superpowers/
+/_build/
+/build/
+/dist/
+
+# Compiled products and local diagnostics must never be committed.
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.a
+*.rlib
+*.rmeta
+*.so
+*.dylib
+*.lib
+*.exp
+*.ilk
+*.idb
+*.log
+
+# Editor/OS scratch files.
+*.rs.bk
+*.tmp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Keep intentional documentation images; other captures are local QA scratch.
+/docs/screenshots/*
+!/docs/screenshots/stage-1-windows.png
+!/docs/screenshots/commander-controls-final-windows.png
+!/docs/screenshots/mouse-activation-windows.png
+!/docs/screenshots/compact-desktop-windows.png
+!/docs/screenshots/navigation-appearance-windows.png
+!/docs/screenshots/compact-touch-windows.png
+!/docs/screenshots/selection-continuity-windows.png

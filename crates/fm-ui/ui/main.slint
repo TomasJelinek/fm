@@ -1,0 +1,838 @@
+import { ComboBox, LineEdit, ScrollView, Button, AboutSlint, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TipBody, CompactPicker } from "controls.slint";
+import { CompactLocationButton } from "location-controls.slint";
+import { PanelList } from "panel-list.slint";
+import { TabRow, BookmarkRow } from "navigation-models.slint";
+import { TabStrip, BookmarkMenu } from "navigation-controls.slint";
+export { Theme }
+export { TabRow, BookmarkRow }
+
+export struct FileRow {
+    identity: string,
+    name: string,
+    size: string,
+    size-state: int,
+    size-hint: string,
+    modified: string,
+    kind: string,
+    icon: image,
+    directory: bool,
+    selected: bool,
+    cursor: bool,
+}
+export struct LocationRow {
+    label: string, compact-label: string, is-drive: bool,
+    path: string, tooltip: string, icon: image, selected: bool
+}
+
+component Tool inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <string> hint;
+    callback clicked();
+    width: Theme.tool-width; height: Theme.control-height;
+    border-radius: 4px;
+    background: area.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: hint;
+    accessible-action-default => { root.clicked(); }
+    Tooltip { TipBody { text: root.hint; } }
+    Text { visible: root.label != ""; text: root.label; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+    Image { visible: root.label == ""; source: root.icon; colorize: Theme.text; width: 18px; height: 18px; x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; image-fit: contain; }
+    area := TouchArea { clicked => { root.clicked(); } }
+}
+
+// Native buttons enforce a taller minimum; these fixed-height function keys
+// share the same focus, pointer and accessibility behavior at either density.
+component FunctionButton inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: Theme.bottom-height;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
+    background: area.has-hover && root.enabled ? Theme.hover : Theme.surface;
+    accessible-role: button;
+    accessible-label: root.text + (root.enabled ? "" : " — unavailable in read-only stage");
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    Tooltip { TipBody { text: root.hint; } }
+    Text {
+        text: root.text; font-size: Theme.font-size;
+        color: root.enabled ? Theme.text : Theme.muted-text;
+        horizontal-alignment: center; vertical-alignment: center;
+        overflow: elide;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
+                && (event.text == Key.Return || event.text == Key.Space) {
+                root.clicked(); return accept;
+            }
+            reject
+        }
+        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.clicked(); } }
+    }
+}
+
+component FilePane inherits Rectangle {
+    in property <bool> active;
+    in property <[TabRow]> tabs;
+    in property <[BookmarkRow]> bookmarks;
+    in property <string> bookmark-name;
+    in property <length> viewport-width;
+    in property <length> viewport-height;
+    in property <string> path;
+    in property <[string]> volumes;
+    in property <[image]> volume-icons;
+    in property <[string]> volume-short-labels;
+    in property <[string]> volume-tooltips;
+    in property <int> volumes-revision;
+    in property <int> volume-index;
+    in property <[FileRow]> rows;
+    in property <[LocationRow]> locations;
+    in property <string> status;
+    in property <string> error;
+    in property <bool> loading;
+    in property <bool> scroll-interaction-active;
+    in property <int> cursor-index: -1;
+    in property <int> sort-column;
+    in property <bool> descending;
+    in property <length> row-height: Theme.row-height;
+    private property <string> previous-click-identity;
+    out property <bool> list-focused: files-focus.has-focus;
+    // Include one adjacent row for the virtualized repeater's boundary cache.
+    out property <int> visible-row-start: root.row-height > 0px
+        ? max(0, floor(-list.content-y / root.row-height) - 1) : 0;
+    out property <int> visible-row-end: root.row-height > 0px
+        ? min(root.rows.length, ceil((-list.content-y + list.visible-height) / root.row-height) + 1) : 0;
+    callback action(int);
+    callback navigate(string);
+    callback volume(int);
+    callback sort(int);
+    callback row-click(int, bool);
+    callback open(int);
+    callback key(int);
+    callback bulk-selection(int);
+    callback activate();
+    callback location(int);
+    callback properties();
+    callback folder-sizes();
+    callback drive-letter(string);
+    callback insert-path();
+    callback insert-name();
+    callback drive-info();
+    callback tab-new();
+    callback tab-select(string);
+    callback tab-close(string);
+    callback bookmark-add(string, int);
+    callback bookmark-open(string);
+    callback bookmark-remove(string);
+    background: Theme.pane-background;
+    border-color: active ? Theme.active-frame : Theme.frame;
+    border-width: 1px;
+    border-radius: 5px;
+
+    public function focus-list() { files-focus.focus(); }
+    public function open-volumes() { root.activate(); root.focus-list(); volume-picker.open(); }
+    public function open-bookmarks() { bookmarks-menu.open(); }
+    changed row-height => { root.reveal-cursor(); }
+    public function reveal-cursor() {
+        list.cancel-scroll-settle();
+        if (root.cursor-index >= 0) {
+            if (root.cursor-index * root.row-height < -list.content-y) { list.content-y = -root.cursor-index * root.row-height; }
+            else if ((root.cursor-index + 1) * root.row-height > -list.content-y + list.visible-height) {
+                list.content-y = min(0px, list.visible-height - (root.cursor-index + 1) * root.row-height);
+            }
+        }
+    }
+    VerticalLayout {
+        padding: 1px; spacing: 0px;
+        Rectangle {
+            height: 3px;
+            background: root.active ? Theme.active-frame : Theme.frame;
+        }
+        if root.tabs.length > 0 : TabStrip {
+            model: root.tabs;
+            new-tab => { root.activate(); root.tab-new(); root.focus-list(); }
+            selected(identity) => { root.activate(); root.tab-select(identity); root.focus-list(); }
+            close-tab(identity) => { root.activate(); root.tab-close(identity); root.focus-list(); }
+        }
+        Rectangle {
+            height: Theme.toolbar-height; background: root.active ? Theme.active-header : Theme.surface;
+            HorizontalLayout {
+                padding-top: 4px; padding-bottom: 4px;
+                padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
+                spacing: Theme.touch ? 6px : 4px;
+                volume-picker := CompactPicker {
+                    width: Theme.touch ? 88px : 78px;
+                    popup-width: 540px;
+                    model: root.volumes; current-index: root.volume-index;
+                    icons: root.volume-icons;
+                    model-revision: root.volumes-revision;
+                    label: root.volume-index >= 0
+                        ? root.volume-short-labels[root.volume-index] : "—";
+                    hint: root.volume-index >= 0
+                        ? root.volume-tooltips[root.volume-index] + "\nChoose a drive or volume."
+                        : "Choose a drive or volume.";
+                    accessible-name: "Drive or volume";
+                    selected(index) => { root.activate(); root.volume(index); root.focus-list(); }
+                    dismissed => { root.focus-list(); }
+                }
+                ScrollView {
+                    min-width: 0px;
+                    min-height: 0px;
+                    horizontal-stretch: 1;
+                    vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: always-off;
+                    HorizontalLayout {
+                        spacing: 2px; alignment: start;
+                        for location[index] in root.locations : CompactLocationButton {
+                            label: location.label;
+                            compact-label: location.compact-label;
+                            is-drive: location.is-drive;
+                            icon: location.icon;
+                            selected: location.selected;
+                            hint: location.tooltip;
+                            clicked => { root.activate(); root.location(index); root.focus-list(); }
+                        }
+                    }
+                }
+                Tool { label: "‹"; hint: "Back (Alt+Left)"; clicked => { root.activate(); root.action(0); } }
+                Tool { label: "›"; hint: "Forward (Alt+Right)"; clicked => { root.activate(); root.action(1); } }
+                Tool { label: "↑"; hint: "Parent folder (Backspace / Ctrl+Page Up)"; clicked => { root.activate(); root.action(2); } }
+                Tool { icon: @image-url("icons/refresh.svg"); hint: "Refresh (Ctrl+F9 / Ctrl+R)"; clicked => { root.activate(); root.action(3); } }
+                bookmarks-menu := BookmarkMenu {
+                    model: root.bookmarks; path: root.path; default-name: root.bookmark-name;
+                    viewport-width: root.viewport-width; viewport-height: root.viewport-height;
+                    opening => { root.activate(); root.focus-list(); }
+                    dismissed => { root.focus-list(); }
+                    add-bookmark(name, slot) => { root.bookmark-add(name, slot); }
+                    open-bookmark(identity) => { root.bookmark-open(identity); root.focus-list(); }
+                    remove-bookmark(identity) => { root.bookmark-remove(identity); }
+                }
+            }
+        }
+        Rectangle {
+            height: Theme.path-height; background: Theme.secondary-surface;
+            HorizontalLayout {
+                padding-top: Theme.touch ? 4px : Theme.control-padding; padding-bottom: Theme.touch ? 4px : Theme.control-padding;
+                padding-left: Theme.control-padding; padding-right: Theme.control-padding;
+                spacing: Theme.touch ? 6px : 4px;
+                path-input := LineEdit {
+                    text: root.path;
+                    min-height: Theme.control-height;
+                    accessible-label: "Folder path";
+                    Tooltip { TipBody { text: "Folder path: " + root.path + "\n" + root.status + (root.loading ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. Ctrl+G focuses this field."; } }
+                    accepted => { root.activate(); root.navigate(self.text); root.focus-list(); }
+                }
+                Tool { label: "→"; hint: "Open entered path"; clicked => { root.activate(); root.navigate(path-input.text); root.focus-list(); } }
+            }
+        }
+        Rectangle {
+            height: Theme.column-height; background: Theme.header;
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px; spacing: 8px;
+                for title[index] in ["Name", "Size", "Modified", "Type"] : Rectangle {
+                    horizontal-stretch: index == 0 ? 1 : 0;
+                    min-width: index == 0 ? 120px : index == 1 ? 78px : index == 2 ? 132px : 70px;
+                    preferred-width: index == 0 ? 120px : index == 1 ? 78px : index == 2 ? 132px : 70px;
+                    Text { text: title + (root.sort-column == index ? (root.descending ? "  ↓" : "  ↑") : ""); color: root.sort-column == index ? Theme.accent : Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; horizontal-alignment: index == 1 ? right : left; overflow: elide; }
+                    accessible-role: button;
+                    accessible-label: "Sort by " + title;
+                    accessible-action-default => { root.activate(); root.sort(index); }
+                    Tooltip { TipBody { text: "Sort by " + title + (root.sort-column == index ? (root.descending ? " · descending; click for ascending" : " · ascending; click for descending") : " · click for ascending"); } }
+                    TouchArea { clicked => { root.activate(); root.sort(index); } }
+                }
+            }
+        }
+        files-focus := FocusScope {
+            key-pressed(event) => {
+                if event.modifiers.meta { return reject; }
+                if (event.modifiers.control && !event.modifiers.alt && event.modifiers.shift
+                    && (event.text == "s" || event.text == "S" || event.text == Key.F10)) { root.folder-sizes(); return accept; }
+                if (event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift) {
+                    if event.text == "a" || event.text == "A" { root.bulk-selection(0); return accept; }
+                    if event.text == "d" || event.text == "D" { root.bulk-selection(1); return accept; }
+                    if event.text == "i" || event.text == "I" { root.bulk-selection(2); return accept; }
+                    if event.text == Key.F3 { root.sort(0); return accept; }
+                    if event.text == Key.F4 { root.sort(3); return accept; }
+                    if event.text == Key.F5 { root.sort(2); return accept; }
+                    if event.text == Key.F6 { root.sort(1); return accept; }
+                    if event.text == Key.F9 || event.text == "r" || event.text == "R" { root.action(3); return accept; }
+                    if event.text == "g" || event.text == "G" { path-input.focus(); return accept; }
+                    if event.text == Key.Space { root.insert-path(); return accept; }
+                    if event.text == Key.PageUp { root.action(2); return accept; }
+                    if event.text == Key.PageDown { root.key(10); return accept; }
+                    if event.text == Key.Backspace || event.text == "\\" { root.action(4); return accept; }
+                    if event.text == Key.F1 || event.text == "l" || event.text == "L" { root.drive-info(); return accept; }
+                }
+                if (!event.modifiers.control && !event.modifiers.alt && event.modifiers.shift && event.text == Key.Backspace) { root.action(4); return accept; }
+                if (!event.modifiers.control && event.modifiers.alt && !event.modifiers.shift && event.text == Key.LeftArrow) { root.action(0); return accept; }
+                if (!event.modifiers.control && event.modifiers.alt && !event.modifiers.shift && event.text == Key.RightArrow) { root.action(1); return accept; }
+                if (event.modifiers.alt && !event.modifiers.shift && event.text == Key.Return) { root.properties(); return accept; }
+                if (event.text == Key.Return && (event.modifiers.control || event.modifiers.alt || event.modifiers.shift)) { return accept; }
+                if (event.text == Key.Tab && !event.modifiers.control && !event.modifiers.alt) { root.key(0); return accept; }
+                if (event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt && event.text.character-count == 1) { root.drive-letter(event.text); return accept; }
+                if event.modifiers.control || event.modifiers.alt || event.modifiers.shift { return reject; }
+                if (event.text == Key.Return) { root.key(1); return accept; }
+                if (event.text == Key.Backspace) { root.action(2); return accept; }
+                if (event.text == Key.UpArrow) { root.key(2); return accept; }
+                if (event.text == Key.DownArrow) { root.key(3); return accept; }
+                if (event.text == Key.PageUp) { root.key(4); return accept; }
+                if (event.text == Key.PageDown) { root.key(5); return accept; }
+                if (event.text == Key.Home) { root.key(6); return accept; }
+                if (event.text == Key.End) { root.key(7); return accept; }
+                if (event.text == Key.Space) { root.key(8); return accept; }
+                if (event.text == Key.Insert) { root.key(9); return accept; }
+                reject
+            }
+            list := PanelList {
+                row-height: root.row-height;
+                interaction-active: root.scroll-interaction-active;
+                for item[index] in root.rows : Rectangle {
+                    height: root.row-height;
+                    Tooltip { TipBody { text: item.name + "\n" + item.kind + " · " + item.size + "\n" + item.modified + (item.size-hint != "" ? "\n" + item.size-hint : ""); } }
+                    background: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor) : item.selected ? Theme.selected-background : (mod(index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
+                    Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: item.cursor && root.active ? Theme.cursor-edge : transparent; }
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 12px; spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 6px; horizontal-stretch: 1; min-width: 120px;
+                            Rectangle {
+                                width: Theme.icon-size;
+                                Image {
+                                    source: item.icon;
+                                    width: Theme.icon-size; height: Theme.icon-size;
+                                    y: (parent.height - self.height) / 2;
+                                    image-fit: contain;
+                                }
+                            }
+                            Text { text: item.name; color: item.selected ? Theme.selected-text : item.directory ? Theme.directory-text : Theme.text; font-size: Theme.font-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                        }
+                        Text { text: item.size; color: item.size-state == 0 ? Theme.secondary-text : Theme.pending-size; font-weight: item.size-state == 0 ? 400 : 600; font-size: Theme.small-font; width: 78px; overflow: elide; horizontal-alignment: right; vertical-alignment: center; }
+                        Text { text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font; width: 132px; overflow: elide; vertical-alignment: center; }
+                        Text { text: item.kind; color: Theme.secondary-text; font-size: Theme.small-font; width: 70px; overflow: elide; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        private property <string> pressed-identity;
+                        private property <bool> control-pressed;
+                        private property <bool> modified-pressed;
+                        private property <bool> same-target-double;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down
+                                && event.button == PointerEventButton.left {
+                                self.pressed-identity = item.identity;
+                                self.control-pressed = event.modifiers.control;
+                                self.modified-pressed = event.modifiers.control
+                                    || event.modifiers.shift || event.modifiers.alt;
+                            } else if event.kind == PointerEventKind.cancel {
+                                self.pressed-identity = "";
+                                self.same-target-double = false;
+                            }
+                        }
+                        clicked => {
+                            // Slint emits clicked before double-clicked on left release.
+                            // Freeze both clicks across virtualized row rebinding and refreshes.
+                            self.same-target-double = self.pressed-identity == item.identity
+                                && root.previous-click-identity == self.pressed-identity;
+                            root.previous-click-identity = self.pressed-identity == item.identity
+                                ? self.pressed-identity : "";
+                            if self.pressed-identity == item.identity {
+                                root.activate();
+                                root.focus-list();
+                                root.row-click(index, self.control-pressed);
+                            }
+                        }
+                        double-clicked => {
+                            if self.same-target-double && !self.modified-pressed
+                                && self.pressed-identity == item.identity {
+                                root.activate();
+                                root.focus-list();
+                                root.open(index);
+                            }
+                        }
+                    }
+                }
+            }
+            if root.rows.length == 0 : Text {
+                text: root.loading ? "Reading folder…" : "This folder is empty";
+                color: Theme.muted-text; font-size: 13px; horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+        if root.error != "" : Rectangle {
+            height: 44px; background: Theme.error-background;
+            Text { x: 10px; width: parent.width - 20px; text: root.error; color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap; vertical-alignment: center; }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    in property <string> application-version;
+    title: "FM" + (root.application-version == "" ? "" : " " + root.application-version) + " — File Manager";
+    preferred-width: 1340px; preferred-height: 820px;
+    min-width: 1040px; min-height: 480px;
+    background: Theme.window-background;
+    default-font-family: Theme.font-family != "" ? Theme.font-family : "Segoe UI";
+    default-font-size: Theme.font-size;
+    init => { Palette.color-scheme = ColorScheme.dark; }
+    in property <int> active-pane;
+    in property <bool> native-shortcuts-authoritative;
+    in property <[TabRow]> left-tabs;
+    in property <[TabRow]> right-tabs;
+    in property <[BookmarkRow]> bookmarks;
+    in property <string> left-bookmark-name;
+    in property <string> right-bookmark-name;
+    in property <bool> scroll-interaction-active;
+    in-out property <int> theme-index <=> Theme.scheme;
+    in-out property <int> density-index <=> Theme.density;
+    in property <[string]> font-choices;
+    in property <int> font-index;
+    in property <bool> font-list-ready;
+    in-out property <int> desktop-font-size <=> Theme.desktop-font-size;
+    in-out property <int> touch-font-size <=> Theme.touch-font-size;
+    in property <bool> preferences-unsaved;
+    out property <int> focused-pane: left.list-focused ? 0 : right.list-focused ? 1 : -1;
+    out property <int> left-visible-row-start: left.visible-row-start;
+    out property <int> left-visible-row-end: left.visible-row-end;
+    out property <int> right-visible-row-start: right.visible-row-start;
+    out property <int> right-visible-row-end: right.visible-row-end;
+    in property <[FileRow]> left-rows;
+    in property <[FileRow]> right-rows;
+    in property <[LocationRow]> left-locations;
+    in property <[LocationRow]> right-locations;
+    in property <[string]> volumes;
+    in property <[image]> volume-icons;
+    in property <[string]> volume-short-labels;
+    in property <[string]> volume-tooltips;
+    in property <int> volumes-revision;
+    in property <string> left-path;
+    in property <string> right-path;
+    in property <int> left-volume: -1;
+    in property <int> right-volume: -1;
+    in property <string> left-status;
+    in property <string> right-status;
+    in property <string> left-error;
+    in property <string> right-error;
+    in property <bool> left-loading;
+    in property <bool> right-loading;
+    in property <int> left-cursor: -1;
+    in property <int> right-cursor: -1;
+    in property <int> left-sort;
+    in property <int> right-sort;
+    in property <bool> left-descending;
+    in property <bool> right-descending;
+    in property <bool> terminal-ready;
+    in property <bool> terminal-available;
+    in property <[string]> terminal-choices;
+    in property <int> terminal-index;
+    in property <string> command-hint;
+    in property <string> desktop-status;
+    in property <bool> desktop-feedback-important;
+    in property <string> message-title;
+    in property <string> message-body;
+    in property <int> message-generation;
+    in-out property <string> command-text <=> command-input.text;
+    out property <bool> command-focused: command-input.has-focus;
+    // Slint 1.18.1 exposes these internal UTF-8 offsets; keep the pinned SDK and
+    // the actual-key Unicode selection tests together when upgrading Slint.
+    out property <int> command-anchor: command-input.anchor-position-byte-offset;
+    out property <int> command-cursor: command-input.cursor-position-byte-offset;
+    callback backend-ready();
+    callback action(int, int);
+    callback navigate(int, string);
+    callback volume(int, int);
+    callback sort(int, int);
+    callback row-click(int, int, bool);
+    callback open(int, int);
+    callback key(int, int);
+    callback bulk-selection(int, int);
+    callback activate(int);
+    callback location(int, int);
+    callback properties(int);
+    callback folder-sizes(int);
+    callback drive-letter(int, string);
+    callback insert-path(int);
+    callback insert-name();
+    callback tab-new(int);
+    callback tab-select(int, string);
+    callback tab-close(int, string);
+    callback tab-close-active(int);
+    callback tab-cycle(int, int);
+    callback bookmark-add(int, string, int);
+    callback bookmark-open(int, string);
+    callback bookmark-remove(string);
+    callback bookmark-slot(int, int);
+    callback bookmark-jump(int, int);
+    callback drive-info(int);
+    callback submit-command(string) -> bool;
+    callback exit();
+    callback preferences-changed(int, int, int);
+    callback font-options-changed(int, int, int, int);
+    callback options-opened();
+    callback terminal-changed(int);
+    callback command-edited(bool);
+    public function apply-preferences(theme: int, density: int) {
+        Theme.scheme = theme;
+        Theme.density = density;
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+    }
+    public function apply-fonts(family: string, desktop: int, touch: int) {
+        Theme.font-family = family;
+        Theme.desktop-font-size = desktop;
+        Theme.touch-font-size = touch;
+    }
+    public function focus-files() { if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); } }
+    public function reveal-left() { left.reveal-cursor(); }
+    public function reveal-right() { right.reveal-cursor(); }
+    public function set-command(text: string, offset: int) {
+        command-input.text = text;
+        command-input.focus();
+        command-input.set-selection-offsets(offset, offset);
+    }
+    public function focus-command() { command-input.focus(); }
+    pure function hot-path-slot(text: string) -> int {
+        if text == "1" { return 1; } if text == "2" { return 2; }
+        if text == "3" { return 3; } if text == "4" { return 4; }
+        if text == "5" { return 5; } if text == "6" { return 6; }
+        if text == "7" { return 7; } if text == "8" { return 8; }
+        if text == "9" { return 9; } if text == "0" { return 10; }
+        return 0;
+    }
+    changed message-generation => { if root.message-generation != 0 { message.show(); } }
+    changed command-text => { root.command-edited(root.command-text != ""); }
+    shortcuts := FocusScope {
+      capture-key-pressed(event) => {
+        if event.modifiers.meta { return reject; }
+        if event.modifiers.alt && !event.modifiers.control && !event.modifiers.shift {
+            if event.text == Key.F1 { left.open-volumes(); return accept; }
+            if event.text == Key.F2 { right.open-volumes(); return accept; }
+            if event.text == Key.F4 { root.exit(); return accept; }
+        }
+        if event.modifiers.control && !event.modifiers.alt && event.text == Key.Tab {
+            if root.command-focused && !event.modifiers.shift { root.focus-files(); return accept; }
+            if root.focused-pane >= 0 { root.tab-cycle(root.focused-pane, event.modifiers.shift ? -1 : 1); return accept; }
+        }
+        if root.focused-pane >= 0 {
+            if event.modifiers.control && !event.modifiers.alt {
+                if !event.modifiers.shift && (event.text == "t" || event.text == "T") { root.tab-new(root.focused-pane); return accept; }
+                if !event.modifiers.shift && (event.text == "w" || event.text == "W") { root.tab-close-active(root.focused-pane); return accept; }
+                if event.modifiers.shift && (event.text == "+" || event.text == "=") {
+                    root.bookmark-add(root.focused-pane, root.focused-pane == 0 ? root.left-bookmark-name : root.right-bookmark-name, 0);
+                    return accept;
+                }
+            }
+            if !root.native-shortcuts-authoritative && (event.modifiers.control || event.modifiers.shift) {
+                if root.hot-path-slot(event.text) > 0 {
+                    if event.modifiers.control && event.modifiers.shift && !event.modifiers.alt {
+                        root.bookmark-slot(root.focused-pane, root.hot-path-slot(event.text)); return accept;
+                    }
+                    if (!event.modifiers.control && event.modifiers.shift) || (event.modifiers.control && !event.modifiers.shift) {
+                        root.bookmark-jump(event.modifiers.alt ? 1 - root.focused-pane : root.focused-pane, root.hot-path-slot(event.text)); return accept;
+                    }
+                }
+            }
+        }
+        if event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift
+            && (root.focused-pane >= 0 || root.command-focused) {
+            if event.text == Key.Return { root.insert-name(); return accept; }
+            if event.text == "p" || event.text == "P" { root.insert-path(root.active-pane); return accept; }
+        }
+        if event.modifiers.control && !event.modifiers.alt && event.text == "[" { root.insert-path(0); return accept; }
+        if event.modifiers.control && !event.modifiers.alt && event.text == "]" { root.insert-path(1); return accept; }
+        if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift {
+            if event.text == Key.F1 { help.show(); return accept; }
+            if event.text == Key.F9 { user-menu.show(); return accept; }
+            if event.text == Key.F10 { main-menu.show(); return accept; }
+        }
+        reject
+      }
+      VerticalLayout {
+        padding: Theme.window-padding; spacing: Theme.gap;
+        HorizontalLayout {
+            spacing: Theme.gap;
+            left := FilePane {
+                tabs: root.left-tabs; bookmarks: root.bookmarks; bookmark-name: root.left-bookmark-name;
+                viewport-width: root.width; viewport-height: root.height;
+                tab-new => { root.tab-new(0); } tab-select(id) => { root.tab-select(0, id); } tab-close(id) => { root.tab-close(0, id); }
+                bookmark-add(name, slot) => { root.bookmark-add(0, name, slot); } bookmark-open(id) => { root.bookmark-open(0, id); }
+                bookmark-remove(id) => { root.bookmark-remove(id); }
+                scroll-interaction-active: root.scroll-interaction-active;
+                active: root.active-pane == 0; rows: root.left-rows; volumes: root.volumes; volume-index: root.left-volume;
+                locations: root.left-locations;
+                volume-short-labels: root.volume-short-labels;
+                volume-icons: root.volume-icons;
+                volume-tooltips: root.volume-tooltips;
+                volumes-revision: root.volumes-revision;
+                path: root.left-path; status: root.left-status; error: root.left-error; loading: root.left-loading;
+                cursor-index: root.left-cursor; sort-column: root.left-sort; descending: root.left-descending;
+                action(a) => { root.action(0, a); } navigate(p) => { root.navigate(0, p); } volume(v) => { root.volume(0, v); }
+                sort(c) => { root.sort(0, c); } row-click(r, c) => { root.row-click(0, r, c); } open(r) => { root.open(0, r); }
+                key(k) => { root.key(0, k); } activate => { root.activate(0); }
+                bulk-selection(operation) => { root.bulk-selection(0, operation); }
+                location(l) => { root.location(0, l); } properties => { root.properties(0); }
+                folder-sizes => { root.folder-sizes(0); } drive-letter(letter) => { root.drive-letter(0, letter); }
+                insert-path => { root.insert-path(0); } insert-name => { root.insert-name(); } drive-info => { root.drive-info(0); }
+            }
+            right := FilePane {
+                tabs: root.right-tabs; bookmarks: root.bookmarks; bookmark-name: root.right-bookmark-name;
+                viewport-width: root.width; viewport-height: root.height;
+                tab-new => { root.tab-new(1); } tab-select(id) => { root.tab-select(1, id); } tab-close(id) => { root.tab-close(1, id); }
+                bookmark-add(name, slot) => { root.bookmark-add(1, name, slot); } bookmark-open(id) => { root.bookmark-open(1, id); }
+                bookmark-remove(id) => { root.bookmark-remove(id); }
+                scroll-interaction-active: root.scroll-interaction-active;
+                active: root.active-pane == 1; rows: root.right-rows; volumes: root.volumes; volume-index: root.right-volume;
+                locations: root.right-locations;
+                volume-short-labels: root.volume-short-labels;
+                volume-icons: root.volume-icons;
+                volume-tooltips: root.volume-tooltips;
+                volumes-revision: root.volumes-revision;
+                path: root.right-path; status: root.right-status; error: root.right-error; loading: root.right-loading;
+                cursor-index: root.right-cursor; sort-column: root.right-sort; descending: root.right-descending;
+                action(a) => { root.action(1, a); } navigate(p) => { root.navigate(1, p); } volume(v) => { root.volume(1, v); }
+                sort(c) => { root.sort(1, c); } row-click(r, c) => { root.row-click(1, r, c); } open(r) => { root.open(1, r); }
+                key(k) => { root.key(1, k); } activate => { root.activate(1); }
+                bulk-selection(operation) => { root.bulk-selection(1, operation); }
+                location(l) => { root.location(1, l); } properties => { root.properties(1); }
+                folder-sizes => { root.folder-sizes(1); } drive-letter(letter) => { root.drive-letter(1, letter); }
+                insert-path => { root.insert-path(1); } insert-name => { root.insert-name(); } drive-info => { root.drive-info(1); }
+            }
+        }
+        Rectangle {
+            height: Theme.command-height; background: Theme.secondary-surface; border-radius: 4px;
+            border-width: 1px; border-color: command-input.has-focus ? Theme.active-frame : Theme.frame;
+            HorizontalLayout {
+                padding-top: 4px; padding-bottom: 4px;
+                padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
+                spacing: Theme.touch ? 6px : 5px;
+                CompactPicker {
+                    width: Theme.touch ? 48px : 46px;
+                    accessible-name: "Command shell";
+                    enabled: root.terminal-available;
+                    model: root.terminal-choices;
+                    current-index: root.terminal-index;
+                    icon-only: true;
+                    icon: @image-url("icons/terminal.svg");
+                    popup-above: true;
+                    popup-width: Theme.touch ? 360px : 320px;
+                    hint: (root.terminal-available ? "Selected shell: " + root.terminal-choices[root.terminal-index] + "\nChoose a shell from this menu.\n" : "Command terminal unavailable.\n") + root.command-hint + "\nWorking folder: " + (root.active-pane == 0 ? root.left-path : root.right-path);
+                    selected(index) => { root.terminal-changed(index); root.focus-command(); }
+                    dismissed => { root.focus-command(); }
+                }
+                Text {
+                    text: (root.active-pane == 0 ? root.left-path : root.right-path) + " >";
+                    color: Theme.secondary-text; font-size: Theme.small-font;
+                    max-width: Theme.touch ? 200px : 180px;
+                    overflow: elide; vertical-alignment: center;
+                    accessible-label: "Working folder: " + (root.active-pane == 0 ? root.left-path : root.right-path);
+                    Tooltip { TipBody { text: "Working folder: " + (root.active-pane == 0 ? root.left-path : root.right-path); } }
+                }
+                Rectangle {
+                    clip: true; horizontal-stretch: 1;
+                    Tooltip { TipBody { text: root.command-hint + "\nWorking folder: " + (root.active-pane == 0 ? root.left-path : root.right-path) + "\nEnter runs the command. Escape returns to the files. Ctrl+Enter appends the focused filename. Ctrl+P inserts the current path. Ctrl+[ / Ctrl+] inserts a panel path."; } }
+                    command-input := TextInput {
+                        private property <length> horizontal-offset;
+                        x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.horizontal-offset));
+                        width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                        height: parent.height;
+                        color: Theme.text; selection-background-color: Theme.selection-background;
+                        selection-foreground-color: Theme.selection-text;
+                        vertical-alignment: center;
+                        single-line: true;
+                        accessible-label: "Command line";
+                        cursor-position-changed(position) => {
+                            if position.x + self.horizontal-offset < 0px {
+                                self.horizontal-offset = -position.x;
+                            } else if position.x + self.horizontal-offset > parent.width - self.text-cursor-width {
+                                self.horizontal-offset = parent.width - position.x - self.text-cursor-width;
+                            }
+                        }
+                        edited => { root.command-edited(self.text != ""); }
+                        accepted => { if root.submit-command(self.text) { self.text = ""; root.command-edited(false); } }
+                        key-pressed(event) => {
+                            if event.text == Key.Return && (event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta) { return accept; }
+                            if event.text == Key.Escape { root.focus-files(); return accept; }
+                            reject
+                        }
+                    }
+                }
+                Button { text: "Options"; min-height: Theme.control-height; Tooltip { TipBody { text: "Choose the theme, font family, font sizes and compact or touch controls."; } } clicked => { root.options-opened(); options.show(); } }
+                Button { text: "Run"; min-height: Theme.control-height; enabled: root.terminal-ready && root.command-text != ""; Tooltip { TipBody { text: !root.terminal-available ? "A system terminal is unavailable." : !root.terminal-ready ? "Waiting for the terminal to become ready." : root.command-text == "" ? "Enter a command to run in the active panel’s folder." : "Run with " + root.terminal-choices[root.terminal-index] + "\nWorking folder: " + (root.active-pane == 0 ? root.left-path : root.right-path); } } clicked => { if root.submit-command(root.command-text) { root.command-text = ""; root.command-edited(false); } root.focus-command(); } }
+            }
+        }
+        HorizontalLayout {
+            height: Theme.bottom-height; spacing: 4px;
+            for label[index] in ["Help", "Rename", "View", "Edit", "Copy", "Move", "Create dir", "Delete", "User menu", "Menu"] : FunctionButton {
+                text: "F" + (index + 1) + " " + label;
+                enabled: index == 0 || index == 8 || index == 9;
+                hint: "F" + (index + 1) + " " + label + (index == 0 ? " · keyboard shortcuts and usage help" : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : " · unavailable in this read-only stage");
+                clicked => { if index == 0 { help.show(); } else if index == 8 { user-menu.show(); } else if index == 9 { main-menu.show(); } }
+            }
+        }
+        if root.desktop-feedback-important && root.desktop-status != "" : Text {
+            text: root.desktop-status;
+            color: Theme.secondary-text; font-size: Theme.hint-font;
+            wrap: word-wrap;
+        }
+      }
+    }
+    options := PopupWindow {
+        close-policy: close-on-click-outside;
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        width: min(root.width - 24px, max(500px, Theme.font-size * 21));
+        height: min(root.height - 24px, Theme.touch ? 380px : 320px);
+        Rectangle {
+            background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Options"; color: Theme.strong-text; font-size: 20px; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                    spacing: 12px;
+                        Text { text: "Theme"; color: Theme.text; wrap: word-wrap; }
+                        ComboBox {
+                            accessible-label: "Theme";
+                            Tooltip { TipBody { text: "Choose Blue, Dark or Light. Changes apply immediately."; } }
+                            model: ["Blue", "Dark", "Light"];
+                            current-index: root.theme-index;
+                            min-height: Theme.control-height;
+                            selected(value) => { root.preferences-changed(self.current-index, root.density-index, 0); }
+                        }
+                        Text { text: "Controls and spacing"; color: Theme.text; wrap: word-wrap; }
+                        ComboBox {
+                            accessible-label: "Control density";
+                            Tooltip { TipBody { text: "Desktop uses compact controls. Touch provides targets at least 40 pixels high."; } }
+                            model: ["Desktop / mouse · compact", "Touch · larger controls"];
+                            current-index: root.density-index;
+                            min-height: Theme.control-height;
+                            selected(value) => { root.preferences-changed(root.theme-index, self.current-index, 1); }
+                        }
+                        Text { text: "Font family"; color: Theme.text; wrap: word-wrap; }
+                        CompactPicker {
+                            accessible-name: "Font family";
+                            enabled: root.font-list-ready;
+                            model: root.font-choices;
+                            current-index: root.font-index;
+                            label: root.font-choices[root.font-index];
+                            popup-width: min(root.width - 64px, 640px);
+                            hint: root.font-list-ready ? root.font-choices[root.font-index] + "\nChoose an installed font. Application default uses FM’s Segoe UI default and system fallback. Changes apply immediately." : "Loading installed font families. Size controls remain available.";
+                            selected(index) => { root.font-options-changed(index, root.desktop-font-size, root.touch-font-size, 0); }
+                        }
+                        Text { text: "Desktop font size · logical pixels"; color: Theme.text; wrap: word-wrap; }
+                        ComboBox {
+                            accessible-label: "Desktop font size in logical pixels";
+                            model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
+                            current-index: root.desktop-font-size - 8;
+                            min-height: Theme.control-height;
+                            Tooltip { TipBody { text: "Desktop base text size, from 8 to 32 logical pixels. Screen scaling converts logical pixels to physical pixels. File rows and controls grow with the text."; } }
+                            selected(value) => { root.font-options-changed(root.font-index, self.current-index + 8, root.touch-font-size, 1); }
+                        }
+                        Text { text: "Touch font size · logical pixels"; color: Theme.text; wrap: word-wrap; }
+                        ComboBox {
+                            accessible-label: "Touch font size in logical pixels";
+                            model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
+                            current-index: root.touch-font-size - 8;
+                            min-height: Theme.control-height;
+                            Tooltip { TipBody { text: "Touch base text size, from 8 to 32 logical pixels. Touch targets stay at least 40 logical pixels high. File rows and controls grow with the text."; } }
+                            selected(value) => { root.font-options-changed(root.font-index, root.desktop-font-size, self.current-index + 8, 2); }
+                        }
+                        Text { text: root.preferences-unsaved ? "Changes apply immediately. Saving is pending; Save again retries if needed." : "Changes apply immediately and are saved for the next launch."; color: Theme.secondary-text; wrap: word-wrap; font-size: Theme.small-font; }
+                    }
+                }
+                HorizontalLayout { spacing: 8px;
+                    Button { text: "Save again"; enabled: root.preferences-unsaved; min-height: Theme.control-height; Tooltip { TipBody { text: "Retry saving the theme, control density, font family, font sizes and shell preference for the next launch."; } } clicked => { root.preferences-changed(root.theme-index, root.density-index, 2); } }
+                    Button { text: "Done"; min-height: Theme.control-height; Tooltip { TipBody { text: "Close Options. Changes are applied immediately."; } } clicked => { options.close(); } }
+                }
+            }
+        }
+    }
+    help := PopupWindow {
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        width: 620px; height: min(root.height - 40px, Theme.touch ? 600px : 490px);
+        Rectangle {
+            background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
+            VerticalLayout {
+                padding: 20px; spacing: 13px;
+                Text { text: "FM keyboard help"; color: Theme.strong-text; font-size: 20px; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                    spacing: 13px;
+                        Text { text: "Tab switches file panels. Ctrl+T opens a folder tab, Ctrl+W closes the active tab, and Ctrl+Tab / Ctrl+Shift+Tab cycles tabs. Choose Command line from the User menu to edit a command; Ctrl+Tab there returns to files. Enter or left double click opens a folder or file. Ctrl+left click, Space / Insert selects files; .. is navigation only. In files, Ctrl+A selects all, Ctrl+D clears selection, and Ctrl+I inverts it; editors keep their normal text shortcuts."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Backspace / Ctrl+Page Up opens the parent. Ctrl+Page Down enters a directory. Ctrl+Backspace, Shift+Backspace or Ctrl+\\ opens the root. Alt+Left / Right uses history. Ctrl+F9 / Ctrl+R refreshes. Ctrl+G edits the folder path."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Ctrl+F3 / F4 / F5 / F6 sorts by name / extension / modified time / size. Alt+F1 / F2 chooses the left / right drive. Ctrl+F1 / Ctrl+L shows drive information. Shift+drive letter chooses a Windows drive from a file panel. Alt+Enter shows Properties. Alt+F4 exits."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Ctrl+[ / Ctrl+] inserts the left / right folder path. Ctrl+P inserts the active folder path and Ctrl+Enter appends the focused filename from files or the command editor. From files, Ctrl+Space inserts the active path; the editor reserves it for IME. Enter or Run executes a command in the active folder; modified Enter never runs it. Escape returns to files."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "The star opens Bookmarks and Hot Paths. Ctrl+1…9 / Ctrl+0 or Shift+1…9 / Shift+0 opens a saved Hot Path. Add Alt to open it in the other panel. Ctrl+Shift+1…9 / Ctrl+Shift+0 assigns the current folder; Ctrl+Shift++ adds a bookmark without a shortcut. These shortcuts apply only while files have focus. Bookmarks are saved for the next launch; folder tabs last for this session."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: root.command-hint + ". Clear the command line before changing shell type. Terminal / Terminal (sudo) may be switched for an existing command; sudo prompts only in the external terminal and is never saved."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Ctrl+Shift+F10 / Ctrl+Shift+S measures every folder in the active panel; press again to cancel. Sizes use logical lengths and skip links and special files. Amber sizes are unfinished, cancelled or have errors; hover for details. Alt+F10 / Ctrl+Q remains reserved for selected-item sizes."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Rename, View, Edit, Copy, Move, Create directory and Delete are unavailable in this read-only stage."; color: Theme.secondary-text; wrap: word-wrap; }
+                    }
+                }
+                Button { text: "Close"; min-height: Theme.control-height; Tooltip { TipBody { text: "Close this dialog and return to the file manager."; } } clicked => { help.close(); } }
+            }
+        }
+    }
+    user-menu := PopupWindow {
+        x: (root.width - self.width) / 2; y: root.height - self.height - 75px;
+        width: min(root.width - 24px, max(340px, Theme.font-size * 18 + 24px));
+        height: min(root.height - 90px, max(Theme.touch ? 280px : 220px, Theme.control-height * 5 + 90px));
+        Rectangle { background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+            VerticalLayout { padding: 12px; spacing: 8px;
+                Text { text: "User menu"; color: Theme.strong-text; font-size: 17px; }
+                Button { text: "Command line"; min-height: Theme.control-height; Tooltip { TipBody { text: "Focus the command editor without running a command. Ctrl+Tab in the editor returns to files."; } } clicked => { user-menu.close(); root.focus-command(); } }
+                Button { text: "Bookmarks and Hot Paths"; min-height: Theme.control-height; Tooltip { TipBody { text: "Save, open or remove a favorite folder. Hot Paths provide ten numbered shortcuts."; } } clicked => { user-menu.close(); if root.active-pane == 0 { left.open-bookmarks(); } else { right.open-bookmarks(); } } }
+                Button { text: "Properties · Alt+Enter"; min-height: Theme.control-height; Tooltip { TipBody { text: "Show Properties for selected items, or the focused file or folder."; } } clicked => { user-menu.close(); root.properties(root.active-pane); } }
+                Button { text: "Calculate / cancel folder sizes"; min-height: Theme.control-height; Tooltip { TipBody { text: "Measure every folder in the active panel; choose again to cancel (Ctrl+Shift+F10 / Ctrl+Shift+S)."; } } clicked => { user-menu.close(); root.folder-sizes(root.active-pane); } }
+                Button { text: "Close"; min-height: Theme.control-height; Tooltip { TipBody { text: "Close this dialog and return to the file manager."; } } clicked => { user-menu.close(); } }
+            }
+        }
+    }
+    main-menu := PopupWindow {
+        x: root.width - self.width - 15px; y: root.height - self.height - 75px;
+        width: min(root.width - 24px, max(300px, Theme.font-size * 14 + 24px));
+        height: min(root.height - 90px, max(Theme.touch ? 330px : 260px, Theme.control-height * 5 + 90px));
+        Rectangle { background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+            VerticalLayout { padding: 12px; spacing: 8px;
+                Text { text: "Menu"; color: Theme.strong-text; font-size: 17px; }
+                Button { text: "Options"; min-height: Theme.control-height; Tooltip { TipBody { text: "Choose the theme, font family, font sizes and compact desktop or larger touch controls."; } } clicked => { main-menu.close(); root.options-opened(); options.show(); } }
+                Button { text: "Refresh active folder"; min-height: Theme.control-height; Tooltip { TipBody { text: "Read the active folder again (Ctrl+F9 / Ctrl+R)."; } } clicked => { main-menu.close(); root.action(root.active-pane, 3); } }
+                Button { text: "Keyboard help · F1"; min-height: Theme.control-height; Tooltip { TipBody { text: "Show supported keyboard shortcuts and usage help."; } } clicked => { main-menu.close(); help.show(); } }
+                Button { text: "About FM"; min-height: Theme.control-height; Tooltip { TipBody { text: "Show application and Slint version information."; } } clicked => { main-menu.close(); about.show(); } }
+                Button { text: "Exit"; min-height: Theme.control-height; Tooltip { TipBody { text: "Close the file manager (Alt+F4)."; } } clicked => { main-menu.close(); root.exit(); } }
+            }
+        }
+    }
+    message := PopupWindow {
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        width: 600px; height: 400px;
+        Rectangle { background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+            VerticalLayout { padding: 18px; spacing: 12px;
+                Text { text: root.message-title; color: Theme.strong-text; font-size: 18px; wrap: word-wrap; }
+                ScrollView { Text { text: root.message-body; color: Theme.text; wrap: word-wrap; width: parent.width; } }
+                Button { text: "Close"; min-height: Theme.control-height; Tooltip { TipBody { text: "Close this dialog and return to the file manager."; } } clicked => { message.close(); } }
+            }
+        }
+    }
+    about := PopupWindow {
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        width: 360px; height: Theme.touch ? 320px : 270px;
+        Rectangle {
+            background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
+            VerticalLayout {
+                padding: 18px; spacing: 10px;
+                Text { text: "FM · File Manager"; color: Theme.strong-text; font-size: 18px; }
+                Text { text: "A focused, two-pane file browser."; color: Theme.secondary-text; }
+                AboutSlint {}
+                Button { text: "Close"; min-height: Theme.control-height; Tooltip { TipBody { text: "Close this dialog and return to the file manager."; } } clicked => { about.close(); } }
+            }
+        }
+    }
+}

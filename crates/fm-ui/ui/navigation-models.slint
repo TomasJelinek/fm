@@ -1,0 +1,14 @@
+// Display-only projections. Native tab and bookmark paths remain in the backend.
+export struct TabRow {
+    identity: string,
+    label: string,
+    path: string,
+    active: bool,
+}
+
+export struct BookmarkRow {
+    identity: string,
+    label: string,
+    path: string,
+    slot: int,
+}

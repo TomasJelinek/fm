@@ -1,0 +1,301 @@
+use fm_core::{
+    Cancellation, Command, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, Event,
+    FsError, NavigationId, PaneId, SortSpec, SpaceInfo, StorageService, Volume, VolumeService,
+};
+use fm_engine::Engine;
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
+};
+use tokio::sync::{Notify, mpsc};
+
+struct ControlledFileSystem {
+    entered: Arc<Notify>,
+    released: Arc<(Mutex<bool>, Condvar)>,
+    cooperative: bool,
+}
+
+impl DirectoryService for ControlledFileSystem {
+    fn read_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        if path == Path::new("missing") {
+            return Err(FsError::from_io(
+                "read directory",
+                path,
+                io::Error::from(io::ErrorKind::NotFound),
+            ));
+        }
+        if path == Path::new("slow") {
+            self.entered.notify_one();
+            let (lock, condition) = &*self.released;
+            let mut released = lock.lock().unwrap();
+            while !*released && (!self.cooperative || !cancel.is_cancelled()) {
+                released = condition
+                    .wait_timeout(released, Duration::from_millis(10))
+                    .unwrap()
+                    .0;
+            }
+        }
+        for index in 0..300 {
+            if cancel.is_cancelled()
+                || !emit(Entry::new(
+                    EntryId(index),
+                    path.join(format!("file-{index:03}")),
+                    EntryKind::File,
+                ))
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn entry_metadata(&self, _path: &Path) -> Result<EntryMetadata, FsError> {
+        Ok(EntryMetadata {
+            size: Some(7),
+            modified: None,
+        })
+    }
+}
+
+impl VolumeService for ControlledFileSystem {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        Ok(vec![Volume {
+            id: "root".into(),
+            label: "Root".into(),
+            root: PathBuf::from("/"),
+        }])
+    }
+}
+
+impl StorageService for ControlledFileSystem {
+    fn space_info(&self, _path: &Path) -> Result<SpaceInfo, FsError> {
+        Ok(SpaceInfo {
+            available: 40,
+            total: 100,
+        })
+    }
+}
+
+fn provider() -> Arc<ControlledFileSystem> {
+    Arc::new(ControlledFileSystem {
+        entered: Arc::new(Notify::new()),
+        released: Arc::new((Mutex::new(false), Condvar::new())),
+        cooperative: true,
+    })
+}
+
+fn navigate(pane: PaneId, generation: u64, path: &str) -> Command {
+    Command::Navigate {
+        pane,
+        navigation: NavigationId(generation),
+        path: PathBuf::from(path),
+        sort: SortSpec::default(),
+    }
+}
+
+async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
+    tokio::time::timeout(Duration::from_secs(3), events.recv())
+        .await
+        .expect("engine must deliver an event")
+        .expect("engine output must remain connected")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_left_listing_does_not_prevent_right_completion() {
+    let filesystem = provider();
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(8);
+    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "slow"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+        .await
+        .expect("left worker entered provider");
+    commands
+        .send(navigate(PaneId::Right, 1, "fast"))
+        .await
+        .unwrap();
+    loop {
+        if let Event::ListingFinished {
+            pane: PaneId::Right,
+            entries,
+            ..
+        } = next(&mut events).await
+        {
+            assert_eq!(entries.len(), 300);
+            assert_eq!(entries[0].metadata.size, Some(7));
+            break;
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacing_navigation_cancels_old_completion() {
+    let filesystem = provider();
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "slow"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+        .await
+        .unwrap();
+    commands
+        .send(navigate(PaneId::Left, 2, "fast"))
+        .await
+        .unwrap();
+    loop {
+        match next(&mut events).await {
+            Event::ListingFinished {
+                navigation: NavigationId(1),
+                ..
+            } => panic!("cancelled listing completed"),
+            Event::ListingFinished {
+                navigation: NavigationId(2),
+                entries,
+                ..
+            } => {
+                assert_eq!(entries.len(), 300);
+                break;
+            }
+            _ => {}
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn saturated_result_queue_preserves_batches_and_terminal_state() {
+    let (commands, receiver) = mpsc::channel(4);
+    let (sender, mut events) = mpsc::channel(1);
+    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "fast"))
+        .await
+        .unwrap();
+    let mut count = 0;
+    loop {
+        match next(&mut events).await {
+            Event::EntriesBatch { entries, .. } => {
+                assert!(entries.len() <= 128);
+                count += entries.len();
+            }
+            Event::MetadataBatch { entries, .. } => assert!(entries.len() <= 128),
+            Event::ListingFinished { entries, .. } => {
+                assert_eq!(entries.len(), 300);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(count, 300);
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn unavailable_path_reports_failure_and_other_pane_still_works() {
+    let (commands, receiver) = mpsc::channel(4);
+    let (sender, mut events) = mpsc::channel(8);
+    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "missing"))
+        .await
+        .unwrap();
+    commands
+        .send(navigate(PaneId::Right, 1, "fast"))
+        .await
+        .unwrap();
+    let mut failure = false;
+    let mut completed = false;
+    while !failure || !completed {
+        match next(&mut events).await {
+            Event::ListingFailed {
+                pane: PaneId::Left,
+                error,
+                ..
+            } => {
+                assert_eq!(error.kind, io::ErrorKind::NotFound);
+                failure = true;
+            }
+            Event::ListingFinished {
+                pane: PaneId::Right,
+                ..
+            } => completed = true,
+            _ => {}
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
+    let filesystem = Arc::new(ControlledFileSystem {
+        entered: Arc::new(Notify::new()),
+        released: Arc::new((Mutex::new(false), Condvar::new())),
+        cooperative: false,
+    });
+    struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let (lock, condition) = &*self.0;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+        }
+    }
+    let _release = ReleaseOnDrop(filesystem.released.clone());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    for generation in [1, 2] {
+        commands
+            .send(navigate(PaneId::Left, generation, "slow"))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+            .await
+            .unwrap();
+    }
+    commands
+        .send(navigate(PaneId::Left, 3, "slow"))
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), filesystem.entered.notified())
+            .await
+            .is_err(),
+        "one pane must not start a third uncancellable OS read"
+    );
+    commands
+        .send(navigate(PaneId::Right, 1, "fast"))
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next(&mut events).await,
+            Event::ListingFinished {
+                pane: PaneId::Right,
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}

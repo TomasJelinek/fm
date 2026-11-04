@@ -1,0 +1,104 @@
+use super::*;
+
+pub(super) fn test_root() -> PathBuf {
+    PathBuf::from("C:\\")
+}
+
+#[test]
+fn bookmark_and_tab_actions_preserve_unpaired_native_utf16() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let path = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
+    let mut p = Presenter::new(path.clone(), test_root());
+    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    assert!(
+        p.add_bookmark(PaneId::Left, "Raw native".into(), Some(1), &|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!()
+            };
+            assert_eq!(preferences.bookmarks[0].path, path);
+            true
+        })
+    );
+    assert!(p.new_tab(PaneId::Left, &|command| {
+        assert!(matches!(command, Command::Navigate { path: actual, .. } if actual == path));
+        true
+    }));
+    assert_eq!(p.tabs(PaneId::Left)[1].path, path);
+    assert!(p.jump_bookmark(PaneId::Right, 1, &|command| {
+        assert!(matches!(command, Command::Navigate {
+            pane: PaneId::Right, path: actual, ..
+        } if actual == path));
+        true
+    }));
+}
+
+#[test]
+fn volumes_revision_distinguishes_raw_roots_with_identical_unicode_display() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
+    let second = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd801]));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut presenter = Presenter::new(test_root(), test_root());
+    let update = |root| {
+        Event::VolumesUpdated(vec![Volume {
+            id: "same-display".into(),
+            label: "Drive".into(),
+            root,
+        }])
+    };
+    presenter.apply(update(first));
+    let before = presenter.volumes_revision;
+    presenter.apply(update(second));
+    assert_ne!(presenter.volumes_revision, before);
+}
+
+#[test]
+fn opening_uses_raw_path_even_when_display_name_is_lossy() {
+    use std::os::windows::ffi::OsStringExt;
+    let mut p = Presenter::new("a".into(), "right".into());
+    let first = begin(&mut p, PaneId::Left, "a");
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&[67, 58, 92, 0xd800]));
+    finish(
+        &mut p,
+        PaneId::Left,
+        first,
+        vec![Entry::new(EntryId(1), path.clone(), EntryKind::Directory)],
+    );
+    assert!(p.open(PaneId::Left, 0, &|command| {
+        match command {
+            Command::Navigate { path: actual, .. } => assert_eq!(actual, path),
+            _ => panic!(),
+        };
+        true
+    }));
+}
+
+#[test]
+fn file_association_request_preserves_unpaired_native_utf16() {
+    use std::os::windows::ffi::OsStringExt;
+    let mut p = Presenter::new("a".into(), "right".into());
+    let first = begin(&mut p, PaneId::Left, "a");
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&[67, 58, 92, 0xd800]));
+    finish(
+        &mut p,
+        PaneId::Left,
+        first,
+        vec![Entry::new(EntryId(0), path.clone(), EntryKind::File)],
+    );
+    assert!(p.open(PaneId::Left, 0, &|command| {
+        assert!(matches!(command, Command::OpenEntry { path: actual, .. } if actual == path));
+        true
+    }));
+}
+#[test]
+fn submitting_unchanged_lossy_path_text_reuses_the_original_raw_path() {
+    use std::os::windows::ffi::OsStringExt;
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&[67, 58, 92, 0xd800]));
+    let mut p = Presenter::new(path.clone(), "right".into());
+    assert!(
+        p.navigate_text(PaneId::Left, path.to_string_lossy().as_ref(), &|command| {
+            assert!(matches!(command, Command::Navigate { path: actual, .. } if actual == path));
+            true
+        })
+    );
+}
