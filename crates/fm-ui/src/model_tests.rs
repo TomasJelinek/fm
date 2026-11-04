@@ -2,6 +2,47 @@ use super::*;
 use std::{path::PathBuf, sync::Arc};
 
 #[test]
+fn completed_partial_size_is_distinct_from_other_folders_still_queued() {
+    let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    {
+        let mut p = presenter.borrow_mut();
+        p.panes[0].entries = ["drivers", "other"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                Entry::new(EntryId(index as u64), root.join(name), EntryKind::Directory)
+            })
+            .collect::<Vec<_>>()
+            .into();
+        p.panes[0].size_scan = Some(FolderSizeScanId(1));
+        p.panes[0].size_scan_attempted = true;
+        p.panes[0].folder_sizes.insert(
+            root.join("drivers"),
+            FolderSize {
+                bytes: 175_438_846,
+                files: 769,
+                errors: 1,
+                finished: true,
+                ..Default::default()
+            },
+        );
+    }
+    let model = Rows::new(presenter, PaneId::Left);
+    let finished = model.row_data(0).unwrap();
+    assert_eq!(
+        finished.size_state, 2,
+        "one inaccessible folder does not leave the scan running"
+    );
+    assert_eq!(finished.size.as_str(), "≈ 167.3 MB");
+    assert_eq!(
+        model.row_data(1).unwrap().size_state,
+        1,
+        "other roots can still be queued"
+    );
+}
+
+#[test]
 fn unfinished_directory_sizes_are_marked_until_their_own_clean_completion() {
     let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));

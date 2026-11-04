@@ -88,9 +88,10 @@ success text does not occupy a permanent footer. Desktop F1–F10 buttons use a
 22px base height; compact touch targets use a40px baseline. Unclear and disabled controls
 have tooltips and accessible labels. Text metrics may grow the controls.
 
-Final successful folder sizes display normally. Running/queued, cancelled and
-incomplete results use a contrasting color without `!`; known partial totals
-also use `≈`. A tooltip explains the state and partial errors. An unscanned
+Final successful folder sizes display normally. Active running/queued results
+use a contrasting color without `!`; known partial totals also use `≈`.
+Completed partial/cancelled totals retain their partial marker but ordinary
+styling. File/folder rows have no hover tooltips; F1 explains the states. An unscanned
 directory shows `<DIR>`, never its filesystem directory-entry size as a recursive
 total. Sorting preserves estimate state and uses backend sorting.
 

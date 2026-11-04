@@ -243,7 +243,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, false);
     assert_eq!(
         window.get_command_text().as_str(),
-        "'left 文档'\\''Cafe\u{301} 👩🏽‍💻'"
+        "\"left 文档'Cafe\u{301} 👩🏽‍💻\""
     );
     assert!(window.get_command_focused());
     assert!(
@@ -259,7 +259,10 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, true);
     key(&window, "]");
     hold(&window, Key::Control, false);
-    assert_eq!(window.get_command_text().as_str(), "echo 'right 文件' tail");
+    assert_eq!(
+        window.get_command_text().as_str(),
+        "echo \"right 文件\" tail"
+    );
     assert_eq!(window.get_command_cursor(), 19);
     let before = window.get_command_text();
     presenter.borrow_mut().apply(Event::IconLoaded {
@@ -295,7 +298,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     );
     assert_eq!(
         window.get_command_text().as_str(),
-        "echo 'right 文件'D tail"
+        "echo \"right 文件\"D tail"
     );
     key(&window, Key::Return);
     key(&window, Key::Return);
@@ -303,7 +306,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     let request = match &commands.borrow()[0] {
         Command::LaunchTerminal { request, terminal } => {
             assert_eq!(terminal.working_directory, right);
-            assert_eq!(terminal.command, "echo 'right 文件'D tail");
+            assert_eq!(terminal.command, "echo \"right 文件\"D tail");
             assert_eq!(terminal.shell, ShellFlavor::Posix);
             assert_eq!(terminal.mode, TerminalMode::Standard);
             *request

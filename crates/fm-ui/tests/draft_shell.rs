@@ -84,7 +84,7 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
     window.window().dispatch_event(WindowEvent::KeyReleased {
         text: Key::Control.into(),
     });
-    let literal_draft = "echo 'folder & echo INJECTED'";
+    let literal_draft = "echo \"folder & echo INJECTED\"";
     assert_eq!(window.get_command_text().as_str(), literal_draft);
     let cursor = window.get_command_cursor();
     window.invoke_terminal_changed(1);

@@ -50,6 +50,12 @@ special-location art may use the native folder fallback; if that is unavailable,
 retain the distinct application vector for its location role. Preserve native RGB
 and alpha; tint only the application's monochrome vectors. Unsupported native
 roles do not change an action's availability or enable future write operations.
+Bottom function buttons vertically center their icon and label together while
+preserving the current heights, icon sizes and native image aspect ratios in
+both density profiles and at large fonts.
+The Windows adapter also rejects the observed uniformly opaque black placeholder
+for semantic action/location icons. This narrow rule does not reject native file
+or drive icons, black glyphs with transparent margins, or colored native art.
 
 Native context discovery is coalesced on the backend. A changed volume inventory
 requests fresh typed navigation metadata, including Windows drive letters, even
@@ -59,13 +65,13 @@ stale generations cannot publish over a newer requested context.
 
 ## Complete command directory
 
-Remove the fixed 180/200 px, elided directory prompt. Put its complete text above
-the command editor, using character wrapping for long components and Unicode.
-The editor row keeps its shell picker, Options and Run controls and usable
+Remove the fixed 180/200 px, elided directory prompt. Keep its complete text
+beside the command editor in the same single horizontal row.
+The row keeps its shell picker, Options and Run controls and usable editor
 width. Its directory always follows the active pane's committed/displayed path.
 
-Ordinary paths fit in one or a few lines. For extreme lengths, constrain only
-the viewport height and allow scrolling through the entire wrapped text; retain
+Ordinary paths use their natural text width. For extreme lengths, constrain only
+the viewport width and allow horizontal scrolling through the entire text; retain
 every character and never impose a data/path length cap. Keep the editor and
 panels usable at the minimum window size and largest supported fonts. Tooltips
 and accessibility expose the complete text as well.
@@ -74,7 +80,24 @@ Keep the ordinary 480 px minimum-height floor. At large fonts, derive a larger
 effective minimum from fixed control bands, one readable directory line and
 one complete file row. Reserve possible pane-error and important-feedback bands
 unconditionally so an error does not resize the window. This layout constraint
-does not depend on path length or the scrollable text's preferred height.
+does not depend on path length or the scrollable text's preferred size.
+
+File/folder rows deliberately have no hover tooltips. Control, drive and header
+tooltips remain. Running sizes use amber/bold text; finished partial results
+retain `≈` with ordinary styling, distinct from an active scan. F1 documents the
+meaning of partial totals when access is denied or entries are skipped.
+
+Inserted paths/names remain bare when they are simple literal shell arguments.
+Other tokens use escaped double quotes, without enclosing apostrophes. Preserve
+Unicode spelling, including PowerShell numeric-looking names and smart quotes;
+reject ambiguous CMD literals rather than changing their target identity.
+
+Behavior reference checked in Open Salamander: `src/editwnd.cpp:1734`
+(`SetDirectory`), `:1752` (`GetNeededHeight`), `:1757` (`ResizeChilds`) and `:337`
+(`InsertText`). Its prompt and editor share one text row, with separate prompt
+and command content. FM keeps that compact arrangement while preserving full
+Unicode/native identities and horizontally accessible long paths. The C++/ANSI
+implementation is a behavior reference only; no source is copied.
 
 ## Verification
 

@@ -428,45 +428,82 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         "missing native icons render visible semantic vector fallbacks"
     );
 
-    // Active file rows and sort headers use the same pass-through observer
-    // ordering; pending-size explanations must also be visible on real hover.
-    window.set_left_rows(ModelRc::new(VecModel::from(vec![FileRow {
-        identity: "hover-row".into(),
-        name: "Unfinished folder 文档".into(),
-        size: "≈1.0 KB".into(),
-        size_state: 1,
-        size_hint: "Still counting; this size is not final.".into(),
-        directory: true,
-        ..Default::default()
-    }])));
+    // File and folder rows stay quiet on hover, including unfinished sizes.
+    // Both panels retain the deliberate tooltips on their sort headers.
+    let hover_rows = ModelRc::new(VecModel::from(vec![
+        FileRow {
+            identity: "hover-folder".into(),
+            name: "Unfinished folder 文档".into(),
+            size: "≈1.0 KB".into(),
+            size_state: 1,
+            size_hint: "Still counting; this size is not final.".into(),
+            directory: true,
+            ..Default::default()
+        },
+        FileRow {
+            identity: "hover-file".into(),
+            name: "Regular file 文档.txt".into(),
+            size: "1.0 KB".into(),
+            ..Default::default()
+        },
+    ]));
+    window.set_left_rows(hover_rows.clone());
+    window.set_right_rows(hover_rows);
     let file_top =
         y + theme.get_toolbar_height() / 2.0 + theme.get_path_height() + theme.get_column_height();
-    for (hover_y, delay) in [
-        (file_top + theme.get_row_height() / 2.0, 3000),
-        (file_top - theme.get_column_height() / 2.0, 4000),
+    let mut hover_time = 2000;
+    for (hover_x, hover_y, is_header) in [
+        (150.0, file_top + theme.get_row_height() / 2.0, false),
+        (150.0, file_top + 1.5 * theme.get_row_height(), false),
+        (820.0, file_top + theme.get_row_height() / 2.0, false),
+        (820.0, file_top + 1.5 * theme.get_row_height(), false),
+        (150.0, file_top - theme.get_column_height() / 2.0, true),
+        (820.0, file_top - theme.get_column_height() / 2.0, true),
     ] {
         window.window().dispatch_event(WindowEvent::PointerMoved {
-            position: slint::LogicalPosition::new(150.0, hover_y),
+            position: slint::LogicalPosition::new(hover_x, hover_y),
         });
         draw(&mut pixels, 1340);
         let quiet = pixels.clone();
-        time.set(Duration::from_millis(delay));
+        hover_time += 1000;
+        time.set(Duration::from_millis(hover_time));
         draw(&mut pixels, 1340);
-        assert!(
-            quiet.iter().zip(&pixels).filter(|(a, b)| a != b).count() > 100,
-            "active file rows and headers must expose their actual hover details"
-        );
+        let changed = quiet.iter().zip(&pixels).filter(|(a, b)| a != b).count();
+        if is_header {
+            assert!(
+                changed > 100,
+                "sort headers must retain actual timed hover tooltips"
+            );
+        } else {
+            assert_eq!(
+                changed, 0,
+                "file and folder rows must not display hover tooltips"
+            );
+        }
         window.window().dispatch_event(WindowEvent::PointerMoved {
             position: slint::LogicalPosition::new(0.0, 0.0),
         });
         draw(&mut pixels, 1340);
     }
 
-    // Character wrapping handles long Unicode components without stealing file rows
-    // or shrinking the editor into a narrow remainder next to the cwd.
+    assert_eq!(
+        window.get_command_bar_height(),
+        theme.get_command_height(),
+        "the cwd and editor must share exactly one command row"
+    );
+
+    // The full cwd shares one line with the editor. Short paths use their
+    // natural width; extreme Unicode components pan within the remaining space.
     let long = format!("{}/文档{}👩🏽‍💻tail", root.display(), "e\u{301}".repeat(2400));
+    let short = root
+        .ancestors()
+        .last()
+        .unwrap()
+        .join("文档")
+        .to_string_lossy()
+        .into_owned();
     window.set_left_path(long.clone().into());
-    window.set_right_path(home.to_string_lossy().into_owned().into());
+    window.set_right_path(short.clone().into());
     window.set_active_pane(0);
     window.set_desktop_status("An important terminal or desktop failure with a long Unicode explanation 文档 👩🏽‍💻 that must remain available in full through the tooltip.".into());
     window.set_desktop_feedback_important(true);
@@ -486,12 +523,28 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                     window.set_left_error(error.into());
                     draw(&mut pixels, width as usize);
                     assert_eq!(window.get_command_directory().as_str(), long);
-                    assert!(
-                        window.get_command_path_content_height() > window.get_command_path_height()
+                    assert_eq!(
+                        window.get_command_bar_height(),
+                        window.global::<Theme>().get_command_height()
                     );
                     assert!(
-                        window.get_command_path_height() >= window.get_command_path_line_height(),
-                        "the cwd must retain a complete readable text line"
+                        (window.get_command_path_top() - window.get_command_input_top()).abs()
+                            <= 1.0,
+                        "cwd and editor must occupy the same line"
+                    );
+                    assert_eq!(
+                        window.get_command_path_height(),
+                        window.get_command_input_height()
+                    );
+                    assert!(window.get_command_path_width() > 0.0);
+                    assert!(
+                        window.get_command_path_content_width() > window.get_command_path_width()
+                    );
+                    assert!(window.get_command_path_left() < window.get_command_input_left());
+                    assert!(
+                        window.get_command_path_left() + window.get_command_path_width()
+                            <= window.get_command_input_left(),
+                        "the cwd viewport must not overlap the command editor"
                     );
                     assert!(
                         window.get_command_input_width() > 300.0,
@@ -507,28 +560,78 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                         window.get_command_input_top() + window.get_command_input_height()
                             < height as f32 - window.global::<Theme>().get_bottom_height()
                     );
+                    let long_editor_width = window.get_command_input_width();
+                    window.set_active_pane(1);
+                    draw(&mut pixels, width as usize);
+                    assert_eq!(window.get_command_directory().as_str(), short);
+                    assert!(
+                        (window.get_command_path_width() - window.get_command_path_natural_width())
+                            .abs()
+                            <= 1.0,
+                        "ordinary paths must be printed in full at their natural width"
+                    );
+                    assert!(
+                        window.get_command_input_width() > long_editor_width,
+                        "short paths return their unused width to the editor"
+                    );
+                    window.set_active_pane(0);
+                    draw(&mut pixels, width as usize);
                 }
             }
         }
     }
-    let path_top = window.get_command_path_text_top();
+    let path_left = window.get_command_path_text_left();
+    let scroll_x = window.get_command_path_left() + window.get_command_path_width() / 2.0;
+    let scroll_y = window.get_command_path_top() + window.get_command_path_height() / 2.0;
     window
         .window()
         .dispatch_event(WindowEvent::PointerScrolled {
-            position: slint::LogicalPosition::new(300.0, window.get_command_path_top() + 8.0),
+            position: slint::LogicalPosition::new(scroll_x, scroll_y),
             delta_x: 0.0,
             delta_y: -120.0,
         });
     draw(&mut pixels, 1040);
     assert!(
-        window.get_command_path_text_top() < path_top,
-        "an extreme cwd remains fully reachable through its bounded scroll viewport"
+        window.get_command_path_text_left() < path_left,
+        "an ordinary mouse wheel pans an extreme cwd horizontally"
+    );
+    let before_drag = window.get_command_path_text_left();
+    pointer(&window, scroll_x, scroll_y, true);
+    hover_time += 20;
+    time.set(Duration::from_millis(hover_time));
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(scroll_x - 80.0, scroll_y),
+    });
+    draw(&mut pixels, 1040);
+    hover_time += 20;
+    time.set(Duration::from_millis(hover_time));
+    pointer(&window, scroll_x - 120.0, scroll_y, false);
+    draw(&mut pixels, 1040);
+    assert!(
+        window.get_command_path_text_left() < before_drag,
+        "mouse dragging must pan the full path even with a wheel handler present"
+    );
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(scroll_x, scroll_y),
+            delta_x: -1_000_000.0,
+            delta_y: 0.0,
+        });
+    draw(&mut pixels, 1040);
+    let text_right =
+        window.get_command_path_text_left() + window.get_command_path_natural_width() - 8.0;
+    let viewport_right = window.get_command_path_left() + window.get_command_path_width();
+    assert!(
+        (text_right - (viewport_right - 4.0)).abs() <= 1.0,
+        "the complete Unicode tail remains reachable without an ellipsis or data cap"
     );
     window.set_active_pane(1);
     draw(&mut pixels, 1040);
-    assert_eq!(
-        window.get_command_directory().as_str(),
-        home.to_string_lossy()
+    assert_eq!(window.get_command_directory().as_str(), short);
+    assert!(
+        (window.get_command_path_text_left() - window.get_command_path_left() - 4.0).abs() <= 1.0,
+        "switching cwd resets horizontal pan to the beginning"
     );
     window.hide().unwrap();
 }

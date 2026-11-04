@@ -57,11 +57,21 @@ impl IconService for WindowsFileSystem {
         let rgba = straight_rgba(&black, &white);
         // Some host versions return a transparent placeholder for a documented
         // stock id. Report it as unavailable so the semantic UI fallback remains.
-        if !rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0) {
+        let pixels = rgba.as_chunks::<4>().0;
+        if !pixels.iter().any(|pixel| pixel[3] != 0) || opaque_black_placeholder(key.kind, pixels) {
             return Ok(None);
         }
         Ok(IconPixels::new(u32::from(key.size), u32::from(key.size), rgba).ok())
     }
+}
+
+fn opaque_black_placeholder(kind: IconKind, pixels: &[[u8; 4]]) -> bool {
+    // The host can also return a completely opaque black Settings placeholder.
+    // Reject only that exact semantic-art artifact; real black glyphs retain
+    // their transparent surroundings, and ordinary file/drive art stays untouched.
+    matches!(kind, IconKind::Action(_) | IconKind::Location(_))
+        && !pixels.is_empty()
+        && pixels.iter().all(|pixel| *pixel == [0, 0, 0, 255])
 }
 
 fn synthetic_name(key: &IconKey) -> Vec<u16> {
@@ -472,6 +482,41 @@ mod tests {
         ] {
             assert_eq!(action_stock_id(role), None, "unsupported role {role:?}");
         }
+    }
+
+    #[test]
+    fn opaque_black_placeholders_only_reject_semantic_art_not_native_file_or_drive_icons() {
+        let mut pixels = vec![[0, 0, 0, 255]; 32 * 32];
+        for kind in [
+            IconKind::Action(ActionIcon::Options),
+            IconKind::Location(LocationKind::Home),
+        ] {
+            assert!(opaque_black_placeholder(kind, &pixels));
+        }
+        for kind in [
+            IconKind::File,
+            IconKind::Folder,
+            IconKind::Link,
+            IconKind::Drive,
+        ] {
+            assert!(!opaque_black_placeholder(kind, &pixels));
+        }
+        // A real monochrome glyph has transparent surrounding pixels.
+        pixels[0] = [0, 0, 0, 0];
+        assert!(!opaque_black_placeholder(
+            IconKind::Action(ActionIcon::Options),
+            &pixels
+        ));
+        // Preserve even subtle genuine color variation rather than judging its style.
+        pixels[0] = [1, 0, 0, 255];
+        assert!(!opaque_black_placeholder(
+            IconKind::Action(ActionIcon::Options),
+            &pixels
+        ));
+        assert!(!opaque_black_placeholder(
+            IconKind::Action(ActionIcon::Options),
+            &[]
+        ));
     }
 
     #[test]

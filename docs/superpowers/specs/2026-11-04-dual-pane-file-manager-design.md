@@ -584,8 +584,9 @@ se při vkládání odmítne bez změny rozepsaného příkazu. Vložení nikdy 
 nespustí; záměrný uživatelský `eval` může argumenty znovu interpretovat.
 
 Cmd nepodporuje libovolný bezpečný procentní literál stejným způsobem jako
-PowerShell. Cesta obsahující `%`, uvozovku nebo newline se pro vložení do cmd
-výslovně odmítne s možností zvolit PowerShell; její identita se nezkracuje ani
+PowerShell. Cesta obsahující `%`, uvozovku, newline nebo vyžadující citování
+a končící zpětným lomítkem se pro vložení do cmd výslovně odmítne s možností
+zvolit PowerShell; její identita se nezkracuje ani
 tiše nepřepisuje. Cmd také nesmí potichu změnit UNC pracovní adresář na lokální:
 nepodporované cwd vrátí chybu s doporučením PowerShellu.
 
@@ -924,9 +925,10 @@ Volba shellu je malé ikonové tlačítko úplně vlevo, bezprostředně před p
 editorem. Tooltip vysvětlí aktuální PowerShell/cmd nebo Terminal/(sudo), pracovní
 adresář a použití. Rozbalená nabídka zachová celé čitelné názvy, ovládání
 klávesnicí a rozlišení režimu sudo. Přepnutí samo nic nespouští; ochrana gramatiky
-rozepsaného příkazu nadále platí. Aktuální cwd zůstane vedle editoru jako stručný
-read-only prompt (nejvýše180px na desktopu,220px při dotyku), plná cesta je také
-v tooltipu. Prompt není součástí spouštěného příkazu.
+rozepsaného příkazu nadále platí. Aktuální cwd zůstane vedle editoru jako celý
+read-only prompt bez výpustky a pevného omezení šířky. Výjimečně dlouhá cesta
+má vodorovný posuvný výřez; příkazové ovládání zůstává v jediném řádku.
+Prompt není součástí spouštěného příkazu.
 Dotyková varianta používá po požadavku na zmenšení40px základní cíle.
 
 Profil Desktop/mouse je výrazně hustší:22px řádky,24px ovladače,14px ikony,
@@ -998,7 +1000,7 @@ ne-Unicode názvy mají bezeztrátový platformní kodek. Souhrnný limit nastav
 4MiB chrání paměť, není limitem délky cesty; nadlimitní uložení selže bez zkrácení.
 
 Odstraňují se i stavové lišty panelů; běžné úspěšné zprávy nezabírají stálý
-footer. Spodní tlačítka mají pro myš základ22px, dotyk40px. Nefinální
+footer. Spodní tlačítka mají pro myš základ22px, dotyk40px. Probíhající
 velikosti složek ukazují kontrastní barvu a při známém dílčím součtu `≈`, bez `!`.
 Options doplňuje systémový font a nezávislé základní velikosti Desktop/Touch
 8–32px, výchozí11/15; ostatní text a ovladače se odvozují od těchto hodnot.
@@ -1027,7 +1029,10 @@ uživateli; nová ručně spuštěná úloha má vlastní oddělenou cache.
 
 Průběžné překreslení velikostí se slučuje pro oba panely na250ms takt, tedy4×
 za sekundu. Ostatní události a přímé ovládání reagují okamžitě. Nehotové součty
-mají barvu, `≈`/`…`/`—` a tooltip; vykřičník se nepoužívá.
+mají barvu a `≈`/`…`/`—`; vykřičník se nepoužívá. Dokončený částečný výsledek
+si ponechá `≈`, ale běžnou barvou a váhou písma se odliší od aktivního výpočtu.
+Řádky souborů ani složek nezobrazují hover tooltipy. Tooltipy ovladačů,
+hlaviček, disků a systémových umístění zůstávají dostupné.
 Průběžné výsledky ani dokončení výpočtu automaticky nemění pořadí řádků,
 ani při zvoleném sloupci Size. Uživatel nové hotové velikosti uplatní ručním
 řazením přes záhlaví nebo zkratku. Běžné načtení či obnovení seznamu používá
@@ -1051,11 +1056,25 @@ Tlačítka používají odpovídající systémové ikony, pokud je platforma po
 Windows a Linux mají oddělené adaptéry; načítání a dekódování provádí výhradně
 backend s omezenou frontou a cache. Původní barevné pixely se nepřebarvují.
 Kde vhodná systémová ikona chybí, zůstává srozumitelná vektorová ikona aplikace.
+Ikony a popisky spodních funkčních tlačítek jsou společně vertikálně vystředěné
+v obou hustotách ovládání, při zachování rozměrů tlačítek i poměru stran ikon.
 
 Aktivní cesta příkazového řádku se zobrazuje celá, bez výpustky a bez pevného
-omezení délky textu. Nad editorem příkazu se zalamuje i uvnitř dlouhé komponenty.
-U extrémních cest je omezen pouze posuvný výřez, aby editor zůstal použitelný.
-Při velkém písmu se minimální výška okna odvodí také od čitelného řádku cesty
+omezení délky textu. Cesta a editor jsou v jediné vodorovné řadě se shellem,
+Options a Run. Cesta má přirozenou šířku, pokud se vejde; u extrémních cest je
+omezen pouze vodorovný posuvný výřez, aby editor zůstal použitelný.
+Při velkém písmu se minimální výška okna odvodí také od čitelného příkazového řádku
 a celého řádku souborů; běžné velikosti zachovají základní minimum 480 px.
 Podrobnosti a ověřovací scénáře stanoví
 [návrh systémových ovladačů a celé cesty](2026-11-04-native-controls-and-full-path-design.md).
+
+Vkládání cest a jmen do příkazového editoru nepřidává obalující apostrofy.
+Jednoduché Unicode cesty zůstanou bez uvozovek, ostatní používají dvojité
+uvozovky a přesné escapování daného shellu. PowerShell musí chránit také
+číselná jména a všechny podporované typografické uvozovky; POSIX chrání
+expanze, zpětná lomítka a substituce. CMD odmítne nejednoznačné procentní
+expanze, uvozovky, konce řádků a citovanou cestu končící zpětným lomítkem.
+Přesná identita Unicode se ověřuje také skutečnými parsery shellů.
+Pravidla vycházejí z [dokumentace PowerShellu](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules),
+[POSIX citování v Bash](https://www.gnu.org/software/bash/manual/html_node/Double-Quotes.html)
+a [Windows CRT argv pravidel](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments?view=msvc-170).

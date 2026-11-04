@@ -41,7 +41,14 @@ enum Quote {
 }
 
 fn single_quote(ch: char, shell: ShellFlavor) -> bool {
-    ch == '\'' || (shell == ShellFlavor::PowerShell && matches!(ch, '\u{2018}' | '\u{2019}'))
+    ch == '\''
+        || (shell == ShellFlavor::PowerShell
+            && matches!(ch, '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}'))
+}
+
+fn double_quote(ch: char, shell: ShellFlavor) -> bool {
+    ch == '"'
+        || (shell == ShellFlavor::PowerShell && matches!(ch, '\u{201c}' | '\u{201d}' | '\u{201e}'))
 }
 
 /// Deliberately recognizes plain arguments and balanced quoted arguments only.
@@ -78,7 +85,9 @@ pub(crate) fn safe_path_context(text: &str, anchor: i32, cursor: i32, shell: She
             Quote::Single => {
                 if single_quote(ch, shell) {
                     if shell == ShellFlavor::PowerShell
-                        && chars.peek().is_some_and(|(_, next)| *next == ch)
+                        && chars
+                            .peek()
+                            .is_some_and(|(_, next)| single_quote(*next, shell))
                     {
                         chars.next();
                     } else {
@@ -87,41 +96,46 @@ pub(crate) fn safe_path_context(text: &str, anchor: i32, cursor: i32, shell: She
                 }
             }
             Quote::Double => {
-                if ch == '"' {
-                    quote = Quote::None;
-                } else if matches!(ch, '$' | '`' | '\u{201c}' | '\u{201d}')
-                    || (ch == '\\' && shell == ShellFlavor::Posix)
+                if (shell == ShellFlavor::PowerShell && ch == '`')
+                    || (shell == ShellFlavor::Posix && ch == '\\')
                 {
+                    // Accept only literal escapes emitted by quote_shell_path.
+                    // Consuming the escaped character keeps its delimiter or
+                    // dollar sign from changing the surrounding quote state.
+                    let Some((_, escaped)) = chars.next() else {
+                        return false;
+                    };
+                    let literal = match shell {
+                        ShellFlavor::PowerShell => {
+                            matches!(escaped, '`' | '$') || double_quote(escaped, shell)
+                        }
+                        ShellFlavor::Posix => matches!(escaped, '\\' | '$' | '`' | '"'),
+                        ShellFlavor::Cmd => false,
+                    };
+                    if !literal {
+                        return false;
+                    }
+                } else if double_quote(ch, shell) {
+                    quote = Quote::None;
+                } else if matches!(ch, '$' | '`') {
                     return false;
                 }
             }
             Quote::None => {
                 if single_quote(ch, shell) {
                     quote = Quote::Single;
-                } else if ch == '"' {
+                } else if double_quote(ch, shell) {
                     quote = Quote::Double;
                 } else if ch == '\\' && shell == ShellFlavor::Posix {
-                    // This is the sole unquoted escape produced by our POSIX
-                    // path serializer: 'one'\''two'. Escaped whitespace and
+                    // Support manually typed legacy POSIX literals such as
+                    // 'one'\''two'. Escaped whitespace and
                     // arbitrary escapes would invalidate boundary checks.
                     if !chars.next().is_some_and(|(_, next)| next == '\'') {
                         return false;
                     }
                 } else if matches!(
                     ch,
-                    '$' | '`'
-                        | '#'
-                        | ';'
-                        | '&'
-                        | '|'
-                        | '<'
-                        | '>'
-                        | '('
-                        | ')'
-                        | '{'
-                        | '}'
-                        | '\u{201c}'
-                        | '\u{201d}'
+                    '$' | '`' | '#' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '{' | '}'
                 ) || (shell == ShellFlavor::PowerShell
                     && (ch == '@' || text[index..].starts_with("--%")))
                 {
@@ -150,9 +164,9 @@ fn safe_cmd_context(text: &str, start: usize, end: usize) -> bool {
         if index == end {
             end_quoted = Some(quoted);
         }
-        // Percent expansion occurs inside quotes; caret escaping and command
-        // operators make the insertion context ambiguous. /V:OFF makes ! literal.
-        if matches!(ch, '%' | '^') {
+        // Percent expansion occurs inside quotes; unquoted caret escaping and
+        // command operators are ambiguous. /V:OFF makes ! literal.
+        if ch == '%' || (ch == '^' && !quoted) {
             return false;
         }
         if ch == '"' {
@@ -256,5 +270,93 @@ mod tests {
             powershell.len() as i32,
             ShellFlavor::PowerShell
         ));
+    }
+
+    #[test]
+    fn a_second_path_can_follow_generated_escaped_double_quoted_literals() {
+        for (shell, text) in [
+            (
+                ShellFlavor::PowerShell,
+                r#"cp "文档's ‘ ’ ‚ ‛ `“ `” `„ `" `` `$(literal); & |" "#,
+            ),
+            (
+                ShellFlavor::Posix,
+                r#"cp "文档's ‘ ’ \\ \$PATH \$(literal) \`literal\` \"quoted\" ; & |" "#,
+            ),
+        ] {
+            let cursor = text.len() as i32;
+            assert!(
+                safe_path_context(text, cursor, cursor, shell),
+                "generated literal must allow a following path: {text:?}"
+            );
+            let (result, caret) = replace_command_selection(text, cursor, cursor, "next/文档");
+            assert_eq!(result, format!("{text}next/文档"));
+            assert_eq!(caret as usize, result.len());
+        }
+    }
+
+    #[test]
+    fn double_quoted_expansions_unknown_escapes_and_unfinished_literals_are_rejected() {
+        for (shell, texts) in [
+            (
+                ShellFlavor::PowerShell,
+                &[
+                    r#"echo "$value" "#,
+                    r#"echo "$(run)" "#,
+                    r#"echo "text`nnext" "#,
+                    r#"echo "text` "#,
+                    r#"echo "text`" "#,
+                    r#"echo "text``$(run)" "#,
+                ][..],
+            ),
+            (
+                ShellFlavor::Posix,
+                &[
+                    r#"echo "$value" "#,
+                    r#"echo "$(run)" "#,
+                    r#"echo "`run`" "#,
+                    r#"echo "text\qnext" "#,
+                    r#"echo "text\ "#,
+                    r#"echo "text\" "#,
+                    r#"echo "text\\$(run)" "#,
+                ][..],
+            ),
+        ] {
+            for text in texts {
+                let cursor = text.len() as i32;
+                assert!(
+                    !safe_path_context(text, cursor, cursor, shell),
+                    "nonliteral context must be rejected: {text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn escaped_delimiters_do_not_allow_insertion_inside_an_existing_literal() {
+        for (shell, text) in [
+            (ShellFlavor::PowerShell, r#"echo "before`" INSERT after" "#),
+            (ShellFlavor::Posix, r#"echo "before\" INSERT after" "#),
+            (ShellFlavor::PowerShell, "echo “before INSERT after” "),
+            (ShellFlavor::PowerShell, "echo „before INSERT after“ "),
+            (ShellFlavor::PowerShell, "echo ‚before INSERT after‛ "),
+        ] {
+            let start = text.find("INSERT").unwrap() as i32;
+            assert!(
+                !safe_path_context(text, start, start + 6, shell),
+                "path must not be inserted inside a quoted literal: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_generated_caret_literals_do_not_enable_unquoted_caret_escapes() {
+        let text = r#"copy "C:\文档 ^ & ! (literal)" "#;
+        let cursor = text.len() as i32;
+        assert!(safe_path_context(text, cursor, cursor, ShellFlavor::Cmd));
+        for text in [r#"echo "prior"^ & other "#, r#"echo "prior" ^ "#] {
+            let cursor = text.len() as i32;
+            assert!(!safe_path_context(text, cursor, cursor, ShellFlavor::Cmd));
+        }
     }
 }

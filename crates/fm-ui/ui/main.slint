@@ -71,6 +71,7 @@ component FunctionButton inherits Rectangle {
     forward-focus: focus;
     HorizontalLayout {
         padding-left: 4px; padding-right: 4px; spacing: 4px;
+        cross-axis-alignment: center;
         NativeActionImage {
             native-icon: root.native-icon; fallback-icon: root.fallback-icon;
             action-enabled: root.enabled; width: Theme.icon-size; height: Theme.icon-size;
@@ -355,7 +356,7 @@ component FilePane inherits Rectangle {
                             }
                             Text { text: item.name; color: item.selected ? Theme.selected-text : item.directory ? Theme.directory-text : Theme.text; font-size: Theme.font-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                         }
-                        Text { text: item.size; color: item.size-state == 0 ? Theme.secondary-text : Theme.pending-size; font-weight: item.size-state == 0 ? 400 : 600; font-size: Theme.small-font; width: 78px; overflow: elide; horizontal-alignment: right; vertical-alignment: center; }
+                        Text { text: item.size; color: item.size-state == 1 ? Theme.pending-size : Theme.secondary-text; font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font; width: 78px; overflow: elide; horizontal-alignment: right; vertical-alignment: center; }
                         Text { text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font; width: 132px; overflow: elide; vertical-alignment: center; }
                         Text { text: item.kind; color: Theme.secondary-text; font-size: Theme.small-font; width: 70px; overflow: elide; vertical-alignment: center; }
                     }
@@ -398,7 +399,6 @@ component FilePane inherits Rectangle {
                             }
                         }
                     }
-                    Tooltip { TipBody { text: item.name + "\n" + item.kind + " · " + item.size + "\n" + item.modified + (item.size-hint != "" ? "\n" + item.size-hint : ""); } }
                 }
             }
             if root.rows.length == 0 : Text {
@@ -422,20 +422,15 @@ export component MainWindow inherits Window {
     in property <string> application-version;
     title: "FM" + (root.application-version == "" ? "" : " " + root.application-version) + " — File Manager";
     preferred-width: 1340px; preferred-height: 820px;
-    // Copy the actual viewport on resize, outside layout constraints, to keep
-    // content-driven preferred heights from depending on their own minimum.
-    private property <length> layout-viewport-height: 820px;
-    changed height => { root.layout-viewport-height = root.height; }
     min-width: 1040px; min-height: root.effective-minimum-height;
-    // Reserve fixed bands, one file row, a readable cwd line and both possible
+    // Reserve fixed bands, one file row and both possible
     // failure bands. A later error must not force a window resize.
     private property <length> fixed-layout-height: 2 * Theme.window-padding
         + Theme.bottom-height + 2 * Theme.gap + Theme.command-height
         + Theme.control-height + Theme.toolbar-height + Theme.path-height
         + Theme.column-height + Theme.row-height + 12px;
-    out property <length> command-path-line-height: Theme.small-font * 1.5 + 8px;
     out property <length> effective-minimum-height: max(480px,
-        root.fixed-layout-height + root.command-path-line-height + 44px
+        root.fixed-layout-height + 44px
         + Theme.hint-font * 1.5 + Theme.gap);
     background: Theme.window-background;
     default-font-family: Theme.font-family != "" ? Theme.font-family : "Segoe UI";
@@ -501,17 +496,17 @@ export component MainWindow inherits Window {
     in property <int> message-generation;
     in-out property <string> command-text <=> command-input.text;
     out property <string> command-directory: root.active-pane == 0 ? root.left-path : root.right-path;
-    changed command-directory => { cwd-scroll.content-y = 0px; }
-    private property <length> command-path-limit: max(0px,
-        min(Theme.small-font * 4.5 + 8px,
-            root.layout-viewport-height - root.fixed-layout-height
-            - (root.desktop-feedback-important && root.desktop-status != "" ? Theme.hint-font * 1.5 + Theme.gap : 0px)
-            - (root.left-error != "" || root.right-error != "" ? 44px : 0px)));
-    out property <length> command-path-height: min(full-cwd.preferred-height + 8px, root.command-path-limit);
-    out property <length> command-path-content-height: full-cwd.preferred-height + 8px;
+    changed command-directory => { cwd-scroll.content-x = 0px; }
+    out property <length> command-path-natural-width: full-cwd.preferred-width + 8px;
+    out property <length> command-path-content-width: cwd-scroll.content-width;
+    out property <length> command-path-width: cwd-scroll.width;
+    out property <length> command-path-height: cwd-scroll.height;
+    out property <length> command-path-left: cwd-scroll.absolute-position.x;
     out property <length> command-path-top: cwd-scroll.absolute-position.y;
-    out property <length> command-path-text-top: full-cwd.absolute-position.y;
+    out property <length> command-path-text-left: full-cwd.absolute-position.x;
+    out property <length> command-bar-top: command-bar.absolute-position.y;
     out property <length> command-bar-height: command-bar.height;
+    out property <length> command-input-left: command-slot.absolute-position.x;
     out property <length> command-input-width: command-slot.width;
     out property <length> command-input-top: command-slot.absolute-position.y;
     out property <length> command-input-height: command-slot.height;
@@ -688,81 +683,95 @@ export component MainWindow inherits Window {
             }
         }
         command-bar := Rectangle {
-            height: Theme.command-height + root.command-path-height + 2px;
+            height: Theme.command-height;
             background: Theme.secondary-surface; border-radius: 4px;
             border-width: 1px; border-color: command-input.has-focus ? Theme.active-frame : Theme.frame;
-            VerticalLayout {
-                spacing: 2px;
-                cwd-scroll := ScrollView {
-                    min-height: 0px;
-                    preferred-height: root.command-path-height;
-                    max-height: root.command-path-height;
-                    vertical-stretch: 0;
-                    horizontal-scrollbar-policy: always-off;
-                    content-width: self.visible-width;
-                    content-height: full-cwd.preferred-height + 8px;
-                    full-cwd := Text {
-                        x: 4px; y: 4px;
-                        width: max(0px, cwd-scroll.visible-width - 20px);
-                        height: self.preferred-height;
-                        text: root.command-directory;
-                        wrap: char-wrap;
-                        color: Theme.secondary-text; font-size: Theme.small-font;
-                        accessible-label: "Working folder: " + root.command-directory;
-                        Tooltip { TipBody { text: "Working folder: " + root.command-directory; } }
-                    }
+            HorizontalLayout {
+                padding-top: 4px; padding-bottom: 4px;
+                padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
+                spacing: Theme.touch ? 6px : 5px;
+                CompactPicker {
+                    width: Theme.touch ? 48px : 46px;
+                    accessible-name: "Command shell";
+                    enabled: root.terminal-available;
+                    model: root.terminal-choices;
+                    current-index: root.terminal-index;
+                    icon-only: true;
+                    icon: FallbackIcons.terminal; native-icon: root.action-icons.terminal;
+                    popup-above: true;
+                    popup-width: Theme.touch ? 360px : 320px;
+                    hint: (root.terminal-available ? "Selected shell: " + root.terminal-choices[root.terminal-index] + "\nChoose a shell from this menu.\n" : "Command terminal unavailable.\n") + root.command-hint + "\nWorking folder: " + root.command-directory;
+                    selected(index) => { root.terminal-changed(index); root.focus-command(); }
+                    dismissed => { root.focus-command(); }
                 }
-                Rectangle {
-                    height: Theme.command-height;
-                    HorizontalLayout {
-                        padding-top: 4px; padding-bottom: 4px;
-                        padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
-                        spacing: Theme.touch ? 6px : 5px;
-                        CompactPicker {
-                            width: Theme.touch ? 48px : 46px;
-                            accessible-name: "Command shell";
-                            enabled: root.terminal-available;
-                            model: root.terminal-choices;
-                            current-index: root.terminal-index;
-                            icon-only: true;
-                            icon: FallbackIcons.terminal; native-icon: root.action-icons.terminal;
-                            popup-above: true;
-                            popup-width: Theme.touch ? 360px : 320px;
-                            hint: (root.terminal-available ? "Selected shell: " + root.terminal-choices[root.terminal-index] + "\nChoose a shell from this menu.\n" : "Command terminal unavailable.\n") + root.command-hint + "\nWorking folder: " + root.command-directory;
-                            selected(index) => { root.terminal-changed(index); root.focus-command(); }
-                            dismissed => { root.focus-command(); }
-                        }
-                        command-slot := Rectangle {
-                            clip: true; horizontal-stretch: 1; min-width: 0px;
-                            command-input := TextInput {
-                                private property <length> horizontal-offset;
-                                x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.horizontal-offset));
-                                width: max(parent.width - self.text-cursor-width, self.preferred-width);
-                                height: parent.height;
-                                color: Theme.text; selection-background-color: Theme.selection-background;
-                                selection-foreground-color: Theme.selection-text;
-                                vertical-alignment: center; single-line: true;
-                                accessible-label: "Command line";
-                                cursor-position-changed(position) => {
-                                    if position.x + self.horizontal-offset < 0px { self.horizontal-offset = -position.x; }
-                                    else if position.x + self.horizontal-offset > parent.width - self.text-cursor-width {
-                                        self.horizontal-offset = parent.width - position.x - self.text-cursor-width;
+                command-content := Rectangle {
+                    horizontal-stretch: 1; min-width: 0px;
+                    private property <length> gap: Theme.touch ? 6px : 5px;
+                    private property <length> editor-reserve: min(360px, max(0px, self.width) * 0.5);
+                    private property <length> prompt-width: root.command-directory == "" ? 0px
+                        : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve - self.gap));
+                    cwd-scroll := ScrollView {
+                        x: 0px; y: 0px;
+                        width: command-content.prompt-width; height: parent.height;
+                        horizontal-scrollbar-policy: always-off;
+                        vertical-scrollbar-policy: always-off;
+                        mouse-drag-pan-enabled: true;
+                        content-width: max(self.visible-width, root.command-path-natural-width);
+                        content-height: self.visible-height;
+                        Rectangle {
+                            width: cwd-scroll.content-width; height: cwd-scroll.visible-height;
+                            full-cwd := Text {
+                                x: 4px; width: self.preferred-width; height: parent.height;
+                                text: root.command-directory; wrap: no-wrap; overflow: clip;
+                                color: Theme.secondary-text; font-size: Theme.small-font;
+                                vertical-alignment: center;
+                                accessible-label: "Working folder: " + root.command-directory;
+                            }
+                            TouchArea {
+                                scroll-event(event) => {
+                                    let delta = event.delta-x != 0px ? event.delta-x : event.delta-y;
+                                    if cwd-scroll.content-width > cwd-scroll.visible-width && delta != 0px {
+                                        cwd-scroll.content-x = clamp(cwd-scroll.content-x + delta,
+                                            min(0px, cwd-scroll.visible-width - cwd-scroll.content-width), 0px);
+                                        return accept;
                                     }
-                                }
-                                edited => { root.command-edited(self.text != ""); }
-                                accepted => { if root.submit-command(self.text) { self.text = ""; root.command-edited(false); } }
-                                key-pressed(event) => {
-                                    if event.text == Key.Return && (event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta) { return accept; }
-                                    if event.text == Key.Escape { root.focus-files(); return accept; }
                                     reject
                                 }
                             }
-                            Tooltip { TipBody { text: root.command-hint + "\nWorking folder: " + root.command-directory + "\nEnter runs the command. Escape returns to the files. Ctrl+Enter appends the focused filename. Ctrl+P inserts the current path. Ctrl+[ / Ctrl+] inserts a panel path."; } }
+                            Tooltip { TipBody { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; } }
                         }
-                        ActionButton { native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options; text: "Options"; min-height: Theme.control-height; Tooltip { TipBody { text: "Choose the theme, font family, font sizes and compact or touch controls."; } } clicked => { root.options-opened(); options.show(); } }
-                        ActionButton { native-icon: root.action-icons.run; fallback-icon: FallbackIcons.run; text: "Run"; min-height: Theme.control-height; enabled: root.terminal-ready && root.command-text != ""; Tooltip { TipBody { text: !root.terminal-available ? "A system terminal is unavailable." : !root.terminal-ready ? "Waiting for the terminal to become ready." : root.command-text == "" ? "Enter a command to run in the active panel’s folder." : "Run with " + root.terminal-choices[root.terminal-index] + "\nWorking folder: " + root.command-directory; } } clicked => { if root.submit-command(root.command-text) { root.command-text = ""; root.command-edited(false); } root.focus-command(); } }
+                    }
+                    command-slot := Rectangle {
+                        x: cwd-scroll.width > 0px ? cwd-scroll.width + command-content.gap : 0px;
+                        width: max(0px, parent.width - self.x); height: parent.height; clip: true;
+                        command-input := TextInput {
+                            private property <length> horizontal-offset;
+                            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.horizontal-offset));
+                            width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                            height: parent.height;
+                            color: Theme.text; selection-background-color: Theme.selection-background;
+                            selection-foreground-color: Theme.selection-text;
+                            vertical-alignment: center; single-line: true;
+                            accessible-label: "Command line";
+                            cursor-position-changed(position) => {
+                                if position.x + self.horizontal-offset < 0px { self.horizontal-offset = -position.x; }
+                                else if position.x + self.horizontal-offset > parent.width - self.text-cursor-width {
+                                    self.horizontal-offset = parent.width - position.x - self.text-cursor-width;
+                                }
+                            }
+                            edited => { root.command-edited(self.text != ""); }
+                            accepted => { if root.submit-command(self.text) { self.text = ""; root.command-edited(false); } }
+                            key-pressed(event) => {
+                                if event.text == Key.Return && (event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta) { return accept; }
+                                if event.text == Key.Escape { root.focus-files(); return accept; }
+                                reject
+                            }
+                        }
+                        Tooltip { TipBody { text: root.command-hint + "\nWorking folder: " + root.command-directory + "\nEnter runs the command. Escape returns to the files. Ctrl+Enter appends the focused filename. Ctrl+P inserts the current path. Ctrl+[ / Ctrl+] inserts a panel path."; } }
                     }
                 }
+                ActionButton { native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options; text: "Options"; min-height: Theme.control-height; Tooltip { TipBody { text: "Choose the theme, font family, font sizes and compact or touch controls."; } } clicked => { root.options-opened(); options.show(); } }
+                ActionButton { native-icon: root.action-icons.run; fallback-icon: FallbackIcons.run; text: "Run"; min-height: Theme.control-height; enabled: root.terminal-ready && root.command-text != ""; Tooltip { TipBody { text: !root.terminal-available ? "A system terminal is unavailable." : !root.terminal-ready ? "Waiting for the terminal to become ready." : root.command-text == "" ? "Enter a command to run in the active panel’s folder." : "Run with " + root.terminal-choices[root.terminal-index] + "\nWorking folder: " + root.command-directory; } } clicked => { if root.submit-command(root.command-text) { root.command-text = ""; root.command-edited(false); } root.focus-command(); } }
             }
         }
         HorizontalLayout {
@@ -882,7 +891,7 @@ export component MainWindow inherits Window {
                         Text { text: "Ctrl+[ / Ctrl+] inserts the left / right folder path. Ctrl+P inserts the active folder path and Ctrl+Enter appends the focused filename from files or the command editor. From files, Ctrl+Space inserts the active path; the editor reserves it for IME. Enter or Run executes a command in the active folder; modified Enter never runs it. Escape returns to files."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "The star opens Bookmarks and Hot Paths. Ctrl+1…9 / Ctrl+0 or Shift+1…9 / Shift+0 opens a saved Hot Path. Add Alt to open it in the other panel. Ctrl+Shift+1…9 / Ctrl+Shift+0 assigns the current folder; Ctrl+Shift++ adds a bookmark without a shortcut. These shortcuts apply only while files have focus. Bookmarks are saved for the next launch; folder tabs last for this session."; color: Theme.text; wrap: word-wrap; }
                         Text { text: root.command-hint + ". Clear the command line before changing shell type. Terminal / Terminal (sudo) may be switched for an existing command; sudo prompts only in the external terminal and is never saved."; color: Theme.text; wrap: word-wrap; }
-                        Text { text: "Ctrl+Shift+F10 / Ctrl+Shift+S measures every folder in the active panel; press again to cancel. Sizes use logical lengths and skip links and special files. Amber sizes are unfinished, cancelled or have errors; hover for details. Alt+F10 / Ctrl+Q remains reserved for selected-item sizes."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Ctrl+Shift+F10 / Ctrl+Shift+S measures every folder in the active panel; press again to cancel. Sizes use logical lengths and skip links and special files. Amber means active counting. ≈ marks approximate or partial totals, including inaccessible folders; completed partial totals use ordinary text. Alt+F10 / Ctrl+Q remains reserved for selected-item sizes."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "Rename, View, Edit, Copy, Move, Create directory and Delete are unavailable in this read-only stage."; color: Theme.secondary-text; wrap: word-wrap; }
                     }
                 }

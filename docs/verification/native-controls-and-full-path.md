@@ -1,5 +1,9 @@
 # Native controls and full command path verification
 
+Historical baseline `2de9d14`: the later
+[compact-command follow-up](compact-command-and-size-feedback.md) restores the
+single command row, removes file-row tooltips and refines partial-size feedback.
+
 Scope: shared drive/special-location choices, working hover tooltips, native
 action/location icons with semantic fallbacks, preserved input gestures and
 the full wrapped command directory. The starting point is commit `d4ef58a`.

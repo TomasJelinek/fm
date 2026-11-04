@@ -27,7 +27,11 @@ file encoding/writes execute in backend workers.
   against external filesystem replacement; future writes need stronger contracts.
 - The command editor is a separate explicit shell action. Only submitting Enter
   starts the configured system terminal on a backend worker, using the active
-  pane's captured working directory. Inserted paths are quoted literal tokens;
+  pane's captured working directory. Inserted paths are literal arguments:
+  simple Unicode paths remain bare, other tokens use shell-specific escaped
+  double quotes, without surrounding apostrophes. PowerShell numeric names and
+  smart quotes are preserved literally. CMD refuses unsafe percent/quote/line
+  break text and quoted paths ending in backslash (builtin/CRT ambiguity);
   typed command text is intentionally executable shell syntax and is not logged.
   Insertion requires a recognized standalone argument position; ambiguous quote
   or expansion contexts are rejected. Intentional eval/sh -c user commands can
@@ -41,7 +45,9 @@ file encoding/writes execute in backend workers.
   Native Properties is also an explicit host-UI action. Unsupported native
   properties fall back to read-only metadata rather than opening/executing files.
 - Recursive size scans skip explicit links/special files, use checked totals and
-  mark access/resource failures as partial. They are live estimates, not atomic
+  mark access/resource failures as partial. Completed partial values retain `≈`
+  but lose the active scan's amber/bold style, so denied access cannot look like
+  endless computation. They are live estimates, not atomic
   snapshots: the current path-based read-only interface cannot exclude races
   with concurrent path replacement. This interface must not be reused as a
   security contract for future destructive traversal.

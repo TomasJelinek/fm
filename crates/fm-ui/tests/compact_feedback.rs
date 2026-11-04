@@ -124,8 +124,8 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                 }
                 assert_eq!(
                     warning_pixels > 0,
-                    row != 0,
-                    "only unfinished size rows use warning color; theme={scheme} density={density} row={row}"
+                    row == 1,
+                    "only active calculations use warning color; completed partials stay calm; theme={scheme} density={density} row={row}"
                 );
             }
             for background in [
@@ -143,7 +143,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     "unfinished-size text contrast is {contrast} in theme {scheme}"
                 );
             }
-            let pane_bottom = window.get_command_path_top() - theme.get_gap();
+            let pane_bottom = window.get_command_bar_top() - theme.get_gap();
             selected.set((-1, -1));
             click(&window, 100.0, pane_bottom - 3.0);
             assert_eq!(

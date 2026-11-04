@@ -51,11 +51,14 @@ F1 help remains available without reserving persistent workspace.
 
 Follow-up corrections: center all file/folder icons inside their row height.
 Desktop uses22px rows,24px controls,14px icons,6px window padding and4px gaps;
-Touch retains44px controls/rows and its original spacious layout. Desktop drive
+Touch now uses40px controls/rows. Desktop drive
 buttons use46px captions such as `C:`; special locations use24px icon buttons
 with full accessible tooltip labels, while Touch retains descriptive captions.
-The current folder is visible as a bounded180px desktop/220px touch prompt,
-separate from executable command text. Options explicitly uses
+The current folder is visible in full beside the editor in a single command row,
+separate from executable command text. There is no fixed prompt-width cap or
+ellipsis; extreme paths pan horizontally while preserving editor space.
+File/folder rows no longer show hover tooltips; controls and drives retain them.
+Options explicitly uses
 `close-on-click-outside` so interior clicks and nested picker selections work;
 Escape and Done still dismiss it. Actual pointer regression covers
 Dark→Touch→Light, continued interaction, reopening and Done.

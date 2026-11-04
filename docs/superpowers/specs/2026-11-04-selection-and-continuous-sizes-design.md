@@ -40,9 +40,11 @@ into UI code. Windows and Linux share platform-neutral selection behavior.
 ## Folder-size display and scan lifetime
 
 Remove `!` prefixes from running, queued and unfinished folder-size strings.
-Keep the contrasting non-final color, approximate `≈` known totals, queued `…`,
-unfinished `—` and explanatory tooltips. Only a clean completed scan displays an
-ordinary final total; errors/cancellation never masquerade as complete data.
+Keep the contrasting active-scan color, approximate `≈` known totals, queued `…`
+and unfinished `—`. Completed partial totals retain `≈` with ordinary styling,
+so they differ both from a running scan and from a clean final value. File/folder
+rows have no hover tooltips; F1 explains these states. Errors/cancellation never
+masquerade as complete data.
 
 Selection, cursor movement, active-pane switching, column sorting and same-path
 refresh do not cancel an active directory-size scan. Scan identity is separate

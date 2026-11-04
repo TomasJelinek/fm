@@ -43,7 +43,8 @@ do not intercept RightAlt/AltGr. Number0 refers to slot10.
 | F10 | Main menu, including Options |
 | Alt+F4 | Exit |
 
-Inserted paths/names are quoted using the draft's fixed shell grammar. Insertion
+Inserted paths/names use the draft's fixed shell grammar: simple paths remain
+bare; special characters use escaped double quotes, never surrounding apostrophes. Insertion
 never submits a command. Editor word deletion and ordinary text editing retain
 their standard behavior. Menus also support arrows, Enter and Escape; unclear
 controls have tooltips and accessible names.

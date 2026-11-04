@@ -197,8 +197,9 @@ Sources are inspected as behavioral reference, without copying implementation:
 | Active-panel directory sizes | `help/src/hh/salamand/advwork_calcsize.htm:17` (upstream Ctrl+Shift+F10; this app Ctrl+Shift+S) |
 | Automatic/network refresh | `help/src/hh/salamand/configuration_drive.htm:20`, `:31` (notification gaps on network drives) |
 
-Intentional adaptations: quoted shell tokens instead of Salamander's unquoted
-ANSI text, own remembered paths per pane, supported physical special locations,
+Intentional adaptations: lossless Unicode shell arguments (simple tokens bare,
+special syntax escaped in double quotes) instead of Salamander's ANSI text,
+own remembered paths per pane, supported physical special locations,
 and read-only-stage capability gating. Inspect relevant Salamander sources for
 every further feature and record differences instead of assuming parity.
 Mouse double-click activation requires no modifiers; Ctrl+click remains selection

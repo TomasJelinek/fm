@@ -23,7 +23,8 @@ pub enum TerminalMode {
     Elevated,
 }
 
-/// Quote a path token without changing its original Unicode spelling.
+/// Format a literal shell argument without changing its Unicode spelling.
+/// Ordinary paths remain bare; shell syntax uses escaped double quotes.
 pub fn quote_shell_path(path: &Path, shell: ShellFlavor) -> Result<String, &'static str> {
     let text = path
         .to_str()
@@ -38,22 +39,55 @@ pub fn quote_shell_path(path: &Path, shell: ShellFlavor) -> Result<String, &'sta
         if text.chars().any(|ch| matches!(ch, '%' | '"' | '\r' | '\n')) {
             return Err("This path cannot be inserted safely in cmd; choose PowerShell.");
         }
-        return Ok(format!("\"{text}\""));
-    }
-    let mut quoted = String::with_capacity(text.len() + 2);
-    quoted.push('\'');
-    for ch in text.chars() {
-        match (shell, ch) {
-            (ShellFlavor::PowerShell, '\'' | '\u{2018}' | '\u{2019}') => {
-                quoted.push(ch);
-                quoted.push(ch);
-            }
-            (ShellFlavor::Posix, '\'') => quoted.push_str("'\\''"),
-            _ => quoted.push(ch),
+        // A quoted trailing backslash has incompatible meanings for cmd
+        // builtins and the CRT argv parser used by native programs.
+        if !bare_shell_path(text, shell) && text.ends_with('\\') {
+            return Err("This path cannot be inserted safely in cmd; choose PowerShell.");
         }
     }
-    quoted.push('\'');
+    if bare_shell_path(text, shell) {
+        return Ok(text.to_owned());
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for ch in text.chars() {
+        match (shell, ch) {
+            (ShellFlavor::PowerShell, '`' | '$' | '"' | '\u{201c}' | '\u{201d}' | '\u{201e}') => {
+                quoted.push('`');
+            }
+            (ShellFlavor::Posix, '\\' | '$' | '`' | '"') => quoted.push('\\'),
+            _ => {}
+        }
+        quoted.push(ch);
+    }
+    quoted.push('"');
     Ok(quoted)
+}
+
+fn bare_shell_path(text: &str, shell: ShellFlavor) -> bool {
+    if text.is_empty() || text.starts_with('-') {
+        return false;
+    }
+    if shell == ShellFlavor::PowerShell
+        && (text.starts_with(['\u{2013}', '\u{2014}', '\u{2015}'])
+            || text.as_bytes()[0].is_ascii_digit()
+            || (text.starts_with('.') && text.as_bytes().get(1).is_some_and(u8::is_ascii_digit)))
+    {
+        // PowerShell can parse numeric basenames as values (001 becomes 1)
+        // and leading dash forms as parameter names instead of literal text.
+        return false;
+    }
+    text.chars().all(|ch| {
+        if ch.is_ascii() {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, '_' | '.' | '/' | '-')
+                || (shell != ShellFlavor::Posix && matches!(ch, '\\' | ':'))
+        } else {
+            !ch.is_whitespace()
+                && !ch.is_control()
+                && (shell != ShellFlavor::PowerShell || !matches!(ch, '\u{2018}'..='\u{201e}'))
+        }
+    })
 }
 
 /// Finite semantic roles for optional native control icons.
@@ -386,15 +420,15 @@ mod tests {
         let path = Path::new("Žluťoučký/文档/👩🏽‍💻 ' ‘ ’ $x;&");
         assert_eq!(
             quote_shell_path(path, ShellFlavor::PowerShell).unwrap(),
-            "'Žluťoučký/文档/👩🏽‍💻 '' ‘‘ ’’ $x;&'"
+            "\"Žluťoučký/文档/👩🏽‍💻 ' ‘ ’ `$x;&\""
         );
     }
 
     #[test]
-    fn posix_quotes_preserve_curly_quotes_and_escape_ascii_apostrophe() {
+    fn posix_quotes_preserve_curly_quotes_and_ascii_apostrophe() {
         assert_eq!(
             quote_shell_path(Path::new("a'文档 ’ $x;&"), ShellFlavor::Posix).unwrap(),
-            "'a'\\''文档 ’ $x;&'"
+            "\"a'文档 ’ \\$x;&\""
         );
     }
 

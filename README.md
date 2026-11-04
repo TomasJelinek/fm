@@ -87,7 +87,8 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+R / toolbar Refresh: reload the current directory.
 - Ctrl+Shift+S: calculate all folder sizes in the active pane on the backend;
   press again to cancel. Partial/running values are marked; links are skipped.
-- Ctrl+[ / Ctrl+]: insert the left/right path as a quoted shell token.
+- Ctrl+[ / Ctrl+]: insert the left/right path as a literal shell argument.
+  Simple paths remain bare; special characters use escaped double quotes.
 - Ctrl+P: insert the active path; Ctrl+Enter: append the focused filename at
   the end of the command draft. Insertion never submits the command.
 - Alt+F1 / Alt+F2: open left / right drive choices. Ctrl+F3/F4/F5/F6 sort by
@@ -107,9 +108,10 @@ editor scope and shortcuts reserved for later stages.
   font family and independent Desktop/Touch base sizes (8–32px). Preview
   is immediate; typed preferences are saved asynchronously by the backend.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
-  appears in full above the command input, wrapping long components without
-  elision. Extreme paths remain fully accessible in a scrollable text viewport.
-  At large fonts, the window minimum grows to preserve a readable path line and
+  appears in full beside the command input in the same single row, without
+  elision or a fixed path-width cap. Extreme paths remain fully accessible in a
+  horizontal viewport while preserving editor space.
+  At large fonts, the window minimum grows to preserve readable controls and
   a complete file row; ordinary fonts retain the 480 px minimum-height floor.
 - Panel scrolling moves by pixels and gently settles on a row after input and
   inertia stop. Native drive icons precede captions and dropdown choices.
@@ -142,12 +144,17 @@ only for proven local SSD, one stream for HDD/network/unknown storage. Detection
 errors remain conservative. Other navigation work has independent capacity.
 An active size scan continues across sorting and same-directory refresh; moving
 the cursor, changing selection or working in the other pane does not cancel it.
-Non-final totals retain a contrasting color, `≈` and tooltips without an
-exclamation prefix. Size-only UI updates are combined for both panes and shown
+Running totals retain a contrasting color and `≈` without an exclamation prefix.
+Completed partial totals retain `≈` in ordinary text: inaccessible or skipped
+entries mean the result is incomplete, even though the scan has finished.
+File and folder rows have no hover tooltips; control/drive tooltips remain.
+Size-only UI updates are combined for both panes and shown
 at most four times per second; input and navigation remain immediate.
 Progress and scan completion update values without reordering rows; explicitly
 sort again to apply newly completed sizes to the order.
 Quick drive/location buttons sit beside the drive dropdown.
+The single command row, quiet file hover and completed-partial size feedback
+have an updated [verification record](docs/verification/compact-command-and-size-feedback.md).
 
 ## Build output and version control
 
