@@ -72,6 +72,21 @@ file encoding/writes execute in backend workers.
   tabs release large data on backend workers. Drive icons use root-specific
   cache keys; Windows Shell root queries are restricted to validated local fixed
   drive roots, with stock icons for media/network classes to avoid probing them.
+- Navigation buttons and dropdowns resolve revision-tagged choices to captured
+  native targets. Display labels, duplicate-looking aliases and stale popup
+  indices cannot retarget an action after discovery changes. Both surfaces keep
+  the same available drives and semantic locations, including same-path aliases.
+- Action/location icon roles are fixed semantic keys, not caller-controlled DLL
+  indices or resource paths. Native lookup, bounded raster decoding and caching
+  stay on backend workers. Unsupported semantic roles retain UI vector fallbacks;
+  negative caching prevents repeated native misses. Known-folder PIDLs have
+  scoped native ownership; Linux theme PNG loading retains its trusted-root,
+  encoded-size, decoded-allocation and lookup-attempt bounds.
+  Context discovery coalesces refreshes behind one native worker; typed drive
+  letters come from the platform adapter, never UI path-prefix inference.
+- The command directory is complete plain text without elision. A scrollable
+  presentation viewport bounds extreme layout height without limiting or
+  modifying the native path. Viewing or scrolling it never submits a command.
 - There is no application-wide path-length ceiling or `MAX_PATH` buffer.
   Provider/OS limits are reported without truncation. Future FTP/remote locations
   have provider-owned path semantics and separate credentials, not host-OS paths.
@@ -90,6 +105,7 @@ file encoding/writes execute in backend workers.
   Size scans retain a separate identity across display sorting and same-path
   refresh; each replacement scan owns a fresh cache. Size-only paints are
   coalesced to250ms without throttling input or error delivery.
+  Progress and completion never trigger automatic row reordering.
 - Runtime filesystem errors retain operation/path context. Unknown or failed
   metadata is not represented as successful zero-length data.
 - The explicit developer `--snapshot` option is a file write, not a browsing

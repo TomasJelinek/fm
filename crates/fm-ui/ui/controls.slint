@@ -1,5 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
+import { LocationImage } from "action-icons.slint";
 
 // Dynamic paths and volume labels remain plain text, including Markdown punctuation.
 export component TipBody inherits Rectangle {
@@ -21,6 +23,7 @@ export component TipBody inherits Rectangle {
 // Only selected() commits: keyboard browsing never overwrites the host's index.
 export component CompactPicker inherits Rectangle {
     in property <[string]> model;
+    in property <[NavigationChoiceRow]> choices;
     in property <[image]> icons;
     in property <int> model-revision;
     in property <int> current-index: -1;
@@ -28,13 +31,18 @@ export component CompactPicker inherits Rectangle {
     in property <string> hint;
     in property <string> accessible-name;
     in property <image> icon;
+    in property <image> native-icon;
     in property <bool> icon-only;
     in property <bool> enabled: true;
     in property <bool> popup-above;
     in property <length> popup-width: 360px;
     private property <int> pending-index: -1;
     private property <bool> expanded;
+    private property <int> item-count: root.choices.length > 0 ? root.choices.length : root.model.length;
+    private property <[NavigationChoiceRow]> opened-choices;
+    private property <int> opened-revision;
     callback selected(int);
+    callback selected-key(string);
     callback dismissed();
     height: Theme.control-height;
     min-width: 40px;
@@ -45,20 +53,34 @@ export component CompactPicker inherits Rectangle {
     forward-focus: focus;
     accessible-role: combobox;
     accessible-label: root.accessible-name;
-    accessible-value: root.current-index >= 0 ? root.model[root.current-index] : "";
+    accessible-value: root.current-index >= 0 ? root.row-label(root.current-index) : "";
     accessible-enabled: root.enabled;
     accessible-expandable: true;
     accessible-expanded: root.expanded;
     accessible-action-expand => { root.open(); }
-    Tooltip { TipBody { text: root.hint; } }
-    changed model => { if root.expanded { root.cancel(); } }
+    changed model => { if root.expanded && root.choices.length == 0 { root.cancel(); } }
     changed model-revision => { if root.expanded { root.cancel(); } }
     changed current-index => { if root.expanded { root.cancel(); } }
     changed enabled => { if !root.enabled && root.expanded { root.cancel(); } }
+    pure function row-label(index: int) -> string {
+        if index < 0 || index >= root.item-count { return ""; }
+        return root.choices.length > 0 ? root.choices[index].label : root.model[index];
+    }
+    pure function row-key(index: int) -> string {
+        return index >= 0 && index < root.choices.length ? root.choices[index].identity : "";
+    }
+    pure function row-hint(index: int) -> string {
+        return root.choices.length > 0 ? root.choices[index].tooltip : root.row-label(index);
+    }
+    pure function row-icon(index: int) -> image {
+        return root.choices.length > 0 ? root.choices[index].icon : root.icons[index];
+    }
 
     public function open() {
-        if root.enabled && root.model.length > 0 {
-            root.pending-index = min(root.model.length - 1, max(0, root.current-index));
+        if root.enabled && root.item-count > 0 {
+            root.pending-index = min(root.item-count - 1, max(0, root.current-index));
+            root.opened-choices = root.choices;
+            root.opened-revision = root.model-revision;
             root.expanded = true;
             popup.show();
         }
@@ -70,22 +92,31 @@ export component CompactPicker inherits Rectangle {
         root.dismissed();
     }
     function commit(index: int) {
+        let key = root.row-key(index);
+        if root.opened-revision != root.model-revision
+            || (key != "" && (index >= root.opened-choices.length || root.opened-choices[index].identity != key)) {
+            root.cancel(); return;
+        }
         popup.close();
         root.expanded = false;
         focus.focus();
-        if root.enabled && index >= 0 && index < root.model.length { root.selected(index); }
+        if root.enabled && index >= 0 && index < root.item-count {
+            if key != "" { root.selected-key(key); } else { root.selected(index); }
+        }
     }
     HorizontalLayout {
         padding-left: 6px; padding-right: 6px; spacing: 4px;
-        if !root.icon-only && root.current-index >= 0 && root.current-index < root.icons.length : Image {
-            source: root.icons[root.current-index];
+        if !root.icon-only && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length) : LocationImage {
+            native-icon: root.row-icon(root.current-index);
+            kind: root.choices.length > 0 ? root.choices[root.current-index].kind : LocationRole.drive;
             width: 18px; height: 18px; image-fit: contain;
         }
         Rectangle {
             horizontal-stretch: 1;
             Image {
                 visible: root.icon-only;
-                source: root.icon; colorize: Theme.accent;
+                source: root.native-icon.width > 0 ? root.native-icon : root.icon;
+                colorize: root.native-icon.width > 0 ? transparent : Theme.accent;
                 width: 18px; height: 18px; image-fit: contain;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
@@ -122,18 +153,19 @@ export component CompactPicker inherits Rectangle {
             clicked => { focus.focus(); root.open(); }
         }
     }
+    Tooltip { TipBody { text: root.hint; } }
     popup := PopupWindow {
         x: 0px;
         y: root.popup-above ? -self.height : root.height;
         width: max(root.popup-width, root.width);
-        height: min(360px, root.model.length * Theme.control-height + 10px);
+        height: min(360px, root.item-count * Theme.control-height + 10px);
         close-policy: close-on-click-outside;
         forward-focus: popup-focus;
         popup-focus := FocusScope {
             focus-changed-event => { root.expanded = self.has-focus; }
             key-pressed(event) => {
                 if event.text == Key.DownArrow {
-                    root.pending-index = min(root.model.length - 1, root.pending-index + 1);
+                    root.pending-index = min(root.item-count - 1, root.pending-index + 1);
                     return accept;
                 }
                 if event.text == Key.UpArrow {
@@ -142,7 +174,7 @@ export component CompactPicker inherits Rectangle {
                 }
                 if event.text == Key.Home { root.pending-index = 0; return accept; }
                 if event.text == Key.End {
-                    root.pending-index = root.model.length - 1;
+                    root.pending-index = root.item-count - 1;
                     return accept;
                 }
                 if event.text == Key.Return || event.text == " " {
@@ -162,14 +194,14 @@ export component CompactPicker inherits Rectangle {
                     horizontal-scrollbar-policy: always-off;
                     // Direct ListView children stay virtualized even for a full
                     // installed-font catalog. The host keeps the committed index.
-                    content-y: -min(max(0px, root.model.length * Theme.control-height - self.visible-height),
+                    content-y: -min(max(0px, root.item-count * Theme.control-height - self.visible-height),
                         max(0, root.pending-index - 5) * Theme.control-height);
-                    for value[index] in root.model : Rectangle {
+                    for value[index] in root.item-count : Rectangle {
                         height: Theme.control-height;
                         background: index == root.pending-index || row-area.has-hover
                             ? Theme.hover : transparent;
                         accessible-role: button;
-                        accessible-label: value;
+                        accessible-label: root.row-label(index);
                         accessible-action-default => { root.commit(index); }
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px; spacing: 8px;
@@ -177,16 +209,32 @@ export component CompactPicker inherits Rectangle {
                                 text: index == root.current-index ? "✓" : "";
                                 color: Theme.accent; width: 16px; vertical-alignment: center;
                             }
-                            if index < root.icons.length : Image {
-                                source: root.icons[index]; width: 18px; height: 18px; image-fit: contain;
+                            if root.choices.length > 0 || index < root.icons.length : LocationImage {
+                                native-icon: root.row-icon(index);
+                                kind: root.choices.length > 0 ? root.choices[index].kind : LocationRole.drive;
+                                width: 18px; height: 18px;
                             }
                             Text {
-                                text: value; color: Theme.text; font-size: Theme.font-size;
+                                text: root.row-label(index); color: Theme.text; font-size: Theme.font-size;
                                 vertical-alignment: center; overflow: elide;
                             }
                         }
-                        Tooltip { TipBody { text: value; } }
-                        row-area := TouchArea { clicked => { root.commit(index); } }
+                        row-area := TouchArea {
+                            private property <string> pressed-key;
+                            private property <int> pressed-revision;
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.down {
+                                    self.pressed-key = root.row-key(index);
+                                    self.pressed-revision = root.model-revision;
+                                }
+                            }
+                            clicked => {
+                                if self.pressed-key == root.row-key(index) && self.pressed-revision == root.model-revision {
+                                    root.commit(index);
+                                }
+                            }
+                        }
+                        Tooltip { TipBody { text: root.row-hint(index); } }
                     }
                 }
             }

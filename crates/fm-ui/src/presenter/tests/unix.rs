@@ -5,6 +5,37 @@ pub(super) fn test_root() -> PathBuf {
 }
 
 #[test]
+fn native_choice_tokens_preserve_non_utf8_bytes_and_reject_display_alias_replacement() {
+    use crate::Presenter;
+    use fm_core::{Command, Event, LocationKind, NavigationLocation, PaneId, ShellFlavor};
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x80".to_vec()));
+    let second = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x81".to_vec()));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut p = Presenter::new(test_root(), test_root());
+    let update = |path| Event::DesktopContext {
+        shell: ShellFlavor::Posix,
+        locations: vec![NavigationLocation {
+            id: "desktop".into(),
+            label: "Same caption".into(),
+            path,
+            kind: LocationKind::Desktop,
+            drive_letter: None,
+        }],
+    };
+    p.apply(update(first.clone()));
+    let token = p.navigation_choice_token(0);
+    assert!(
+        p.choose_navigation_choice(PaneId::Left, &token, &|command| {
+            assert!(matches!(command, Command::Navigate { path, .. } if path == first));
+            true
+        })
+    );
+    p.apply(update(second));
+    assert!(!p.choose_navigation_choice(PaneId::Right, &token, &|_| panic!("stale")));
+}
+
+#[test]
 fn bookmark_and_tab_actions_preserve_non_utf8_native_bytes() {
     use crate::Presenter;
     use fm_core::{Command, Event, PaneId, UserPreferences};

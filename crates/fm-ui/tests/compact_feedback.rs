@@ -143,11 +143,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     "unfinished-size text contrast is {contrast} in theme {scheme}"
                 );
             }
-            let pane_bottom = 820.0
-                - theme.get_window_padding()
-                - theme.get_bottom_height()
-                - theme.get_command_height()
-                - 2.0 * theme.get_gap();
+            let pane_bottom = window.get_command_path_top() - theme.get_gap();
             selected.set((-1, -1));
             click(&window, 100.0, pane_bottom - 3.0);
             assert_eq!(
@@ -177,6 +173,12 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
     pixels.resize(1040 * 480, slint::Rgb8Pixel::default());
     for density in 0..2 {
         window.invoke_apply_preferences(0, density);
+        let height = window.get_effective_minimum_height().ceil().max(480.0) as usize;
+        native.set_size(slint::PhysicalSize::new(1040, height as u32));
+        window.window().dispatch_event(WindowEvent::Resized {
+            size: slint::LogicalSize::new(1040.0, height as f32),
+        });
+        pixels.resize(1040 * height, slint::Rgb8Pixel::default());
         window.invoke_focus_files();
         for pressed in [true, false] {
             window.window().dispatch_event(if pressed {
@@ -196,7 +198,11 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
             pixels[300 * 1040 + 220],
             pixel(window.global::<Theme>().get_surface())
         );
-        click(&window, 520.0, if density == 0 { 428.0 } else { 418.0 });
+        let theme = window.global::<Theme>();
+        let help_height = (height as f32 - 40.0).min(if density == 0 { 490.0 } else { 600.0 });
+        let close_y =
+            height as f32 / 2.0 + help_height / 2.0 - 20.0 - theme.get_control_height() / 2.0;
+        click(&window, 520.0, close_y);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });

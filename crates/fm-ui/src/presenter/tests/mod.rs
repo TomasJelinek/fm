@@ -4,6 +4,7 @@ use std::{cell::RefCell, io};
 mod activation;
 mod bookmarks;
 mod bulk_selection;
+mod choices;
 mod controls;
 mod font_preferences;
 mod navigation;

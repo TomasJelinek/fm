@@ -3,14 +3,14 @@
 use crate::Outbox;
 use fm_core::*;
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     io,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
     task::JoinSet,
 };
 
@@ -21,10 +21,11 @@ const MAX_OPEN_HELPERS: usize = 16;
 pub(crate) struct Desktop {
     services: Option<Arc<dyn DesktopServices>>,
     icons: mpsc::Sender<IconKey>,
+    volume_icons: watch::Sender<Vec<IconKey>>,
     children: mpsc::Sender<TrackedChild>,
     property_budget: Arc<Semaphore>,
     launch_budget: Arc<Semaphore>,
-    context_budget: Arc<Semaphore>,
+    context_requests: watch::Sender<u64>,
     terminal_slots: Arc<Semaphore>,
     open_budget: Arc<Semaphore>,
     open_slots: Arc<Semaphore>,
@@ -45,15 +46,27 @@ impl Desktop {
     ) -> Self {
         let (icons, receiver) = mpsc::channel(64);
         tasks.spawn(icon_worker(services.clone(), outbox.clone(), receiver));
+        let (volume_icons, roots) = watch::channel(Vec::new());
+        tasks.spawn(forward_icons(roots, icons.clone()));
+        let (location_icons, locations) = watch::channel(Vec::new());
+        tasks.spawn(forward_icons(locations, icons.clone()));
+        let (context_requests, context_receiver) = watch::channel(0);
+        tasks.spawn(context_worker(
+            services.clone(),
+            outbox.clone(),
+            location_icons,
+            context_receiver,
+        ));
         let (children, child_receiver) = mpsc::channel(MAX_TERMINALS);
         tasks.spawn(reap_children(child_receiver, outbox.clone()));
         let result = Self {
             services,
             icons,
+            volume_icons,
             children,
             property_budget: Arc::new(Semaphore::new(1)),
             launch_budget: Arc::new(Semaphore::new(1)),
-            context_budget: Arc::new(Semaphore::new(1)),
+            context_requests,
             terminal_slots: Arc::new(Semaphore::new(MAX_TERMINALS)),
             open_budget: Arc::new(Semaphore::new(4)),
             open_slots: Arc::new(Semaphore::new(MAX_OPEN_HELPERS)),
@@ -67,7 +80,10 @@ impl Desktop {
                 kind: IconKind::Link,
                 ..IconKey::file()
             },
-        ] {
+        ]
+        .into_iter()
+        .chain(ActionIcon::ALL.into_iter().map(IconKey::action))
+        {
             let _ = result.icons.try_send(key);
         }
         result
@@ -77,52 +93,17 @@ impl Desktop {
         self.icons.clone()
     }
 
-    pub(crate) fn context(&self, tasks: &mut JoinSet<()>) {
-        let Some(services) = self.services.clone() else {
-            return;
-        };
-        let Ok(permit) = self.context_budget.clone().try_acquire_owned() else {
-            return;
-        };
-        let outbox = self.outbox.clone();
-        let icons = self.icons.clone();
-        tasks.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                services
-                    .locations()
-                    .map(|locations| (services.shell_flavor(), locations))
-            })
-            .await;
-            let (event, drive_icons) = match result {
-                Ok(Ok((shell, locations))) => {
-                    let drive_icons: Vec<_> = locations
-                        .iter()
-                        .filter(|location| location.kind == LocationKind::Volume)
-                        .map(|location| IconKey::for_drive(&location.path))
-                        .collect();
-                    (Event::DesktopContext { shell, locations }, drive_icons)
-                }
-                Ok(Err(error)) => (Event::DesktopContextFailed(error), Vec::new()),
-                Err(error) => (
-                    Event::DesktopContextFailed(worker_error(
-                        "desktop locations",
-                        Path::new(""),
-                        error,
-                    )),
-                    Vec::new(),
-                ),
-            };
-            if outbox.send(event).await {
-                // Publish navigation roots first. Icon backpressure stays entirely
-                // on the backend and shares the existing bounded/cache worker.
-                for key in drive_icons {
-                    if icons.send(key).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+    pub(crate) fn volume_icon_sender(&self) -> watch::Sender<Vec<IconKey>> {
+        self.volume_icons.clone()
+    }
+
+    pub(crate) fn context_sender(&self) -> watch::Sender<u64> {
+        self.context_requests.clone()
+    }
+
+    pub(crate) fn context(&self) {
+        self.context_requests
+            .send_modify(|version| *version = version.wrapping_add(1));
     }
 
     pub(crate) fn launch(
@@ -343,6 +324,68 @@ fn metadata_properties(
     Ok(DesktopActionResult::PropertiesInfo { title, body })
 }
 
+/// A watch slot coalesces refreshes without overlapping uninterruptible host calls.
+async fn context_worker(
+    services: Option<Arc<dyn DesktopServices>>,
+    outbox: Outbox,
+    icons: watch::Sender<Vec<IconKey>>,
+    mut requests: watch::Receiver<u64>,
+) {
+    let Some(services) = services else {
+        return;
+    };
+    while requests.changed().await.is_ok() {
+        let version = *requests.borrow_and_update();
+        let worker = services.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            worker
+                .locations()
+                .map(|locations| (worker.shell_flavor(), locations))
+        })
+        .await;
+        let (event, keys) = match result {
+            Ok(Ok((shell, locations))) => {
+                // Keep the finite semantic aliases ahead of large mount inventories.
+                let keys = locations
+                    .iter()
+                    .filter(|location| location.kind != LocationKind::Volume)
+                    .chain(
+                        locations
+                            .iter()
+                            .filter(|location| location.kind == LocationKind::Volume),
+                    )
+                    .take(ICON_CAPACITY)
+                    .map(IconKey::for_location)
+                    .collect();
+                (Event::DesktopContext { shell, locations }, keys)
+            }
+            Ok(Err(error)) => (Event::DesktopContextFailed(error), Vec::new()),
+            Err(error) => (
+                Event::DesktopContextFailed(worker_error(
+                    "desktop locations",
+                    Path::new(""),
+                    error,
+                )),
+                Vec::new(),
+            ),
+        };
+        // Recheck after backpressure. No obsolete result, success or failure,
+        // may replace the typed metadata requested for the latest inventory.
+        let Ok(permit) = outbox.sender.reserve().await else {
+            return;
+        };
+        {
+            let latest = requests.borrow();
+            if version != *latest {
+                continue;
+            }
+            permit.send(event);
+            icons.send_replace(keys);
+        }
+        (outbox.wakeup)();
+    }
+}
+
 async fn icon_worker(
     services: Option<Arc<dyn DesktopServices>>,
     outbox: Outbox,
@@ -364,11 +407,21 @@ async fn icon_worker(
                     (1..=64).contains(&pixels.width)
                         && (1..=64).contains(&pixels.height)
                         && pixels.rgba.len() == pixels.width as usize * pixels.height as usize * 4
+                        && pixels
+                            .rgba
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|pixel| pixel[3] != 0)
                 })
-                .unwrap_or_else(|| fallback_icon(worker_key.kind))
+                .or_else(|| fallback_icon(worker_key.kind))
         })
         .await;
-        let pixels = result.unwrap_or_else(|_| fallback_icon(kind));
+        let Some(pixels) = result.unwrap_or_else(|_| fallback_icon(kind)) else {
+            // Missing semantic roles keep the UI's appropriate vector fallback.
+            // The key remains cached so an unsupported role is never queried again.
+            continue;
+        };
         if !outbox
             .send(Event::IconLoaded {
                 key,
@@ -381,25 +434,46 @@ async fn icon_worker(
     }
 }
 
-fn fallback_icon(kind: IconKind) -> IconPixels {
+fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
     // Small backend-generated RGBA assets also work without a font icon glyph.
-    let mut rgba = vec![0; 24 * 24 * 4];
     let color = match kind {
         IconKind::Folder => [232, 182, 62, 255],
         IconKind::Drive => [126, 144, 163, 255],
         IconKind::Link => [94, 173, 155, 255],
         IconKind::File => [181, 200, 220, 255],
+        IconKind::Action(_) | IconKind::Location(_) => return None,
     };
+    let mut rgba = vec![0; 24 * 24 * 4];
     for y in 4..21 {
         for x in 3..21 {
             let i = (y * 24 + x) * 4;
             rgba[i..i + 4].copy_from_slice(&color);
         }
     }
-    IconPixels {
+    Some(IconPixels {
         width: 24,
         height: 24,
         rgba: rgba.into(),
+    })
+}
+
+/// Coalesce discovery while native lookup is busy, without delaying volume metadata.
+async fn forward_icons(mut roots: watch::Receiver<Vec<IconKey>>, icons: mpsc::Sender<IconKey>) {
+    let mut pending = VecDeque::new();
+    loop {
+        tokio::select! {
+            biased;
+            changed = roots.changed() => {
+                if changed.is_err() { return; }
+                // Producer and consumer both bound this snapshot independently.
+                pending = roots.borrow_and_update().iter().take(ICON_CAPACITY).cloned().collect();
+            }
+            permit = icons.reserve(), if !pending.is_empty() => {
+                let Ok(permit) = permit else { return; };
+                if let Some(key) = pending.pop_front() { permit.send(key); }
+            }
+            _ = icons.closed() => return,
+        }
     }
 }
 
@@ -464,6 +538,363 @@ fn worker_error(operation: &'static str, path: &Path, error: tokio::task::JoinEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::{Future, poll_fn};
+    use std::sync::{
+        Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct Icons {
+        keys: Mutex<Vec<IconKey>>,
+        roots: Mutex<Vec<Volume>>,
+        gate: Option<Arc<IconGate>>,
+        context_gate: Option<Arc<IconGate>>,
+        context_calls: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct IconGate {
+        entered: Notify,
+        released: Mutex<bool>,
+        wake: Condvar,
+    }
+
+    impl IconGate {
+        fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.wake.notify_all();
+        }
+    }
+
+    struct ReleaseIcon(Arc<IconGate>);
+
+    impl Drop for ReleaseIcon {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    impl IconService for Icons {
+        fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError> {
+            self.keys.lock().unwrap().push(key.clone());
+            if key.kind == IconKind::Action(ActionIcon::Options)
+                && let Some(gate) = &self.gate
+            {
+                gate.entered.notify_one();
+                let mut released = gate.released.lock().unwrap();
+                while !*released {
+                    released = gate.wake.wait(released).unwrap();
+                }
+            }
+            Ok(match key.kind {
+                IconKind::Action(ActionIcon::Options) => {
+                    Some(IconPixels::new(1, 1, vec![12, 34, 56, 128]).unwrap())
+                }
+                IconKind::Action(ActionIcon::Help) => {
+                    Some(IconPixels::new(1, 1, vec![0; 4]).unwrap())
+                }
+                IconKind::Action(ActionIcon::View) => Some(IconPixels {
+                    width: 65,
+                    height: 1,
+                    rgba: vec![255; 260].into(),
+                }),
+                _ => None,
+            })
+        }
+    }
+    impl TerminalService for Icons {
+        fn shell_flavor(&self) -> ShellFlavor {
+            ShellFlavor::Posix
+        }
+        fn launch_terminal(
+            &self,
+            _: &TerminalRequest,
+        ) -> Result<Box<dyn TerminalProcess>, FsError> {
+            unreachable!("icon lookup must not launch a terminal")
+        }
+    }
+    impl PropertyService for Icons {
+        fn show_properties(&self, _: &[PathBuf]) -> Result<bool, FsError> {
+            unreachable!("icon lookup must not open properties")
+        }
+    }
+    impl LocationService for Icons {
+        fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
+            let locations = self
+                .roots
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|volume| NavigationLocation {
+                    id: volume.id.clone(),
+                    label: volume.label.clone(),
+                    path: volume.root.clone(),
+                    kind: LocationKind::Volume,
+                    // Deliberately unrelated to path syntax: this is native metadata.
+                    drive_letter: Some('Z'),
+                })
+                .collect();
+            let call = self.context_calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0
+                && let Some(gate) = &self.context_gate
+            {
+                gate.entered.notify_one();
+                let mut released = gate.released.lock().unwrap();
+                while !*released {
+                    released = gate.wake.wait(released).unwrap();
+                }
+            }
+            Ok(locations)
+        }
+    }
+    impl OpenService for Icons {
+        fn open_entry(&self, _: &Path) -> Result<OpenEntryResult, FsError> {
+            unreachable!("icon lookup must not open files")
+        }
+    }
+
+    impl DirectoryService for Icons {
+        fn read_directory(
+            &self,
+            _: &Path,
+            _: &Cancellation,
+            _: &mut dyn FnMut(Entry) -> bool,
+        ) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
+            unreachable!("empty test directories have no entries")
+        }
+    }
+    impl VolumeService for Icons {
+        fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+            Ok(self.roots.lock().unwrap().clone())
+        }
+    }
+    impl StorageService for Icons {
+        fn space_info(&self, _: &Path) -> Result<SpaceInfo, FsError> {
+            Ok(SpaceInfo {
+                available: 4,
+                total: 8,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_actions_and_locations_keep_negative_cached_semantic_fallbacks() {
+        let services = Arc::new(Icons::default());
+        let (sender, mut events) = mpsc::channel(16);
+        let outbox = Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        };
+        let (icons, receiver) = mpsc::channel(16);
+        let worker = tokio::spawn(icon_worker(Some(services.clone()), outbox, receiver));
+        let missing = IconKey::action(ActionIcon::Back);
+        let native = IconKey::action(ActionIcon::Options);
+        let home = IconKey {
+            kind: IconKind::Location(LocationKind::Home),
+            ..IconKey::folder()
+        };
+        for key in [
+            missing.clone(),
+            native.clone(),
+            missing.clone(),
+            IconKey::action(ActionIcon::Help),
+            IconKey::action(ActionIcon::View),
+            home.clone(),
+            home.clone(),
+            IconKey {
+                kind: IconKind::Location(LocationKind::Downloads),
+                ..IconKey::folder()
+            },
+            IconKey::folder(),
+        ] {
+            icons.send(key).await.unwrap();
+        }
+        drop(icons);
+        worker.await.unwrap();
+        let mut emitted = HashSet::new();
+        while let Some(Event::IconLoaded { key, pixels }) = events.recv().await {
+            if key == native {
+                assert_eq!(&*pixels.rgba, [12, 34, 56, 128]);
+            }
+            assert_ne!(
+                key, missing,
+                "generic bitmap replaced the semantic Back fallback"
+            );
+            emitted.insert(key);
+        }
+        assert_eq!(emitted, HashSet::from([native, IconKey::folder()]));
+        for negative in [missing, home] {
+            assert_eq!(
+                services
+                    .keys
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|key| **key == negative)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hotplug_discovery_does_not_wait_for_icons_and_reused_ids_keep_raw_root_keys() {
+        let gate = Arc::new(IconGate::default());
+        let _release = ReleaseIcon(gate.clone());
+        let services = Arc::new(Icons {
+            gate: Some(gate.clone()),
+            ..Icons::default()
+        });
+        let (commands, receiver) = mpsc::channel(8);
+        let (sender, mut events) = mpsc::channel(64);
+        let task = tokio::spawn(
+            crate::Engine::new(services.clone(), sender)
+                .with_desktop(services.clone())
+                .run(receiver),
+        );
+        tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
+            .await
+            .unwrap();
+        let first = PathBuf::from("/native/文档-old");
+        let second = PathBuf::from("/native/👩🏽‍💻-new");
+        for root in [&first, &second] {
+            *services.roots.lock().unwrap() = vec![Volume {
+                id: "reused-id".into(),
+                label: "same label".into(),
+                root: root.clone(),
+            }];
+            commands.send(Command::ListVolumes).await.unwrap();
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(4), events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if let Event::VolumesUpdated(volumes) = event {
+                    assert_eq!(volumes.len(), 1);
+                    assert_eq!(&volumes[0].root, root);
+                    break;
+                }
+            }
+        }
+        gate.release();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(4), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let Event::IconLoaded { key, .. } = event
+                && key == IconKey::for_drive(&second)
+            {
+                break;
+            }
+        }
+        {
+            let keys = services.keys.lock().unwrap();
+            assert!(keys.contains(&IconKey::for_drive(&second)));
+        }
+        assert_ne!(IconKey::for_drive(&first), IconKey::for_drive(&second));
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn latest_volume_roots_replace_pending_icons_under_channel_backpressure() {
+        let (roots, receiver) = watch::channel(Vec::new());
+        let (icons, mut received) = mpsc::channel(1);
+        let sentinel = IconKey::folder();
+        icons.send(sentinel.clone()).await.unwrap();
+        let forwarder = forward_icons(receiver, icons);
+        tokio::pin!(forwarder);
+        let latest = IconKey::for_drive(Path::new("/native/新しい-volume"));
+        for key in [
+            IconKey::for_drive(Path::new("/native/removed")),
+            latest.clone(),
+        ] {
+            roots.send_replace(vec![key]);
+            poll_fn(|context| {
+                assert!(forwarder.as_mut().poll(context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        assert_eq!(received.recv().await, Some(sentinel));
+        let forwarded = tokio::select! {
+            biased;
+            _ = &mut forwarder => panic!("forwarder stopped while receivers were open"),
+            key = received.recv() => key,
+        };
+        assert_eq!(forwarded, Some(latest));
+        assert!(received.try_recv().is_err());
+        received.close();
+        tokio::time::timeout(Duration::from_secs(1), forwarder)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn hotplug_during_native_context_lookup_coalesces_to_current_typed_metadata() {
+        let gate = Arc::new(IconGate::default());
+        let _release = ReleaseIcon(gate.clone());
+        let old = PathBuf::from("/native/old");
+        let current = PathBuf::from("/native/新しい-drive");
+        let volume = |root: PathBuf| Volume {
+            id: "same-id".into(),
+            label: "native name".into(),
+            root,
+        };
+        let services = Arc::new(Icons {
+            roots: Mutex::new(vec![volume(old)]),
+            context_gate: Some(gate.clone()),
+            ..Icons::default()
+        });
+        let (commands, receiver) = mpsc::channel(8);
+        let (sender, mut events) = mpsc::channel(32);
+        let task = tokio::spawn(
+            crate::Engine::new(services.clone(), sender)
+                .with_desktop(services.clone())
+                .run(receiver),
+        );
+        commands.send(Command::ListDesktopContext).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
+            .await
+            .unwrap();
+        *services.roots.lock().unwrap() = vec![volume(current.clone())];
+        commands.send(Command::ListVolumes).await.unwrap();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(4), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let Event::VolumesUpdated(volumes) = event {
+                assert_eq!(volumes[0].root, current);
+                break;
+            }
+        }
+        assert_eq!(services.context_calls.load(Ordering::SeqCst), 1);
+        gate.release();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(4), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let Event::DesktopContext { locations, .. } = event {
+                assert_eq!(locations.len(), 1);
+                assert_eq!(locations[0].path, current, "stale context was published");
+                assert_eq!(locations[0].drive_letter, Some('Z'));
+                break;
+            }
+        }
+        assert_eq!(services.context_calls.load(Ordering::SeqCst), 2);
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
 
     #[tokio::test]
     async fn icon_cache_deduplicates_and_stops_at_256_types() {

@@ -1,10 +1,12 @@
-import { Button, ComboBox, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { ComboBox, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TipBody } from "controls.slint";
 import { TabRow, BookmarkRow } from "navigation-models.slint";
+import { ActionIcons, ActionButton, NativeActionImage, FallbackIcons } from "action-icons.slint";
 
 component NavigationButton inherits Rectangle {
     in property <image> icon;
+    in property <image> native-icon;
     in property <string> label;
     in property <string> hint;
     in property <string> identity;
@@ -22,11 +24,11 @@ component NavigationButton inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
-    Tooltip { TipBody { text: root.hint; } }
-    Image {
+    NativeActionImage {
         visible: root.label == "";
-        source: root.icon; colorize: root.enabled ? Theme.text : Theme.muted-text;
-        width: 16px; height: 16px; image-fit: contain;
+        native-icon: root.native-icon; fallback-icon: root.icon;
+        action-enabled: root.enabled;
+        width: 16px; height: 16px;
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
     }
     Text {
@@ -59,10 +61,12 @@ component NavigationButton inherits Rectangle {
             }
         }
     }
+    Tooltip { TipBody { text: root.hint; } }
 }
 
 export component TabStrip inherits Rectangle {
     in property <[TabRow]> model;
+    in property <ActionIcons> action-icons;
     private property <int> revision;
     private property <int> active-index: -1;
     callback selected(string);
@@ -108,7 +112,6 @@ export component TabStrip inherits Rectangle {
                     accessible-checkable: true; accessible-checked: tab.active;
                     accessible-action-default => { root.selected(tab.identity); }
                     forward-focus: tab-focus;
-                    Tooltip { TipBody { text: tab.label + "\n" + tab.path + "\nSelect this folder tab."; } }
                     caption := Text {
                         x: 8px; width: parent.width - close.width - 12px; height: parent.height;
                         text: tab.label; color: Theme.text; font-size: Theme.font-size;
@@ -123,6 +126,7 @@ export component TabStrip inherits Rectangle {
                             reject
                         }
                         tab-area := TouchArea {
+                            Tooltip { TipBody { text: tab.label + "\n" + tab.path + "\nSelect this folder tab."; } }
                             private property <string> pressed-id;
                             private property <int> pressed-revision;
                             pointer-event(event) => {
@@ -139,7 +143,8 @@ export component TabStrip inherits Rectangle {
                     close := NavigationButton {
                         x: parent.width - self.width;
                         identity: tab.identity; model-revision: root.revision;
-                        icon: @image-url("icons/close.svg");
+                        icon: FallbackIcons.close-tab;
+                        native-icon: root.action-icons.close-tab;
                         hint: "Close tab: " + tab.label + "\n" + tab.path + "\nCtrl+W closes the active tab. The last tab stays open.";
                         enabled: root.model.length > 1;
                         clicked => { root.close-tab(tab.identity); }
@@ -148,7 +153,8 @@ export component TabStrip inherits Rectangle {
             }
         }
         NavigationButton {
-            label: "+"; enabled: root.model.length < 32;
+            icon: FallbackIcons.tab-add; native-icon: root.action-icons.tab-add;
+            enabled: root.model.length < 32;
             hint: root.model.length < 32 ? "Open a new folder tab (Ctrl+T)." : "A panel can have up to 32 folder tabs.";
             clicked => { root.new-tab(); }
         }
@@ -157,6 +163,7 @@ export component TabStrip inherits Rectangle {
 
 export component BookmarkMenu inherits Rectangle {
     in property <[BookmarkRow]> model;
+    in property <ActionIcons> action-icons;
     in property <string> path;
     in property <string> default-name;
     in property <length> viewport-width;
@@ -182,7 +189,8 @@ export component BookmarkMenu inherits Rectangle {
     function select-bookmark(identity: string) { popup.close(); root.open-bookmark(identity); }
     NavigationButton {
         width: root.width;
-        icon: @image-url("icons/star.svg");
+        icon: FallbackIcons.bookmarks;
+        native-icon: root.action-icons.bookmarks;
         hint: "Bookmarks and Hot Paths\nSave, open or remove a favorite folder. Ctrl+1…9 / Ctrl+0 opens a Hot Path; Ctrl+Shift+1…9 / Ctrl+Shift+0 assigns one.";
         clicked => { root.open(); }
     }
@@ -214,7 +222,6 @@ export component BookmarkMenu inherits Rectangle {
                             accessible-label: bookmark.label + "\n" + bookmark.path + (bookmark.slot > 0 ? "\nHot Path Ctrl+" + (bookmark.slot == 10 ? 0 : bookmark.slot) : "");
                             accessible-action-default => { root.select-bookmark(bookmark.identity); }
                             forward-focus: bookmark-focus;
-                            Tooltip { TipBody { text: bookmark.label + "\n" + bookmark.path; } }
                             VerticalLayout {
                                 padding-left: 8px; padding-right: Theme.control-height + 8px; spacing: 0px;
                                 Text { text: bookmark.label + (bookmark.slot > 0 ? "  ·  Ctrl+" + (bookmark.slot == 10 ? 0 : bookmark.slot) : ""); color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; overflow: elide; }
@@ -230,6 +237,7 @@ export component BookmarkMenu inherits Rectangle {
                                     reject
                                 }
                                 row-area := TouchArea {
+                                    Tooltip { TipBody { text: bookmark.label + "\n" + bookmark.path; } }
                                     width: parent.width; height: parent.height;
                                     private property <string> pressed-id;
                                     private property <int> pressed-revision;
@@ -247,7 +255,8 @@ export component BookmarkMenu inherits Rectangle {
                             NavigationButton {
                                 x: parent.width - self.width; y: (parent.height - self.height) / 2;
                                 identity: bookmark.identity; model-revision: root.revision;
-                                icon: @image-url("icons/close.svg");
+                                icon: FallbackIcons.remove-bookmark;
+                                native-icon: root.action-icons.remove-bookmark;
                                 hint: "Remove bookmark: " + bookmark.label + "\n" + bookmark.path + "\nThe folder is kept.";
                                 clicked => { root.remove-bookmark(bookmark.identity); }
                             }
@@ -274,13 +283,20 @@ export component BookmarkMenu inherits Rectangle {
                             selected(value) => { root.draft-slot = self.current-index; }
                             Tooltip { TipBody { text: "Optional Hot Path shortcut. Assigning an occupied slot moves the shortcut to this folder."; } }
                         }
-                        Button {
+                        ActionButton {
+                            native-icon: root.action-icons.add-bookmark;
+                            fallback-icon: FallbackIcons.add-bookmark;
                             text: "Add current"; enabled: name-input.text != ""; min-height: Theme.control-height;
                             Tooltip { TipBody { text: "Save the current folder using this name and optional Hot Path shortcut. The folder path is taken from its panel."; } }
                             clicked => { root.add-bookmark(name-input.text, root.draft-slot); }
                         }
                     }
-                    Button { text: "Close"; min-height: Theme.control-height; clicked => { root.dismiss(); } }
+                    ActionButton {
+                        text: "Close"; min-height: Theme.control-height;
+                        native-icon: root.action-icons.close; fallback-icon: FallbackIcons.close;
+                        Tooltip { TipBody { text: "Close Bookmarks and return to the file panel."; } }
+                        clicked => { root.dismiss(); }
+                    }
                 }
             }
         }

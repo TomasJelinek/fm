@@ -1,0 +1,534 @@
+//! Native navigation identities survive asynchronous metadata; full cwd stays readable.
+use fm_core::*;
+use fm_ui::{ActionIcons, FileRow, MainWindow, Presenter, Theme, install, refresh};
+use slint::{
+    ComponentHandle, Model, ModelRc, VecModel,
+    platform::{
+        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    },
+};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::OsString,
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
+
+#[cfg(windows)]
+#[path = "support/windows_keys.rs"]
+mod platform_keys;
+
+#[cfg(not(windows))]
+#[path = "support/default_keys.rs"]
+mod platform_keys;
+#[cfg(windows)]
+#[path = "support/windows_raw_paths.rs"]
+mod raw_paths;
+#[cfg(unix)]
+#[path = "support/unix_raw_paths.rs"]
+mod raw_paths;
+
+struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
+impl Platform for TestPlatform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        Ok(self.0.clone())
+    }
+    fn duration_since_start(&self) -> Duration {
+        self.1.get()
+    }
+}
+fn key(window: &MainWindow, key: Key) {
+    platform_keys::key(window, key.into());
+}
+fn pointer(window: &MainWindow, x: f32, y: f32, down: bool) {
+    let position = slint::LogicalPosition::new(x, y);
+    let button = PointerEventButton::Left;
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    window.window().dispatch_event(if down {
+        WindowEvent::PointerPressed { position, button }
+    } else {
+        WindowEvent::PointerReleased { position, button }
+    });
+}
+fn open_picker(window: &MainWindow, pane: PaneId) {
+    window.invoke_focus_files();
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Alt.into(),
+    });
+    key(
+        window,
+        if pane == PaneId::Left {
+            Key::F1
+        } else {
+            Key::F2
+        },
+    );
+    window.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Alt.into(),
+    });
+}
+fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
+    NavigationLocation {
+        id: id.into(),
+        label: id.into(),
+        kind,
+        path,
+        drive_letter: None,
+    }
+}
+fn toolbar_y(window: &MainWindow) -> f32 {
+    let theme = window.global::<Theme>();
+    theme.get_window_padding() + 4.0 + theme.get_control_height() + theme.get_toolbar_height() / 2.0
+}
+fn quick_x(window: &MainWindow) -> f32 {
+    let theme = window.global::<Theme>();
+    theme.get_window_padding()
+        + 1.0
+        + if theme.get_density() == 1 {
+            6.0 + 88.0 + 6.0
+        } else {
+            4.0 + 78.0 + 4.0
+        }
+        + theme.get_tool_width() / 2.0
+}
+fn latest_path(commands: &RefCell<Vec<Command>>) -> PathBuf {
+    commands
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Navigate { path, .. } | Command::Refresh { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+fn navigations(commands: &RefCell<Vec<Command>>) -> usize {
+    commands
+        .borrow()
+        .iter()
+        .filter(|command| matches!(command, Command::Navigate { .. } | Command::Refresh { .. }))
+        .count()
+}
+fn details() -> VolumeDetails {
+    VolumeDetails {
+        label: Ok(Some(OsString::from("Work 文档 & <plain>"))),
+        space: Ok(SpaceInfo {
+            available: 1 << 30,
+            total: 2 << 30,
+        }),
+    }
+}
+
+#[test]
+fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    let time = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    let root = std::env::temp_dir().join("fm-ui-native-controls 文档");
+    let home = root.join("Home e\u{301} 👩🏽‍💻");
+    let downloads = home.join("Downloads & [plain]");
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let sent = commands.clone();
+    install(
+        &window,
+        presenter.clone(),
+        Rc::new(move |command| {
+            sent.borrow_mut().push(command);
+            true
+        }),
+    );
+    presenter.borrow_mut().apply(Event::VolumesUpdated(vec![
+        Volume {
+            id: "disk".into(),
+            label: "Disk".into(),
+            root: root.clone(),
+        },
+        Volume {
+            id: "home".into(),
+            label: "Home".into(),
+            root: home.clone(),
+        },
+    ]));
+    presenter.borrow_mut().apply(Event::DesktopContext {
+        shell: ShellFlavor::Posix,
+        locations: vec![
+            location("disk", LocationKind::Volume, root.clone()),
+            location("home", LocationKind::Home, home.clone()),
+            location("desktop", LocationKind::Desktop, home.clone()),
+            location("documents", LocationKind::Documents, home.join("Documents")),
+            location("downloads", LocationKind::Downloads, downloads.clone()),
+        ],
+    });
+    refresh(&window, &presenter.borrow());
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    native.set_size(slint::PhysicalSize::new(1340, 820));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(1340.0, 820.0),
+    });
+    let mut pixels = vec![slint::Rgb8Pixel::default(); 1340 * 820];
+    let draw = |pixels: &mut [slint::Rgb8Pixel], width| {
+        slint::platform::update_timers_and_animations();
+        native.draw_if_needed(|renderer| {
+            renderer.render(pixels, width);
+        });
+    };
+    draw(&mut pixels, 1340);
+    let choices = window.get_navigation_choices();
+    assert_eq!(choices.row_count(), 5, "synthetic Home is merged only once");
+    for locations in [window.get_left_locations(), window.get_right_locations()] {
+        assert_eq!(locations.row_count(), choices.row_count());
+        for index in 0..choices.row_count() {
+            let choice = choices.row_data(index).unwrap();
+            let quick = locations.row_data(index).unwrap();
+            assert_eq!(quick.identity, choice.identity);
+            assert_eq!(quick.tooltip, choice.tooltip);
+        }
+    }
+    assert_ne!(
+        choices.row_data(1).unwrap().identity,
+        choices.row_data(2).unwrap().identity,
+        "Home and Desktop remain separate even when their raw target is identical"
+    );
+
+    // Native metadata and icon replies must not destroy a held quick button.
+    let x = quick_x(&window);
+    let y = toolbar_y(&window);
+    let original_locations = window.get_left_locations();
+    pointer(&window, x, y, true);
+    presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
+        volume_id: "disk".into(),
+        root: root.clone(),
+        details: details(),
+    });
+    presenter.borrow_mut().apply(Event::IconLoaded {
+        key: IconKey::for_drive(&root),
+        pixels: Arc::new(IconPixels::new(1, 1, vec![232, 11, 29, 255]).unwrap()),
+    });
+    refresh(&window, &presenter.borrow());
+    draw(&mut pixels, 1340);
+    let before = navigations(&commands);
+    pointer(&window, x, y, false);
+    assert!(
+        std::ptr::eq(
+            original_locations.as_any(),
+            window.get_left_locations().as_any()
+        ),
+        "metadata must preserve the quick model, not merely its count"
+    );
+    assert_eq!(
+        navigations(&commands),
+        before + 1,
+        "metadata cannot lose a held click"
+    );
+    assert_eq!(latest_path(&commands), root);
+
+    // Timed hover shows the real tooltip, not just model strings or accessibility.
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(0.0, 0.0),
+    });
+    draw(&mut pixels, 1340);
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+    draw(&mut pixels, 1340);
+    let quiet = pixels.clone();
+    time.set(Duration::from_millis(1000));
+    draw(&mut pixels, 1340);
+    assert!(
+        quiet.iter().zip(&pixels).filter(|(a, b)| a != b).count() > 100,
+        "quick drives must display an actual hover tooltip"
+    );
+    let hint = window.get_left_locations().row_data(0).unwrap().tooltip;
+    assert!(hint.contains("Work 文档 & <plain>") && hint.contains("1.0 GB free"));
+    let with_tooltip = pixels.clone();
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(0.0, 0.0),
+    });
+    draw(&mut pixels, 1340);
+    assert!(
+        with_tooltip
+            .iter()
+            .zip(&pixels)
+            .filter(|(a, b)| a != b)
+            .count()
+            > 100,
+        "leaving a quick target dismisses its tooltip"
+    );
+
+    // Every special alias can be picked from the same drive dropdown.
+    open_picker(&window, PaneId::Left);
+    draw(&mut pixels, 1340);
+    key(&window, Key::End);
+    // Metadata refresh while open retains the pending semantic choice.
+    presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
+        volume_id: "disk".into(),
+        root: root.clone(),
+        details: VolumeDetails {
+            label: Ok(Some("New native volume name 文档".into())),
+            space: Ok(SpaceInfo {
+                available: 2 << 30,
+                total: 3 << 30,
+            }),
+        },
+    });
+    refresh(&window, &presenter.borrow());
+    draw(&mut pixels, 1340);
+    key(&window, Key::Return);
+    assert_eq!(latest_path(&commands), downloads);
+
+    // The second panel uses the same semantic choices and row tooltips. A real
+    // popup-row press survives a changed label/free-space reply, too.
+    open_picker(&window, PaneId::Right);
+    draw(&mut pixels, 1340);
+    let theme = window.global::<Theme>();
+    let right_x = (1340.0 + theme.get_gap()) / 2.0 + 24.0;
+    let home_y = y + 2.0 * theme.get_control_height() + 4.0;
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(right_x, home_y),
+    });
+    draw(&mut pixels, 1340);
+    let quiet_popup = pixels.clone();
+    time.set(Duration::from_millis(2000));
+    draw(&mut pixels, 1340);
+    assert!(
+        quiet_popup
+            .iter()
+            .zip(&pixels)
+            .filter(|(a, b)| a != b)
+            .count()
+            > 100,
+        "special-location dropdown rows display the same actual hover tooltips"
+    );
+    pointer(&window, right_x, home_y, true);
+    presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
+        volume_id: "disk".into(),
+        root: root.clone(),
+        details: details(),
+    });
+    refresh(&window, &presenter.borrow());
+    draw(&mut pixels, 1340);
+    let before = navigations(&commands);
+    pointer(&window, right_x, home_y, false);
+    assert_eq!(navigations(&commands), before + 1);
+    assert_eq!(latest_path(&commands), home);
+
+    // Equal captions with a new raw root invalidate a quick press.
+    pointer(&window, x, y, true);
+    let before = navigations(&commands);
+    presenter
+        .borrow_mut()
+        .apply(Event::VolumesUpdated(vec![Volume {
+            id: "disk".into(),
+            label: "Disk".into(),
+            root: root.join("replacement"),
+        }]));
+    refresh(&window, &presenter.borrow());
+    draw(&mut pixels, 1340);
+    pointer(&window, x, y, false);
+    assert_eq!(
+        navigations(&commands),
+        before,
+        "replacement cannot retarget a held click"
+    );
+
+    // Reordering two canonical targets while a popup row is held cannot turn
+    // that gesture into navigation to a different mount, even with equal labels.
+    let [first_raw, second_raw] = raw_paths::same_display(&root);
+    assert_ne!(first_raw, second_raw);
+    assert_eq!(first_raw.to_string_lossy(), second_raw.to_string_lossy());
+    let drives = vec![
+        Volume {
+            id: "a".into(),
+            label: "Same".into(),
+            root: first_raw,
+        },
+        Volume {
+            id: "b".into(),
+            label: "Same".into(),
+            root: second_raw,
+        },
+    ];
+    presenter
+        .borrow_mut()
+        .apply(Event::VolumesUpdated(drives.clone()));
+    refresh(&window, &presenter.borrow());
+    assert_eq!(
+        window.get_navigation_choices().row_data(0).unwrap().label,
+        window.get_navigation_choices().row_data(1).unwrap().label,
+        "the real canonical rows must have identical visible text"
+    );
+    open_picker(&window, PaneId::Right);
+    draw(&mut pixels, 1340);
+    let first_y = y + theme.get_control_height() + 4.0;
+    pointer(&window, right_x, first_y, true);
+    let before = navigations(&commands);
+    presenter
+        .borrow_mut()
+        .apply(Event::VolumesUpdated(drives.into_iter().rev().collect()));
+    refresh(&window, &presenter.borrow());
+    draw(&mut pixels, 1340);
+    pointer(&window, right_x, first_y, false);
+    key(&window, Key::Escape);
+    assert_eq!(
+        navigations(&commands),
+        before,
+        "reordering cancels the popup gesture"
+    );
+
+    // Native icon pixels retain their RGB; clearing the palette restores SVG fallback.
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(0.0, 0.0),
+    });
+    let buffer =
+        slint::SharedPixelBuffer::<slint::Rgb8Pixel>::clone_from_slice(&[251, 7, 13], 1, 1);
+    window.set_action_icons(ActionIcons {
+        back: slint::Image::from_rgb8(buffer),
+        ..Default::default()
+    });
+    draw(&mut pixels, 1340);
+    let red = pixels
+        .iter()
+        .filter(|p| p.r == 251 && p.g == 7 && p.b == 13)
+        .count();
+    assert!(red > 100, "native action RGB must not be tinted");
+    let native_coordinates: Vec<_> = pixels
+        .iter()
+        .enumerate()
+        .filter_map(|(index, p)| (p.r == 251 && p.g == 7 && p.b == 13).then_some(index))
+        .collect();
+    let native_pixels = pixels.clone();
+    window.set_action_icons(ActionIcons::default());
+    draw(&mut pixels, 1340);
+    assert!(
+        pixels
+            .iter()
+            .zip(&native_pixels)
+            .filter(|(a, b)| a != b)
+            .count()
+            > 100
+    );
+
+    let background = pixels[native_coordinates[0] - 1341];
+    assert!(
+        native_coordinates
+            .iter()
+            .filter(|index| **index % 1340 < 670 && pixels[**index] != background)
+            .count()
+            > 30,
+        "missing native icons render visible semantic vector fallbacks"
+    );
+
+    // Active file rows and sort headers use the same pass-through observer
+    // ordering; pending-size explanations must also be visible on real hover.
+    window.set_left_rows(ModelRc::new(VecModel::from(vec![FileRow {
+        identity: "hover-row".into(),
+        name: "Unfinished folder 文档".into(),
+        size: "≈1.0 KB".into(),
+        size_state: 1,
+        size_hint: "Still counting; this size is not final.".into(),
+        directory: true,
+        ..Default::default()
+    }])));
+    let file_top =
+        y + theme.get_toolbar_height() / 2.0 + theme.get_path_height() + theme.get_column_height();
+    for (hover_y, delay) in [
+        (file_top + theme.get_row_height() / 2.0, 3000),
+        (file_top - theme.get_column_height() / 2.0, 4000),
+    ] {
+        window.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(150.0, hover_y),
+        });
+        draw(&mut pixels, 1340);
+        let quiet = pixels.clone();
+        time.set(Duration::from_millis(delay));
+        draw(&mut pixels, 1340);
+        assert!(
+            quiet.iter().zip(&pixels).filter(|(a, b)| a != b).count() > 100,
+            "active file rows and headers must expose their actual hover details"
+        );
+        window.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(0.0, 0.0),
+        });
+        draw(&mut pixels, 1340);
+    }
+
+    // Character wrapping handles long Unicode components without stealing file rows
+    // or shrinking the editor into a narrow remainder next to the cwd.
+    let long = format!("{}/文档{}👩🏽‍💻tail", root.display(), "e\u{301}".repeat(2400));
+    window.set_left_path(long.clone().into());
+    window.set_right_path(home.to_string_lossy().into_owned().into());
+    window.set_active_pane(0);
+    window.set_desktop_status("An important terminal or desktop failure with a long Unicode explanation 文档 👩🏽‍💻 that must remain available in full through the tooltip.".into());
+    window.set_desktop_feedback_important(true);
+    for (width, requested_height) in [(1340u32, 820u32), (1040, 480)] {
+        for density in [0, 1] {
+            for font in [if density == 0 { 11 } else { 15 }, 32] {
+                window.set_desktop_font_size(font);
+                window.set_touch_font_size(font);
+                window.invoke_apply_preferences(0, density);
+                let height =
+                    requested_height.max(window.get_effective_minimum_height().ceil() as u32);
+                native.set_size(slint::PhysicalSize::new(width, height));
+                window.window().dispatch_event(WindowEvent::Resized {
+                    size: slint::LogicalSize::new(width as f32, height as f32),
+                });
+                for error in ["", "A directory access error"] {
+                    window.set_left_error(error.into());
+                    draw(&mut pixels, width as usize);
+                    assert_eq!(window.get_command_directory().as_str(), long);
+                    assert!(
+                        window.get_command_path_content_height() > window.get_command_path_height()
+                    );
+                    assert!(
+                        window.get_command_path_height() >= window.get_command_path_line_height(),
+                        "the cwd must retain a complete readable text line"
+                    );
+                    assert!(
+                        window.get_command_input_width() > 300.0,
+                        "full cwd must leave useful editor width at density{density}/font{font}"
+                    );
+                    assert!(
+                        window.get_left_list_visible_height()
+                            >= window.global::<Theme>().get_row_height(),
+                        "one complete file row must remain at {width}x{height}, density{density}/font{font}, error={error}: {}",
+                        window.get_left_list_visible_height()
+                    );
+                    assert!(
+                        window.get_command_input_top() + window.get_command_input_height()
+                            < height as f32 - window.global::<Theme>().get_bottom_height()
+                    );
+                }
+            }
+        }
+    }
+    let path_top = window.get_command_path_text_top();
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(300.0, window.get_command_path_top() + 8.0),
+            delta_x: 0.0,
+            delta_y: -120.0,
+        });
+    draw(&mut pixels, 1040);
+    assert!(
+        window.get_command_path_text_top() < path_top,
+        "an extreme cwd remains fully reachable through its bounded scroll viewport"
+    );
+    window.set_active_pane(1);
+    draw(&mut pixels, 1040);
+    assert_eq!(
+        window.get_command_directory().as_str(),
+        home.to_string_lossy()
+    );
+    window.hide().unwrap();
+}

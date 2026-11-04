@@ -1,5 +1,7 @@
 import { Theme } from "theme.slint";
 import { TipBody } from "controls.slint";
+import { LocationImage } from "action-icons.slint";
+import { LocationRole } from "navigation-models.slint";
 
 // Desktop shortcuts show compact drive captions and icon-only special locations.
 // The full name, path and available capacity remain available to assistive tools
@@ -8,6 +10,9 @@ export component CompactLocationButton inherits Rectangle {
     in property <string> label;
     in property <string> compact-label;
     in property <image> icon;
+    in property <LocationRole> kind;
+    in property <string> identity;
+    in property <int> model-revision;
     in property <string> hint;
     in property <bool> selected;
     in property <bool> is-drive;
@@ -29,10 +34,9 @@ export component CompactLocationButton inherits Rectangle {
     accessible-checkable: true;
     accessible-checked: root.selected;
     accessible-action-default => { root.clicked(); }
-    Tooltip { TipBody { text: root.hint; } }
 
-    Image {
-        source: root.icon;
+    LocationImage {
+        native-icon: root.icon; kind: root.kind;
         width: Theme.touch ? 20px : 14px;
         height: self.width;
         x: root.is-drive ? (Theme.touch ? 8px : 4px) : (root.width - self.width) / 2;
@@ -59,7 +63,21 @@ export component CompactLocationButton inherits Rectangle {
             reject
         }
         area := TouchArea {
-            clicked => { focus.focus(); root.clicked(); }
+            private property <string> pressed-identity;
+            private property <int> pressed-revision;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    self.pressed-identity = root.identity;
+                    self.pressed-revision = root.model-revision;
+                }
+            }
+            clicked => {
+                if self.pressed-identity == root.identity && self.pressed-revision == root.model-revision {
+                    focus.focus(); root.clicked();
+                }
+            }
         }
     }
+    // Tooltip observers must precede accepting input in hit-test order.
+    Tooltip { TipBody { text: root.hint; } }
 }

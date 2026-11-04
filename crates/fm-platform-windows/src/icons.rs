@@ -1,5 +1,5 @@
 use crate::{WindowsFileSystem, desktop::ComGuard, volume_details::ErrorMode};
-use fm_core::{FsError, IconKey, IconKind, IconPixels, IconService};
+use fm_core::{ActionIcon, FsError, IconKey, IconKind, IconPixels, IconService, LocationKind};
 use std::{
     mem::size_of,
     os::windows::ffi::OsStrExt,
@@ -22,10 +22,13 @@ use windows_sys::Win32::{
     },
     UI::{
         Shell::{
-            SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON,
-            SHGSI_SMALLICON, SHGetFileInfoW, SHGetStockIconInfo, SHSTOCKICONINFO, SIID_DRIVECD,
+            Common::ITEMIDLIST, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
+            FOLDERID_Profile, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
+            SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_SMALLICON, SHGetFileInfoW,
+            SHGetKnownFolderIDList, SHGetStockIconInfo, SHSTOCKICONINFO, SIID_DELETE, SIID_DRIVECD,
             SIID_DRIVEFIXED, SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN,
-            SIID_LINK,
+            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_LINK, SIID_RENAME,
+            SIID_SETTINGS,
         },
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
@@ -51,12 +54,13 @@ impl IconService for WindowsFileSystem {
         let Some(white) = surface.draw(icon.0, 255) else {
             return Ok(None);
         };
-        Ok(IconPixels::new(
-            u32::from(key.size),
-            u32::from(key.size),
-            straight_rgba(&black, &white),
-        )
-        .ok())
+        let rgba = straight_rgba(&black, &white);
+        // Some host versions return a transparent placeholder for a documented
+        // stock id. Report it as unavailable so the semantic UI fallback remains.
+        if !rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0) {
+            return Ok(None);
+        }
+        Ok(IconPixels::new(u32::from(key.size), u32::from(key.size), rgba).ok())
     }
 }
 
@@ -87,6 +91,14 @@ impl Drop for OwnedIcon {
 }
 
 fn native_icon(key: &IconKey) -> Option<OwnedIcon> {
+    match key.kind {
+        IconKind::Action(role) => return action_stock_id(role).and_then(stock_icon),
+        IconKind::Location(LocationKind::Volume) => return stock_icon(SIID_DRIVEFIXED),
+        IconKind::Location(kind) => {
+            return known_folder_icon(kind).or_else(|| stock_icon(SIID_FOLDER));
+        }
+        _ => {}
+    }
     if key.kind == IconKind::Drive {
         let Some(root) = &key.drive_root else {
             return stock_icon(SIID_DRIVEFIXED);
@@ -119,6 +131,94 @@ fn native_icon(key: &IconKey) -> Option<OwnedIcon> {
         attributes,
         SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES,
     )
+}
+
+fn action_stock_id(role: ActionIcon) -> Option<i32> {
+    match role {
+        ActionIcon::Options => Some(SIID_SETTINGS),
+        ActionIcon::Help => Some(SIID_HELP),
+        ActionIcon::Rename => Some(SIID_RENAME),
+        ActionIcon::Delete => Some(SIID_DELETE),
+        ActionIcon::Properties | ActionIcon::About => Some(SIID_INFO),
+        ActionIcon::NewFolder => Some(SIID_FOLDER),
+        ActionIcon::OpenPath => Some(SIID_FOLDEROPEN),
+        // Windows has no appropriate documented stock icon for these roles.
+        ActionIcon::Back
+        | ActionIcon::Forward
+        | ActionIcon::Parent
+        | ActionIcon::Refresh
+        | ActionIcon::Bookmarks
+        | ActionIcon::Terminal
+        | ActionIcon::Run
+        | ActionIcon::TabAdd
+        | ActionIcon::CloseTab
+        | ActionIcon::RemoveBookmark
+        | ActionIcon::AddBookmark
+        | ActionIcon::View
+        | ActionIcon::Edit
+        | ActionIcon::Copy
+        | ActionIcon::Move
+        | ActionIcon::UserMenu
+        | ActionIcon::Menu
+        | ActionIcon::SaveAgain
+        | ActionIcon::Done
+        | ActionIcon::Close
+        | ActionIcon::FolderSizes
+        | ActionIcon::Exit
+        | ActionIcon::SortAscending
+        | ActionIcon::SortDescending => None,
+    }
+}
+
+fn location_folder_id(kind: LocationKind) -> Option<windows_sys::core::GUID> {
+    Some(match kind {
+        LocationKind::Home => FOLDERID_Profile,
+        LocationKind::Desktop => FOLDERID_Desktop,
+        LocationKind::Documents => FOLDERID_Documents,
+        LocationKind::Downloads => FOLDERID_Downloads,
+        LocationKind::Volume => return None,
+    })
+}
+
+struct OwnedPidl(*mut ITEMIDLIST);
+
+impl Drop for OwnedPidl {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: SHGetKnownFolderIDList transfers this PIDL to the caller;
+            // its documented allocator pair is ILFree, called exactly once here.
+            unsafe { ILFree(self.0) };
+        }
+    }
+}
+
+fn known_folder_icon(kind: LocationKind) -> Option<OwnedIcon> {
+    let id = location_folder_id(kind)?;
+    let _mode = ErrorMode::new().ok()?;
+    let mut raw = ptr::null_mut();
+    // SAFETY: only fixed host-known GUIDs enter here. The output pointer is valid,
+    // the current user's token is implicit, and flags never create/verify folders.
+    let result = unsafe {
+        SHGetKnownFolderIDList(&id, KF_FLAG_DONT_VERIFY as u32, ptr::null_mut(), &mut raw)
+    };
+    let pidl = OwnedPidl(raw);
+    if result < 0 || pidl.0.is_null() {
+        return None;
+    }
+    let mut info = SHFILEINFOW::default();
+    // SAFETY: the owned absolute PIDL remains alive for the call. SHGFI_PIDL
+    // explicitly interprets this pointer as ITEMIDLIST, never as a path string.
+    // Existing load_icon COM/worker guards keep installed host handlers off UI.
+    let result = unsafe {
+        SHGetFileInfoW(
+            pidl.0.cast(),
+            0,
+            &mut info,
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_PIDL | SHGFI_ICON | SHGFI_SMALLICON,
+        )
+    };
+    (result != 0 && !info.hIcon.is_null()).then_some(OwnedIcon(info.hIcon))
 }
 
 /// Only an enumerated drive-letter root can reach an actual Shell path query.
@@ -351,6 +451,84 @@ mod tests {
             SIID_DRIVECD, SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN,
         },
     };
+
+    #[test]
+    fn semantic_actions_only_use_appropriate_documented_stock_icons() {
+        assert_eq!(
+            action_stock_id(fm_core::ActionIcon::Options),
+            Some(SIID_SETTINGS)
+        );
+        assert_eq!(
+            action_stock_id(fm_core::ActionIcon::Delete),
+            Some(SIID_DELETE)
+        );
+        for role in [
+            fm_core::ActionIcon::Back,
+            fm_core::ActionIcon::Copy,
+            fm_core::ActionIcon::Move,
+            fm_core::ActionIcon::Terminal,
+            fm_core::ActionIcon::SortAscending,
+            fm_core::ActionIcon::SortDescending,
+        ] {
+            assert_eq!(action_stock_id(role), None, "unsupported role {role:?}");
+        }
+    }
+
+    #[test]
+    fn special_locations_resolve_only_the_trusted_known_folder_allowlist() {
+        for (kind, expected) in [
+            (fm_core::LocationKind::Home, FOLDERID_Profile),
+            (fm_core::LocationKind::Desktop, FOLDERID_Desktop),
+            (fm_core::LocationKind::Documents, FOLDERID_Documents),
+            (fm_core::LocationKind::Downloads, FOLDERID_Downloads),
+        ] {
+            let actual = location_folder_id(kind).unwrap();
+            assert_eq!(
+                (actual.data1, actual.data2, actual.data3, actual.data4),
+                (
+                    expected.data1,
+                    expected.data2,
+                    expected.data3,
+                    expected.data4
+                )
+            );
+        }
+        assert!(location_folder_id(fm_core::LocationKind::Volume).is_none());
+    }
+
+    #[test]
+    fn native_action_and_known_folder_render_without_reading_a_supplied_path() {
+        let services = WindowsFileSystem::new(None);
+        for kind in [
+            IconKind::Action(fm_core::ActionIcon::Options),
+            IconKind::Location(fm_core::LocationKind::Home),
+        ] {
+            let key = IconKey {
+                kind,
+                extension: Some("../../arbitrary.dll".into()),
+                drive_root: Some("\\\\server\\untrusted\\icon.dll".into()),
+                size: 24,
+            };
+            let pixels = services.load_icon(&key).unwrap();
+            if kind == IconKind::Action(ActionIcon::Options) && pixels.is_none() {
+                continue;
+            }
+            let pixels = pixels.unwrap();
+            assert_eq!(
+                (pixels.width, pixels.height, pixels.rgba.len()),
+                (24, 24, 2304)
+            );
+            assert!(
+                pixels
+                    .rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] != 0),
+                "host returned a transparent {kind:?} icon"
+            );
+        }
+    }
 
     #[test]
     fn fixed_volume_icons_query_the_discovered_root_without_synthetic_attributes() {

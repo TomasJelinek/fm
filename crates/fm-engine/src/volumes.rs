@@ -1,7 +1,7 @@
 //! Cheap root discovery and bounded background metadata have independent workers.
 
 use crate::Outbox;
-use fm_core::{Event, FileSystem, FsError, Volume, VolumeDetails};
+use fm_core::{Event, FileSystem, FsError, IconKey, Volume, VolumeDetails};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -16,6 +16,7 @@ use tokio::{
 };
 
 const REFRESH: Duration = Duration::from_secs(45);
+const MAX_VOLUME_ICONS: usize = 256;
 
 pub(crate) struct Controller {
     requests: watch::Sender<u64>,
@@ -25,10 +26,12 @@ impl Controller {
     pub(crate) fn new(
         filesystem: Arc<dyn FileSystem>,
         outbox: Outbox,
+        icons: watch::Sender<Vec<IconKey>>,
+        context: watch::Sender<u64>,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let (requests, receiver) = watch::channel(0);
-        tasks.spawn(run(filesystem, outbox, receiver));
+        tasks.spawn(run(filesystem, outbox, icons, context, receiver));
         Self { requests }
     }
 
@@ -98,8 +101,10 @@ impl Details {
             .min()
     }
 
-    fn discover(&mut self, volumes: &[Volume]) {
+    fn discover(&mut self, volumes: &[Volume]) -> bool {
         let keys: HashSet<_> = volumes.iter().map(Key::from).collect();
+        let changed = keys.len() != self.active.len()
+            || keys.iter().any(|key| !self.active.contains_key(key));
         self.active.retain(|key, _| keys.contains(key));
         self.cached.retain(|key, _| keys.contains(key));
         for key in keys {
@@ -108,6 +113,7 @@ impl Details {
                 self.incarnation
             });
         }
+        changed
     }
 
     fn schedule(
@@ -160,7 +166,13 @@ impl Details {
     }
 }
 
-async fn run(filesystem: Arc<dyn FileSystem>, outbox: Outbox, mut requests: watch::Receiver<u64>) {
+async fn run(
+    filesystem: Arc<dyn FileSystem>,
+    outbox: Outbox,
+    icons: watch::Sender<Vec<IconKey>>,
+    context: watch::Sender<u64>,
+    mut requests: watch::Receiver<u64>,
+) {
     let mut discovery = JoinSet::new();
     let mut workers = JoinSet::new();
     let budget = Arc::new(Semaphore::new(2));
@@ -204,7 +216,7 @@ async fn run(filesystem: Arc<dyn FileSystem>, outbox: Outbox, mut requests: watc
                 if next_refresh.is_some() => {}
             result = discovery.join_next(), if !discovery.is_empty() => {
                 let Some(Ok((version, result))) = result else { continue; };
-                if !publish_discovery(version, result, &requests, &outbox, &mut details).await {
+                if !publish_discovery(version, result, &requests, &outbox, &icons, &context, &mut details).await {
                     break;
                 }
             }
@@ -222,6 +234,8 @@ async fn publish_discovery(
     result: Result<Vec<Volume>, FsError>,
     requests: &watch::Receiver<u64>,
     outbox: &Outbox,
+    icons: &watch::Sender<Vec<IconKey>>,
+    context: &watch::Sender<u64>,
     details: &mut Details,
 ) -> bool {
     if version != *requests.borrow() {
@@ -240,8 +254,28 @@ async fn publish_discovery(
         }
         match result {
             Ok(volumes) => {
-                details.discover(&volumes);
-                permit.send(Event::VolumesUpdated(volumes));
+                let changed = details.discover(&volumes);
+                let mut seen = HashSet::new();
+                let roots = volumes
+                    .iter()
+                    .map(|volume| IconKey::for_drive(&volume.root))
+                    .filter(|key| seen.insert(key.clone()))
+                    .take(MAX_VOLUME_ICONS)
+                    .collect();
+                if changed {
+                    // The context worker holds the matching read guard while
+                    // publishing. Serialize its invalidation with this event so
+                    // an older context cannot slip behind the new inventory.
+                    context.send_modify(|version| {
+                        *version = version.wrapping_add(1);
+                        permit.send(Event::VolumesUpdated(volumes));
+                    });
+                } else {
+                    permit.send(Event::VolumesUpdated(volumes));
+                }
+                // Only a published, current inventory reaches the icon actor. Raw
+                // roots identify cache entries, so reusing a label/id cannot retarget one.
+                icons.send_replace(roots);
                 true
             }
             Err(error) => {

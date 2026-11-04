@@ -99,12 +99,18 @@ editor scope and shortcuts reserved for later stages.
   clear it before switching PowerShell/cmd. Sudo selection is session-only.
 - The compact terminal icon and navigation controls explain themselves through
   tooltips. Drive tooltips show free space and Windows volume names; expanded
-  drive choices include those details. Metadata loads on the backend.
+  drive choices include those details. Quick buttons and their dropdown share
+  all discovered drives and special locations, with full-path tooltips.
+  Suitable host icons load on the backend; missing native action icons retain
+  semantic application vectors and native colors remain intact.
 - Options beside Run offers Blue, Dark, Light, Desktop/Touch spacing, an installed
   font family and independent Desktop/Touch base sizes (8–32px). Preview
   is immediate; typed preferences are saved asynchronously by the backend.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
-  appears as a compact read-only prompt beside the command input.
+  appears in full above the command input, wrapping long components without
+  elision. Extreme paths remain fully accessible in a scrollable text viewport.
+  At large fonts, the window minimum grows to preserve a readable path line and
+  a complete file row; ordinary fonts retain the 480 px minimum-height floor.
 - Panel scrolling moves by pixels and gently settles on a row after input and
   inertia stop. Native drive icons precede captions and dropdown choices.
 

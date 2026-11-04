@@ -5,6 +5,35 @@ pub(super) fn test_root() -> PathBuf {
 }
 
 #[test]
+fn native_choice_tokens_preserve_unpaired_utf16_and_reject_display_alias_replacement() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
+    let second = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd801]));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut p = Presenter::new(test_root(), test_root());
+    let update = |path| Event::DesktopContext {
+        shell: ShellFlavor::PowerShell,
+        locations: vec![NavigationLocation {
+            id: "desktop".into(),
+            label: "Same caption".into(),
+            path,
+            kind: LocationKind::Desktop,
+            drive_letter: None,
+        }],
+    };
+    p.apply(update(first.clone()));
+    let token = p.navigation_choice_token(0);
+    assert!(
+        p.choose_navigation_choice(PaneId::Left, &token, &|command| {
+            assert!(matches!(command, Command::Navigate { path, .. } if path == first));
+            true
+        })
+    );
+    p.apply(update(second));
+    assert!(!p.choose_navigation_choice(PaneId::Right, &token, &|_| panic!("stale")));
+}
+
+#[test]
 fn bookmark_and_tab_actions_preserve_unpaired_native_utf16() {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     let path = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));

@@ -40,7 +40,11 @@ impl DesktopState {
             .get(key)
             .or_else(|| {
                 self.images.get(&IconKey {
-                    kind: key.kind,
+                    kind: if matches!(key.kind, IconKind::Location(_)) {
+                        IconKind::Folder
+                    } else {
+                        key.kind
+                    },
                     extension: None,
                     drive_root: None,
                     size: key.size,
@@ -100,6 +104,7 @@ impl Presenter {
                     locations,
                 )));
                 self.desktop.error.clear();
+                self.sync_navigation_choices();
             }
             Event::DesktopContextFailed(error) => {
                 self.desktop.error = error.to_string();
@@ -303,12 +308,14 @@ impl Presenter {
         if chars.next().is_some() {
             return;
         }
-        if let Some(index) = self.desktop.locations.iter().position(|location| {
-            location
+        if let Some(index) = self.navigation_choices().iter().position(|choice| {
+            choice
+                .location
                 .drive_letter
                 .is_some_and(|drive| drive.eq_ignore_ascii_case(&letter))
         }) {
-            self.choose_location(pane, index, send);
+            let token = self.navigation_choice_token(index);
+            self.choose_navigation_choice(pane, &token, send);
         }
     }
 

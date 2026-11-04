@@ -1,4 +1,15 @@
 // Display-only projections. Native tab and bookmark paths remain in the backend.
+export enum LocationRole { drive, home, desktop, documents, downloads }
+
+export struct NavigationChoiceRow {
+    identity: string,
+    label: string,
+    compact-label: string,
+    tooltip: string,
+    icon: image,
+    kind: LocationRole,
+}
+
 export struct TabRow {
     identity: string,
     label: string,

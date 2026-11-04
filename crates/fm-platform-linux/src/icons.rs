@@ -1,5 +1,7 @@
 use crate::{LinuxFileSystem, desktop::read_bounded};
-use fm_core::{FsError, IconKey, IconKind, IconPixels, IconService, StorageKind};
+use fm_core::{
+    ActionIcon, FsError, IconKey, IconKind, IconPixels, IconService, LocationKind, StorageKind,
+};
 use std::{
     collections::{HashSet, VecDeque},
     io::Cursor,
@@ -85,6 +87,16 @@ fn icon_names_with_storage(
     detect: impl FnOnce(&Path) -> StorageKind,
 ) -> Vec<&'static str> {
     match key.kind {
+        IconKind::Action(role) => return action_names(role).to_vec(),
+        IconKind::Location(kind) => {
+            return match kind {
+                LocationKind::Home => vec!["user-home", "folder"],
+                LocationKind::Desktop => vec!["user-desktop", "folder"],
+                LocationKind::Documents => vec!["folder-documents", "folder"],
+                LocationKind::Downloads => vec!["folder-download", "folder"],
+                LocationKind::Volume => vec!["drive-harddisk"],
+            };
+        }
         IconKind::Folder => return vec!["folder"],
         IconKind::Drive => {
             // detect checks locally parsed mountinfo for network filesystems
@@ -128,6 +140,42 @@ fn icon_names_with_storage(
     };
     names.push("text-x-generic");
     names
+}
+
+fn action_names(role: ActionIcon) -> &'static [&'static str] {
+    match role {
+        ActionIcon::Back => &["go-previous"],
+        ActionIcon::Forward => &["go-next"],
+        ActionIcon::Parent => &["go-up"],
+        ActionIcon::Refresh => &["view-refresh"],
+        ActionIcon::OpenPath => &["go-jump", "document-open"],
+        ActionIcon::Bookmarks => &["user-bookmarks"],
+        ActionIcon::Terminal => &["utilities-terminal"],
+        ActionIcon::Options => &["preferences-system"],
+        ActionIcon::Run => &["system-run"],
+        ActionIcon::TabAdd => &["tab-new"],
+        ActionIcon::CloseTab | ActionIcon::Close => &["window-close"],
+        ActionIcon::RemoveBookmark => &["bookmark-remove"],
+        ActionIcon::AddBookmark => &["bookmark-new"],
+        ActionIcon::Help => &["help-browser"],
+        ActionIcon::Rename => &["edit-rename"],
+        ActionIcon::View => &["document-preview"],
+        ActionIcon::Edit => &["document-edit", "accessories-text-editor"],
+        ActionIcon::Copy => &["edit-copy"],
+        ActionIcon::Move => &["folder-move"],
+        ActionIcon::NewFolder => &["folder-new"],
+        ActionIcon::Delete => &["edit-delete"],
+        ActionIcon::UserMenu => &["applications-other"],
+        ActionIcon::Menu => &["open-menu"],
+        ActionIcon::SaveAgain => &["document-save"],
+        ActionIcon::Done => &["dialog-ok"],
+        ActionIcon::Properties => &["document-properties"],
+        ActionIcon::FolderSizes => &["folder-properties"],
+        ActionIcon::About => &["help-about"],
+        ActionIcon::Exit => &["application-exit"],
+        ActionIcon::SortAscending => &["view-sort-ascending"],
+        ActionIcon::SortDescending => &["view-sort-descending"],
+    }
 }
 
 fn safe_theme_name(name: &str) -> bool {
@@ -236,6 +284,37 @@ fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
 mod tests {
     use super::*;
     use fm_core::IconKind;
+
+    #[test]
+    fn semantic_names_are_fixed_host_roles_and_never_probe_supplied_paths() {
+        for (kind, expected) in [
+            (IconKind::Action(fm_core::ActionIcon::Back), "go-previous"),
+            (
+                IconKind::Action(fm_core::ActionIcon::SortDescending),
+                "view-sort-descending",
+            ),
+            (IconKind::Location(fm_core::LocationKind::Home), "user-home"),
+            (
+                IconKind::Location(fm_core::LocationKind::Downloads),
+                "folder-download",
+            ),
+        ] {
+            let key = IconKey {
+                kind,
+                extension: Some("../../arbitrary.png".into()),
+                drive_root: Some("/mnt/never-probe".into()),
+                size: 32,
+            };
+            let names = icon_names_with_storage(&key, |_| panic!("semantic role probed a path"));
+            assert_eq!(names[0], expected);
+            assert!(names.iter().all(|name| safe_theme_name(name)));
+        }
+        for role in fm_core::ActionIcon::ALL {
+            let names = icon_names(&IconKey::action(role));
+            assert!(!names.is_empty(), "missing fixed names for {role:?}");
+            assert!(names.iter().all(|name| safe_theme_name(name)));
+        }
+    }
 
     #[test]
     fn discovered_network_volume_uses_the_host_network_icon_before_generic_drive() {

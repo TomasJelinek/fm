@@ -56,13 +56,90 @@ pub fn quote_shell_path(path: &Path, shell: ShellFlavor) -> Result<String, &'sta
     Ok(quoted)
 }
 
-/// File type or discovered volume icon; never arbitrary browsed file contents.
+/// Finite semantic roles for optional native control icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ActionIcon {
+    Back,
+    Forward,
+    Parent,
+    Refresh,
+    OpenPath,
+    Bookmarks,
+    Terminal,
+    Options,
+    Run,
+    TabAdd,
+    CloseTab,
+    RemoveBookmark,
+    AddBookmark,
+    Help,
+    Rename,
+    View,
+    Edit,
+    Copy,
+    Move,
+    NewFolder,
+    Delete,
+    UserMenu,
+    Menu,
+    SaveAgain,
+    Done,
+    Close,
+    Properties,
+    FolderSizes,
+    About,
+    Exit,
+    SortAscending,
+    SortDescending,
+}
+
+impl ActionIcon {
+    /// Bounded prefetch palette. Consumers use named roles rather than numeric indexes.
+    pub const ALL: [Self; 32] = [
+        Self::Back,
+        Self::Forward,
+        Self::Parent,
+        Self::Refresh,
+        Self::OpenPath,
+        Self::Bookmarks,
+        Self::Terminal,
+        Self::Options,
+        Self::Run,
+        Self::TabAdd,
+        Self::CloseTab,
+        Self::RemoveBookmark,
+        Self::AddBookmark,
+        Self::Help,
+        Self::Rename,
+        Self::View,
+        Self::Edit,
+        Self::Copy,
+        Self::Move,
+        Self::NewFolder,
+        Self::Delete,
+        Self::UserMenu,
+        Self::Menu,
+        Self::SaveAgain,
+        Self::Done,
+        Self::Close,
+        Self::Properties,
+        Self::FolderSizes,
+        Self::About,
+        Self::Exit,
+        Self::SortAscending,
+        Self::SortDescending,
+    ];
+}
+
+/// File type, discovered volume or allowlisted semantic role; never browsed file contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IconKind {
     File,
     Folder,
     Link,
     Drive,
+    Action(ActionIcon),
+    Location(LocationKind),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -76,6 +153,26 @@ pub struct IconKey {
 }
 
 impl IconKey {
+    pub fn action(role: ActionIcon) -> Self {
+        Self {
+            kind: IconKind::Action(role),
+            extension: None,
+            drive_root: None,
+            size: 32,
+        }
+    }
+
+    /// Special aliases retain their meaning even when their native paths are identical.
+    pub fn for_location(location: &NavigationLocation) -> Self {
+        if location.kind == LocationKind::Volume {
+            return Self::for_drive(&location.path);
+        }
+        Self {
+            kind: IconKind::Location(location.kind),
+            ..Self::folder()
+        }
+    }
+
     pub fn folder() -> Self {
         Self {
             kind: IconKind::Folder,
@@ -154,7 +251,7 @@ impl IconPixels {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LocationKind {
     Volume,
     Home,

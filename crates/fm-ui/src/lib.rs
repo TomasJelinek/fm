@@ -1,8 +1,10 @@
 //! In-memory presentation and a virtualized Slint shell. All I/O lives behind commands.
 #![deny(unsafe_code)]
+mod action_icons;
 mod command_line;
 mod font_model;
 mod native_shortcuts;
+mod navigation_models;
 mod presenter;
 mod scroll_input;
 mod size_presentation;
@@ -210,67 +212,25 @@ fn column_index(column: SortColumn) -> i32 {
     }
 }
 
-fn location_rows(presenter: &Presenter, pane: PaneId) -> Vec<LocationRow> {
-    let path = presenter.panes[pane.index()].display_path();
-    let closest = presenter
-        .desktop
-        .locations
-        .iter()
-        .enumerate()
-        .filter(|(_, location)| path.starts_with(&location.path))
-        .max_by_key(|(_, location)| location.path.components().count())
-        .map(|(index, _)| index);
-    presenter
-        .desktop
-        .locations
-        .iter()
-        .enumerate()
-        .map(|(index, location)| LocationRow {
-            label: location.label.clone().into(),
-            compact_label: location
-                .drive_letter
-                .map(|letter| format!("{letter}:"))
-                .unwrap_or_else(|| {
-                    location
-                        .path
-                        .file_name()
-                        .unwrap_or(location.path.as_os_str())
-                        .to_string_lossy()
-                        .into_owned()
-                })
-                .into(),
-            is_drive: location.kind == LocationKind::Volume,
-            path: location.path.to_string_lossy().into_owned().into(),
-            tooltip: if location.kind == LocationKind::Volume {
-                let details = volume_presentation::tooltip(
-                    presenter
-                        .volumes
-                        .iter()
-                        .find(|volume| volume.root == location.path)
-                        .and_then(|volume| volume_presentation::details(presenter, volume)),
-                );
-                format!("{}\n{details}", location.path.display()).into()
-            } else {
-                format!("{}\n{}", location.label, location.path.display()).into()
-            },
-            icon: presenter
-                .desktop
-                .image(&if location.kind == LocationKind::Volume {
-                    IconKey::for_drive(&location.path)
-                } else {
-                    IconKey::folder()
-                }),
-            selected: closest == Some(index),
-        })
-        .collect()
-}
-
 /// Refresh visible properties and lazy model notifications from current presenter state.
 pub fn refresh(window: &MainWindow, presenter: &Presenter) {
     refresh_properties(window, presenter, true);
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    window.set_action_icons(action_icons::palette(presenter));
+    let choices = navigation_models::choices(presenter);
+    let left_choice = presenter.navigation_choice_index(PaneId::Left);
+    let right_choice = presenter.navigation_choice_index(PaneId::Right);
+    navigation_models::update(
+        window.get_navigation_choices(),
+        choices.clone(),
+        |choice| choice.identity.clone(),
+        |model| window.set_navigation_choices(model),
+    );
+    window.set_navigation_revision(presenter.navigation_choices_revision() as i32);
+    window.set_left_navigation_index(left_choice);
+    window.set_right_navigation_index(right_choice);
     let tab_rows = |pane| {
         presenter
             .tabs(pane)
@@ -422,14 +382,16 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_right_descending(p.sort.descending);
         }
     }
-    update_model(
+    navigation_models::update(
         window.get_left_locations(),
-        location_rows(presenter, PaneId::Left),
+        navigation_models::locations(&choices, left_choice),
+        |location| location.identity.clone(),
         |model| window.set_left_locations(model),
     );
-    update_model(
+    navigation_models::update(
         window.get_right_locations(),
-        location_rows(presenter, PaneId::Right),
+        navigation_models::locations(&choices, right_choice),
+        |location| location.identity.clone(),
         |model| window.set_right_locations(model),
     );
     window.set_terminal_ready(
@@ -582,6 +544,13 @@ pub fn install(
     callback!(on_navigate, |w, p, s, id, text| {
         p.navigate_text(pane(id), text.as_str(), s);
         let _ = w;
+    });
+    callback!(on_navigation_choice, |w, p, s, id, token| {
+        if p.choose_navigation_choice(pane(id), token.as_str(), s) {
+            p.active = pane(id);
+            w.set_active_pane(id);
+            w.invoke_focus_files();
+        }
     });
     callback!(on_volume, |w, p, s, id, volume| {
         p.choose_volume(pane(id), volume as usize, s);

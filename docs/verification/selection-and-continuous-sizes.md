@@ -83,4 +83,5 @@ documents and selected documentation screenshots. Windows Cargo output is in
 `target/`; this development environment's Linux output is in
 `.tools/linux-target/`. Local toolchains, dependencies, logs, verification
 metadata and temporary captures remain ignored. No compiled executable,
-library or object belongs in the commit. Nothing is pushed to a remote.
+library or object belongs in the commit. A remote push was not part of that
+baseline verification.

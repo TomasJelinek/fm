@@ -1,5 +1,6 @@
 use fm_core::*;
 mod bookmarks;
+mod choices;
 mod desktop;
 mod fonts;
 mod preferences;
@@ -95,6 +96,7 @@ pub struct Presenter {
     pub(crate) preferences: preferences::PreferencesState,
     pub(crate) fonts: fonts::FontsState,
     tabs: tabs::TabsState,
+    choices: choices::ChoicesState,
     selection_properties: [Option<selection::PendingProperties>; 2],
     retired: Vec<DeferredDrop>,
 }
@@ -104,6 +106,7 @@ impl Presenter {
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
         Self {
             tabs: tabs::TabsState::new(),
+            choices: choices::ChoicesState::default(),
             selection_properties: [None, None],
             panes: [Pane::new(left), Pane::new(right)],
             volumes: vec![],
@@ -160,6 +163,8 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.retired
+            .push(Box::new(mem::take(&mut self.choices.items)));
         self.retire_selection_properties();
         self.tabs.retire(&mut self.retired);
         for p in &mut self.panes {
@@ -395,6 +400,8 @@ impl Presenter {
                         }
                     }
                     self.volumes_error.clear();
+                    self.choices.authoritative_volumes = true;
+                    self.sync_navigation_choices();
                     return;
                 }
                 Event::VolumesFailed(error) => {

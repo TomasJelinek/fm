@@ -199,25 +199,27 @@ fn font_options_keep_family_and_density_bases_independent() {
     window.invoke_apply_fonts("".into(), 32, 32);
     for density in 0..2 {
         window.invoke_apply_preferences(0, density);
+        let height = window.get_effective_minimum_height().ceil().max(480.0) as usize;
+        native.set_size(slint::PhysicalSize::new(1040, height as u32));
+        window.window().dispatch_event(WindowEvent::Resized {
+            size: slint::LogicalSize::new(1040.0, height as f32),
+        });
+        pixels.resize(1040 * height, slint::Rgb8Pixel::default());
         window.invoke_focus_files();
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
-        let command_y = 480.0
-            - theme.get_window_padding()
-            - theme.get_bottom_height()
-            - theme.get_gap()
-            - theme.get_command_height() / 2.0;
+        let command_y = window.get_command_input_top() + window.get_command_input_height() / 2.0;
         click(&window, 874.0, command_y);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
         assert_eq!(
-            pixels[240 * 1040 + 200],
+            pixels[(height / 2) * 1040 + 200],
             surface,
             "Options must fit at 32px; density={density}"
         );
-        let done_y = 240.0 + if density == 0 { 160.0 } else { 190.0 }
+        let done_y = height as f32 / 2.0 + if density == 0 { 160.0 } else { 190.0 }
             - 20.0
             - theme.get_control_height() / 2.0;
         click(&window, 700.0, done_y);
@@ -225,7 +227,7 @@ fn font_options_keep_family_and_density_bases_independent() {
             renderer.render(&mut pixels, 1040);
         });
         assert_ne!(
-            pixels[240 * 1040 + 200],
+            pixels[(height / 2) * 1040 + 200],
             surface,
             "Done must stay visible at 32px; density={density}"
         );
@@ -237,7 +239,7 @@ fn font_options_keep_family_and_density_bases_independent() {
         click(
             &window,
             940.0,
-            480.0 - 75.0 - 12.0 - theme.get_control_height() / 2.0,
+            height as f32 - 75.0 - 12.0 - theme.get_control_height() / 2.0,
         );
         assert_eq!(
             exits.get(),
@@ -250,17 +252,17 @@ fn font_options_keep_family_and_density_bases_independent() {
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
-        assert_eq!(pixels[300 * 1040 + 230], surface);
+        assert_eq!(pixels[(height / 2 + 60) * 1040 + 230], surface);
         click(
             &window,
             520.0,
-            480.0 - 75.0 - 12.0 - theme.get_control_height() / 2.0,
+            height as f32 - 75.0 - 12.0 - theme.get_control_height() / 2.0,
         );
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
         assert_ne!(
-            pixels[300 * 1040 + 230],
+            pixels[(height / 2 + 60) * 1040 + 230],
             surface,
             "User menu Close must stay visible at 32px"
         );

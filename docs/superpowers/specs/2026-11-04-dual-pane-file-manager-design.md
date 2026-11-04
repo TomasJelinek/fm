@@ -1037,3 +1037,25 @@ Rychlá tlačítka disků a umístění se přesunou vedle nabídky disků, bez 
 horního řádku. V úzkém panelu se tento pás horizontálně posouvá; základní
 navigační ovladače zůstanou přístupné. Podrobnosti jsou v
 [aktuálním rozšíření návrhu](2026-11-04-selection-and-continuous-sizes-design.md).
+
+## 29. Systémové ikony, úplná nabídka umístění a příkazová cesta
+
+Rychlá navigační tlačítka a rozbalovací nabídka sdílejí jeden seznam všech
+aktuálních disků a speciálních umístění. Domů, Plocha, Dokumenty a Stažené
+soubory zůstávají samostatnými volbami i při shodné cílové cestě. Obě místa
+poskytují tooltip s úplnou cestou; disky také s dostupným názvem svazku
+a volným místem. Změny připojených disků nesmějí zanechat zastaralou volbu.
+Identita a revize položky chrání před přesměrováním rozpracovaného kliknutí.
+
+Tlačítka používají odpovídající systémové ikony, pokud je platforma poskytuje.
+Windows a Linux mají oddělené adaptéry; načítání a dekódování provádí výhradně
+backend s omezenou frontou a cache. Původní barevné pixely se nepřebarvují.
+Kde vhodná systémová ikona chybí, zůstává srozumitelná vektorová ikona aplikace.
+
+Aktivní cesta příkazového řádku se zobrazuje celá, bez výpustky a bez pevného
+omezení délky textu. Nad editorem příkazu se zalamuje i uvnitř dlouhé komponenty.
+U extrémních cest je omezen pouze posuvný výřez, aby editor zůstal použitelný.
+Při velkém písmu se minimální výška okna odvodí také od čitelného řádku cesty
+a celého řádku souborů; běžné velikosti zachovají základní minimum 480 px.
+Podrobnosti a ověřovací scénáře stanoví
+[návrh systémových ovladačů a celé cesty](2026-11-04-native-controls-and-full-path-design.md).

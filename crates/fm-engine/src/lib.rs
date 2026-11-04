@@ -186,8 +186,13 @@ impl Engine {
         let size_budget = Arc::new(Semaphore::new(2));
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
         let mut size_requests: [Option<SizeRequest>; 2] = [None, None];
-        let volumes =
-            volumes::Controller::new(self.filesystem.clone(), self.outbox.clone(), &mut tasks);
+        let volumes = volumes::Controller::new(
+            self.filesystem.clone(),
+            self.outbox.clone(),
+            desktop.volume_icon_sender(),
+            desktop.context_sender(),
+            &mut tasks,
+        );
 
         loop {
             tokio::select! {
@@ -208,7 +213,7 @@ impl Engine {
                     match command {
                         None | Some(Command::Shutdown) => break,
                         Some(Command::Selection(request)) => selection.submit(request),
-                        Some(Command::ListDesktopContext) => desktop.context(&mut tasks),
+                        Some(Command::ListDesktopContext) => desktop.context(),
                         Some(Command::ListFontFamilies) => {
                             fonts.list();
                         }

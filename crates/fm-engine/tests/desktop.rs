@@ -117,7 +117,8 @@ impl StorageService for Services {
 impl IconService for Services {
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError> {
         self.icon_keys.lock().unwrap().push(key.clone());
-        Ok(None)
+        Ok(matches!(key.kind, IconKind::Location(_))
+            .then(|| IconPixels::new(1, 1, vec![12, 34, 56, 255]).unwrap()))
     }
 }
 impl LocationService for Services {
@@ -129,6 +130,19 @@ impl LocationService for Services {
             kind: LocationKind::Home,
             drive_letter: None,
         }];
+        for kind in [
+            LocationKind::Desktop,
+            LocationKind::Documents,
+            LocationKind::Downloads,
+        ] {
+            locations.push(NavigationLocation {
+                id: format!("{kind:?}"),
+                label: format!("{kind:?}"),
+                path: PathBuf::from("文档/🏠"),
+                kind,
+                drive_letter: None,
+            });
+        }
         for letter in ['C', 'D'] {
             locations.push(NavigationLocation {
                 id: format!("drive:{letter}"),
@@ -224,7 +238,7 @@ async fn desktop_context_and_background_icons_never_launch_commands() {
 }
 
 #[tokio::test]
-async fn desktop_context_publishes_locations_before_loading_each_volume_icon() {
+async fn desktop_context_publishes_choices_before_loading_each_drive_and_special_icon() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
@@ -236,7 +250,8 @@ async fn desktop_context_publishes_locations_before_loading_each_volume_icon() {
     commands.send(Command::ListDesktopContext).await.unwrap();
     let mut context_published = false;
     let mut roots = std::collections::HashSet::new();
-    while roots.len() < 2 {
+    let mut locations = std::collections::HashSet::new();
+    while roots.len() < 2 || locations.len() < 4 {
         match next(&mut events).await {
             Event::DesktopContext { .. } => context_published = true,
             Event::IconLoaded { key, pixels } if key.drive_root.is_some() => {
@@ -250,6 +265,12 @@ async fn desktop_context_publishes_locations_before_loading_each_volume_icon() {
                         .any(|pixel| pixel[3] != 0)
                 );
                 roots.insert(key.drive_root.unwrap());
+            }
+            Event::IconLoaded { key, .. } => {
+                if let IconKind::Location(kind) = key.kind {
+                    assert!(context_published, "special icons arrived before locations");
+                    locations.insert(kind);
+                }
             }
             _ => {}
         }
