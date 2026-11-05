@@ -339,6 +339,13 @@ been selected. macOS adapters and distribution are later work.
 
 Further designs cover [the viewer and virtual filesystems](docs/superpowers/specs/2026-11-04-viewer-vfs-design.md)
 and [reusable sudo terminal sessions](docs/superpowers/specs/2026-11-04-terminal-sessions-design.md).
+The [finalized dynamic plugin interface](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
+specifies separately loadable text/source viewers and native, ZIP, GZIP, TAR/TAR.GZ
+and 7z filesystem providers under executable-adjacent `viewers/` and `filesystems/`.
+Missing packages remove their features after restart, including native browsing
+when the platform's native provider is absent. Plugins use a versioned C ABI;
+Slint rendering and Tokio orchestration stay in the host. Native plugins are
+trusted application code, not sandboxed extensions. Initial archives are read-only.
 These are designs, not enabled viewer/VFS/session-reuse implementations. Each OS
 will have its own native provider; archives and typed Registry values use the
 same provider boundary. Copy/move conflicts require a source/destination metadata

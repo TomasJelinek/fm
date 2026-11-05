@@ -33,6 +33,7 @@ Požadavky uživatele:
 - Dodatečně potvrzeno: vestavěný viewer má mít prostý text, zvýrazněný zdrojový kód a vykreslený Markdown. Nejprve navrhnout rozhraní a zkontrolovat viewer/pluginy Salamanderu; F3 se aktivuje až se skutečnou implementací.
 - Dodatečně odsouhlaseno: opakované sudo má využít systémové ověření a vhodnou otevřenou relaci, nikoli ukládat heslo v aplikaci. Automatické znovupoužití z editoru vyžaduje samostatný bezpečný návrh relací z oddílu 24; samotné otevřené root okno tento routing nezajišťuje.
 - Dodatečně potvrzeno: obecné VFS rozhraní má umožnit lokální disky, procházení archivů včetně vnořených, další vzdálené filesystémy a Windows Registry. Současné lokální panely se převedou na první nativní provider; Windows/Linux/macOS mají každý svou samostatnou nativní implementaci.
+- Dodatečně potvrzeno: každý viewer a filesystem včetně nativního je dynamicky načitatelný plugin vedle executable ve složkách viewers/filesystems. Přítomnost balíčku určuje dostupnost funkce. První viewer je text se syntax highlighting; první archivy ZIP, GZIP, TAR.GZ a 7z. Rozhraní a přejímku finalizuje [plugin návrh](2026-11-05-dynamic-viewer-filesystem-plugins-design.md).
 - Dodatečně potvrzeno: při kopírování/přesunu na existující cíl zobrazit varování a rozhodnutí o přepsání se srovnáním zdroje/cíle, zejména velikosti a data/času. Bez výslovné platné politiky se nic nepřepíše.
 - Dodatečně potvrzeno: výběr shellu vlevo od příkazového editoru na všech platformách: PowerShell/cmd na Windows, Terminal/Terminal (sudo) na Linuxu a stejné připravené rozhraní pro budoucí macOS. Enter při zaměřeném editoru spouští přesně jeho obsah ve zvolené externí relaci; volba se zachytí společně s cwd a oprávněním.
 
@@ -300,7 +301,7 @@ Hotovo znamená: otestované plné médium, odpojení disku, přístupová chyba
 
 Na stejný model příkazů a úloh navázat přesun, přejmenování, vytváření složek, koš/mazání, hledání, záložky panelů, prohlížeč a náhledy. Přesun mezi filesystémy smí smazat zdroj až po úspěšné ověřené kopii a publikování. Přesun v rámci jednoho filesystemu je jiný typ operace s vlastními pravidly.
 
-Archivy a vzdálené zdroje přidávat jako providery s deklarovanými schopnostmi: čtení, zápis, přejmenování, kontrolní čtení, publikování a politika metadat. Provider bez potřebné schopnosti nesmí předstírat stejnou záruku jako lokální ověřená kopie. Samostatné plugin API a stabilní ABI nejsou cílem prvního základu.
+Archivy a vzdálené zdroje přidávat jako providery s deklarovanými schopnostmi: čtení, zápis, přejmenování, kontrolní čtení, publikování a politika metadat. Provider bez potřebné schopnosti nesmí předstírat stejnou záruku jako lokální ověřená kopie. Samostatné plugin API nebylo součástí původního základu; nový požadavek z 5. listopadu je zavádí jako podmínku viewer/VFS etapy, viz oddíly 22–23.
 
 Počítá se výslovně s FTP/FTPS a případně SFTP; FTP, FTPS a SFTP jsou odlišné protokoly/providery. Jejich zavedení nesmí vyžadovat přepis UI ani kopírovacího stavového automatu. Detailní pravidla umístění a délky cest určuje následující oddíl 14.
 
@@ -547,7 +548,7 @@ Provedené testy nejsou náhradou za dosud neprovedená měření či nasazení 
 | Odstranění horního pruhu, témata, hustota, ukládání preferencí | Implementováno podle oddílu 21; shell picker je na všech aktuálně podporovaných platformách |
 | Kopírování/přesun/mazání a jejich společná fronta | Následující etapy podle uživatelem zvoleného read-only rozsahu; ověření nelze obejít |
 | FTP/FTPS/SFTP, archivy, macOS | Připravené hranice providerů/platformních služeb; implementace později |
-| Vestavěný viewer a obecné VFS | Nový detailní návrh podle zdrojů Salamanderu; migrace současného lokálního backendu na první nativní providery následuje postupně |
+| Vestavěný viewer a obecné VFS | Finalizovaný návrh dynamických pluginů: text/source, nativní OS provider, ZIP/GZIP/TAR.GZ/7z; implementace následuje podle oddílů 22–23 |
 
 | Vstup | Chování |
 | --- | --- |
@@ -738,97 +739,51 @@ vyčistit řádek; již citovaná cesta s `&` se nesmí změnit ve spustitelnou 
 Přepnutí Standard/sudo v rámci POSIX gramatiky je výslovná změna oprávnění,
 stále vyžaduje Enter/Run a nezapisuje zvýšený režim do konfigurace.
 
-## 22. Vestavěný viewer: text, zdrojový kód a Markdown
+## 22. Vestavěný viewer: dynamické pluginy pro text/source a později Markdown
 
-Jde o samostatně navrhovanou další funkci, ne o označení dosud nefunkčního F3
-za hotový viewer. Detailní návrh, skutečné reference Salamanderu a migrační kroky
-jsou v [návrhu vieweru a VFS](2026-11-04-viewer-vfs-design.md).
+Aktuální [finální plugin kontrakt](2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
+stanoví samostatné knihovny v `viewers/`, discovery při startu, verzované C ABI,
+backendové leases a společný Slint renderer. První plugin poskytne plain text
+a zvýraznění syntaxe známých zdrojových jazyků. Odebraný plugin odebere příslušnou funkci;
+F3 se aktivuje až se skutečnou implementací. UI neobsahuje skrytý parser fallback.
 
-Viewer bude používat backendový čtecí lease/session nad providerem, ne otevírat
-lokální cestu z UI. Vstupem je referenční identita uzlu a deklarované schopnosti
-čtení. Textový, source a Markdown režim sdílejí životní cyklus, rušení, chyby,
-generace požadavků a omezenou keš. Prostý režim zůstane dostupný při chybě
-zvýraznění nebo náhledu. Zobrazení nikdy neznamená spuštění obsahu.
+Čtení, dekódování, indexování, syntax, hledání, velké výběry a cleanup patří
+backendu. UI vykreslí omezené UTF-8 stránky a sémantické spany se source map,
+generation a revision. Unicode shaping, výběr a bidi zachovají společný kontext
+řádku; jednotlivé tokeny se nesmějí rozpadnout do nezávislých Text widgetů.
+Sekvenční stream nepředstírá levný random access, velký soubor se nenačítá celý.
 
-Backend obstará čtení, dekódování, rozpoznání binárních dat, hledání, rozdělení
-na řádky/bloky a syntax/Markdown analýzu. UI dostává hotové omezené textové bloky,
-spany a strukturu pro vykreslení. Velký soubor se nepřenese celý do Slint stringu;
-stránkování/prefetch má pevný pracovní rozpočet. Ani memory-mapped stránka, která
-by mohla vyvolat diskový page fault při malování, nepatří na UI vlákno.
+Markdown přijde jako další plugin s vyjednaným block modelem. Zachová zákaz
+aktivního HTML/scriptu a automatického stahování i hostitelskou LinkPolicy.
+Podrobnosti obsahových kontraktů, Unicode, cache, source změn a reference
+Salamanderu zůstávají v [původním viewer/VFS návrhu](2026-11-04-viewer-vfs-design.md).
 
-Unicode dekódování zachovává původní bajty a výslovně řeší BOM, neúplné sekvence
-na hranici bloku, UTF-8/UTF-16 a chybné vstupy. Žádná slepá ANSI konverze nebo
-normalizace identity. Syntax highlighting pracuje mimo UI a respektuje stav
-parseru, dlouhé řádky a jeho případnou thread affinity. Budoucí výběr/kopírování
-textu a hledání mají rozhraní nad zobrazenými offsety i původním zdrojem.
+## 23. VFS a migrace na platformní nativní pluginy
 
-Markdown se přednostně vykresluje z backendem vytvořené omezené struktury bloků
-(nadpisy, odstavce, seznamy, odkazy, tabulky, code blocks). Aktivní raw HTML,
-JavaScript, automatické externí obrázky/URL, nepovolené file odkazy a únik mimo
-scope otevřeného provideru jsou zakázané. Kliknutí na externí odkaz je výslovná
-akce. Pokud později vznikne webový renderer, musí mít vlastní oddělený sandbox
-a jasně omezené schopnosti, ne výchozí přístup k disku/síti.
+Každý filesystem včetně nativního je samostatný dynamický plugin ve
+`filesystems/`. Windows, Linux a později macOS mají oddělené implementace a testy.
+První archivní balíčky jsou ZIP, GZIP, TAR (také TAR.GZ/TGZ) a 7z; procházení
+členů a F3 jsou read-only. GZIP zpřístupní jeden logický stream, TAR.GZ strom;
+TAR má vlastní decoder helper a nezávisí na přítomnosti GZIP pluginu.
 
-Ne-seekovatelný stream z archivu/sítě se nesmí tvářit jako levný náhodný přístup.
-Viewer použije streamový režim nebo backendový omezený spool/cache s jasnou
-chybou při nedostatku prostředků. Lease určuje životnost, případné změny zdroje
-a bezpečné uvolnění; dočasný soubor není univerzální ani povinné rozhraní.
+Současné PathBuf rozhraní se migruje přes adaptér na provider registry,
+MountId/NodeRef a content broker. Provider vlastní namespace, parent/root,
+case pravidla, persistent address i raw identity. Display text není OS cesta;
+není žádný aplikační MAX_PATH. Capabilities pravdivě rozlišují čtení/seek/watch,
+metadata a budoucí mutace. Odebraný provider ponechá karty/záložky nedostupné,
+neztratí jejich uložené adresy. Chybějící native plugin odebere lokální browsing;
+vestavěné host služby nastavení, terminálu, ikon a loaderu zůstanou funkční.
 
-## 23. VFS a migrace na platformní nativní providery
+Archivy používají backing leases, bounded index/dekompresi, bezpečné opaque
+identity členů a watch invalidaci. Neextrahují automaticky cesty ani odkazy.
+Budoucí extraction/copy vyžaduje společný BLAKE3 destination readback a bezpečné
+publish; CRC archivu není náhrada. Registry zůstává budoucí Windows plugin
+s klíči a typovanými hodnotami, vzdálené zdroje dalšími capability implementacemi.
 
-Současné `FileSystem` je lokální první implementace, ne konečný univerzální model
-všech cest. Migrace zachová použitelné panely a testy: nejdříve vznikne VFS
-kontrakt a kompatibilní adaptér nad stávajícími službami, potom se postupně
-převedou typy navigace/modelu. Nesmí současně vzniknout druhá nekonzistentní
-navigace nebo kopírovací engine pro archivy.
-
-| Provider | Platformní/implementační hranice |
-| --- | --- |
-| Windows Native | Samostatný Windows crate; WindowsFileSystem/adaptér, UTF-16/W API, svazky, sdílení, publikování, watchery |
-| Linux Native | Samostatný Linux crate; LinuxFileSystem/adaptér, raw Unix názvy, mount namespace, oprávnění, inotify |
-| macOS Native | Budoucí samostatný crate a jeho vlastní OS služby/testy |
-| Archive/container | Samostatný provider nad čtecím lease jiného uzlu; není OS větev v panelu |
-| FTP/FTPS/SFTP apod. | Samostatné síťové providery s deklarovanými schopnostmi a časovými limity |
-| Windows Registry | Windows-only provider s klíči a typovanými hodnotami; ne falešné obyčejné soubory |
-
-`fm-platform` zůstane krátký selector. Skutečně přenositelné Rust pomocné operace
-lze sdílet; těla Windows/Linux/macOS implementací ani jejich nativní testy se
-nemíchají v jednom souboru. Každá nativní implementace musí projít společnými
-provider conformance testy a vlastními OS testy.
-
-VFS používá `ProviderId` + providerem vlastněnou opaque identitu umístění/uzlu.
-Zobrazený název, breadcrumb či editovatelná reprezentace není identita. `PathBuf`
-zůstává uvnitř Native provideru; archive path, URL nebo registry key se na něj
-nepřevádí. Parent/root, parsování uživatelského vstupu, case/canonicalization,
-rozlišení komponent a odkazy patří provideru na backendu. UI požaduje záměr
-navigace a vykresluje popis. Nikde nevznikne globální MAX_PATH nebo URL limit.
-
-Schopnosti se vyjednávají výslovně: listing, metadata, byte-stream/seek, typed
-value, zápis, rename, watch, bezpečné publikování, kontrolní čtení a další.
-Chybějící schopnost vrací Unsupported před operací. Otevření archivu znamená
-nový container scope navázaný na lease jeho backing uzlu; vnořené archivy nesmějí
-obejít rušení, rozpočet paměti/dekomprese či pravidla ověřování.
-
-Archive provider hlídá traversal/absolutní cesty, duplicitní či kolidující jména,
-symlinkové úniky a dekompresní bomby. Neextrahuje nic automaticky do hostitelského
-adresáře podle nedůvěryhodného názvu. Zápis do archivu vyžaduje deklarovanou
-transakci/publikování; read-only archiv neslibuje úspěšné mutace.
-
-Registry model rozlišuje klíč, pojmenovanou i výchozí hodnotu a její skutečný typ
-(řetězec, multi-string, číslo, binární data apod.). Nulový/default název není
-ztracený soubor. Export do `.reg`/textu je výslovný převod s definovaným formátem;
-bez deklarované reprezentace nelze použít obecnou bajtovou kopii. Přístupová
-práva a mutace Registry mají vlastní bezpečnostní schopnosti a Windows testy.
-
-Povinné ověření kopie platí i mezi providery. U bajtového obsahu vyžaduje úplný
-nezávislý readback cíle, délku a kryptografický hash. Provider bez bezpečného
-publikování či kontrolního čtení tuto záruku nepředstírá. Typované přenosy potřebují
-výslovně definované porovnání typu/obsahu nebo kanonický ověřovaný export.
-
-První migrační přejímka: stávající panely fungují nad Windows Native a Linux
-Native přes stejné VFS; stejné chování ověří syntetický read-only provider.
-Potom archiv, viewer nad jeho streamem, vnořený archiv a až následně Registry
-nebo síťové zápisy. Žádný krok nesmí přesunout I/O či drahý parsing do UI.
+Plný kontrakt, balení, životnost, bezpečnost a přejímací matice jsou v
+[novém návrhu dynamických pluginů](2026-11-05-dynamic-viewer-filesystem-plugins-design.md).
+Nativní DLL/SO jsou důvěryhodný kód s právy aplikace, nikoli sandbox. Knihovny
+zůstanou načtené do ukončení procesu, instalace/odebrání se uplatní po restartu.
 
 ## 24. Opakované sudo a životní cyklus terminálové relace
 

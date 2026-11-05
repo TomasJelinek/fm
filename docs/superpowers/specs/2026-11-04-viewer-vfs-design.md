@@ -4,6 +4,12 @@ Datum: 4. listopadu 2026. Stav: návrh dalšího rozšíření, nikoli tvrzení 
 implementaci. Navazuje na [hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md).
 V této etapě se nemění produkční API ani se nezapíná dosud neimplementované F3.
 
+Aktualizace 5. listopadu: [dynamické viewer/filesystem pluginy](2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
+finalizují balení, discovery, verzované C ABI, vlastnictví a nové pořadí etap.
+Tento dokument zůstává podkladem pro obsahové kontrakty; v uvedených oblastech
+má novější návrh přednost. Každý viewer/provider včetně nativního je odstranitelný
+plugin. První rozsah zahrnuje text/source a ZIP, GZIP, TAR.GZ a 7z; Markdown později.
+
 ## 1. Zadání a rozhodnutí návrhu
 
 Uživatel požaduje vestavěný prohlížeč pro prostý text, barevně zvýrazněný zdrojový
@@ -18,8 +24,9 @@ nezkrácené providerové identity, žádný aplikační MAX_PATH a omezené pra
 kapacity. Budoucí kopie bajtových souborů musí nezávisle přečíst cíl a ověřit délku
 a kryptografický hash. Registry ani archivy nesmějí tyto záruky předstírat.
 
-Konkrétní datové typy, výchozí cache rozpočty a knihovny níže jsou doporučení
-návrhu. Nejsou dalšími požadavky uživatele ani nově vybraným stabilním plugin ABI.
+Konkrétní interní datové typy, výchozí cache rozpočty a knihovny níže jsou doporučení
+návrhu. Binární hranici nyní určuje samostatný verzovaný plugin kontrakt výše;
+interní Rust traity ani futures nejsou plugin ABI.
 
 Zvažované přístupy:
 
@@ -75,16 +82,19 @@ flowchart LR
 `fm-core` obsahuje pouze typy, chyby, kontrakty a zprávy. Provider registry,
 orchestrace, lease registry, cache, rozpočty a copy engine patří `fm-engine`.
 VFS prezentace a viewer widgety patří `fm-ui`; konkrétní provider se do UI
-neimportuje. Jednotlivé archivační/síťové implementace mohou později dostat
-vlastní crates podle skutečné velikosti a závislostí.
+neimportuje. Nový plugin kontrakt vyžaduje vlastní dynamický crate pro každou
+konkrétní implementaci; přenositelné helper knihovny se mohou sdílet.
 
-- `WindowsFileSystem` se přes adaptér stane `WindowsNativeProvider` ve
-  `fm-platform-windows`. Win32, registry a Windows testy zůstanou v OS souborech.
-- `LinuxFileSystem` se stane `LinuxNativeProvider` ve `fm-platform-linux`.
+- `WindowsFileSystem` se přes adaptér stane `WindowsNativeProvider` v dynamickém
+  `fm-fs-native-windows`. Win32, registry a Windows testy zůstanou v OS souborech.
+- `LinuxFileSystem` se stane `LinuxNativeProvider` v dynamickém `fm-fs-native-linux`.
 - macOS později dodá `MacOsNativeProvider` ve vlastním crate a stejné conformance
   testy. Linux implementace se nepoužije jako skrytá macOS větev.
 - `fm-platform-common` smí sdílet skutečně přenositelné bezpečné Rust pomocné
   operace. `fm-platform` je pouze malý selector/reexport podle targetu.
+
+Hostitelské služby nastavení, terminálu, ikon a loaderu zůstávají odděleně
+vestavěné; chybějící native plugin však nesmí mít statický fallback pro browsing.
 
 První migrace zachová dnešní `FileSystem` jako interní kompatibilní adaptér.
 Nativní služby nemusí být přepsané v jedné změně. Dočasný adaptér ale není cílové
@@ -409,27 +419,12 @@ delete stále sdílí tutéž operační frontu a její konfliktní identity/zá
 
 ## 12. Pořadí implementace
 
-1. Přidat providerové typy a malý Browse/OpenByteContent kontrakt s fake providerem.
-   Dnešní FileSystem obalit NativeProvider adaptérem. Pro každou OS implementaci
-   spustit stejnou conformance sadu; zachovat dnešní UI a funkce beze změny.
-2. Převést panel messages/model na NodeRef/LocationRef; parent, crumbs, resolve
-   a capability gating přes backend. Vyřadit univerzální PathBuf z UI rozhraní,
-   aniž by se měnila bezeztrátová interní reprezentace nativních adaptérů.
-3. Zavést lease registry a F3 plain viewer nad nativním i fake sekvenčním zdrojem.
-   Nejprve skutečně rychlý první viewport, Unicode, velké soubory, chyby a cancel.
-4. Přidat Source režim a omezený highlighter spike; ověřit worker affinity,
-   parserové limity, theming a multiline checkpointy před širším nasazením.
-5. Přidat bezpečné Markdown bloky, source map a návrat do Source. Obrázky až se
-   samostatným resource-scope kontraktem. Nejdříve nepovolit raw HTML ani síť.
-6. Přidat jeden read-only ArchiveProvider, například ZIP, nad byte lease.
-   Prokázat browsing a F3 bez úplné extrakce; potom nesting a sekvenční formáty.
-7. Přidat read-only WindowsRegistryProvider s typed viewerem a explicitním
-   exportem; Windows-only kód/testy odděleně, žádná simulovaná Linux Registry.
-8. Přidávat další archivy a FTP/FTPS/SFTP po jednotlivých schopnostech.
-   Mutation/publish a typed writes patří samostatným bezpečnostním etapám.
-
-Dynamické plugin ABI, hot reload nedůvěryhodného kódu, editor zdrojáků a obecný
-HTML browser nejsou předpoklady prvního vieweru/VFS. Registry write ani archivní
+Aktuální pořadí a přejímku určuje
+[nový plugin návrh](2026-11-05-dynamic-viewer-filesystem-plugins-design.md#10-migrace-a-implementační-pořadí):
+ABI/SDK a dynamické testovací pluginy → oddělené loadery/balení → VFS identity
+a nativní plugin každého OS → text/source viewer → ZIP, GZIP, TAR/TAR.GZ a 7z.
+Teprve potom Markdown, Registry a síťové providery. Dynamické ABI je nově
+požadavek prvního vieweru/VFS. Hot unload, editor, Registry write a archivní
 repack se nezapnou jen proto, že panel umí číst jejich položky.
 
 ## 13. Přejímací testy
@@ -453,8 +448,9 @@ důkazem vizuální kvality všech fontů nebo otestovaného macOS/Mint nasazen�
 
 ## 14. Drobné implementační volby ponechané další etapě
 
-Formát interních opaque IDs a způsob registrace providerů, konkrétní highlighter,
+Formát interních opaque IDs, konkrétní highlighter,
 počty workerů/cache budgety, wrap strategie a seznam prvních jazyků se stanoví
 spikem a měřením před implementací dané etapy. Nemění to smlouvy: UI žádné I/O,
 provider vlastní namespace, chybějící capability je pravdivě Unsupported,
 Markdown nic samo nespouští a byte-file kopie nemá neověřený režim.
+Registraci, plugin discovery a binární lifetime už stanoví novější plugin návrh.

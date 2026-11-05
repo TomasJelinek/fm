@@ -202,6 +202,34 @@ means its separate software renderer remains a developer diagnostic path until
 it is independently qualified; it must not be advertised as a fully Unicode
 production fallback.
 
+## Planned dynamic viewer/filesystem plugins
+
+The [plugin interface design](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
+defines the next implementation; no dynamic plugin loader or internal viewer is
+enabled today. Each viewer/provider, including the OS-native filesystem, becomes
+a removable library under the installation's `viewers/` or `filesystems/` root.
+
+- Native plugins run with application authority. Neither a C ABI nor capability
+  validation isolates malicious code, memory faults or a stuck native parser.
+  A hard isolation guarantee would require a separate process/sandbox.
+- Installing a package is a trust decision. Discovery reads bounded manifests
+  before loading code, checks platform/ABI/identity, and never searches the active
+  panel, working directory, PATH or an archive for executable extensions. Native
+  dependency lookup is constrained by separate platform loader implementations.
+- Host-owned leases scope content services; no Rust allocator, future, Tokio
+  runtime or Slint object crosses the ABI. Buffers have explicit ownership and
+  release functions. Loaded code outlives every worker, callback, session and
+  buffer. Version 1 uses restart-based installation/removal, with no hot unload.
+- Text viewers return bounded Unicode text and semantic style spans, never
+  executable markup or source-directory grammars. Parsing and decompression run
+  on bounded backend workers; cancellation is cooperative, not a promise to kill
+  a blocked thread safely.
+- Archive browsing is read-only. Names, links and declared sizes are untrusted;
+  actual decompression, dictionaries, indexes, nesting and cache use share
+  budgets. Listing never extracts a member to its declared host pathname.
+  Future extraction/copy uses the common destination readback/hash/publish
+  contract. ZIP/GZIP/7z checksums do not substitute for that verification.
+
 ## Dependencies
 
 Keep `Cargo.lock`, check advisories against the actual lockfile, and record the
