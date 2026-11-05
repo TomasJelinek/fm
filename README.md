@@ -346,6 +346,10 @@ Missing packages remove their features after restart, including native browsing
 when the platform's native provider is absent. Plugins use a versioned C ABI;
 Slint rendering and Tokio orchestration stay in the host. Native plugins are
 trusted application code, not sandboxed extensions. Initial archives are read-only.
+Each plugin is developed in its own repository with its own build, dependencies,
+tests and CI, sharing only the published API/SDK. Plugins cannot depend on private
+application crates or modify the main application's sources; API extensions are
+separate host-owned changes. Distribution packaging consumes plugin artifacts.
 These are designs, not enabled viewer/VFS/session-reuse implementations. Each OS
 will have its own native provider; archives and typed Registry values use the
 same provider boundary. Copy/move conflicts require a source/destination metadata

@@ -13,6 +13,9 @@ Požadavek uživatele: každý konkrétní viewer a filesystem bude samostatně
 dynamicky načitatelný plugin vedle aplikace. Přítomný kompatibilní plugin přidá
 funkci, chybějící ji odebere. První viewer zobrazí prostý text a syntax známých
 zdrojových jazyků. Filesystémy zahrnou nativní platformu, ZIP, GZIP, TAR.GZ a 7z.
+Dodatečný požadavek: pluginy se vyvíjejí samostatně a sdílejí pouze veřejné API;
+jejich testy jsou součástí pluginu. Plugin ani jeho build/test nesmí upravovat
+zdrojové kódy hlavní aplikace.
 
 Zůstává jedna aplikace s oddělenými Rust crates, Slint UI a Tokio backendem.
 První archivní etapa je procházení a čtení, včetně otevření člena ve vieweru.
@@ -60,12 +63,12 @@ Tím se do každého pluginu negeneruje další kopie Slint komponent.
 | --- | --- |
 | `fm-core` | Bezpečné interní typy VFS, vieweru, capabilities a chyb; žádné FFI |
 | `fm-plugin-api` | C layout, číselné tagy, verze, specifikace zpráv a generovaný C header; bez Slintu/Tokia |
-| `fm-plugin-sdk` | Úzké auditované FFI wrappery, vlastnictví bufferů, dispatch, bezpečné Rust rozhraní pro autory pluginů |
+| `fm-plugin-sdk` | Veřejná součást API distribuce: úzké auditované FFI wrappery, vlastnictví bufferů, dispatch, bezpečné Rust rozhraní pro autory pluginů; žádná interní implementace hostitele |
 | `fm-plugin-host` | Discovery, validace, ABI adaptér, knihovní lifetime; platformní loadery v oddělených souborech/crates |
 | `fm-engine` | Tokio orchestrace, registry, mount/session/lease, rušení, rozpočty, cache, budoucí copy engine |
 | `fm-viewer-text` | `cdylib`: dekódování, index, hledání a volitelné syntax spany |
 | `fm-fs-native-windows`, `fm-fs-native-linux` | Samostatné `cdylib` implementace společného VFS; později `fm-fs-native-macos` |
-| `fm-fs-zip`, `fm-fs-gzip`, `fm-fs-tar`, `fm-fs-7z` | Nezávislé archivační `cdylib`; přenositelné helper crates lze sdílet při kompilaci |
+| `fm-fs-zip`, `fm-fs-gzip`, `fm-fs-tar`, `fm-fs-7z` | Nezávislé archivační `cdylib` projekty; vlastní implementace, závislosti a testy |
 | `fm-platform-*` | Vestavěné hostitelské služby: start aplikace, nastavení, loader, terminál, clipboard, ikony a fonty |
 
 Obecné platformní služby nejsou další skrytá implementace VFS. Host musí umět
@@ -73,6 +76,50 @@ načíst konfiguraci a pluginy i bez nativního VFS. Procházení uživatelskýc
 potom poskytuje výhradně nativní plugin. Platformní implementace a testy se
 nadále nemíchají v jednom souboru; sdílený SDK kód je platformně neutrální.
 Nové auditované FFI výjimky zůstanou ve vyhrazených crates; core/engine/app bez unsafe.
+
+### Samostatný vývoj a vlastnictví testů
+
+Každý dodávaný plugin je samostatný repozitář a Cargo projekt/workspace, s vlastní
+release verzí, `Cargo.lock`, závislostmi, buildem a CI. Názvy crates v tabulce
+neznamenají, že pluginy patří mezi workspace members hlavní aplikace. To platí
+i pro nativní Windows/Linux/macOS filesystemy a první text viewer; nejsou výjimkou.
+
+Jedinou sdílenou projektovou závislostí je vydaný veřejný API balíček: ABI/schema,
+header, čistý SDK adaptér a případný obecný conformance harness. SDK je součást
+veřejného kontraktu, nikoli způsob importu `fm-core`, `fm-engine`, `fm-ui`,
+`fm-platform-*` či `fm-plugin-host`. Ani transitivně nesmí plugin záviset na
+interních crates aplikace, jiném pluginu, privátních helper knihovnách projektu
+nebo zdrojových souborech hostitele. Běžné nezávislé knihovny třetích stran jsou
+povolené; dva pluginy mohou použít stejný veřejný decoder crate bez sdílení své
+implementace. API nepřibaluje konkrétní parser, renderer nebo native provider.
+
+Plugin musí jít sestavit a otestovat z čistého checkoutu pouze s publikovaným
+API/SDK a svými deklarovanými závislostmi. Není potřeba checkout hlavní aplikace.
+Zakázané jsou cesty do jejího workspace, `include!` jejích zdrojů, lokální patche
+jejích crates, build-script generování do jejích adresářů i úpravy aplikace kvůli
+konkrétnímu pluginu. Instalace přidává jen vlastní package do `viewers/` nebo
+`filesystems/`; nemění EXE, zdrojáky hostitele ani ostatní balíčky.
+
+Unit, integration, parser/format fixtures, fuzzing, benchmarks a platformní testy
+konkrétního pluginu žijí v jeho repozitáři a běží v jeho CI. Obecnou conformance
+sadu veřejného API spouští také plugin CI. Test s reálným hostitelem použije
+vydanou binárku/test harness a vlastní dočasnou instalační sestavu; nesmí vyžadovat
+editaci host source tree ani instalovaných uživatelských pluginů. CI pluginu
+nemá zápisový přístup do repozitáře hlavní aplikace.
+
+Hostitel vlastní jen svoje obecné loader/broker/UI testy a integrační testy přes
+veřejnou hranici, například absence pluginu, ABI mismatch a fake blocked provider.
+Neudržuje kopie testů ZIP parseru nebo text highlighteru. Plugin release předává
+artefakty, manifest, licence a výsledky vlastních testů; aplikace/distribuční CI
+je pouze sestaví do balení a ověří kompatibilitu/integraci.
+
+Chybějící API schopnost znamená návrh samostatné verzované změny API/hostitele,
+provedený jeho maintainerem. Plugin zůstane na podporovaném API nebo oznámí
+Unsupported; nesmí si hostitele automaticky patchnout. Počáteční migrace dnešního
+native backendu je hostitelem řízená samostatná změna aplikace, ne oprávnění
+pluginu měnit ji při vývoji, sestavení, testu, instalaci či běhu. Toto pravidlo
+vývoje a CI nemění skutečnost, že nativní kód bez OS sandboxu má práva procesu
+popsaná v oddílu 9.
 
 ## 3. Balení, discovery a chybějící funkce
 
@@ -534,10 +581,12 @@ nedůvěryhodnými účty nejsou bezpečný plugin root a loader je odmítne.
    fake viewer a fake filesystem jako skutečné sdílené knihovny. Nejdřív testovat
    ABI kompatibilitu, dynamické načtení, nepřítomnost a rušení přes reálnou hranici.
 2. Přidat oddělené Windows/Linux loadery, manifest discovery, plugin status
-   v Options a release/dev balení do `viewers`/`filesystems`. Build helper musí
-   sestavit a zkopírovat vybrané pluginy do správného target adresáře; DLL/SO a
-   staging zůstanou v ignorovaném `target`/build stromu. Samotný Cargo build
-   aplikace není po migraci kompletní distribuce.
+   v Options a release/dev balení do `viewers`/`filesystems`. Aplikace se sestavuje
+   nezávisle; každý plugin má vlastní build helper/CI. Samostatný packaging krok
+   převezme konkrétní verzované plugin artefakty a zkopíruje je do distribučního
+   stromu, bez patchování/buildování jejich zdrojů v app workspace. DLL/SO a staging
+   zůstanou v ignorovaném `target`/build stromu. Samotný Cargo build aplikace
+   není po migraci kompletní distribuce.
 3. Přidat provider registry, generační reference a safe adaptéry. Dnešní
    `FileSystem`/Directory/Volume/Storage/Watch přesunout za nativní pluginy pro
    každý OS. Path mapy v engine nahradit mount-aware identity; nezhoršit existující
@@ -561,6 +610,7 @@ VFS/vieweru: test odebraného pluginu je podmínkou dokončení migrace.
 
 | Oblast | Povinné scénáře |
 | --- | --- |
+| Nezávislý vývoj | Čistý plugin checkout se sestaví a otestuje pouze s veřejným API/SDK, bez app sources; žádné přímé/transitivní interní nebo cross-plugin dependencies; vlastní CI/fixtures/fuzzing; build/test/install nemění host sources ani EXE; integrace přes vydanou binárku v temp sestavě |
 | Discovery / skutečná DLL/SO | Prázdné složky; přidání/odebrání každého pluginu a restart; jiný cwd; Unicode/dlouhá instalační cesta; duplicate ID; wrong bitness/target; chybějící dependency; poškozený manifest; mismatch descriptor; symlink/reparse escape |
 | ABI | Samostatně kompilované host/plugin fixtures; minimum/minor prefix a nekompatibilní major; unknown required vs optional; short struct; allocator ownership; queue Full vs accepted; malformed message/span/length; stale/cross-instance handles |
 | Lifetime / async | Pozdní callback po cancel, instance shutdown s leases/workery/buffery, exactly-once terminal/drop, notification race, backpressure, nesting při jediném worker permitu bez deadlocku, thread affinity, backend cleanup |

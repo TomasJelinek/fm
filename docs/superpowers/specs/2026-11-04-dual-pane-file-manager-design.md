@@ -784,6 +784,9 @@ Plný kontrakt, balení, životnost, bezpečnost a přejímací matice jsou v
 [novém návrhu dynamických pluginů](2026-11-05-dynamic-viewer-filesystem-plugins-design.md).
 Nativní DLL/SO jsou důvěryhodný kód s právy aplikace, nikoli sandbox. Knihovny
 zůstanou načtené do ukončení procesu, instalace/odebrání se uplatní po restartu.
+Každý plugin má samostatný repozitář, build a vlastní testy/CI. Sdílí pouze veřejné
+API/SDK, ne interní app crates. Vývoj, build, test ani instalace pluginu nesmějí
+upravovat zdrojáky hlavní aplikace; rozšíření API je samostatná změna hostitele.
 
 ## 24. Opakované sudo a životní cyklus terminálové relace
 

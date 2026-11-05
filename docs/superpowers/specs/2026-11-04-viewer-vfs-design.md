@@ -82,8 +82,9 @@ flowchart LR
 `fm-core` obsahuje pouze typy, chyby, kontrakty a zprávy. Provider registry,
 orchestrace, lease registry, cache, rozpočty a copy engine patří `fm-engine`.
 VFS prezentace a viewer widgety patří `fm-ui`; konkrétní provider se do UI
-neimportuje. Nový plugin kontrakt vyžaduje vlastní dynamický crate pro každou
-konkrétní implementaci; přenositelné helper knihovny se mohou sdílet.
+neimportuje. Nový plugin kontrakt vyžaduje samostatný projekt/repozitář pro každou
+konkrétní implementaci, vlastní testy a závislost pouze na veřejném API/SDK.
+Pluginy nesmějí importovat interní app crates ani měnit zdrojáky hlavní aplikace.
 
 - `WindowsFileSystem` se přes adaptér stane `WindowsNativeProvider` v dynamickém
   `fm-fs-native-windows`. Win32, registry a Windows testy zůstanou v OS souborech.

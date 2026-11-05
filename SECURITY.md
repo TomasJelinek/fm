@@ -216,6 +216,11 @@ a removable library under the installation's `viewers/` or `filesystems/` root.
   before loading code, checks platform/ABI/identity, and never searches the active
   panel, working directory, PATH or an archive for executable extensions. Native
   dependency lookup is constrained by separate platform loader implementations.
+- Plugin projects share only the published API/SDK. Their own repositories/CI
+  contain their tests and have no write access to the application's repository.
+  Building, testing or installing a plugin must never patch host sources or the
+  executable. Integration tests consume a released host binary in a temporary
+  distribution; extending host API requires a separate host-owned change.
 - Host-owned leases scope content services; no Rust allocator, future, Tokio
   runtime or Slint object crosses the ABI. Buffers have explicit ownership and
   release functions. Loaded code outlives every worker, callback, session and
