@@ -31,10 +31,16 @@ pub(crate) struct ShortcutState {
     modifiers: ModifiersState,
     right_alt: bool,
     held: HashSet<PhysicalKey>,
+    search_active: bool,
 }
 
 impl ShortcutState {
     pub(crate) fn handle(&mut self, window: &MainWindow, event: &WindowEvent) -> bool {
+        self.search_active = match window.get_focused_pane() {
+            0 => window.get_left_search_active(),
+            1 => window.get_right_search_active(),
+            _ => false,
+        };
         let decision = self.observe(event, window.get_focused_pane());
         match decision.action {
             Some(Action::Jump(pane, slot)) => window.invoke_bookmark_jump(pane, slot),
@@ -111,6 +117,9 @@ impl ShortcutState {
         let control = self.modifiers.control_key();
         let shift = self.modifiers.shift_key();
         let alt = self.modifiers.alt_key();
+        if self.search_active && shift && !control && !alt {
+            return Decision::default();
+        }
         let action = match (control, shift, alt) {
             (true, true, false) => Action::Assign(pane, slot),
             (true, false, _) | (false, true, _) => {
@@ -322,5 +331,28 @@ mod tests {
             state.key(input(KeyCode::Digit1, "+"), 1),
             accepted(Action::Jump(1, 1))
         );
+    }
+
+    #[test]
+    fn search_or_preedit_reserves_shift_digits_but_preserves_control_and_alt_hot_paths() {
+        for (mods, expected) in [
+            (ModifiersState::SHIFT, Decision::default()),
+            (ModifiersState::CONTROL, accepted(Action::Jump(0, 1))),
+            (
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+                accepted(Action::Assign(0, 1)),
+            ),
+            (
+                ModifiersState::ALT | ModifiersState::SHIFT,
+                accepted(Action::Jump(1, 1)),
+            ),
+        ] {
+            let mut state = ShortcutState {
+                search_active: true,
+                ..Default::default()
+            };
+            modifiers(&mut state, mods);
+            assert_eq!(state.key(input(KeyCode::Digit1, "!"), 0), expected);
+        }
     }
 }

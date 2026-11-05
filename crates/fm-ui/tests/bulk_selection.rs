@@ -62,6 +62,7 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.set_left_path("left 文档".into());
     window.set_right_path("right 🧪".into());
     let requested = Rc::new(RefCell::new(Vec::new()));

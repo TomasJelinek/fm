@@ -26,6 +26,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         font_family: "Stored 文档 e\u{301} 🧪".into(),
         desktop_font_size: 18,
         touch_font_size: 23,
+        quick_search_filter: true,
         bookmarks: vec![stored_bookmark(9, Some(1))],
     };
     let mut expected = saved.clone();

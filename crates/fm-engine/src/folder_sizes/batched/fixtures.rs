@@ -170,6 +170,7 @@ impl DirectoryService for Files {
         Ok(EntryMetadata {
             size: self.lengths.get(path).copied(),
             modified: None,
+            ..EntryMetadata::default()
         })
     }
 }
@@ -517,9 +518,22 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
         Path::new(directory).join("device"),
         EntryKind::Other,
     ));
+    entries.push(Entry::new(
+        EntryId(83),
+        Path::new(directory).join("junction"),
+        EntryKind::DirectoryLink,
+    ));
     let results = start(
         Arc::new(files),
-        vec![root(1, directory), root(2, "prázdná")],
+        vec![
+            root(1, directory),
+            root(2, "prázdná"),
+            Entry::new(
+                EntryId(3),
+                "never-probe-link-root".into(),
+                EntryKind::DirectoryLink,
+            ),
+        ],
         Arc::new(IoBudget::new()),
     )
     .join()
@@ -531,10 +545,15 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
         FolderSize {
             bytes: 4,
             files: 4,
-            skipped_links: 1,
+            skipped_links: 2,
             errors: 1,
             finished: true,
         }
+    );
+    assert_eq!(
+        results.len(),
+        2,
+        "a directory-link root must not start a scan"
     );
     assert_eq!(
         results[&EntryId(2)],

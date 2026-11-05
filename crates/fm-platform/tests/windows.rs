@@ -16,7 +16,7 @@ fn list(provider: &LocalFileSystem, path: &Path) -> Vec<Entry> {
 }
 
 #[test]
-fn directory_junction_is_classified_as_link_and_dangling_metadata_is_safe() {
+fn directory_junction_is_classified_as_directory_link_and_dangling_metadata_is_safe() {
     // A legal path containing shell syntax must remain literal fixture data.
     let dir = tempfile::Builder::new()
         .prefix("fm&echo.safe-")
@@ -52,7 +52,7 @@ fn directory_junction_is_classified_as_link_and_dangling_metadata_is_safe() {
             .find(|entry| entry.path == junction)
             .unwrap()
             .kind,
-        EntryKind::Symlink
+        EntryKind::DirectoryLink
     );
     fs::remove_dir(target).unwrap();
     assert_eq!(provider.entry_metadata(&junction).unwrap().size, None);

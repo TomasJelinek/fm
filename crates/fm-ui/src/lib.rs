@@ -2,12 +2,17 @@
 #![deny(unsafe_code)]
 mod action_icons;
 mod command_line;
+mod file_key_bridge;
+mod file_keys;
 mod font_model;
 mod native_shortcuts;
 mod navigation_models;
 mod presenter;
 mod scroll_input;
+mod search_input;
 mod size_presentation;
+mod time_presentation;
+mod tooltip;
 mod volume_presentation;
 use command_line::{replace_command_selection, safe_path_context};
 use fm_core::*;
@@ -39,6 +44,7 @@ struct RowStructure {
     length: usize,
     parent: usize,
     streaming: bool,
+    view: u64,
 }
 
 impl RowStructure {
@@ -47,9 +53,10 @@ impl RowStructure {
             navigation: pane.generation,
             displayed: pane.displayed_generation(),
             entries: pane.rows().as_ptr() as usize,
-            length: pane.rows().len(),
+            length: pane.display_len(),
             parent: pane.parent_offset(),
             streaming: pane.showing_stream(),
+            view: pane.search.view_revision,
         }
     }
 }
@@ -86,7 +93,7 @@ impl Model for Rows {
     fn row_count(&self) -> usize {
         let state = self.presenter.borrow();
         let pane = &state.panes[self.pane.index()];
-        pane.rows().len() + pane.parent_offset()
+        pane.display_len() + pane.parent_offset()
     }
     fn row_data(&self, index: usize) -> Option<FileRow> {
         let state = self.presenter.borrow();
@@ -100,6 +107,8 @@ impl Model for Rows {
                 )
                 .into(),
                 name: "..".into(),
+                prefix_end: 0,
+                compressed: false,
                 size: "".into(),
                 size_state: 0,
                 size_hint: "Parent folder".into(),
@@ -112,18 +121,24 @@ impl Model for Rows {
             });
         }
         let index = index.checked_sub(pane.parent_offset())?;
-        let entry = pane.rows().get(index)?;
+        let entry = pane.display_entry(index)?;
         let metadata = if pane.showing_stream() {
             pane.metadata.get(&entry.id).unwrap_or(&entry.metadata)
         } else {
             &entry.metadata
         };
-        let directory = entry.kind == EntryKind::Directory;
-        let (size, size_state, size_hint) = if directory {
+        let directory = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
+        let (size, size_state, size_hint) = if entry.kind == EntryKind::Directory {
             size_presentation::folder_size(
                 pane.folder_sizes.get(&entry.path),
                 pane.size_scan.is_some(),
                 pane.size_scan_attempted,
+            )
+        } else if entry.kind == EntryKind::DirectoryLink {
+            (
+                "—".into(),
+                0,
+                "Automatic size scans do not follow folder links.".into(),
             )
         } else {
             (
@@ -134,13 +149,11 @@ impl Model for Rows {
         };
         let modified = metadata
             .modified
-            .map(|time| {
-                let local: chrono::DateTime<chrono::Local> = time.into();
-                local.format("%Y-%m-%d %H:%M").to_string()
-            })
+            .and_then(time_presentation::modified)
             .unwrap_or_else(|| "—".into());
         let kind = match entry.kind {
             EntryKind::Directory => "Folder".into(),
+            EntryKind::DirectoryLink => "Folder link".into(),
             EntryKind::Symlink => "Link".into(),
             EntryKind::Other => "Other".into(),
             EntryKind::File => entry
@@ -153,13 +166,16 @@ impl Model for Rows {
             // Include intent and committed generations: a pending refresh may keep
             // the old rows visible, and a provider may recycle IDs at its commit.
             identity: format!(
-                "{}:{}:entry:{}",
+                "{}:{}:{}:entry:{}",
                 pane.generation,
                 pane.displayed_generation().0,
+                pane.search.view_revision,
                 entry.id.0
             )
             .into(),
             name: entry.display_name.clone().into(),
+            prefix_end: i32::try_from(pane.search_prefix_end(index)).unwrap_or(0),
+            compressed: metadata.compression == CompressionStatus::Compressed,
             size: size.into(),
             size_state,
             size_hint: size_hint.into(),
@@ -309,6 +325,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter.preferences.density_index(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
+    window.set_quick_search_filter(presenter.preferences.values.quick_search_filter);
     window.set_active_pane(presenter.active.index() as i32);
     window.set_volumes_revision(presenter.volumes_revision);
     let mut reveal = [false; 2];
@@ -317,6 +334,26 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         .enumerate()
     {
         let p = &presenter.panes[index];
+        let context = p.search.input_context.0.to_string().into();
+        let query = p.search.query.as_str().into();
+        let matches = i32::try_from(p.search_match_count()).unwrap_or(i32::MAX);
+        if index == 0 {
+            if window.get_left_search_context() != context {
+                window.invoke_reset_files_input(0);
+            }
+            window.set_left_search_context(context);
+            window.set_left_search_query(query);
+            window.set_left_search_pending(p.search.pending);
+            window.set_left_search_count(matches);
+        } else {
+            if window.get_right_search_context() != context {
+                window.invoke_reset_files_input(1);
+            }
+            window.set_right_search_context(context);
+            window.set_right_search_query(query);
+            window.set_right_search_pending(p.search.pending);
+            window.set_right_search_count(matches);
+        }
         if let Some(rows) = model.as_any().downcast_ref::<Rows>() {
             let (first, end) = if index == 0 {
                 (
@@ -472,6 +509,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     if reveal[1] {
         window.invoke_reveal_right();
     }
+    tooltip::synchronize(window);
 }
 
 fn update_strings(
@@ -504,12 +542,22 @@ fn update_model<T: Clone + PartialEq + 'static>(
     }
 }
 
+/// Register the shared file-panel keyboard policy on a standalone Slint window.
+///
+/// [`install`] includes this initializer. UI-only hosts that attach individual
+/// callbacks can use it without a presenter or backend; native editors retain focus.
+pub fn install_file_keys(window: &MainWindow) {
+    file_key_bridge::install(window);
+}
+
 /// Register UI callbacks and request the initial locations. The sender must be nonblocking.
 pub fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
+    install_file_keys(window);
+    tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
     window.set_left_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Left)));
@@ -599,6 +647,22 @@ pub fn install(
         w.set_active_pane(id.index() as i32);
         p.bulk_selection(id, operation, s);
     });
+    callback!(on_search_edited, |w, p, s, id, query| {
+        p.change_search_query(pane(id), query.as_str(), s);
+        let _ = w;
+    });
+    window.on_search_backspace(|text, anchor, cursor| {
+        let (text, cursor) = search_input::erase_previous_grapheme(text.as_str(), anchor, cursor);
+        SearchTextEdit {
+            text: text.into(),
+            cursor: i32::try_from(cursor).unwrap_or(i32::MAX),
+        }
+    });
+    callback!(on_search_filter_changed, |w, p, s, enabled| {
+        p.change_search_filter(enabled, s);
+        p.flush_selection(s);
+        let _ = w;
+    });
     {
         let weak = window.as_weak();
         let state = presenter.clone();
@@ -646,11 +710,17 @@ pub fn install(
             w.set_active_pane(p.active.index() as i32);
             w.invoke_focus_files();
         } else if key == 1 {
-            if let Some(row) = p.panes[id.index()].cursor_index() {
+            if p.panes[id.index()].search_allows_activation()
+                && let Some(row) = p.panes[id.index()].cursor_index()
+            {
                 p.open(id, row, s);
             }
         } else if key == 10 {
-            p.open_folder(id, s);
+            if p.panes[id.index()].search_allows_activation() {
+                p.open_folder(id, s);
+            }
+        } else if (2..=7).contains(&key) && !p.panes[id.index()].search.query.is_empty() {
+            p.move_search_cursor(id, key);
         } else {
             p.move_cursor(id, key, s);
         }
@@ -662,12 +732,24 @@ pub fn install(
         w.set_active_pane(id.index() as i32);
         w.invoke_focus_files();
     });
-    callback!(on_drive_letter, |w, p, s, id, letter| {
-        let id = pane(id);
-        p.active = id;
-        p.drive_letter(id, letter.as_str(), s);
-        let _ = w;
-    });
+    {
+        let weak = window.as_weak();
+        let state = presenter.clone();
+        let sender = send.clone();
+        window.on_drive_letter(move |id, letter| {
+            let Some(window) = weak.upgrade() else {
+                return false;
+            };
+            let handled = {
+                let mut presenter = state.borrow_mut();
+                presenter.drive_letter(pane(id), letter.as_str(), sender.as_ref())
+            };
+            if handled {
+                refresh(&window, &state.borrow());
+            }
+            handled
+        });
+    }
     callback!(on_properties, |w, p, s, id| {
         p.properties(pane(id), s);
         let _ = w;

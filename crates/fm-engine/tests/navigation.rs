@@ -60,6 +60,7 @@ impl DirectoryService for ControlledFileSystem {
         Ok(EntryMetadata {
             size: Some(7),
             modified: None,
+            ..EntryMetadata::default()
         })
     }
 }

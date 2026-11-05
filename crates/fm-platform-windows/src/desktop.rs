@@ -36,7 +36,7 @@ impl ComGuard {
     pub(crate) fn initialize(mode: u32) -> Option<Self> {
         // SAFETY: reserved pointer is null; initialization and its guard stay on this thread.
         let result = unsafe { CoInitializeEx(ptr::null(), mode | COINIT_DISABLE_OLE1DDE as u32) };
-        (result >= 0).then_some(Self(std::marker::PhantomData))
+        (result >= 0).then(|| Self(std::marker::PhantomData))
     }
 }
 impl Drop for ComGuard {
@@ -335,6 +335,36 @@ impl LocationService for WindowsFileSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_com_initialization_preserves_the_callers_existing_apartment() {
+        std::thread::spawn(|| {
+            use windows_sys::Win32::System::Com::CoGetApartmentType;
+            let _apartment = ComGuard::initialize(COINIT_APARTMENTTHREADED as u32)
+                .expect("initialize the isolated test thread's STA");
+            let apartment_type = || {
+                let mut apartment = 0;
+                let mut qualifier = 0;
+                // SAFETY: both output pointers are live and the current thread owns its STA.
+                let result = unsafe { CoGetApartmentType(&mut apartment, &mut qualifier) };
+                (result, apartment, qualifier)
+            };
+            let before = apartment_type();
+            assert!(before.0 >= 0);
+            assert!(
+                ComGuard::initialize(windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32)
+                    .is_none(),
+                "a conflicting MTA initialization must fail"
+            );
+            assert_eq!(
+                apartment_type(),
+                before,
+                "failed initialization must not uninitialize the existing caller-owned STA"
+            );
+        })
+        .join()
+        .unwrap();
+    }
     use base64::{Engine, engine::general_purpose::STANDARD};
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf};
 

@@ -128,7 +128,7 @@ fn scan_root<F: ScanSource + ?Sized>(
                         },
                         Err(_) => size.errors = size.errors.saturating_add(1),
                     },
-                    EntryKind::Symlink => {
+                    EntryKind::Symlink | EntryKind::DirectoryLink => {
                         add_checked(&mut size.skipped_links, 1, &mut size.errors);
                     }
                     EntryKind::Other => {}

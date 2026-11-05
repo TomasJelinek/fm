@@ -1,6 +1,6 @@
 # Dvoupanelový souborový manažer v Rustu
 
-Datum: 4. listopadu 2026
+Datum: 4. listopadu 2026; doplněno 5. listopadu 2026
 
 Stav: průběžně aktualizovaný návrh zahrnující všechny dosud přidané požadavky. Read-only základ, commander ovládání, automatická obnova, témata/fonty/nastavení, karty a uložené cesty, systémové ikony disků, pixelové rolování a plánování velikostí podle úložiště jsou implementované a otestované. Aktuální verze je0.1; zmenšený Touch profil má40px základní cíle. Viewer/VFS a opakované sudo relace mají samostatný návrh; kopírování/přesun/mazání s frontou a konflikty patří do dalších etap. Stav jednotlivých částí je v oddílu 18.
 
@@ -995,7 +995,7 @@ Uložené cesty podle Salamanderu mají jméno, nezměněnou nativní cestu a vo
 číselnou zkratku. Nabídka hvězdičky umožní přidání, otevření a odebrání. Až64
 záložek,10 číselných slotů; Ctrl+Shift+číslo přiřazuje, Ctrl/Shift+číslo otevírá,
 Alt navíc cílí do druhého panelu. Identita není odvozena z názvu ani zobrazené
-cesty. Uložené záložky sdílí atomické asynchronní nastavení verze3; nativní
+cesty. Uložené záložky sdílí atomické asynchronní nastavení verze4; nativní
 ne-Unicode názvy mají bezeztrátový platformní kodek. Souhrnný limit nastavení
 4MiB chrání paměť, není limitem délky cesty; nadlimitní uložení selže bez zkrácení.
 
@@ -1078,3 +1078,104 @@ Přesná identita Unicode se ověřuje také skutečnými parsery shellů.
 Pravidla vycházejí z [dokumentace PowerShellu](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules),
 [POSIX citování v Bash](https://www.gnu.org/software/bash/manual/html_node/Double-Quotes.html)
 a [Windows CRT argv pravidel](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments?view=msvc-170).
+
+## 30. Hledání psaním, tooltipy a atribut komprese
+
+Prosté psaní v seznamu souborů zahájí hledání začátku názvu. Po dodatečném
+upřesnění uživatelem je hledání **vždy Unicode case-insensitive**, také na Linuxu.
+Porovnává se původní název; nedochází k normalizaci identity ani odstranění
+diakritiky. Hledání je doslovné, bez wildcardů a regulárních výrazů. Zvýrazní se
+původní odpovídající prefix, při rozšíření case foldu až po konec původního
+grafému. Nativní ne-Unicode jména se nesmějí hledat přes ztrátovou náhradu.
+
+Šipky nahoru/dolů procházejí odpovídající soubory i složky v aktuálním řazení,
+bez přetečení přes konec. Escape hledání opustí; Backspace odstraňuje celý
+rozšířený grafém a prázdný dotaz režim ukončí. `..` zůstává navigací a nehledá se.
+IME preedit je lokální; backend dostane až potvrzený text. Ctrl+Space patří IME,
+Ctrl+P nadále vkládá cestu. Windows Shift+písmeno disku má přednost; Shift+číslo
+pro uložené cesty je při hledání/kompozici dočasně potlačeno. Ostatní editory
+zachovávají běžné chování.
+
+Options nabízí filtrování při psaní: zobrazí jen shodné položky namísto skákání
+v celém seznamu. Volba je ve striktních nastaveních verze4 jako
+`quick_search_filter`, výchozí `false`; verze1–3 se migrují s vypnutým filtrem.
+Předčasné místní změny přežijí pozdní načtení uložených nastavení. Dotaz je
+samostatný pro každý panel, přežívá řazení a obnovu stejné složky; změna složky
+nebo karty jej ruší. Prostor cesty slouží také pro kontextový dotaz bez trvalého
+nového řádku UI.
+
+Veškeré porovnávání a vytváření indexu probíhá na backendu nad neměnným úplným
+snapshotem. Dva omezené, samostatné proudy přijímají poslední dotaz panelu;
+starší práci kooperativně ruší a kontrolují generaci navigace, přesnou identitu
+zdrojového Arc a revizi dotazu i po čekání na výstupní frontu. UI ověření opakuje.
+Filtrování nemění kanonický obsah pro watchery a výpočet velikostí. Hromadný
+výběr a vlastnosti používají skutečně zobrazenou projekci; skryté položky nejsou
+akčními cíli. Klávesová aktivace během čekání nebo bez shod nesmí otevřít
+zastaralou neodpovídající položku. Velká data se uvolňují na backendu.
+
+Tooltipy mají menší odvozené písmo. Preferované umístění je vpravo dole od
+kurzoru s mezerou přibližně14/18px; u hran se jednotlivé osy obrátí a bublina
+zůstane ve viditelné ploše s8px okrajem. Velké bubliny se přizpůsobí dostupnému
+prostoru, aby nezakryly kurzor a klikací místo. Zachová se úplný přístupný text,
+průchod kliknutí a nativní životní cyklus i uvnitř popupů. Tooltipy na řádcích
+souborů zůstávají odstraněné.
+
+Soubor nebo složka s kompresí hlášenou filesystémem má malou značku u nativní
+ikony. `EntryMetadata.compression` rozlišuje `Unknown`, `Uncompressed` a
+`Compressed`; přípona archivu ani řídká alokace nejsou důkazem komprese.
+Windows adaptér čte nativní atribut, Linux samostatně používá bezpečné `statx`
+s kontrolou masky podpory. Metadata se načítají na backendu bez otevírání obsahu
+a bez následování koncového odkazu. Zobrazená velikost zůstává logická.
+
+Odkazy na složky a Windows junctiony mají rozpoznatelnou ikonu odkazu. Windows
+načte systémový překryv na základní ikoně složky/souboru; ostatní platformy použijí
+vhodnou systémovou ikonu, případně vlastní značku. Typ `DirectoryLink` zůstává
+oddělený od skutečné složky: rekurzivní výpočet velikostí jej nesmí následovat.
+Windows rozpozná adresářový odkaz z údajů enumerace bez dotazu na cíl; na Linuxu
+se kvůli ikoně neprovádí implicitní průchod či síťový dotaz na cíl symlinku.
+Načítání a skládání ikon probíhá na backendu. Překryv odkazu může současně
+obsahovat označení komprese. Koncový odkaz se sleduje až při výslovné navigaci.
+
+Podrobná rozhraní, prior art Salamanderu a ověřovací scénáře jsou v
+[návrhu hledání, tooltipů a metadat](2026-11-05-panel-search-and-metadata-design.md).
+[README](../../../README.md) obsahuje sestavení a spuštění Windows x64 a
+Linuxu/Ubuntu/Mintu včetně `build.bat` a `build.sh`; macOS zůstává budoucí etapou.
+
+## 31. Sdílení kódu a velikost generovaného Rustu
+
+Opakované chování patří do malých sdílených funkcí; opakované ovládací prvky do
+komponent s daty a callbacky. Platformní implementace zůstávají oddělené, společná
+je pouze neutrální logika. Pravidlo platí také pro vstupy Slint kompilátoru:
+tooltip vložený jako dítě každé instance může vynutit vložení celé komponenty.
+Sdílené obaly editorů a ComboBoxů proto vlastní tooltip uvnitř své definice.
+Nabídky F9/F10 sdílejí tělo a panelové klávesy zpracovává společný Rust router.
+
+Izolovaný tooltip adaptér ukládá původní tělo vytvoření tooltipu jednou do privátní
+funkce a opakovaně ji volá. Výstup se standardně formátuje jako Rust AST; ruční
+úpravy vygenerovaného textu ani zdrojů závislostí se nepoužívají. Při změnách
+komponent se kontroluje skutečný generovaný objem při stejném vstupu a zároveň
+chování, Unicode, focus a vykreslení. Velikost zdrojového výstupu sama neurčuje
+velikost binárky ani spotřebu paměti. Podrobnosti měření a hranic sdílení uvádí
+[rozšíření návrhu](2026-11-05-panel-search-and-metadata-design.md#reuse-and-generated-rust).
+
+Podrobný audit rozlišuje vlastní Slint zdroje od výsledku překladu. V prvním
+optimalizovaném checkpointu má dvanáct zdrojů dohromady přibližně 125 KB; generovaný
+Rust má 5,96 MB normalizovaných tokenů a 10,59 MB po formátování. Přibližně 59 % tohoto
+výpisu tvoří inicializace widgetů a vazeb. FilePane i TipBody už mají jednu sdílenou
+implementaci; další celý panel přidá v diagnostickém příkladu pouze 74 KB. Přidávání
+dalších pomocných funkcí samo o sobě zbývající megabajty neodstraní.
+
+Následné sdílení tlačítek snížilo výstup na 4,87 MB normalizovaných tokenů a
+8,70 MB po formátování, celkem o 40,6 % proti původnímu adaptérem generovanému
+výstupu. Počet implementací komponent klesl ze 130 na 92. Zbývající inicializace
+představují 60,7 % formátovaného výpisu; tento výsledek není tvrzením o dosažení
+optima ani o velikosti binárky či spotřebě RAM.
+
+Další postup je omezovat varianty složených ovladačů, sdílet dialogová těla pomocí
+modelů a nepřidávat Tooltip jako dítě každého tlačítka. Stejný princip obalu s
+vlastností `hint` platí pro tlačítka, ComboBoxy i editory. Výraznější úspory přes
+vlastní lehké ovladače nebo sdílenou reprezentaci popupů se musí prokázat úplným
+prototypem včetně klávesnice, IME, přístupnosti a systémových ikon. Nepředpokládá
+se neověřené procento úspory ani úplná aplikace ve stovkách kilobajtů.
+Čísla, omezení a další možnosti dokumentuje
+[rozbor generování UI](../../verification/slint-code-generation-size.md).

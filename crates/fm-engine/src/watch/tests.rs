@@ -151,6 +151,7 @@ impl Files {
         entry.metadata = EntryMetadata {
             size: Some(length),
             modified: Some(SystemTime::UNIX_EPOCH),
+            ..EntryMetadata::default()
         };
         self.directories
             .lock()
@@ -425,6 +426,62 @@ async fn recovered_metadata_refreshes_once_and_stable_unknown_metadata_stays_qui
     files.put("left", 8);
     assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(2)));
     stop(&controller, &mut tasks).await;
+}
+
+async fn assert_polling_observes_compression_only_change(initial: fm_core::CompressionStatus) {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    files
+        .directories
+        .lock()
+        .unwrap()
+        .get_mut(Path::new("left"))
+        .unwrap()[0]
+        .metadata
+        .compression = initial;
+    let original = files.visible(PaneId::Left, 1, "left");
+    let (controller, mut tasks, mut events) =
+        controller(files.clone(), None, Duration::from_millis(30));
+    controller.set_visible(original.clone());
+    files.wait_probes(2).await;
+    assert!(
+        events.try_recv().is_err(),
+        "unchanged compression must remain quiet"
+    );
+    {
+        let mut directories = files.directories.lock().unwrap();
+        let entry = &mut directories.get_mut(Path::new("left")).unwrap()[0];
+        entry.metadata.compression = fm_core::CompressionStatus::Compressed;
+        assert_eq!(entry.metadata.size, original.entries[0].metadata.size);
+        assert_eq!(
+            entry.metadata.modified,
+            original.entries[0].metadata.modified
+        );
+    }
+    // There is deliberately no native event: only the bounded polling fallback
+    // can notice this compression-only transition and request a badge refresh.
+    let change = tokio::time::timeout(Duration::from_secs(3), events.recv()).await;
+    stop(&controller, &mut tasks).await;
+    assert!(
+        matches!(
+            change,
+            Ok(Some(Event::DirectoryChanged {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+            }))
+        ),
+        "polling missed compression-only change from {initial:?}: {change:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn polling_refreshes_a_compression_only_change_without_length_or_mtime_changes() {
+    assert_polling_observes_compression_only_change(fm_core::CompressionStatus::Uncompressed).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn polling_refreshes_recovered_compression_without_length_or_mtime_changes() {
+    assert_polling_observes_compression_only_change(fm_core::CompressionStatus::Unknown).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

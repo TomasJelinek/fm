@@ -75,6 +75,8 @@ pub struct UserPreferences {
     pub font_family: String,
     pub desktop_font_size: u16,
     pub touch_font_size: u16,
+    /// Show only matching names during panel type-to-search instead of jumping.
+    pub quick_search_filter: bool,
     pub bookmarks: Vec<Bookmark>,
 }
 
@@ -91,6 +93,7 @@ impl Default for UserPreferences {
             font_family: String::new(),
             desktop_font_size: 11,
             touch_font_size: 15,
+            quick_search_filter: false,
             bookmarks: Vec::new(),
         }
     }

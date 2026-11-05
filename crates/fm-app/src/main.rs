@@ -414,6 +414,7 @@ fn run_window(
         move || {
             let mut state = sync_state.borrow_mut();
             state.flush_selection(&|command| sync_commands.try_send(command).is_ok());
+            state.flush_search(&|command| sync_commands.try_send(command).is_ok());
             sync_visible(&state, &sync_commands, &visible_sync);
         },
     );
@@ -443,10 +444,7 @@ fn run_window(
             &mut retired,
         )
         .await;
-        closing_events.close();
-        while let Ok(event) = closing_events.try_recv() {
-            retired.push(Box::new(event));
-        }
+        reclaim::retire_receiver(closing_events, &mut retired);
         presenter.borrow_mut().retire_all();
         retired.extend(presenter.borrow_mut().take_retired());
         if let Some(pending) = final_retire_pending.borrow_mut().take() {

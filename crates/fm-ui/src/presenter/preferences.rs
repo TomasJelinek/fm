@@ -22,6 +22,7 @@ pub(super) struct EditedFields {
     pub(super) font_family: bool,
     pub(super) desktop_font_size: bool,
     pub(super) touch_font_size: bool,
+    pub(super) quick_search_filter: bool,
     bookmarks: bool,
 }
 
@@ -54,6 +55,7 @@ impl Presenter {
             return;
         }
         self.preferences.loaded = true;
+        let previous_filter = self.preferences.values.quick_search_filter;
         match result {
             Ok(mut loaded) => {
                 let local = &mut self.preferences.values;
@@ -75,6 +77,9 @@ impl Presenter {
                 }
                 if edited.touch_font_size {
                     loaded.touch_font_size = local.touch_font_size;
+                }
+                if edited.quick_search_filter {
+                    loaded.quick_search_filter = local.quick_search_filter;
                 }
                 let local_generation = self.preferences.bookmark_generation;
                 let mut generation = local_generation.max(
@@ -132,6 +137,9 @@ impl Presenter {
             }
         }
         self.preferences.flush_after_load = self.preferences.unsaved;
+        if previous_filter != self.preferences.values.quick_search_filter {
+            self.search_filter_changed();
+        }
     }
 
     pub(super) fn flush_loaded_preferences(&mut self, send: &dyn Fn(Command) -> bool) {
@@ -189,6 +197,15 @@ impl Presenter {
         self.update_preferences(preferences, send);
     }
 
+    pub(crate) fn change_search_filter(&mut self, enabled: bool, send: &dyn Fn(Command) -> bool) {
+        self.preferences.edited.quick_search_filter = true;
+        let preferences = UserPreferences {
+            quick_search_filter: enabled,
+            ..self.preferences.values.clone()
+        };
+        self.update_preferences(preferences, send);
+    }
+
     pub(super) fn update_preferences(
         &mut self,
         preferences: UserPreferences,
@@ -208,6 +225,8 @@ impl Presenter {
         edited.font_family |= preferences.font_family != previous.font_family;
         edited.desktop_font_size |= preferences.desktop_font_size != previous.desktop_font_size;
         edited.touch_font_size |= preferences.touch_font_size != previous.touch_font_size;
+        let filter_changed = preferences.quick_search_filter != previous.quick_search_filter;
+        edited.quick_search_filter |= filter_changed;
         edited.bookmarks |= preferences.bookmarks != previous.bookmarks;
         self.retired.push(Box::new(mem::replace(
             &mut self.preferences.values,
@@ -215,6 +234,9 @@ impl Presenter {
         )));
         self.preferences.unsaved = true;
         self.preferences.revision.0 = self.preferences.revision.0.saturating_add(1);
+        if filter_changed {
+            self.search_filter_changed();
+        }
         if !self.preferences.loaded {
             self.desktop.status = "Options previewed; waiting for saved options to load".into();
             return;
@@ -258,6 +280,42 @@ impl Presenter {
 mod tests {
     use super::*;
     use std::{cell::RefCell, io};
+
+    #[test]
+    fn quick_search_filter_preview_survives_late_load_and_saves_other_loaded_choices() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.change_search_filter(true, &|_| panic!("must await saved preferences"));
+        p.preferences_loaded(Ok(UserPreferences {
+            theme: PreferenceTheme::Dark,
+            font_family: "Stored 文档 e\u{301}".into(),
+            quick_search_filter: false,
+            ..Default::default()
+        }));
+        assert!(p.preferences.values.quick_search_filter);
+        assert_eq!(p.preferences.values.font_family, "Stored 文档 e\u{301}");
+        p.flush_loaded_preferences(&|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!()
+            };
+            assert!(preferences.quick_search_filter);
+            assert_eq!(preferences.theme, PreferenceTheme::Dark);
+            assert_eq!(preferences.font_family, "Stored 文档 e\u{301}");
+            true
+        });
+    }
+
+    #[test]
+    fn quick_search_filter_explicit_default_choice_wins_over_late_enabled_setting() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.change_search_filter(false, &|_| panic!("must await saved preferences"));
+        p.preferences_loaded(Ok(UserPreferences {
+            quick_search_filter: true,
+            density: UiDensity::Touch,
+            ..Default::default()
+        }));
+        assert!(!p.preferences.values.quick_search_filter);
+        assert_eq!(p.preferences.values.density, UiDensity::Touch);
+    }
 
     #[test]
     fn unchanged_provisional_defaults_do_not_mask_saved_values() {

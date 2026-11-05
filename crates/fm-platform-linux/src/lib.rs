@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 mod desktop;
 mod fonts;
 mod icons;
+mod metadata;
 mod mounts;
 mod open;
 mod settings;
@@ -46,7 +47,7 @@ impl DirectoryService for LinuxFileSystem {
         self.local.read_directory(path, cancel, emit)
     }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
-        self.local.entry_metadata(path)
+        metadata::read(path)
     }
 }
 

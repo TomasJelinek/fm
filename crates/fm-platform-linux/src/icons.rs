@@ -98,6 +98,13 @@ fn icon_names_with_storage(
             };
         }
         IconKind::Folder => return vec!["folder"],
+        IconKind::FolderLink => {
+            return vec![
+                "folder-symbolic-link",
+                "folder-link",
+                "emblem-symbolic-link",
+            ];
+        }
         IconKind::Drive => {
             // detect checks locally parsed mountinfo for network filesystems
             // before any target stat/canonicalize; no media/file contents are read.
@@ -112,7 +119,7 @@ fn icon_names_with_storage(
                 vec!["drive-harddisk"]
             };
         }
-        IconKind::Link => return vec!["emblem-symbolic-link", "text-x-generic"],
+        IconKind::Link => return vec!["emblem-symbolic-link"],
         IconKind::File => {}
     }
     // Fixed MIME names prevent filename-controlled path construction or file sniffing.
@@ -284,6 +291,23 @@ fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
 mod tests {
     use super::*;
     use fm_core::IconKind;
+
+    #[test]
+    fn folder_links_request_only_fixed_host_link_art_without_probing_the_target() {
+        let key = IconKey {
+            extension: Some("../../evil.png".into()),
+            drive_root: Some("/mnt/untrusted".into()),
+            ..IconKey::folder_link()
+        };
+        let names = icon_names_with_storage(&key, |_| panic!("folder link target was probed"));
+        assert_eq!(names[0], "folder-symbolic-link");
+        assert!(names.contains(&"emblem-symbolic-link"));
+        assert!(
+            !names.contains(&"folder"),
+            "generic folder art would erase the link indication"
+        );
+        assert!(names.iter().all(|name| safe_theme_name(name)));
+    }
 
     #[test]
     fn semantic_names_are_fixed_host_roles_and_never_probe_supplied_paths() {

@@ -2,20 +2,27 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { LocationImage } from "action-icons.slint";
+import { TooltipPlacement } from "tooltip-placement.slint";
+export { TooltipPlacement }
 
 // Dynamic paths and volume labels remain plain text, including Markdown punctuation.
 export component TipBody inherits Rectangle {
     in property <string> text;
-    width: min(560px, max(120px, content.preferred-width + 20px));
-    height: content.preferred-height + 16px;
+    x: 0px; y: 0px;
+    width: min(560px, max(120px, content.preferred-width + 20px),
+        TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px));
+    height: min(content.preferred-height + 16px,
+        TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px));
+    clip: true;
     background: Theme.surface;
     border-color: Theme.active-frame;
     border-width: 1px;
     border-radius: 4px;
     content := Text {
-        x: 10px; y: 8px; width: parent.width - 20px;
-        text: root.text; color: Theme.text; font-size: Theme.font-size;
-        wrap: word-wrap;
+        x: 10px; y: 8px; width: max(1px, parent.width - 20px);
+        text: root.text; color: Theme.text; font-size: Theme.small-font;
+        wrap: char-wrap;
+        accessible-label: root.text;
     }
 }
 

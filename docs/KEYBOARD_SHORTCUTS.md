@@ -9,6 +9,10 @@ do not intercept RightAlt/AltGr. Number0 refers to slot10.
 | --- | --- |
 | Tab / Shift+Tab in files | Switch the active pane |
 | ↑ / ↓, PageUp / PageDown, Home / End | Move the focused row |
+| Plain typing in files | Start Unicode case-insensitive filename-prefix search |
+| ↑ / ↓ during search | Visit previous / next matching name without wrapping |
+| Escape during search | Leave search and restore the complete listing |
+| Backspace during search | Remove one extended grapheme; an empty query exits |
 | Enter | Enter a folder or open the focused file through its host association |
 | Backspace / Ctrl+PageUp | Parent folder |
 | Alt+← / Alt+→ | Back / forward history |
@@ -35,7 +39,7 @@ do not intercept RightAlt/AltGr. Number0 refers to slot10.
 | Ctrl+Enter in files or command editor | Append the focused basename to the end of the command draft |
 | Ctrl+P in files or command editor | Insert the active pane path at the command selection |
 | Ctrl+[ / Ctrl+] | Insert the left / right pane path at the command selection |
-| Ctrl+Space in files | Insert that pane path and focus the command editor |
+| Ctrl+Space | Available to the input method (IME); Ctrl+P inserts the path |
 | Enter in command editor | Explicitly submit the command to the selected system terminal |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |
 | F1 | Help |
@@ -51,6 +55,17 @@ controls have tooltips and accessible names.
 
 Mouse: left click focuses, Ctrl+left click toggles selection, unmodified left
 double-click activates. Clicking a column header switches sorting direction.
+
+Search matches the beginning of files and folders literally, always ignoring
+Unicode case. The matched original prefix is colored; `..` never matches. The
+Options checkbox **Filter while typing** hides nonmatching entries; otherwise
+search jumps among matches in the complete list. Home/End and PageUp/PageDown
+also follow match order. Space appends query text while searching; Insert exits
+search before its normal selection action. Native IME composition is not searched
+until committed. Shift+drive keeps its Windows meaning; shifted numbered
+bookmarks are suspended during search/composition. Queries are independent per
+pane, survive sorting/refresh and clear on folder/tab navigation. Pending or
+empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 
 The bottom F2 Rename, F3 View, F4 Edit, F5 Copy, F6 Move, F7 New folder and
 F8 Delete actions are reserved for later stages and are currently disabled.

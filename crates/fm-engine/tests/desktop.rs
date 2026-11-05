@@ -98,6 +98,7 @@ impl DirectoryService for Services {
         Ok(EntryMetadata {
             size: Some(17),
             modified: None,
+            ..EntryMetadata::default()
         })
     }
 }

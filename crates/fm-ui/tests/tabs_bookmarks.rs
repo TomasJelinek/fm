@@ -62,6 +62,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.set_left_tabs(ModelRc::new(VecModel::from(vec![
         tab("11", "A", true),
         tab("12", "B", false),

@@ -2,8 +2,8 @@
 
 use crate::Outbox;
 use fm_core::{
-    Cancellation, Entry, EntryKind, Event, FileSystem, NavigationId, PaneId, VisibleDirectory,
-    WatchService, WatchSubscription,
+    Cancellation, CompressionStatus, Entry, EntryKind, Event, FileSystem, NavigationId, PaneId,
+    VisibleDirectory, WatchService, WatchSubscription,
 };
 use std::{
     ffi::OsString,
@@ -370,6 +370,7 @@ struct Row {
     kind: EntryKind,
     size: Option<u64>,
     modified: Option<SystemTime>,
+    compression: CompressionStatus,
 }
 
 impl Row {
@@ -382,6 +383,7 @@ impl Row {
                 .then_some(entry.metadata.size)
                 .flatten(),
             modified: entry.metadata.modified,
+            compression: entry.metadata.compression,
         }
     }
 }

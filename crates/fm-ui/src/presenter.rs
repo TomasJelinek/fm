@@ -4,6 +4,7 @@ mod choices;
 mod desktop;
 mod fonts;
 mod preferences;
+mod search;
 mod selection;
 mod shortcuts;
 mod tabs;
@@ -82,6 +83,7 @@ pub(crate) struct Pane {
     pub(crate) generation: u64,
     successful_generation: Option<NavigationId>,
     committed_sort: SortSpec,
+    pub(crate) search: search::SearchState,
 }
 
 /// In-memory state for two independent panes and their current navigation generations.
@@ -98,6 +100,8 @@ pub struct Presenter {
     tabs: tabs::TabsState,
     choices: choices::ChoicesState,
     selection_properties: [Option<selection::PendingProperties>; 2],
+    search_revisions: [SearchRevision; 2],
+    search_cancellations: [Option<SearchRevision>; 2],
     retired: Vec<DeferredDrop>,
 }
 
@@ -108,6 +112,8 @@ impl Presenter {
             tabs: tabs::TabsState::new(),
             choices: choices::ChoicesState::default(),
             selection_properties: [None, None],
+            search_revisions: [SearchRevision(0); 2],
+            search_cancellations: [None, None],
             panes: [Pane::new(left), Pane::new(right)],
             volumes: vec![],
             volumes_revision: 0,
@@ -168,6 +174,8 @@ impl Presenter {
         self.retire_selection_properties();
         self.tabs.retire(&mut self.retired);
         for p in &mut self.panes {
+            self.retired.push(Box::new(p.search.result.take()));
+            self.retired.push(Box::new(mem::take(&mut p.search.query)));
             self.retired
                 .push(Box::new(mem::replace(&mut p.entries, Arc::from([]))));
             self.retired.push(Box::new(mem::replace(
@@ -279,6 +287,9 @@ impl Presenter {
         resort: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
+        let new_location = path != self.panes[pane.index()].path
+            || self.panes[pane.index()].successful_generation.is_none();
+        self.search_navigation_accepted(pane, new_location, send);
         self.selection_navigation_accepted(pane, navigation, &path);
         let p = &mut self.panes[pane.index()];
         let same_location = path == p.path && p.successful_generation.is_some();
@@ -362,6 +373,7 @@ impl Presenter {
         if let Some(pane) = committed {
             self.panes[pane.index()].selection_rebase_pending = true;
         }
+        self.flush_search(send);
         self.flush_selection(send);
         self.dispatch_open_directories(send);
         self.flush_loaded_preferences(send);
@@ -369,6 +381,9 @@ impl Presenter {
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        let Some(event) = self.apply_search_event(event) else {
+            return;
+        };
         let Some(event) = self.apply_selection_event(event) else {
             return;
         };
@@ -678,11 +693,12 @@ impl Presenter {
             return false;
         };
         let entry = self.panes[pane.index()]
-            .rows()
-            .get(row)
+            .display_entry(row)
             .map(|entry| (entry.kind, entry.path.clone()));
         match entry {
-            Some((EntryKind::Directory, path)) => self.navigate(pane, path, None, send),
+            Some((EntryKind::Directory | EntryKind::DirectoryLink, path)) => {
+                self.navigate(pane, path, None, send)
+            }
             Some((EntryKind::File | EntryKind::Symlink, path)) => {
                 self.open_native_entry(pane, path, send)
             }
@@ -716,14 +732,18 @@ impl Presenter {
         let Some(row) = row.checked_sub(p.parent_offset()) else {
             return;
         };
-        if let Some(id) = p.rows().get(row).map(|e| e.id) {
+        if let Some(id) = p.display_entry(row).map(|e| e.id) {
             p.cursor = Some(id);
             p.parent_cursor = false;
             if let Some(request) = &mut p.pending {
                 request.cursor_touched = true;
             }
             if toggle {
-                let path = p.rows()[row].path.clone();
+                let path = p
+                    .display_entry(row)
+                    .expect("validated display row")
+                    .path
+                    .clone();
                 self.send_selection(pane, SelectionAction::Toggle(path), send);
             }
         }
@@ -731,7 +751,7 @@ impl Presenter {
     pub(crate) fn move_cursor(&mut self, pane: PaneId, key: i32, send: &dyn Fn(Command) -> bool) {
         let p = &mut self.panes[pane.index()];
         p.preserve_viewport = false;
-        let count = p.rows().len() + p.parent_offset();
+        let count = p.display_len() + p.parent_offset();
         if count == 0 {
             return;
         }
@@ -759,7 +779,9 @@ impl Presenter {
             p.cursor = None;
             p.parent_cursor = true;
         } else {
-            p.cursor = Some(p.rows()[row - p.parent_offset()].id);
+            p.cursor = p
+                .display_entry(row - p.parent_offset())
+                .map(|entry| entry.id);
             p.parent_cursor = false;
         }
         if let Some(path) = toggle_path {
@@ -844,6 +866,7 @@ impl Pane {
             volume_paths: HashMap::new(),
             streaming_index: HashMap::new(),
             committed_sort: SortSpec::default(),
+            search: search::SearchState::default(),
         }
     }
 
@@ -891,12 +914,15 @@ impl Pane {
         if self.parent_cursor && self.has_parent() {
             return Some(0);
         }
+        if self.search_view_waiting() {
+            return None;
+        }
         self.cursor
             .and_then(|id| {
                 if self.showing_stream() {
                     self.streaming_index.get(&id)
                 } else {
-                    self.index.by_id.get(&id)
+                    self.display_index().by_id.get(&id)
                 }
             })
             .map(|i| *i + self.parent_offset())

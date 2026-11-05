@@ -16,6 +16,9 @@ impl Presenter {
         operation: SelectionOperation,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].search_view_waiting() {
+            return false;
+        }
         self.send_selection(pane, SelectionAction::Bulk(operation), send)
     }
 
@@ -44,7 +47,7 @@ impl Presenter {
             revision,
             context: p.selection_context,
             location: p.display_path().to_owned(),
-            view: (!p.showing_stream()).then(|| p.index.clone()),
+            view: (!p.showing_stream()).then(|| p.display_index().clone()),
             seed: p.selected.clone(),
             reset: p.selection_reset,
             action,
@@ -77,6 +80,7 @@ impl Presenter {
         for pane in [PaneId::Left, PaneId::Right] {
             if self.panes[pane.index()].selection_rebase_pending
                 && !self.panes[pane.index()].loading
+                && !self.panes[pane.index()].search_view_waiting()
                 && self.send_selection(pane, SelectionAction::Rebase, send)
             {
                 self.panes[pane.index()].selection_rebase_pending = false;
@@ -159,6 +163,9 @@ impl Presenter {
         pane: PaneId,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.panes[pane.index()].search_allows_activation() {
+            return;
+        }
         if self.selection_properties[pane.index()].is_some() {
             self.desktop.report(
                 "Properties waiting",
@@ -184,7 +191,7 @@ impl Presenter {
             .flatten();
         // A streaming single-row fallback is tiny. Multi-selection expansion is
         // always deferred to the backend, using a shared stable view.
-        let view = (!p.showing_stream()).then(|| p.index.clone());
+        let view = (!p.showing_stream()).then(|| p.display_index().clone());
         let pending = p.selection_revision > p.selection_resolved;
         let selection = p.selected.clone();
         let navigation = NavigationId(p.generation);

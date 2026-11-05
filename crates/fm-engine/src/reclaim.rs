@@ -3,6 +3,12 @@ use tokio::sync::mpsc;
 
 pub type Retired = Vec<Box<dyn Send>>;
 
+/// Retain the closed receiver so late reserved sends are reclaimed off the UI thread.
+pub fn retire_receiver<T: Send + 'static>(mut receiver: mpsc::Receiver<T>, retired: &mut Retired) {
+    receiver.close();
+    retired.push(Box::new(receiver));
+}
+
 /// Backend service releasing large listing allocations away from the UI thread.
 pub fn start(
     runtime: &tokio::runtime::Handle,
@@ -88,6 +94,49 @@ mod tests {
             thread, caller,
             "directory destruction must not run on the UI caller"
         );
+    }
+
+    #[tokio::test]
+    async fn a_send_reserved_before_close_is_retired_with_the_receiver_on_a_backend_thread() {
+        let caller = std::thread::current().id();
+        let (sender, receiver) = mpsc::channel(1);
+        let permit = sender.reserve().await.unwrap();
+        let (dropped, mut notification) = oneshot::channel();
+        let mut retired = Retired::new();
+        retire_receiver(receiver, &mut retired);
+        // Tokio permits remain usable after close. This arrives after a one-time
+        // drain would have observed an empty queue.
+        permit.send(DropProbe(Some(dropped)));
+        drop(sender);
+        assert!(
+            notification.try_recv().is_err(),
+            "late payload was released on the UI caller"
+        );
+        tokio::task::spawn_blocking(move || drop(retired))
+            .await
+            .unwrap();
+        assert_ne!(notification.await.unwrap(), caller);
+    }
+
+    #[tokio::test]
+    async fn a_closed_reclamation_queue_keeps_receiver_and_buffered_payload_ownership() {
+        let caller = std::thread::current().id();
+        let (sender, receiver) = mpsc::channel(1);
+        let (dropped, mut notification) = oneshot::channel();
+        assert!(sender.send(DropProbe(Some(dropped))).await.is_ok());
+        drop(sender);
+        let mut retired = Retired::new();
+        retire_receiver(receiver, &mut retired);
+        let (queue, closed) = mpsc::channel(1);
+        drop(closed);
+        let mut pending = Some(retired);
+        assert!(!flush_pending(&queue, &mut pending));
+        assert!(pending.is_some());
+        assert!(notification.try_recv().is_err());
+        tokio::task::spawn_blocking(move || drop(pending))
+            .await
+            .unwrap();
+        assert_ne!(notification.await.unwrap(), caller);
     }
 
     #[tokio::test]

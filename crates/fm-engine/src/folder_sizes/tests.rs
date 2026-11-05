@@ -72,6 +72,7 @@ impl DirectoryService for Tree {
             .map(|size| EntryMetadata {
                 size: Some(size),
                 modified: None,
+                ..EntryMetadata::default()
             })
             .ok_or_else(|| FsError::from_io("test metadata", path, io::ErrorKind::NotFound.into()))
     }
@@ -182,6 +183,40 @@ fn symlinks_and_special_files_are_neither_followed_nor_opened() {
         }
     );
     assert_eq!(*tree.reads.lock().unwrap(), vec![PathBuf::from("root/dir")]);
+    assert!(tree.metadata_reads.lock().unwrap().is_empty());
+}
+
+#[test]
+fn directory_links_are_counted_as_skipped_without_recursing_or_reading_target_metadata() {
+    let mut tree = Tree::default();
+    tree.directory(
+        "root/dir",
+        vec![item(2, "root/dir/junction", EntryKind::DirectoryLink)],
+    );
+    tree.directory(
+        "root/dir/junction",
+        vec![item(3, "root/dir/junction/payload", EntryKind::File)],
+    );
+    tree.length("root/dir/junction/payload", 999);
+    let result = finished(
+        &tree,
+        &[
+            item(1, "root/dir", EntryKind::Directory),
+            item(4, "root/direct-link", EntryKind::DirectoryLink),
+        ],
+    );
+    assert_eq!(
+        result,
+        [(
+            EntryId(1),
+            FolderSize {
+                skipped_links: 1,
+                finished: true,
+                ..FolderSize::default()
+            }
+        )]
+    );
+    assert_eq!(*tree.reads.lock().unwrap(), [PathBuf::from("root/dir")]);
     assert!(tree.metadata_reads.lock().unwrap().is_empty());
 }
 

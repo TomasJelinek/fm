@@ -170,6 +170,29 @@ Case mapping for sorting never changes the original path or merges identities.
 Composed/decomposed spelling is preserved; filesystem-specific equivalence must
 be handled explicitly rather than by globally rewriting names.
 
+Prefix search always uses Unicode case folding on valid original names, never
+lossy display replacement text. Search is literal, without regex/glob/markup
+interpretation. Matching and projection/index construction run on bounded backend
+workers against an immutable accepted source; navigation, source and query
+revisions are checked after output backpressure and again in the UI. Filtering
+retains the canonical directory for watches and size scans. Selection/Properties
+use the visible projection so hidden entries cannot become action targets.
+Native IME preedit is not submitted as a completed query. Filesystem paths and
+names are never reconstructed from highlighted text.
+
+Compression indication reads native metadata only, without opening contents or
+following the final link. Windows uses the compression attribute; Linux statx
+requires the compression support mask and avoids final-link/automount traversal.
+Unknown support does not mean uncompressed. Sparse allocation, archive suffixes
+and apparent compression ratios are not evidence; reported sizes remain logical.
+
+Directory links and junctions retain a separate entry kind. Native Windows link
+icons use system overlays on cached generic types, without sending untrusted
+link paths to the Shell or opening targets. Linux does not infer a directory
+target by an implicit stat/network probe for icon presentation. Recursive sizing
+continues to accept only ordinary directories; a folder-looking icon must never
+turn a link into a traversable directory.
+
 Tests include Czech, Chinese/Japanese, Arabic/Hebrew, supplementary-plane emoji,
 combining sequences and long Windows paths, plus raw non-UTF-8 Linux names.
 Storage/navigation tests do not establish visual shaping: the supported renderer

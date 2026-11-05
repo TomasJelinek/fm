@@ -1,6 +1,114 @@
 use super::*;
 use std::{path::PathBuf, sync::Arc};
 
+#[cfg(unix)]
+mod unix;
+
+#[test]
+fn modified_dates_outside_the_portable_calendar_render_unknown_but_keep_raw_time() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    let time = UNIX_EPOCH
+        .checked_add(Duration::from_secs(500_000_000_000))
+        .unwrap();
+    let mut entry = Entry::new(EntryId(1), root.join("far future date"), EntryKind::File);
+    entry.metadata.modified = Some(time);
+    presenter.borrow_mut().panes[0].entries = vec![entry].into();
+    let row = Rows::new(presenter.clone(), PaneId::Left)
+        .row_data(0)
+        .unwrap();
+    assert_eq!(row.modified.as_str(), "—");
+    assert_eq!(
+        presenter.borrow().panes[0].entries[0].metadata.modified,
+        Some(time)
+    );
+}
+
+#[test]
+fn directory_links_have_folder_appearance_without_queued_or_target_sizes() {
+    let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    let mut entry = Entry::new(
+        EntryId(1),
+        root.join("folder link"),
+        EntryKind::DirectoryLink,
+    );
+    entry.metadata.size = Some(123);
+    entry.metadata.compression = CompressionStatus::Compressed;
+    presenter.borrow_mut().panes[0].entries = vec![entry].into();
+    presenter.borrow_mut().panes[0].size_scan = Some(FolderSizeScanId(7));
+    let row = Rows::new(presenter, PaneId::Left).row_data(0).unwrap();
+    assert!(row.directory);
+    assert_eq!(row.kind.as_str(), "Folder link");
+    assert_eq!(row.size.as_str(), "—");
+    assert_eq!(row.size_state, 0);
+    assert!(
+        row.compressed,
+        "compression may coexist with a native link-overlay icon"
+    );
+}
+
+#[test]
+fn compression_badge_uses_only_reported_metadata_and_preserves_logical_lengths() {
+    let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    let mut entries: Vec<_> = ["compressed 文档.txt", "ordinary.zip", "unknown.zip"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let mut entry = Entry::new(EntryId(index as u64), root.join(name), EntryKind::File);
+            entry.metadata.size = Some(123);
+            entry
+        })
+        .collect();
+    {
+        let mut p = presenter.borrow_mut();
+        assert!(p.navigate(PaneId::Left, root.clone(), None, &|_| true));
+        p.apply(Event::EntriesBatch {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            entries: entries.clone(),
+        });
+    }
+    let model = Rows::new(presenter.clone(), PaneId::Left);
+    assert!((0..3).all(|row| !model.row_data(row).unwrap().compressed));
+    for (entry, compression) in entries.iter_mut().zip([
+        CompressionStatus::Compressed,
+        CompressionStatus::Uncompressed,
+        CompressionStatus::Unknown,
+    ]) {
+        entry.metadata.compression = compression;
+    }
+    presenter.borrow_mut().apply(Event::MetadataBatch {
+        pane: PaneId::Left,
+        navigation: NavigationId(1),
+        entries: entries
+            .iter()
+            .map(|entry| (entry.id, entry.metadata.clone()))
+            .collect(),
+    });
+    assert!(model.row_data(0).unwrap().compressed);
+    assert_eq!(
+        model.row_data(0).unwrap().name.as_str(),
+        "compressed 文档.txt"
+    );
+    for row in 0..3 {
+        assert_eq!(model.row_data(row).unwrap().size.as_str(), "123 B");
+        if row > 0 {
+            assert!(!model.row_data(row).unwrap().compressed);
+        }
+    }
+    presenter.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation: NavigationId(1),
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries: entries.into(),
+    });
+    assert!(model.row_data(0).unwrap().compressed);
+    assert_eq!(model.row_data(0).unwrap().size.as_str(), "123 B");
+}
+
 #[test]
 fn completed_partial_size_is_distinct_from_other_folders_still_queued() {
     let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
@@ -277,6 +385,7 @@ fn lazy_rows_read_current_shared_state_and_only_the_requested_pane() {
             EntryMetadata {
                 size: Some(2048),
                 modified: None,
+                ..Default::default()
             },
         )],
     });

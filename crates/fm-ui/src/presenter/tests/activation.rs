@@ -1,5 +1,27 @@
 use super::*;
 
+#[test]
+fn known_directory_links_enter_native_raw_paths_without_shell_launch() {
+    let (mut presenter, path) = populated(EntryKind::DirectoryLink);
+    let row = presenter.panes[0].parent_offset();
+    presenter.select_row(PaneId::Left, row, false, &|_| true);
+    assert!(
+        presenter.open_folder(PaneId::Left, &|command| {
+            assert!(
+                matches!(command, Command::Navigate { path: ref target, .. } if target == &path)
+            );
+            true
+        }),
+        "Ctrl+PageDown must explicitly browse a known directory link"
+    );
+    let (mut presenter, path) = populated(EntryKind::DirectoryLink);
+    let row = presenter.panes[0].parent_offset();
+    assert!(presenter.open(PaneId::Left, row, &|command| {
+        assert!(matches!(command, Command::Navigate { path: ref target, .. } if target == &path));
+        true
+    }));
+}
+
 fn populated(kind: EntryKind) -> (Presenter, PathBuf) {
     let base = test_root().join("文档 ' & $() 👩🏽‍💻");
     let target = base.join("Café.txt");

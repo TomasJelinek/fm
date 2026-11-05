@@ -95,6 +95,7 @@ fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_im
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.show().unwrap();
     native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     window.window().dispatch_event(WindowEvent::Resized {

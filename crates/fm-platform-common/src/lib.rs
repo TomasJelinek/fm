@@ -27,11 +27,13 @@ impl Default for LocalServices {
     }
 }
 
-impl DirectoryService for LocalServices {
-    fn read_directory(
+impl LocalServices {
+    /// Enumerate once and let a platform classify the cached, non-following file type.
+    pub fn read_directory_with(
         &self,
         path: &Path,
         cancel: &Cancellation,
+        classify: impl Fn(fs::FileType) -> EntryKind,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
         if cancel.is_cancelled() {
@@ -58,15 +60,7 @@ impl DirectoryService for LocalServices {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(FsError::from_io("read entry type", &item.path(), error)),
             };
-            let kind = if file_type.is_symlink() {
-                EntryKind::Symlink
-            } else if file_type.is_dir() {
-                EntryKind::Directory
-            } else if file_type.is_file() {
-                EntryKind::File
-            } else {
-                EntryKind::Other
-            };
+            let kind = classify(file_type);
             if cancel.is_cancelled() {
                 break;
             }
@@ -77,6 +71,17 @@ impl DirectoryService for LocalServices {
         }
         Ok(())
     }
+}
+
+impl DirectoryService for LocalServices {
+    fn read_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        self.read_directory_with(path, cancel, classify, emit)
+    }
 
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         // Do not open targets: dangling links, FIFOs and devices are safe to inspect.
@@ -85,7 +90,20 @@ impl DirectoryService for LocalServices {
         Ok(EntryMetadata {
             size: metadata.is_file().then_some(metadata.len()),
             modified: metadata.modified().ok(),
+            ..EntryMetadata::default()
         })
+    }
+}
+
+fn classify(file_type: fs::FileType) -> EntryKind {
+    if file_type.is_symlink() {
+        EntryKind::Symlink
+    } else if file_type.is_dir() {
+        EntryKind::Directory
+    } else if file_type.is_file() {
+        EntryKind::File
+    } else {
+        EntryKind::Other
     }
 }
 

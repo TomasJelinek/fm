@@ -300,13 +300,13 @@ impl Presenter {
         pane: PaneId,
         letter: &str,
         send: &dyn Fn(Command) -> bool,
-    ) {
+    ) -> bool {
         let mut chars = letter.chars();
         let Some(letter) = chars.next().filter(char::is_ascii_alphabetic) else {
-            return;
+            return false;
         };
         if chars.next().is_some() {
-            return;
+            return false;
         }
         if let Some(index) = self.navigation_choices().iter().position(|choice| {
             choice
@@ -316,7 +316,9 @@ impl Presenter {
         }) {
             let token = self.navigation_choice_token(index);
             self.choose_navigation_choice(pane, &token, send);
+            return true;
         }
+        false
     }
 
     pub(crate) fn folder_sizes(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {

@@ -52,6 +52,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.set_left_status("100 items · status is available in the path tooltip".into());
     window.set_desktop_status("Finished successfully".into());
     window.set_left_rows(ModelRc::new(VecModel::from(

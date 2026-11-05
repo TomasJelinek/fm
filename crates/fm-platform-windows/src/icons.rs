@@ -24,11 +24,11 @@ use windows_sys::Win32::{
         Shell::{
             Common::ITEMIDLIST, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
             FOLDERID_Profile, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
-            SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_SMALLICON, SHGetFileInfoW,
-            SHGetKnownFolderIDList, SHGetStockIconInfo, SHSTOCKICONINFO, SIID_DELETE, SIID_DRIVECD,
-            SIID_DRIVEFIXED, SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN,
-            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_LINK, SIID_RENAME,
-            SIID_SETTINGS,
+            SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_LINKOVERLAY,
+            SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetStockIconInfo,
+            SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD, SIID_DRIVEFIXED,
+            SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FOLDER,
+            SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_RENAME, SIID_SETTINGS,
         },
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
@@ -128,8 +128,8 @@ fn native_icon(key: &IconKey) -> Option<OwnedIcon> {
             stock_icon,
         );
     }
-    if key.kind == IconKind::Link {
-        return stock_icon(SIID_LINK);
+    if let Some((stock, flags)) = link_stock_request(key.kind) {
+        return stock_icon_with_flags(stock, flags);
     }
     let attributes = if key.kind == IconKind::Folder {
         FILE_ATTRIBUTE_DIRECTORY
@@ -141,6 +141,17 @@ fn native_icon(key: &IconKey) -> Option<OwnedIcon> {
         attributes,
         SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES,
     )
+}
+
+fn link_stock_request(kind: IconKind) -> Option<(i32, u32)> {
+    let stock = match kind {
+        IconKind::FolderLink => SIID_FOLDER,
+        IconKind::Link => SIID_DOCNOASSOC,
+        _ => return None,
+    };
+    // The Shell renders its own configured overlay onto a trusted stock base.
+    // No untrusted link path, target or arbitrary icon location is passed to the Shell.
+    Some((stock, SHGSI_ICON | SHGSI_SMALLICON | SHGSI_LINKOVERLAY))
 }
 
 fn action_stock_id(role: ActionIcon) -> Option<i32> {
@@ -288,12 +299,16 @@ fn drive_icon<T>(
 }
 
 fn stock_icon(stock: i32) -> Option<OwnedIcon> {
+    stock_icon_with_flags(stock, SHGSI_ICON | SHGSI_SMALLICON)
+}
+
+fn stock_icon_with_flags(stock: i32, flags: u32) -> Option<OwnedIcon> {
     let mut info = SHSTOCKICONINFO {
         cbSize: size_of::<SHSTOCKICONINFO>() as u32,
         ..Default::default()
     };
     // SAFETY: sized output structure; a stock lookup never probes media or network paths.
-    if unsafe { SHGetStockIconInfo(stock, SHGSI_ICON | SHGSI_SMALLICON, &mut info) } < 0 {
+    if unsafe { SHGetStockIconInfo(stock, flags, &mut info) } < 0 {
         return None;
     }
     (!info.hIcon.is_null()).then_some(OwnedIcon(info.hIcon))
@@ -453,6 +468,7 @@ mod tests {
     use fm_core::IconKind;
     use std::ffi::OsString;
     use std::path::Path;
+    use std::sync::{Barrier, Mutex, MutexGuard};
     use windows_sys::Win32::{
         System::WindowsProgramming::{
             DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE, DRIVE_UNKNOWN,
@@ -461,6 +477,73 @@ mod tests {
             SIID_DRIVECD, SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN,
         },
     };
+
+    // Qualify native artwork independently from its concurrent availability. Cold
+    // parallel stock-icon calls can return E_OUTOFMEMORY on a healthy desktop.
+    // The concurrent contract test below exercises those optional results itself.
+    static NATIVE_QUALIFICATION: Mutex<()> = Mutex::new(());
+
+    fn native_qualification() -> MutexGuard<'static, ()> {
+        NATIVE_QUALIFICATION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn folder_and_file_links_request_system_composites_without_any_path_lookup() {
+        use windows_sys::Win32::UI::Shell::{SHGSI_LINKOVERLAY, SIID_DOCNOASSOC};
+        for (kind, stock) in [
+            (IconKind::FolderLink, SIID_FOLDER),
+            (IconKind::Link, SIID_DOCNOASSOC),
+        ] {
+            assert_eq!(
+                link_stock_request(kind),
+                Some((stock, SHGSI_ICON | SHGSI_SMALLICON | SHGSI_LINKOVERLAY))
+            );
+        }
+        assert_eq!(link_stock_request(IconKind::Folder), None);
+        assert_eq!(link_stock_request(IconKind::File), None);
+    }
+
+    #[test]
+    fn native_link_composite_ignores_arbitrary_root_and_extension_data() {
+        let _qualification = native_qualification();
+        let services = WindowsFileSystem::new(None);
+        for kind in [IconKind::FolderLink, IconKind::Link] {
+            let key = IconKey {
+                kind,
+                extension: Some("../../arbitrary.dll".into()),
+                drive_root: Some("\\\\server\\untrusted\\target".into()),
+                ..IconKey::file()
+            };
+            let icon = services
+                .load_icon(&key)
+                .unwrap()
+                .expect("system link composite");
+            assert!(
+                icon.rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] != 0)
+            );
+            let plain = services
+                .load_icon(&IconKey {
+                    kind: if kind == IconKind::FolderLink {
+                        IconKind::Folder
+                    } else {
+                        IconKind::File
+                    },
+                    ..IconKey::file()
+                })
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                icon.rgba, plain.rgba,
+                "the system overlay must remain visible"
+            );
+        }
+    }
 
     #[test]
     fn semantic_actions_only_use_appropriate_documented_stock_icons() {
@@ -543,6 +626,7 @@ mod tests {
 
     #[test]
     fn native_action_and_known_folder_render_without_reading_a_supplied_path() {
+        let _qualification = native_qualification();
         let services = WindowsFileSystem::new(None);
         for kind in [
             IconKind::Action(fm_core::ActionIcon::Options),
@@ -660,6 +744,7 @@ mod tests {
 
     #[test]
     fn current_native_volume_renders_bounded_nonempty_system_icon_pixels() {
+        let _qualification = native_qualification();
         let current = std::env::current_dir().unwrap();
         let root = current.ancestors().last().unwrap();
         let pixels = WindowsFileSystem::new(None)
@@ -678,6 +763,55 @@ mod tests {
                 .iter()
                 .any(|pixel| pixel[3] != 0)
         );
+    }
+
+    #[test]
+    fn concurrent_native_icon_requests_preserve_optional_availability_and_pixel_bounds() {
+        let _qualification = native_qualification();
+        let current = std::env::current_dir().unwrap();
+        let root = current.ancestors().last().unwrap();
+        let keys = [
+            IconKey::for_drive(root),
+            IconKey::folder_link(),
+            IconKey {
+                kind: IconKind::Link,
+                ..IconKey::file()
+            },
+            IconKey::folder(),
+            IconKey::file(),
+            IconKey {
+                kind: IconKind::Location(LocationKind::Home),
+                ..IconKey::file()
+            },
+            IconKey::action(ActionIcon::Options),
+        ];
+        let start = Barrier::new(16);
+        std::thread::scope(|scope| {
+            for worker in 0..16 {
+                let key = &keys[worker % keys.len()];
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    let Some(pixels) = WindowsFileSystem::new(None).load_icon(key).unwrap() else {
+                        // Native art is optional, including native resource failures.
+                        return;
+                    };
+                    assert_eq!(
+                        (pixels.width, pixels.height, pixels.rgba.len()),
+                        (32, 32, 4096)
+                    );
+                    assert!(
+                        pixels
+                            .rgba
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|pixel| pixel[3] != 0),
+                        "native art must remain visible when available: {key:?}"
+                    );
+                });
+            }
+        });
     }
 
     #[test]

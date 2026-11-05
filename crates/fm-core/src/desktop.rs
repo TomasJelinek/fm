@@ -170,6 +170,7 @@ impl ActionIcon {
 pub enum IconKind {
     File,
     Folder,
+    FolderLink,
     Link,
     Drive,
     Action(ActionIcon),
@@ -223,6 +224,12 @@ impl IconKey {
             size: 32,
         }
     }
+    pub fn folder_link() -> Self {
+        Self {
+            kind: IconKind::FolderLink,
+            ..Self::folder()
+        }
+    }
     pub fn drive() -> Self {
         Self {
             kind: IconKind::Drive,
@@ -242,6 +249,7 @@ impl IconKey {
         Self {
             kind: match entry.kind {
                 EntryKind::Directory => IconKind::Folder,
+                EntryKind::DirectoryLink => IconKind::FolderLink,
                 EntryKind::Symlink => IconKind::Link,
                 _ => IconKind::File,
             },
@@ -456,6 +464,20 @@ mod tests {
         assert_eq!(IconKey::for_drive(first).drive_root.as_deref(), Some(first));
         assert_eq!(IconKey::folder().drive_root, None);
         assert_eq!(IconKey::file().drive_root, None);
+    }
+
+    #[test]
+    fn directory_link_icon_keys_are_shared_type_only_keys_without_target_or_extension() {
+        let entry = Entry::new(
+            crate::EntryId(7),
+            PathBuf::from("文档/link.exe"),
+            EntryKind::DirectoryLink,
+        );
+        let key = IconKey::for_entry(&entry);
+        assert_eq!(key, IconKey::folder_link());
+        assert_ne!(key, IconKey::folder());
+        assert_eq!(key.drive_root, None);
+        assert_eq!(key.extension, None);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod fonts;
 mod preferences;
 pub mod reclaim;
 mod scan_cache;
+mod search;
 mod selection;
 pub mod snapshot;
 mod volumes;
@@ -183,6 +184,7 @@ impl Engine {
         });
         let desktop = desktop::Desktop::new(self.desktop, self.outbox.clone(), &mut tasks);
         let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let search = search::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let size_budget = Arc::new(Semaphore::new(2));
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
         let mut size_requests: [Option<SizeRequest>; 2] = [None, None];
@@ -211,6 +213,8 @@ impl Engine {
                         _ => None,
                     };
                     match command {
+                        Some(Command::Search(request)) => search.query(request),
+                        Some(Command::CancelSearch { pane, revision }) => search.cancel(pane, revision),
                         None | Some(Command::Shutdown) => break,
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
@@ -320,6 +324,7 @@ impl Engine {
                         | Some(Command::Refresh { pane, navigation, path, sort, .. })
                         | Some(Command::Resort { pane, navigation, path, sort, .. }) => {
                             if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
+                            search.invalidate(pane);
                             let keep_scan = size_requests[pane.index()].as_ref().is_some_and(|request|
                                 request.path == path && (resort || (refresh && continued_scan == Some(request.scan))));
                             let continued_sizes = keep_scan.then(|| size_requests[pane.index()].as_ref().expect("validated scan").sizes.clone());
@@ -407,6 +412,7 @@ impl Engine {
             watcher.shutdown();
         }
         drop(selection);
+        drop(search);
         fonts.shutdown();
         if let Some(settings) = settings {
             settings.shutdown();

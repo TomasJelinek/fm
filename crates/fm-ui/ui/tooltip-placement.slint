@@ -1,0 +1,19 @@
+// Host coordinates are observed after input dispatch. Current pinned Winit
+// popups are embedded in this surface; placement does not affect input routing.
+export global TooltipPlacement {
+    callback synchronize() -> bool;
+    in-out property <length> surface-width: 1040px;
+    in-out property <length> surface-height: 800px;
+    in-out property <length> cursor-x;
+    in-out property <length> cursor-y;
+
+    public pure function max-room(cursor: length, surface: length, gap: length) -> length {
+        return max(1px, max(cursor - gap - 8px, surface - 8px - cursor - gap));
+    }
+    public pure function axis(cursor: length, body: length, surface: length, gap: length) -> length {
+        let after = cursor + gap;
+        let before = cursor - gap - body;
+        let desired = after + body <= surface - 8px ? after : before;
+        return clamp(desired, 8px, max(8px, surface - 8px - body));
+    }
+}

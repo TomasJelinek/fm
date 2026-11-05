@@ -6,6 +6,8 @@ pub struct EntryId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     Directory,
+    /// A known directory symlink/junction. Browse explicitly; never recurse automatically.
+    DirectoryLink,
     File,
     Symlink,
     Other,
@@ -15,6 +17,16 @@ pub enum EntryKind {
 pub struct EntryMetadata {
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
+    /// Filesystem-reported compression, independent of file extension or size.
+    pub compression: CompressionStatus,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CompressionStatus {
+    #[default]
+    Unknown,
+    Uncompressed,
+    Compressed,
 }
 
 #[derive(Clone, Debug)]
@@ -99,8 +111,8 @@ pub fn sort_entries(entries: &mut [Entry], sort: SortSpec) {
     }
 
     entries.sort_unstable_by(|left, right| {
-        let directory_order =
-            (right.kind == EntryKind::Directory).cmp(&(left.kind == EntryKind::Directory));
+        let is_folder = |kind| matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink);
+        let directory_order = is_folder(right.kind).cmp(&is_folder(left.kind));
         if directory_order != Ordering::Equal {
             return directory_order;
         }
@@ -140,6 +152,21 @@ mod tests {
         let mut result = Entry::new(EntryId(id), PathBuf::from(name), kind);
         result.metadata.size = size;
         result
+    }
+
+    #[test]
+    fn directory_links_sort_with_folders_without_becoming_recursive_directories() {
+        let mut entries = vec![
+            entry(1, "a-file", EntryKind::File, None),
+            entry(2, "z-junction", EntryKind::DirectoryLink, None),
+            entry(3, "b-folder", EntryKind::Directory, None),
+        ];
+        sort_entries(&mut entries, SortSpec::default());
+        assert_eq!(
+            entries.iter().map(|entry| entry.id.0).collect::<Vec<_>>(),
+            [3, 2, 1]
+        );
+        assert_ne!(entries[1].kind, EntryKind::Directory);
     }
 
     #[test]

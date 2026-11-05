@@ -71,6 +71,7 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
     let time = Rc::new(Cell::new(Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.set_terminal_available(true);
     window.set_terminal_choices(ModelRc::new(VecModel::from(vec![
         "PowerShell — PowerShell syntax".into(),

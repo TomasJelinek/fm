@@ -54,6 +54,7 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.show().unwrap();
     window
         .window()
@@ -118,18 +119,21 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     let captured = paths.clone();
     window.on_insert_path(move |pane| captured.borrow_mut().push(pane));
     chord(&window, &[Key::Control], Key::Space);
-    assert_eq!(*paths.borrow(), vec![1]);
+    assert!(
+        paths.borrow().is_empty(),
+        "Ctrl+Space belongs to native IME"
+    );
     let names = Rc::new(Cell::new(0));
     let captured = names.clone();
     window.on_insert_name(move || captured.set(captured.get() + 1));
     chord(&window, &[Key::Control], Key::Return);
     assert_eq!(names.get(), 1);
     chord(&window, &[Key::Control], "p");
-    assert_eq!(*paths.borrow(), vec![1, 1]);
+    assert_eq!(*paths.borrow(), vec![1]);
     window.set_active_pane(0);
     window.invoke_focus_files();
     chord(&window, &[Key::Control], "P");
-    assert_eq!(*paths.borrow(), vec![1, 1, 0]);
+    assert_eq!(*paths.borrow(), vec![1, 0]);
     window.set_active_pane(1);
     window.invoke_focus_files();
     let properties = Rc::new(Cell::new(0));
@@ -176,11 +180,11 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     chord(&window, &[Key::Control], Key::Space);
     assert_eq!(
         *paths.borrow(),
-        vec![1, 1, 0],
+        vec![1, 0],
         "Ctrl+Space in the editor remains available for IME"
     );
     chord(&window, &[Key::Control], "p");
-    assert_eq!(*paths.borrow(), vec![1, 1, 0, 1]);
+    assert_eq!(*paths.borrow(), vec![1, 0, 1]);
     chord(&window, &[Key::Control], Key::Return);
     assert_eq!(
         names.get(),
@@ -210,7 +214,7 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     );
     chord(&window, &[Key::Control], "[");
     chord(&window, &[Key::Control], "]");
-    assert_eq!(*paths.borrow(), vec![1, 1, 0, 1, 0, 1]);
+    assert_eq!(*paths.borrow(), vec![1, 0, 1, 0, 1]);
     let launches = Rc::new(Cell::new(0));
     let captured = launches.clone();
     window.on_submit_command(move |_| {

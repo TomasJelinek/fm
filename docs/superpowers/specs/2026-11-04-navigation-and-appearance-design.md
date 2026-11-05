@@ -50,7 +50,9 @@ typed provider-owned location through a schema migration. UI IDs and callbacks
 stay independent of native paths; providers never infer their identity from a
 caption, drive-looking prefix or shell syntax. Credentials remain separate.
 
-Bookmarks persist with appearance settings in version3 UTF-8 JSON. Valid Unicode
+Bookmarks persist with appearance settings in version4 UTF-8 JSON. Version4 adds
+the optional live-search filter preference; versions1–3 migrate with it disabled.
+Valid Unicode
 paths are strings; host-native non-Unicode paths use tagged lossless encodings
 in separate Windows/Unix codec modules. Foreign native encodings are rejected.
 Version1/2 settings migrate without bookmarks. IDs, labels, slots, absolute paths,
@@ -138,7 +140,7 @@ Storage is asynchronous and atomic through the existing native settings service:
 - Linux: `$XDG_CONFIG_HOME/fm/preferences.json`, otherwise `~/.config/fm/preferences.json`.
 
 The same document stores theme, density, shell preference, family, both sizes
-and bookmarks. It never stores commands, credentials, sudo passwords or elevated
+and bookmarks, plus the live prefix-search filter choice. It never stores commands, credentials, sudo passwords or elevated
 mode. Native readers reject special files and symlink/reparse targets. Failures
 are visible and leave session choices usable.
 

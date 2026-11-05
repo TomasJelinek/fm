@@ -1,0 +1,164 @@
+import { HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+
+export struct SearchTextEdit { text: string, cursor: int }
+
+// Selection recolors glyphs in one shaped paragraph, including bidi and ligatures.
+// This display item is disabled: the enclosing file row owns all input/accessibility.
+export component PrefixName inherits Rectangle {
+    in property <string> text;
+    in property <int> prefix-end;
+    in property <color> text-color;
+    in property <color> row-background;
+    clip: true;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    private property <bool> measuring-start;
+    private property <length> prefix-start-x;
+    private property <length> prefix-end-x;
+    function update-highlight() {
+        root.measuring-start = true;
+        label.set-selection-offsets(root.prefix-end, 0);
+        root.measuring-start = false;
+        label.set-selection-offsets(0, root.prefix-end);
+    }
+    changed text => { root.update-highlight(); }
+    changed prefix-end => { root.update-highlight(); }
+    init => { root.update-highlight(); }
+    label := TextInput {
+        x: min(0px, max(parent.width - self.width,
+            parent.width - max(root.prefix-start-x, root.prefix-end-x)));
+        y: 0px;
+        width: max(parent.width, self.preferred-width);
+        height: parent.height;
+        text: root.text;
+        font-family: Theme.font-family;
+        font-size: Theme.font-size;
+        changed font-family => { root.update-highlight(); }
+        changed font-size => { root.update-highlight(); }
+        changed width => { root.update-highlight(); }
+        color: root.text-color;
+        selection-foreground-color: Theme.search-match;
+        selection-background-color: transparent;
+        single-line: true;
+        enabled: false;
+        read-only: true;
+        text-cursor-width: 0px;
+        vertical-alignment: center;
+        accessible-role: none;
+        cursor-position-changed(position) => {
+            if root.measuring-start { root.prefix-start-x = position.x; }
+            else { root.prefix-end-x = position.x; }
+        }
+    }
+    for side in 2 : Rectangle {
+        visible: label.preferred-width > root.width && (side == 0
+            ? label.x < -1px : label.x + label.preferred-width > root.width + 1px);
+        x: side == 0 ? 0px : max(0px, parent.width - ellipsis.preferred-width);
+        y: 0px;
+        width: ellipsis.preferred-width;
+        height: parent.height;
+        background: root.row-background;
+        ellipsis := Text {
+            text: "…"; color: root.text-color; font-size: Theme.font-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+}
+
+// A real input remains focusable even when its empty chrome is behind the path.
+// Preedit is shown locally; only edited committed text is sent to the backend.
+export component PanelSearch inherits Rectangle {
+    in-out property <string> text <=> receiver.text;
+    in property <bool> pending;
+    in property <int> match-count;
+    in property <image> close-icon;
+    out property <string> preedit: receiver.preedit-text;
+    out property <bool> active: root.text != "" || root.preedit != "";
+    out property <bool> has-focus: receiver.has-focus;
+    callback edited(string);
+    callback handle-key(KeyEvent) -> EventResult;
+    callback backspace(string, int, int) -> SearchTextEdit;
+    background: root.active ? Theme.surface : transparent;
+    border-color: Theme.accent;
+    border-width: root.active ? 1px : 0px;
+    border-radius: 3px;
+    public function focus-input() { receiver.focus(); }
+    public function clear-query() { receiver.text = ""; root.edited(""); }
+    public function erase-previous() {
+        let result = root.backspace(receiver.text, receiver.anchor-position-byte-offset,
+            receiver.cursor-position-byte-offset);
+        receiver.text = result.text;
+        receiver.set-selection-offsets(result.cursor, result.cursor);
+        root.edited(receiver.text);
+    }
+    public function reset-context() {
+        let restore = receiver.has-focus;
+        receiver.clear-focus();
+        if restore { receiver.focus(); }
+    }
+    if root.active : Text {
+        x: 7px; y: 0px; width: 18px; height: parent.height;
+        text: "⌕"; color: Theme.accent; font-size: Theme.font-size;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    input-viewport := Rectangle {
+        x: root.active ? 26px : 0px; y: 0px;
+        width: max(0px, root.active ? count.x - self.x - 4px : parent.width);
+        height: parent.height;
+        clip: true;
+        changed width => {
+            receiver.set-selection-offsets(receiver.anchor-position-byte-offset,
+                receiver.cursor-position-byte-offset);
+        }
+        receiver := TextInput {
+            private property <length> computed-x;
+            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+            y: 0px;
+            width: max(1px, parent.width - self.text-cursor-width, self.preferred-width);
+            height: parent.height;
+            font-size: Theme.font-size;
+            changed font-size => {
+                self.set-selection-offsets(self.anchor-position-byte-offset, self.cursor-position-byte-offset);
+            }
+            color: Theme.text;
+            selection-foreground-color: Theme.selection-text;
+            selection-background-color: Theme.selection-background;
+            text-cursor-width: root.active ? 1px : 0px;
+            single-line: true;
+            vertical-alignment: center;
+            accessible-label: "Filename prefix search";
+            cursor-position-changed(position) => {
+                if position.x + self.computed-x < 4px { self.computed-x = 4px - position.x; }
+                else if position.x + self.computed-x > parent.width - self.text-cursor-width - 4px {
+                    self.computed-x = parent.width - position.x - self.text-cursor-width - 4px;
+                }
+            }
+            edited => { root.edited(receiver.text); }
+            key-pressed(event) => { return root.handle-key(event); }
+        }
+    }
+    count := Text {
+        visible: root.active;
+        x: max(0px, parent.width - Theme.tool-width - self.width - 4px);
+        y: 0px; width: self.preferred-width; height: parent.height;
+        text: !root.active || root.preedit != "" ? "" : root.pending ? "…" : root.match-count;
+        color: !root.pending && root.preedit == "" && root.match-count == 0
+            ? Theme.error-text : Theme.secondary-text;
+        font-size: Theme.small-font;
+        horizontal-alignment: right; vertical-alignment: center;
+        accessible-label: root.pending ? "Searching filenames" : root.match-count + " matches";
+    }
+    if root.active : HintedActionButton {
+        x: max(0px, parent.width - Theme.tool-width); y: 0px;
+        width: Theme.tool-width; height: parent.height;
+        native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
+        accessible-label: "Clear filename search";
+        clicked => { root.clear-query(); root.focus-input(); }
+        hint: "Clear filename search · Escape";
+    }
+}

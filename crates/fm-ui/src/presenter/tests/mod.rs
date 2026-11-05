@@ -10,6 +10,7 @@ mod font_preferences;
 mod navigation;
 mod preferences_load;
 mod reclamation;
+mod search;
 mod selection;
 mod shortcuts;
 mod size_continuity;

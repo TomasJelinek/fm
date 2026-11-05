@@ -1100,6 +1100,8 @@ dependencies = [
  "image",
  "tempfile",
  "tokio",
+ "unicase",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -1154,9 +1156,14 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "fm-core",
+ "i-slint-compiler",
  "i-slint-core",
+ "prettyplease",
  "slint",
  "slint-build",
+ "spin_on",
+ "syn 2.0.119",
+ "unicode-segmentation",
 ]
 
 [[package]]

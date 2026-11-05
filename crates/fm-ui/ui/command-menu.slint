@@ -1,0 +1,37 @@
+import { HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+
+
+export struct CommandMenuRow {
+    native-icon: image,
+    fallback-icon: image,
+    label: string,
+    hint: string,
+}
+
+// Immutable command positions. Presentation changes never change
+// the repeater model, so asynchronously arriving native icons retain gestures.
+export component CommandMenuBody inherits Rectangle {
+    in property <string> title;
+    in property <[CommandMenuRow]> rows;
+    in property <int> item-count: 5;
+    callback selected(int);
+    background: Theme.surface;
+    border-color: Theme.active-frame;
+    border-width: 1px;
+    border-radius: 6px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text { text: root.title; color: Theme.strong-text; font-size: 17px; }
+        for index in root.item-count : HintedActionButton {
+            native-icon: root.rows[index].native-icon;
+            fallback-icon: root.rows[index].fallback-icon;
+            text: root.rows[index].label;
+            min-height: Theme.control-height;
+            hint: root.rows[index].hint;
+            clicked => { root.selected(index); }
+        }
+    }
+}

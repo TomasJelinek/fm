@@ -1,8 +1,10 @@
-import { ComboBox, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
+import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { TipBody } from "controls.slint";
 import { TabRow, BookmarkRow } from "navigation-models.slint";
-import { ActionIcons, ActionButton, NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
 
 component NavigationButton inherits Rectangle {
     in property <image> icon;
@@ -267,34 +269,34 @@ export component BookmarkMenu inherits Rectangle {
                         text: "Current folder: " + root.path; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
                         Tooltip { TipBody { text: root.path; } }
                     }
-                    name-input := LineEdit {
+                    name-input := HintedLineEdit {
                         text <=> root.draft-name;
                         accessible-label: "Bookmark name"; placeholder-text: "Bookmark name";
                         min-height: Theme.control-height;
-                        Tooltip { TipBody { text: "Name for the current folder. Unicode and punctuation are kept as plain text."; } }
+                        hint: "Name for the current folder. Unicode and punctuation are kept as plain text.";
                     }
                     HorizontalLayout {
                         spacing: 8px;
-                        ComboBox {
+                        HintedComboBox {
                             accessible-label: "Hot Path shortcut";
                             min-height: Theme.control-height;
                             model: ["No shortcut", "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9", "Ctrl+0"];
                             current-index: root.draft-slot;
                             selected(value) => { root.draft-slot = self.current-index; }
-                            Tooltip { TipBody { text: "Optional Hot Path shortcut. Assigning an occupied slot moves the shortcut to this folder."; } }
+                            hint: "Optional Hot Path shortcut. Assigning an occupied slot moves the shortcut to this folder.";
                         }
-                        ActionButton {
+                        HintedActionButton {
                             native-icon: root.action-icons.add-bookmark;
                             fallback-icon: FallbackIcons.add-bookmark;
                             text: "Add current"; enabled: name-input.text != ""; min-height: Theme.control-height;
-                            Tooltip { TipBody { text: "Save the current folder using this name and optional Hot Path shortcut. The folder path is taken from its panel."; } }
+                            hint: "Save the current folder using this name and optional Hot Path shortcut. The folder path is taken from its panel.";
                             clicked => { root.add-bookmark(name-input.text, root.draft-slot); }
                         }
                     }
-                    ActionButton {
+                    HintedActionButton {
                         text: "Close"; min-height: Theme.control-height;
                         native-icon: root.action-icons.close; fallback-icon: FallbackIcons.close;
-                        Tooltip { TipBody { text: "Close Bookmarks and return to the file panel."; } }
+                        hint: "Close Bookmarks and return to the file panel.";
                         clicked => { root.dismiss(); }
                     }
                 }

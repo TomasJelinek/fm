@@ -57,6 +57,7 @@ fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     let reads = Rc::new(Cell::new(0));
     window.set_font_choices(ModelRc::new(Catalog(reads.clone())));
     window.set_font_list_ready(true);

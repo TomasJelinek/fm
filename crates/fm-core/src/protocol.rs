@@ -1,8 +1,9 @@
 use crate::{
     DesktopActionResult, DesktopRequestId, DirectoryIndex, Entry, EntryId, EntryMetadata,
     FolderSize, FolderSizeScanId, FsError, IconKey, IconPixels, NavigationLocation,
-    PreferencesRevision, SelectionRequest, SelectionRevision, SelectionSnapshot, ShellFlavor,
-    SortSpec, SpaceInfo, TerminalRequest, UserPreferences, VisibleDirectory, Volume, VolumeDetails,
+    PreferencesRevision, SearchRequest, SearchResult, SearchRevision, SelectionRequest,
+    SelectionRevision, SelectionSnapshot, ShellFlavor, SortSpec, SpaceInfo, TerminalRequest,
+    UserPreferences, VisibleDirectory, Volume, VolumeDetails,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -32,6 +33,11 @@ pub struct NavigationId(pub u64);
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    Search(SearchRequest),
+    CancelSearch {
+        pane: PaneId,
+        revision: SearchRevision,
+    },
     Selection(SelectionRequest),
     ListVolumes,
     ListDesktopContext,
@@ -102,6 +108,18 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    SearchReady {
+        pane: PaneId,
+        navigation: NavigationId,
+        revision: SearchRevision,
+        result: Arc<SearchResult>,
+    },
+    SearchFailed {
+        pane: PaneId,
+        navigation: NavigationId,
+        revision: SearchRevision,
+        error: FsError,
+    },
     SelectionChanged {
         pane: PaneId,
         navigation: NavigationId,

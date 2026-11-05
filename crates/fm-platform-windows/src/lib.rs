@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 mod desktop;
 mod fonts;
 mod icons;
+mod listing;
+mod metadata;
 mod open;
 mod settings;
 mod storage_kind;
@@ -43,10 +45,11 @@ impl DirectoryService for WindowsFileSystem {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        self.local.read_directory(path, cancel, emit)
+        self.local
+            .read_directory_with(path, cancel, listing::classify, emit)
     }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
-        self.local.entry_metadata(path)
+        metadata::read(path)
     }
 }
 

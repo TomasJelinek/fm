@@ -46,6 +46,7 @@ fn font_options_keep_family_and_density_bases_independent() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     let theme = window.global::<Theme>();
     window.invoke_apply_fonts("".into(), 11, 15);
     assert_eq!(theme.get_font_family().as_str(), "");

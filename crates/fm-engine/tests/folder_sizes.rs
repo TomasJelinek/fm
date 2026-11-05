@@ -445,6 +445,7 @@ impl DirectoryService for ControlledTree {
         Ok(EntryMetadata {
             size: (path.extension().is_some()).then_some(length),
             modified: None,
+            ..EntryMetadata::default()
         })
     }
 }

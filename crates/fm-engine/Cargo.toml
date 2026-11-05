@@ -9,6 +9,8 @@ publish.workspace = true
 fm-core.workspace = true
 tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
+unicase = "=2.10.0"
+unicode-segmentation = "=1.13.3"
 
 [dev-dependencies]
 fm-platform.workspace = true

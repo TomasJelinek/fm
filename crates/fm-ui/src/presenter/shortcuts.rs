@@ -17,7 +17,7 @@ impl Presenter {
         self.navigate(pane, root, None, send)
     }
 
-    /// Enter a known directory or the synthetic parent; never launch a file or link.
+    /// Explicitly browse a known folder/link or parent; never launch a host file handler.
     pub(crate) fn open_folder(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
         let p = &self.panes[pane.index()];
         if p.parent_cursor && p.has_parent() {
@@ -26,7 +26,7 @@ impl Presenter {
         let path = p
             .cursor
             .and_then(|id| p.entry_by_id(id))
-            .filter(|entry| entry.kind == EntryKind::Directory)
+            .filter(|entry| matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink))
             .map(|entry| entry.path.clone());
         path.is_some_and(|path| self.navigate(pane, path, None, send))
     }
@@ -37,8 +37,9 @@ impl Presenter {
         if p.parent_cursor && p.has_parent() {
             return Some(PathBuf::from(".."));
         }
-        p.cursor
-            .and_then(|id| p.entry_by_id(id))
+        p.cursor_index()
+            .and_then(|row| row.checked_sub(p.parent_offset()))
+            .and_then(|row| p.display_entry(row))
             .and_then(|entry| entry.path.file_name())
             .map(PathBuf::from)
     }

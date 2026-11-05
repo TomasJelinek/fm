@@ -18,6 +18,12 @@ the formatting authority; strict Clippy checks run in CI.
   facade may select/re-export an implementation with `cfg`; implementation bodies
   for multiple OSes do not share a file. Shared code must be platform-neutral.
   Platform-specific tests are separated too.
+- **Reuse:** extract repeated behavior into focused functions and repeated UI
+  structures into shared Slint components. Pass data and callbacks into shared
+  code instead of copying branches or widgets. Keep platform implementations
+  separate; share only platform-neutral policy. Check generated-code size when
+  changing component boundaries, since child content can force Slint to inline
+  an otherwise reusable component. Never hand-edit generated Rust.
 - **Public APIs:** expose the smallest useful surface, prefer private or
   `pub(crate)` internals, document public contracts/errors and use typed IDs,
   paths, enums and capabilities. Each platform implements the common service
@@ -26,6 +32,8 @@ the formatting authority; strict Clippy checks run in CI.
   on user input or filesystem/network results in application code. Unsafe code is
   forbidden in core/engine/app and denied in handwritten UI; isolate audited FFI
   with a `SAFETY` explanation and generated bindings with a narrow allowance.
+  Resource guards acquire ownership only after a successful native call; failed
+  initialization must not run a destructor that releases another caller's state.
 - **Async boundaries:** filesystem/network/CPU-heavy work and large-data cleanup
   belong to backend workers. UI callbacks perform short input/presentation work.
   Use bounded channels, cooperative cancellation and explicit ownership.
@@ -39,4 +47,5 @@ the formatting authority; strict Clippy checks run in CI.
 Checks: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 Source size: `pwsh scripts/check-source-size.ps1` on Windows or
-`bash scripts/check-source-size.sh` on Linux; no extra interpreter is required.
+`bash scripts/check-source-size.sh` on Linux, including the root build helpers;
+no extra interpreter is required.

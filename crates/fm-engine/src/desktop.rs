@@ -75,6 +75,7 @@ impl Desktop {
         for key in [
             IconKey::file(),
             IconKey::folder(),
+            IconKey::folder_link(),
             IconKey::drive(),
             IconKey {
                 kind: IconKind::Link,
@@ -435,11 +436,14 @@ async fn icon_worker(
 }
 
 fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
+    if matches!(kind, IconKind::Link | IconKind::FolderLink) {
+        return Some(link_fallback(kind == IconKind::FolderLink));
+    }
     // Small backend-generated RGBA assets also work without a font icon glyph.
     let color = match kind {
         IconKind::Folder => [232, 182, 62, 255],
         IconKind::Drive => [126, 144, 163, 255],
-        IconKind::Link => [94, 173, 155, 255],
+        IconKind::Link | IconKind::FolderLink => unreachable!("link icons use a badge"),
         IconKind::File => [181, 200, 220, 255],
         IconKind::Action(_) | IconKind::Location(_) => return None,
     };
@@ -455,6 +459,41 @@ fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
         height: 24,
         rgba: rgba.into(),
     })
+}
+
+fn link_fallback(folder: bool) -> IconPixels {
+    const EDGE: usize = 24;
+    let mut rgba = vec![0; EDGE * EDGE * 4];
+    let mut paint = |left: usize, top: usize, right: usize, bottom: usize, color: [u8; 4]| {
+        for y in top..bottom {
+            for x in left..right {
+                let offset = (y * EDGE + x) * 4;
+                rgba[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    };
+    if folder {
+        paint(3, 4, 12, 8, [197, 140, 36, 255]);
+        paint(2, 7, 23, 21, [197, 140, 36, 255]);
+        paint(3, 8, 22, 20, [244, 193, 72, 255]);
+    } else {
+        paint(6, 2, 21, 22, [91, 112, 137, 255]);
+        paint(7, 3, 20, 21, [224, 234, 245, 255]);
+        paint(16, 3, 20, 7, [165, 188, 214, 255]);
+    }
+    // A bordered arrow badge remains recognizable without host art or icon fonts.
+    paint(0, 13, 13, 24, [43, 73, 107, 255]);
+    paint(1, 14, 12, 23, [250, 252, 255, 255]);
+    paint(5, 15, 10, 17, [26, 93, 174, 255]);
+    paint(8, 15, 10, 20, [26, 93, 174, 255]);
+    paint(6, 17, 8, 19, [26, 93, 174, 255]);
+    paint(4, 19, 6, 21, [26, 93, 174, 255]);
+    paint(2, 20, 4, 22, [26, 93, 174, 255]);
+    IconPixels {
+        width: EDGE as u32,
+        height: EDGE as u32,
+        rgba: rgba.into(),
+    }
 }
 
 /// Coalesce discovery while native lookup is busy, without delaying volume metadata.
@@ -545,6 +584,29 @@ mod tests {
     };
     use tokio::sync::Notify;
 
+    #[test]
+    fn link_fallbacks_have_a_recognizable_badge_and_distinct_file_or_folder_bases() {
+        let folder = fallback_icon(IconKind::Folder).unwrap();
+        let folder_link = fallback_icon(IconKind::FolderLink).unwrap();
+        let link = fallback_icon(IconKind::Link).unwrap();
+        assert_ne!(
+            folder_link.rgba, folder.rgba,
+            "a junction must not look like an ordinary folder"
+        );
+        assert_ne!(
+            folder_link.rgba, link.rgba,
+            "folder/file link bases must differ"
+        );
+        for icon in [folder_link, link] {
+            let colors: HashSet<_> = icon.rgba.as_chunks::<4>().0.iter().copied().collect();
+            assert!(
+                colors.len() >= 4,
+                "link fallback needs a visible base, border and arrow"
+            );
+            assert!(colors.contains(&[0, 0, 0, 0]));
+        }
+    }
+
     #[derive(Default)]
     struct Icons {
         keys: Mutex<Vec<IconKey>>,
@@ -595,6 +657,7 @@ mod tests {
                 IconKind::Action(ActionIcon::Help) => {
                     Some(IconPixels::new(1, 1, vec![0; 4]).unwrap())
                 }
+                IconKind::FolderLink => Some(IconPixels::new(1, 1, vec![0; 4]).unwrap()),
                 IconKind::Action(ActionIcon::View) => Some(IconPixels {
                     width: 65,
                     height: 1,
@@ -740,6 +803,31 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[tokio::test]
+    async fn transparent_host_link_art_uses_and_caches_the_recognizable_fallback() {
+        let services = Arc::new(Icons::default());
+        let (sender, mut events) = mpsc::channel(2);
+        let outbox = Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        };
+        let (icons, receiver) = mpsc::channel(2);
+        let worker = tokio::spawn(icon_worker(Some(services.clone()), outbox, receiver));
+        icons.send(IconKey::folder_link()).await.unwrap();
+        icons.send(IconKey::folder_link()).await.unwrap();
+        drop(icons);
+        worker.await.unwrap();
+        match events.recv().await.unwrap() {
+            Event::IconLoaded { key, pixels } => {
+                assert_eq!(key, IconKey::folder_link());
+                assert_eq!(pixels.rgba, link_fallback(true).rgba);
+            }
+            event => panic!("unexpected icon event: {event:?}"),
+        }
+        assert!(events.recv().await.is_none());
+        assert_eq!(*services.keys.lock().unwrap(), [IconKey::folder_link()]);
     }
 
     #[tokio::test]

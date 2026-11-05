@@ -88,6 +88,7 @@ fn options_survives_inside_clicks_and_picker_selections() {
     let time = Rc::new(Cell::new(Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time))).unwrap();
     let window = MainWindow::new().unwrap();
+    fm_ui::install_file_keys(&window);
     window.invoke_apply_preferences(0, 0);
     let accepted = Rc::new(Cell::new((-1, -1)));
     let changed = accepted.clone();

@@ -16,52 +16,133 @@ and explicitly submitted shell commands run with
 the selected user/sudo permissions. Copying with mandatory BLAKE3 destination verification
 is the next milestone; no unverified copy operation is exposed.
 
-## Run on Windows x64
+## Build and run
 
-Install Rust with [rustup](https://rust-lang.org/tools/install/) and Visual Studio
-C++ build tools with a Windows SDK. This workspace also supports the local
-toolchain under `.tools` used during development, without modifying system PATH:
+Supported desktop targets are **Windows x64 with MSVC** and **Linux**, including
+Ubuntu and Linux Mint. macOS is planned; it has no platform adapter and does not
+currently build. Slint's own macOS support does not change FM's platform support.
+
+Install [Rust with rustup](https://rust-lang.org/tools/install/), then reopen your
+terminal so `cargo` and `rustup` are on `PATH`. The repository pins **Rust 1.99.1**
+with rustfmt and Clippy in [rust-toolchain.toml](rust-toolchain.toml). From the
+repository root, `rustup show` selects/downloads that toolchain. Cargo downloads
+Slint and the other locked dependencies on the first build; no separate Slint SDK
+installation is needed. The first build takes longer than subsequent builds.
+
+The commands below assume the current directory is the repository root. The
+optional root build helpers locate the repository themselves, so they also work
+when invoked by a quoted path from another directory. They accept no argument
+(debug), `debug`, or `release`, run a locked build of `fm-app`, and return Cargo's
+exit status. They do not install system packages or launch the application.
+Output paths below assume the default native target and no `CARGO_TARGET_DIR`
+override.
+
+### Windows x64
+
+Install the Visual Studio **Desktop development with C++** workload, including
+the MSVC x64/x86 tools and a Windows SDK, as described in the
+[rustup MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html).
+Use the `x86_64-pc-windows-msvc` Rust host toolchain; FM's Windows build does not
+support the GNU/MinGW toolchain. A complete Visual Studio IDE is optional.
+
+Build from PowerShell or Command Prompt:
 
 ```powershell
-.\scripts\cargo.ps1 run -p fm-app
-.\scripts\cargo.ps1 run -p fm-app '--' --left D:\experiments --right C:\Users
+.\build.bat
+.\build.bat release
 ```
 
-With a regular Rust installation, use `cargo run -p fm-app`. For a release build:
+Equivalent commands with a normal Rust installation:
 
 ```powershell
-.\scripts\cargo.ps1 build --release -p fm-app
-.\target\release\fm-app.exe
+cargo build -p fm-app --locked
+cargo build -p fm-app --locked --release
 ```
 
-Normal rendering uses Slint FemtoVG-WGPU with system-font fallback. The separate
-software renderer is a developer diagnostic option; Slint documents script
-limitations, so it is not a qualified full-Unicode production fallback:
+Run either executable directly, or let Cargo build and run it:
 
 ```powershell
-.\scripts\cargo.ps1 run -p fm-app '--' --software
+.\target\debug\fm-app.exe
+.\target\release\fm-app.exe --left "C:\Users" --right "C:\Program Files"
+cargo run -p fm-app --locked -- --left "C:\Users" --right "C:\Windows"
+cargo run -p fm-app --locked --release
 ```
 
-`SLINT_BACKEND` is respected when `--software` is not supplied. First builds
-download and compile Slint's dependencies and take substantially longer than
-later builds. The pinned toolchain is specified in `rust-toolchain.toml`.
-When forwarding application arguments through the PowerShell helper, quote the
-literal `'--'` separator as shown above; regular `cargo.exe` commands use `--`.
+For a filesystem smoke check that exits without opening the UI:
 
-## Linux / Ubuntu / Mint
+```powershell
+.\target\debug\fm-app.exe --smoke-test --left "C:\Users" --right "C:\Windows"
+```
 
-Install Rust with rustup and the distribution's native build prerequisites.
-For Ubuntu/Mint, the development package set is:
+An existing development checkout may have a private toolchain/cache under
+`.tools/`. It is optional: `build.bat` prefers `cargo` on `PATH`, and falls back
+to [scripts/cargo.ps1](scripts/cargo.ps1) only when that local cache exists and
+normal Cargo is unavailable. You can also invoke the helper explicitly:
+
+```powershell
+.\scripts\cargo.ps1 run -p fm-app --locked '--' --left "C:\Users" --right "C:\Windows"
+```
+
+Quote the literal `'--'` separator when forwarding application arguments through
+that PowerShell helper. Regular `cargo` commands use the ordinary `--` separator.
+
+### Linux / Ubuntu / Mint
+
+Install the native compiler/linker and development libraries used by the current
+Linux build. This matches the repository's CI prerequisites plus `build-essential`:
 
 ```sh
-sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libx11-dev libxcb1-dev libwayland-dev libudev-dev
-cargo run -p fm-app
+sudo apt update
+sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype6-dev \
+    libxkbcommon-dev libx11-dev libxcb1-dev libwayland-dev libudev-dev
 ```
 
-Linux supports already-mounted filesystems via `/proc/self/mountinfo`; mounting
-or safely ejecting devices is not part of this milestone. Desktop smoke checks
-require a working X11 or Wayland display. Software rendering is available with
-`cargo run -p fm-app -- --software`.
+Install Rust using the [official rustup instructions](https://rust-lang.org/tools/install/),
+then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
+Build using the POSIX helper or Cargo:
+
+```sh
+./build.sh
+./build.sh release
+
+cargo build -p fm-app --locked
+cargo build -p fm-app --locked --release
+```
+
+Run in a graphical desktop session with X11 or Wayland and working graphics
+drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/)
+describes the display/runtime libraries. The normal renderer is FemtoVG-WGPU.
+
+```sh
+./target/debug/fm-app
+./target/release/fm-app --left "$HOME" --right /tmp
+cargo run -p fm-app --locked -- --left "$HOME" --right /tmp
+cargo run -p fm-app --locked --release
+```
+
+The filesystem smoke check does not require a display:
+
+```sh
+./target/debug/fm-app --smoke-test --left "$HOME" --right /tmp
+```
+
+Linux discovers already-mounted filesystems through `/proc/self/mountinfo`;
+mounting or safely ejecting devices is not implemented. The `.tools/` WSL paths
+and isolated native-library prefix used for internal QA are not installation
+prerequisites for an ordinary Linux build.
+
+### Rendering diagnostics
+
+Normal rendering uses Slint FemtoVG-WGPU with system-font fallback. The separate
+software renderer is a developer diagnostic option; it is not a qualified
+full-Unicode production fallback:
+
+```sh
+cargo run -p fm-app --locked -- --software
+```
+
+`SLINT_BACKEND` is respected when `--software` is not supplied. GUI smoke checks
+and `--snapshot FILE.png` need a working display; see [Checks](#checks) below.
 
 ## Controls
 
@@ -70,6 +151,9 @@ editor scope and shortcuts reserved for later stages.
 
 - Ctrl+A / Ctrl+D / Ctrl+I: select all / clear / invert selection in the focused
   file pane. The parent `..` is excluded; text editors retain normal editing.
+- Type in the file pane to search filename prefixes, always Unicode
+  case-insensitively. The matching prefix is colored; Up/Down visits matches and
+  Escape exits. Options can filter the list while typing instead of just jumping.
 
 - Tab: switch active file pane.
 - Ctrl+T / Ctrl+W: add / close a folder tab in the focused pane.
@@ -125,11 +209,26 @@ editor scope and shortcuts reserved for later stages.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are
   retained and sorted on the backend; Refresh invalidates these live estimates.
 
-Options and bookmarks are stored as version3 UTF-8 JSON in the native
+Options and bookmarks are stored as version4 UTF-8 JSON in the native
 `%LOCALAPPDATA%\FM\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/fm/preferences.json` / `~/.config/fm/preferences.json` on Linux.
 Storage and font/icon discovery run on backend workers. See the
 [navigation and appearance design](docs/superpowers/specs/2026-11-04-navigation-and-appearance-design.md).
+
+A small badge on a file/folder icon identifies compression reported by its
+filesystem. File sizes remain logical sizes. An archive extension alone does not
+set the badge; unavailable compression metadata remains unknown. Search, tooltip
+placement and native metadata contracts are in the
+[current design extension](docs/superpowers/specs/2026-11-05-panel-search-and-metadata-design.md).
+The [verification record](docs/verification/panel-search-and-reuse.md) covers
+search, native metadata and UI reuse. The
+[generated-code review](docs/verification/slint-code-generation-size.md) explains
+the remaining Slint expansion and measured optimization options.
+
+Directory links and junctions have distinct link artwork. Windows uses the
+system link overlay; other platforms prefer host-theme icons and fall back to
+application artwork. Recursive folder-size scans skip links. Browsing a folder
+does not inspect a link target merely to choose its icon.
 
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.
@@ -162,11 +261,11 @@ Build products are not source files and are ignored by Git:
 
 | Directory | Contents | Git |
 | --- | --- | --- |
-| `target/` | Standard Cargo outputs, including Windows debug/release executables | Ignored |
+| `target/` | Standard Cargo outputs, including native debug/release executables | Ignored |
 | `.tools/linux-target/` | Local WSL/Linux Cargo outputs used for development | Ignored |
 | `.tools/` | Local toolchains, dependency caches, native prerequisites, helper scripts and logs | Ignored |
 | `.superpowers/` | Local execution/verification evidence | Ignored |
-| `crates/`, `scripts/`, `.cargo/`, `.github/` | Handwritten code, tests, portable build configuration and CI | Tracked |
+| `crates/`, `scripts/`, `.cargo/`, `.github/`, root `build.bat` / `build.sh` | Handwritten code, tests, build helpers/configuration and CI | Tracked |
 | `docs/` | Design, keyboard map and intended documentation images | Tracked |
 
 There is no required `_build/` directory. Root `_build/`, `build/` and `dist/`
