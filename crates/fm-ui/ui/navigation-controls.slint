@@ -2,8 +2,8 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { ListView, ScrollView } from "std-widgets.slint";
 import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
-import { TipBody } from "controls.slint";
-import { TabRow, BookmarkRow } from "navigation-models.slint";
+import { TipBody, CompactPicker } from "controls.slint";
+import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
 
 component NavigationButton inherits Rectangle {
@@ -64,6 +64,47 @@ component NavigationButton inherits Rectangle {
         }
     }
     Tooltip { TipBody { text: root.hint; } }
+}
+
+export component HistoryNavigation inherits Rectangle {
+    in property <image> icon;
+    in property <image> native-icon;
+    in property <string> hint;
+    in property <[NavigationChoiceRow]> model;
+    in property <int> revision;
+    callback step();
+    callback selected(string);
+    callback dismissed();
+    width: Theme.tool-width + (Theme.touch ? 26px : 22px);
+    height: Theme.control-height;
+    background: Theme.surface;
+    border-width: 1px; border-radius: 4px; border-color: Theme.frame;
+    HorizontalLayout {
+        spacing: 0px; cross-axis-alignment: center;
+        NavigationButton {
+            width: Theme.tool-width; icon: root.icon; native-icon: root.native-icon;
+            hint: root.hint; enabled: root.model.length > 0;
+            model-revision: root.revision;
+            identity: root.model.length > 0 ? root.model[0].identity : "";
+            clicked => { root.step(); }
+        }
+        CompactPicker {
+            width: Theme.touch ? 26px : 22px; minimum-control-width: 0px;
+            framed: false;
+            choices: root.model; model-revision: root.revision;
+            show-row-icons: false; popup-align-right: true;
+            enabled: root.model.length > 0;
+            hint: root.hint + "\nChoose a previously visited folder.";
+            accessible-name: root.hint + " history";
+            popup-width: 500px;
+            selected-key(identity) => { root.selected(identity); }
+            dismissed => { root.dismissed(); }
+        }
+    }
+    Rectangle {
+        x: Theme.tool-width; y: 4px; width: 1px; height: root.height - 8px;
+        background: Theme.frame;
+    }
 }
 
 export component TabStrip inherits Rectangle {
@@ -164,6 +205,7 @@ export component TabStrip inherits Rectangle {
 }
 
 export component BookmarkMenu inherits Rectangle {
+    in property <bool> show-trigger: true;
     in property <[BookmarkRow]> model;
     in property <ActionIcons> action-icons;
     in property <string> path;
@@ -178,7 +220,7 @@ export component BookmarkMenu inherits Rectangle {
     callback open-bookmark(string);
     callback remove-bookmark(string);
     callback add-bookmark(string, int);
-    width: Theme.tool-width; height: Theme.control-height;
+    width: root.show-trigger ? Theme.tool-width : 0px; height: Theme.control-height;
     changed model => { root.revision += 1; }
     public function open() {
         root.opening();
@@ -190,10 +232,11 @@ export component BookmarkMenu inherits Rectangle {
     // Own the identity argument before closing destroys the virtualized delegate.
     function select-bookmark(identity: string) { popup.close(); root.open-bookmark(identity); }
     NavigationButton {
+        visible: root.show-trigger;
         width: root.width;
         icon: FallbackIcons.bookmarks;
         native-icon: root.action-icons.bookmarks;
-        hint: "Bookmarks and Hot Paths\nSave, open or remove a favorite folder. Ctrl+1…9 / Ctrl+0 opens a Hot Path; Ctrl+Shift+1…9 / Ctrl+Shift+0 assigns one.";
+        hint: "Manage Bookmarks and Hot Paths\nSave, open or remove a favorite folder. Ctrl+1…9 / Ctrl+0 opens a Hot Path; assign shortcuts in this dialog.";
         clicked => { root.open(); }
     }
     popup := PopupWindow {

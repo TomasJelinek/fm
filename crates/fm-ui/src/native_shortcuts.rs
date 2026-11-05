@@ -10,6 +10,7 @@ use std::collections::HashSet;
 enum Action {
     Jump(i32, i32),
     Assign(i32, i32),
+    Tab(i32, i32),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -45,6 +46,7 @@ impl ShortcutState {
         match decision.action {
             Some(Action::Jump(pane, slot)) => window.invoke_bookmark_jump(pane, slot),
             Some(Action::Assign(pane, slot)) => window.invoke_bookmark_slot(pane, slot),
+            Some(Action::Tab(pane, number)) => window.invoke_tab_number(pane, number),
             None => {}
         }
         decision.consume
@@ -121,6 +123,7 @@ impl ShortcutState {
             return Decision::default();
         }
         let action = match (control, shift, alt) {
+            (true, true, false) if slot <= 9 => Action::Tab(pane, slot),
             (true, true, false) => Action::Assign(pane, slot),
             (true, false, _) | (false, true, _) => {
                 Action::Jump(if alt { 1 - pane } else { pane }, slot)
@@ -281,7 +284,7 @@ mod tests {
         modifiers(&mut state, ModifiersState::CONTROL | ModifiersState::SHIFT);
         assert_eq!(
             state.key(input(KeyCode::Digit1, "!"), 0),
-            accepted(Action::Assign(0, 1))
+            accepted(Action::Tab(0, 1))
         );
         let mut repeated = input(KeyCode::Digit1, "!");
         repeated.repeat = true;
@@ -340,7 +343,7 @@ mod tests {
             (ModifiersState::CONTROL, accepted(Action::Jump(0, 1))),
             (
                 ModifiersState::CONTROL | ModifiersState::SHIFT,
-                accepted(Action::Assign(0, 1)),
+                accepted(Action::Tab(0, 1)),
             ),
             (
                 ModifiersState::ALT | ModifiersState::SHIFT,

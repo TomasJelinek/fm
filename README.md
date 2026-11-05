@@ -35,7 +35,9 @@ when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `fm-app`, and return Cargo's
 exit status. They do not install system packages or launch the application.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
-override.
+override. Cargo's checked-in configuration puts compiled and generated output
+under `_build/`. The build helpers also keep their child processes'
+temporary files under `_build/tmp/`.
 
 ### Windows x64
 
@@ -62,8 +64,8 @@ cargo build -p fm-app --locked --release
 Run either executable directly, or let Cargo build and run it:
 
 ```powershell
-.\target\debug\fm-app.exe
-.\target\release\fm-app.exe --left "C:\Users" --right "C:\Program Files"
+.\_build\debug\fm-app.exe
+.\_build\release\fm-app.exe --left "C:\Users" --right "C:\Program Files"
 cargo run -p fm-app --locked -- --left "C:\Users" --right "C:\Windows"
 cargo run -p fm-app --locked --release
 ```
@@ -71,7 +73,7 @@ cargo run -p fm-app --locked --release
 For a filesystem smoke check that exits without opening the UI:
 
 ```powershell
-.\target\debug\fm-app.exe --smoke-test --left "C:\Users" --right "C:\Windows"
+.\_build\debug\fm-app.exe --smoke-test --left "C:\Users" --right "C:\Windows"
 ```
 
 An existing development checkout may have a private toolchain/cache under
@@ -114,8 +116,8 @@ drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/doc
 describes the display/runtime libraries. The normal renderer is FemtoVG-WGPU.
 
 ```sh
-./target/debug/fm-app
-./target/release/fm-app --left "$HOME" --right /tmp
+./_build/debug/fm-app
+./_build/release/fm-app --left "$HOME" --right /tmp
 cargo run -p fm-app --locked -- --left "$HOME" --right /tmp
 cargo run -p fm-app --locked --release
 ```
@@ -123,13 +125,19 @@ cargo run -p fm-app --locked --release
 The filesystem smoke check does not require a display:
 
 ```sh
-./target/debug/fm-app --smoke-test --left "$HOME" --right /tmp
+./_build/debug/fm-app --smoke-test --left "$HOME" --right /tmp
 ```
 
 Linux discovers already-mounted filesystems through `/proc/self/mountinfo`;
 mounting or safely ejecting devices is not implemented. The `.tools/` WSL paths
 and isolated native-library prefix used for internal QA are not installation
 prerequisites for an ordinary Linux build.
+
+For other Cargo commands, [scripts/cargo.sh](scripts/cargo.sh) keeps temporary
+files in `_build/tmp/` too, for example `sh scripts/cargo.sh test --workspace --locked`.
+It forwards arguments and Cargo's exit status and uses `cargo` on `PATH`.
+When Windows and WSL use the same checkout, give Linux its separate cache:
+`CARGO_TARGET_DIR="$PWD/_build/linux" sh scripts/cargo.sh test --workspace --locked`.
 
 ### Rendering diagnostics
 
@@ -159,15 +167,19 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+T / Ctrl+W: add / close a folder tab in the focused pane.
 - Ctrl+Tab / Ctrl+Shift+Tab: next / previous folder tab. Each caption follows
   the current folder name; full paths are in tooltips. Tabs are session-only.
-- Star button: add, open or remove named saved paths. Ctrl+Shift+1–9/0 assigns
-  a numbered path; Ctrl+number or Shift+number opens it (Alt targets the other pane).
+- Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.
+- Hot Paths dropdown: open or manage saved paths and numbered assignments;
+  saved paths also appear in the full drive dropdown. Ctrl+number or Shift+number
+  opens a numbered path (Alt targets the other pane); Ctrl+Shift+0 assigns slot 10.
 - Left click: focus the row and its pane; Ctrl+left click toggles selection.
 - Enter / unmodified left double click: enter a directory or open a file in its
   default system application. Directory links stay inside the file manager.
 - Backspace / toolbar Up: parent directory.
-- Alt+Left / Alt+Right: back / forward history.
+- Alt+Left / Alt+Right: back / forward history; adjacent dropdowns choose a
+  particular history entry. Click a highlighted path prefix to visit its ancestor.
 - Arrow keys, Page Up/Down, Home/End: move the cursor.
-- Space: toggle selection; Insert: toggle selection and advance.
+- Space / Insert: toggle selection and advance, clamped at the last row. Space
+  also schedules the focused directory's size without following links.
 - Ctrl+R / toolbar Refresh: reload the current directory.
 - Ctrl+Shift+S: calculate all folder sizes in the active pane on the backend;
   press again to cancel. Partial/running values are marked; links are skipped.
@@ -179,6 +191,9 @@ editor scope and shortcuts reserved for later stages.
   name/type/time/size; Ctrl+F9 refreshes; Ctrl+Shift+F10 calculates folder sizes.
 - Enter in the command editor: open the system terminal in the active directory
   and run the submitted command. Insertion alone never executes a command.
+- The full command directory ends with `>`. Its history dropdown restores the
+  selected draft without running it. The latest 100 unique exact strings are
+  persisted (up to 1MiB aggregate text); recalling never enables elevated mode.
 - The picker left of the editor chooses PowerShell/cmd on Windows or
   Terminal/Terminal(sudo) on Linux. A nonempty draft stays bound to its grammar;
   clear it before switching PowerShell/cmd. Sudo selection is session-only.
@@ -188,7 +203,8 @@ editor scope and shortcuts reserved for later stages.
   all discovered drives and special locations, with full-path tooltips.
   Suitable host icons load on the backend; missing native action icons retain
   semantic application vectors and native colors remain intact.
-- Options beside Run offers Blue, Dark, Light, Desktop/Touch spacing, an installed
+- Options beside Run has Panel, Appearance and Command tabs. It offers readable
+  or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Desktop/Touch spacing, an installed
   font family and independent Desktop/Touch base sizes (8–32px). Preview
   is immediate; typed preferences are saved asynchronously by the backend.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
@@ -197,8 +213,12 @@ editor scope and shortcuts reserved for later stages.
   horizontal viewport while preserving editor space.
   At large fonts, the window minimum grows to preserve readable controls and
   a complete file row; ordinary fonts retain the 480 px minimum-height floor.
-- Panel scrolling moves by pixels and gently settles on a row after input and
-  inertia stop. Native drive icons precede captions and dropdown choices.
+- Panel scrolling animates discrete wheel input in pixels and gently settles on
+  a row after input and inertia stop. Native touch/trackpad physics are preserved.
+  Native drive icons precede captions and dropdown choices; special folders show
+  their containing volume, while detected native network paths show Network.
+- Each panel's details strip shows the focused name, exact byte size, date/time,
+  attributes and Unix permissions where available. Click a field to copy it.
 
 - Alt+Enter: properties of selected items or the focused file/folder.
 - Shift+drive letter: switch the focused file pane on Windows.
@@ -209,11 +229,16 @@ editor scope and shortcuts reserved for later stages.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are
   retained and sorted on the backend; Refresh invalidates these live estimates.
 
-Options and bookmarks are stored as version4 UTF-8 JSON in the native
+Options, bookmarks and enabled command history are stored as version 5 UTF-8 JSON in the native
 `%LOCALAPPDATA%\FM\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/fm/preferences.json` / `~/.config/fm/preferences.json` on Linux.
 Storage and font/icon discovery run on backend workers. See the
 [navigation and appearance design](docs/superpowers/specs/2026-11-04-navigation-and-appearance-design.md).
+The [panel navigation and details extension](docs/superpowers/specs/2026-11-05-panel-navigation-details-design.md)
+defines current controls. A separate [Network filesystem plugin](docs/superpowers/specs/2026-11-05-network-filesystem-design.md)
+will discover available devices/shares; discovery is designed, not implemented yet.
+The [panel and scrolling verification](docs/verification/panel-navigation-and-smooth-scrolling.md)
+records regression coverage, native checks and the clean build layout.
 
 A small badge on a file/folder icon identifies compression reported by its
 filesystem. File sizes remain logical sizes. An archive extension alone does not
@@ -257,21 +282,34 @@ have an updated [verification record](docs/verification/compact-command-and-size
 
 ## Build output and version control
 
-Build products are not source files and are ignored by Git:
+New project build products and diagnostic artifacts share the ignored `_build/`
+root. Cargo's `target-dir` configuration applies to build, test, Clippy, generated
+Slint Rust, dependency outputs, incremental caches and rustdoc output:
 
 | Directory | Contents | Git |
 | --- | --- | --- |
-| `target/` | Standard Cargo outputs, including native debug/release executables | Ignored |
-| `.tools/linux-target/` | Local WSL/Linux Cargo outputs used for development | Ignored |
-| `.tools/` | Local toolchains, dependency caches, native prerequisites, helper scripts and logs | Ignored |
-| `.superpowers/` | Local execution/verification evidence | Ignored |
+| `_build/` | Default Cargo outputs, including native debug/release executables | Ignored |
+| `_build/linux/` | Separate Linux/WSL outputs when sharing the checkout with Windows | Ignored |
+| `_build/tmp/` | Temporary compiler/test files when using the build/Cargo helpers | Ignored |
+| `_build/qa/` | New test logs, screenshots, diagnostics and disposable experiments | Ignored |
+| `.tools/` | Optional existing toolchains/dependency caches/native prerequisites and retained historical QA artifacts | Ignored |
+| `.superpowers/` | Retained historical execution/verification evidence | Ignored |
 | `crates/`, `scripts/`, `.cargo/`, `.github/`, root `build.bat` / `build.sh` | Handwritten code, tests, build helpers/configuration and CI | Tracked |
 | `docs/` | Design, keyboard map and intended documentation images | Tracked |
 
-There is no required `_build/` directory. Root `_build/`, `build/` and `dist/`
-are also ignored if introduced later. Compiled binary/object/library extensions
-are excluded as a second safeguard. Cargo.lock is committed for reproducible
-application dependency resolution; temporary QA captures are excluded.
+Cargo writes directly into `_build/`; there is no separate `target/` directory
+or compatibility junction. Windows binaries are in `_build/debug/` or
+`_build/release/`. Linux/WSL builds sharing this checkout use `_build/linux/`;
+standalone Linux checkouts use the default `_build/` layout. Retained historical
+QA evidence outside `_build/` stays separate; new diagnostics use `_build/qa/`.
+
+Explicit `CARGO_TARGET_DIR`/`--target-dir` overrides remain supported. Direct Cargo
+commands use `_build/` but may use the OS temporary directory; the helpers
+scope `TEMP`/`TMP` on Windows or `TMPDIR` on POSIX to `_build/tmp/`. Global rustup,
+Cargo download caches and the application's runtime preferences are not build
+products and retain their normal locations. Root `build/` and `dist/`, plus
+compiled binary/object/library extensions, are ignored as an extra safeguard.
+Cargo.lock is committed for reproducible application dependency resolution.
 
 ## Structure
 

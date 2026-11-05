@@ -1,4 +1,4 @@
-//! Verify reclaimed pane space, fixed function-button height and size warnings.
+//! Verify compact panel details, fixed function-button height and size warnings.
 use fm_ui::{FileRow, MainWindow, Theme};
 use slint::{
     ComponentHandle, ModelRc, VecModel,
@@ -121,7 +121,12 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                 if row == 1 && warning_pixels == 0 {
                     let mut dump = b"P6\n1340 820\n255\n".to_vec();
                     dump.extend(pixels.iter().flat_map(|value| [value.r, value.g, value.b]));
-                    std::fs::write("../../target/compact-feedback-debug.ppm", dump).unwrap();
+                    std::fs::create_dir_all("../../_build/qa/panel-refinement").unwrap();
+                    std::fs::write(
+                        "../../_build/qa/panel-refinement/compact-feedback-debug.ppm",
+                        dump,
+                    )
+                    .unwrap();
                 }
                 assert_eq!(
                     warning_pixels > 0,
@@ -144,7 +149,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     "unfinished-size text contrast is {contrast} in theme {scheme}"
                 );
             }
-            let pane_bottom = window.get_command_bar_top() - theme.get_gap();
+            let pane_bottom = window.get_left_details_top();
             selected.set((-1, -1));
             click(&window, 100.0, pane_bottom - 3.0);
             assert_eq!(
@@ -153,7 +158,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                     0,
                     ((pane_bottom - 3.0 - top) / theme.get_row_height()) as i32
                 ),
-                "files must use the former status-bar space, and success feedback must not consume height"
+                "files fill the space above panel details, and success feedback must not consume height"
             );
             // The function keys must paint within the advertised 22/40px band.
             let x = 30usize;

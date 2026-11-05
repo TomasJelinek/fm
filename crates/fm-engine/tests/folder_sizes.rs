@@ -40,6 +40,64 @@ fn scan(pane: PaneId, navigation: u64, generation: u64) -> Command {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn individual_directory_scans_keep_other_results_and_ignore_file_rows() {
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path();
+    for (folder, bytes) in [("first", 7usize), ("second", 11)] {
+        fs::create_dir(base.join(folder)).unwrap();
+        fs::write(base.join(folder).join("文档.txt"), vec![1u8; bytes]).unwrap();
+    }
+    fs::write(base.join("ordinary.txt"), [1u8; 99]).unwrap();
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(
+        Engine::new(Arc::new(fm_platform::LocalFileSystem::new(None)), sender).run(receiver),
+    );
+    commands
+        .send(navigate(PaneId::Left, 1, base))
+        .await
+        .unwrap();
+    let entries = listing(&mut events, PaneId::Left, 1).await;
+    for (index, entry) in entries.iter().enumerate() {
+        commands
+            .send(Command::ComputeEntrySize {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                scan: FolderSizeScanId(index as u64 + 1),
+                entry: entry.id,
+            })
+            .await
+            .unwrap();
+    }
+    let mut finished = HashMap::new();
+    let mut sizes = HashMap::new();
+    while finished.len() < entries.len() {
+        match next(&mut events).await {
+            Event::FolderSizeUpdated {
+                scan, entry, size, ..
+            } if size.finished => {
+                assert_ne!(
+                    entries.iter().find(|row| row.id == entry).unwrap().kind,
+                    EntryKind::File
+                );
+                sizes.insert(scan.0, size.bytes);
+            }
+            Event::FolderSizesFinished {
+                scan, cancelled, ..
+            } => {
+                finished.insert(scan.0, cancelled);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(sizes.values().copied().sum::<u64>(), 18);
+    assert_eq!(sizes.len(), 2);
+    assert_eq!(finished.values().filter(|cancelled| **cancelled).count(), 1);
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
 async fn listing(
     events: &mut mpsc::Receiver<Event>,
     pane: PaneId,
@@ -338,6 +396,9 @@ struct ControlledTree {
     token: Mutex<Option<Cancellation>>,
     released: (Mutex<bool>, Condvar),
     cooperative: bool,
+    block_refresh: bool,
+    refresh_entered: Notify,
+    refresh_released: (Mutex<bool>, Condvar),
 }
 
 impl ControlledTree {
@@ -352,6 +413,9 @@ impl ControlledTree {
             token: Mutex::new(None),
             released: (Mutex::new(false), Condvar::new()),
             cooperative,
+            block_refresh: false,
+            refresh_entered: Notify::new(),
+            refresh_released: (Mutex::new(false), Condvar::new()),
         }
     }
 
@@ -363,12 +427,18 @@ impl ControlledTree {
     fn was_cancelled(&self) -> bool {
         self.token.lock().unwrap().as_ref().unwrap().is_cancelled()
     }
+
+    fn release_refresh(&self) {
+        *self.refresh_released.0.lock().unwrap() = true;
+        self.refresh_released.1.notify_all();
+    }
 }
 
 struct ReleaseOnDrop(Arc<ControlledTree>);
 impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
         self.0.release();
+        self.0.release_refresh();
     }
 }
 
@@ -381,6 +451,18 @@ impl DirectoryService for ControlledTree {
     ) -> Result<(), FsError> {
         if path == Path::new("active") {
             let refreshed = self.root_reads.fetch_add(1, Ordering::SeqCst) > 0;
+            if refreshed && self.block_refresh {
+                self.refresh_entered.notify_one();
+                let mut released = self.refresh_released.0.lock().unwrap();
+                while !*released && !cancel.is_cancelled() {
+                    released = self
+                        .refresh_released
+                        .1
+                        .wait_timeout(released, Duration::from_millis(5))
+                        .unwrap()
+                        .0;
+                }
+            }
             if self.completed_first {
                 for (id, name) in [(3, "a-small"), (4, "b-large")] {
                     emit(Entry::new(
@@ -480,6 +562,178 @@ async fn entered(tree: &ControlledTree) {
     tokio::time::timeout(Duration::from_secs(5), tree.entered.notified())
         .await
         .expect("Recursive size worker must enter controlled directory");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_scan_supersedes_a_blocked_individual_scan_before_replacing_its_cache() {
+    let filesystem = Arc::new(ControlledTree::new(false));
+    let _release = ReleaseOnDrop(filesystem.clone());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, Path::new("active")))
+        .await
+        .unwrap();
+    let entries = listing(&mut events, PaneId::Left, 1).await;
+    commands
+        .send(Command::ComputeEntrySize {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            scan: FolderSizeScanId(1),
+            entry: entries[0].id,
+        })
+        .await
+        .unwrap();
+    entered(&filesystem).await;
+    let old_token = filesystem.token.lock().unwrap().clone().unwrap();
+    commands.send(scan(PaneId::Left, 1, 2)).await.unwrap();
+    // The next command confirms full-scan dispatch without waiting for its blocked I/O.
+    commands
+        .send(navigate(PaneId::Right, 1, Path::new("other")))
+        .await
+        .unwrap();
+    listing(&mut events, PaneId::Right, 1).await;
+    assert!(old_token.is_cancelled());
+    filesystem.release();
+    let mut final_size = None;
+    loop {
+        match next(&mut events).await {
+            Event::FolderSizeUpdated { scan, size, .. } => {
+                assert_eq!(scan, FolderSizeScanId(2));
+                if size.finished {
+                    final_size = Some(size.bytes);
+                }
+            }
+            Event::FolderSizesFinished {
+                scan, cancelled, ..
+            } => {
+                assert_eq!(scan, FolderSizeScanId(2));
+                assert!(!cancelled);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(final_size, Some(42));
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn individual_scan_finishing_during_refresh_remains_available_to_explicit_size_sort() {
+    let mut tree = ControlledTree::new(true);
+    tree.block_refresh = true;
+    let filesystem = Arc::new(tree);
+    let _release = ReleaseOnDrop(filesystem.clone());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, Path::new("active")))
+        .await
+        .unwrap();
+    let entries = listing(&mut events, PaneId::Left, 1).await;
+    commands
+        .send(Command::ComputeEntrySize {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            scan: FolderSizeScanId(1),
+            entry: entries[0].id,
+        })
+        .await
+        .unwrap();
+    entered(&filesystem).await;
+    commands
+        .send(Command::Refresh {
+            pane: PaneId::Left,
+            navigation: NavigationId(2),
+            path: "active".into(),
+            sort: SortSpec::default(),
+            scan: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        filesystem.refresh_entered.notified(),
+    )
+    .await
+    .unwrap();
+    filesystem.release();
+    complete_scan(&mut events, 1, false).await;
+    filesystem.release_refresh();
+    let refreshed = listing(&mut events, PaneId::Left, 2).await;
+    assert_eq!(refreshed[0].metadata.size, Some(42));
+    commands
+        .send(Command::Resort {
+            pane: PaneId::Left,
+            navigation: NavigationId(3),
+            path: "active".into(),
+            sort: SortSpec {
+                column: fm_core::SortColumn::Size,
+                descending: false,
+            },
+            source: Some(fm_core::VisibleDirectory {
+                pane: PaneId::Left,
+                navigation: NavigationId(2),
+                path: "active".into(),
+                entries: refreshed,
+            }),
+        })
+        .await
+        .unwrap();
+    let sorted = listing(&mut events, PaneId::Left, 3).await;
+    assert_eq!(sorted[0].metadata.size, Some(42));
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_honors_target_continuation_until_the_ui_retires_its_completion() {
+    let filesystem = Arc::new(ControlledTree::new(true));
+    let _release = ReleaseOnDrop(filesystem.clone());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, Path::new("active")))
+        .await
+        .unwrap();
+    let entries = listing(&mut events, PaneId::Left, 1).await;
+    commands
+        .send(Command::ComputeEntrySize {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            scan: FolderSizeScanId(1),
+            entry: entries[0].id,
+        })
+        .await
+        .unwrap();
+    entered(&filesystem).await;
+    filesystem.release();
+    complete_scan(&mut events, 1, false).await;
+    // Consume the backend completion without applying it to a presenter: the UI still
+    // names the request while two consecutive refreshes are dispatched.
+    for navigation in [2, 3, 4] {
+        commands
+            .send(Command::Refresh {
+                pane: PaneId::Left,
+                navigation: NavigationId(navigation),
+                path: "active".into(),
+                sort: SortSpec {
+                    column: fm_core::SortColumn::Size,
+                    descending: false,
+                },
+                scan: (navigation < 4).then_some(FolderSizeScanId(1)),
+            })
+            .await
+            .unwrap();
+        let refreshed = listing(&mut events, PaneId::Left, navigation).await;
+        assert_eq!(refreshed[0].metadata.size, (navigation < 4).then_some(42));
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
 }
 
 async fn complete_scan(events: &mut mpsc::Receiver<Event>, expected_scan: u64, cancelled: bool) {

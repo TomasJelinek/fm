@@ -2,11 +2,13 @@
 #![deny(unsafe_code)]
 mod action_icons;
 mod command_line;
+mod detail_attributes;
 mod file_key_bridge;
 mod file_keys;
 mod font_model;
 mod native_shortcuts;
 mod navigation_models;
+mod panel_models;
 mod presenter;
 mod scroll_input;
 mod search_input;
@@ -131,8 +133,9 @@ impl Model for Rows {
         let (size, size_state, size_hint) = if entry.kind == EntryKind::Directory {
             size_presentation::folder_size(
                 pane.folder_sizes.get(&entry.path),
-                pane.size_scan.is_some(),
+                pane.entry_size_running(&entry.path),
                 pane.size_scan_attempted,
+                state.preferences.values.size_display,
             )
         } else if entry.kind == EntryKind::DirectoryLink {
             (
@@ -142,7 +145,12 @@ impl Model for Rows {
             )
         } else {
             (
-                metadata.size.map(format_size).unwrap_or_else(|| "—".into()),
+                metadata
+                    .size
+                    .map(|bytes| {
+                        size_presentation::file_size(bytes, state.preferences.values.size_display)
+                    })
+                    .unwrap_or_else(|| "—".into()),
                 0,
                 "File length from backend metadata.".into(),
             )
@@ -235,9 +243,35 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
     window.set_action_icons(action_icons::palette(presenter));
-    let choices = navigation_models::choices(presenter);
-    let left_choice = presenter.navigation_choice_index(PaneId::Left);
-    let right_choice = presenter.navigation_choice_index(PaneId::Right);
+    panel_models::refresh(window, presenter);
+    let locations = navigation_models::choices(presenter);
+    let mut choices = locations.clone();
+    let mut left_choice = presenter.navigation_choice_index(PaneId::Left);
+    let mut right_choice = presenter.navigation_choice_index(PaneId::Right);
+    if presenter
+        .panes
+        .iter()
+        .any(|pane| pane.visible_storage_kind() == StorageKind::Network)
+    {
+        let index = choices.len() as i32;
+        choices.push(NavigationChoiceRow {
+            identity: "network".into(),
+            label: "Network".into(),
+            compact_label: "Network".into(),
+            tooltip: "Network location".into(),
+            icon: presenter
+                .desktop
+                .image(&IconKey::action(ActionIcon::Network)),
+            kind: LocationRole::Network,
+        });
+        if presenter.panes[0].visible_storage_kind() == StorageKind::Network {
+            left_choice = index;
+        }
+        if presenter.panes[1].visible_storage_kind() == StorageKind::Network {
+            right_choice = index;
+        }
+    }
+    choices.extend(panel_models::bookmark_choices(presenter));
     navigation_models::update(
         window.get_navigation_choices(),
         choices.clone(),
@@ -421,13 +455,13 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     navigation_models::update(
         window.get_left_locations(),
-        navigation_models::locations(&choices, left_choice),
+        navigation_models::locations(&locations, left_choice),
         |location| location.identity.clone(),
         |model| window.set_left_locations(model),
     );
     navigation_models::update(
         window.get_right_locations(),
-        navigation_models::locations(&choices, right_choice),
+        navigation_models::locations(&locations, right_choice),
         |location| location.identity.clone(),
         |model| window.set_right_locations(model),
     );
@@ -594,7 +628,63 @@ pub fn install(
         let _ = w;
     });
     callback!(on_navigation_choice, |w, p, s, id, token| {
-        if p.choose_navigation_choice(pane(id), token.as_str(), s) {
+        let navigated = if token == "network" {
+            p.desktop.report(
+                "Network",
+                "Device discovery is not available yet. Use Ctrl+G to enter a known network path."
+                    .into(),
+            );
+            false
+        } else if let Some(bookmark) = panel_models::bookmark_id(p, token.as_str()) {
+            p.open_bookmark(pane(id), bookmark, s)
+        } else {
+            p.choose_navigation_choice(pane(id), token.as_str(), s)
+        };
+        if navigated {
+            p.active = pane(id);
+            w.set_active_pane(id);
+            w.invoke_focus_files();
+        }
+    });
+    callback!(on_path_part, |w, p, s, id, token| {
+        if p.navigate_path_part(pane(id), token.as_str(), s) {
+            p.active = pane(id);
+            w.set_active_pane(id);
+            w.invoke_focus_files();
+        }
+    });
+    callback!(on_history_choice, |w, p, s, id, forward, token| {
+        if p.choose_history_entry(pane(id), forward, token.as_str(), s) {
+            p.active = pane(id);
+            w.set_active_pane(id);
+            w.invoke_focus_files();
+        }
+    });
+    callback!(on_detail_copy, |w, p, s, id, token| {
+        p.copy_panel_detail(pane(id), token.as_str(), s);
+        let _ = w;
+    });
+    callback!(on_sizes_format_changed, |w, p, s, bytes| {
+        p.change_size_display(bytes, s);
+        let _ = w;
+    });
+    callback!(on_remember_command_history_changed, |w, p, s, remember| {
+        p.change_remember_command_history(remember, s);
+        let _ = w;
+    });
+    callback!(on_command_history_clear, |w, p, s| {
+        p.clear_command_history(s);
+        let _ = w;
+    });
+    callback!(on_command_history_choice, |w, p, _s, token| {
+        if let Some(command) = p.recall_command(token.as_str()) {
+            let cursor = i32::try_from(command.len()).unwrap_or(i32::MAX);
+            w.invoke_set_command(command.into(), cursor);
+            w.invoke_focus_command();
+        }
+    });
+    callback!(on_tab_number, |w, p, s, id, number| {
+        if p.select_tab_number(pane(id), number, s) {
             p.active = pane(id);
             w.set_active_pane(id);
             w.invoke_focus_files();
@@ -829,10 +919,12 @@ pub fn install(
         let _ = w;
     });
     callback!(on_bookmark_open, |w, p, s, id, token| {
-        if let Ok(bookmark) = token.parse::<u64>() {
+        if let Some(bookmark) = panel_models::bookmark_id(p, token.as_str())
+            .or_else(|| token.parse::<u64>().ok().map(BookmarkId))
+        {
             p.active = pane(id);
             w.set_active_pane(id);
-            p.open_bookmark(pane(id), BookmarkId(bookmark), s);
+            p.open_bookmark(pane(id), bookmark, s);
             w.invoke_focus_files();
         }
     });

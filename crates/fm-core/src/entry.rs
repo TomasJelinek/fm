@@ -19,6 +19,10 @@ pub struct EntryMetadata {
     pub modified: Option<SystemTime>,
     /// Filesystem-reported compression, independent of file extension or size.
     pub compression: CompressionStatus,
+    /// Raw Windows file attributes, present only when the native provider supplies them.
+    pub native_attributes: Option<u32>,
+    /// POSIX file type and permission bits, including setuid/setgid/sticky bits.
+    pub unix_mode: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

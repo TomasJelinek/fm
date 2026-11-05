@@ -17,6 +17,9 @@ esac
 
 build_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 cd -- "$build_root"
+mkdir -p -- "$build_root/_build/tmp"
+TMPDIR="$build_root/_build/tmp"
+export TMPDIR
 
 if [ "$build_profile" = release ]; then
     exec cargo build -p fm-app --locked --release

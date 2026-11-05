@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod clipboard;
 mod desktop;
+mod entry_sizes;
 mod folder_sizes;
 mod fonts;
+#[cfg(test)]
+mod outbox_tests;
 mod preferences;
 pub mod reclaim;
 mod scan_cache;
@@ -45,12 +49,22 @@ impl Outbox {
         true
     }
 
-    fn blocking_send(&self, event: Event, cancel: &Cancellation) -> bool {
-        if cancel.is_cancelled() || self.sender.blocking_send(event).is_err() {
-            return false;
+    fn blocking_send(&self, mut event: Event, cancel: &Cancellation) -> bool {
+        loop {
+            if cancel.is_cancelled() {
+                return false;
+            }
+            match self.sender.try_send(event) {
+                Ok(()) => {
+                    (self.wakeup)();
+                    return !cancel.is_cancelled();
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => return false,
+                Err(mpsc::error::TrySendError::Full(unsent)) => event = unsent,
+            }
+            // A full UI queue must not strand a cancelled native worker or its permit.
+            std::thread::park_timeout(std::time::Duration::from_millis(10));
         }
-        (self.wakeup)();
-        !cancel.is_cancelled()
     }
 }
 
@@ -75,6 +89,7 @@ pub struct Engine {
     desktop: Option<Arc<dyn DesktopServices>>,
     watch: Option<Arc<dyn WatchService>>,
     settings: Option<Arc<dyn SettingsService>>,
+    clipboard: Option<Arc<dyn fm_core::ClipboardService>>,
 }
 
 #[derive(Default)]
@@ -134,6 +149,7 @@ impl Engine {
             desktop: None,
             watch: None,
             settings: None,
+            clipboard: None,
             outbox: Outbox {
                 sender: events,
                 wakeup,
@@ -156,6 +172,11 @@ impl Engine {
     /// Configuration I/O is serialized independently of browsing and native dialogs.
     pub fn with_settings(mut self, settings: Arc<dyn SettingsService>) -> Self {
         self.settings = Some(settings);
+        self
+    }
+
+    pub fn with_clipboard(mut self, clipboard: Arc<dyn fm_core::ClipboardService>) -> Self {
+        self.clipboard = Some(clipboard);
         self
     }
 
@@ -183,10 +204,18 @@ impl Engine {
             )
         });
         let desktop = desktop::Desktop::new(self.desktop, self.outbox.clone(), &mut tasks);
+        let mut clipboard = clipboard::Controller::new(self.clipboard, self.outbox.clone());
         let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
         let search = search::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let size_budget = Arc::new(Semaphore::new(2));
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
+        let mut entry_sizes = entry_sizes::Controller::new(
+            self.filesystem.clone(),
+            self.outbox.clone(),
+            snapshots.clone(),
+            size_budget.clone(),
+            size_io_budget.clone(),
+        );
         let mut size_requests: [Option<SizeRequest>; 2] = [None, None];
         let volumes = volumes::Controller::new(
             self.filesystem.clone(),
@@ -247,6 +276,7 @@ impl Engine {
                             if let Some(watcher) = &watcher { watcher.set_visible(watch_target); }
                         }
                         Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks),
+                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks),
                         Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks),
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
                             selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback },
@@ -270,6 +300,7 @@ impl Engine {
                                 continue;
                             }
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
+                            entry_sizes.cancel_all(pane);
                             let entries = entries.map(|selected| scan_cache::prepare(selected, &snapshots, pane));
                             let cancel = Cancellation::default();
                             let worker_cancel = cancel.clone();
@@ -308,7 +339,11 @@ impl Engine {
                                 size_requests[pane.index()] = Some(SizeRequest { scan, navigation, path, sizes, cancel, task });
                             }
                         }
+                        Some(Command::ComputeEntrySize { pane, navigation, scan, entry }) => {
+                            entry_sizes.compute(pane, navigation, scan, entry, &mut tasks);
+                        }
                         Some(Command::CancelFolderSizes { pane, scan }) => {
+                            entry_sizes.cancel(pane, scan, &mut tasks);
                             if size_requests[pane.index()].as_ref().is_some_and(|request| request.scan == scan)
                                 && let Some(old) = size_requests[pane.index()].take() {
                                 let navigation = old.navigation;
@@ -324,10 +359,13 @@ impl Engine {
                         | Some(Command::Refresh { pane, navigation, path, sort, .. })
                         | Some(Command::Resort { pane, navigation, path, sort, .. }) => {
                             if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
+                            let continued_entry_sizes = (refresh || resort)
+                                .then(|| entry_sizes.continued_sizes(pane, &path, continued_scan)).flatten();
+                            entry_sizes.navigate(pane, &path, refresh || resort);
                             search.invalidate(pane);
                             let keep_scan = size_requests[pane.index()].as_ref().is_some_and(|request|
                                 request.path == path && (resort || (refresh && continued_scan == Some(request.scan))));
-                            let continued_sizes = keep_scan.then(|| size_requests[pane.index()].as_ref().expect("validated scan").sizes.clone());
+                            let continued_sizes = keep_scan.then(|| size_requests[pane.index()].as_ref().expect("validated scan").sizes.clone()).or(continued_entry_sizes);
                             if !keep_scan && let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             if let Some(old) = requests[pane.index()].take() { old.cancel(); }
                             let source = {
@@ -385,8 +423,12 @@ impl Engine {
                             let space = tasks.spawn(async move {
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if space_cancel.is_cancelled() { return; }
+                                let storage_outbox = outbox.clone();
+                                let storage_cancel = space_cancel.clone();
                                 let result = tokio::task::spawn_blocking(move || {
                                     let _permit = permit;
+                                    let kind = filesystem.storage_kind(&path).unwrap_or_default();
+                                    storage_outbox.blocking_send(Event::StorageKindUpdated { pane, navigation, kind }, &storage_cancel);
                                     filesystem.space_info(&path)
                                 }).await;
                                 if !space_cancel.is_cancelled()
@@ -412,6 +454,8 @@ impl Engine {
             watcher.shutdown();
         }
         drop(selection);
+        entry_sizes.shutdown();
+        clipboard.shutdown();
         drop(search);
         fonts.shutdown();
         if let Some(settings) = settings {

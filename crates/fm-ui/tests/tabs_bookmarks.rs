@@ -1,5 +1,5 @@
 //! Real keyboard and pointer routing for tab identities and persistent bookmarks.
-use fm_ui::{BookmarkRow, MainWindow, TabRow, Theme};
+use fm_ui::{BookmarkRow, MainWindow, NavigationChoiceRow, TabRow, Theme};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
@@ -79,6 +79,11 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     }])));
     window.set_left_path("D:\\文档".into());
     window.set_left_bookmark_name("文档".into());
+    window.set_hot_path_choices(ModelRc::new(VecModel::from(vec![NavigationChoiceRow {
+        identity: "manage-hot-paths".into(),
+        label: "Manage Hot Paths…".into(),
+        ..Default::default()
+    }])));
     let events = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = events.clone();
     window.on_tab_new(move |pane| captured.borrow_mut().push(format!("new:{pane}")));
@@ -91,6 +96,12 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     let captured = events.clone();
     window.on_tab_close_active(move |pane| {
         captured.borrow_mut().push(format!("close-active:{pane}"))
+    });
+    let captured = events.clone();
+    window.on_tab_number(move |pane, number| {
+        captured
+            .borrow_mut()
+            .push(format!("tab-number:{pane}:{number}"))
     });
     let captured = events.clone();
     window.on_bookmark_jump(move |pane, slot| {
@@ -124,6 +135,8 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     chord(&window, &[Key::Control, Key::Alt], "2");
     chord(&window, &[Key::Shift, Key::Alt], "3");
     chord(&window, &[Key::Control, Key::Shift], "0");
+    chord(&window, &[Key::Control, Key::Shift], "1");
+    chord(&window, &[Key::Control, Key::Shift], "9");
     chord(&window, &[Key::Control, Key::Shift], "+");
     assert_eq!(
         *events.borrow(),
@@ -137,6 +150,8 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             "jump:1:2",
             "jump:1:3",
             "slot:0:10",
+            "tab-number:0:1",
+            "tab-number:0:9",
             "add:0:文档:0"
         ]
     );
@@ -200,7 +215,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     let tabs_y = theme.get_window_padding()
         + 1.0
         + 3.0
-        + theme.get_locations_height()
+        + theme.get_toolbar_height()
         + theme.get_control_height() / 2.0;
     let tab_close_x = theme.get_window_padding() + 1.0 + theme.get_tab_width() - 12.0;
     click(
@@ -289,15 +304,11 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             .push(format!("open:{pane}:{identity}"))
     });
     draw(&mut pixels);
-    let star_y = theme.get_window_padding()
-        + 1.0
-        + 3.0
-        + theme.get_locations_height()
-        + theme.get_control_height()
-        + theme.get_toolbar_height() / 2.0;
+    let star_y = theme.get_window_padding() + 1.0 + 3.0 + theme.get_toolbar_height() / 2.0;
     let pane_width = (1340.0 - 2.0 * theme.get_window_padding() - theme.get_gap()) / 2.0;
     let star_x = theme.get_window_padding() + pane_width - 1.0 - 4.0 - theme.get_tool_width() / 2.0;
     click(&window, star_x, star_y);
+    chord(&window, &[], Key::Return); // The final dropdown item opens its manager.
     draw(&mut pixels);
     assert_eq!(
         window.get_focused_pane(),

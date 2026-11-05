@@ -1,5 +1,9 @@
 //! A large installed-font catalog must stay lazy and commit only accepted choices.
-use fm_ui::{MainWindow, Theme};
+#[path = "support/ui.rs"]
+mod ui;
+
+use fm_ui::MainWindow;
+use i_slint_core::items::AccessibleRole;
 use slint::{
     ComponentHandle, Model, ModelRc, ModelTracker, SharedString,
     platform::{
@@ -82,17 +86,10 @@ fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
     draw(&mut pixels);
     click(&window, 1240.0, 771.0);
     draw(&mut pixels);
-    // The first Theme control establishes focus; Tab follows the actual form.
-    let surface = window.global::<Theme>().get_surface();
-    let surface = slint::Rgb8Pixel {
-        r: surface.red(),
-        g: surface.green(),
-        b: surface.blue(),
-    };
-    let first_control = (300..450)
-        .find(|y| pixels[y * 1340 + 880] != surface)
-        .unwrap();
-    click(&window, 650.0, first_control as f32 + 12.0);
+    window.set_options_topic_index(1);
+    draw(&mut pixels);
+    // Theme establishes focus; Tab follows the Appearance form.
+    ui::click_popup(&window, "Theme", AccessibleRole::Combobox);
     key(&window, Key::Escape);
     key(&window, Key::Tab);
     key(&window, Key::Tab);

@@ -143,7 +143,13 @@ fn submitted_command_freezes_cwd_and_blocks_repeat_until_result() {
     };
     p.apply(Event::DesktopActionFinished {
         request,
-        result: Ok(DesktopActionResult::TerminalStarted { process_id: 5 }),
+        result: Ok(DesktopActionResult::TerminalStarted {
+            process_id: 5,
+            history: CommandHistoryEntry {
+                command: "echo '👩🏽‍💻'".into(),
+                shell: ShellFlavor::Posix,
+            },
+        }),
     });
     assert!(p.submit_command("echo next", &send));
 }

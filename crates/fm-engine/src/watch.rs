@@ -371,6 +371,8 @@ struct Row {
     size: Option<u64>,
     modified: Option<SystemTime>,
     compression: CompressionStatus,
+    native_attributes: Option<u32>,
+    unix_mode: Option<u32>,
 }
 
 impl Row {
@@ -384,6 +386,8 @@ impl Row {
                 .flatten(),
             modified: entry.metadata.modified,
             compression: entry.metadata.compression,
+            native_attributes: entry.metadata.native_attributes,
+            unix_mode: entry.metadata.unix_mode,
         }
     }
 }

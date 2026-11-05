@@ -160,9 +160,9 @@ fn reordered_equal_labels_reject_old_tokens_and_rejected_navigation_keeps_alias(
     let home = p.navigation_choice_token(0);
     let desktop = p.navigation_choice_token(1);
     assert!(p.choose_navigation_choice(PaneId::Left, &desktop, &|_| true));
-    assert_eq!(p.navigation_choice_index(PaneId::Left), 1);
+    assert_eq!(p.navigation_choice_index(PaneId::Left), -1);
     assert!(!p.choose_navigation_choice(PaneId::Left, &home, &|_| false));
-    assert_eq!(p.navigation_choice_index(PaneId::Left), 1);
+    assert_eq!(p.navigation_choice_index(PaneId::Left), -1);
     p.apply(Event::DesktopContext {
         shell: ShellFlavor::Posix,
         locations: vec![
@@ -171,7 +171,7 @@ fn reordered_equal_labels_reject_old_tokens_and_rejected_navigation_keeps_alias(
         ],
     });
     assert!(!p.choose_navigation_choice(PaneId::Right, &desktop, &|_| panic!("stale")));
-    assert_eq!(p.navigation_choice_index(PaneId::Left), 0);
+    assert_eq!(p.navigation_choice_index(PaneId::Left), -1);
     assert!(p.choose_navigation_choice(PaneId::Right, &p.navigation_choice_token(1), &|_| true));
 }
 

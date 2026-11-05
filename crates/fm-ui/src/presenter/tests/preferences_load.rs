@@ -27,6 +27,12 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         desktop_font_size: 18,
         touch_font_size: 23,
         quick_search_filter: true,
+        size_display: SizeDisplay::Bytes,
+        remember_command_history: true,
+        command_history: vec![CommandHistoryEntry {
+            command: "echo Saved 文档".into(),
+            shell: ShellFlavor::Cmd,
+        }],
         bookmarks: vec![stored_bookmark(9, Some(1))],
     };
     let mut expected = saved.clone();

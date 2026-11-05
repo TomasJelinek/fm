@@ -9,7 +9,9 @@ use fm_core::{
 use fm_platform_common::LocalServices;
 use std::fs;
 use std::path::{Path, PathBuf};
+mod clipboard;
 mod desktop;
+pub use clipboard::NativeClipboard;
 mod fonts;
 mod icons;
 mod metadata;

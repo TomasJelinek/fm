@@ -22,6 +22,12 @@ První archivní etapa je procházení a čtení, včetně otevření člena ve 
 Kopírování/extrakce na disk, změny archivů a další mutace následují se společným
 ověřeným copy/publish enginem; pouhá instalace archivačního pluginu je nezapne.
 Markdown preview, Registry, síťové providery a editor jsou další implementace.
+Budoucí [Network filesystem](2026-11-05-network-filesystem-design.md) nabídne
+objevená i ručně zadaná lokální síťová zařízení/služby. Jeho nepřítomnost odebere
+discovery; známé síťové cesty mohou dál obsloužit nativní providery. Metadata
+aktuální síťové lokace řídí Network label/ikonu v drive dropdownu, zatímco
+breadcrumbs zachovají celou skutečnou cestu. Discovery se v aktuální UI etapě
+neimplementuje.
 
 | Varianta | Rozhodnutí a důvod |
 | --- | --- |
@@ -69,6 +75,7 @@ Tím se do každého pluginu negeneruje další kopie Slint komponent.
 | `fm-viewer-text` | `cdylib`: dekódování, index, hledání a volitelné syntax spany |
 | `fm-fs-native-windows`, `fm-fs-native-linux` | Samostatné `cdylib` implementace společného VFS; později `fm-fs-native-macos` |
 | `fm-fs-zip`, `fm-fs-gzip`, `fm-fs-tar`, `fm-fs-7z` | Nezávislé archivační `cdylib` projekty; vlastní implementace, závislosti a testy |
+| `fm-fs-network` | Budoucí samostatný discovery/filesystem plugin; vlastní projekt/testy, API-only závislosti a oddělené OS adaptery |
 | `fm-platform-*` | Vestavěné hostitelské služby: start aplikace, nastavení, loader, terminál, clipboard, ikony a fonty |
 
 Obecné platformní služby nejsou další skrytá implementace VFS. Host musí umět

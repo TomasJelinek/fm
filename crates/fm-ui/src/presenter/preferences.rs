@@ -23,6 +23,10 @@ pub(super) struct EditedFields {
     pub(super) desktop_font_size: bool,
     pub(super) touch_font_size: bool,
     pub(super) quick_search_filter: bool,
+    pub(super) size_display: bool,
+    pub(super) remember_command_history: bool,
+    pub(super) command_history: bool,
+    pub(super) command_history_cleared: bool,
     bookmarks: bool,
 }
 
@@ -80,6 +84,20 @@ impl Presenter {
                 }
                 if edited.quick_search_filter {
                     loaded.quick_search_filter = local.quick_search_filter;
+                }
+                if edited.size_display {
+                    loaded.size_display = local.size_display;
+                }
+                if edited.remember_command_history {
+                    loaded.remember_command_history = local.remember_command_history;
+                }
+                if edited.command_history_cleared {
+                    loaded.command_history = local.command_history.clone();
+                } else if edited.command_history {
+                    // Executed session commands are newer than the initial disk read.
+                    for entry in local.command_history.iter().rev() {
+                        remember_command(&mut loaded.command_history, entry.clone());
+                    }
                 }
                 let local_generation = self.preferences.bookmark_generation;
                 let mut generation = local_generation.max(
@@ -143,6 +161,9 @@ impl Presenter {
     }
 
     pub(super) fn flush_loaded_preferences(&mut self, send: &dyn Fn(Command) -> bool) {
+        if !self.preferences.loaded {
+            return;
+        }
         if mem::take(&mut self.preferences.flush_after_load) {
             self.send_preferences_save(send);
         }
@@ -206,6 +227,58 @@ impl Presenter {
         self.update_preferences(preferences, send);
     }
 
+    pub(crate) fn change_size_display(&mut self, bytes: bool, send: &dyn Fn(Command) -> bool) {
+        self.preferences.edited.size_display = true;
+        self.update_preferences(
+            UserPreferences {
+                size_display: if bytes {
+                    SizeDisplay::Bytes
+                } else {
+                    SizeDisplay::Readable
+                },
+                ..self.preferences.values.clone()
+            },
+            send,
+        );
+    }
+
+    pub(crate) fn change_remember_command_history(
+        &mut self,
+        enabled: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.preferences.edited.remember_command_history = true;
+        self.update_preferences(
+            UserPreferences {
+                remember_command_history: enabled,
+                ..self.preferences.values.clone()
+            },
+            send,
+        );
+    }
+
+    pub(crate) fn clear_command_history(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.preferences.edited.command_history_cleared = true;
+        self.preferences.edited.command_history = true;
+        self.update_preferences(
+            UserPreferences {
+                command_history: Vec::new(),
+                ..self.preferences.values.clone()
+            },
+            send,
+        );
+    }
+
+    /// The backend reports the exact frozen command only after a successful launch.
+    pub(super) fn record_command_history(&mut self, entry: CommandHistoryEntry) {
+        if remember_command(&mut self.preferences.values.command_history, entry) {
+            self.preferences.edited.command_history = true;
+            self.preferences.unsaved = true;
+            self.preferences.revision.0 = self.preferences.revision.0.saturating_add(1);
+            self.preferences.flush_after_load = true;
+        }
+    }
+
     pub(super) fn update_preferences(
         &mut self,
         preferences: UserPreferences,
@@ -227,6 +300,10 @@ impl Presenter {
         edited.touch_font_size |= preferences.touch_font_size != previous.touch_font_size;
         let filter_changed = preferences.quick_search_filter != previous.quick_search_filter;
         edited.quick_search_filter |= filter_changed;
+        edited.size_display |= preferences.size_display != previous.size_display;
+        edited.remember_command_history |=
+            preferences.remember_command_history != previous.remember_command_history;
+        edited.command_history |= preferences.command_history != previous.command_history;
         edited.bookmarks |= preferences.bookmarks != previous.bookmarks;
         self.retired.push(Box::new(mem::replace(
             &mut self.preferences.values,

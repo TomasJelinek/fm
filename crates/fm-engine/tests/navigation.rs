@@ -76,12 +76,54 @@ impl VolumeService for ControlledFileSystem {
 }
 
 impl StorageService for ControlledFileSystem {
+    fn storage_kind(&self, path: &Path) -> Result<fm_core::StorageKind, FsError> {
+        if path == Path::new("network") {
+            Ok(fm_core::StorageKind::Network)
+        } else {
+            Err(FsError::from_io(
+                "storage profile",
+                path,
+                io::ErrorKind::Unsupported.into(),
+            ))
+        }
+    }
     fn space_info(&self, _path: &Path) -> Result<SpaceInfo, FsError> {
         Ok(SpaceInfo {
             available: 40,
             total: 100,
         })
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn path_storage_kind_is_reported_with_navigation_identity_and_unknown_on_failure() {
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(16);
+    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    for (generation, path, expected) in [
+        (1, "network", fm_core::StorageKind::Network),
+        (2, "unknown", fm_core::StorageKind::Unknown),
+    ] {
+        commands
+            .send(navigate(PaneId::Left, generation, path))
+            .await
+            .unwrap();
+        loop {
+            if let Event::StorageKindUpdated {
+                pane,
+                navigation,
+                kind,
+            } = next(&mut events).await
+                && navigation == NavigationId(generation)
+            {
+                assert_eq!(pane, PaneId::Left);
+                assert_eq!(kind, expected);
+                break;
+            }
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
 }
 
 fn provider() -> Arc<ControlledFileSystem> {

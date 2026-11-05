@@ -1,0 +1,175 @@
+import { ScrollView } from "std-widgets.slint";
+import { HintedCheckBox, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { CompactPicker } from "controls.slint";
+import { Theme } from "theme.slint";
+import { ActionIcons, FallbackIcons } from "action-icons.slint";
+
+component OptionPicker inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <[string]> model;
+    in property <int> current-index;
+    callback selected(int);
+    height: Theme.control-height + 6px;
+    HorizontalLayout {
+        spacing: 12px; cross-axis-alignment: center;
+        Text {
+            text: root.label; color: Theme.text; font-size: Theme.font-size;
+            width: max(138px, Theme.font-size * 8); wrap: word-wrap;
+        }
+        picker := HintedComboBox {
+            accessible-label: root.label; hint: root.hint;
+            model: root.model; current-index: root.current-index;
+            horizontal-stretch: 1; height: Theme.control-height;
+            selected(value) => { root.selected(self.current-index); }
+        }
+    }
+}
+
+export component OptionsBody inherits Rectangle {
+    in property <ActionIcons> action-icons;
+    in-out property <int> topic-index;
+    in property <int> theme-index;
+    in property <int> density-index;
+    in property <[string]> font-choices;
+    in property <int> font-index;
+    in property <bool> font-list-ready;
+    in property <int> desktop-font-size;
+    in property <int> touch-font-size;
+    in property <bool> preferences-unsaved;
+    in property <bool> quick-search-filter;
+    in property <bool> sizes-in-bytes;
+    in property <bool> remember-command-history;
+    in property <bool> command-history-empty;
+    callback preferences-changed(int, int, int);
+    callback font-options-changed(int, int, int, int);
+    callback search-filter-changed(bool);
+    callback sizes-format-changed(bool);
+    callback remember-command-history-changed(bool);
+    callback command-history-clear();
+    callback close();
+    background: Theme.surface; border-radius: 8px;
+    border-color: Theme.active-frame; border-width: 1px;
+    VerticalLayout {
+        padding: 18px; spacing: 14px;
+        Text { text: "Options"; color: Theme.strong-text; font-size: max(20px, Theme.font-size + 4px); }
+        topics := Rectangle {
+            height: Theme.control-height + 4px;
+            HorizontalLayout {
+                spacing: 0px;
+                for label[index] in ["Panel", "Appearance", "Command"] : Rectangle {
+                    horizontal-stretch: 1;
+                    background: root.topic-index == index ? Theme.active-header
+                        : tab-area.has-hover ? Theme.hover : Theme.secondary-surface;
+                    border-width: 1px; border-color: root.topic-index == index ? Theme.active-frame : Theme.frame;
+                    accessible-role: button; accessible-label: label;
+                    accessible-checkable: true; accessible-checked: root.topic-index == index;
+                    accessible-action-default => { root.topic-index = index; }
+                    forward-focus: tab-focus;
+                    Text {
+                        text: label; color: root.topic-index == index ? Theme.strong-text : Theme.text;
+                        font-size: Theme.font-size; font-weight: root.topic-index == index ? 600 : 400;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    tab-focus := FocusScope {
+                        key-pressed(event) => {
+                            if event.text == Key.Return || event.text == Key.Space {
+                                root.topic-index = index; return accept;
+                            }
+                            if event.text == Key.RightArrow { root.topic-index = min(2, root.topic-index + 1); return accept; }
+                            if event.text == Key.LeftArrow { root.topic-index = max(0, root.topic-index - 1); return accept; }
+                            reject
+                        }
+                        tab-area := TouchArea { clicked => { tab-focus.focus(); root.topic-index = index; } }
+                    }
+                }
+            }
+        }
+        ScrollView {
+            horizontal-scrollbar-policy: always-off;
+            if root.topic-index == 0 : VerticalLayout {
+                spacing: 16px; alignment: start;
+                HintedCheckBox {
+                    text: "Show only filename search matches";
+                    checked: root.quick-search-filter; min-height: Theme.control-height;
+                    toggled => { root.search-filter-changed(self.checked); }
+                    hint: "Typing in a panel searches filename prefixes. Enable this to hide nonmatching files instead of moving among matches.";
+                }
+                HintedCheckBox {
+                    text: "Always show file sizes in bytes";
+                    checked: root.sizes-in-bytes; min-height: Theme.control-height;
+                    toggled => { root.sizes-format-changed(self.checked); }
+                    hint: "Use exact byte counts in the file list. When disabled, large sizes use readable units. The panel detail line always shows bytes.";
+                }
+            }
+            if root.topic-index == 1 : VerticalLayout {
+                spacing: 10px; alignment: start;
+                theme := OptionPicker {
+                    label: "Theme"; model: ["Blue", "Dark", "Light"]; current-index: root.theme-index;
+                    hint: "Choose Blue, Dark or Light. Changes apply immediately.";
+                    selected(index) => { root.preferences-changed(index, root.density-index, 0); }
+                }
+                density := OptionPicker {
+                    label: "Spacing";
+                    model: ["Desktop / mouse · compact", "Touch · larger controls"]; current-index: root.density-index;
+                    hint: "Desktop uses compact controls. Touch provides targets at least 40 pixels high.";
+                    selected(index) => { root.preferences-changed(root.theme-index, index, 1); }
+                }
+                Rectangle {
+                    height: Theme.control-height + 6px;
+                    HorizontalLayout {
+                        spacing: 12px; cross-axis-alignment: center;
+                        Text { text: "Font family"; color: Theme.text; font-size: Theme.font-size; width: max(138px, Theme.font-size * 8); }
+                        family := CompactPicker {
+                            horizontal-stretch: 1;
+                            accessible-name: "Font family"; enabled: root.font-list-ready;
+                            model: root.font-choices; current-index: root.font-index;
+                            label: root.font-index >= 0 && root.font-index < root.font-choices.length ? root.font-choices[root.font-index] : "Application default";
+                            popup-width: min(640px, root.width - 36px);
+                            hint: root.font-list-ready ? "Choose an installed font family. Changes apply immediately." : "Loading installed font families. Size controls remain available.";
+                            selected(index) => { root.font-options-changed(index, root.desktop-font-size, root.touch-font-size, 0); }
+                        }
+                    }
+                }
+                for label[index] in ["Desktop font", "Touch font"] : OptionPicker {
+                    label: label;
+                    model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
+                    current-index: (index == 0 ? root.desktop-font-size : root.touch-font-size) - 8;
+                    hint: "Base text size in logical pixels, from 8 to 32. Controls grow with text; screen scaling converts logical to physical pixels.";
+                    selected(size) => { root.font-options-changed(root.font-index, index == 0 ? size + 8 : root.desktop-font-size, index == 1 ? size + 8 : root.touch-font-size, index + 1); }
+                }
+            }
+            if root.topic-index == 2 : VerticalLayout {
+                spacing: 16px; alignment: start;
+                HintedCheckBox {
+                    text: "Remember command history after restart";
+                    checked: root.remember-command-history; min-height: Theme.control-height;
+                    toggled => { root.remember-command-history-changed(self.checked); }
+                    hint: "Keep the last 100 distinct executed commands. Commands may contain sensitive text. Disabling this removes persisted history; session history remains available.";
+                }
+                HintedActionButton {
+                    text: "Clear command history"; enabled: !root.command-history-empty;
+                    native-icon: root.action-icons.delete; fallback-icon: FallbackIcons.delete;
+                    min-height: Theme.control-height;
+                    hint: "Remove all remembered commands. This does not change the current draft or execute a command.";
+                    clicked => { root.command-history-clear(); }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            HintedActionButton {
+                native-icon: root.action-icons.save-again; fallback-icon: FallbackIcons.save-again;
+                text: "Save again"; enabled: root.preferences-unsaved; min-height: Theme.control-height;
+                hint: "Retry saving preferences. Changes apply immediately.";
+                clicked => { root.preferences-changed(root.theme-index, root.density-index, 2); }
+            }
+            done := HintedActionButton {
+                native-icon: root.action-icons.done; fallback-icon: FallbackIcons.done;
+                text: "Done"; min-height: Theme.control-height;
+                hint: "Close Options. Changes are applied immediately.";
+                clicked => { root.close(); }
+            }
+        }
+    }
+}

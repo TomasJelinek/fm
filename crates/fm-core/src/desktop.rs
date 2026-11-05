@@ -125,11 +125,12 @@ pub enum ActionIcon {
     Exit,
     SortAscending,
     SortDescending,
+    Network,
 }
 
 impl ActionIcon {
     /// Bounded prefetch palette. Consumers use named roles rather than numeric indexes.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Back,
         Self::Forward,
         Self::Parent,
@@ -162,6 +163,7 @@ impl ActionIcon {
         Self::Exit,
         Self::SortAscending,
         Self::SortDescending,
+        Self::Network,
     ];
 }
 
@@ -327,7 +329,9 @@ pub struct DesktopRequestId(pub u64);
 pub enum DesktopActionResult {
     TerminalStarted {
         process_id: u32,
+        history: crate::CommandHistoryEntry,
     },
+    ClipboardCopied,
     PropertiesOpened,
     PropertiesInfo {
         title: String,
@@ -408,6 +412,16 @@ pub trait PropertyService: Send + Sync + 'static {
 pub trait LocationService: Send + Sync + 'static {
     /// Real volumes and supported physical special locations; no UI-side lookup.
     fn locations(&self) -> Result<Vec<NavigationLocation>, FsError>;
+}
+
+/// A thread-affine native clipboard owner. Create, use and drop it on one backend worker.
+pub trait ClipboardSession {
+    fn copy_text(&mut self, text: &str) -> Result<(), FsError>;
+}
+
+pub trait ClipboardService: Send + Sync + 'static {
+    /// Opening may perform native I/O; call only from the dedicated backend worker.
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError>;
 }
 
 pub trait DesktopServices:

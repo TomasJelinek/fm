@@ -122,8 +122,12 @@ impl Presenter {
                 }
                 let opened = self.desktop.open_requests.remove(&request);
                 match result {
-                    Ok(DesktopActionResult::TerminalStarted { .. }) => {
+                    Ok(DesktopActionResult::TerminalStarted { history, .. }) => {
+                        self.record_command_history(history);
                         self.desktop.status = "Command opened in terminal".into()
+                    }
+                    Ok(DesktopActionResult::ClipboardCopied) => {
+                        self.desktop.status = "Copied to clipboard".into()
                     }
                     Ok(DesktopActionResult::PropertiesOpened) => {
                         self.desktop.status = "Properties opened".into()
@@ -337,14 +341,23 @@ impl Presenter {
         let Some(navigation) = p.successful_generation.filter(|_| !p.loading) else {
             return;
         };
-        p.size_scan_generation = p.size_scan_generation.saturating_add(1);
-        let scan = FolderSizeScanId(p.size_scan_generation);
+        let Some(generation) = p.size_scan_generation.checked_add(1) else {
+            self.desktop.report(
+                "Folder size scan unavailable",
+                "The scan identifier limit was reached. Restart the application.".into(),
+            );
+            return;
+        };
+        p.size_scan_generation = generation;
+        let scan = FolderSizeScanId(generation);
         if send(Command::ComputeFolderSizes {
             pane,
             navigation,
             scan,
         }) {
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
+            self.retired
+                .push(Box::new(mem::take(&mut p.entry_size_scans)));
             p.size_scan = Some(scan);
             p.size_scan_scope = Some(SizeScanScope {
                 navigation,

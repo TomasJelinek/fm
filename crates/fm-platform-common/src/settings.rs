@@ -1,5 +1,8 @@
 //! Portable preferences codec and atomic publication; native adapters own path/security policy.
-use fm_core::{Bookmark, BookmarkId, PreferenceTheme, UiDensity, UserPreferences, WindowsShell};
+use fm_core::{
+    Bookmark, BookmarkId, CommandHistoryEntry, PreferenceTheme, ShellFlavor, SizeDisplay,
+    UiDensity, UserPreferences, WindowsShell,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
@@ -32,6 +35,19 @@ struct StoredPreferences {
     bookmarks: Option<Vec<StoredBookmark>>,
     #[serde(default, deserialize_with = "present")]
     quick_search_filter: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    size_display: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    remember_command_history: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    command_history: Option<Vec<StoredCommandHistory>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredCommandHistory {
+    command: String,
+    shell: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -62,7 +78,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         return Err(invalid("preferences exceed 4 MiB"));
     }
     let stored: StoredPreferences = serde_json::from_slice(bytes).map_err(invalid)?;
-    if !(1..=4).contains(&stored.version) {
+    if !(1..=5).contains(&stored.version) {
         return Err(invalid("unsupported preferences version"));
     }
     let theme = match stored.theme.as_str() {
@@ -93,7 +109,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 defaults.touch_font_size,
             )
         }
-        2..=4 => (
+        2..=5 => (
             stored
                 .font_family
                 .ok_or_else(|| invalid("missing font family"))?,
@@ -108,7 +124,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let bookmarks = match (stored.version, stored.bookmarks) {
         (1 | 2, None) => Vec::new(),
-        (3 | 4, Some(bookmarks)) => bookmarks
+        (3..=5, Some(bookmarks)) => bookmarks
             .into_iter()
             .map(|bookmark| {
                 Ok(Bookmark {
@@ -119,16 +135,53 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 })
             })
             .collect::<io::Result<Vec<_>>>()?,
-        (3 | 4, None) => return Err(invalid("missing bookmarks")),
+        (3..=5, None) => return Err(invalid("missing bookmarks")),
         _ => return Err(invalid("bookmarks require preferences version 3")),
     };
     let quick_search_filter = match (stored.version, stored.quick_search_filter) {
         (1..=3, None) => false,
-        (4, Some(enabled)) => enabled,
-        (4, None) => return Err(invalid("missing quick search filter preference")),
+        (4 | 5, Some(enabled)) => enabled,
+        (4 | 5, None) => return Err(invalid("missing quick search filter preference")),
         _ => {
             return Err(invalid(
                 "quick search filter requires preferences version 4",
+            ));
+        }
+    };
+    let (size_display, remember_command_history, command_history) = match (
+        stored.version,
+        stored.size_display,
+        stored.remember_command_history,
+        stored.command_history,
+    ) {
+        (1..=4, None, None, None) => (SizeDisplay::Readable, true, Vec::new()),
+        (5, Some(size), Some(remember), Some(history)) => {
+            let size = match size.as_str() {
+                "readable" => SizeDisplay::Readable,
+                "bytes" => SizeDisplay::Bytes,
+                _ => return Err(invalid("unknown file size display preference")),
+            };
+            let history = history
+                .into_iter()
+                .map(|entry| {
+                    let shell = match entry.shell.as_str() {
+                        "powershell" => ShellFlavor::PowerShell,
+                        "cmd" => ShellFlavor::Cmd,
+                        "posix" => ShellFlavor::Posix,
+                        _ => return Err(invalid("unknown command history shell")),
+                    };
+                    Ok(CommandHistoryEntry {
+                        command: entry.command,
+                        shell,
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            (size, remember, history)
+        }
+        (5, _, _, _) => return Err(invalid("missing panel or command history preferences")),
+        _ => {
+            return Err(invalid(
+                "panel and command history preferences require version 5",
             ));
         }
     };
@@ -140,6 +193,9 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         desktop_font_size,
         touch_font_size,
         quick_search_filter,
+        size_display,
+        remember_command_history,
+        command_history,
         bookmarks,
     };
     preferences.validate().map_err(invalid)?;
@@ -149,8 +205,33 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
 pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     preferences.validate().map_err(invalid)?;
     let stored = StoredPreferences {
-        version: 4,
+        version: 5,
         quick_search_filter: Some(preferences.quick_search_filter),
+        size_display: Some(
+            match preferences.size_display {
+                SizeDisplay::Readable => "readable",
+                SizeDisplay::Bytes => "bytes",
+            }
+            .into(),
+        ),
+        remember_command_history: Some(preferences.remember_command_history),
+        command_history: Some(if preferences.remember_command_history {
+            preferences
+                .command_history
+                .into_iter()
+                .map(|entry| StoredCommandHistory {
+                    command: entry.command,
+                    shell: match entry.shell {
+                        ShellFlavor::PowerShell => "powershell",
+                        ShellFlavor::Cmd => "cmd",
+                        ShellFlavor::Posix => "posix",
+                    }
+                    .into(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }),
         bookmarks: Some(
             preferences
                 .bookmarks
@@ -299,7 +380,7 @@ mod tests {
         let encoded = encode_preferences(preferences).unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-            4
+            5
         );
     }
 
@@ -396,14 +477,14 @@ mod tests {
         let decoded = decode_preferences(json.as_bytes()).unwrap();
         let encoded = encode_preferences(decoded).unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(stored["version"], 4);
+        assert_eq!(stored["version"], 5);
         assert_eq!(stored["font_family"], "文档 é 🧪");
         assert_eq!(stored["desktop_font_size"], 12);
         assert_eq!(stored["touch_font_size"], 19);
     }
 
     #[test]
-    fn legacy_migration_writes_v4_and_preserves_existing_choices() {
+    fn legacy_migration_writes_v5_and_preserves_existing_choices() {
         let preferences = decode_preferences(
             br#"{"version":1,"theme":"light","density":"touch","windows_shell":"cmd"}"#,
         )
@@ -414,7 +495,7 @@ mod tests {
         let migrated = encode_preferences(preferences.clone()).unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&migrated).unwrap()["version"],
-            4
+            5
         );
         assert_eq!(decode_preferences(&migrated).unwrap(), preferences);
     }
@@ -496,7 +577,7 @@ mod tests {
                 assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
                 assert_eq!(
                     serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-                    4
+                    5
                 );
             }
         }

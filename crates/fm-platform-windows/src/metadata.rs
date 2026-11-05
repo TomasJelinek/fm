@@ -12,6 +12,8 @@ pub(crate) fn read(path: &Path) -> Result<EntryMetadata, FsError> {
         size: metadata.is_file().then_some(metadata.len()),
         modified: metadata.modified().ok(),
         compression: compression_from_attributes(metadata.file_attributes()),
+        native_attributes: Some(metadata.file_attributes()),
+        unix_mode: None,
     })
 }
 
@@ -70,6 +72,8 @@ mod tests {
         assert_eq!(result.compression, expected);
         assert_eq!(result.size, Some(bytes.len() as u64));
         assert_eq!(result.modified, native.modified().ok());
+        assert_eq!(result.native_attributes, Some(native.file_attributes()));
+        assert_eq!(result.unix_mode, None);
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let missing = read(&directory.path().join("missing")).unwrap_err();
         assert_eq!(missing.kind, std::io::ErrorKind::NotFound);

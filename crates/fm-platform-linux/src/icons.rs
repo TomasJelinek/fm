@@ -182,6 +182,7 @@ fn action_names(role: ActionIcon) -> &'static [&'static str] {
         ActionIcon::Exit => &["application-exit"],
         ActionIcon::SortAscending => &["view-sort-ascending"],
         ActionIcon::SortDescending => &["view-sort-descending"],
+        ActionIcon::Network => &["network-server", "network-workgroup", "drive-harddisk"],
     }
 }
 
@@ -313,6 +314,10 @@ mod tests {
     fn semantic_names_are_fixed_host_roles_and_never_probe_supplied_paths() {
         for (kind, expected) in [
             (IconKind::Action(fm_core::ActionIcon::Back), "go-previous"),
+            (
+                IconKind::Action(fm_core::ActionIcon::Network),
+                "network-server",
+            ),
             (
                 IconKind::Action(fm_core::ActionIcon::SortDescending),
                 "view-sort-descending",

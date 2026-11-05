@@ -1,0 +1,74 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+import { DetailRow } from "navigation-models.slint";
+
+// These are ready-to-display fields. Copying resolves the captured field identity
+// on the backend; clipping never changes the value copied to the clipboard.
+export component PanelDetails inherits Rectangle {
+    in property <[DetailRow]> model;
+    callback copy-field(string);
+    private property <int> revision;
+    changed model => { root.revision += 1; }
+    height: Theme.status-height;
+    background: Theme.secondary-surface;
+    Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame; }
+    ScrollView {
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        horizontal-scrollbar-policy: always-off;
+        vertical-scrollbar-policy: always-off;
+        mouse-drag-pan-enabled: true;
+        HorizontalLayout {
+            spacing: 0px; alignment: start;
+            for field[index] in root.model : Rectangle {
+                width: index == 0 ? clamp(value.preferred-width + 16px, 80px, 220px)
+                    : value.preferred-width + 16px;
+                height: Theme.status-height - 2px;
+                background: area.has-hover ? Theme.hover : transparent;
+                border-width: 1px;
+                border-color: focus.has-focus ? Theme.active-frame : transparent;
+                accessible-role: button;
+                accessible-label: field.label + ": " + field.value + ". Copy to clipboard";
+                accessible-action-default => { root.copy-field(field.identity); }
+                forward-focus: focus;
+                value := Text {
+                    x: 7px; width: parent.width - 14px; height: parent.height;
+                    text: field.value; font-size: Theme.small-font;
+                    color: index == 0 ? Theme.text : Theme.secondary-text;
+                    vertical-alignment: center; overflow: elide;
+                }
+                if index > 0 : Rectangle {
+                    x: 0px; y: 5px; width: 1px; height: max(0px, parent.height - 10px);
+                    background: Theme.frame;
+                }
+                focus := FocusScope {
+                    key-pressed(event) => {
+                        if !event.modifiers.control && !event.modifiers.alt
+                            && !event.modifiers.shift && !event.modifiers.meta
+                            && (event.text == Key.Return || event.text == Key.Space) {
+                            root.copy-field(field.identity); return accept;
+                        }
+                        reject
+                    }
+                    area := TouchArea {
+                        private property <string> pressed-id;
+                        private property <int> pressed-revision;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down {
+                                self.pressed-id = field.identity;
+                                self.pressed-revision = root.revision;
+                            }
+                        }
+                        clicked => {
+                            if self.pressed-id == field.identity
+                                && self.pressed-revision == root.revision {
+                                focus.focus(); root.copy-field(self.pressed-id);
+                            }
+                        }
+                    }
+                }
+                Tooltip { TipBody { text: field.label + ": " + field.value + "\nClick to copy this value."; } }
+            }
+        }
+    }
+}

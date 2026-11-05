@@ -163,6 +163,7 @@ fn action_stock_id(role: ActionIcon) -> Option<i32> {
         ActionIcon::Properties | ActionIcon::About => Some(SIID_INFO),
         ActionIcon::NewFolder => Some(SIID_FOLDER),
         ActionIcon::OpenPath => Some(SIID_FOLDEROPEN),
+        ActionIcon::Network => Some(SIID_DRIVENET),
         // Windows has no appropriate documented stock icon for these roles.
         ActionIcon::Back
         | ActionIcon::Forward
@@ -547,6 +548,10 @@ mod tests {
 
     #[test]
     fn semantic_actions_only_use_appropriate_documented_stock_icons() {
+        assert_eq!(
+            action_stock_id(fm_core::ActionIcon::Network),
+            Some(SIID_DRIVENET)
+        );
         assert_eq!(
             action_stock_id(fm_core::ActionIcon::Options),
             Some(SIID_SETTINGS)

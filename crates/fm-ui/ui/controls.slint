@@ -40,11 +40,18 @@ export component CompactPicker inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
     in property <bool> icon-only;
+    in property <bool> show-row-icons: true;
+    in property <bool> popup-align-right;
     in property <bool> enabled: true;
+    in property <bool> framed: true;
     in property <bool> popup-above;
+    in property <length> minimum-control-width: 40px;
     in property <length> popup-width: 360px;
     private property <int> pending-index: -1;
     private property <bool> expanded;
+    private property <bool> has-leading-icon: root.show-row-icons && !root.icon-only
+        && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length);
+    private property <bool> arrow-only: !root.icon-only && root.label == "" && !root.has-leading-icon;
     private property <int> item-count: root.choices.length > 0 ? root.choices.length : root.model.length;
     private property <[NavigationChoiceRow]> opened-choices;
     private property <int> opened-revision;
@@ -52,11 +59,11 @@ export component CompactPicker inherits Rectangle {
     callback selected-key(string);
     callback dismissed();
     height: Theme.control-height;
-    min-width: 40px;
+    min-width: root.minimum-control-width;
     border-width: 1px;
     border-radius: 4px;
-    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
-    background: area.has-hover && root.enabled ? Theme.hover : Theme.surface;
+    border-color: focus.has-focus ? Theme.active-frame : root.framed ? Theme.frame : transparent;
+    background: area.has-hover && root.enabled ? Theme.hover : root.framed ? Theme.surface : transparent;
     forward-focus: focus;
     accessible-role: combobox;
     accessible-label: root.accessible-name;
@@ -112,14 +119,18 @@ export component CompactPicker inherits Rectangle {
         }
     }
     HorizontalLayout {
-        padding-left: 6px; padding-right: 6px; spacing: 4px;
-        if !root.icon-only && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length) : LocationImage {
+        padding-left: root.arrow-only ? 0px : root.has-leading-icon ? 5px : 6px;
+        padding-right: root.arrow-only ? 0px : root.has-leading-icon ? 5px : 6px;
+        spacing: root.arrow-only ? 0px : 4px;
+        alignment: root.arrow-only ? center : stretch;
+        cross-axis-alignment: center;
+        if root.has-leading-icon : LocationImage {
             native-icon: root.row-icon(root.current-index);
             kind: root.choices.length > 0 ? root.choices[root.current-index].kind : LocationRole.drive;
-            width: 18px; height: 18px; image-fit: contain;
+            width: Theme.picker-location-icon-size; height: self.width; image-fit: contain;
         }
-        Rectangle {
-            horizontal-stretch: 1;
+        if !root.arrow-only : Rectangle {
+            horizontal-stretch: 1; height: root.height;
             Image {
                 visible: root.icon-only;
                 source: root.native-icon.width > 0 ? root.native-icon : root.icon;
@@ -136,11 +147,12 @@ export component CompactPicker inherits Rectangle {
             }
         }
         Rectangle {
-            width: 9px;
+            width: 9px; height: root.height;
             Image {
                 source: @image-url("icons/chevron-down.svg");
                 colorize: root.enabled ? Theme.secondary-text : Theme.muted-text;
                 width: 9px; height: 6px; image-fit: contain;
+                x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
             }
         }
@@ -162,7 +174,7 @@ export component CompactPicker inherits Rectangle {
     }
     Tooltip { TipBody { text: root.hint; } }
     popup := PopupWindow {
-        x: 0px;
+        x: root.popup-align-right ? root.width - self.width : 0px;
         y: root.popup-above ? -self.height : root.height;
         width: max(root.popup-width, root.width);
         height: min(360px, root.item-count * Theme.control-height + 10px);
@@ -212,14 +224,15 @@ export component CompactPicker inherits Rectangle {
                         accessible-action-default => { root.commit(index); }
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px; spacing: 8px;
+                            cross-axis-alignment: center;
                             Text {
                                 text: index == root.current-index ? "✓" : "";
                                 color: Theme.accent; width: 16px; vertical-alignment: center;
                             }
-                            if root.choices.length > 0 || index < root.icons.length : LocationImage {
+                            if root.show-row-icons && (root.choices.length > 0 || index < root.icons.length) : LocationImage {
                                 native-icon: root.row-icon(index);
                                 kind: root.choices.length > 0 ? root.choices[index].kind : LocationRole.drive;
-                                width: 18px; height: 18px;
+                                width: Theme.picker-location-icon-size; height: self.width;
                             }
                             Text {
                                 text: root.row-label(index); color: Theme.text; font-size: Theme.font-size;

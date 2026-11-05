@@ -1,4 +1,7 @@
 //! Real hover, paint and click routing across the shared tooltip compiler adapter.
+#[path = "support/ui.rs"]
+mod ui;
+
 use fm_core::*;
 use fm_ui::{MainWindow, Presenter, Theme, install, refresh};
 use i_slint_core::{
@@ -10,7 +13,7 @@ use i_slint_core::{
 use slint::{
     ComponentHandle, Model,
     platform::{
-        Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
+        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
@@ -179,7 +182,7 @@ fn assert_tip(
     assert_eq!(
         text_font(item, expected),
         Some(window.global::<Theme>().get_small_font()),
-        "full plain text and smaller themed font must survive clipping"
+        "full plain text and smaller themed font must survive clipping: {expected}"
     );
     let mut changed = 0;
     for y in (origin.y.ceil() as usize)..((origin.y + size.height).floor() as usize) {
@@ -389,6 +392,10 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             hover(&window, &native, &time, &mut pixels, center(&button), hint);
         }
         window.window().dispatch_event(WindowEvent::PointerExited);
+        window.set_active_pane(0);
+        window.invoke_focus_files();
+        ui::chord(&window, &[Key::Control], "g");
+        draw(&native, &mut pixels);
         let folder_path = find(root(&window), "Folder path", AccessibleRole::TextInput).remove(0);
         let folder_hint = format!(
             "Folder path: {}\n{}{}\nEdit and press Enter to open a folder. Ctrl+G focuses this field.",
@@ -450,6 +457,9 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         );
         click(&window, position);
         draw(&native, &mut pixels);
+        let appearance = find(popup_root(&window), "Appearance", AccessibleRole::Button).remove(0);
+        click(&window, center(&appearance));
+        draw(&native, &mut pixels);
         let theme = find(popup_root(&window), "Theme", AccessibleRole::Combobox).remove(0);
         hover(
             &window,
@@ -460,9 +470,12 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             "Choose Blue, Dark or Light. Changes apply immediately.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
+        let panel = find(popup_root(&window), "Panel", AccessibleRole::Button).remove(0);
+        click(&window, center(&panel));
+        draw(&native, &mut pixels);
         let checkbox = find(
             popup_root(&window),
-            "Show only search matches",
+            "Show only filename search matches",
             AccessibleRole::Checkbox,
         )
         .remove(0);
@@ -473,7 +486,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             position,
-            "Typing in files searches filename prefixes. Enable this to hide nonmatching rows; otherwise the full list stays visible.",
+            "Typing in a panel searches filename prefixes. Enable this to hide nonmatching files instead of moving among matches.",
         );
         let before = window.get_quick_search_filter();
         click(&window, position);

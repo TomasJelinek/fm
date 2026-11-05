@@ -556,7 +556,7 @@ Provedené testy nejsou náhradou za dosud neprovedená měření či nasazení 
 | Levé kliknutí / Ctrl+klik | Kurzor a aktivní panel / přepnutí výběru položky; samotný výběr nic nespouští |
 | Enter / levý dvojklik bez modifikátorů | Vstup do adresáře nebo otevření běžného souboru výchozí systémovou aplikací; odkazy na adresáře zůstávají v panelu |
 | Backspace / dvojklik na `..` | Navigace k rodiči; `..` není skutečný soubor ani součást výběru |
-| Space / Insert | Multivýběr podle identity; Insert také posune kurzor |
+| Space / Insert | Multivýběr a posun kurzoru; Space navíc počítá velikost skutečné složky na pozadí |
 | Alt+Left / Alt+Right, Ctrl+R | Historie / nový výpis aktivního umístění |
 | Kliknutí na záhlaví Name/Size/Modified/Type | První volba sloupce vzestupně; opakované kliknutí přepíná asc/desc; šipka ukazuje směr |
 | Ctrl+Shift+S | Výpočet všech složek aktivního panelu bez ohledu na výběr; opakování ruší |
@@ -602,10 +602,9 @@ Chybějící ikona má generovaný fallback. Windows používá typové Shell/st
 Linux zatím omezené instalované PNG motivy. Vícenásobné či nepodporované nativní
 vlastnosti mají read-only metadata fallback, nikdy implicitní otevření souboru.
 
-Scroll zachovává fyziku Slint ListView/Flickable: dojezd prstu/touchpadu a krátkou
-animaci kolečka přibližně 180 ms. Nepřidává se druhá animace content-y. Krátký
-dojezd kolečka je přijatelný, pokud nepřekáží přesnému ovládání; aktualizace ikon,
-metadat a automatický refresh nesmějí vracet viewport ke kurzoru.
+Scroll zachovává nativní dojezd prstu/touchpadu. Diskrétní kolečko v souborovém
+panelu převádí na krátkou pixelovou animaci a po klidu zarovná řádek. Kliknutí,
+klávesnice či změna cíle zruší zbylý pohyb; metadata nevracejí viewport ke kurzoru.
 
 ## 19. Velikosti složek, férovost a typ úložiště
 
@@ -944,21 +943,21 @@ okna je `FM 0.1 — File Manager`; hodnota se odvozuje z verze balíčku.
 Každý panel má samostatné karty cest. Výchozí jméno karty vždy odpovídá názvu
 aktuální složky a při navigaci se změní; kořen zobrazí svou cestu. Celá cesta je
 v tooltipu. Ctrl+T přidá kartu, Ctrl+W zavře aktuální, Ctrl+Tab/Ctrl+Shift+Tab
-přepíná karty. Poslední karta zůstává otevřená; limit je32 na panel. V této etapě
+přepíná karty, Ctrl+Shift+1…9 volí konkrétní kartu. Poslední karta zůstává otevřená; limit je32 na panel. V této etapě
 jsou karty pouze pro aktuální běh, s vlastní historií, řazením a kurzorem.
 Neaktivní karty nedrží velké výpisy ani skeny; přepnutí načte čerstvý obsah.
 Opožděné backendové výsledky nesmějí přepsat jinou kartu.
 
 Uložené cesty podle Salamanderu mají jméno, nezměněnou nativní cestu a volitelnou
 číselnou zkratku. Nabídka hvězdičky umožní přidání, otevření a odebrání. Až64
-záložek,10 číselných slotů; Ctrl+Shift+číslo přiřazuje, Ctrl/Shift+číslo otevírá,
+záložek,10 číselných slotů; správce přiřazuje, Ctrl/Shift+číslo otevírá,
 Alt navíc cílí do druhého panelu. Identita není odvozena z názvu ani zobrazené
-cesty. Uložené záložky sdílí atomické asynchronní nastavení verze4; nativní
+cesty. Uložené záložky sdílí atomické asynchronní nastavení verze5; nativní
 ne-Unicode názvy mají bezeztrátový platformní kodek. Souhrnný limit nastavení
 4MiB chrání paměť, není limitem délky cesty; nadlimitní uložení selže bez zkrácení.
 
-Odstraňují se i stavové lišty panelů; běžné úspěšné zprávy nezabírají stálý
-footer. Spodní tlačítka mají pro myš základ22px, dotyk40px. Probíhající
+Běžné úspěšné zprávy nezabírají stálý footer. Každý panel má nově kompaktní
+metadata řádku pod kurzorem, kopírovatelná kliknutím. Spodní tlačítka mají pro myš základ22px, dotyk40px. Probíhající
 velikosti složek ukazují kontrastní barvu a při známém dílčím součtu `≈`, bez `!`.
 Options doplňuje systémový font a nezávislé základní velikosti Desktop/Touch
 8–32px, výchozí11/15; ostatní text a ovladače se odvozují od těchto hodnot.
@@ -1101,39 +1100,44 @@ Linuxu/Ubuntu/Mintu včetně `build.bat` a `build.sh`; macOS zůstává budoucí
 
 ## 31. Sdílení kódu a velikost generovaného Rustu
 
-Opakované chování patří do malých sdílených funkcí; opakované ovládací prvky do
-komponent s daty a callbacky. Platformní implementace zůstávají oddělené, společná
-je pouze neutrální logika. Pravidlo platí také pro vstupy Slint kompilátoru:
-tooltip vložený jako dítě každé instance může vynutit vložení celé komponenty.
-Sdílené obaly editorů a ComboBoxů proto vlastní tooltip uvnitř své definice.
-Nabídky F9/F10 sdílejí tělo a panelové klávesy zpracovává společný Rust router.
+Opakované chování patří do sdílených funkcí a komponent s daty a callbacky.
+Platformní implementace zůstávají oddělené. Tooltipy vlastní sdílené obaly;
+vložené dítě v každé instanci by mohlo vynutit duplikaci komponenty. Generovaný
+Rust se ručně nemění. Každé zmenšení musí zachovat Unicode, IME, focus,
+přístupnost a vykreslení. Velikost Rust výpisu není velikost binárky ani RAM.
 
-Izolovaný tooltip adaptér ukládá původní tělo vytvoření tooltipu jednou do privátní
-funkce a opakovaně ji volá. Výstup se standardně formátuje jako Rust AST; ruční
-úpravy vygenerovaného textu ani zdrojů závislostí se nepoužívají. Při změnách
-komponent se kontroluje skutečný generovaný objem při stejném vstupu a zároveň
-chování, Unicode, focus a vykreslení. Velikost zdrojového výstupu sama neurčuje
-velikost binárky ani spotřebu paměti. Podrobnosti měření a hranic sdílení uvádí
-[rozšíření návrhu](2026-11-05-panel-search-and-metadata-design.md#reuse-and-generated-rust).
+Předchozí optimalizace dosáhla 4,87 MB normalizovaných tokenů / 8,70 MB
+formátovaného Rustu, o40,6 % méně než původní adaptér. Nejde o odhad nových
+komponent ani tvrzení o optimu. Měření a další možnosti jsou v
+[rozboru generování UI](../../verification/slint-code-generation-size.md).
 
-Podrobný audit rozlišuje vlastní Slint zdroje od výsledku překladu. V prvním
-optimalizovaném checkpointu má dvanáct zdrojů dohromady přibližně 125 KB; generovaný
-Rust má 5,96 MB normalizovaných tokenů a 10,59 MB po formátování. Přibližně 59 % tohoto
-výpisu tvoří inicializace widgetů a vazeb. FilePane i TipBody už mají jednu sdílenou
-implementaci; další celý panel přidá v diagnostickém příkladu pouze 74 KB. Přidávání
-dalších pomocných funkcí samo o sobě zbývající megabajty neodstraní.
+## 32. Detailní navigace, historie a síťový provider
 
-Následné sdílení tlačítek snížilo výstup na 4,87 MB normalizovaných tokenů a
-8,70 MB po formátování, celkem o 40,6 % proti původnímu adaptérem generovanému
-výstupu. Počet implementací komponent klesl ze 130 na 92. Zbývající inicializace
-představují 60,7 % formátovaného výpisu; tento výsledek není tvrzením o dosažení
-optima ani o velikosti binárky či spotřebě RAM.
+Karty jsou pod diskovou lištou. Hot Paths má vlastní nabídku a všechny záložky
+jsou také v nabídce disků. Back/Forward nabízí jednotlivé záznamy historie.
+Horní cesta sleduje aktuální adresář; hover zvýrazní prefix a klik otevře jeho
+nezměněnou nativní cestu. Speciální složka v nabídce ukáže svůj svazek, síťová
+cesta Network se systémovou síťovou ikonou. Chyba navigace obnoví původní cestu.
+Ikony disků a souborů jsou o10% větší při stejné výšce řádků. Breadcrumb nemá
+umělé mezery; historie tvoří zarovnané dvojité tlačítko s vycentrovanou šipkou.
 
-Další postup je omezovat varianty složených ovladačů, sdílet dialogová těla pomocí
-modelů a nepřidávat Tooltip jako dítě každého tlačítka. Stejný princip obalu s
-vlastností `hint` platí pro tlačítka, ComboBoxy i editory. Výraznější úspory přes
-vlastní lehké ovladače nebo sdílenou reprezentaci popupů se musí prokázat úplným
-prototypem včetně klávesnice, IME, přístupnosti a systémových ikon. Nepředpokládá
-se neověřené procento úspory ani úplná aplikace ve stovkách kilobajtů.
-Čísla, omezení a další možnosti dokumentuje
-[rozbor generování UI](../../verification/slint-code-generation-size.md).
+Space/Insert přepnou výběr a postoupí o řádek; Space také spočítá skutečnou
+složku. Skeny sdílejí omezený backendový rozpočet, přežijí řazení/refresh;
+nový explicitní celopanelový sken je nahradí. Options má témata Panel,
+Appearance a Command, přepíná čitelné velikosti/přesné bajty. Detailní lišta
+každého panelu ukazuje jméno, přesné bajty, datum, čas a nativní atributy/práva;
+klik kopíruje hodnotu přes backend. Zvýraznění výběru je viditelné ve všech tématech.
+
+Jednořádková příkazová cesta končí `>`. Historie uchová posledních100 unikátních
+přesných textů, nejnovější první, do1MiB součtu; příkazy se nezkracují.
+Výběr pouze obnoví draft a kompatibilní shell bez elevated režimu, nic nespustí.
+Zápis následuje po úspěšném spuštění terminálu; Options umožní vymazání/vypnutí.
+Nastavení verze5 migruje v1–4. Buildy, dočasné soubory helperů a nové QA výstupy
+patří pod `_build` přímo bez junctionu; sdílený WSL používá `_build/linux`.
+Historické/toolchain výjimky popisuje README.
+
+Podrobné kontrakty, omezení a testy jsou v
+[rozšíření panelů](2026-11-05-panel-navigation-details-design.md).
+[Síťový filesystem](2026-11-05-network-filesystem-design.md) bude samostatný
+API-only plugin pro dostupná zařízení/služby/sdílení. Zjišťování celé sítě zatím
+není implementované; dostupnost nelze zaručit pro zařízení blokující discovery.

@@ -264,11 +264,12 @@ mod tests {
     fn actual_unicode_file_beyond_max_path_is_classified_without_truncation() {
         let temp = tempfile::tempdir().unwrap();
         let component = "dlouhá_文档_🦀_".repeat(5);
-        let parent = temp
-            .path()
-            .join(&component)
-            .join(&component)
-            .join(&component);
+        let mut parent = temp.path().to_owned();
+        // The repository-local test directory can be shorter than a user's TEMP.
+        // Build a genuinely long native path independently of either location.
+        while parent.as_os_str().encode_wide().count() <= 260 {
+            parent.push(&component);
+        }
         fs::create_dir_all(&parent).unwrap();
         let file = parent.join("document & %.txt");
         fs::write(&file, b"data").unwrap();

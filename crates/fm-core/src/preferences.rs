@@ -1,5 +1,5 @@
 //! User-visible preferences; native storage belongs to backend platform services.
-use crate::FsError;
+use crate::{CommandHistoryEntry, FsError, validate_command_history};
 use std::{collections::HashSet, path::PathBuf};
 
 /// Stable callback identity; names and displayed paths are never identifiers.
@@ -66,6 +66,13 @@ pub enum WindowsShell {
     Cmd,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SizeDisplay {
+    #[default]
+    Readable,
+    Bytes,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
     pub theme: PreferenceTheme,
@@ -77,6 +84,10 @@ pub struct UserPreferences {
     pub touch_font_size: u16,
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
+    pub size_display: SizeDisplay,
+    pub remember_command_history: bool,
+    /// Newest first; exact command text is unique even across different shells.
+    pub command_history: Vec<CommandHistoryEntry>,
     pub bookmarks: Vec<Bookmark>,
 }
 
@@ -94,6 +105,9 @@ impl Default for UserPreferences {
             desktop_font_size: 11,
             touch_font_size: 15,
             quick_search_filter: false,
+            size_display: SizeDisplay::default(),
+            remember_command_history: true,
+            command_history: Vec::new(),
             bookmarks: Vec::new(),
         }
     }
@@ -113,6 +127,9 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if let Err(error) = validate_command_history(&self.command_history) {
+            message = Some(error);
+        }
         if self.bookmarks.len() > MAX_BOOKMARKS {
             message = Some("At most 64 bookmarks can be saved.");
         }

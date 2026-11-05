@@ -9,6 +9,15 @@ component ListView inherits ScrollView {
     private property <bool> scroll-pending;
     private property <bool> settling;
     private property <length> last-scroll-position;
+    private property <length> settle-target;
+
+    function snap-target() -> length {
+        let bottom = min(0px, root.visible-height - root.content-height);
+        let position = clamp(root.content-y, bottom, 0px);
+        // Exact bounds can be partial rows. Preserve them without blank gaps.
+        return position == bottom || position == 0px ? position
+            : clamp(-round(-position / root.row-height) * root.row-height, bottom, 0px);
+    }
 
     function wait-for-idle() {
         root.last-scroll-position = root.content-y;
@@ -29,6 +38,13 @@ component ListView inherits ScrollView {
     function reconsider-scroll-settle() {
         if root.scroll-pending {
             if root.settling {
+                // Virtualized rows can refine their content-height estimate
+                // during metadata refresh. An unchanged target must not restart
+                // the tween and its idle delay on every visible-row update.
+                if !root.interaction-active && root.row-height > 0px
+                    && abs(root.snap-target() - root.settle-target) < 0.01px {
+                    return;
+                }
                 let position = root.content-y;
                 root.settling = false;
                 settled.stop();
@@ -73,16 +89,12 @@ component ListView inherits ScrollView {
                 root.wait-for-idle();
                 return;
             }
-            let bottom = min(0px, root.visible-height - root.content-height);
-            let position = clamp(root.content-y, bottom, 0px);
-            // Bounds win: an exact bottom can be a partial row when the
-            // viewport height is not a row multiple. Preserve it without gaps.
-            let target = position == bottom || position == 0px ? position
-                : clamp(-round(-position / root.row-height) * root.row-height, bottom, 0px);
+            let target = root.snap-target();
             if abs(target - root.content-y) < 0.01px {
                 root.scroll-pending = false;
                 return;
             }
+            root.settle-target = target;
             root.settling = true;
             root.content-y = target;
             settled.start();
@@ -94,8 +106,18 @@ component ListView inherits ScrollView {
         running: false;
         triggered => {
             self.stop();
+            // Timers precede changed handlers: recheck input and geometry that
+            // may have changed in this same event-loop turn.
+            if root.interaction-active || root.row-height <= 0px
+                || abs(root.snap-target() - root.settle-target) >= 0.01px {
+                root.reconsider-scroll-settle();
+                return;
+            }
             root.scroll-pending = false;
             root.settling = false;
+            // ListView layout can write the viewport while rows change. Commit
+            // the exact target after the tween; cancellation stops this timer.
+            root.content-y = root.settle-target;
         }
     }
     accessible-role: list;

@@ -194,7 +194,9 @@ impl Presenter {
         let preferred = self.choices.preferred[pane.index()];
         let mut best: Option<(usize, usize, bool)> = None;
         for (index, choice) in self.choices.items.iter().enumerate() {
-            if !path.starts_with(&choice.location.path) {
+            if choice.location.kind != LocationKind::Volume
+                || !path.starts_with(&choice.location.path)
+            {
                 continue;
             }
             let depth = choice.location.path.components().count();

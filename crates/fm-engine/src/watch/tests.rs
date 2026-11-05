@@ -1,4 +1,18 @@
 use super::*;
+
+#[test]
+fn polling_fingerprint_includes_native_attributes_and_unix_permissions() {
+    let entry = Entry::new(EntryId(1), "root/file".into(), EntryKind::File);
+    let mut changed = entry.clone();
+    changed.metadata.native_attributes = Some(0x2);
+    assert!(Row::from_entry(&entry) != Row::from_entry(&changed));
+    changed.metadata.native_attributes = None;
+    changed.metadata.unix_mode = Some(0o100640);
+    assert!(Row::from_entry(&entry) != Row::from_entry(&changed));
+    let previous = Row::from_entry(&changed);
+    changed.metadata.unix_mode = Some(0o100600);
+    assert!(previous != Row::from_entry(&changed));
+}
 use fm_core::{
     Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, Event, FsError,
     NavigationId, PaneId, SpaceInfo, StorageService, Volume, VolumeService, WatchSubscription,

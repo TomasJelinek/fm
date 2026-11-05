@@ -4,7 +4,8 @@ use std::{collections::HashSet, path::PathBuf};
 #[test]
 fn finite_action_palette_keeps_each_semantic_role_distinct() {
     let keys: HashSet<_> = ActionIcon::ALL.into_iter().map(IconKey::action).collect();
-    assert_eq!(keys.len(), 32);
+    assert_eq!(keys.len(), 33);
+    assert!(keys.contains(&IconKey::action(ActionIcon::Network)));
     assert!(keys.iter().all(|key| {
         matches!(key.kind, IconKind::Action(_))
             && key.extension.is_none()

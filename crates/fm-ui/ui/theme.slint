@@ -30,7 +30,8 @@ export global Theme {
     out property <color> compression-mark: light ? #174e8a : #a8ceff;
     out property <color> cursor-background: light ? #c7dff5 : scheme == 1 ? #4a4a4a : #234d7f;
     out property <color> inactive-cursor: light ? #dce3eb : scheme == 1 ? #383838 : #344052;
-    out property <color> selected-background: light ? #e0ecf7 : scheme == 1 ? #343434 : #263a50;
+    out property <color> selected-background: light ? #d0e4f7 : scheme == 1 ? #434343 : #304c6b;
+    out property <color> selected-edge: light ? #3878aa : scheme == 1 ? #b8b8b8 : #e0b769;
     out property <color> cursor-edge: light ? #3b719f : scheme == 1 ? #bdbdbd : #6bacff;
     out property <color> error-background: light ? #ffebee : scheme == 1 ? #402d2d : #39262d;
     out property <color> error-text: light ? #842434 : scheme == 1 ? #ffc3c3 : #ffb7bd;
@@ -55,4 +56,7 @@ export global Theme {
     out property <length> small-font: max(8px, font-size - (touch ? 2px : 1px));
     out property <length> hint-font: max(8px, font-size - (touch ? 3px : 1px));
     out property <length> icon-size: touch ? 20px : 14px;
+    // Grow file/drive artwork inside the existing control and row bounds.
+    out property <length> file-icon-size: icon-size * 1.1;
+    out property <length> picker-location-icon-size: 18px * 1.1;
 }

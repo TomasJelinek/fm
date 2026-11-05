@@ -8,6 +8,7 @@ mod choices;
 mod controls;
 mod font_preferences;
 mod navigation;
+mod panel_navigation;
 mod preferences_load;
 mod reclamation;
 mod search;
@@ -110,7 +111,9 @@ fn select_row(p: &mut Presenter, pane: PaneId, row: usize, toggle: bool) {
 fn move_cursor(p: &mut Presenter, pane: PaneId, key: i32) {
     let sent = RefCell::new(None);
     p.move_cursor(pane, key, &|command| {
-        *sent.borrow_mut() = Some(command);
+        if matches!(command, Command::Selection(_)) {
+            *sent.borrow_mut() = Some(command);
+        }
         true
     });
     fixture_toggle(p, pane, sent.into_inner());

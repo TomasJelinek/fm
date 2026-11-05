@@ -316,7 +316,13 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     assert_eq!(window.get_command_text().as_str(), "");
     presenter.borrow_mut().apply(Event::DesktopActionFinished {
         request,
-        result: Ok(DesktopActionResult::TerminalStarted { process_id: 1 }),
+        result: Ok(DesktopActionResult::TerminalStarted {
+            process_id: 1,
+            history: CommandHistoryEntry {
+                command: "echo \"right 文件\"D tail".into(),
+                shell: ShellFlavor::Posix,
+            },
+        }),
     });
     fm_ui::refresh(&window, &presenter.borrow());
     commands.borrow_mut().clear();
@@ -341,7 +347,13 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     };
     presenter.borrow_mut().apply(Event::DesktopActionFinished {
         request: elevated_request,
-        result: Ok(DesktopActionResult::TerminalStarted { process_id: 2 }),
+        result: Ok(DesktopActionResult::TerminalStarted {
+            process_id: 2,
+            history: CommandHistoryEntry {
+                command: elevated_draft.into(),
+                shell: ShellFlavor::Posix,
+            },
+        }),
     });
     fm_ui::refresh(&window, &presenter.borrow());
     window.invoke_terminal_changed(0);
@@ -643,7 +655,13 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
             .expect("editor Enter must launch the selected Windows shell");
         presenter.borrow_mut().apply(Event::DesktopActionFinished {
             request,
-            result: Ok(DesktopActionResult::TerminalStarted { process_id: 3 }),
+            result: Ok(DesktopActionResult::TerminalStarted {
+                process_id: 3,
+                history: CommandHistoryEntry {
+                    command: windows_draft.into(),
+                    shell,
+                },
+            }),
         });
         fm_ui::refresh(&window, &presenter.borrow());
     }

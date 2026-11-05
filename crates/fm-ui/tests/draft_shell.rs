@@ -115,7 +115,13 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
     };
     presenter.borrow_mut().apply(Event::DesktopActionFinished {
         request: first,
-        result: Ok(DesktopActionResult::TerminalStarted { process_id: 1 }),
+        result: Ok(DesktopActionResult::TerminalStarted {
+            process_id: 1,
+            history: CommandHistoryEntry {
+                command: literal_draft.into(),
+                shell: ShellFlavor::PowerShell,
+            },
+        }),
     });
     fm_ui::refresh(&window, &presenter.borrow());
     assert_eq!(window.get_command_text().as_str(), "");

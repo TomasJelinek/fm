@@ -1,7 +1,11 @@
 //! Exercise compact controls through actual pointer and keyboard dispatch.
-use fm_ui::{LocationRow, MainWindow, Theme};
+#[path = "support/ui.rs"]
+mod ui;
+
+use fm_ui::{LocationRow, MainWindow, NavigationChoiceRow, Theme};
+use i_slint_core::items::AccessibleRole;
 use slint::{
-    ComponentHandle, Model, ModelRc, SharedString, VecModel,
+    ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
         Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -43,15 +47,7 @@ fn click(window: &MainWindow, x: f32, y: f32) {
 
 fn toolbar_y(window: &MainWindow) -> f32 {
     let theme = window.global::<Theme>();
-    theme.get_window_padding()
-        + 1.0
-        + 3.0
-        + if window.get_left_tabs().row_count() > 0 {
-            theme.get_control_height()
-        } else {
-            0.0
-        }
-        + theme.get_toolbar_height() / 2.0
+    theme.get_window_padding() + 1.0 + 3.0 + theme.get_toolbar_height() / 2.0
 }
 
 fn location_strip_x(window: &MainWindow) -> f32 {
@@ -332,6 +328,11 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
     let action = Rc::new(Cell::new((-1, -1)));
     let captured = action.clone();
     window.on_action(move |pane, selected| captured.set((pane, selected)));
+    window.set_hot_path_choices(ModelRc::new(VecModel::from(vec![NavigationChoiceRow {
+        identity: "manage-hot-paths".into(),
+        label: "Manage Hot Paths…".into(),
+        ..Default::default()
+    }])));
     native.set_size(slint::PhysicalSize::new(1040, 820));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(1040.0, 820.0),
@@ -346,17 +347,13 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
             0.0,
             "no extra drive row remains"
         );
-        let pane_width = (1040.0 - 2.0 * theme.get_window_padding() - theme.get_gap()) / 2.0;
-        let toolbar_padding = if density == 1 { 6.0 } else { 4.0 };
-        let toolbar_gap = if density == 1 { 6.0 } else { 4.0 };
-        let star_x = theme.get_window_padding() + pane_width
-            - 1.0
-            - toolbar_padding
-            - theme.get_tool_width() / 2.0;
-        let refresh_x = star_x - theme.get_tool_width() - toolbar_gap;
-        click(&window, refresh_x, toolbar_y(&window));
+        ui::click_root(
+            &window,
+            "Refresh (Ctrl+F9 / Ctrl+R)",
+            AccessibleRole::Button,
+        );
         assert_eq!(action.get(), (0, 3), "drives cannot obscure Refresh");
-        click(&window, star_x, toolbar_y(&window));
+        ui::click_root(&window, "Hot Paths", AccessibleRole::Combobox);
         draw(&mut pixels);
         assert_eq!(window.get_focused_pane(), -1, "Bookmarks stays reachable");
         key(&window, Key::Escape);

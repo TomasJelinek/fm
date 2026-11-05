@@ -53,6 +53,10 @@ pub enum Command {
         request: DesktopRequestId,
         terminal: TerminalRequest,
     },
+    CopyText {
+        request: DesktopRequestId,
+        text: String,
+    },
     ShowProperties {
         request: DesktopRequestId,
         paths: Vec<PathBuf>,
@@ -75,6 +79,12 @@ pub enum Command {
         navigation: NavigationId,
         scan: FolderSizeScanId,
     },
+    ComputeEntrySize {
+        pane: PaneId,
+        navigation: NavigationId,
+        scan: FolderSizeScanId,
+        entry: EntryId,
+    },
     CancelFolderSizes {
         pane: PaneId,
         scan: FolderSizeScanId,
@@ -85,7 +95,8 @@ pub enum Command {
         path: PathBuf,
         sort: SortSpec,
     },
-    /// Reload the same pane location, optionally continuing its exact live scan.
+    /// Reload the same pane location, optionally continuing its full scan or latest
+    /// individual scan still tracked by the UI, including completion events in flight.
     /// A new tab or different location uses Navigate, even for an identical path.
     Refresh {
         pane: PaneId,
@@ -206,5 +217,10 @@ pub enum Event {
         pane: PaneId,
         navigation: NavigationId,
         space: SpaceInfo,
+    },
+    StorageKindUpdated {
+        pane: PaneId,
+        navigation: NavigationId,
+        kind: crate::StorageKind,
     },
 }

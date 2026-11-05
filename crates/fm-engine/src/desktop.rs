@@ -141,6 +141,10 @@ impl Desktop {
         let children = self.children.clone();
         tasks.spawn(async move {
             let path = terminal.working_directory.clone();
+            let history = CommandHistoryEntry {
+                command: terminal.command.clone(),
+                shell: terminal.shell,
+            };
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 services.launch_terminal(&terminal)
@@ -157,7 +161,10 @@ impl Desktop {
                             completion: None,
                         })
                         .await;
-                    Ok(DesktopActionResult::TerminalStarted { process_id })
+                    Ok(DesktopActionResult::TerminalStarted {
+                        process_id,
+                        history,
+                    })
                 }
                 Ok(Err(error)) => Err(error),
                 Err(error) => Err(worker_error("launch terminal", &path, error)),

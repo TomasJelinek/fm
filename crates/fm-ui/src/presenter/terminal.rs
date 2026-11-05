@@ -1,7 +1,62 @@
 //! Terminal choices are input state. Launching and credentials stay external.
 use super::*;
 
+#[cfg(test)]
+#[path = "tests/command_history.rs"]
+mod command_history_tests;
+
 impl Presenter {
+    /// Exact command text is a stable callback token; a stale removed row does nothing.
+    pub(crate) fn command_history_choices(&self) -> Vec<(String, String)> {
+        self.preferences
+            .values
+            .command_history
+            .iter()
+            .map(|entry| {
+                let shell = match entry.shell {
+                    ShellFlavor::PowerShell => "PowerShell",
+                    ShellFlavor::Cmd => "cmd",
+                    ShellFlavor::Posix => "Terminal",
+                };
+                (
+                    entry.command.clone(),
+                    format!("{shell} · {}", entry.command),
+                )
+            })
+            .collect()
+    }
+
+    /// Recall edits the draft only. It cannot launch or revive elevated permissions.
+    pub(crate) fn recall_command(&mut self, token: &str) -> Option<String> {
+        let entry = self
+            .preferences
+            .values
+            .command_history
+            .iter()
+            .find(|entry| entry.command == token)?
+            .clone();
+        let supported = matches!(
+            (self.desktop.shell, entry.shell),
+            (Some(ShellFlavor::Posix), ShellFlavor::Posix)
+                | (
+                    Some(ShellFlavor::PowerShell | ShellFlavor::Cmd),
+                    ShellFlavor::PowerShell | ShellFlavor::Cmd
+                )
+        );
+        if !supported {
+            self.desktop.report(
+                "Command shell unavailable",
+                "This command was recorded for a shell unavailable on this platform.".into(),
+            );
+            return None;
+        }
+        self.desktop.draft_nonempty = true;
+        self.desktop.draft_shell = Some(entry.shell);
+        self.desktop.terminal_mode = TerminalMode::Standard;
+        self.desktop.terminal_guidance = None;
+        Some(entry.command)
+    }
+
     fn preferred_shell(&self) -> Option<ShellFlavor> {
         self.desktop.shell.map(|host| match host {
             ShellFlavor::Posix => ShellFlavor::Posix,

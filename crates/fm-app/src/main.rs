@@ -245,6 +245,7 @@ fn run_window(
     let engine = runtime.spawn(
         Engine::with_wakeup(filesystem, event_sender, notify.clone())
             .with_desktop(desktop)
+            .with_clipboard(Arc::new(fm_platform::NativeClipboard))
             .with_watch(watch)
             .with_settings(settings)
             .run(command_receiver),

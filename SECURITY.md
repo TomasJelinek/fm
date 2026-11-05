@@ -55,7 +55,7 @@ file encoding/writes execute in backend workers.
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Version3 includes named native bookmarks and font choices, with v1/v2 migration.
+  Version5 includes bookmarks, fonts, size display and command history, with v1–4 migration.
   Its 4MiB aggregate bound is a settings resource limit, not a path-length limit.
   Native path encodings are lossless and platform-specific; malformed/foreign
   encodings, duplicate IDs/slots and NUL paths are rejected. Late initial loads
@@ -64,6 +64,19 @@ file encoding/writes execute in backend workers.
   blocking on FIFOs or opening their targets. Own exclusive temp creation and
   atomic publication preserve existing settings on failure. File sync is used;
   no power-loss durability of the parent directory entry is claimed.
+- Command history intentionally persists exact user-submitted text only after a
+  successful terminal launch, never command output or passwords collected by FM.
+  Commands can contain secrets; the user authorized persistence and can disable
+  it or clear history in Options. Keep at most100 distinct strings and1MiB of
+  aggregate text without truncation; this is a retention budget, not an execution
+  limit. Deduplicate by exact text across shells; recall restores compatible
+  grammar and standard privileges, never executes and never restores elevation.
+  History is not written to diagnostic logs.
+- Status-field clicks copy only the current displayed value via a bounded backend
+  clipboard service. A dedicated lazy worker retains native clipboard ownership;
+  the UI never opens the OS clipboard. Clipboard managers may retain copied data.
+  Breadcrumb/history/detail tokens reject stale clicks after navigation or updates;
+  displayed paths are never parsed to construct a clicked filesystem identity.
 - Raw `PathBuf`/`OsString` identities are kept separately from visible text.
   Valid Unicode is not converted through an ANSI code page or normalized into a
   different filename. Names that are not valid Unicode on their host remain

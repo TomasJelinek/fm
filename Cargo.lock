@@ -1129,6 +1129,7 @@ dependencies = [
 name = "fm-platform-linux"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "fm-core",
  "fm-platform-common",
  "fontdb",
@@ -1142,6 +1143,7 @@ dependencies = [
 name = "fm-platform-windows"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "base64",
  "fm-core",
  "fm-platform-common",

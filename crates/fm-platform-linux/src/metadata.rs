@@ -1,5 +1,5 @@
 //! Linux reports compression only when statx explicitly supports that attribute.
-use fm_core::{CompressionStatus, DirectoryService, EntryMetadata, FsError};
+use fm_core::{CompressionStatus, EntryMetadata, FsError};
 use rustix::fs::{AtFlags, CWD, FileType, Statx, StatxAttributes, StatxFlags, statx};
 use std::{
     path::Path,
@@ -16,9 +16,7 @@ pub(crate) fn read(path: &Path) -> Result<EntryMetadata, FsError> {
         Ok(stat) => Ok(decode(&stat)),
         // Older kernels can still supply ordinary metadata. Unknown compression
         // is preferable to guessing from sparse blocks, file suffixes or size.
-        Err(rustix::io::Errno::NOSYS) => {
-            fm_platform_common::LocalServices::default().entry_metadata(path)
-        }
+        Err(rustix::io::Errno::NOSYS) => fallback_metadata(path),
         Err(error) => Err(FsError::from_io("read metadata", path, error.into())),
     }
 }
@@ -44,7 +42,23 @@ fn decode(stat: &Statx) -> EntryMetadata {
             .then(|| timestamp(stat.stx_mtime.tv_sec, stat.stx_mtime.tv_nsec))
             .flatten(),
         compression,
+        native_attributes: None,
+        unix_mode: mask
+            .contains(StatxFlags::MODE)
+            .then_some(u32::from(stat.stx_mode)),
     }
+}
+
+fn fallback_metadata(path: &Path) -> Result<EntryMetadata, FsError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| FsError::from_io("read metadata", path, error))?;
+    Ok(EntryMetadata {
+        size: metadata.is_file().then_some(metadata.len()),
+        modified: metadata.modified().ok(),
+        unix_mode: Some(metadata.mode()),
+        ..EntryMetadata::default()
+    })
 }
 
 fn timestamp(seconds: i64, nanoseconds: u32) -> Option<SystemTime> {
@@ -63,7 +77,7 @@ fn timestamp(seconds: i64, nanoseconds: u32) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fm_core::CompressionStatus;
+    use fm_core::{CompressionStatus, DirectoryService};
     use rustix::fs::{AtFlags, CWD, FileType, StatxAttributes, StatxFlags, statx};
     use std::{
         fs,
@@ -119,6 +133,7 @@ mod tests {
         stat.stx_mask = 0;
         assert_eq!(decode(&stat).size, None);
         assert_eq!(decode(&stat).modified, None);
+        assert_eq!(decode(&stat).unix_mode, None);
         stat.stx_mask = StatxFlags::MTIME.bits();
         stat.stx_mtime.tv_nsec = 1_000_000_000;
         assert_eq!(decode(&stat).modified, None);
@@ -146,6 +161,8 @@ mod tests {
             CompressionStatus::Uncompressed
         };
         assert_eq!(result.compression, expected);
+        assert_eq!(result.native_attributes, None);
+        assert_eq!(result.unix_mode, Some(u32::from(stat.stx_mode)));
         let link = directory.path().join("link");
         symlink(&path, &link).unwrap();
         assert_eq!(read(&link).unwrap().size, None);

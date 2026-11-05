@@ -1,18 +1,20 @@
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ScrollView, Button, CheckBox, AboutSlint, Palette } from "std-widgets.slint";
-import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 import { CommandMenuBody } from "command-menu.slint";
 import { Theme } from "theme.slint";
 import { TipBody, CompactPicker, TooltipPlacement } from "controls.slint";
 import { CompactLocationButton } from "location-controls.slint";
 import { PanelList } from "panel-list.slint";
-import { TabRow, BookmarkRow } from "navigation-models.slint";
+import { TabRow, BookmarkRow, PathPartRow, DetailRow } from "navigation-models.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
-import { TabStrip, BookmarkMenu } from "navigation-controls.slint";
+import { TabStrip, BookmarkMenu, HistoryNavigation } from "navigation-controls.slint";
+import { PathNavigation } from "path-navigation.slint";
+import { PanelDetails } from "panel-details.slint";
+import { OptionsBody } from "options-dialog.slint";
 import { PanelSearch, PrefixName, SearchTextEdit } from "panel-search.slint";
 export { Theme }
-export { TabRow, BookmarkRow }
+export { TabRow, BookmarkRow, PathPartRow, DetailRow }
 export { ActionIcons, NavigationChoiceRow, LocationRole }
 export { SearchTextEdit }
 export { TooltipPlacement }
@@ -113,6 +115,12 @@ component FilePane inherits Rectangle {
     in property <bool> active;
     in property <[TabRow]> tabs;
     in property <[BookmarkRow]> bookmarks;
+    in property <[NavigationChoiceRow]> hot-path-choices;
+    in property <[NavigationChoiceRow]> back-history;
+    in property <[NavigationChoiceRow]> forward-history;
+    in property <int> history-revision;
+    in property <[PathPartRow]> path-parts;
+    in property <[DetailRow]> details;
     in property <string> bookmark-name;
     in property <length> viewport-width;
     in property <length> viewport-height;
@@ -132,6 +140,8 @@ component FilePane inherits Rectangle {
     in property <int> cursor-index: -1;
     in property <int> sort-column;
     in property <bool> descending;
+    in property <bool> sizes-in-bytes;
+    private property <length> size-column-width: root.sizes-in-bytes ? max(126px, Theme.small-font * 15) : 78px;
     in-out property <string> search-query;
     in property <string> search-context;
     in property <bool> search-pending;
@@ -142,6 +152,17 @@ component FilePane inherits Rectangle {
     private property <string> previous-click-identity;
     out property <bool> list-focused: search.has-focus;
     out property <length> list-visible-height: list.visible-height;
+    out property <length> list-left: list.absolute-position.x;
+    out property <length> list-top: list.absolute-position.y;
+    out property <length> list-width: list.width;
+    out property <length> path-left: path-input.absolute-position.x;
+    out property <length> path-top: path-input.absolute-position.y;
+    out property <length> path-width: path-input.width;
+    out property <length> path-control-height: path-input.height;
+    out property <string> path-draft: path-input.text;
+    out property <string> highlighted-path: path-input.highlighted-prefix;
+    out property <length> details-top: details-bar.absolute-position.y;
+    out property <length> details-left: details-bar.absolute-position.x;
     // Include one adjacent row for the virtualized repeater's boundary cache.
     out property <int> visible-row-start: root.row-height > 0px
         ? max(0, floor(-list.content-y / root.row-height) - 1) : 0;
@@ -149,6 +170,9 @@ component FilePane inherits Rectangle {
         ? min(root.rows.length, ceil((-list.content-y + list.visible-height) / root.row-height) + 1) : 0;
     callback action(int);
     callback navigate(string);
+    callback path-part(string);
+    callback history-choice(bool, string);
+    callback detail-copy(string);
     callback volume(int);
     callback sort(int);
     callback row-click(int, bool);
@@ -178,7 +202,7 @@ component FilePane inherits Rectangle {
     border-width: 1px;
     border-radius: 5px;
 
-    public function focus-list() { search.focus-input(); }
+    public function focus-list() { path-input.finish-edit(); search.focus-input(); }
     public function reset-search-context() { search.reset-context(); }
     public function open-volumes() { root.activate(); root.focus-list(); volume-picker.open(); }
     public function open-bookmarks() { bookmarks-menu.open(); }
@@ -195,7 +219,7 @@ component FilePane inherits Rectangle {
     function handle-files-key(event: KeyEvent) -> EventResult {
         let action = root.files-key(event, search.active, search.preedit != "");
         if action == 0 { return reject; }
-        if action == 2 { path-input.focus(); }
+        if action == 2 { path-input.focus-editor(); }
         else if action == 3 { search.clear-query(); }
         else if action == 4 { search.erase-previous(); }
         else if action == 5 { search.clear-query(); root.key(9); }
@@ -207,19 +231,13 @@ component FilePane inherits Rectangle {
             height: 3px;
             background: root.active ? Theme.active-frame : Theme.frame;
         }
-        if root.tabs.length > 0 : TabStrip {
-            model: root.tabs;
-            action-icons: root.action-icons;
-            new-tab => { root.activate(); root.tab-new(); root.focus-list(); }
-            selected(identity) => { root.activate(); root.tab-select(identity); root.focus-list(); }
-            close-tab(identity) => { root.activate(); root.tab-close(identity); root.focus-list(); }
-        }
         Rectangle {
             height: Theme.toolbar-height; background: root.active ? Theme.active-header : Theme.surface;
             HorizontalLayout {
                 padding-top: 4px; padding-bottom: 4px;
                 padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
                 spacing: Theme.touch ? 6px : 4px;
+                cross-axis-alignment: center;
                 volume-picker := CompactPicker {
                     width: Theme.touch ? 88px : 78px;
                     popup-width: 540px;
@@ -227,12 +245,12 @@ component FilePane inherits Rectangle {
                     current-index: root.choices.length > 0 ? root.choice-index : root.volume-index;
                     icons: root.volume-icons;
                     model-revision: root.choices.length > 0 ? root.choice-revision : root.volumes-revision;
-                    label: root.choices.length > 0
-                        ? (root.choice-index >= 0 ? root.choices[root.choice-index].compact-label : "—")
-                        : root.volume-index >= 0
-                        ? root.volume-short-labels[root.volume-index] : "—";
-                    hint: root.choices.length > 0 && root.choice-index >= 0
-                        ? root.choices[root.choice-index].tooltip + "\nChoose a drive or special location."
+                    label: root.choice-index >= 0 && root.choice-index < root.choices.length
+                        ? root.choices[root.choice-index].compact-label
+                        : root.volume-index >= 0 ? root.volume-short-labels[root.volume-index]
+                        : "—";
+                    hint: root.choice-index >= 0 && root.choice-index < root.choices.length
+                        ? root.choices[root.choice-index].tooltip
                         : root.volume-index >= 0
                         ? root.volume-tooltips[root.volume-index] + "\nChoose a drive or volume."
                         : "Choose a drive or volume.";
@@ -243,7 +261,7 @@ component FilePane inherits Rectangle {
                 }
                 ScrollView {
                     min-width: 0px;
-                    min-height: 0px;
+                    height: Theme.control-height;
                     horizontal-stretch: 1;
                     vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off;
@@ -263,11 +281,37 @@ component FilePane inherits Rectangle {
                         }
                     }
                 }
-                Tool { native-icon: root.action-icons.back; icon: FallbackIcons.back; hint: "Back (Alt+Left)"; clicked => { root.activate(); root.action(0); } }
-                Tool { native-icon: root.action-icons.forward; icon: FallbackIcons.forward; hint: "Forward (Alt+Right)"; clicked => { root.activate(); root.action(1); } }
+                HistoryNavigation {
+                    native-icon: root.action-icons.back; icon: FallbackIcons.back;
+                    hint: "Back (Alt+Left)"; model: root.back-history; revision: root.history-revision;
+                    step => { root.activate(); root.action(0); root.focus-list(); }
+                    selected(identity) => { root.activate(); root.history-choice(false, identity); root.focus-list(); }
+                    dismissed => { root.focus-list(); }
+                }
+                HistoryNavigation {
+                    native-icon: root.action-icons.forward; icon: FallbackIcons.forward;
+                    hint: "Forward (Alt+Right)"; model: root.forward-history; revision: root.history-revision;
+                    step => { root.activate(); root.action(1); root.focus-list(); }
+                    selected(identity) => { root.activate(); root.history-choice(true, identity); root.focus-list(); }
+                    dismissed => { root.focus-list(); }
+                }
                 Tool { native-icon: root.action-icons.parent; icon: FallbackIcons.parent; hint: "Parent folder (Backspace / Ctrl+Page Up)"; clicked => { root.activate(); root.action(2); } }
                 Tool { native-icon: root.action-icons.refresh; icon: FallbackIcons.refresh; hint: "Refresh (Ctrl+F9 / Ctrl+R)"; clicked => { root.activate(); root.action(3); } }
+                CompactPicker {
+                    width: Theme.touch ? 52px : 44px;
+                    icon-only: true; icon: FallbackIcons.bookmarks; native-icon: root.action-icons.bookmarks;
+                    choices: root.hot-path-choices; model-revision: root.choice-revision;
+                    accessible-name: "Hot Paths"; hint: "Hot Paths\nChoose a saved folder. Ctrl+1…9 / Ctrl+0 opens numbered Hot Paths.";
+                    popup-width: 500px; popup-align-right: true;
+                    selected-key(identity) => {
+                        root.activate();
+                        if identity == "manage-hot-paths" { bookmarks-menu.open(); }
+                        else { root.bookmark-open(identity); root.focus-list(); }
+                    }
+                    dismissed => { root.focus-list(); }
+                }
                 bookmarks-menu := BookmarkMenu {
+                    show-trigger: false;
                     action-icons: root.action-icons;
                     model: root.bookmarks; path: root.path; default-name: root.bookmark-name;
                     viewport-width: root.viewport-width; viewport-height: root.viewport-height;
@@ -279,6 +323,13 @@ component FilePane inherits Rectangle {
                 }
             }
         }
+        if root.tabs.length > 0 : TabStrip {
+            model: root.tabs;
+            action-icons: root.action-icons;
+            new-tab => { root.activate(); root.tab-new(); root.focus-list(); }
+            selected(identity) => { root.activate(); root.tab-select(identity); root.focus-list(); }
+            close-tab(identity) => { root.activate(); root.tab-close(identity); root.focus-list(); }
+        }
         Rectangle {
             height: Theme.path-height; background: Theme.secondary-surface;
             HorizontalLayout {
@@ -288,12 +339,13 @@ component FilePane inherits Rectangle {
                 Rectangle {
                     horizontal-stretch: 1;
                     min-height: Theme.control-height;
-                    path-input := HintedLineEdit {
+                    path-input := PathNavigation {
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
-                        text: root.path;
-                        accessible-label: "Folder path";
+                        path: root.path; parts: root.path-parts;
                         hint: "Folder path: " + root.path + "\n" + root.status + (root.loading ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. Ctrl+G focuses this field.";
-                        accepted => { root.activate(); root.navigate(self.text); root.focus-list(); }
+                        navigate(path) => { root.activate(); root.navigate(path); root.focus-list(); }
+                        selected-part(identity) => { root.activate(); root.path-part(identity); root.focus-list(); }
+                        cancelled => { root.focus-list(); }
                     }
                     search := PanelSearch {
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
@@ -306,7 +358,11 @@ component FilePane inherits Rectangle {
                         backspace(text, anchor, cursor) => { return root.search-backspace(text, anchor, cursor); }
                     }
                 }
-                Tool { native-icon: root.action-icons.open-path; icon: FallbackIcons.open-path; hint: "Open entered path"; clicked => { root.activate(); root.navigate(path-input.text); root.focus-list(); } }
+                Tool {
+                    native-icon: root.action-icons.open-path; icon: FallbackIcons.open-path;
+                    hint: path-input.editing ? "Open entered path (Enter)" : "Edit folder path (Ctrl+G)";
+                    clicked => { root.activate(); if path-input.editing { root.navigate(path-input.text); root.focus-list(); } else { path-input.focus-editor(); } }
+                }
             }
         }
         Rectangle {
@@ -315,10 +371,11 @@ component FilePane inherits Rectangle {
                 padding-left: 12px; padding-right: 12px; spacing: 8px;
                 for title[index] in ["Name", "Size", "Modified", "Type"] : Rectangle {
                     horizontal-stretch: index == 0 ? 1 : 0;
-                    min-width: index == 0 ? 120px : index == 1 ? 78px : index == 2 ? 132px : 70px;
-                    preferred-width: index == 0 ? 120px : index == 1 ? 78px : index == 2 ? 132px : 70px;
+                    min-width: index == 0 ? 120px : index == 1 ? root.size-column-width : index == 2 ? 132px : 70px;
+                    preferred-width: index == 0 ? 120px : index == 1 ? root.size-column-width : index == 2 ? 132px : 70px;
                     HorizontalLayout {
                         spacing: 3px;
+                        cross-axis-alignment: center;
                         Text { text: title; color: root.sort-column == index ? Theme.accent : Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; horizontal-alignment: index == 1 ? right : left; overflow: elide; horizontal-stretch: 1; }
                         if root.sort-column == index : NativeActionImage {
                             native-icon: root.descending ? root.action-icons.sort-descending : root.action-icons.sort-ascending;
@@ -344,22 +401,27 @@ component FilePane inherits Rectangle {
                     accessible-role: list-item;
                     accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
                         + (item.compressed ? " · Filesystem compressed" : "");
-                    Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: item.cursor && root.active ? Theme.cursor-edge : transparent; }
+                    Rectangle { x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height; background: item.selected ? Theme.selected-edge : item.cursor && root.active ? Theme.cursor-edge : transparent; }
+                    if item.selected && item.cursor : Rectangle {
+                        x: 4px; y: 0px; width: parent.width - 4px; height: 1px;
+                        background: Theme.selected-edge;
+                    }
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 12px; spacing: 8px;
                         HorizontalLayout {
-                            spacing: 6px; horizontal-stretch: 1; min-width: 120px;
+                            spacing: 6px - (Theme.file-icon-size - Theme.icon-size);
+                            horizontal-stretch: 1; min-width: 120px;
                             Rectangle {
-                                width: Theme.icon-size;
+                                width: Theme.file-icon-size;
                                 Image {
                                     source: item.icon;
-                                    width: Theme.icon-size; height: Theme.icon-size;
+                                    width: Theme.file-icon-size; height: Theme.file-icon-size;
                                     y: (parent.height - self.height) / 2;
                                     image-fit: contain;
                                 }
                                 if item.compressed : Rectangle {
                                     x: parent.width - 8px;
-                                    y: (parent.height + Theme.icon-size) / 2 - 8px;
+                                    y: (parent.height + Theme.file-icon-size) / 2 - 8px;
                                     width: 9px; height: 9px;
                                     background: Theme.pane-background;
                                     border-radius: 2px;
@@ -376,9 +438,9 @@ component FilePane inherits Rectangle {
                                 text-color: item.selected ? Theme.selected-text : item.directory ? Theme.directory-text : Theme.text;
                                 row-background: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor) : item.selected ? Theme.selected-background : (mod(index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
                             }
-                            if item.prefix-end <= 0 : Text { text: item.name; color: item.selected ? Theme.selected-text : item.directory ? Theme.directory-text : Theme.text; font-size: Theme.font-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                            if item.prefix-end <= 0 : Text { text: item.name; color: item.selected ? Theme.selected-text : item.directory ? Theme.directory-text : Theme.text; font-size: Theme.font-size; font-weight: item.selected ? 600 : 400; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                         }
-                        Text { text: item.size; color: item.size-state == 1 ? Theme.pending-size : Theme.secondary-text; font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font; width: 78px; overflow: elide; horizontal-alignment: right; vertical-alignment: center; }
+                        Text { text: item.size; color: item.size-state == 1 ? Theme.pending-size : Theme.secondary-text; font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font; width: root.size-column-width; overflow: elide; horizontal-alignment: right; vertical-alignment: center; }
                         Text { text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font; width: 132px; overflow: elide; vertical-alignment: center; }
                         Text { text: item.kind; color: Theme.secondary-text; font-size: Theme.small-font; width: 70px; overflow: elide; vertical-alignment: center; }
                     }
@@ -428,6 +490,7 @@ component FilePane inherits Rectangle {
                 color: Theme.muted-text; font-size: 13px; horizontal-alignment: center; vertical-alignment: center;
             }
         }
+        details-bar := PanelDetails { model: root.details; copy-field(identity) => { root.activate(); root.detail-copy(identity); } }
         if root.error != "" : Rectangle {
             height: 44px; background: Theme.error-background;
             Text { x: 10px; width: parent.width - 20px; text: root.error; color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap; vertical-alignment: center; }
@@ -450,7 +513,7 @@ export component MainWindow inherits Window {
     private property <length> fixed-layout-height: 2 * Theme.window-padding
         + Theme.bottom-height + 2 * Theme.gap + Theme.command-height
         + Theme.control-height + Theme.toolbar-height + Theme.path-height
-        + Theme.column-height + Theme.row-height + 12px;
+        + Theme.column-height + Theme.row-height + Theme.status-height + 12px;
     out property <length> effective-minimum-height: max(480px,
         root.fixed-layout-height + 44px
         + Theme.hint-font * 1.5 + Theme.gap);
@@ -463,6 +526,16 @@ export component MainWindow inherits Window {
     in property <[TabRow]> left-tabs;
     in property <[TabRow]> right-tabs;
     in property <[BookmarkRow]> bookmarks;
+    in property <[NavigationChoiceRow]> hot-path-choices;
+    in property <[NavigationChoiceRow]> left-back-history;
+    in property <[NavigationChoiceRow]> right-back-history;
+    in property <[NavigationChoiceRow]> left-forward-history;
+    in property <[NavigationChoiceRow]> right-forward-history;
+    in property <int> history-revision;
+    in property <[PathPartRow]> left-path-parts;
+    in property <[PathPartRow]> right-path-parts;
+    in property <[DetailRow]> left-details;
+    in property <[DetailRow]> right-details;
     in property <string> left-bookmark-name;
     in property <string> right-bookmark-name;
     in property <bool> scroll-interaction-active;
@@ -481,6 +554,23 @@ export component MainWindow inherits Window {
     out property <int> right-visible-row-end: right.visible-row-end;
     out property <length> left-list-visible-height: left.list-visible-height;
     out property <length> right-list-visible-height: right.list-visible-height;
+    out property <length> left-list-left: left.list-left;
+    out property <length> left-list-top: left.list-top;
+    out property <length> left-list-width: left.list-width;
+    out property <length> left-list-height: left.list-visible-height;
+    out property <length> right-list-left: right.list-left;
+    out property <length> right-list-top: right.list-top;
+    out property <length> right-list-width: right.list-width;
+    out property <length> right-list-height: right.list-visible-height;
+    out property <length> left-path-left: left.path-left;
+    out property <length> left-path-top: left.path-top;
+    out property <length> left-path-width: left.path-width;
+    out property <length> left-path-control-height: left.path-control-height;
+    out property <string> left-path-draft: left.path-draft;
+    out property <string> right-path-draft: right.path-draft;
+    out property <string> left-highlighted-path: left.highlighted-path;
+    out property <length> left-details-top: left.details-top;
+    out property <length> left-details-left: left.details-left;
     in property <[FileRow]> left-rows;
     in property <[FileRow]> right-rows;
     in property <[LocationRow]> left-locations;
@@ -511,6 +601,9 @@ export component MainWindow inherits Window {
     in property <int> left-search-count;
     in property <int> right-search-count;
     in-out property <bool> quick-search-filter;
+    in-out property <bool> sizes-in-bytes;
+    in-out property <bool> remember-command-history: true;
+    in-out property <int> options-topic-index;
     out property <bool> left-search-active: left.search-active;
     out property <bool> right-search-active: right.search-active;
     out property <string> left-search-preedit: left.search-preedit;
@@ -523,6 +616,8 @@ export component MainWindow inherits Window {
     in property <bool> terminal-available;
     in property <[string]> terminal-choices;
     in property <int> terminal-index;
+    in property <[NavigationChoiceRow]> command-history;
+    in property <int> command-history-revision;
     in property <string> command-hint;
     in property <string> desktop-status;
     in property <bool> desktop-feedback-important;
@@ -531,6 +626,7 @@ export component MainWindow inherits Window {
     in property <int> message-generation;
     in-out property <string> command-text <=> command-input.text;
     out property <string> command-directory: root.active-pane == 0 ? root.left-path : root.right-path;
+    out property <string> command-prompt: root.command-directory == "" ? "" : root.command-directory + ">";
     changed command-directory => { cwd-scroll.content-x = 0px; }
     out property <length> command-path-natural-width: full-cwd.preferred-width + 8px;
     out property <length> command-path-content-width: cwd-scroll.content-width;
@@ -545,8 +641,14 @@ export component MainWindow inherits Window {
     out property <length> command-input-width: command-slot.width;
     out property <length> command-input-top: command-slot.absolute-position.y;
     out property <length> command-input-height: command-slot.height;
-    out property <length> options-search-filter-x;
-    out property <length> options-search-filter-y;
+    out property <length> command-history-left: command-history-picker.absolute-position.x;
+    out property <length> command-history-top: command-history-picker.absolute-position.y;
+    out property <length> command-history-width: command-history-picker.width;
+    out property <length> command-history-height: command-history-picker.height;
+    out property <length> options-left: (root.width - root.options-width) / 2;
+    out property <length> options-top: (root.height - root.options-height) / 2;
+    out property <length> options-width: min(root.width - 24px, max(600px, Theme.font-size * 26));
+    out property <length> options-height: min(root.height - 24px, Theme.touch ? 510px : 420px);
     out property <bool> command-focused: command-input.has-focus;
     // Slint 1.18.1 exposes these internal UTF-8 offsets; keep the pinned SDK and
     // the actual-key Unicode selection tests together when upgrading Slint.
@@ -564,6 +666,9 @@ export component MainWindow inherits Window {
     callback activate(int);
     callback location(int, int);
     callback navigation-choice(int, string);
+    callback path-part(int, string);
+    callback history-choice(int, bool, string);
+    callback detail-copy(int, string);
     callback properties(int);
     callback folder-sizes(int);
     callback drive-letter(int, string) -> bool;
@@ -571,6 +676,8 @@ export component MainWindow inherits Window {
     callback files-key(int, KeyEvent, bool, bool) -> int;
     callback search-backspace(string, int, int) -> SearchTextEdit;
     callback search-filter-changed(bool);
+    callback sizes-format-changed(bool);
+    callback remember-command-history-changed(bool);
     callback insert-path(int);
     callback insert-name();
     callback tab-new(int);
@@ -578,6 +685,7 @@ export component MainWindow inherits Window {
     callback tab-close(int, string);
     callback tab-close-active(int);
     callback tab-cycle(int, int);
+    callback tab-number(int, int);
     callback bookmark-add(int, string, int);
     callback bookmark-open(int, string);
     callback bookmark-remove(string);
@@ -585,6 +693,8 @@ export component MainWindow inherits Window {
     callback bookmark-jump(int, int);
     callback drive-info(int);
     callback submit-command(string) -> bool;
+    callback command-history-choice(string);
+    callback command-history-clear();
     callback exit();
     callback preferences-changed(int, int, int);
     callback font-options-changed(int, int, int, int);
@@ -613,6 +723,7 @@ export component MainWindow inherits Window {
         command-input.set-selection-offsets(offset, offset);
     }
     public function focus-command() { command-input.focus(); }
+    public function show-options() { root.options-opened(); options.show(); }
     pure function hot-path-slot(text: string) -> int {
         if text == "1" { return 1; } if text == "2" { return 2; }
         if text == "3" { return 3; } if text == "4" { return 4; }
@@ -647,7 +758,9 @@ export component MainWindow inherits Window {
             if !root.native-shortcuts-authoritative && (event.modifiers.control || event.modifiers.shift) {
                 if root.hot-path-slot(event.text) > 0 {
                     if event.modifiers.control && event.modifiers.shift && !event.modifiers.alt {
-                        root.bookmark-slot(root.focused-pane, root.hot-path-slot(event.text)); return accept;
+                        if root.hot-path-slot(event.text) < 10 { root.tab-number(root.focused-pane, root.hot-path-slot(event.text)); }
+                        else { root.bookmark-slot(root.focused-pane, 10); }
+                        return accept;
                     }
                     if (!event.modifiers.control && event.modifiers.shift
                         && (event.modifiers.alt || !(root.focused-pane == 0 ? root.left-search-active : root.right-search-active)))
@@ -680,6 +793,13 @@ export component MainWindow inherits Window {
                 choice-index: root.left-navigation-index; choice-revision: root.navigation-revision;
                 navigation-choice(identity) => { root.navigation-choice(0, identity); }
                 tabs: root.left-tabs; bookmarks: root.bookmarks; bookmark-name: root.left-bookmark-name;
+                hot-path-choices: root.hot-path-choices;
+                back-history: root.left-back-history; forward-history: root.left-forward-history;
+                history-revision: root.history-revision; path-parts: root.left-path-parts; details: root.left-details;
+                sizes-in-bytes: root.sizes-in-bytes;
+                path-part(identity) => { root.path-part(0, identity); }
+                history-choice(forward, identity) => { root.history-choice(0, forward, identity); }
+                detail-copy(identity) => { root.detail-copy(0, identity); }
                 viewport-width: root.width; viewport-height: root.height;
                 tab-new => { root.tab-new(0); } tab-select(id) => { root.tab-select(0, id); } tab-close(id) => { root.tab-close(0, id); }
                 bookmark-add(name, slot) => { root.bookmark-add(0, name, slot); } bookmark-open(id) => { root.bookmark-open(0, id); }
@@ -712,6 +832,13 @@ export component MainWindow inherits Window {
                 choice-index: root.right-navigation-index; choice-revision: root.navigation-revision;
                 navigation-choice(identity) => { root.navigation-choice(1, identity); }
                 tabs: root.right-tabs; bookmarks: root.bookmarks; bookmark-name: root.right-bookmark-name;
+                hot-path-choices: root.hot-path-choices;
+                back-history: root.right-back-history; forward-history: root.right-forward-history;
+                history-revision: root.history-revision; path-parts: root.right-path-parts; details: root.right-details;
+                sizes-in-bytes: root.sizes-in-bytes;
+                path-part(identity) => { root.path-part(1, identity); }
+                history-choice(forward, identity) => { root.history-choice(1, forward, identity); }
+                detail-copy(identity) => { root.detail-copy(1, identity); }
                 viewport-width: root.width; viewport-height: root.height;
                 tab-new => { root.tab-new(1); } tab-select(id) => { root.tab-select(1, id); } tab-close(id) => { root.tab-close(1, id); }
                 bookmark-add(name, slot) => { root.bookmark-add(1, name, slot); } bookmark-open(id) => { root.bookmark-open(1, id); }
@@ -748,6 +875,7 @@ export component MainWindow inherits Window {
                 padding-top: 4px; padding-bottom: 4px;
                 padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
                 spacing: Theme.touch ? 6px : 5px;
+                cross-axis-alignment: center;
                 CompactPicker {
                     width: Theme.touch ? 48px : 46px;
                     accessible-name: "Command shell";
@@ -764,6 +892,7 @@ export component MainWindow inherits Window {
                 }
                 command-content := Rectangle {
                     horizontal-stretch: 1; min-width: 0px;
+                    height: Theme.control-height;
                     private property <length> gap: Theme.touch ? 6px : 5px;
                     private property <length> editor-reserve: min(360px, max(0px, self.width) * 0.5);
                     private property <length> prompt-width: root.command-directory == "" ? 0px
@@ -780,7 +909,7 @@ export component MainWindow inherits Window {
                             width: cwd-scroll.content-width; height: cwd-scroll.visible-height;
                             full-cwd := Text {
                                 x: 4px; width: self.preferred-width; height: parent.height;
-                                text: root.command-directory; wrap: no-wrap; overflow: clip;
+                                text: root.command-prompt; wrap: no-wrap; overflow: clip;
                                 color: Theme.secondary-text; font-size: Theme.small-font;
                                 vertical-alignment: center;
                                 accessible-label: "Working folder: " + root.command-directory;
@@ -828,7 +957,18 @@ export component MainWindow inherits Window {
                         Tooltip { TipBody { text: root.command-hint + "\nWorking folder: " + root.command-directory + "\nEnter runs the command. Escape returns to the files. Ctrl+Enter appends the focused filename. Ctrl+P inserts the current path. Ctrl+[ / Ctrl+] inserts a panel path."; } }
                     }
                 }
-                HintedActionButton { native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options; text: "Options"; min-height: Theme.control-height; hint: "Choose the theme, font family, font sizes and compact or touch controls."; clicked => { root.options-opened(); options.show(); } }
+                command-history-picker := CompactPicker {
+                    width: Theme.touch ? 46px : 34px; minimum-control-width: 0px;
+                    choices: root.command-history; model-revision: root.command-history-revision;
+                    popup-above: true; popup-width: 620px; popup-align-right: true;
+                    show-row-icons: false;
+                    enabled: root.command-history.length > 0;
+                    accessible-name: "Executed command history";
+                    hint: "Executed command history\nPick a command to fill the editor without running it.";
+                    selected-key(identity) => { root.command-history-choice(identity); root.focus-command(); }
+                    dismissed => { root.focus-command(); }
+                }
+                HintedActionButton { native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options; text: "Options"; min-height: Theme.control-height; hint: "Panel, appearance and command history preferences."; clicked => { root.show-options(); } }
                 HintedActionButton { native-icon: root.action-icons.run; fallback-icon: FallbackIcons.run; text: "Run"; min-height: Theme.control-height; enabled: root.terminal-ready && root.command-text != ""; hint: !root.terminal-available ? "A system terminal is unavailable." : !root.terminal-ready ? "Waiting for the terminal to become ready." : root.command-text == "" ? "Enter a command to run in the active panel’s folder." : "Run with " + root.terminal-choices[root.terminal-index] + "\nWorking folder: " + root.command-directory; clicked => { if root.submit-command(root.command-text) { root.command-text = ""; root.command-edited(false); } root.focus-command(); } }
             }
         }
@@ -863,87 +1003,25 @@ export component MainWindow inherits Window {
     options := PopupWindow {
         close-policy: close-on-click-outside;
         x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
-        width: min(root.width - 24px, max(500px, Theme.font-size * 21));
-        height: min(root.height - 24px, Theme.touch ? 380px : 320px);
-        Rectangle {
-            background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
-            VerticalLayout {
-                padding: 20px; spacing: 12px;
-                options-title := Text { text: "Options"; color: Theme.strong-text; font-size: 20px; }
-                search-filter-choice := CheckBox {
-                    text: "Show only search matches";
-                    min-height: Theme.control-height;
-                    checked <=> root.quick-search-filter;
-                    function publish-geometry() {
-                        root.options-search-filter-x = options.x + options.width / 2;
-                        root.options-search-filter-y = options.y + 20px + options-title.height
-                            + 12px + self.height / 2;
-                    }
-                    init => { self.publish-geometry(); }
-                    changed width => { self.publish-geometry(); }
-                    changed height => { self.publish-geometry(); }
-                    toggled => { root.search-filter-changed(self.checked); }
-                    Tooltip { TipBody { text: "Typing in files searches filename prefixes. Enable this to hide nonmatching rows; otherwise the full list stays visible."; } }
-                }
-                ScrollView {
-                    horizontal-scrollbar-policy: always-off;
-                    VerticalLayout {
-                    spacing: 12px;
-                        Text { text: "Theme"; color: Theme.text; wrap: word-wrap; }
-                        HintedComboBox {
-                            accessible-label: "Theme";
-                            hint: "Choose Blue, Dark or Light. Changes apply immediately.";
-                            model: ["Blue", "Dark", "Light"];
-                            current-index: root.theme-index;
-                            min-height: Theme.control-height;
-                            selected(value) => { root.preferences-changed(self.current-index, root.density-index, 0); }
-                        }
-                        Text { text: "Controls and spacing"; color: Theme.text; wrap: word-wrap; }
-                        HintedComboBox {
-                            accessible-label: "Control density";
-                            hint: "Desktop uses compact controls. Touch provides targets at least 40 pixels high.";
-                            model: ["Desktop / mouse · compact", "Touch · larger controls"];
-                            current-index: root.density-index;
-                            min-height: Theme.control-height;
-                            selected(value) => { root.preferences-changed(root.theme-index, self.current-index, 1); }
-                        }
-                        Text { text: "Font family"; color: Theme.text; wrap: word-wrap; }
-                        CompactPicker {
-                            accessible-name: "Font family";
-                            enabled: root.font-list-ready;
-                            model: root.font-choices;
-                            current-index: root.font-index;
-                            label: root.font-choices[root.font-index];
-                            popup-width: min(root.width - 64px, 640px);
-                            hint: root.font-list-ready ? root.font-choices[root.font-index] + "\nChoose an installed font. Application default uses FM’s Segoe UI default and system fallback. Changes apply immediately." : "Loading installed font families. Size controls remain available.";
-                            selected(index) => { root.font-options-changed(index, root.desktop-font-size, root.touch-font-size, 0); }
-                        }
-                        Text { text: "Desktop font size · logical pixels"; color: Theme.text; wrap: word-wrap; }
-                        HintedComboBox {
-                            accessible-label: "Desktop font size in logical pixels";
-                            model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
-                            current-index: root.desktop-font-size - 8;
-                            min-height: Theme.control-height;
-                            hint: "Desktop base text size, from 8 to 32 logical pixels. Screen scaling converts logical pixels to physical pixels. File rows and controls grow with the text.";
-                            selected(value) => { root.font-options-changed(root.font-index, self.current-index + 8, root.touch-font-size, 1); }
-                        }
-                        Text { text: "Touch font size · logical pixels"; color: Theme.text; wrap: word-wrap; }
-                        HintedComboBox {
-                            accessible-label: "Touch font size in logical pixels";
-                            model: ["8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"];
-                            current-index: root.touch-font-size - 8;
-                            min-height: Theme.control-height;
-                            hint: "Touch base text size, from 8 to 32 logical pixels. Touch targets stay at least 40 logical pixels high. File rows and controls grow with the text.";
-                            selected(value) => { root.font-options-changed(root.font-index, root.desktop-font-size, self.current-index + 8, 2); }
-                        }
-                        Text { text: root.preferences-unsaved ? "Changes apply immediately. Saving is pending; Save again retries if needed." : "Changes apply immediately and are saved for the next launch."; color: Theme.secondary-text; wrap: word-wrap; font-size: Theme.small-font; }
-                    }
-                }
-                HorizontalLayout { spacing: 8px;
-                    HintedActionButton { native-icon: root.action-icons.save-again; fallback-icon: FallbackIcons.save-again; text: "Save again"; enabled: root.preferences-unsaved; min-height: Theme.control-height; hint: "Retry saving the theme, control density, font family, font sizes and shell preference for the next launch."; clicked => { root.preferences-changed(root.theme-index, root.density-index, 2); } }
-                    HintedActionButton { native-icon: root.action-icons.done; fallback-icon: FallbackIcons.done; text: "Done"; min-height: Theme.control-height; hint: "Close Options. Changes are applied immediately."; clicked => { options.close(); } }
-                }
-            }
+        width: min(root.width - 24px, max(600px, Theme.font-size * 26));
+        height: min(root.height - 24px, Theme.touch ? 510px : 420px);
+        options-body := OptionsBody {
+            action-icons: root.action-icons;
+            topic-index <=> root.options-topic-index;
+            theme-index: root.theme-index; density-index: root.density-index;
+            font-choices: root.font-choices; font-index: root.font-index; font-list-ready: root.font-list-ready;
+            desktop-font-size: root.desktop-font-size; touch-font-size: root.touch-font-size;
+            preferences-unsaved: root.preferences-unsaved;
+            quick-search-filter: root.quick-search-filter; sizes-in-bytes: root.sizes-in-bytes;
+            remember-command-history: root.remember-command-history;
+            command-history-empty: root.command-history.length == 0;
+            preferences-changed(theme, density, field) => { root.preferences-changed(theme, density, field); }
+            font-options-changed(family, desktop, touch, field) => { root.font-options-changed(family, desktop, touch, field); }
+            search-filter-changed(value) => { root.search-filter-changed(value); }
+            sizes-format-changed(value) => { root.sizes-format-changed(value); }
+            remember-command-history-changed(value) => { root.remember-command-history-changed(value); }
+            command-history-clear => { root.command-history-clear(); }
+            close => { options.close(); }
         }
     }
     help := PopupWindow {
@@ -958,12 +1036,12 @@ export component MainWindow inherits Window {
                     horizontal-scrollbar-policy: always-off;
                     VerticalLayout {
                     spacing: 13px;
-                        Text { text: "Tab switches file panels. Ctrl+T opens a folder tab, Ctrl+W closes the active tab, and Ctrl+Tab / Ctrl+Shift+Tab cycles tabs. Choose Command line from the User menu to edit a command; Ctrl+Tab there returns to files. Enter or left double click opens a folder or file. Ctrl+left click, Space / Insert selects files; .. is navigation only. In files, Ctrl+A selects all, Ctrl+D clears selection, and Ctrl+I inverts it; editors keep their normal text shortcuts."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Tab switches file panels. Ctrl+T opens a folder tab, Ctrl+W closes the active tab, Ctrl+Tab / Ctrl+Shift+Tab cycles tabs, and Ctrl+Shift+1…9 selects a numbered tab. Choose Command line from the User menu to edit a command; Ctrl+Tab there returns to files. Enter or left double click opens a folder or file. Ctrl+left click selects files. Insert toggles selection and moves to the next file. Space does the same and measures a focused folder in the background; .. is navigation only. In files, Ctrl+A selects all, Ctrl+D clears selection, and Ctrl+I inverts it; editors keep their normal text shortcuts."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "Backspace / Ctrl+Page Up opens the parent. Ctrl+Page Down enters a directory. Ctrl+Backspace, Shift+Backspace or Ctrl+\\ opens the root. Alt+Left / Right uses history. Ctrl+F9 / Ctrl+R refreshes. Ctrl+G edits the folder path."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "Ctrl+F3 / F4 / F5 / F6 sorts by name / extension / modified time / size. Alt+F1 / F2 chooses the left / right drive. Ctrl+F1 / Ctrl+L shows drive information. Shift+drive letter chooses a Windows drive from a file panel. Alt+Enter shows Properties. Alt+F4 exits."; color: Theme.text; wrap: word-wrap; }
-                        Text { text: "Ctrl+[ / Ctrl+] inserts the left / right folder path. Ctrl+P inserts the active folder path and Ctrl+Enter appends the focused filename from files or the command editor. Ctrl+Space is reserved for IME. Enter or Run executes a command in the active folder; modified Enter never runs it. Escape returns to files."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "Ctrl+[ / Ctrl+] inserts the left / right folder path. Ctrl+P inserts the active folder path and Ctrl+Enter appends the focused filename from files or the command editor. Ctrl+Space is reserved for IME. Enter or Run executes a command in the active folder; modified Enter never runs it. The history dropdown fills the editor without executing. Escape returns to files."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "Type without Shift in files to search a literal filename prefix, always ignoring case. Colored letters show the matching prefix. Up/Down, Page Up/Down and Home/End move among matches without wrapping. Escape clears search; Backspace removes a whole character cluster. Space edits the active query; Insert ends search and selects. Options can show matches only; hidden selections are cleared. Shift+drive letter still chooses an available Windows drive. Shift-only numbered Hot Paths pause during search or IME composition."; color: Theme.text; wrap: word-wrap; }
-                        Text { text: "The star opens Bookmarks and Hot Paths. Ctrl+1…9 / Ctrl+0 or Shift+1…9 / Shift+0 opens a saved Hot Path. Add Alt to open it in the other panel. Ctrl+Shift+1…9 / Ctrl+Shift+0 assigns the current folder; Ctrl+Shift++ adds a bookmark without a shortcut. These shortcuts apply only while files have focus. Bookmarks are saved for the next launch; folder tabs last for this session."; color: Theme.text; wrap: word-wrap; }
+                        Text { text: "The star dropdown opens a saved Hot Path or its manager. Ctrl+1…9 / Ctrl+0 or Shift+1…9 / Shift+0 opens a saved Hot Path. Add Alt to open it in the other panel. Assign numbered Hot Paths in their manager; Ctrl+Shift+0 assigns slot 0 and Ctrl+Shift++ adds a bookmark without a shortcut. Ctrl+Shift+1…9 switches folder tabs. These shortcuts apply only while files have focus. Bookmarks are saved for the next launch; folder tabs last for this session."; color: Theme.text; wrap: word-wrap; }
                         Text { text: root.command-hint + ". Clear the command line before changing shell type. Terminal / Terminal (sudo) may be switched for an existing command; sudo prompts only in the external terminal and is never saved."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "Ctrl+Shift+F10 / Ctrl+Shift+S measures every folder in the active panel; press again to cancel. Sizes use logical lengths and skip links and special files. Amber means active counting. ≈ marks approximate or partial totals, including inaccessible folders; completed partial totals use ordinary text. Alt+F10 / Ctrl+Q remains reserved for selected-item sizes."; color: Theme.text; wrap: word-wrap; }
                         Text { text: "A small C on a file icon means filesystem compression reported by the host. Archive extensions alone do not set this mark. Sizes remain logical file lengths. Folder-link icons mark directory links or junctions; automatic size scans do not follow them."; color: Theme.text; wrap: word-wrap; }
@@ -1012,7 +1090,7 @@ export component MainWindow inherits Window {
                 { native-icon: root.action-icons.exit, fallback-icon: FallbackIcons.exit, label: "Exit", hint: "Close the file manager (Alt+F4)." },
             ];
             selected(index) => {
-                if index == 0 { main-menu.close(); root.options-opened(); options.show(); }
+                if index == 0 { main-menu.close(); root.show-options(); }
                 if index == 1 { main-menu.close(); root.action(root.active-pane, 3); }
                 if index == 2 { main-menu.close(); help.show(); }
                 if index == 3 { main-menu.close(); about.show(); }

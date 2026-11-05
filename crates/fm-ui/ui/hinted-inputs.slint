@@ -1,8 +1,13 @@
 import { ActionButton } from "action-icons.slint";
-import { ComboBox, LineEdit } from "std-widgets.slint";
+import { CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
 import { TipBody } from "controls.slint";
 
 // Child-free call sites reuse the same native widget and popup implementation.
+export component HintedCheckBox inherits CheckBox {
+    in property <string> hint;
+    Tooltip { TipBody { text: root.hint; } }
+}
+
 export component HintedComboBox inherits ComboBox {
     in property <string> hint;
     Tooltip { TipBody { text: root.hint; } }

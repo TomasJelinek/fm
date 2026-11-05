@@ -21,6 +21,10 @@ set "FM_BUILD_PROFILE=--release"
 
 :build
 pushd "%~dp0" || exit /b 1
+if not exist "_build\tmp\" mkdir "_build\tmp"
+if errorlevel 1 goto temporary_failure
+set "TEMP=%CD%\_build\tmp"
+set "TMP=%TEMP%"
 where cargo >nul 2>nul
 if errorlevel 1 goto local_cargo
 call cargo build -p fm-app --locked %FM_BUILD_PROFILE%
@@ -36,6 +40,11 @@ goto done
 :missing_cargo
 >&2 echo Rust Cargo was not found. Install Rust with rustup and reopen your terminal.
 set "FM_BUILD_EXIT=127"
+goto done
+
+:temporary_failure
+>&2 echo Could not create the build temporary directory under _build.
+set "FM_BUILD_EXIT=1"
 
 :done
 popd

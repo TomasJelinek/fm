@@ -2,7 +2,10 @@ use fm_core::*;
 mod bookmarks;
 mod choices;
 mod desktop;
+mod entry_sizes;
 mod fonts;
+mod panel_details;
+mod panel_navigation;
 mod preferences;
 mod search;
 mod selection;
@@ -26,6 +29,7 @@ struct Request {
     path: PathBuf,
     history: Option<usize>,
     space: Option<SpaceInfo>,
+    storage_kind: Option<StorageKind>,
     previous_cursor: Option<EntryId>,
     previous_parent_cursor: bool,
     previous_selected: Arc<SelectionSnapshot>,
@@ -54,6 +58,7 @@ pub(crate) struct Pane {
     pub(crate) size_scan: Option<FolderSizeScanId>,
     pub(crate) size_scan_scope: Option<SizeScanScope>,
     pub(crate) size_scan_attempted: bool,
+    entry_size_scans: Vec<entry_sizes::EntrySizeScope>,
     pub(crate) preserve_viewport: bool,
     size_scan_generation: u64,
     pub(crate) selected: Arc<SelectionSnapshot>,
@@ -74,6 +79,7 @@ pub(crate) struct Pane {
     pub(crate) loading: bool,
     pub(crate) sort: SortSpec,
     pub(crate) space: Option<SpaceInfo>,
+    pub(crate) storage_kind: StorageKind,
     pub(crate) streaming: Vec<Entry>,
     pub(crate) metadata: HashMap<EntryId, EntryMetadata>,
     pub(crate) index: Arc<DirectoryIndex>,
@@ -191,6 +197,8 @@ impl Presenter {
             p.parent_cursor = false;
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             p.size_scan = None;
+            self.retired
+                .push(Box::new(mem::take(&mut p.entry_size_scans)));
             self.retired.push(Box::new(p.size_scan_scope.take()));
             p.size_scan_attempted = false;
             p.history_index = None;
@@ -248,7 +256,9 @@ impl Presenter {
                 navigation,
                 path: path.clone(),
                 sort: p.sort,
-                scan: p.size_scan,
+                scan: p
+                    .size_scan
+                    .or_else(|| p.entry_size_scans.last().map(|scope| scope.scan)),
             }
         } else {
             Command::Navigate {
@@ -300,8 +310,10 @@ impl Presenter {
         }
         if !same_location {
             self.retired.push(Box::new(p.size_scan_scope.take()));
+            self.retired
+                .push(Box::new(mem::take(&mut p.entry_size_scans)));
         }
-        if !same_location || (!resort && p.size_scan.is_none()) {
+        if !same_location || (!resort && p.size_scan.is_none() && p.entry_size_scans.is_empty()) {
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             p.size_scan_attempted = false;
         }
@@ -331,6 +343,7 @@ impl Presenter {
             path,
             history,
             space: None,
+            storage_kind: None,
             previous_cursor,
             previous_parent_cursor,
             previous_selected: if keep_rows {
@@ -381,6 +394,9 @@ impl Presenter {
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        let Some(event) = self.apply_entry_size_event(event) else {
+            return;
+        };
         let Some(event) = self.apply_search_event(event) else {
             return;
         };
@@ -451,6 +467,9 @@ impl Presenter {
             }
             | Event::SpaceUpdated {
                 pane, navigation, ..
+            }
+            | Event::StorageKindUpdated {
+                pane, navigation, ..
             } => (*pane, *navigation),
             _ => unreachable!(),
         };
@@ -465,7 +484,10 @@ impl Presenter {
         }
         let p = &mut self.panes[pane.index()];
         if navigation.0 != p.generation
-            || (!matches!(&event, Event::SpaceUpdated { .. }) && p.pending.is_none())
+            || (!matches!(
+                &event,
+                Event::SpaceUpdated { .. } | Event::StorageKindUpdated { .. }
+            ) && p.pending.is_none())
         {
             self.retired.push(Box::new(event));
             return;
@@ -548,6 +570,11 @@ impl Presenter {
                     cursor.or_else(|| entries.first().map(|e| e.id))
                 };
                 p.space = request.space.or(if same_location { p.space } else { None });
+                p.storage_kind = request.storage_kind.unwrap_or(if same_location {
+                    p.storage_kind
+                } else {
+                    StorageKind::Unknown
+                });
                 p.path = mem::take(&mut request.path);
                 if let Some(volume) = self
                     .volumes
@@ -619,6 +646,13 @@ impl Presenter {
                     request.space = Some(space);
                 } else if p.successful_generation == Some(navigation) {
                     p.space = Some(space);
+                }
+            }
+            Event::StorageKindUpdated { kind, .. } => {
+                if let Some(request) = &mut p.pending {
+                    request.storage_kind = Some(kind);
+                } else if p.successful_generation == Some(navigation) {
+                    p.storage_kind = kind;
                 }
             }
             _ => unreachable!(),
@@ -749,26 +783,38 @@ impl Presenter {
         }
     }
     pub(crate) fn move_cursor(&mut self, pane: PaneId, key: i32, send: &dyn Fn(Command) -> bool) {
-        let p = &mut self.panes[pane.index()];
-        p.preserve_viewport = false;
+        let p = &self.panes[pane.index()];
+        if matches!(key, 8 | 9) && !p.search_allows_activation() {
+            return;
+        }
         let count = p.display_len() + p.parent_offset();
         if count == 0 {
             return;
         }
-        if let Some(request) = &mut p.pending {
-            request.cursor_touched = true;
-        }
         let current = p.cursor_index().unwrap_or(0);
-        let toggle_path = ((key == 8 || key == 9) && !p.parent_cursor)
+        let toggle = ((key == 8 || key == 9) && !p.parent_cursor)
             .then(|| {
                 p.cursor
                     .and_then(|id| p.entry_by_id(id))
-                    .map(|entry| entry.path.clone())
+                    .map(|entry| (entry.path.clone(), entry.id))
             })
             .flatten();
+        if let Some((path, entry)) = toggle {
+            if !self.send_selection(pane, SelectionAction::Toggle(path), send) {
+                return;
+            }
+            if key == 8 {
+                self.measure_entry(pane, entry, send);
+            }
+        }
+        let p = &mut self.panes[pane.index()];
+        p.preserve_viewport = false;
+        if let Some(request) = &mut p.pending {
+            request.cursor_touched = true;
+        }
         let row = match key {
             2 => current.saturating_sub(1),
-            3 | 9 => (current + 1).min(count - 1),
+            3 | 8 | 9 => (current + 1).min(count - 1),
             4 => current.saturating_sub(20),
             5 => (current + 20).min(count - 1),
             6 => 0,
@@ -783,9 +829,6 @@ impl Presenter {
                 .display_entry(row - p.parent_offset())
                 .map(|entry| entry.id);
             p.parent_cursor = false;
-        }
-        if let Some(path) = toggle_path {
-            self.send_selection(pane, SelectionAction::Toggle(path), send);
         }
     }
     pub(crate) fn sort(
@@ -837,6 +880,7 @@ impl Pane {
             size_scan: None,
             size_scan_scope: None,
             size_scan_attempted: false,
+            entry_size_scans: Vec::new(),
             preserve_viewport: false,
             size_scan_generation: 0,
             selected: Arc::default(),
@@ -857,6 +901,7 @@ impl Pane {
             loading: false,
             sort: SortSpec::default(),
             space: None,
+            storage_kind: StorageKind::Unknown,
             streaming: vec![],
             metadata: HashMap::new(),
             pending: None,
@@ -902,6 +947,17 @@ impl Pane {
         self.pending
             .as_ref()
             .map_or(self.space, |request| request.space)
+    }
+    pub(crate) fn visible_storage_kind(&self) -> StorageKind {
+        self.pending.as_ref().map_or(self.storage_kind, |request| {
+            request
+                .storage_kind
+                .unwrap_or(if request.path == self.path {
+                    self.storage_kind
+                } else {
+                    StorageKind::Unknown
+                })
+        })
     }
     pub(crate) fn rows(&self) -> &[Entry] {
         if self.showing_stream() {

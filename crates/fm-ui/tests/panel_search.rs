@@ -1,7 +1,11 @@
 //! Prefix search follows actual file-panel text focus and immutable backend snapshots.
+#[path = "support/ui.rs"]
+mod ui;
+
 use fm_core::*;
 use fm_ui::{MainWindow, Presenter, Theme, install, refresh};
 use i_slint_core::input::{InternalKeyEvent, KeyEvent, KeyEventType};
+use i_slint_core::items::AccessibleRole;
 use slint::{
     ComponentHandle, Model, SharedString,
     platform::{
@@ -428,10 +432,10 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });
-    click(
+    ui::click_popup(
         &window,
-        window.get_options_search_filter_x(),
-        window.get_options_search_filter_y(),
+        "Show only filename search matches",
+        AccessibleRole::Checkbox,
     );
     assert!(
         window.get_quick_search_filter(),

@@ -1,6 +1,10 @@
 //! Native navigation identities survive asynchronous metadata; full cwd stays readable.
+#[path = "support/ui.rs"]
+mod ui;
+
 use fm_core::*;
 use fm_ui::{ActionIcons, FileRow, MainWindow, Presenter, Theme, install, refresh};
+use i_slint_core::items::AccessibleRole;
 use slint::{
     ComponentHandle, Model, ModelRc, VecModel,
     platform::{
@@ -83,7 +87,7 @@ fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
 }
 fn toolbar_y(window: &MainWindow) -> f32 {
     let theme = window.global::<Theme>();
-    theme.get_window_padding() + 4.0 + theme.get_control_height() + theme.get_toolbar_height() / 2.0
+    theme.get_window_padding() + 4.0 + theme.get_toolbar_height() / 2.0
 }
 fn quick_x(window: &MainWindow) -> f32 {
     let theme = window.global::<Theme>();
@@ -285,6 +289,17 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     draw(&mut pixels, 1340);
     key(&window, Key::Return);
     assert_eq!(latest_path(&commands), downloads);
+    draw(&mut pixels, 1340);
+    assert_eq!(window.get_left_navigation_index(), 0);
+    let caption = ui::text_values(ui::root_item(
+        &window,
+        "Drive or volume",
+        AccessibleRole::Combobox,
+    ));
+    assert!(
+        caption.iter().any(|text| text == "Disk") && caption.iter().all(|text| text != "Home"),
+        "a folder below Home must show its containing drive in the closed picker: {caption:?}"
+    );
 
     // The second panel uses the same semantic choices and row tooltips. A real
     // popup-row press survives a changed label/free-space reply, too.
@@ -392,7 +407,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     let buffer =
         slint::SharedPixelBuffer::<slint::Rgb8Pixel>::clone_from_slice(&[251, 7, 13], 1, 1);
     window.set_action_icons(ActionIcons {
-        back: slint::Image::from_rgb8(buffer),
+        refresh: slint::Image::from_rgb8(buffer),
         ..Default::default()
     });
     draw(&mut pixels, 1340);
@@ -449,17 +464,30 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     ]));
     window.set_left_rows(hover_rows.clone());
     window.set_right_rows(hover_rows);
-    let file_top =
-        y + theme.get_toolbar_height() / 2.0 + theme.get_path_height() + theme.get_column_height();
+    draw(&mut pixels, 1340);
+    let mut hover_targets = Vec::new();
+    for column in ["Name", "Size", "Modified", "Type"] {
+        let header = ui::root_position(
+            &window,
+            &format!("Sort by {column}"),
+            AccessibleRole::Button,
+        );
+        for (offset, file_top) in [
+            (0.0, window.get_left_list_top()),
+            (
+                window.get_right_list_left() - window.get_left_list_left(),
+                window.get_right_list_top(),
+            ),
+        ] {
+            let x = header.x + offset;
+            for row in [0.5, 1.5] {
+                hover_targets.push((x, file_top + row * theme.get_row_height(), false));
+            }
+            hover_targets.push((x, header.y, true));
+        }
+    }
     let mut hover_time = 2000;
-    for (hover_x, hover_y, is_header) in [
-        (150.0, file_top + theme.get_row_height() / 2.0, false),
-        (150.0, file_top + 1.5 * theme.get_row_height(), false),
-        (820.0, file_top + theme.get_row_height() / 2.0, false),
-        (820.0, file_top + 1.5 * theme.get_row_height(), false),
-        (150.0, file_top - theme.get_column_height() / 2.0, true),
-        (820.0, file_top - theme.get_column_height() / 2.0, true),
-    ] {
+    for (hover_x, hover_y, is_header) in hover_targets {
         window.window().dispatch_event(WindowEvent::PointerMoved {
             position: slint::LogicalPosition::new(hover_x, hover_y),
         });

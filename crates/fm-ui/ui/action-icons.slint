@@ -41,6 +41,7 @@ export struct ActionIcons {
 // Embedded, monochrome fallbacks are used only when a semantic host icon is absent.
 export global FallbackIcons {
     out property <image> drive: @image-url("icons/drive.svg");
+    out property <image> network: @image-url("icons/network.svg");
     out property <image> home: @image-url("icons/home.svg");
     out property <image> desktop: @image-url("icons/desktop.svg");
     out property <image> documents: @image-url("icons/documents.svg");
@@ -104,5 +105,7 @@ export component LocationImage inherits NativeActionImage {
     fallback-icon: root.kind == LocationRole.home ? FallbackIcons.home
         : root.kind == LocationRole.desktop ? FallbackIcons.desktop
         : root.kind == LocationRole.documents ? FallbackIcons.documents
-        : root.kind == LocationRole.downloads ? FallbackIcons.downloads : FallbackIcons.drive;
+        : root.kind == LocationRole.downloads ? FallbackIcons.downloads
+        : root.kind == LocationRole.hot-path ? FallbackIcons.bookmarks
+        : root.kind == LocationRole.network ? FallbackIcons.network : FallbackIcons.drive;
 }

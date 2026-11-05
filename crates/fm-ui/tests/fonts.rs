@@ -1,5 +1,9 @@
 //! Font options use real focus and keys, including while enumeration is pending.
+#[path = "support/ui.rs"]
+mod ui;
+
 use fm_ui::{MainWindow, Theme};
+use i_slint_core::items::AccessibleRole;
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
@@ -121,18 +125,9 @@ fn font_options_keep_family_and_density_bases_independent() {
         g: surface.green(),
         b: surface.blue(),
     };
-    let mut first_control = None;
-    for y in 300..450 {
-        if pixels[y * 1340 + 880] != surface {
-            first_control = Some(y);
-            break;
-        }
-    }
-    click(
-        &window,
-        650.0,
-        first_control.expect("Theme picker must be painted") as f32 + 12.0,
-    );
+    window.set_options_topic_index(1);
+    draw(&mut pixels);
+    ui::click_popup(&window, "Theme", AccessibleRole::Combobox);
     draw(&mut pixels);
     key(&window, Key::Escape);
     key(&window, Key::Tab); // Density.
@@ -210,26 +205,23 @@ fn font_options_keep_family_and_density_bases_independent() {
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
-        let command_y = window.get_command_input_top() + window.get_command_input_height() / 2.0;
-        click(&window, 874.0, command_y);
+        ui::click_root(&window, "Options", AccessibleRole::Button);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
-        assert_eq!(
-            pixels[(height / 2) * 1040 + 200],
-            surface,
-            "Options must fit at 32px; density={density}"
+        assert!(
+            ui::has_popup(&window),
+            "Options opens at 32px; density={density}"
         );
-        let done_y = height as f32 / 2.0 + if density == 0 { 160.0 } else { 190.0 }
-            - 20.0
-            - theme.get_control_height() / 2.0;
-        click(&window, 700.0, done_y);
+        assert!(window.get_options_left() >= 0.0 && window.get_options_top() >= 0.0);
+        assert!(window.get_options_left() + window.get_options_width() <= 1040.0);
+        assert!(window.get_options_top() + window.get_options_height() <= height as f32);
+        ui::click_popup(&window, "Done", AccessibleRole::Button);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
-        assert_ne!(
-            pixels[(height / 2) * 1040 + 200],
-            surface,
+        assert!(
+            !ui::has_popup(&window),
             "Done must stay visible at 32px; density={density}"
         );
         window.invoke_focus_files();

@@ -37,9 +37,10 @@ export component CompactLocationButton inherits Rectangle {
 
     LocationImage {
         native-icon: root.icon; kind: root.kind;
-        width: Theme.touch ? 20px : 14px;
+        width: root.is-drive ? Theme.file-icon-size : Theme.icon-size;
         height: self.width;
-        x: root.is-drive ? (Theme.touch ? 8px : 4px) : (root.width - self.width) / 2;
+        x: root.is-drive ? (Theme.touch ? 8px : 4px) - (self.width - Theme.icon-size) / 2
+            : (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
         image-fit: contain;
     }

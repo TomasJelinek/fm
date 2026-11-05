@@ -106,8 +106,8 @@ impl Presenter {
         true
     }
 
-    /// Ctrl+Shift+1..9/0 assigns the current location to an existing numbered
-    /// bookmark, preserving its identity, or creates the slot on first use.
+    /// Assign the current location through bookmark management (or Ctrl+Shift+0
+    /// for slot 10), preserving an existing slot's identity.
     pub fn assign_bookmark_slot(
         &mut self,
         pane: PaneId,
