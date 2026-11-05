@@ -123,8 +123,13 @@ impl Presenter {
                 let opened = self.desktop.open_requests.remove(&request);
                 match result {
                     Ok(DesktopActionResult::TerminalStarted { history, .. }) => {
+                        let status = if history.command.is_empty() {
+                            "Terminal opened"
+                        } else {
+                            "Command opened in terminal"
+                        };
                         self.record_command_history(history);
-                        self.desktop.status = "Command opened in terminal".into()
+                        self.desktop.status = status.into()
                     }
                     Ok(DesktopActionResult::ClipboardCopied) => {
                         self.desktop.status = "Copied to clipboard".into()
@@ -244,7 +249,19 @@ impl Presenter {
 
     pub(crate) fn submit_command(&mut self, text: &str, send: &dyn Fn(Command) -> bool) -> bool {
         self.track_draft(!text.is_empty());
-        if text.trim().is_empty() || self.desktop.terminal_pending.is_some() {
+        if text.trim().is_empty() {
+            return false;
+        }
+        self.launch_terminal(text, send)
+    }
+
+    /// Open an interactive shell without submitting or changing the editor draft.
+    pub(crate) fn open_terminal(&mut self, send: &dyn Fn(Command) -> bool) -> bool {
+        self.launch_terminal("", send)
+    }
+
+    fn launch_terminal(&mut self, text: &str, send: &dyn Fn(Command) -> bool) -> bool {
+        if self.desktop.terminal_pending.is_some() {
             return false;
         }
         let Some(shell) = self.effective_shell() else {
@@ -264,7 +281,7 @@ impl Presenter {
         if !send(Command::LaunchTerminal { request, terminal }) {
             self.desktop.report(
                 "Terminal queue busy",
-                "Try submitting the command again.".into(),
+                "Try opening the terminal again.".into(),
             );
             return false;
         }

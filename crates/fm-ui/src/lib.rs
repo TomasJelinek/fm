@@ -191,7 +191,7 @@ impl Model for Rows {
             kind: kind.into(),
             icon: state.desktop.image(&IconKey::for_entry(entry)),
             directory,
-            selected: pane.selected.contains_path(&entry.path),
+            selected: pane.selection_visible(entry),
             cursor: pane.cursor == Some(entry.id),
         })
     }
@@ -272,6 +272,16 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         }
     }
     choices.extend(panel_models::bookmark_choices(presenter));
+    choices.push(NavigationChoiceRow {
+        identity: "other-panel".into(),
+        label: ". As Other Panel".into(),
+        compact_label: "As Other Panel".into(),
+        tooltip: "Open the other panel's current folder (.).".into(),
+        icon: presenter
+            .desktop
+            .image(&IconKey::action(ActionIcon::OpenPath)),
+        kind: LocationRole::Documents,
+    });
     navigation_models::update(
         window.get_navigation_choices(),
         choices.clone(),
@@ -469,6 +479,10 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter.desktop.shell.is_some() && presenter.desktop.terminal_pending.is_none(),
     );
     window.set_terminal_available(presenter.desktop.shell.is_some());
+    window.set_windows_shells(matches!(
+        presenter.desktop.shell,
+        Some(ShellFlavor::PowerShell | ShellFlavor::Cmd)
+    ));
     let terminal_choices = presenter.terminal_choices();
     let previous_choices = window.get_terminal_choices();
     if previous_choices.row_count() != terminal_choices.len()
@@ -628,7 +642,9 @@ pub fn install(
         let _ = w;
     });
     callback!(on_navigation_choice, |w, p, s, id, token| {
-        let navigated = if token == "network" {
+        let navigated = if token == "other-panel" {
+            p.navigate_as_other_panel(pane(id), s)
+        } else if token == "network" {
             p.desktop.report(
                 "Network",
                 "Device discovery is not available yet. Use Ctrl+G to enter a known network path."
@@ -652,6 +668,12 @@ pub fn install(
             w.set_active_pane(id);
             w.invoke_focus_files();
         }
+    });
+    callback!(on_path_copy, |_w, p, s, id, token| {
+        p.copy_path_part(pane(id), token.as_str(), s);
+    });
+    callback!(on_open_terminal, |_w, p, s| {
+        p.open_terminal(s);
     });
     callback!(on_history_choice, |w, p, s, id, forward, token| {
         if p.choose_history_entry(pane(id), forward, token.as_str(), s) {
@@ -757,7 +779,7 @@ pub fn install(
         let weak = window.as_weak();
         let state = presenter.clone();
         let sender = send.clone();
-        window.on_row_click(move |id, row, toggle| {
+        window.on_row_click(move |id, row, toggle, shift| {
             let Some(window) = weak.upgrade() else {
                 return;
             };
@@ -765,7 +787,10 @@ pub fn install(
             let old = {
                 let mut presenter = state.borrow_mut();
                 let old = presenter.panes[id.index()].cursor_index();
-                presenter.select_row(id, row as usize, toggle, sender.as_ref());
+                if row < 0 {
+                    return;
+                }
+                presenter.select_row_modified(id, row as usize, toggle, shift, sender.as_ref());
                 old
             };
             let model = if id == PaneId::Left {
@@ -781,6 +806,25 @@ pub fn install(
                 }
                 if row >= 0 && (row as usize) < model.row_count() {
                     rows.notify.row_changed(row as usize);
+                }
+                if shift {
+                    let (first, end) = if id == PaneId::Left {
+                        (
+                            window.get_left_visible_row_start(),
+                            window.get_left_visible_row_end(),
+                        )
+                    } else {
+                        (
+                            window.get_right_visible_row_start(),
+                            window.get_right_visible_row_end(),
+                        )
+                    };
+                    rows.refresh(
+                        &state.borrow().panes[id.index()],
+                        first.max(0) as usize,
+                        end.max(0) as usize,
+                        true,
+                    );
                 }
             }
             refresh_properties(&window, &state.borrow(), false);

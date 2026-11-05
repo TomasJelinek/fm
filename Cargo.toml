@@ -25,3 +25,39 @@ tempfile = "3"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Keep backend debugging intact while avoiding unoptimized per-frame UI/renderer
+# work. Native resize measurements are documented in docs/verification.
+[profile.dev.package.i-slint-core]
+opt-level = 2
+
+[profile.dev.package.i-slint-renderer-femtovg]
+opt-level = 2
+
+[profile.dev.package.femtovg]
+opt-level = 2
+
+[profile.dev.package.wgpu-core]
+opt-level = 2
+
+[profile.dev.package.wgpu-hal]
+opt-level = 2
+
+[profile.dev.package.fm-ui]
+opt-level = 1
+
+# Text shaping and font lookup are part of every resized text layout too.
+[profile.dev.package.parley]
+opt-level = 2
+
+[profile.dev.package.fontique]
+opt-level = 2
+
+[profile.dev.package.harfrust]
+opt-level = 2
+
+[profile.dev.package.skrifa]
+opt-level = 2
+
+[profile.dev.package.swash]
+opt-level = 2

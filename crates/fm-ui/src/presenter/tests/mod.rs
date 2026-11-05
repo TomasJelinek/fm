@@ -118,3 +118,4 @@ fn move_cursor(p: &mut Presenter, pane: PaneId, key: i32) {
     });
     fixture_toggle(p, pane, sent.into_inner());
 }
+mod selection_feedback;

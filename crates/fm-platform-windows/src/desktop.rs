@@ -80,37 +80,44 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
     if !executable.is_absolute()
         || !request.working_directory.is_absolute()
         || request.command.contains('\0')
+        || request
+            .working_directory
+            .as_os_str()
+            .encode_wide()
+            .any(|unit| unit == 0)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "terminal requires absolute native paths and a command without NUL",
+            "terminal requires absolute native paths and arguments without NUL",
         ));
     }
     let mut arguments = Vec::<OsString>::new();
     let mut raw_tail = None;
     match request.shell {
         ShellFlavor::PowerShell => {
-            let utf16: Vec<u8> = request
-                .command
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect();
             arguments.extend(
-                ["-NoLogo", "-NoProfile", "-NoExit", "-EncodedCommand"]
+                ["-NoLogo", "-NoProfile", "-NoExit"]
                     .into_iter()
                     .map(OsString::from),
             );
-            arguments.push(STANDARD.encode(utf16).into());
+            if !request.command.is_empty() {
+                let utf16: Vec<u8> = request
+                    .command
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                arguments.push("-EncodedCommand".into());
+                arguments.push(STANDARD.encode(utf16).into());
+            }
         }
         ShellFlavor::Cmd => {
-            // cmd /S removes exactly these outer quotes. raw_arg preserves the explicit
-            // source inside them; C-runtime argument escaping would alter cmd syntax.
-            arguments.extend(
-                ["/D", "/U", "/V:OFF", "/S", "/K"]
-                    .into_iter()
-                    .map(OsString::from),
-            );
-            raw_tail = Some(format!("\"{}\"", request.command).into());
+            arguments.extend(["/D", "/U", "/V:OFF"].into_iter().map(OsString::from));
+            if !request.command.is_empty() {
+                // cmd /S removes exactly these outer quotes. raw_arg preserves the explicit
+                // source inside them; C-runtime argument escaping would alter cmd syntax.
+                arguments.extend(["/S", "/K"].into_iter().map(OsString::from));
+                raw_tail = Some(format!("\"{}\"", request.command).into());
+            }
         }
         ShellFlavor::Posix => {
             return Err(io::Error::new(
@@ -369,6 +376,60 @@ mod tests {
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf};
 
     #[test]
+    fn empty_terminal_launch_has_only_interactive_shell_arguments() {
+        let directory = PathBuf::from(r"C:\文档\👩🏽‍💻 & !");
+        for (shell, executable, expected) in [
+            (
+                ShellFlavor::PowerShell,
+                r"C:\Program Files\PowerShell\7\pwsh.exe",
+                ["-NoLogo", "-NoProfile", "-NoExit"],
+            ),
+            (
+                ShellFlavor::Cmd,
+                r"C:\Windows\System32\cmd.exe",
+                ["/D", "/U", "/V:OFF"],
+            ),
+        ] {
+            let request = TerminalRequest {
+                shell,
+                mode: TerminalMode::Standard,
+                command: String::new(),
+                working_directory: directory.clone(),
+            };
+            let command = terminal_command(Path::new(executable), &request).unwrap();
+            let arguments: Vec<_> = command.arguments.iter().map(OsString::as_os_str).collect();
+            assert_eq!(arguments, expected.map(OsStr::new));
+            assert!(command.raw_tail.is_none());
+            assert_eq!(command.application, Path::new(executable));
+            assert_eq!(command.working_directory, directory);
+        }
+    }
+
+    #[test]
+    fn empty_terminal_launch_keeps_native_path_and_nul_validation() {
+        for shell in [ShellFlavor::PowerShell, ShellFlavor::Cmd] {
+            for (command, directory) in [
+                ("", "relative"),
+                ("", "C:\\bad\0path"),
+                ("echo\0bad", "C:\\valid"),
+            ] {
+                let request = TerminalRequest {
+                    shell,
+                    mode: TerminalMode::Standard,
+                    command: command.into(),
+                    working_directory: directory.into(),
+                };
+                assert_eq!(
+                    terminal_command(Path::new(r"C:\Windows\System32\cmd.exe"), &request)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::InvalidInput
+                );
+            }
+        }
+    }
+
+    #[test]
     fn terminal_passes_exact_unicode_command_as_utf16le_base64_and_separate_cwd() {
         let text = "Write-Output '文档 👩🏽‍💻 e\u{301} ‘quote’' ; $x = 1";
         let directory = PathBuf::from("C:\\文档\\$() ' ; ‘ ’");
@@ -466,17 +527,19 @@ mod tests {
 
     #[test]
     fn cmd_rejects_unc_working_directory_instead_of_running_in_another_directory() {
-        let request = TerminalRequest {
-            command: "echo 文档".into(),
-            working_directory: PathBuf::from(r"\\nonexistent.invalid\share\文档"),
-            shell: ShellFlavor::Cmd,
-            mode: TerminalMode::Standard,
-        };
-        assert_eq!(
-            terminal_command(Path::new(r"C:\Windows\System32\cmd.exe"), &request)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Unsupported
-        );
+        for command in ["", "echo 文档"] {
+            let request = TerminalRequest {
+                command: command.into(),
+                working_directory: PathBuf::from(r"\\nonexistent.invalid\share\文档"),
+                shell: ShellFlavor::Cmd,
+                mode: TerminalMode::Standard,
+            };
+            assert_eq!(
+                terminal_command(Path::new(r"C:\Windows\System32\cmd.exe"), &request)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Unsupported
+            );
+        }
     }
 }

@@ -9,6 +9,7 @@ mod panel_navigation;
 mod preferences;
 mod search;
 mod selection;
+mod selection_preview;
 mod shortcuts;
 mod tabs;
 mod terminal;
@@ -62,6 +63,9 @@ pub(crate) struct Pane {
     pub(crate) preserve_viewport: bool,
     size_scan_generation: u64,
     pub(crate) selected: Arc<SelectionSnapshot>,
+    selection_preview: Vec<selection_preview::PendingSelection>,
+    selection_anchor: Option<PathBuf>,
+    selection_anchor_id: Option<EntryId>,
     selection_context: NavigationId,
     selection_committed_context: NavigationId,
     selection_revision: SelectionRevision,
@@ -623,6 +627,8 @@ impl Presenter {
                     // acknowledgments before scheduling the source rebase.
                     p.selection_applied = p.selection_revision;
                     p.selection_resolved = p.selection_revision;
+                    p.selection_preview.clear();
+                    p.selection_deferred = false;
                     p.selection_restore = request.previous_selection_origin.take();
                     p.selection_context = p
                         .selection_restore
@@ -746,41 +752,14 @@ impl Presenter {
             None => false,
         }
     }
-    pub(crate) fn select_row(
+    pub fn select_row(
         &mut self,
         pane: PaneId,
         row: usize,
         toggle: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
-        let p = &mut self.panes[pane.index()];
-        p.preserve_viewport = false;
-        if p.has_parent() && row == 0 {
-            p.cursor = None;
-            p.parent_cursor = true;
-            if let Some(request) = &mut p.pending {
-                request.cursor_touched = true;
-            }
-            return;
-        }
-        let Some(row) = row.checked_sub(p.parent_offset()) else {
-            return;
-        };
-        if let Some(id) = p.display_entry(row).map(|e| e.id) {
-            p.cursor = Some(id);
-            p.parent_cursor = false;
-            if let Some(request) = &mut p.pending {
-                request.cursor_touched = true;
-            }
-            if toggle {
-                let path = p
-                    .display_entry(row)
-                    .expect("validated display row")
-                    .path
-                    .clone();
-                self.send_selection(pane, SelectionAction::Toggle(path), send);
-            }
-        }
+        self.select_row_modified(pane, row, toggle, false, send);
     }
     pub(crate) fn move_cursor(&mut self, pane: PaneId, key: i32, send: &dyn Fn(Command) -> bool) {
         let p = &self.panes[pane.index()];
@@ -884,6 +863,9 @@ impl Pane {
             preserve_viewport: false,
             size_scan_generation: 0,
             selected: Arc::default(),
+            selection_preview: Vec::new(),
+            selection_anchor: None,
+            selection_anchor_id: None,
             selection_context: NavigationId(0),
             selection_committed_context: NavigationId(0),
             selection_revision: SelectionRevision(0),

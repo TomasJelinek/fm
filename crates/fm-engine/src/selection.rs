@@ -14,11 +14,12 @@ use tokio::{
 const QUEUE_CAPACITY: usize = 32;
 
 enum Message {
-    Request(SelectionRequest),
+    Request(Box<SelectionRequest>),
     Wake,
 }
 
 pub(crate) struct Controller {
+    pub(crate) streaming: crate::streaming_selection::StreamingSelections,
     senders: [Option<mpsc::Sender<Message>>; 2],
     failures: Arc<Mutex<[Option<Event>; 2]>>,
     stop: Arc<StopSignal>,
@@ -38,6 +39,7 @@ impl StopSignal {
 
 impl Controller {
     pub(crate) fn new(outbox: Outbox, tasks: &mut JoinSet<()>) -> Self {
+        let streaming = crate::streaming_selection::StreamingSelections::default();
         let stop = Arc::new(StopSignal::default());
         let failures: Arc<Mutex<[Option<Event>; 2]>> = Arc::new(Mutex::new([None, None]));
         let senders = std::array::from_fn(|slot| {
@@ -45,10 +47,11 @@ impl Controller {
             let outbox = outbox.clone();
             let stop = stop.clone();
             let failures = failures.clone();
-            tasks.spawn(run(slot, input, outbox, failures, stop));
+            tasks.spawn(run(slot, input, outbox, failures, stop, streaming.clone()));
             Some(sender)
         });
         Self {
+            streaming,
             senders,
             failures,
             stop,
@@ -60,7 +63,7 @@ impl Controller {
         let Some(sender) = &self.senders[slot] else {
             return;
         };
-        if let Err(error) = sender.try_send(Message::Request(request)) {
+        if let Err(error) = sender.try_send(Message::Request(Box::new(request))) {
             let Message::Request(request) = error.into_inner() else {
                 return;
             };
@@ -102,6 +105,7 @@ async fn run(
     outbox: Outbox,
     failures: Arc<Mutex<[Option<Event>; 2]>>,
     stop: Arc<StopSignal>,
+    streaming: crate::streaming_selection::StreamingSelections,
 ) {
     let mut state = State::default();
     // Receiving and backpressure are async. Idle panes own no blocking task,
@@ -117,8 +121,18 @@ async fn run(
                 request.revision,
                 request.location.clone(),
             );
+            let stream = streaming.clone();
             let computed = tokio::task::spawn_blocking(move || {
-                let event = match state.apply(&request) {
+                let selected = if request.view.is_none()
+                    && matches!(request.action, SelectionAction::Range { .. })
+                {
+                    stream
+                        .snapshot(&request)
+                        .and_then(|view| state.apply_with_stream(&request, Some(view)))
+                } else {
+                    state.apply(&request)
+                };
+                let event = match selected {
                     Ok(Some((selection, deferred))) => Some(Event::SelectionChanged {
                         pane: request.pane,
                         navigation: request.navigation,
@@ -222,12 +236,21 @@ struct Deferred {
     base: Arc<SelectionSnapshot>,
     transform: Transform,
     toggles: HashSet<PathBuf>,
+    directories: HashSet<PathBuf>,
 }
 
 impl State {
     fn apply(
         &mut self,
         request: &SelectionRequest,
+    ) -> Result<Option<(Arc<SelectionSnapshot>, bool)>, &'static str> {
+        self.apply_with_stream(request, None)
+    }
+
+    fn apply_with_stream(
+        &mut self,
+        request: &SelectionRequest,
+        stream: Option<Arc<DirectoryIndex>>,
     ) -> Result<Option<(Arc<SelectionSnapshot>, bool)>, &'static str> {
         if request.navigation < self.navigation
             || (request.navigation == self.navigation && request.revision <= self.revision)
@@ -298,6 +321,27 @@ impl State {
                         bits[position / 64] ^= 1u64 << (position % 64);
                     }
                 }
+                SelectionAction::Range {
+                    anchor,
+                    target,
+                    additive,
+                } => {
+                    let position = |path| {
+                        view.by_path
+                            .get(path)
+                            .and_then(|id| view.by_id.get(id))
+                            .copied()
+                    };
+                    let (Some(anchor), Some(target)) = (position(anchor), position(target)) else {
+                        return Err("Range endpoints no longer belong to the captured view");
+                    };
+                    if !additive {
+                        bits.fill(0);
+                    }
+                    for position in anchor.min(target)..=anchor.max(target) {
+                        bits[position / 64] |= 1 << (position % 64);
+                    }
+                }
                 SelectionAction::Rebase => {}
             }
             self.current = Arc::new(self.current.with_bits(bits)?);
@@ -307,6 +351,7 @@ impl State {
                 base: self.current.clone(),
                 transform: Transform::Identity,
                 toggles: HashSet::new(),
+                directories: HashSet::new(),
             });
             match &request.action {
                 SelectionAction::Bulk(operation) => match operation {
@@ -328,13 +373,50 @@ impl State {
                     }
                 },
                 SelectionAction::Toggle(path) => {
+                    if request.toggle_directory {
+                        deferred.directories.insert(path.clone());
+                    } else {
+                        deferred.directories.remove(path);
+                    }
                     if !deferred.toggles.remove(path) {
                         deferred.toggles.insert(path.clone());
                     }
                 }
+                SelectionAction::Range {
+                    anchor,
+                    target,
+                    additive,
+                } => {
+                    let view = stream
+                        .as_ref()
+                        .ok_or("The streamed range index is unavailable")?;
+                    let position = |path| {
+                        view.by_path
+                            .get(path)
+                            .and_then(|id| view.by_id.get(id))
+                            .copied()
+                    };
+                    let (Some(anchor), Some(target)) = (position(anchor), position(target)) else {
+                        return Err("Range endpoints no longer belong to the streamed view");
+                    };
+                    if !additive {
+                        deferred.transform = Transform::None;
+                        deferred.toggles.clear();
+                    }
+                    for (path, id) in &view.by_path {
+                        if (anchor.min(target)..=anchor.max(target)).contains(&view.by_id[id]) {
+                            if !deferred.contains(path) && !deferred.toggles.remove(path) {
+                                deferred.toggles.insert(path.clone());
+                            }
+                            if view.is_directory(*id) {
+                                deferred.directories.insert(path.clone());
+                            }
+                        }
+                    }
+                }
                 SelectionAction::Rebase => {}
             }
-            self.current = deferred.rebase(deferred.subset())?;
+            self.current = deferred.rebase(stream.unwrap_or_else(|| deferred.subset()))?;
             let pending = matches!(deferred.transform, Transform::All | Transform::Invert);
             Ok(Some((self.current.clone(), pending)))
         }
@@ -342,17 +424,40 @@ impl State {
 }
 
 impl Deferred {
+    fn contains(&self, path: &std::path::Path) -> bool {
+        (match self.transform {
+            Transform::Identity => self.base.contains_path(path),
+            Transform::Invert => !self.base.contains_path(path),
+            Transform::All => true,
+            Transform::None => false,
+        }) ^ self.toggles.contains(path)
+    }
     fn subset(&self) -> Arc<DirectoryIndex> {
         let mut paths: HashSet<_> = self.base.basis().by_path.keys().cloned().collect();
         paths.extend(self.toggles.iter().cloned());
         let mut by_id = HashMap::with_capacity(paths.len());
         let mut by_path = HashMap::with_capacity(paths.len());
+        let mut directory_bits = vec![0; paths.len().div_ceil(64)];
         for (position, path) in paths.into_iter().enumerate() {
             let id = EntryId(position as u64);
+            if self.directories.contains(&path)
+                || self
+                    .base
+                    .basis()
+                    .by_path
+                    .get(&path)
+                    .is_some_and(|id| self.base.basis().is_directory(*id))
+            {
+                directory_bits[position / 64] |= 1 << (position % 64);
+            }
             by_id.insert(id, position);
             by_path.insert(path, id);
         }
-        Arc::new(DirectoryIndex { by_id, by_path })
+        Arc::new(DirectoryIndex {
+            by_id,
+            by_path,
+            directory_bits,
+        })
     }
 
     fn rebase(&self, view: Arc<DirectoryIndex>) -> Result<Arc<SelectionSnapshot>, &'static str> {
@@ -386,6 +491,7 @@ fn rebase(
         base: snapshot.clone(),
         transform: Transform::Identity,
         toggles: HashSet::new(),
+        directories: HashSet::new(),
     }
     .rebase(view)
 }
@@ -529,6 +635,7 @@ mod tests {
             preserve: None,
             restore: None,
             action,
+            toggle_directory: false,
         }
     }
 
@@ -982,5 +1089,188 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[test]
+    #[ignore = "explicit debug selection CPU benchmark"]
+    fn interaction_selection_cpu() {
+        use std::time::Instant;
+        for count in [10_000, 100_000] {
+            let entries: Vec<_> = (0..count)
+                .map(|id| {
+                    Entry::new(
+                        EntryId(id),
+                        format!("root/entry-{id:06}-文档.txt").into(),
+                        EntryKind::File,
+                    )
+                })
+                .collect();
+            let index = Arc::new(DirectoryIndex::from_entries(&entries));
+            let mut state = State::default();
+            apply(
+                &mut state,
+                request(1, Some(index.clone()), SelectionAction::Rebase),
+            );
+            let mut values = Vec::new();
+            for round in 0..100 {
+                let req = request(
+                    round + 2,
+                    Some(index.clone()),
+                    SelectionAction::Toggle(entries[round as usize].path.clone()),
+                );
+                let start = Instant::now();
+                std::hint::black_box(apply(&mut state, req));
+                values.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            values.sort_by(f64::total_cmp);
+            println!(
+                "selection_state_apply: rows={count} median_ms={:.4} p95_ms={:.4} n=100 (debug, actual backend CPU, no injected delay)",
+                values[50], values[95]
+            );
+        }
+    }
+    #[test]
+    fn range_selection_uses_inclusive_captured_order_and_native_paths() {
+        let index = view(&["文档/a", "文档/b", "文档/c", "文档/d"]);
+        let mut state = State::default();
+        apply(
+            &mut state,
+            request(
+                1,
+                Some(index.clone()),
+                SelectionAction::Bulk(SelectionOperation::All),
+            ),
+        );
+        let range = |anchor: &str, target: &str, additive| SelectionAction::Range {
+            anchor: anchor.into(),
+            target: target.into(),
+            additive,
+        };
+        let replaced = apply(
+            &mut state,
+            request(2, Some(index.clone()), range("文档/c", "文档/b", false)),
+        );
+        assert_eq!(replaced.bits(), [0b0110]);
+        let added = apply(
+            &mut state,
+            request(3, Some(index.clone()), range("文档/c", "文档/d", true)),
+        );
+        assert_eq!(added.bits(), [0b1110]);
+        assert!(
+            state
+                .apply(&request(4, Some(index), range("missing", "文档/b", false)))
+                .is_err()
+        );
+        assert_eq!(
+            state.current.bits(),
+            [0b1110],
+            "invalid anchor cannot clear committed selection"
+        );
+    }
+
+    #[test]
+    fn streamed_directory_toggle_reports_folder_count_before_listing_commit() {
+        let mut state = State::default();
+        let mut toggle = request(1, None, SelectionAction::Toggle("folder".into()));
+        toggle.toggle_directory = true;
+        let selected = apply(&mut state, toggle);
+        assert_eq!((selected.file_count(), selected.folder_count()), (0, 1));
+        let selected = apply(
+            &mut state,
+            request(2, None, SelectionAction::Toggle("file".into())),
+        );
+        assert_eq!((selected.file_count(), selected.folder_count()), (1, 1));
+    }
+    #[tokio::test]
+    async fn streamed_range_is_resolved_by_worker_and_survives_final_sort() {
+        let (sender, mut events) = mpsc::channel(8);
+        let mut tasks = JoinSet::new();
+        let controller = Controller::new(
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            &mut tasks,
+        );
+        let entries = vec![
+            Entry::new(EntryId(900), "root/z".into(), EntryKind::DirectoryLink),
+            Entry::new(EntryId(7), "root/a".into(), EntryKind::File),
+            Entry::new(EntryId(99), "root/m".into(), EntryKind::File),
+        ];
+        controller.streaming.append(
+            PaneId::Left,
+            NavigationId(1),
+            std::path::Path::new("root"),
+            &entries,
+        );
+        controller.submit(request(
+            1,
+            None,
+            SelectionAction::Range {
+                anchor: "root/z".into(),
+                target: "root/a".into(),
+                additive: false,
+            },
+        ));
+        let Event::SelectionChanged {
+            selection,
+            deferred,
+            ..
+        } = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("streamed selection result")
+        };
+        assert!(!deferred);
+        assert_eq!((selection.file_count(), selection.folder_count()), (1, 1));
+        assert!(!selection.contains_path(std::path::Path::new("root/m")));
+        let sorted = vec![entries[1].clone(), entries[2].clone(), entries[0].clone()];
+        controller.submit(request(
+            2,
+            Some(Arc::new(DirectoryIndex::from_entries(&sorted))),
+            SelectionAction::Rebase,
+        ));
+        let Event::SelectionChanged { selection, .. } =
+            tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("committed selection")
+        };
+        assert_eq!(selection.bits(), [0b101]);
+        drop(controller);
+        drop(events);
+        while tasks.join_next().await.is_some() {}
+    }
+
+    #[test]
+    fn additive_streamed_range_keeps_pending_select_all_for_future_rows() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            request(1, None, SelectionAction::Bulk(SelectionOperation::All)),
+        );
+        let range = request(
+            2,
+            None,
+            SelectionAction::Range {
+                anchor: "a".into(),
+                target: "b".into(),
+                additive: true,
+            },
+        );
+        let (partial, pending) = state
+            .apply_with_stream(&range, Some(view(&["a", "b"])))
+            .unwrap()
+            .unwrap();
+        assert_eq!(partial.len(), 2);
+        assert!(pending);
+        let complete = apply(
+            &mut state,
+            request(3, Some(view(&["b", "later", "a"])), SelectionAction::Rebase),
+        );
+        assert_eq!(complete.len(), 3);
     }
 }

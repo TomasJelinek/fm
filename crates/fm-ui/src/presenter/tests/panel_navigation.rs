@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn other_panel_navigation_preserves_raw_pending_path_and_queue_refusal() {
+    let left = test_root().join("left 文档");
+    let right = test_root().join("right e\u{301}");
+    let mut presenter = Presenter::new(left.clone(), right);
+    let pending = test_root().join("next 👩🏽‍💻 & ' folder");
+    assert!(presenter.navigate(PaneId::Right, pending.clone(), None, &|_| true));
+    assert!(!presenter.navigate_as_other_panel(PaneId::Left, &|_| false));
+    assert_eq!(presenter.panes[0].display_path(), left);
+    let sent = RefCell::new(Vec::new());
+    assert!(presenter.navigate_as_other_panel(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    assert!(sent.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Left, path, .. } if path == &pending)));
+    assert_eq!(presenter.panes[0].display_path(), pending);
+    assert_eq!(presenter.panes[1].display_path(), pending);
+}
+
+#[test]
 fn special_location_keeps_the_containing_volume_selected() {
     let root = test_root();
     let special = root.join("Documents 文档");
@@ -99,6 +119,30 @@ fn breadcrumbs_navigate_raw_ancestors_and_reject_stale_tokens() {
             .any(|command| matches!(command, Command::Navigate {path,..} if path == &parent))
     );
     assert!(!p.navigate_path_part(PaneId::Left, &token, &|_| panic!("stale breadcrumb")));
+}
+
+#[test]
+fn breadcrumb_copy_preserves_unicode_prefix_without_navigation_and_rejects_stale_token() {
+    let root = test_root();
+    let parent = root.join("文档 e\u{301}");
+    let current = parent.join("👩🏽‍💻");
+    let mut p = Presenter::new(current.clone(), root);
+    let generation = begin(&mut p, PaneId::Left, current.to_str().unwrap());
+    finish(&mut p, PaneId::Left, generation, vec![]);
+    let parts = p.path_parts(PaneId::Left);
+    let token = parts[parts.len() - 2].identity.clone();
+    let sent = RefCell::new(Vec::new());
+    assert!(p.copy_path_part(PaneId::Left, &token, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    assert!(matches!(&sent.borrow()[0], Command::CopyText { text, .. }
+        if text == &parent.to_string_lossy()));
+    assert_eq!(sent.borrow().len(), 1);
+    assert_eq!(p.panes[0].display_path(), current);
+    assert!(!p.copy_path_part(PaneId::Left, &token, &|_| false));
+    begin(&mut p, PaneId::Left, parent.to_str().unwrap());
+    assert!(!p.copy_path_part(PaneId::Left, &token, &|_| panic!("stale clipboard path")));
 }
 
 #[test]

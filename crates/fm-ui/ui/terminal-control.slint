@@ -1,0 +1,52 @@
+import { Theme } from "theme.slint";
+import { CompactPicker } from "controls.slint";
+import { NavigationButton } from "navigation-controls.slint";
+import { ActionIcons, FallbackIcons } from "action-icons.slint";
+
+export component TerminalControl inherits Rectangle {
+    in property <[string]> model;
+    in property <int> current-index;
+    in property <bool> windows-shells;
+    in property <bool> available;
+    in property <bool> ready;
+    in property <ActionIcons> action-icons;
+    in property <string> working-directory;
+    in property <string> hint;
+    private property <[image]> shell-icons: root.windows-shells
+        ? [@image-url("icons/powershell.svg"), @image-url("icons/cmd.svg")]
+        : [root.action-icons.terminal.width > 0 ? root.action-icons.terminal
+            : @image-url("icons/cmd.svg"), @image-url("icons/terminal-root.svg")];
+    callback selected(int);
+    callback launch();
+    callback dismissed();
+    width: Theme.tool-width + (Theme.touch ? 26px : 22px);
+    height: Theme.control-height;
+    background: Theme.surface;
+    border-width: 1px; border-radius: 4px; border-color: Theme.frame;
+    HorizontalLayout {
+        spacing: 0px; cross-axis-alignment: center;
+        NavigationButton {
+            width: Theme.tool-width;
+            icon: root.shell-icons[root.current-index];
+            native-icon: root.shell-icons[root.current-index];
+            hint: "Open " + root.model[root.current-index] + "\nWorking folder: " + root.working-directory;
+            enabled: root.ready;
+            clicked => { root.launch(); }
+        }
+        CompactPicker {
+            width: Theme.touch ? 26px : 22px; minimum-control-width: 0px;
+            framed: false; model: root.model; icons: root.shell-icons;
+            current-index: root.current-index; show-row-icons: true;
+            // Keep the trigger arrow-only; row icons remain visible in the popup.
+            arrow-trigger-only: true;
+            enabled: root.available; popup-above: true; popup-width: 230px;
+            accessible-name: "Command shell"; hint: root.hint;
+            selected(index) => { root.selected(index); }
+            dismissed => { root.dismissed(); }
+        }
+    }
+    Rectangle {
+        x: Theme.tool-width; y: 4px; width: 1px; height: root.height - 8px;
+        background: Theme.frame;
+    }
+}

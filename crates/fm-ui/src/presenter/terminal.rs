@@ -210,6 +210,151 @@ mod tests {
     use std::cell::RefCell;
 
     #[test]
+    fn open_terminal_preserves_draft_and_history_with_selected_shell_and_active_path() {
+        for (host, index, shell, mode) in [
+            (
+                ShellFlavor::PowerShell,
+                0,
+                ShellFlavor::PowerShell,
+                TerminalMode::Standard,
+            ),
+            (
+                ShellFlavor::PowerShell,
+                1,
+                ShellFlavor::Cmd,
+                TerminalMode::Standard,
+            ),
+            (
+                ShellFlavor::Posix,
+                0,
+                ShellFlavor::Posix,
+                TerminalMode::Standard,
+            ),
+            (
+                ShellFlavor::Posix,
+                1,
+                ShellFlavor::Posix,
+                TerminalMode::Elevated,
+            ),
+        ] {
+            let right = PathBuf::from("right/文档 👩🏽‍💻");
+            let mut p = Presenter::new("left".into(), right.clone());
+            p.active = PaneId::Right;
+            p.apply(Event::DesktopContext {
+                shell: host,
+                locations: vec![],
+            });
+            p.change_terminal(index, false, &|_| panic!("a shell choice cannot launch"));
+            p.track_draft(true);
+            p.desktop.terminal_guidance = Some("Keep this draft bound to its shell.");
+            p.preferences
+                .values
+                .command_history
+                .push(CommandHistoryEntry {
+                    command: "echo remembered".into(),
+                    shell,
+                });
+            let preferences = p.preferences.values.clone();
+            let revision = p.preferences.revision;
+            let draft = (
+                p.desktop.draft_nonempty,
+                p.desktop.draft_shell,
+                p.desktop.terminal_guidance,
+            );
+            let sent = RefCell::new(Vec::new());
+            assert!(p.open_terminal(&|command| {
+                sent.borrow_mut().push(command);
+                true
+            }));
+            assert_eq!(sent.borrow().len(), 1);
+            let request = match &sent.borrow()[0] {
+                Command::LaunchTerminal { request, terminal } => {
+                    assert!(terminal.command.is_empty());
+                    assert_eq!(terminal.shell, shell);
+                    assert_eq!(terminal.mode, mode);
+                    assert_eq!(terminal.working_directory, right);
+                    *request
+                }
+                other => panic!("unexpected terminal dispatch: {other:?}"),
+            };
+            p.active = PaneId::Left;
+            p.apply(Event::DesktopActionFinished {
+                request,
+                result: Ok(DesktopActionResult::TerminalStarted {
+                    process_id: 1,
+                    history: CommandHistoryEntry {
+                        command: String::new(),
+                        shell,
+                    },
+                }),
+            });
+            assert_eq!(
+                (
+                    p.desktop.draft_nonempty,
+                    p.desktop.draft_shell,
+                    p.desktop.terminal_guidance,
+                ),
+                draft
+            );
+            assert_eq!(p.preferences.values, preferences);
+            assert_eq!(p.preferences.revision, revision);
+            assert!(p.desktop.terminal_pending.is_none());
+            assert!(p.desktop.requests.is_empty());
+        }
+    }
+
+    #[test]
+    fn open_terminal_shares_backpressure_and_pending_guard_with_submission() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        assert!(!p.open_terminal(&|_| panic!("desktop context is not available")));
+        p.apply(Event::DesktopContext {
+            shell: ShellFlavor::PowerShell,
+            locations: vec![],
+        });
+        for text in ["", " \t\n"] {
+            assert!(!p.submit_command(text, &|_| panic!("blank submission cannot launch")));
+        }
+        assert!(!p.open_terminal(&|_| false));
+        assert!(p.desktop.terminal_pending.is_none());
+        assert!(p.desktop.requests.is_empty());
+        assert!(p.desktop.draft_nonempty);
+        assert_eq!(p.desktop.draft_shell, Some(ShellFlavor::PowerShell));
+        assert!(p.open_terminal(&|_| true));
+        let request = p.desktop.terminal_pending.unwrap();
+        assert!(!p.open_terminal(&|_| panic!("pending launch must not repeat")));
+        assert!(!p.submit_command("echo draft", &|_| panic!(
+            "pending launch blocks submission"
+        )));
+        p.apply(Event::DesktopActionFinished {
+            request: DesktopRequestId(request.0 + 1),
+            result: Err(FsError::from_io(
+                "launch",
+                Path::new(""),
+                std::io::ErrorKind::NotFound.into(),
+            )),
+        });
+        assert_eq!(p.desktop.terminal_pending, Some(request));
+        p.apply(Event::DesktopActionFinished {
+            request,
+            result: Err(FsError::from_io(
+                "launch",
+                Path::new(""),
+                std::io::ErrorKind::NotFound.into(),
+            )),
+        });
+        let sent = RefCell::new(Vec::new());
+        assert!(p.submit_command("echo draft", &|command| {
+            sent.borrow_mut().push(command);
+            true
+        }));
+        assert!(
+            matches!(&sent.borrow()[0], Command::LaunchTerminal { terminal, .. }
+            if terminal.command == "echo draft" && terminal.shell == ShellFlavor::PowerShell)
+        );
+        assert!(!p.open_terminal(&|_| panic!("pending submission blocks empty launch")));
+    }
+
+    #[test]
     fn bound_draft_defers_loaded_defaults_and_rejects_cross_grammar_selection() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {

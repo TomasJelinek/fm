@@ -136,6 +136,8 @@ pub enum Event {
         navigation: NavigationId,
         revision: SelectionRevision,
         selection: Arc<SelectionSnapshot>,
+        /// All/Invert still applies to unseen rows: paths absent from the basis
+        /// are selected until the complete-view rebase supplies explicit bits.
         deferred: bool,
     },
     SelectionFailed {

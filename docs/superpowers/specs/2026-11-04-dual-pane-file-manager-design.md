@@ -117,7 +117,7 @@ Oba panely mají stejnou komponentu a vlastní stav: umístění, historii, řaz
 Každý panel obsahuje:
 
 - Výběr disku/připojeného svazku a editovatelnou cestu.
-- Seznam se sloupci název, velikost, datum změny a typ; adresáře jsou standardně první.
+- Seznam se sloupci název, velikost a datum změny; adresáře jsou standardně první.
 - Odlišený kurzor, výběr a aktivní panel; tyto stavy se neslévají.
 - Stavový řádek s počtem položek a vybraných souborů; volné místo se načítá nezávisle.
 
@@ -558,7 +558,7 @@ Provedené testy nejsou náhradou za dosud neprovedená měření či nasazení 
 | Backspace / dvojklik na `..` | Navigace k rodiči; `..` není skutečný soubor ani součást výběru |
 | Space / Insert | Multivýběr a posun kurzoru; Space navíc počítá velikost skutečné složky na pozadí |
 | Alt+Left / Alt+Right, Ctrl+R | Historie / nový výpis aktivního umístění |
-| Kliknutí na záhlaví Name/Size/Modified/Type | První volba sloupce vzestupně; opakované kliknutí přepíná asc/desc; šipka ukazuje směr |
+| Kliknutí na záhlaví Name/Size/Modified | První volba sloupce vzestupně; opakované kliknutí přepíná asc/desc; šipka ukazuje směr |
 | Ctrl+Shift+S | Výpočet všech složek aktivního panelu bez ohledu na výběr; opakování ruší |
 | Alt+Enter, také Ctrl+Alt+Enter | Vlastnosti vybraných položek, jinak skutečné položky pod kurzorem; samotné `..` nic nespouští |
 | Ctrl+[ / Ctrl+] | Vloží celou cestu levého/pravého panelu jako samostatný bezpečně citovaný argument |
@@ -942,8 +942,8 @@ okna je `FM 0.1 — File Manager`; hodnota se odvozuje z verze balíčku.
 
 Každý panel má samostatné karty cest. Výchozí jméno karty vždy odpovídá názvu
 aktuální složky a při navigaci se změní; kořen zobrazí svou cestu. Celá cesta je
-v tooltipu. Ctrl+T přidá kartu, Ctrl+W zavře aktuální, Ctrl+Tab/Ctrl+Shift+Tab
-přepíná karty, Ctrl+Shift+1…9 volí konkrétní kartu. Poslední karta zůstává otevřená; limit je32 na panel. V této etapě
+v tooltipu. Ctrl+T přidá kartu, Ctrl+W zavře aktuální, Ctrl+Shift+Tab volí předchozí,
+Ctrl+Shift+1…9 konkrétní kartu. Ctrl+Tab fokusuje příkazový řádek. Poslední karta zůstává otevřená; limit je32 na panel. V této etapě
 jsou karty pouze pro aktuální běh, s vlastní historií, řazením a kurzorem.
 Neaktivní karty nedrží velké výpisy ani skeny; přepnutí načte čerstvý obsah.
 Opožděné backendové výsledky nesmějí přepsat jinou kartu.
@@ -1141,3 +1141,6 @@ Podrobné kontrakty, omezení a testy jsou v
 [Síťový filesystem](2026-11-05-network-filesystem-design.md) bude samostatný
 API-only plugin pro dostupná zařízení/služby/sdílení. Zjišťování celé sítě zatím
 není implementované; dostupnost nelze zaručit pro zařízení blokující discovery.
+
+[Nové ovládání a layout](2026-11-05-panel-interaction-layout-design.md) definuje
+Ctrl+Tab/Ctrl+U, splitter, karty, výběr, terminál, atributy, Light a F3/Alt+F3.

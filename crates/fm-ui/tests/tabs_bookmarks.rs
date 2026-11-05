@@ -1,5 +1,12 @@
 //! Real keyboard and pointer routing for tab identities and persistent bookmarks.
-use fm_ui::{BookmarkRow, MainWindow, NavigationChoiceRow, TabRow, Theme};
+#[path = "support/ui.rs"]
+mod ui;
+
+use fm_ui::{BookmarkRow, MainWindow, NavigationChoiceRow, TabRow};
+use i_slint_core::{
+    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    window::WindowInner,
+};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
@@ -55,6 +62,51 @@ fn tab(identity: &str, label: &str, active: bool) -> TabRow {
         path: format!("D:\\文档\\{label}").into(),
         active,
     }
+}
+
+fn close_tab_hint(label: &str) -> String {
+    format!(
+        "Close tab: {label}\nD:\\文档\\{label}\nCtrl+W closes the active tab. The last tab stays open."
+    )
+}
+
+fn active_overflow_tab(window: &MainWindow) -> slint::LogicalPosition {
+    fn find(item: ItemRc) -> Option<ItemRc> {
+        if item.accessible_role() == AccessibleRole::Button
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| {
+                    value == "Long folder title 文档\nD:\\文档\\Long folder title 文档"
+                })
+            && item
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .is_some_and(|value| value == "true")
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = find(item) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let item = find(ItemRc::new_root(
+        WindowInner::from_pub(window.window()).component(),
+    ))
+    .expect("the active folder tab remains accessible among equal captions");
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    assert!(origin.x >= window.get_left_list_left() - 1.0);
+    assert!(
+        origin.x + rect.size.width <= window.get_left_list_left() + window.get_left_list_width()
+    );
+    slint::LogicalPosition::new(
+        origin.x + rect.size.width / 2.0,
+        origin.y + rect.size.height / 2.0,
+    )
 }
 
 #[test]
@@ -129,6 +181,8 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     chord(&window, &[Key::Control], "t");
     chord(&window, &[Key::Control], "w");
     chord(&window, &[Key::Control], Key::Tab);
+    assert!(window.get_command_focused());
+    chord(&window, &[Key::Control], Key::Tab);
     chord(&window, &[Key::Control, Key::Shift], Key::Tab);
     chord(&window, &[Key::Control], "1");
     chord(&window, &[Key::Shift], "0");
@@ -143,7 +197,6 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         [
             "new:0",
             "close-active:0",
-            "cycle:0:1",
             "cycle:0:-1",
             "jump:0:1",
             "jump:0:10",
@@ -211,23 +264,15 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         });
     };
     draw(&mut pixels);
-    let theme = window.global::<Theme>();
-    let tabs_y = theme.get_window_padding()
-        + 1.0
-        + 3.0
-        + theme.get_toolbar_height()
-        + theme.get_control_height() / 2.0;
-    let tab_close_x = theme.get_window_padding() + 1.0 + theme.get_tab_width() - 12.0;
-    click(
-        &window,
-        theme.get_window_padding() + 1.0 + 1.5 * theme.get_tab_width() + 2.0,
-        tabs_y,
-    );
+    ui::click_root(&window, "B\nD:\\文档\\B", AccessibleRole::Button);
     assert_eq!(*selected.borrow(), vec![(0, SharedString::from("12"))]);
     assert_eq!(window.get_focused_pane(), 0);
     draw(&mut pixels);
-    let position = slint::LogicalPosition::new(tab_close_x, tabs_y);
+    let position = ui::root_position(&window, &close_tab_hint("A"), AccessibleRole::Button);
     let button = PointerEventButton::Left;
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
     window
         .window()
         .dispatch_event(WindowEvent::PointerPressed { position, button });
@@ -243,17 +288,21 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         closed.borrow().is_empty(),
         "reordering tabs during a press must not close either identity"
     );
-    click(&window, tab_close_x, tabs_y);
+    ui::click_root(&window, &close_tab_hint("B"), AccessibleRole::Button);
     assert_eq!(*closed.borrow(), vec![(0, SharedString::from("12"))]);
     window.set_left_tabs(ModelRc::new(VecModel::from(vec![tab("11", "A", true)])));
     draw(&mut pixels);
-    click(&window, tab_close_x, tabs_y);
+    ui::click_root(&window, &close_tab_hint("A"), AccessibleRole::Button);
     assert_eq!(
         closed.borrow().len(),
         1,
         "the last tab must not expose a close action"
     );
-    click(&window, 655.0, tabs_y);
+    ui::click_root(
+        &window,
+        "Open a new folder tab (Ctrl+T).",
+        AccessibleRole::Button,
+    );
     assert_eq!(events.borrow().last().unwrap(), "new:0");
     window.set_left_tabs(ModelRc::new(VecModel::from(
         (0..32)
@@ -267,7 +316,8 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             .collect::<Vec<_>>(),
     )));
     draw(&mut pixels);
-    click(&window, 7.0 + 634.0 - theme.get_tab_width() / 2.0, tabs_y);
+    let position = active_overflow_tab(&window);
+    click(&window, position.x, position.y);
     assert_eq!(
         selected.borrow().last(),
         Some(&(0, SharedString::from("overflow-31"))),
@@ -285,7 +335,8 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             .collect::<Vec<_>>(),
     )));
     draw(&mut pixels);
-    click(&window, 30.0, tabs_y);
+    let position = active_overflow_tab(&window);
+    click(&window, position.x, position.y);
     assert_eq!(
         selected.borrow().last(),
         Some(&(0, SharedString::from("overflow-0"))),
@@ -304,10 +355,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             .push(format!("open:{pane}:{identity}"))
     });
     draw(&mut pixels);
-    let star_y = theme.get_window_padding() + 1.0 + 3.0 + theme.get_toolbar_height() / 2.0;
-    let pane_width = (1340.0 - 2.0 * theme.get_window_padding() - theme.get_gap()) / 2.0;
-    let star_x = theme.get_window_padding() + pane_width - 1.0 - 4.0 - theme.get_tool_width() / 2.0;
-    click(&window, star_x, star_y);
+    ui::click_root(&window, "Hot Paths", AccessibleRole::Combobox);
     chord(&window, &[], Key::Return); // The final dropdown item opens its manager.
     draw(&mut pixels);
     assert_eq!(
@@ -323,14 +371,22 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     chord(&window, &[], Key::Return);
     assert_eq!(events.borrow().last().unwrap(), "add:0:Renamed [星] Café:1");
     draw(&mut pixels);
-    click(&window, 902.0, 261.0);
+    ui::click_popup(
+        &window,
+        "Remove bookmark: 文档 [work]\nD:\\文档\\work\nThe folder is kept.",
+        AccessibleRole::Button,
+    );
     assert_eq!(events.borrow().last().unwrap(), "remove:31");
     assert_eq!(
         window.get_focused_pane(),
         -1,
         "removing a bookmark must keep its popup open"
     );
-    click(&window, 500.0, 261.0);
+    ui::click_popup(
+        &window,
+        "文档 [work]\nD:\\文档\\work\nHot Path Ctrl+1",
+        AccessibleRole::Button,
+    );
     assert_eq!(events.borrow().last().unwrap(), "open:0:31");
     assert_eq!(
         window.get_focused_pane(),

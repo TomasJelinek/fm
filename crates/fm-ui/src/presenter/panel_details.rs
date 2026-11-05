@@ -10,8 +10,34 @@ pub(crate) struct PanelDetail {
 impl Presenter {
     pub(crate) fn panel_details(&self, pane: PaneId) -> Vec<PanelDetail> {
         let p = &self.panes[pane.index()];
+        if !p.selected.is_empty()
+            || !p.selection_preview.is_empty()
+            || p.selection_deferred
+            || p.selection_pending_bulk
+            || p.selection_rebase_pending
+        {
+            let files = p.selected.file_count();
+            let folders = p.selected.folder_count();
+            let pending = !p.selection_preview.is_empty()
+                || p.selection_deferred
+                || p.selection_rebase_pending;
+            let value = format!(
+                "{files} {}, {folders} {}{}",
+                if files == 1 { "file" } else { "files" },
+                if folders == 1 { "folder" } else { "folders" },
+                if pending { " (updating)" } else { "" }
+            );
+            return vec![PanelDetail {
+                identity: format!(
+                    "detail:{}:selection:{}:{}:{value}",
+                    p.generation, p.selection_applied.0, p.selection_revision.0
+                ),
+                label: "Selected",
+                value,
+            }];
+        }
         if p.parent_cursor {
-            return [("Name", ".."), ("Bytes", "—"), ("Type", "Parent folder")]
+            return [("Name", ".."), ("Bytes", "—")]
                 .into_iter()
                 .enumerate()
                 .map(|(index, (label, value))| PanelDetail {
@@ -85,19 +111,6 @@ impl Presenter {
         else {
             return false;
         };
-        let request = self.desktop.request();
-        if send(Command::CopyText {
-            request,
-            text: field.value,
-        }) {
-            self.desktop.requests.insert(request);
-            true
-        } else {
-            self.desktop.report(
-                "Clipboard queue busy",
-                "Try copying the field again.".into(),
-            );
-            false
-        }
+        self.queue_clipboard_text(field.value, send)
     }
 }

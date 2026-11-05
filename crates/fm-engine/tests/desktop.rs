@@ -198,6 +198,63 @@ fn navigation() -> Command {
     }
 }
 
+#[tokio::test]
+async fn empty_terminal_launch_reaches_adapter_but_whitespace_and_nul_do_not() {
+    let services = Arc::new(Services::default());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(32);
+    let task = tokio::spawn(
+        Engine::new(services.clone(), sender)
+            .with_desktop(services.clone())
+            .run(receiver),
+    );
+    let directory = std::env::current_dir().unwrap().join("文档 👩🏽‍💻");
+    for (index, text) in ["", " \t\n", "\0", "echo before\0after", "echo exact"]
+        .iter()
+        .enumerate()
+    {
+        let request = DesktopRequestId(index as u64 + 1);
+        commands
+            .send(Command::LaunchTerminal {
+                request,
+                terminal: TerminalRequest {
+                    command: (*text).into(),
+                    working_directory: directory.clone(),
+                    shell: ShellFlavor::Posix,
+                    mode: TerminalMode::Elevated,
+                },
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Event::DesktopActionFinished {
+                request: completed,
+                result,
+            } = next(&mut events).await
+                && completed == request
+            {
+                // The external-service double reports a missing terminal after capture.
+                assert!(result.is_err());
+                break;
+            }
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    task.await.unwrap();
+    let launches = services.launches.lock().unwrap();
+    let texts: Vec<_> = launches
+        .iter()
+        .map(|launch| launch.command.as_str())
+        .collect();
+    assert_eq!(texts, ["", "echo exact"]);
+    for launch in launches.iter() {
+        assert_eq!(launch.working_directory, directory);
+        assert_eq!(launch.shell, ShellFlavor::Posix);
+        assert_eq!(launch.mode, TerminalMode::Elevated);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn desktop_context_and_background_icons_never_launch_commands() {
     let services = Arc::new(Services::default());

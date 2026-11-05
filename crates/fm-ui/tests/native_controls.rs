@@ -4,7 +4,12 @@ mod ui;
 
 use fm_core::*;
 use fm_ui::{ActionIcons, FileRow, MainWindow, Presenter, Theme, install, refresh};
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{
+    accessibility::AccessibleStringProperty,
+    item_tree::ItemRc,
+    items::AccessibleRole,
+    window::{WindowInner, WindowKind},
+};
 use slint::{
     ComponentHandle, Model, ModelRc, VecModel,
     platform::{
@@ -85,20 +90,44 @@ fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
         drive_letter: None,
     }
 }
-fn toolbar_y(window: &MainWindow) -> f32 {
-    let theme = window.global::<Theme>();
-    theme.get_window_padding() + 4.0 + theme.get_toolbar_height() / 2.0
+fn quick_position(window: &MainWindow) -> slint::LogicalPosition {
+    let hint = window.get_left_locations().row_data(0).unwrap().tooltip;
+    ui::root_position(window, &hint, AccessibleRole::Button)
 }
-fn quick_x(window: &MainWindow) -> f32 {
-    let theme = window.global::<Theme>();
-    theme.get_window_padding()
-        + 1.0
-        + if theme.get_density() == 1 {
-            6.0 + 88.0 + 6.0
-        } else {
-            4.0 + 78.0 + 4.0
+fn popup_position(window: &MainWindow, label: &str) -> slint::LogicalPosition {
+    fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
+        if item.accessible_role() == AccessibleRole::Button
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value.as_str() == label)
+        {
+            return Some(item);
         }
-        + theme.get_tool_width() / 2.0
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = find(item, label) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    let popup = popups
+        .iter()
+        .rev()
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .expect("an open navigation picker");
+    let item = find(ItemRc::new_root(popup.component.clone()), label)
+        .unwrap_or_else(|| panic!("no navigation row: {label}"));
+    drop(popups);
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    slint::LogicalPosition::new(
+        origin.x + rect.size.width / 2.0,
+        origin.y + rect.size.height / 2.0,
+    )
 }
 fn latest_path(commands: &RefCell<Vec<Command>>) -> PathBuf {
     commands
@@ -188,10 +217,21 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     };
     draw(&mut pixels, 1340);
     let choices = window.get_navigation_choices();
-    assert_eq!(choices.row_count(), 5, "synthetic Home is merged only once");
+    assert_eq!(
+        choices.row_count(),
+        6,
+        "five locations plus the other-panel action"
+    );
+    let other_panel = choices.row_data(5).unwrap();
+    assert_eq!(other_panel.identity, "other-panel");
+    assert_eq!(other_panel.label, ". As Other Panel");
     for locations in [window.get_left_locations(), window.get_right_locations()] {
-        assert_eq!(locations.row_count(), choices.row_count());
-        for index in 0..choices.row_count() {
+        assert_eq!(
+            locations.row_count(),
+            5,
+            "synthetic Home is merged only once"
+        );
+        for index in 0..locations.row_count() {
             let choice = choices.row_data(index).unwrap();
             let quick = locations.row_data(index).unwrap();
             assert_eq!(quick.identity, choice.identity);
@@ -205,10 +245,9 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     );
 
     // Native metadata and icon replies must not destroy a held quick button.
-    let x = quick_x(&window);
-    let y = toolbar_y(&window);
+    let quick = quick_position(&window);
     let original_locations = window.get_left_locations();
-    pointer(&window, x, y, true);
+    pointer(&window, quick.x, quick.y, true);
     presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
         volume_id: "disk".into(),
         root: root.clone(),
@@ -221,7 +260,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     refresh(&window, &presenter.borrow());
     draw(&mut pixels, 1340);
     let before = navigations(&commands);
-    pointer(&window, x, y, false);
+    pointer(&window, quick.x, quick.y, false);
     assert!(
         std::ptr::eq(
             original_locations.as_any(),
@@ -241,9 +280,10 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         position: slint::LogicalPosition::new(0.0, 0.0),
     });
     draw(&mut pixels, 1340);
-    window.window().dispatch_event(WindowEvent::PointerMoved {
-        position: slint::LogicalPosition::new(x, y),
-    });
+    let quick = quick_position(&window);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: quick });
     draw(&mut pixels, 1340);
     let quiet = pixels.clone();
     time.set(Duration::from_millis(1000));
@@ -273,6 +313,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     open_picker(&window, PaneId::Left);
     draw(&mut pixels, 1340);
     key(&window, Key::End);
+    key(&window, Key::UpArrow); // Downloads precedes the final other-panel action.
     // Metadata refresh while open retains the pending semantic choice.
     presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
         volume_id: "disk".into(),
@@ -306,11 +347,11 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     open_picker(&window, PaneId::Right);
     draw(&mut pixels, 1340);
     let theme = window.global::<Theme>();
-    let right_x = (1340.0 + theme.get_gap()) / 2.0 + 24.0;
-    let home_y = y + 2.0 * theme.get_control_height() + 4.0;
-    window.window().dispatch_event(WindowEvent::PointerMoved {
-        position: slint::LogicalPosition::new(right_x, home_y),
-    });
+    let home_label = window.get_navigation_choices().row_data(1).unwrap().label;
+    let home_row = popup_position(&window, &home_label);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: home_row });
     draw(&mut pixels, 1340);
     let quiet_popup = pixels.clone();
     time.set(Duration::from_millis(2000));
@@ -324,7 +365,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
             > 100,
         "special-location dropdown rows display the same actual hover tooltips"
     );
-    pointer(&window, right_x, home_y, true);
+    pointer(&window, home_row.x, home_row.y, true);
     presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
         volume_id: "disk".into(),
         root: root.clone(),
@@ -333,12 +374,13 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     refresh(&window, &presenter.borrow());
     draw(&mut pixels, 1340);
     let before = navigations(&commands);
-    pointer(&window, right_x, home_y, false);
+    pointer(&window, home_row.x, home_row.y, false);
     assert_eq!(navigations(&commands), before + 1);
     assert_eq!(latest_path(&commands), home);
 
     // Equal captions with a new raw root invalidate a quick press.
-    pointer(&window, x, y, true);
+    let quick = quick_position(&window);
+    pointer(&window, quick.x, quick.y, true);
     let before = navigations(&commands);
     presenter
         .borrow_mut()
@@ -349,7 +391,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         }]));
     refresh(&window, &presenter.borrow());
     draw(&mut pixels, 1340);
-    pointer(&window, x, y, false);
+    pointer(&window, quick.x, quick.y, false);
     assert_eq!(
         navigations(&commands),
         before,
@@ -384,15 +426,16 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     );
     open_picker(&window, PaneId::Right);
     draw(&mut pixels, 1340);
-    let first_y = y + theme.get_control_height() + 4.0;
-    pointer(&window, right_x, first_y, true);
+    let first_label = window.get_navigation_choices().row_data(0).unwrap().label;
+    let first_row = popup_position(&window, &first_label);
+    pointer(&window, first_row.x, first_row.y, true);
     let before = navigations(&commands);
     presenter
         .borrow_mut()
         .apply(Event::VolumesUpdated(drives.into_iter().rev().collect()));
     refresh(&window, &presenter.borrow());
     draw(&mut pixels, 1340);
-    pointer(&window, right_x, first_y, false);
+    pointer(&window, first_row.x, first_row.y, false);
     key(&window, Key::Escape);
     assert_eq!(
         navigations(&commands),
@@ -466,7 +509,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     window.set_right_rows(hover_rows);
     draw(&mut pixels, 1340);
     let mut hover_targets = Vec::new();
-    for column in ["Name", "Size", "Modified", "Type"] {
+    for column in ["Name", "Size", "Modified"] {
         let header = ui::root_position(
             &window,
             &format!("Sort by {column}"),
@@ -576,7 +619,19 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                     );
                     assert!(
                         window.get_command_input_width() > 300.0,
-                        "full cwd must leave useful editor width at density{density}/font{font}"
+                        "full cwd must leave useful editor width at {width}x{height}, density{density}/font{font}, error={error:?}: editor={}px, cwd={}px, natural_cwd={}px, options={}px, run={}px, history={}px",
+                        window.get_command_input_width(),
+                        window.get_command_path_width(),
+                        window.get_command_path_natural_width(),
+                        ui::root_item(&window, "Options", AccessibleRole::Button)
+                            .geometry()
+                            .size
+                            .width,
+                        ui::root_item(&window, "Run", AccessibleRole::Button)
+                            .geometry()
+                            .size
+                            .width,
+                        window.get_command_history_width()
                     );
                     assert!(
                         window.get_left_list_visible_height()

@@ -1,5 +1,12 @@
 //! Verify compact panel details, fixed function-button height and size warnings.
+#[path = "support/ui.rs"]
+mod ui;
+
 use fm_ui::{FileRow, MainWindow, Theme};
+use i_slint_core::{
+    item_tree::ItemRc,
+    items::{AccessibleRole, ComplexText, SimpleText},
+};
 use slint::{
     ComponentHandle, ModelRc, VecModel,
     platform::{
@@ -34,6 +41,26 @@ fn pixel(color: slint::Color) -> slint::Rgb8Pixel {
         g: color.green(),
         b: color.blue(),
     }
+}
+
+fn size_text(item: ItemRc, expected: &str) -> Option<ItemRc> {
+    if item
+        .downcast::<SimpleText>()
+        .is_some_and(|text| text.as_pin_ref().text() == expected)
+        || item
+            .downcast::<ComplexText>()
+            .is_some_and(|text| text.as_pin_ref().text() == expected)
+    {
+        return Some(item);
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if let Some(found) = size_text(item, expected) {
+            return Some(found);
+        }
+    }
+    None
 }
 fn luminance(color: slint::Color) -> f32 {
     let channel = |value: u8| {
@@ -78,7 +105,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
     )));
     let selected = Rc::new(Cell::new((-1, -1)));
     let captured = selected.clone();
-    window.on_row_click(move |pane, row, _| captured.set((pane, row)));
+    window.on_row_click(move |pane, row, _, _| captured.set((pane, row)));
     window.show().unwrap();
     native.set_size(slint::PhysicalSize::new(1340, 820));
     window.window().dispatch_event(WindowEvent::Resized {
@@ -99,19 +126,24 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
             if density == 1 {
                 assert!(theme.get_control_height() >= 40.0);
             }
-            let top = theme.get_window_padding()
-                + 1.0
-                + 3.0
-                + theme.get_locations_height()
-                + theme.get_toolbar_height()
-                + theme.get_path_height()
-                + theme.get_column_height();
+            let top = window.get_left_list_top();
             let warning = pixel(theme.get_pending_size());
-            for row in 0..3 {
-                let y1 = (top + row as f32 * theme.get_row_height()) as usize;
-                let y2 = (top + (row + 1) as f32 * theme.get_row_height()) as usize;
+            for (row, expected_text) in ["7 KiB", "…", "≈ 7 KiB"].into_iter().enumerate() {
+                let row_item =
+                    ui::root_item(&window, &format!("Row {row}"), AccessibleRole::ListItem);
+                let size_item = size_text(row_item, expected_text).expect("the row's size caption");
+                let rect = size_item.geometry();
+                let origin = size_item.map_to_native_window(rect.origin);
+                assert!(origin.x >= 0.0 && origin.y >= top);
+                assert!(
+                    origin.x + rect.size.width <= 1340.0 && origin.y + rect.size.height <= 820.0
+                );
+                let x1 = origin.x.floor() as usize;
+                let x2 = (origin.x + rect.size.width).ceil() as usize;
+                let y1 = origin.y.floor() as usize;
+                let y2 = (origin.y + rect.size.height).ceil() as usize;
                 let warning_pixels = (y1..y2)
-                    .flat_map(|y| &pixels[y * 1340 + 20..y * 1340 + 650])
+                    .flat_map(|y| &pixels[y * 1340 + x1..y * 1340 + x2])
                     .filter(|value| {
                         value.r.abs_diff(warning.r) <= 10
                             && value.g.abs_diff(warning.g) <= 10
@@ -121,12 +153,10 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                 if row == 1 && warning_pixels == 0 {
                     let mut dump = b"P6\n1340 820\n255\n".to_vec();
                     dump.extend(pixels.iter().flat_map(|value| [value.r, value.g, value.b]));
-                    std::fs::create_dir_all("../../_build/qa/panel-refinement").unwrap();
-                    std::fs::write(
-                        "../../_build/qa/panel-refinement/compact-feedback-debug.ppm",
-                        dump,
-                    )
-                    .unwrap();
+                    let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../_build/qa/interaction");
+                    std::fs::create_dir_all(&artifacts).unwrap();
+                    std::fs::write(artifacts.join("compact-feedback-debug.ppm"), dump).unwrap();
                 }
                 assert_eq!(
                     warning_pixels > 0,
@@ -204,11 +234,7 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
             pixels[300 * 1040 + 220],
             pixel(window.global::<Theme>().get_surface())
         );
-        let theme = window.global::<Theme>();
-        let help_height = (height as f32 - 40.0).min(if density == 0 { 490.0 } else { 600.0 });
-        let close_y =
-            height as f32 / 2.0 + help_height / 2.0 - 20.0 - theme.get_control_height() / 2.0;
-        click(&window, 520.0, close_y);
+        ui::click_popup(&window, "Close", AccessibleRole::Button);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });

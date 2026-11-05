@@ -6,7 +6,7 @@ import { TipBody, CompactPicker } from "controls.slint";
 import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
 
-component NavigationButton inherits Rectangle {
+export component NavigationButton inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
     in property <string> label;
@@ -112,6 +112,13 @@ export component TabStrip inherits Rectangle {
     in property <ActionIcons> action-icons;
     private property <int> revision;
     private property <int> active-index: -1;
+    private property <length> minimum-tab-width: Theme.touch ? 88px : 72px;
+    private property <length> button-width: Theme.touch ? Theme.tool-width : 24px;
+    private property <length> full-room: max(0px, root.width - root.button-width - 2px);
+    private property <bool> overflowing: root.model.length * (root.minimum-tab-width + 2px) - 2px > root.full-room;
+    private property <length> tab-room: max(0px, root.full-room - (root.overflowing ? 2 * (root.button-width + 2px) : 0px));
+    private property <length> tab-width: clamp((root.tab-room - max(0, root.model.length - 1) * 2px)
+        / max(1, root.model.length), root.minimum-tab-width, Theme.tab-width);
     callback selected(string);
     callback close-tab(string);
     callback new-tab();
@@ -121,14 +128,19 @@ export component TabStrip inherits Rectangle {
     background: Theme.secondary-surface;
     changed model => { root.revision += 1; root.reveal-active(); }
     changed active-index => { root.reveal-active(); }
+    changed tab-width => { root.reveal-active(); }
+    function scroll-tabs(direction: int) {
+        tabs-scroll.content-x = clamp(tabs-scroll.content-x - direction * (root.tab-width + 2px),
+            min(0px, tabs-scroll.visible-width - tabs-scroll.content-width), 0px);
+    }
     public function reveal-active() {
         if root.active-index >= 0 && root.active-index < root.model.length {
-            if root.active-index * (Theme.tab-width + 2px) < -tabs-scroll.content-x {
-                tabs-scroll.content-x = -root.active-index * (Theme.tab-width + 2px);
-            } else if root.active-index * (Theme.tab-width + 2px) + Theme.tab-width
+            if root.active-index * (root.tab-width + 2px) < -tabs-scroll.content-x {
+                tabs-scroll.content-x = -root.active-index * (root.tab-width + 2px);
+            } else if root.active-index * (root.tab-width + 2px) + root.tab-width
                 > -tabs-scroll.content-x + tabs-scroll.visible-width {
                 tabs-scroll.content-x = min(0px, tabs-scroll.visible-width
-                    - root.active-index * (Theme.tab-width + 2px) - Theme.tab-width);
+                    - root.active-index * (root.tab-width + 2px) - root.tab-width);
             }
         }
     }
@@ -137,12 +149,12 @@ export component TabStrip inherits Rectangle {
         tabs-scroll := ScrollView {
             vertical-scrollbar-policy: always-off;
             horizontal-scrollbar-policy: always-off;
-            content-width: max(0px, root.model.length * (Theme.tab-width + 2px) - 2px);
+            content-width: max(0px, root.model.length * (root.tab-width + 2px) - 2px);
             changed visible-width => { root.reveal-active(); }
             HorizontalLayout {
                 spacing: 2px; alignment: start;
                 for tab[index] in root.model : Rectangle {
-                    width: Theme.tab-width;
+                    width: root.tab-width;
                     height: Theme.control-height;
                     private property <bool> current-tab: tab.active;
                     init => { if self.current-tab { root.active-index = index; root.reveal-active(); } }
@@ -194,6 +206,17 @@ export component TabStrip inherits Rectangle {
                     }
                 }
             }
+        }
+        if root.overflowing : NavigationButton {
+            icon: FallbackIcons.back; native-icon: root.action-icons.back;
+            hint: "Scroll tabs left"; enabled: tabs-scroll.content-x < -0.5px;
+            clicked => { root.scroll-tabs(-1); }
+        }
+        if root.overflowing : NavigationButton {
+            icon: FallbackIcons.forward; native-icon: root.action-icons.forward;
+            hint: "Scroll tabs right";
+            enabled: tabs-scroll.content-x > tabs-scroll.visible-width - tabs-scroll.content-width + 0.5px;
+            clicked => { root.scroll-tabs(1); }
         }
         NavigationButton {
             icon: FallbackIcons.tab-add; native-icon: root.action-icons.tab-add;

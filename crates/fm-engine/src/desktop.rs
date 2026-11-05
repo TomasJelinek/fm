@@ -117,10 +117,14 @@ impl Desktop {
             self.fail(request, "Terminal integration is unavailable.", tasks);
             return;
         };
-        if terminal.command.trim().is_empty() || terminal.command.contains('\0') {
+        // Exactly empty opens an interactive shell. Whitespace is still an invalid
+        // submitted command, and neither launch path accepts an embedded NUL.
+        if (!terminal.command.is_empty() && terminal.command.trim().is_empty())
+            || terminal.command.contains('\0')
+        {
             self.fail(
                 request,
-                "Enter a nonempty command without NUL characters.",
+                "Terminal commands cannot contain NUL or consist only of whitespace.",
                 tasks,
             );
             return;

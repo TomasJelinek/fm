@@ -83,7 +83,7 @@ fn control_enter_appends_literal_basename_and_control_p_uses_active_panel() {
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });
-    window.invoke_row_click(0, 0, false);
+    window.invoke_row_click(0, 0, false, false);
     commands.borrow_mut().clear();
     window.invoke_set_command("echo prefix".into(), 0);
     control(&window, Key::Return);

@@ -172,7 +172,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         "command TextInput must have actual focus before editor shortcuts"
     );
 
-    window.invoke_row_click(0, 1, true);
+    window.invoke_row_click(0, 1, true, false);
     selection::acknowledge(
         &presenter,
         &commands,
@@ -234,8 +234,8 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         ],
     );
     fm_ui::refresh(&window, &presenter.borrow());
-    window.invoke_row_click(0, 1, true);
-    window.invoke_row_click(0, 0, false);
+    window.invoke_row_click(0, 1, true, false);
+    window.invoke_row_click(0, 0, false, false);
     commands.borrow_mut().clear();
 
     hold(&window, Key::Control, true);
@@ -365,7 +365,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     selection::acknowledge(&presenter, &commands, PaneId::Left, &[]);
     fm_ui::refresh(&window, &presenter.borrow());
     commands.borrow_mut().clear();
-    window.invoke_row_click(0, 0, false);
+    window.invoke_row_click(0, 0, false, false);
     hold(&window, Key::Alt, true);
     key(&window, Key::Return);
     hold(&window, Key::Alt, false);
@@ -503,18 +503,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         renderer.render(&mut pixels, 1340);
     });
     let theme = window.global::<Theme>();
-    let list_top = theme.get_window_padding()
-        + 1.0
-        + 3.0
-        + theme.get_locations_height()
-        + if window.get_left_tabs().row_count() > 0 {
-            theme.get_control_height()
-        } else {
-            0.0
-        }
-        + theme.get_toolbar_height()
-        + theme.get_path_height()
-        + theme.get_column_height();
+    let list_top = window.get_left_list_top();
     for pressed in [true, false] {
         let position = slint::LogicalPosition::new(100.0, list_top + theme.get_row_height() / 2.0);
         let button = slint::platform::PointerEventButton::Left;
@@ -552,18 +541,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });
-    let top = theme.get_window_padding()
-        + 1.0
-        + 3.0
-        + theme.get_locations_height()
-        + if window.get_left_tabs().row_count() > 0 {
-            theme.get_control_height()
-        } else {
-            0.0
-        }
-        + theme.get_toolbar_height()
-        + theme.get_path_height()
-        + theme.get_column_height();
+    let top = window.get_left_list_top();
     for pressed in [true, false] {
         let position = slint::LogicalPosition::new(100.0, top + 1.5 * theme.get_row_height());
         let button = slint::platform::PointerEventButton::Left;

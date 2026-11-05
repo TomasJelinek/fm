@@ -13,6 +13,7 @@ mod scan_cache;
 mod search;
 mod selection;
 pub mod snapshot;
+mod streaming_selection;
 mod volumes;
 mod watch;
 
@@ -395,6 +396,7 @@ impl Engine {
                             let listing_path = path.clone();
                             let icons = desktop.icon_sender();
                             let listing_snapshots = snapshots.clone();
+                            let selection_stream = selection.streaming.clone();
                             let listing = tasks.spawn(async move {
                                 if !outbox.send(Event::ListingStarted { pane, navigation, path: listing_path.clone() }).await { return; }
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
@@ -407,7 +409,7 @@ impl Engine {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { filesystem, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes });
+                                    list_directory(ListingTask { filesystem, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream });
                                 }).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -469,6 +471,7 @@ impl Engine {
 }
 
 struct ListingTask {
+    selection_stream: streaming_selection::StreamingSelections,
     filesystem: Arc<dyn FileSystem>,
     outbox: Outbox,
     pane: PaneId,
@@ -484,6 +487,7 @@ struct ListingTask {
 
 fn list_directory(task: ListingTask) {
     let ListingTask {
+        selection_stream,
         filesystem,
         outbox,
         pane,
@@ -529,6 +533,7 @@ fn list_directory(task: ListingTask) {
         }
         batch.push(entry);
         if batch.len() == BATCH_SIZE {
+            selection_stream.append(pane, navigation, &path, &batch);
             return outbox.blocking_send(
                 Event::EntriesBatch {
                     pane,
@@ -555,6 +560,7 @@ fn list_directory(task: ListingTask) {
         );
         return;
     }
+    selection_stream.append(pane, navigation, &path, &batch);
     if !batch.is_empty()
         && !outbox.blocking_send(
             Event::EntriesBatch {

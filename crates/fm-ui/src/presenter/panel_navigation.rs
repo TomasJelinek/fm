@@ -15,6 +15,47 @@ pub(crate) struct HistoryChoice {
 }
 
 impl Presenter {
+    pub(crate) fn navigate_as_other_panel(
+        &mut self,
+        pane: PaneId,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let path = self.panes[pane.other().index()].display_path().to_owned();
+        self.navigate(pane, path, None, send)
+    }
+
+    pub(super) fn queue_clipboard_text(
+        &mut self,
+        text: String,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let request = self.desktop.request();
+        if send(Command::CopyText { request, text }) {
+            self.desktop.requests.insert(request);
+            true
+        } else {
+            self.desktop
+                .report("Clipboard queue busy", "Try copying again.".into());
+            false
+        }
+    }
+
+    pub(crate) fn copy_path_part(
+        &mut self,
+        pane: PaneId,
+        token: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Some(part) = self
+            .path_parts(pane)
+            .into_iter()
+            .find(|part| part.identity == token)
+        else {
+            return false;
+        };
+        self.queue_clipboard_text(part.prefix, send)
+    }
+
     pub(crate) fn path_parts(&self, pane: PaneId) -> Vec<PathPart> {
         let p = &self.panes[pane.index()];
         let ancestors: Vec<_> = p

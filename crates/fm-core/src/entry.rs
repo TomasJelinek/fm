@@ -49,10 +49,18 @@ pub struct Entry {
 pub struct DirectoryIndex {
     pub by_id: HashMap<EntryId, usize>,
     pub by_path: HashMap<PathBuf, EntryId>,
+    /// Includes directory links; prepared with the index on a backend worker.
+    pub directory_bits: Vec<u64>,
 }
 
 impl DirectoryIndex {
     pub fn from_entries(entries: &[Entry]) -> Self {
+        let mut directory_bits = vec![0; entries.len().div_ceil(64)];
+        for (row, entry) in entries.iter().enumerate() {
+            if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+                directory_bits[row / 64] |= 1 << (row % 64);
+            }
+        }
         Self {
             by_id: entries
                 .iter()
@@ -63,7 +71,18 @@ impl DirectoryIndex {
                 .iter()
                 .map(|entry| (entry.path.clone(), entry.id))
                 .collect(),
+            directory_bits,
         }
+    }
+    pub fn is_directory(&self, id: EntryId) -> bool {
+        self.by_id
+            .get(&id)
+            .and_then(|row| {
+                self.directory_bits
+                    .get(row / 64)
+                    .map(|bits| bits & (1 << (row % 64)) != 0)
+            })
+            .unwrap_or(false)
     }
 }
 

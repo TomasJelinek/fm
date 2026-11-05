@@ -2,7 +2,7 @@
 
 use crate::{Outbox, Snapshots};
 use fm_core::{
-    DirectoryIndex, Event, FsError, PaneId, SearchMatch, SearchRequest, SearchResult,
+    DirectoryIndex, EntryKind, Event, FsError, PaneId, SearchMatch, SearchRequest, SearchResult,
     SearchRevision,
 };
 use std::{io, sync::Arc};
@@ -197,6 +197,12 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
             || index.by_path.insert(entry.path.clone(), entry.id).is_some()
         {
             return ambiguous_projection(request);
+        }
+        if row.is_multiple_of(64) {
+            index.directory_bits.push(0);
+        }
+        if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            index.directory_bits[row / 64] |= 1 << (row % 64);
         }
         matches.push(SearchMatch {
             source_row,

@@ -20,6 +20,7 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | Ctrl+PageDown | Enter a known folder; never launch a regular file |
 | Ctrl+G | Focus the path editor |
 | Alt+F1 / Alt+F2 | Open left / right volume choices |
+| . in the drive dropdown | As Other Panel: open the other panel's current folder |
 | Shift+drive letter | Switch volume on Windows, using its remembered path |
 | Ctrl+F1 / Ctrl+L | Read-only cached drive information |
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
@@ -31,7 +32,9 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | Alt+Enter / Ctrl+Alt+Enter | Properties of selected items, or focused item |
 | Ctrl+T | New tab at the current folder |
 | Ctrl+W | Close active tab; keep the last tab |
-| Ctrl+Tab / Ctrl+Shift+Tab in files | Next / previous tab in that pane |
+| Ctrl+Tab in files or path editor | Focus the bottom command editor |
+| Ctrl+Shift+Tab in files | Previous tab in that pane |
+| Ctrl+U in files | Swap the complete visual panels, preserving their tabs and running work |
 | Ctrl+Shift+1…9 | Switch to that numbered tab in the focused pane; missing tabs do nothing |
 | Ctrl+Shift+0 | Assign current folder to bookmark slot 10; other slots use the Hot Paths manager |
 | Ctrl+1…9/0 or Shift+1…9/0 | Open the numbered bookmark in the focused pane |
@@ -54,19 +57,27 @@ never submits a command. Editor word deletion and ordinary text editing retain
 their standard behavior. Menus also support arrows, Enter and Escape; unclear
 controls have tooltips and accessible names.
 
-Mouse: left click focuses, Ctrl+left click toggles selection, unmodified left
-double-click activates. Clicking a column header switches sorting direction.
+Mouse: left click focuses, Ctrl+left click toggles selection, Shift+left click
+selects an inclusive range, and Ctrl+Shift+left click adds that range. An unmodified
+left double-click activates. Clicking a column header switches sorting direction.
 Insert and Space clamp at the last row; `..` is never selected or measured.
 Wheel scrolling animates in pixels and settles on a full row when idle; native
 touch/trackpad gestures retain their own inertia.
 
-The drive toolbar includes Hot Paths; all saved paths also appear in the drive
-dropdown. Back/Forward arrows have history dropdowns. Tabs sit below the drive
+The top action toolbar includes Hot Paths; saved paths also appear in the drive
+dropdown. Its `. As Other Panel` item also works by mouse and uses the current
+opposite folder after Ctrl+U swaps the panels. Back/Forward arrows have history
+dropdowns. Tabs sit below the drive
 toolbar. Hovering a path segment highlights its prefix; clicking opens that raw
-ancestor. The details strip below each panel copies a field's displayed value
+ancestor; right-click copies that prefix without navigating. Drag the central
+splitter to resize the panels, or double-click it to center. Tabs shrink uniformly
+and then expose scroll arrows at their minimum width. The details strip below each
+panel copies a field's displayed value
 when clicked (filename, exact bytes, date/time, attributes or Unix permissions).
 
-The command directory ends with `>`. Command history recalls a draft without
+The terminal icon opens a new interactive terminal without submitting the draft;
+its adjacent arrow selects the shell. The command directory ends with `>`.
+Command history recalls a draft without
 running it; only Enter/Run submits it. Options has Panel, Appearance and Command
 topics, including readable/exact-byte sizes, history persistence and Clear.
 History keeps the latest 100 distinct exact command strings across shells,
@@ -85,6 +96,9 @@ empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 
 The bottom F2 Rename, F3 View, F4 Edit, F5 Copy, F6 Move, F7 New folder and
 F8 Delete actions are reserved for later stages and are currently disabled.
+Viewer design: F3 routes by extension to an applicable installed viewer; Alt+F3
+forces the basic plain-text viewer, preserving Unicode and disabling highlighting
+and markup rendering. Both remain unavailable until the viewer plugin is implemented.
 Copy/move/delete queues, overwrite decisions and mandatory destination checksum
 verification remain in the design. Other unlisted Salamander/Total Commander
 shortcuts, such as Shift+F9 for a bookmark menu, are not implemented.

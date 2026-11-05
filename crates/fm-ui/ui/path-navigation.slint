@@ -20,6 +20,7 @@ export component PathNavigation inherits Rectangle {
     private property <int> revision;
     callback navigate(string);
     callback selected-part(string);
+    callback copy-part(string);
     callback cancelled();
     border-width: 1px; border-radius: 3px;
     border-color: root.has-focus ? Theme.active-frame : Theme.frame;
@@ -61,6 +62,7 @@ export component PathNavigation inherits Rectangle {
                 TouchArea {
                     private property <string> pressed-id;
                     private property <int> pressed-revision;
+                    private property <bool> right-pressed;
                     changed has-hover => {
                         if self.has-hover { root.hovered-index = index; }
                         else if root.hovered-index == index { root.hovered-index = -1; }
@@ -69,6 +71,16 @@ export component PathNavigation inherits Rectangle {
                         if event.kind == PointerEventKind.down {
                             self.pressed-id = part.identity;
                             self.pressed-revision = root.revision;
+                            self.right-pressed = event.button == PointerEventButton.right;
+                        } else if event.kind == PointerEventKind.up
+                            && event.button == PointerEventButton.right && self.right-pressed {
+                            if self.pressed-id == part.identity
+                                && self.pressed-revision == root.revision && self.has-hover {
+                                root.copy-part(self.pressed-id);
+                            }
+                            self.right-pressed = false;
+                        } else if event.kind == PointerEventKind.cancel {
+                            self.pressed-id = ""; self.right-pressed = false;
                         }
                     }
                     clicked => {
@@ -77,7 +89,7 @@ export component PathNavigation inherits Rectangle {
                         }
                     }
                 }
-                Tooltip { TipBody { text: "Open " + part.prefix; } }
+                Tooltip { TipBody { text: "Open " + part.prefix + "\nRight-click copies this path."; } }
             }
         }
     }

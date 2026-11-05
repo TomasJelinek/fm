@@ -16,8 +16,8 @@ navigation changes the folder; roots display their root instead. The full path
 is a plain-text tooltip. Captions are presentation, never navigation identities.
 Different folders with the same caption remain distinct through typed `TabId`s.
 
-Ctrl+T creates and activates a tab, Ctrl+W closes the active tab, Ctrl+Tab selects
-the next and Ctrl+Shift+Tab the previous tab in the focused pane. The final tab
+Ctrl+T creates and activates a tab, Ctrl+W closes the active tab; Ctrl+Shift+Tab
+selects the previous tab. Ctrl+Tab focuses the command editor. The final tab
 cannot be closed. Each pane supports 32 tabs. The strip also exposes accessible
 select, close and add controls. Tab state is session-only in this milestone;
 restoring tabs on restart, locked tabs, renaming and reordering can follow later.

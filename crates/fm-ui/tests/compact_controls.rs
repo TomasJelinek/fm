@@ -3,7 +3,12 @@
 mod ui;
 
 use fm_ui::{LocationRow, MainWindow, NavigationChoiceRow, Theme};
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{
+    accessibility::AccessibleStringProperty,
+    item_tree::ItemRc,
+    items::AccessibleRole,
+    window::{WindowInner, WindowKind},
+};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
@@ -45,20 +50,40 @@ fn click(window: &MainWindow, x: f32, y: f32) {
         .dispatch_event(WindowEvent::PointerReleased { position, button });
 }
 
-fn toolbar_y(window: &MainWindow) -> f32 {
-    let theme = window.global::<Theme>();
-    theme.get_window_padding() + 1.0 + 3.0 + theme.get_toolbar_height() / 2.0
-}
-
-fn location_strip_x(window: &MainWindow) -> f32 {
-    let theme = window.global::<Theme>();
-    theme.get_window_padding()
-        + 1.0
-        + if theme.get_density() == 1 {
-            6.0 + 88.0 + 6.0
-        } else {
-            4.0 + 78.0 + 4.0
+fn popup_position(window: &MainWindow, label: &str) -> slint::LogicalPosition {
+    fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
+        if item.accessible_role() == AccessibleRole::Button
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value.as_str() == label)
+        {
+            return Some(item);
         }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = find(item, label) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    let popup = popups
+        .iter()
+        .rev()
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .expect("a drive picker is open");
+    let item = find(ItemRc::new_root(popup.component.clone()), label)
+        .unwrap_or_else(|| panic!("no drive row: {label}"));
+    drop(popups);
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    slint::LogicalPosition::new(
+        origin.x + rect.size.width / 2.0,
+        origin.y + rect.size.height / 2.0,
+    )
 }
 
 #[test]
@@ -123,11 +148,10 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         location_selected.set(index);
     });
     draw(&mut pixels);
-    let theme = window.global::<Theme>();
-    click(
+    ui::click_root(
         &window,
-        location_strip_x(&window) + theme.get_tool_width() + 2.0 + 23.0,
-        toolbar_y(&window),
+        "D:\\ — Work 文档 · 420 GiB free",
+        AccessibleRole::Button,
     );
     assert_eq!(
         location_picked.get(),
@@ -137,12 +161,11 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
     for density in [0, 1] {
         window.invoke_apply_preferences(0, density);
         draw(&mut pixels);
-        let theme = window.global::<Theme>();
         if density == 1 {
-            click(
+            ui::click_root(
                 &window,
-                location_strip_x(&window) + theme.get_tool_width() / 2.0,
-                toolbar_y(&window),
+                "Home folder with a long descriptive caption\n/home/example",
+                AccessibleRole::Button,
             );
             assert_eq!(
                 location_picked.get(),
@@ -151,29 +174,19 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
             );
             draw(&mut pixels);
         }
-        let x = theme.get_window_padding() + if density == 1 { 30.0 } else { 26.0 };
-        let y = 820.0
-            - theme.get_window_padding()
-            - theme.get_bottom_height()
-            - theme.get_gap()
-            - theme.get_command_height() / 2.0;
-        click(&window, x, y);
+        ui::click_root(&window, "Command shell", AccessibleRole::Combobox);
         draw(&mut pixels);
         key(&window, Key::DownArrow);
         assert_eq!(picked.get(), -1, "browsing the popup must not change shell");
         key(&window, Key::Return);
-        assert_eq!(
-            picked.get(),
-            1,
-            "the far-left icon must open the shell picker"
-        );
+        assert_eq!(picked.get(), 1, "the side arrow must open the shell picker");
         assert_eq!(window.get_terminal_index(), 1);
         assert!(window.get_command_focused());
         key(&window, "echo 文档");
         assert_eq!(window.get_command_text().as_str(), "echo 文档");
         window.invoke_set_command("".into(), 0);
         draw(&mut pixels);
-        click(&window, x, y);
+        ui::click_root(&window, "Command shell", AccessibleRole::Combobox);
         draw(&mut pixels);
         key(&window, Key::Home);
         key(&window, Key::Escape);
@@ -185,13 +198,13 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         // A host rejection, such as a cross-shell draft, must remain the
         // selection the picker shows when opened again.
         allow_pick.set(false);
-        click(&window, x, y);
+        ui::click_root(&window, "Command shell", AccessibleRole::Combobox);
         draw(&mut pixels);
         key(&window, Key::Home);
         key(&window, Key::Return);
         assert_eq!(picked.get(), 0);
         assert_eq!(window.get_terminal_index(), 1);
-        click(&window, x, y);
+        ui::click_root(&window, "Command shell", AccessibleRole::Combobox);
         draw(&mut pixels);
         key(&window, Key::Return);
         assert_eq!(picked.get(), 1, "reopening must follow the accepted shell");
@@ -217,11 +230,7 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         volume_selected.set(index);
     });
     draw(&mut pixels);
-    let theme = window.global::<Theme>();
-    let toolbar_top = theme.get_window_padding() + 1.0 + 3.0 + theme.get_locations_height();
-    let drive_x = theme.get_window_padding() + 1.0 + 4.0 + 20.0;
-    let drive_y = toolbar_top + theme.get_toolbar_height() / 2.0;
-    click(&window, drive_x, drive_y);
+    ui::click_root(&window, "Drive or volume", AccessibleRole::Combobox);
     draw(&mut pixels);
     key(&window, Key::DownArrow);
     assert_eq!(volume_picked.get(), -1);
@@ -233,14 +242,13 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
     );
     volume_picked.set(-1);
     draw(&mut pixels);
-    click(&window, drive_x, drive_y);
+    ui::click_root(&window, "Drive or volume", AccessibleRole::Combobox);
     draw(&mut pixels);
-    let popup_row_y = toolbar_top
-        + (theme.get_toolbar_height() + theme.get_control_height()) / 2.0
-        + 4.0
-        + theme.get_control_height() / 2.0;
-    let position = slint::LogicalPosition::new(drive_x, popup_row_y);
+    let position = popup_position(&window, "C:\\ — System · 121 GiB free");
     let button = PointerEventButton::Left;
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
     window
         .window()
         .dispatch_event(WindowEvent::PointerPressed { position, button });
@@ -260,8 +268,12 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
     );
     // Display strings can remain equal when distinct raw mount identities are
     // reordered. The host revision must also invalidate the pressed row.
-    click(&window, drive_x, drive_y);
+    ui::click_root(&window, "Drive or volume", AccessibleRole::Combobox);
     draw(&mut pixels);
+    let position = popup_position(&window, "D:\\ — Replacement drive");
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
     window
         .window()
         .dispatch_event(WindowEvent::PointerPressed { position, button });
@@ -276,10 +288,20 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         -1,
         "an identity revision must cancel a press even when all display labels are equal"
     );
+    ui::click_root(&window, "Drive or volume", AccessibleRole::Combobox);
     draw(&mut pixels);
-    let bottom_y = 820.0 - theme.get_window_padding() - theme.get_bottom_height() / 2.0;
-    let f2_x = theme.get_window_padding() + (1340.0 - 2.0 * theme.get_window_padding()) * 0.15;
-    let position = slint::LogicalPosition::new(f2_x, bottom_y);
+    ui::click_popup(&window, "D:\\ — Replacement drive", AccessibleRole::Button);
+    assert_eq!(
+        volume_picked.get(),
+        0,
+        "a fresh drive-row click still commits"
+    );
+    draw(&mut pixels);
+    let position = ui::root_position(
+        &window,
+        "F2 Rename — unavailable in read-only stage",
+        AccessibleRole::Button,
+    );
     window
         .window()
         .dispatch_event(WindowEvent::PointerMoved { position });
@@ -298,7 +320,7 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         "a disabled F2 control must show a real hover tooltip"
     );
     let with_tip = pixels.clone();
-    click(&window, f2_x, bottom_y);
+    click(&window, position.x, position.y);
     assert_eq!(
         picked.get(),
         -1,

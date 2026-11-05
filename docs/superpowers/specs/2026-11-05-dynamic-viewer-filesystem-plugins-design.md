@@ -455,6 +455,15 @@ Soukromá cache má náhodné vlastní názvy, soukromá oprávnění, žádné 
 
 ## 8. Viewer API a první textový plugin
 
+F3 vybírá dostupný viewer podle nastavení pro příponu a podporovaných capabilities;
+omezený probe může ověřit vhodnost. Alt+F3 toto směrování obchází a žádá roli
+`basic-text` s `mode=Text`: bez zvýraznění zdrojového kódu a bez renderování Markdownu.
+Roli oznamuje `Describe`; host si může pamatovat výslovně zvoleného poskytovatele
+této role. Prostý „ASCII“ režim stále podporuje Unicode, volbu kódování a viditelné
+náhrady vadných bajtů. Neexistuje-li basic-text plugin, akce hlásí nedostupnost;
+nespustí jiný viewer ani externí program. F3 i Alt+F3 zůstávají do implementace
+pluginu návrhem. Reference Salamander: `src/salamand.rc:70–71`.
+
 `ViewerProvider` podporuje `Describe`, `Probe`, `Open`, `RequestViewport`,
 `SetMode`, `SetEncoding`, `SetLanguage`, `Find`, `CancelFind`, `ReadSelection`
 a `Close`. Odpovědi jsou `Opened`, `TextPage`, `SyntaxSpans`, `IndexProgress`,

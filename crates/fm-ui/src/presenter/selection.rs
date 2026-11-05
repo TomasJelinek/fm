@@ -34,6 +34,28 @@ impl Presenter {
             return false;
         };
         let rebase = matches!(&action, SelectionAction::Rebase);
+        if !rebase && p.selection_preview.len() == selection_preview::PREVIEW_CAPACITY {
+            p.error = "Selection queue is busy. Try again.".into();
+            return false;
+        }
+        let preview = (!rebase)
+            .then(|| selection_preview::PendingSelection::new(p, revision, action.clone()));
+        let toggle_directory = if let SelectionAction::Toggle(path) = &action {
+            p.display_index()
+                .by_path
+                .get(path)
+                .and_then(|id| p.entry_by_id(*id))
+                .or_else(|| {
+                    p.cursor
+                        .and_then(|id| p.entry_by_id(id))
+                        .filter(|entry| entry.path == *path)
+                })
+                .is_some_and(|entry| {
+                    matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                })
+        } else {
+            false
+        };
         let pending_bulk = match &action {
             SelectionAction::Bulk(SelectionOperation::All | SelectionOperation::Invert) => {
                 Some(true)
@@ -51,6 +73,7 @@ impl Presenter {
             seed: p.selected.clone(),
             reset: p.selection_reset,
             action,
+            toggle_directory,
             preserve: p
                 .pending
                 .as_ref()
@@ -62,6 +85,9 @@ impl Presenter {
             return false;
         }
         p.selection_revision = revision;
+        if let Some(preview) = preview {
+            p.selection_preview.push(preview);
+        }
         p.selection_reset = false;
         p.selection_restore = None;
         if p.showing_stream()
@@ -96,6 +122,11 @@ impl Presenter {
     ) {
         self.cancel_selection_properties(pane);
         let p = &mut self.panes[pane.index()];
+        p.selection_preview.clear();
+        if path != p.path {
+            p.selection_anchor = None;
+            p.selection_anchor_id = None;
+        }
         p.selection_context = if path == p.path && p.successful_generation.is_some() {
             p.selection_committed_context
         } else {
@@ -129,6 +160,8 @@ impl Presenter {
                     self.retired
                         .push(Box::new(mem::replace(&mut p.selected, selection)));
                     p.selection_applied = revision;
+                    p.selection_preview
+                        .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
                     p.selection_deferred = deferred;
                     if !deferred && !p.showing_stream() {
@@ -146,10 +179,15 @@ impl Presenter {
                 error,
             } => {
                 let p = &mut self.panes[pane.index()];
-                if navigation.0 == p.generation && revision <= p.selection_revision {
+                if navigation.0 == p.generation
+                    && revision <= p.selection_revision
+                    && revision > p.selection_applied
+                    && revision > p.selection_resolved
+                {
+                    p.selection_preview
+                        .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
                     p.error = error.to_string();
-                    p.selection_deferred = false;
                     p.selection_rebase_pending = true;
                 }
                 None

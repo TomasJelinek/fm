@@ -19,6 +19,12 @@ pub struct SelectionRevision(pub u64);
 pub enum SelectionAction {
     Bulk(SelectionOperation),
     Toggle(PathBuf),
+    /// Inclusive positions resolved from raw paths in the captured immutable view.
+    Range {
+        anchor: PathBuf,
+        target: PathBuf,
+        additive: bool,
+    },
     Rebase,
 }
 
@@ -43,6 +49,8 @@ pub struct SelectionRequest {
     pub preserve: Option<SelectionOrigin>,
     pub restore: Option<SelectionOrigin>,
     pub action: SelectionAction,
+    /// Native kind for a single toggle received before a complete index exists.
+    pub toggle_directory: bool,
 }
 
 /// Bits refer to positions in `basis`, never to numeric EntryId values.
@@ -52,6 +60,7 @@ pub struct SelectionSnapshot {
     basis: Arc<DirectoryIndex>,
     bits: Arc<[u64]>,
     selected_count: usize,
+    selected_folders: usize,
 }
 
 impl SelectionSnapshot {
@@ -60,6 +69,9 @@ impl SelectionSnapshot {
         let count = basis.by_id.len();
         if basis.by_path.len() != count {
             return Err("selection directory index has mismatched identities");
+        }
+        if basis.directory_bits.len() != count.div_ceil(64) {
+            return Err("selection directory kinds do not match index length");
         }
         let mut seen = vec![false; count];
         for position in basis.by_id.values() {
@@ -96,10 +108,16 @@ impl SelectionSnapshot {
             return Err("selection contains bits beyond the directory index");
         }
         let selected_count = bits.iter().map(|word| word.count_ones() as usize).sum();
+        let selected_folders = bits
+            .iter()
+            .zip(&basis.directory_bits)
+            .map(|(selected, folders)| (selected & folders).count_ones() as usize)
+            .sum();
         Ok(Self {
             basis,
             bits: bits.into(),
             selected_count,
+            selected_folders,
         })
     }
     pub fn contains_path(&self, path: &Path) -> bool {
@@ -119,6 +137,12 @@ impl SelectionSnapshot {
     }
     pub fn is_empty(&self) -> bool {
         self.selected_count == 0
+    }
+    pub fn file_count(&self) -> usize {
+        self.selected_count - self.selected_folders
+    }
+    pub fn folder_count(&self) -> usize {
+        self.selected_folders
     }
     pub fn basis(&self) -> &Arc<DirectoryIndex> {
         &self.basis
@@ -198,5 +222,28 @@ mod tests {
             }
             assert!(SelectionSnapshot::from_bits(Arc::new(index), vec![3]).is_err());
         }
+    }
+
+    #[test]
+    fn selected_counts_distinguish_folders_links_and_other_entries() {
+        let entries: Vec<_> = [
+            EntryKind::Directory,
+            EntryKind::DirectoryLink,
+            EntryKind::File,
+            EntryKind::Symlink,
+            EntryKind::Other,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(row, kind)| Entry::new(EntryId(row as u64), format!("row-{row}").into(), kind))
+        .collect();
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        let all = SelectionSnapshot::from_bits(index, vec![0b11111]).unwrap();
+        assert_eq!((all.file_count(), all.folder_count()), (3, 2));
+        let links = all.with_bits(vec![0b01010]).unwrap();
+        assert_eq!((links.file_count(), links.folder_count()), (1, 1));
+        let mut incomplete = DirectoryIndex::from_entries(&entries);
+        incomplete.directory_bits.clear();
+        assert!(SelectionSnapshot::from_bits(Arc::new(incomplete), vec![1]).is_err());
     }
 }

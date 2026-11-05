@@ -1,5 +1,8 @@
 //! Product rows retain colored Unicode prefixes, compact compression marks and normal input.
+#[path = "support/ui.rs"]
+mod ui;
 use fm_ui::{FileRow, MainWindow, Theme};
+use i_slint_core::items::AccessibleRole;
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel,
     platform::{
@@ -12,6 +15,12 @@ use std::{cell::RefCell, rc::Rc};
 const WIDTH: usize = 1340;
 const HEIGHT: usize = 820;
 const NATIVE: [u8; 3] = [68, 113, 192];
+
+fn name_end(window: &MainWindow) -> usize {
+    let size = ui::root_item(window, "Sort by Size", AccessibleRole::Button);
+    let origin = size.map_to_native_window(size.geometry().origin);
+    (origin.x - 8.0).max(0.0) as usize
+}
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {
@@ -99,7 +108,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
     window.set_left_path("/prefix-render 文档".into());
     let clicked = Rc::new(RefCell::new(Vec::new()));
     let captured = clicked.clone();
-    window.on_row_click(move |pane, row, _| captured.borrow_mut().push((pane, row)));
+    window.on_row_click(move |pane, row, _, _| captured.borrow_mut().push((pane, row)));
     window.show().unwrap();
     native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
     window.window().dispatch_event(WindowEvent::Resized {
@@ -114,11 +123,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
             native.draw_if_needed(|renderer| {
                 renderer.render(&mut pixels, WIDTH);
             });
-            let top = theme.get_window_padding()
-                + 4.0
-                + theme.get_toolbar_height()
-                + theme.get_path_height()
-                + theme.get_column_height();
+            let top = window.get_left_list_top();
             let start = (theme.get_window_padding() + 1.0 + 12.0) as usize;
             let text_start = (start as f32 + theme.get_icon_size() + 6.0) as usize;
             for row in 0..4 {
@@ -136,7 +141,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                     theme.get_text()
                 };
                 let highlighted = (y1..y2)
-                    .flat_map(|y| (text_start..(WIDTH / 2 - 310)).map(move |x| y * WIDTH + x))
+                    .flat_map(|y| (text_start..name_end(&window)).map(move |x| y * WIDTH + x))
                     .filter(|index| {
                         prefix_ink(pixels[*index], theme.get_search_match(), normal, background)
                     })
@@ -206,14 +211,10 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, WIDTH);
     });
-    let top = theme.get_window_padding()
-        + 4.0
-        + theme.get_toolbar_height()
-        + theme.get_path_height()
-        + theme.get_column_height();
+    let top = window.get_left_list_top();
     let start = (theme.get_window_padding() + 1.0 + 12.0 + theme.get_icon_size() + 6.0) as usize;
     let ordinary_prefix = (top as usize..(top + theme.get_row_height()) as usize)
-        .flat_map(|y| (start..(WIDTH / 2 - 310)).map(move |x| y * WIDTH + x))
+        .flat_map(|y| (start..name_end(&window)).map(move |x| y * WIDTH + x))
         .filter(|index| {
             prefix_ink(
                 pixels[*index],

@@ -170,12 +170,6 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     assert_eq!(sizes.get(), 2, "selected-size shortcuts are reserved");
     assert_eq!(names.get(), 1);
     chord(&window, &[Key::Control], Key::Tab);
-    assert_eq!(
-        window.get_focused_pane(),
-        1,
-        "Ctrl+Tab now cycles file tabs"
-    );
-    window.invoke_focus_command();
     assert!(window.get_command_focused());
     chord(&window, &[Key::Control], Key::Space);
     assert_eq!(
@@ -199,9 +193,11 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     assert!(!window.get_command_focused());
     chord(&window, &[Key::Control], Key::Tab);
     assert!(
-        !window.get_command_focused(),
-        "Ctrl+Tab must not steal path-editor focus"
+        window.get_command_focused(),
+        "Ctrl+Tab focuses the command line from the path editor too"
     );
+    chord(&window, &[Key::Control], Key::Tab);
+    chord(&window, &[Key::Control], "g");
     let navigated = Rc::new(RefCell::new(vec![]));
     let captured = navigated.clone();
     window.on_navigate(move |pane, path| captured.borrow_mut().push((pane, path)));

@@ -45,24 +45,18 @@ impl Harness {
     }
     fn position(&self, pane: PaneId, row: usize) -> slint::LogicalPosition {
         let theme = self.window.global::<Theme>();
-        let has_tabs = match pane {
-            PaneId::Left => self.window.get_left_tabs().row_count() > 0,
-            PaneId::Right => self.window.get_right_tabs().row_count() > 0,
+        let (left, top) = match pane {
+            PaneId::Left => (
+                self.window.get_left_list_left(),
+                self.window.get_left_list_top(),
+            ),
+            PaneId::Right => (
+                self.window.get_right_list_left(),
+                self.window.get_right_list_top(),
+            ),
         };
-        let top = theme.get_window_padding()
-            + 1.0
-            + 3.0
-            + theme.get_locations_height()
-            + if has_tabs {
-                theme.get_control_height()
-            } else {
-                0.0
-            }
-            + theme.get_toolbar_height()
-            + theme.get_path_height()
-            + theme.get_column_height();
         slint::LogicalPosition::new(
-            if pane == PaneId::Left { 100.0 } else { 800.0 },
+            left + 100.0,
             top + theme.get_row_height() * (row as f32 + 0.5),
         )
     }
@@ -349,6 +343,16 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
         matches!(&h.commands.borrow()[0], Command::OpenEntry { pane: PaneId::Right, path, .. }
         if path == &file)
     );
+    h.clear();
+
+    h.advance(800);
+    h.click(PaneId::Right, 2, PointerEventButton::Left);
+    h.modifier(Key::Return, true);
+    h.modifier(Key::Return, false);
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Right, path, .. } if path == &folder)));
+    h.window.invoke_navigate(1, base.to_str().unwrap().into());
+    h.complete(PaneId::Right, entries());
     h.clear();
 
     // Touch density uses the same guarded pointer path with its larger rows.

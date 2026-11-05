@@ -426,3 +426,49 @@ fn final_snapshot_rows_show_identity_selection_after_reordering() {
     assert!(row.cursor && row.selected);
     assert_eq!(row.kind.as_str(), "MD");
 }
+
+#[test]
+fn accepted_toggle_has_first_update_feedback_before_backend_acknowledgement() {
+    let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    let entries: Arc<[Entry]> = vec![Entry::new(
+        EntryId(1),
+        root.join("delayed.txt"),
+        EntryKind::File,
+    )]
+    .into();
+    {
+        let mut p = presenter.borrow_mut();
+        p.navigate(PaneId::Left, root, None, &|_| true);
+        p.apply(Event::ListingFinished {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        });
+        p.select_row(PaneId::Left, 0, true, &|_| true);
+        assert!(
+            p.panes[0].selected.is_empty(),
+            "backend snapshot remains authoritative"
+        );
+    }
+    let rows = Rows::new(presenter.clone(), PaneId::Left);
+    assert!(
+        rows.row_data(0).unwrap().selected,
+        "accepted gesture needs immediate visible feedback"
+    );
+    presenter
+        .borrow_mut()
+        .select_row(PaneId::Left, 0, true, &|_| true);
+    assert!(
+        !rows.row_data(0).unwrap().selected,
+        "second pending toggle composes with first"
+    );
+    presenter
+        .borrow_mut()
+        .select_row(PaneId::Left, 0, true, &|_| false);
+    assert!(
+        !rows.row_data(0).unwrap().selected,
+        "refused gesture cannot alter feedback"
+    );
+}

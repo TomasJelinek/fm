@@ -82,17 +82,21 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
             command.arg("-e");
         }
     }
-    // The fixed wrapper is not composed from filenames or user source. The submitted
-    // command is one positional argument, explicitly evaluated only after submission.
     if request.mode == TerminalMode::Elevated {
         // Password interaction belongs entirely to sudo inside the external terminal.
         // No -S flag, password pipe, output capture, or implicit elevation is used.
         command.args(["/usr/bin/sudo", "--"]);
     }
-    command
-        .args(["/bin/sh", "-c", COMMAND_WRAPPER, "fm-terminal"])
-        .arg(&request.command)
-        .current_dir(&request.working_directory);
+    if request.command.is_empty() {
+        command.args(["/bin/sh", "-i"]);
+    } else {
+        // The fixed wrapper is not composed from filenames or user source. The submitted
+        // command is one positional argument, explicitly evaluated only after submission.
+        command
+            .args(["/bin/sh", "-c", COMMAND_WRAPPER, "fm-terminal"])
+            .arg(&request.command);
+    }
+    command.current_dir(&request.working_directory);
     Ok(command)
 }
 
@@ -259,6 +263,65 @@ fn user_directory(input: &str, key: &str, home: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn empty_terminal_launch_uses_interactive_shell_without_command_evaluation() {
+        let directory = PathBuf::from("/home/文档/👩🏽‍💻 ; $()");
+        for (executable, prefix) in [
+            ("/usr/bin/xterm", vec!["-e"]),
+            ("/usr/bin/konsole", vec!["--nofork", "-e"]),
+            ("/usr/bin/gnome-terminal", vec!["--wait", "--"]),
+            (
+                "/usr/bin/xfce4-terminal",
+                vec!["--disable-server", "--execute"],
+            ),
+            ("/usr/bin/x-terminal-emulator", vec!["-e"]),
+        ] {
+            for mode in [TerminalMode::Standard, TerminalMode::Elevated] {
+                let request = TerminalRequest {
+                    shell: ShellFlavor::Posix,
+                    mode,
+                    command: String::new(),
+                    working_directory: directory.clone(),
+                };
+                let command = terminal_command(Path::new(executable), &request).unwrap();
+                let mut expected = prefix.clone();
+                if mode == TerminalMode::Elevated {
+                    expected.extend(["/usr/bin/sudo", "--"]);
+                }
+                expected.extend(["/bin/sh", "-i"]);
+                let arguments: Vec<_> = command.get_args().collect();
+                assert_eq!(
+                    arguments,
+                    expected.iter().map(OsStr::new).collect::<Vec<_>>()
+                );
+                assert_eq!(command.get_program(), executable);
+                assert_eq!(command.get_current_dir(), Some(directory.as_path()));
+            }
+        }
+    }
+
+    #[test]
+    fn empty_terminal_launch_keeps_native_path_and_nul_validation() {
+        for (command, directory) in [
+            ("", "relative"),
+            ("", "/bad\0path"),
+            ("echo\0bad", "/valid"),
+        ] {
+            let request = TerminalRequest {
+                shell: ShellFlavor::Posix,
+                mode: TerminalMode::Standard,
+                command: command.into(),
+                working_directory: directory.into(),
+            };
+            assert_eq!(
+                terminal_command(Path::new("/usr/bin/xterm"), &request)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
 
     fn assert_fifo_read_does_not_wait_for_a_writer(use_symlink: bool) {
         use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};

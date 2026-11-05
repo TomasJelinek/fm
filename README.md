@@ -61,6 +61,11 @@ cargo build -p fm-app --locked
 cargo build -p fm-app --locked --release
 ```
 
+The default build is debug. The frame rendering libraries use optimization level 2
+even in debug, and generated/UI code uses level 1. Backend/application code retains
+normal debug behavior. Release still optimizes the full application. The first build after
+changing these profiles recompiles the affected dependencies under `_build`.
+
 Run either executable directly, or let Cargo build and run it:
 
 ```powershell
@@ -165,18 +170,26 @@ editor scope and shortcuts reserved for later stages.
 
 - Tab: switch active file pane.
 - Ctrl+T / Ctrl+W: add / close a folder tab in the focused pane.
-- Ctrl+Tab / Ctrl+Shift+Tab: next / previous folder tab. Each caption follows
-  the current folder name; full paths are in tooltips. Tabs are session-only.
+- Ctrl+Tab: focus the command editor; press again to return to the active pane.
+  Ctrl+Shift+Tab selects the previous folder tab. Captions follow the folder name;
+  full paths are in tooltips. Tabs are session-only and shrink uniformly before
+  revealing scroll arrows at their minimum width.
+- Ctrl+U: swap the complete panels while keeping their operations and active content.
+  Drag the divider for unequal widths; double-click it to center the panels.
 - Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.
 - Hot Paths dropdown: open or manage saved paths and numbered assignments;
   saved paths also appear in the full drive dropdown. Ctrl+number or Shift+number
   opens a numbered path (Alt targets the other pane); Ctrl+Shift+0 assigns slot 10.
-- Left click: focus the row and its pane; Ctrl+left click toggles selection.
+- Left click: focus the row and its pane; Ctrl+click toggles selection, Shift+click
+  selects an inclusive range, Ctrl+Shift+click adds that range. Accepted gestures
+  appear immediately while backend confirmations arrive. Panel status shows
+  selected file/folder counts; attributes use readable flags or Unix chmod notation.
 - Enter / unmodified left double click: enter a directory or open a file in its
   default system application. Directory links stay inside the file manager.
 - Backspace / toolbar Up: parent directory.
 - Alt+Left / Alt+Right: back / forward history; adjacent dropdowns choose a
   particular history entry. Click a highlighted path prefix to visit its ancestor.
+  Right-click the prefix to copy it to the clipboard without navigating.
 - Arrow keys, Page Up/Down, Home/End: move the cursor.
 - Space / Insert: toggle selection and advance, clamped at the last row. Space
   also schedules the focused directory's size without following links.
@@ -194,8 +207,9 @@ editor scope and shortcuts reserved for later stages.
 - The full command directory ends with `>`. Its history dropdown restores the
   selected draft without running it. The latest 100 unique exact strings are
   persisted (up to 1MiB aggregate text); recalling never enables elevated mode.
-- The picker left of the editor chooses PowerShell/cmd on Windows or
-  Terminal/Terminal(sudo) on Linux. A nonempty draft stays bound to its grammar;
+- The terminal icon opens a new interactive terminal in the active folder and
+  preserves the command draft. Its adjacent arrow chooses PowerShell/cmd on Windows
+  or Terminal/Terminal(sudo) on Linux. A nonempty draft stays bound to its grammar;
   clear it before switching PowerShell/cmd. Sudo selection is session-only.
 - The compact terminal icon and navigation controls explain themselves through
   tooltips. Drive tooltips show free space and Windows volume names; expanded
@@ -221,6 +235,8 @@ editor scope and shortcuts reserved for later stages.
   attributes and Unix permissions where available. Click a field to copy it.
 
 - Alt+Enter: properties of selected items or the focused file/folder.
+- `.` in the drive dropdown, or click **. As Other Panel**: open the opposite
+  panel's current folder. Enter in files opens the focused folder or file.
 - Shift+drive letter: switch the focused file pane on Windows.
 - F1–F10: commander bottom bar; unavailable file-writing/view/edit actions are
   disabled until their implementation stage.
@@ -239,6 +255,9 @@ defines current controls. A separate [Network filesystem plugin](docs/superpower
 will discover available devices/shares; discovery is designed, not implemented yet.
 The [panel and scrolling verification](docs/verification/panel-navigation-and-smooth-scrolling.md)
 records regression coverage, native checks and the clean build layout.
+The [interaction and layout verification](docs/verification/panel-interaction-and-layout.md)
+records Ctrl/Shift selection, splitter/tab/terminal controls, and measured debug
+selection/resize performance, including remaining native rendering limits.
 
 A small badge on a file/folder icon identifies compression reported by its
 filesystem. File sizes remain logical sizes. An archive extension alone does not

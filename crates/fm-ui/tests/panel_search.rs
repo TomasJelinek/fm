@@ -120,12 +120,7 @@ fn composition(window: &MainWindow, kind: KeyEventType, text: &str, preedit: &st
 
 fn row_pointer(window: &MainWindow, row: usize, down: bool) {
     let theme = window.global::<Theme>();
-    let top = theme.get_window_padding()
-        + 4.0
-        + theme.get_control_height()
-        + theme.get_toolbar_height()
-        + theme.get_path_height()
-        + theme.get_column_height();
+    let top = window.get_left_list_top();
     let position =
         slint::LogicalPosition::new(100.0, top + (row as f32 + 0.5) * theme.get_row_height());
     window

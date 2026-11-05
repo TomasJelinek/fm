@@ -34,12 +34,15 @@ export component CompactPicker inherits Rectangle {
     in property <[image]> icons;
     in property <int> model-revision;
     in property <int> current-index: -1;
+    in property <string> shortcut-key;
+    in property <int> shortcut-index: -1;
     in property <string> label;
     in property <string> hint;
     in property <string> accessible-name;
     in property <image> icon;
     in property <image> native-icon;
     in property <bool> icon-only;
+    in property <bool> arrow-trigger-only;
     in property <bool> show-row-icons: true;
     in property <bool> popup-align-right;
     in property <bool> enabled: true;
@@ -47,9 +50,11 @@ export component CompactPicker inherits Rectangle {
     in property <bool> popup-above;
     in property <length> minimum-control-width: 40px;
     in property <length> popup-width: 360px;
+    out property <length> compact-width: caption-metrics.preferred-width + 29px
+        + (root.has-leading-icon ? Theme.picker-location-icon-size + 4px : 0px);
     private property <int> pending-index: -1;
     private property <bool> expanded;
-    private property <bool> has-leading-icon: root.show-row-icons && !root.icon-only
+    private property <bool> has-leading-icon: root.show-row-icons && !root.icon-only && !root.arrow-trigger-only
         && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length);
     private property <bool> arrow-only: !root.icon-only && root.label == "" && !root.has-leading-icon;
     private property <int> item-count: root.choices.length > 0 ? root.choices.length : root.model.length;
@@ -59,6 +64,7 @@ export component CompactPicker inherits Rectangle {
     callback selected-key(string);
     callback dismissed();
     height: Theme.control-height;
+    caption-metrics := Text { visible: false; text: root.label; font-size: Theme.font-size; }
     min-width: root.minimum-control-width;
     border-width: 1px;
     border-radius: 4px;
@@ -174,15 +180,22 @@ export component CompactPicker inherits Rectangle {
     }
     Tooltip { TipBody { text: root.hint; } }
     popup := PopupWindow {
-        x: root.popup-align-right ? root.width - self.width : 0px;
+        x: clamp(root.absolute-position.x + (root.popup-align-right ? root.width - self.width : 0px),
+            8px, max(8px, TooltipPlacement.surface-width - self.width - 8px)) - root.absolute-position.x;
         y: root.popup-above ? -self.height : root.height;
-        width: max(root.popup-width, root.width);
+        width: min(max(root.popup-width, root.width), max(1px, TooltipPlacement.surface-width - 16px));
         height: min(360px, root.item-count * Theme.control-height + 10px);
         close-policy: close-on-click-outside;
         forward-focus: popup-focus;
         popup-focus := FocusScope {
             focus-changed-event => { root.expanded = self.has-focus; }
             key-pressed(event) => {
+                if root.shortcut-key != "" && event.text == root.shortcut-key
+                    && !event.modifiers.control && !event.modifiers.alt
+                    && !event.modifiers.shift && !event.modifiers.meta {
+                    root.commit(root.shortcut-index);
+                    return accept;
+                }
                 if event.text == Key.DownArrow {
                     root.pending-index = min(root.item-count - 1, root.pending-index + 1);
                     return accept;
