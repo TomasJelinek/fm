@@ -5,8 +5,9 @@ no application crates. Concrete plugins belong in independent workspaces under
 `plugins/`, each with its own tests/lock/build. A plugin may depend on released
 `midnight-plugin-api` and `midnight-plugin-sdk`, never on application internals,
 another plugin, or a source-tree patch. The SDK's ownership/runtime adapters are
-implemented and unit tested; the loader, independent DLL/SO conformance fixture
-and concrete plugins remain in progress. This is not a compatibility promise yet.
+implemented and tested, including an independently exported DLL/SO conformance
+fixture on Windows and Linux. The application loader and concrete viewers remain
+in progress. This is not a compatibility promise yet.
 
 From the repository root with Rust available:
 
@@ -90,6 +91,33 @@ schemas preserve explicit revisions, optional lengths, EOF and errors. The
 leases, host-scheduled continuations, output backpressure and quiescent shutdown.
 The content broker and actual viewer plugins remain pending.
 
-The API/SDK packages will be staged as versioned `.crate` artifacts with an actual
-local dependency-source workflow. Exported-plugin CI must prove it can build/test
-without the application checkout. No package has been published to a registry.
+## Offline release bundle
+
+Run `api/scripts/package.ps1` or `bash api/scripts/package.sh` after fetching the
+locked API workspace dependencies. The Rust maintainer tool creates a fresh
+`_build/plugin-sdk-<timestamp>` bundle containing versioned `.crate` archives,
+an offline registry index, third-party dependency sources, the public C header
+and `artifacts.json` with SHA-256 checksums and original Cargo/VCS provenance.
+
+The SDK's local maintenance dependency uses a path to the public API; Cargo's
+release manifest removes that path. Consumers use only a version and the named
+`midnight` registry. Pass the bundle's `.cargo/config.toml` using `--config`; its
+relative paths allow relocating the same bundle between Windows and Linux. The
+`.invalid` registry URL is an offline source identity, never a remote service.
+Crates.io dependencies use a separate, unchanged vendor directory.
+
+The packager canonicalizes only our API/SDK archive headers/order and moves Cargo's
+repository-wide VCS metadata to `artifacts.json`. Source and binary member bytes,
+dependency versions and third-party archives stay unchanged. Therefore unrelated
+commits do not invalidate a plugin's locked SDK checksum. Changes to API/SDK
+contents require a new release version after this draft is frozen. Nothing is
+published to a remote registry by this tool.
+
+`plugins/viewer-conformance` owns its native loader tests and depends only on the
+released SDK. Export verification uses copied plugin/bundle directories, fresh
+Cargo caches, `--locked --offline`, optimized DLL/SO builds and C ABI tests.
+Cargo metadata confirms that all nine packages resolve inside that export and
+that no application source package participates.
+
+Registry format follows the [Cargo registry specification](https://doc.rust-lang.org/cargo/reference/registry-index.html)
+and [source replacement rules](https://doc.rust-lang.org/cargo/reference/source-replacement.html).

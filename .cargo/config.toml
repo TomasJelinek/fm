@@ -2,5 +2,9 @@
 target-dir = "_build"
 jobs = 4
 
+# Public API/SDK releases are resolved from an explicitly supplied offline bundle.
+[registries.midnight]
+index = "https://midnight-explorer.invalid/api-index"
+
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/STACK:8388608"]

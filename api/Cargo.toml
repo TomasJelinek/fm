@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["midnight-plugin-api", "midnight-plugin-sdk", "tools/headergen"]
+members = ["midnight-plugin-api", "midnight-plugin-sdk", "tools/headergen", "tools/package"]
 
 [workspace.package]
 version = "0.1.0"

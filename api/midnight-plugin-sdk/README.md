@@ -4,8 +4,8 @@ This package supplies ownership and asynchronous dispatch for independent native
 viewer plugins. It depends only on the public API. It contains no file decoder,
 syntax catalogue, Markdown parser, application crate, Tokio runtime or Slint UI.
 The ABI is still under integration testing; this is not a released compatibility
-promise. The standalone DLL/SO conformance fixture and application loader are the
-next verification gates.
+promise. A standalone exported DLL/SO fixture exercises this contract on Windows
+and Linux. Integration with the actual application loader is the next gate.
 
 A plugin is an independent Cargo workspace in the shared repository's `plugins/`
 directory. Its tests, dependencies and lockfile belong to that plugin. It must

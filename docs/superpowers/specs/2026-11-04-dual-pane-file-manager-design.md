@@ -13,7 +13,8 @@ dialog názvu, výhradní vytvoření na backendu bez přepsání existujícího
 Viewer etapa: ověřený [sdílený Unicode renderer](../../verification/viewer-renderer.md)
 a rozpracované [veřejné API](../../../api/README.md) v nezávislém Cargo workspace.
 Pluginy zůstávají v jednom Git repozitáři, každý ve vlastním projektu/testech.
-Loader, SDK lifecycle a okna F3 zatím nejsou hotové; API není vydané ani zmrazené.
+SDK lifecycle a nezávislé DLL/SO mají [ověření](../../verification/plugin-api-sdk.md).
+Loader a okna F3 zatím nejsou hotové; API není vydané ani zmrazené.
 
 ## 1. Záměr a potvrzená rozhodnutí
 

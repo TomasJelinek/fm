@@ -53,15 +53,17 @@ public `include/midnight_plugin_v1.h`, protocol/ownership specifications and fix
 Host project references only the public API artifact. Publishable `.crate` artifacts
 are staged under `_build`, without requiring publication to a public registry.
 
-- [ ] Write independent ABI tests for short descriptors, major/minor compatibility,
+- [x] Write independent ABI tests for short descriptors, major/minor compatibility,
   bounded CBOR, malformed ranges, exactly-once release, queue-full rejection, cancel,
   terminal delivery, service continuation and quiescent shutdown.
-- [ ] Run and record RED before implementing the ABI dispatcher/ownership adapters.
-- [ ] Implement `midnight_plugin_entry_v1`, common create/submit/cancel/drain/release/
+- [x] Run and record RED before implementing the ABI dispatcher/ownership adapters.
+- [x] Implement `midnight_plugin_entry_v1`, common create/submit/cancel/drain/release/
   shutdown functions, schedule-work/content service messages and semantic viewer models.
   Generate/document the header from the actual repr(C) contract, with no Rust types at ABI.
-- [ ] Package API/SDK and build the fake cdylib from an exported project without application sources;
+- [x] Package API/SDK and build the fake cdylib from an exported project without application sources;
   run conformance tests independently and record GREEN.
+  Windows/Linux pass 58 Rust tests, strict Clippy, and seven real DLL/SO scenarios
+  from an exported independent fixture; see [evidence](../../verification/plugin-api-sdk.md).
 
 ## Task 2: Host loader, content broker and shared renderer
 
