@@ -602,7 +602,10 @@ impl Drop for Session {
             }
         }
         let _ = self.connection.destroy_window(self.proxy);
-        let _ = self.connection.flush();
+        // Flushing only sends requests: another connection can still observe our
+        // stale proxy after Drop returns. Finish restoration before releasing the
+        // backend-owned session, including when the host window is already gone.
+        let _ = self.connection.sync();
     }
 }
 

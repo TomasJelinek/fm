@@ -885,6 +885,14 @@ fn x11_registers_verified_proxy_and_restores_previous_host_properties() {
         std::env::var("MIDNIGHT_DND_TEST_ISOLATED").as_deref(),
         Ok("1")
     );
+    // Read through a different X11 connection immediately after each teardown.
+    // Repetition exposes a flush-only cleanup's cross-connection ordering race.
+    for _ in 0..32 {
+        assert_proxy_registration_restored();
+    }
+}
+
+fn assert_proxy_registration_restored() {
     let (connection, screen) = x11rb::connect(None).unwrap();
     let window = connection.generate_id().unwrap();
     connection
