@@ -18,6 +18,7 @@ mod operation_detail;
 mod operation_presentation;
 mod panel_models;
 mod panel_view_navigation;
+mod plugin_options;
 mod presenter;
 mod scroll_input;
 mod search_input;
@@ -37,11 +38,7 @@ use std::{
     rc::Rc,
 };
 
-#[allow(unsafe_code)]
-mod generated {
-    slint::include_modules!();
-}
-pub use generated::*;
+pub use midnight_ui_bindings::*;
 
 struct Rows {
     presenter: Rc<RefCell<Presenter>>,
@@ -264,6 +261,7 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    plugin_options::refresh(window, presenter);
     drag_bridge::refresh(window, presenter);
     commander_presentation::refresh(window, presenter);
     metadata_presentation::refresh(window, presenter);
@@ -436,6 +434,31 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter.preferences.density_index(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
+    window.set_editor_default_label(presenter.editor.default_label.as_str().into());
+    window.set_editor_executable(
+        presenter
+            .preferences
+            .values
+            .editor
+            .executable
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_editor_arguments(
+        serde_json::to_string(&presenter.preferences.values.editor.arguments)
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_editor_revision(
+        format!(
+            "{}:{}",
+            presenter.preferences.revision.0, presenter.editor.revision
+        )
+        .into(),
+    );
+    window.set_editor_error(presenter.editor.error.as_str().into());
     let mode_index = |mode| match mode {
         PanelViewMode::Detailed => 0,
         PanelViewMode::Brief => 1,
@@ -689,6 +712,7 @@ pub fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     shortcut_bridge::install(window, presenter.clone(), send.clone());
+    plugin_options::install(window, presenter.clone(), send.clone());
     commander_presentation::bind(window, &presenter, &send);
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
@@ -1107,6 +1131,20 @@ pub fn install(
     });
     callback!(on_options_opened, |w, p, s| {
         p.request_fonts(s);
+        p.request_default_editor(s);
+        p.request_viewer_plugins(s);
+        let _ = w;
+    });
+    callback!(on_editor_apply, |w, p, s, executable, arguments| {
+        p.change_editor(executable.as_str(), arguments.as_str(), s);
+        let _ = w;
+    });
+    callback!(on_editor_restore, |w, p, s| {
+        p.restore_editor(s);
+        let _ = w;
+    });
+    callback!(on_edit_file, |w, p, s, id| {
+        p.edit_file(pane(id), s);
         let _ = w;
     });
     callback!(

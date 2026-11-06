@@ -334,6 +334,7 @@ pub enum DesktopActionResult {
         history: crate::CommandHistoryEntry,
     },
     ClipboardCopied,
+    EditorStarted,
     PropertiesOpened,
     PropertiesInfo {
         title: String,

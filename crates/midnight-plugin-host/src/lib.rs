@@ -1,0 +1,122 @@
+//! Backend-only host for trusted native viewer plugins.
+#![deny(unsafe_op_in_unsafe_fn)]
+
+#[cfg(test)]
+mod tests;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_linux;
+#[cfg(all(test, windows))]
+mod tests_windows;
+
+pub use midnight_plugin_api as api;
+mod discovery;
+pub use discovery::{Diagnostic, PluginInfo, host_target};
+mod content;
+pub use content::CapturedFile;
+mod events;
+pub use events::{EventKind, HostEvent};
+mod session;
+pub use session::Session;
+mod callbacks;
+mod dispatch;
+mod loaded;
+#[cfg(windows)]
+#[path = "native_windows.rs"]
+mod native;
+#[cfg(target_os = "linux")]
+#[path = "native_linux.rs"]
+mod native;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "native_unsupported.rs"]
+mod native;
+mod replies;
+#[cfg(windows)]
+#[path = "trust_windows.rs"]
+mod trust;
+#[cfg(target_os = "linux")]
+#[path = "trust_linux.rs"]
+mod trust;
+#[cfg(not(any(windows, target_os = "linux")))]
+mod trust {
+    pub fn check(_: &std::path::Path) -> Result<(), crate::Error> {
+        Err(crate::Error(
+            "Native plugin permission validation unsupported on this platform".into(),
+        ))
+    }
+}
+
+use std::{
+    path::Path,
+    sync::{Arc, OnceLock, atomic::AtomicUsize},
+};
+static SESSIONS: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+pub struct Error(pub String);
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for Error {}
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Self(value.to_string())
+    }
+}
+
+#[derive(Debug)]
+pub struct Runtime {
+    catalog: Vec<PluginInfo>,
+    diagnostics: Vec<Diagnostic>,
+    sessions: Arc<AtomicUsize>,
+}
+impl Runtime {
+    pub fn discover(executable_directory: &Path) -> Result<Self, Error> {
+        let (catalog, diagnostics) = discovery::discover(executable_directory)?;
+        Ok(Self {
+            catalog,
+            diagnostics,
+            sessions: SESSIONS
+                .get_or_init(|| Arc::new(AtomicUsize::new(0)))
+                .clone(),
+        })
+    }
+    pub fn catalog(&self) -> &[PluginInfo] {
+        &self.catalog
+    }
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+    pub fn is_loaded(&self, plugin_id: &str) -> bool {
+        self.catalog
+            .iter()
+            .find(|info| info.id == plugin_id)
+            .is_some_and(loaded::Loaded::is_loaded)
+    }
+    pub fn choose(&self, path: &Path, basic: bool) -> Option<(&PluginInfo, u16)> {
+        self.choose_enabled(path, basic, &[])
+    }
+    pub fn choose_enabled(
+        &self,
+        path: &Path,
+        basic: bool,
+        disabled: &[String],
+    ) -> Option<(&PluginInfo, u16)> {
+        discovery::choose(&self.catalog, path, basic, disabled)
+    }
+    pub fn open(
+        &self,
+        plugin_id: &str,
+        file: CapturedFile,
+        generation: u64,
+        mode: u16,
+    ) -> Result<Session, Error> {
+        let info = self
+            .catalog
+            .iter()
+            .find(|info| info.id == plugin_id)
+            .ok_or_else(|| Error("Viewer plugin is unavailable".into()))?;
+        session::Session::open(info, file, generation, mode, self.sessions.clone())
+    }
+}

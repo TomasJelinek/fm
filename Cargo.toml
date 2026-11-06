@@ -58,6 +58,11 @@ opt-level = 2
 [profile.dev.package.midnight-ui]
 opt-level = 1
 
+[profile.dev.package.midnight-ui-bindings]
+opt-level = 1
+# Generated line tables are not useful when debugging handwritten presenters.
+debug = 0
+
 # Text shaping and font lookup are part of every resized text layout too.
 [profile.dev.package.parley]
 opt-level = 2

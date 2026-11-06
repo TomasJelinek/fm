@@ -21,6 +21,7 @@ mod selection;
 mod shell_menu;
 pub mod snapshot;
 mod streaming_selection;
+mod viewer_plugins;
 mod volumes;
 mod watch;
 
@@ -100,6 +101,7 @@ pub struct Engine {
     desktop: Option<Arc<dyn DesktopServices>>,
     watch: Option<Arc<dyn WatchService>>,
     settings: Option<Arc<dyn SettingsService>>,
+    editor: Option<Arc<dyn midnight_core::EditorService>>,
     clipboard: Option<Arc<dyn midnight_core::ClipboardService>>,
     shell_menu: Option<Arc<dyn midnight_core::ShellMenuService>>,
     transfers: Option<Arc<dyn midnight_core::TransferService>>,
@@ -166,6 +168,7 @@ impl Engine {
             desktop: None,
             watch: None,
             settings: None,
+            editor: None,
             clipboard: None,
             shell_menu: None,
             transfers: None,
@@ -192,6 +195,11 @@ impl Engine {
     /// Configuration I/O is serialized independently of browsing and native dialogs.
     pub fn with_settings(mut self, settings: Arc<dyn SettingsService>) -> Self {
         self.settings = Some(settings);
+        self
+    }
+
+    pub fn with_editor(mut self, editor: Arc<dyn midnight_core::EditorService>) -> Self {
+        self.editor = Some(editor);
         self
     }
 
@@ -242,6 +250,7 @@ impl Engine {
             mpsc::channel::<selection::PreparedProperties>(2);
         let properties_budget = Arc::new(Semaphore::new(2));
         let fonts = fonts::Controller::new(self.settings.clone(), self.outbox.clone(), &mut tasks);
+        let viewer_plugins = viewer_plugins::Controller::new(self.outbox.clone(), &mut tasks);
         let settings = self
             .settings
             .map(|service| preferences::Controller::new(service, self.outbox.clone(), &mut tasks));
@@ -383,6 +392,9 @@ impl Engine {
                         None | Some(Command::Shutdown) => break,
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
+                        Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
+                        Some(Command::ResolveDefaultEditor) => desktop.resolve_editor(self.editor.clone(), &mut tasks).await,
+                        Some(Command::EditFile { request, path, editor }) => desktop.edit_file(self.editor.clone(), request, path, editor, &mut tasks).await,
                         Some(Command::ListFontFamilies) => {
                             fonts.list();
                         }

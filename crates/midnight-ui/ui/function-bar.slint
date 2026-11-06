@@ -17,7 +17,7 @@ export component FunctionBar inherits HorizontalLayout {
     for label[index] in ["Help", "Rename", "View", "Edit", "Copy", "Move", "Create dir", "Delete", "User menu", "Menu", "Connect", "Disconnect"] : FunctionButton {
         // Modifier changes must not move the pressed cell before pointer-up.
         preferred-width: self.min-width;
-        private property <string> normal-action: ["app.help", "files.rename", "", "", "", "", "files.create-directory", "files.trash", "app.user-menu", "app.main-menu", "network.connect", "network.disconnect"][index];
+        private property <string> normal-action: ["app.help", "files.rename", "files.view", "files.edit", "", "", "files.create-directory", "files.trash", "app.user-menu", "app.main-menu", "network.connect", "network.disconnect"][index];
         private property <FunctionSlot> control: ShortcutHints.control(index, root.searching);
         private property <int> icon-role: root.control-layer ? self.control.icon : index;
         action-id: root.control-layer ? self.control.action : self.normal-action;
@@ -44,12 +44,12 @@ export component FunctionBar inherits HorizontalLayout {
         enabled: self.action-id != "" && (!self.action-id.starts-with("network.") || root.network-available);
         opacity: root.control-layer && self.control.action == "" ? 0 : 1;
         hint: root.control-layer ? self.control.hint
-            : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 6 ? " · create a folder or nested relative path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : index >= 10 ? " · system network drive dialog" : " · not implemented yet");
+            : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 6 ? " · create a folder or nested relative path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : index >= 10 ? " · system network drive dialog" : " · not implemented yet");
         activated(action, pane) => { root.action(action, pane); }
     }
     FunctionButton {
         native-icon: root.icons.options; fallback-icon: FallbackIcons.options; text: "Options";
-        hint: "Panel, appearance, command history and keyboard preferences.";
+        hint: "Panel, appearance, command history, keyboard, editor and plugin preferences.";
         clicked => { root.options(); }
     }
     FunctionButton {

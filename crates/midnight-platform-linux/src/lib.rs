@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 mod clipboard;
 mod desktop;
+mod editor;
 mod file_clipboard;
 mod file_drag_drop;
 pub use clipboard::NativeClipboard;

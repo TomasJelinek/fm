@@ -5,6 +5,7 @@ mod comparison;
 mod copies;
 mod desktop;
 pub(crate) mod drag_drop;
+mod editor;
 mod entry_sizes;
 mod file_actions;
 mod filter;
@@ -22,6 +23,7 @@ mod selection_preview;
 mod shortcuts;
 mod tabs;
 mod terminal;
+mod viewer_plugins;
 mod volumes;
 pub(crate) use file_actions::MenuAnchor;
 use std::{
@@ -116,6 +118,8 @@ pub struct Presenter {
     pub(crate) active: PaneId,
     pub(crate) desktop: desktop::DesktopState,
     pub(crate) preferences: preferences::PreferencesState,
+    pub(crate) editor: editor::EditorState,
+    pub(crate) viewer_plugins: viewer_plugins::ViewerPluginsState,
     pub(crate) fonts: fonts::FontsState,
     pub(crate) keyboard: keyboard::KeyboardState,
     pub(crate) operations: operations::OperationsState,
@@ -153,6 +157,8 @@ impl Presenter {
             active: PaneId::Left,
             desktop: desktop::DesktopState::default(),
             preferences: preferences::PreferencesState::default(),
+            editor: editor::EditorState::default(),
+            viewer_plugins: viewer_plugins::ViewerPluginsState::default(),
             fonts: fonts::FontsState::default(),
             keyboard: keyboard::KeyboardState::default(),
             operations: operations::OperationsState::default(),

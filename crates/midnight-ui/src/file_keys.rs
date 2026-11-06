@@ -43,6 +43,8 @@ pub(crate) enum FileKey {
     Properties,
     DriveInfo,
     Metadata(bool),
+    View(bool),
+    Edit,
     Compare,
     Filter,
     Zoom,
@@ -134,6 +136,9 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "panel.filter" => FileKey::Filter,
         "panel.zoom" => FileKey::Zoom,
         "files.attributes" => FileKey::Metadata(false),
+        "files.view" => FileKey::View(false),
+        "files.view-basic" => FileKey::View(true),
+        "files.edit" => FileKey::Edit,
         "files.case" => FileKey::Metadata(true),
         "selection.all" => FileKey::Bulk(0),
         "selection.clear" => FileKey::Bulk(1),
@@ -361,6 +366,13 @@ mod tests {
     #[test]
     fn every_catalog_action_has_one_semantic_dispatch() {
         for action in midnight_core::shortcut_catalog() {
+            if matches!(
+                action.scope,
+                midnight_core::ShortcutScope::ViewerAny
+                    | midnight_core::ShortcutScope::ViewerContent
+            ) {
+                continue;
+            }
             assert!(
                 semantic(&action.id, false).is_some(),
                 "missing {}",

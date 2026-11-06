@@ -1,0 +1,141 @@
+import { Button, LineEdit, CheckBox, ComboBox, Palette } from "std-widgets.slint";
+
+component PositionBar inherits Rectangle {
+    in property <float> position;
+    in property <color> accent;
+    in property <bool> horizontal;
+    in property <float> extent: 0.05;
+    callback seek(float);
+    background: #80808020;
+    min-width: horizontal ? 0px : 14px;
+    max-width: horizontal ? 1000000px : 14px;
+    min-height: horizontal ? 14px : 0px;
+    max-height: horizontal ? 14px : 1000000px;
+    thumb := Rectangle {
+        width: root.horizontal ? min(root.width, max(28px, root.width * root.extent)) : parent.width - 4px;
+        height: root.horizontal ? parent.height - 4px : min(root.height, max(28px, root.height * root.extent));
+        x: root.horizontal ? root.position * max(0px, root.width - self.width) : 2px;
+        y: root.horizontal ? 2px : root.position * max(0px, root.height - self.height);
+        background: root.accent; border-radius: 3px;
+    }
+    TouchArea {
+        function drag() {
+            root.seek(root.horizontal
+                ? clamp((self.mouse-x - thumb.width / 2) / max(1px, self.width - thumb.width), 0, 1)
+                : clamp((self.mouse-y - thumb.height / 2) / max(1px, self.height - thumb.height), 0, 1));
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.drag();
+            }
+        }
+        moved => { if self.pressed { self.drag(); } }
+    }
+}
+
+export component ViewerWindow inherits Window {
+    title: root.caption;
+    preferred-width: 1000px; preferred-height: 720px; min-width: 400px; min-height: 240px;
+    in property <string> caption: "Viewer — Midnight Explorer";
+    in property <string> status: "Opening…";
+    in property <image> surface;
+    in property <string> accessible-text;
+    in property <color> foreground: #dddddd;
+    in property <color> background-color: #202020;
+    in property <color> accent: #8bb7ef;
+    in property <float> position;
+    in property <float> vertical-extent: 1;
+    in property <float> horizontal-position;
+    in property <float> horizontal-extent: 1;
+    in property <[string]> modes;
+    in property <int> mode-index;
+    in property <length> ui-font-size: 12px;
+    in property <string> ui-font-family;
+    default-font-size: ui-font-size;
+    default-font-family: ui-font-family;
+    in-out property <bool> search-visible;
+    in-out property <string> query;
+    in-out property <bool> case-sensitive;
+    out property <length> content-width: canvas.width;
+    out property <length> content-height: canvas.height;
+    callback input-key(KeyEvent, bool) -> bool;
+    callback scroll(float, float);
+    callback seek(float);
+    callback pan(float);
+    callback select-point(float, float, bool);
+    callback search(bool);
+    callback change-mode(int);
+    callback close-viewer();
+    public function focus-search() { root.search-visible = true; search-edit.focus(); }
+    public function focus-content() { content-focus.focus(); }
+    public function apply-palette(light: bool) { Palette.color-scheme = light ? ColorScheme.light : ColorScheme.dark; }
+    background: background-color;
+    forward-focus: content-focus;
+    FocusScope {
+        capture-key-pressed(event) => {
+            // Only the content surface owns file cycling and scroll shortcuts.
+            // Search, buttons and the mode chooser keep native widget keys.
+            if root.input-key(event, !content-focus.has-focus) { return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: 6px; spacing: 4px;
+            HorizontalLayout {
+                spacing: 4px;
+                visible: root.search-visible;
+                height: root.search-visible ? 30px : 0px;
+                search-edit := LineEdit {
+                    text <=> root.query;
+                    placeholder-text: "Find in file";
+                    accepted => { root.search(false); }
+                }
+                CheckBox { text: "Aa"; checked <=> root.case-sensitive; accessible-label: "Case sensitive"; }
+                Button { text: "Previous"; clicked => { root.search(true); } }
+                Button { text: "Next"; clicked => { root.search(false); } }
+            }
+            HorizontalLayout {
+                spacing: 2px;
+                canvas := Rectangle {
+                    horizontal-stretch: 1; vertical-stretch: 1; clip: true;
+                    background: root.background-color;
+                    accessible-role: text;
+                    accessible-label: "File content";
+                    accessible-value: root.accessible-text;
+                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; }
+                    content-focus := FocusScope {}
+                    TouchArea {
+                        mouse-cursor: text;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                content-focus.focus();
+                                root.select-point(self.mouse-x / 1px, self.mouse-y / 1px, event.modifiers.shift);
+                            }
+                        }
+                        moved => { if self.pressed { root.select-point(self.mouse-x / 1px, self.mouse-y / 1px, true); } }
+                        scroll-event(event) => {
+                            root.scroll(-event.delta-x / 1px, -event.delta-y / 1px);
+                            accept
+                        }
+                    }
+                }
+                PositionBar { position: root.position; extent: root.vertical-extent; accent: root.accent;
+                    visible: root.vertical-extent < 1; min-width: root.vertical-extent < 1 ? 14px : 0px;
+                    max-width: root.vertical-extent < 1 ? 14px : 0px;
+                    seek(value) => { root.seek(value); } }
+            }
+            HorizontalLayout {
+                height: root.horizontal-extent < 1 ? 16px : 0px;
+                visible: root.horizontal-extent < 1;
+                PositionBar { horizontal: true; position: root.horizontal-position; extent: root.horizontal-extent;
+                    accent: root.accent; seek(value) => { root.pan(value); } }
+            }
+            HorizontalLayout {
+                height: 28px;
+                Text { text: root.status; color: root.foreground; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                ComboBox { model: root.modes; current-index: root.mode-index;
+                    accessible-label: "Viewer mode"; width: 130px;
+                    selected(value) => { root.change-mode(self.current-index); } }
+            }
+        }
+    }
+}

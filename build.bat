@@ -14,10 +14,12 @@ goto usage
 
 :debug
 set "MIDNIGHT_BUILD_PROFILE="
+set "MIDNIGHT_VIEWER_PROFILE=debug"
 goto build
 
 :release
 set "MIDNIGHT_BUILD_PROFILE=--release"
+set "MIDNIGHT_VIEWER_PROFILE=release"
 
 :build
 pushd "%~dp0" || exit /b 1
@@ -47,6 +49,10 @@ goto done
 set "MIDNIGHT_BUILD_EXIT=1"
 
 :done
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+powershell.exe -NoLogo -NoProfile -File scripts\build-viewers.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+:exit_build
 popd
 exit /b %MIDNIGHT_BUILD_EXIT%
 

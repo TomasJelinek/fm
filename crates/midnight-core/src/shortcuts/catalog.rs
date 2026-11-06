@@ -114,6 +114,94 @@ fn build() -> Vec<ShortcutDefinition> {
         &["Ctrl+F10"],
     );
     add("panel.zoom", "Zoom active panel", FilesAny, &["Ctrl+F11"]);
+    add("files.view", "View focused file", FilesAny, &["F3"]);
+    add(
+        "files.view-basic",
+        "View as plain text",
+        FilesAny,
+        &["Alt+F3"],
+    );
+    add(
+        "files.edit",
+        "Edit focused file externally",
+        FilesAny,
+        &["F4"],
+    );
+    add("viewer.close", "Close viewer", ViewerAny, &["Escape"]);
+    add(
+        "viewer.next-file",
+        "View next captured file",
+        ViewerContent,
+        &["Space"],
+    );
+    add("viewer.find", "Find in viewed file", ViewerAny, &["Ctrl+F"]);
+    add(
+        "viewer.find-next",
+        "Next match in viewed file",
+        ViewerAny,
+        &["F3"],
+    );
+    add(
+        "viewer.find-previous",
+        "Previous match in viewed file",
+        ViewerAny,
+        &["Shift+F3"],
+    );
+    add(
+        "viewer.copy",
+        "Copy viewer selection",
+        ViewerContent,
+        &["Ctrl+C"],
+    );
+    add(
+        "viewer.select-page",
+        "Select loaded viewer page",
+        ViewerContent,
+        &["Ctrl+A"],
+    );
+    add("viewer.up", "Scroll viewer up", ViewerContent, &["Up"]);
+    add(
+        "viewer.down",
+        "Scroll viewer down",
+        ViewerContent,
+        &["Down"],
+    );
+    add(
+        "viewer.left",
+        "Scroll viewer left",
+        ViewerContent,
+        &["Left"],
+    );
+    add(
+        "viewer.right",
+        "Scroll viewer right",
+        ViewerContent,
+        &["Right"],
+    );
+    add(
+        "viewer.page-up",
+        "Previous viewer screen",
+        ViewerContent,
+        &["PageUp"],
+    );
+    add(
+        "viewer.page-down",
+        "Next viewer screen",
+        ViewerContent,
+        &["PageDown"],
+    );
+    add(
+        "viewer.first",
+        "Beginning of viewed file",
+        ViewerContent,
+        &["Ctrl+Home"],
+    );
+    add(
+        "viewer.last",
+        "End of viewed file",
+        ViewerContent,
+        &["Ctrl+End"],
+    );
     add("panel.filter", "Edit panel filter", FilesAny, &["Ctrl+F12"]);
     add(
         "panel.drive-info",

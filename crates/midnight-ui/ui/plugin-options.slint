@@ -1,0 +1,65 @@
+import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+export struct ViewerPluginRow {
+    id: string,
+    name: string,
+    version: string,
+    status: string,
+    location: string,
+    enabled: bool,
+    configurable: bool,
+}
+
+export global ViewerPluginsView {
+    in property <string> revision;
+    in property <[ViewerPluginRow]> rows;
+    in property <bool> pending;
+    in property <bool> settings-ready;
+    in property <bool> restart-needed;
+    in property <string> error;
+    callback refresh();
+    callback toggle(string, bool);
+}
+
+export component PluginOptions inherits VerticalLayout {
+    spacing: 10px; alignment: start;
+    Text {
+        text: "Viewer plugins"; color: Theme.strong-text; font-size: Theme.font-size;
+    }
+    Text {
+        text: "Enable plugins for the next application start. Restart to apply changes.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    HintedActionButton {
+        text: ViewerPluginsView.pending ? "Refreshing…" : "Refresh plugins";
+        enabled: !ViewerPluginsView.pending;
+        hint: "Read plugin manifests beside the application and refresh load status. No plugin code is started.";
+        clicked => { ViewerPluginsView.refresh(); }
+    }
+    if ViewerPluginsView.restart-needed : Text {
+        text: "Restart required to apply your plugin choices.";
+        color: Theme.accent; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    if ViewerPluginsView.error != "" : Text {
+        text: ViewerPluginsView.error; color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    if !ViewerPluginsView.pending && ViewerPluginsView.error == "" && ViewerPluginsView.rows.length == 0 : Text {
+        text: "No viewer plugins are installed beside this application.";
+        color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    for plugin in ViewerPluginsView.rows : VerticalLayout {
+        spacing: 4px;
+        HintedCheckBox {
+            text: plugin.name + (plugin.version == "" ? "" : " · " + plugin.version);
+            checked: plugin.enabled;
+            enabled: plugin.configurable && ViewerPluginsView.settings-ready;
+            hint: plugin.id == "" ? "This package is unavailable. Its diagnostic appears below." : "Enable " + plugin.id + " after restart.";
+            toggled => { ViewerPluginsView.toggle(plugin.id, self.checked); }
+        }
+        Text { text: plugin.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+        Text { text: plugin.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+        Text { text: plugin.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+        Rectangle { height: 1px; background: Theme.frame; }
+    }
+}

@@ -20,6 +20,8 @@ pub(crate) struct PreferencesState {
 
 #[derive(Default)]
 pub(super) struct EditedFields {
+    pub(super) disabled_viewer_plugins: bool,
+    pub(super) editor: bool,
     pub(super) theme: bool,
     pub(super) density: bool,
     pub(super) windows_shell: bool,
@@ -50,6 +52,9 @@ impl PreferencesState {
 }
 
 impl Presenter {
+    pub(super) fn editor_preferences_ready(&self) -> bool {
+        self.preferences.loaded && self.preferences.save_blocked.is_none()
+    }
     pub(crate) fn change_panel_view_mode(
         &mut self,
         pane: PaneId,
@@ -83,9 +88,17 @@ impl Presenter {
         let previous_filter = self.preferences.values.quick_search_filter;
         match result {
             Ok(mut loaded) => {
+                self.viewer_plugins.startup_disabled =
+                    Some(loaded.disabled_viewer_plugins.clone().into());
                 self.prepare_loaded_tab_sessions(&mut loaded);
                 let local = &mut self.preferences.values;
                 let edited = &self.preferences.edited;
+                if edited.disabled_viewer_plugins {
+                    loaded.disabled_viewer_plugins = local.disabled_viewer_plugins.clone();
+                }
+                if edited.editor {
+                    loaded.editor = local.editor.clone();
+                }
                 if edited.theme {
                     loaded.theme = local.theme;
                 }
@@ -330,6 +343,9 @@ impl Presenter {
         }
         let previous = &self.preferences.values;
         let edited = &mut self.preferences.edited;
+        edited.disabled_viewer_plugins |=
+            preferences.disabled_viewer_plugins != previous.disabled_viewer_plugins;
+        edited.editor |= preferences.editor != previous.editor;
         edited.theme |= preferences.theme != previous.theme;
         edited.density |= preferences.density != previous.density;
         edited.windows_shell |= preferences.windows_shell != previous.windows_shell;

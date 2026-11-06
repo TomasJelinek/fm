@@ -23,6 +23,10 @@ pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(default, deserialize_with = "present")]
+    disabled_viewer_plugins: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
+    editor: Option<StoredEditor>,
     theme: String,
     density: String,
     #[serde(default = "default_windows_shell")]
@@ -51,6 +55,13 @@ struct StoredPreferences {
     shortcuts: Option<Vec<StoredShortcut>>,
     #[serde(default, deserialize_with = "present")]
     panel_filters: Option<[StoredPanelFilter; 2]>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEditor {
+    executable: Option<NativePath>,
+    arguments: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -128,7 +139,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         return Err(invalid("preferences exceed 4 MiB"));
     }
     let stored: StoredPreferences = serde_json::from_slice(bytes).map_err(invalid)?;
-    if !(1..=8).contains(&stored.version) {
+    if !(1..=10).contains(&stored.version) {
         return Err(invalid("unsupported preferences version"));
     }
     let theme = PreferenceTheme::from_storage_name(&stored.theme)
@@ -155,7 +166,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 defaults.touch_font_size,
             )
         }
-        2..=8 => (
+        2..=10 => (
             stored
                 .font_family
                 .ok_or_else(|| invalid("missing font family"))?,
@@ -170,7 +181,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let bookmarks = match (stored.version, stored.bookmarks) {
         (1 | 2, None) => Vec::new(),
-        (3..=8, Some(bookmarks)) => bookmarks
+        (3..=10, Some(bookmarks)) => bookmarks
             .into_iter()
             .map(|bookmark| {
                 Ok(Bookmark {
@@ -181,13 +192,13 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 })
             })
             .collect::<io::Result<Vec<_>>>()?,
-        (3..=8, None) => return Err(invalid("missing bookmarks")),
+        (3..=10, None) => return Err(invalid("missing bookmarks")),
         _ => return Err(invalid("bookmarks require preferences version 3")),
     };
     let quick_search_filter = match (stored.version, stored.quick_search_filter) {
         (1..=3, None) => false,
-        (4..=8, Some(enabled)) => enabled,
-        (4..=8, None) => return Err(invalid("missing quick search filter preference")),
+        (4..=10, Some(enabled)) => enabled,
+        (4..=10, None) => return Err(invalid("missing quick search filter preference")),
         _ => {
             return Err(invalid(
                 "quick search filter requires preferences version 4",
@@ -201,7 +212,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         stored.command_history,
     ) {
         (1..=4, None, None, None) => (SizeDisplay::Readable, true, Vec::new()),
-        (5..=8, Some(size), Some(remember), Some(history)) => {
+        (5..=10, Some(size), Some(remember), Some(history)) => {
             let size = match size.as_str() {
                 "readable" => SizeDisplay::Readable,
                 "bytes" => SizeDisplay::Bytes,
@@ -224,7 +235,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 .collect::<io::Result<Vec<_>>>()?;
             (size, remember, history)
         }
-        (5..=8, _, _, _) => return Err(invalid("missing panel or command history preferences")),
+        (5..=10, _, _, _) => return Err(invalid("missing panel or command history preferences")),
         _ => {
             return Err(invalid(
                 "panel and command history preferences require version 5",
@@ -233,7 +244,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let tabs = match (stored.version, stored.tabs) {
         (1..=5, None) => Default::default(),
-        (6..=8, Some(tabs)) => {
+        (6..=10, Some(tabs)) => {
             let convert = |tabs: StoredPaneTabs| -> io::Result<PaneTabPreferences> {
                 Ok(PaneTabPreferences {
                     paths: tabs
@@ -247,12 +258,12 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
             let [left, right] = tabs;
             [convert(left)?, convert(right)?]
         }
-        (6..=8, None) => return Err(invalid("missing tab sessions")),
+        (6..=10, None) => return Err(invalid("missing tab sessions")),
         _ => return Err(invalid("tab sessions require preferences version 6")),
     };
     let panel_view_modes = match (stored.version, stored.panel_view_modes) {
         (1..=5, None) => Default::default(),
-        (6..=8, Some(modes)) => {
+        (6..=10, Some(modes)) => {
             let parse = |mode: String| match mode.as_str() {
                 "detailed" => Ok(PanelViewMode::Detailed),
                 "brief" => Ok(PanelViewMode::Brief),
@@ -262,28 +273,43 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
             let [left, right] = modes;
             [parse(left)?, parse(right)?]
         }
-        (6..=8, None) => return Err(invalid("missing panel view modes")),
+        (6..=10, None) => return Err(invalid("missing panel view modes")),
         _ => return Err(invalid("panel view modes require preferences version 6")),
     };
     let shortcuts = match (stored.version, stored.shortcuts) {
         (1..=6, None) => Vec::new(),
-        (7 | 8, Some(bindings)) => bindings
+        (7..=10, Some(bindings)) => bindings
             .into_iter()
             .map(|binding| ShortcutBinding {
                 action: binding.action,
                 keys: binding.keys,
             })
             .collect(),
-        (7 | 8, None) => return Err(invalid("missing shortcut overrides")),
+        (7..=10, None) => return Err(invalid("missing shortcut overrides")),
         _ => return Err(invalid("shortcut overrides require preferences version 7")),
     };
     let panel_filters = match (stored.version, stored.panel_filters) {
         (1..=7, None) => Default::default(),
-        (8, Some([left, right])) => [left.into_filter()?, right.into_filter()?],
-        (8, None) => return Err(invalid("missing panel filters")),
+        (8..=10, Some([left, right])) => [left.into_filter()?, right.into_filter()?],
+        (8..=10, None) => return Err(invalid("missing panel filters")),
         _ => return Err(invalid("panel filters require preferences version 8")),
     };
+    let editor = match (stored.version, stored.editor) {
+        (1..=8, None) => Default::default(),
+        (9..=10, Some(editor)) => midnight_core::EditorPreferences {
+            executable: editor.executable.map(NativePath::into_path).transpose()?,
+            arguments: editor.arguments,
+        },
+        (9..=10, None) => return Err(invalid("missing editor preferences")),
+        _ => return Err(invalid("editor preferences require version 9")),
+    };
     let preferences = UserPreferences {
+        disabled_viewer_plugins: match (stored.version, stored.disabled_viewer_plugins) {
+            (1..=9, None) => Vec::new(),
+            (10, Some(ids)) => ids,
+            _ => return Err(invalid("missing or unexpected viewer plugin preferences")),
+        },
+        editor,
         theme,
         density,
         windows_shell,
@@ -310,7 +336,12 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         crate::filter::CompiledFilter::new(filter).map_err(invalid)?;
     }
     let stored = StoredPreferences {
-        version: 8,
+        version: 10,
+        disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
+        editor: Some(StoredEditor {
+            executable: preferences.editor.executable.map(NativePath::from_path),
+            arguments: preferences.editor.arguments,
+        }),
         panel_filters: Some(preferences.panel_filters.map(|filter| {
             StoredPanelFilter {
                 enabled: filter.enabled,
@@ -514,7 +545,7 @@ mod tests {
         let encoded = encode_preferences(preferences).unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-            8
+            10
         );
     }
 
@@ -611,7 +642,7 @@ mod tests {
         let decoded = decode_preferences(json.as_bytes()).unwrap();
         let encoded = encode_preferences(decoded).unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(stored["version"], 8);
+        assert_eq!(stored["version"], 10);
         assert_eq!(stored["font_family"], "文档 é 🧪");
         assert_eq!(stored["desktop_font_size"], 12);
         assert_eq!(stored["touch_font_size"], 19);
@@ -629,7 +660,7 @@ mod tests {
         let migrated = encode_preferences(preferences.clone()).unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&migrated).unwrap()["version"],
-            8
+            10
         );
         assert_eq!(decode_preferences(&migrated).unwrap(), preferences);
     }
@@ -707,7 +738,7 @@ mod tests {
                 assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
                 assert_eq!(
                     serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-                    8
+                    10
                 );
             }
         }

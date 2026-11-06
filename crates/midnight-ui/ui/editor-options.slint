@@ -1,0 +1,51 @@
+import { LineEdit, TextEdit } from "std-widgets.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+export component EditorOptions inherits VerticalLayout {
+    in property <string> default-label;
+    in property <string> executable;
+    in property <string> arguments;
+    in property <string> revision;
+    in property <string> error;
+    callback apply(string, string);
+    callback restore();
+    spacing: 8px; alignment: start;
+    init => { program.text = root.executable; args.text = root.arguments; }
+    changed executable => { program.text = root.executable; }
+    changed arguments => { args.text = root.arguments; }
+    changed revision => { program.text = root.executable; args.text = root.arguments; }
+    Text {
+        text: "Default editor: " + root.default-label;
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    Text { text: "Executable (absolute path)"; color: Theme.text; font-size: Theme.font-size; }
+    program := LineEdit {
+        accessible-label: "Editor executable"; font-size: Theme.font-size;
+        placeholder-text: "Use the default editor";
+    }
+    Text { text: "Arguments (JSON list)"; color: Theme.text; font-size: Theme.font-size; }
+    args := TextEdit {
+        accessible-label: "Editor arguments"; font-size: Theme.font-size;
+        height: max(54px, Theme.font-size * 2.8); wrap: no-wrap;
+    }
+    Text {
+        text: "Example: [\"--\", \"{file}\"]. Each item is passed literally. {file} must be a complete item. F4 edits the focused file.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    if root.error != "" : Text {
+        text: root.error; accessible-label: root.error;
+        color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        HintedActionButton {
+            text: "Apply editor"; hint: "Validate and save this editor executable and its literal argument list.";
+            clicked => { root.apply(program.text, args.text); }
+        }
+        HintedActionButton {
+            text: "Use default editor"; hint: "Remove the custom executable and use the platform's default graphical editor.";
+            clicked => { root.restore(); }
+        }
+    }
+}

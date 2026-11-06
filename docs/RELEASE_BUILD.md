@@ -32,7 +32,12 @@ tails, operation throughput and memory, rather than assuming that every addition
 optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
-executable. Native tests that exercise integrity and queue/cancellation semantics
+executable. These helpers also build the three independent viewer packages against
+the released public API/SDK and stage them under `viewers/` beside the executable.
+Direct Cargo builds compile only the host; use `scripts/build-viewers.ps1` or
+`scripts/build-viewers.sh` to build its viewer packages separately. Each plugin has
+its own lockfile, tests, release profile and third-party notices.
+Native tests that exercise integrity and queue/cancellation semantics
 must also run under the release profile. Builds take longer and may use more RAM
 because of whole-program optimization. Development builds remain available for
 fast iteration and debugging.
@@ -87,7 +92,13 @@ build directories separate when sharing one checkout.
 
 Archives include run instructions, feature/shortcut/security requirements,
 `BUILD-INFO.json` with the source revision and executable SHA-256, the lockfile,
-dependency inventory and original license texts. If a crate omits license files
+dependency inventory and original license texts. The packager requires all three
+viewer packages under `viewers/` (or `--viewers-root`), validates their platform,
+ABI, entry library and package paths, and records their manifests, file sizes and
+SHA-256 values in `BUILD-INFO.json`. Plugin-owned notices remain inside each package.
+It rejects symlinks, escaped paths and missing notices. Package hashes establish
+integrity, not publisher authenticity or a native-code sandbox.
+If a crate omits license files
 from its published source, supply them in a `NAME-VERSION/` subdirectory of the
 directory passed to `--license-overrides`,
 from its recorded upstream Git commit, retaining source URLs and hashes. Missing

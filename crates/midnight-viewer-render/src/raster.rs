@@ -56,7 +56,7 @@ impl TextRenderer {
 }
 
 impl Raster {
-    fn fill(&mut self, rect: Rect, origin: [f32; 2], color: [u8; 4]) {
+    pub(crate) fn fill(&mut self, rect: Rect, origin: [f32; 2], color: [u8; 4]) {
         let x0 = (rect.x0 - f64::from(origin[0]))
             .floor()
             .clamp(0.0, f64::from(self.width)) as usize;

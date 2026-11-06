@@ -22,6 +22,8 @@ TMPDIR="$build_root/_build/tmp"
 export TMPDIR
 
 if [ "$build_profile" = release ]; then
-    exec cargo build -p midnight-explorer --locked --release
+    cargo build -p midnight-explorer --locked --release
+else
+    cargo build -p midnight-explorer --locked
 fi
-exec cargo build -p midnight-explorer --locked
+exec bash scripts/build-viewers.sh "$build_profile"

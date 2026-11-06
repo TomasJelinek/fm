@@ -89,6 +89,8 @@ impl DesktopState {
 impl Presenter {
     pub(super) fn apply_desktop(&mut self, event: Event) -> Option<Event> {
         match event {
+            Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
+            Event::EditorDefaultResolved(result) => self.editor_default_resolved(result),
             Event::FontFamiliesLoaded(result) => self.apply_font_families(result),
             Event::PreferencesLoaded(result) => self.preferences_loaded(result),
             Event::PreferencesSaved { revision, result } => {
@@ -134,6 +136,9 @@ impl Presenter {
                     }
                     Ok(DesktopActionResult::ClipboardCopied) => {
                         self.desktop.status = "Copied to clipboard".into()
+                    }
+                    Ok(DesktopActionResult::EditorStarted) => {
+                        self.desktop.status = "External editor started".into();
                     }
                     Ok(DesktopActionResult::PropertiesOpened) => {
                         self.desktop.status = "Properties opened".into()

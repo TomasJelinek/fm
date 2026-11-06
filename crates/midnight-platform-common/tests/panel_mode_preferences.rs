@@ -18,7 +18,9 @@ fn independent_panel_modes_roundtrip_as_stable_names() {
     let output: serde_json::Value =
         serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
     let mut migrated = input;
-    migrated["version"] = 8.into();
+    migrated["version"] = 10.into();
+    migrated["disabled_viewer_plugins"] = serde_json::json!([]);
+    migrated["editor"] = serde_json::json!({"executable":null,"arguments":["{file}"]});
     migrated["shortcuts"] = serde_json::json!([]);
     migrated["panel_filters"] = serde_json::json!([{ "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }, { "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }]);
     assert_eq!(output, migrated);

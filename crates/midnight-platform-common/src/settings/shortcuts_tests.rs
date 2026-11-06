@@ -20,7 +20,7 @@ fn shortcut_overrides_survive_roundtrip_with_disabled_actions_and_unicode_keys()
     };
     let bytes = encode_preferences(preferences.clone()).unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(stored["version"], 8);
+    assert_eq!(stored["version"], 10);
     assert_eq!(stored["shortcuts"][0]["keys"][0], "Ctrl+文");
     let restored = decode_preferences(&bytes).unwrap();
     assert_eq!(restored, preferences);
@@ -50,6 +50,11 @@ fn version_six_migrates_to_default_keys_and_seven_requires_explicit_overrides_ar
     let mut legacy: serde_json::Value =
         serde_json::from_slice(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
     legacy["version"] = 6.into();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("disabled_viewer_plugins");
+    legacy.as_object_mut().unwrap().remove("editor");
     legacy.as_object_mut().unwrap().remove("shortcuts");
     legacy.as_object_mut().unwrap().remove("panel_filters");
     let preferences = decode_preferences(&serde_json::to_vec(&legacy).unwrap()).unwrap();

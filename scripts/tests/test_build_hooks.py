@@ -1,0 +1,75 @@
+"""Build entry points must build the app before independent viewers and retain failures."""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+class BuildHookTests(unittest.TestCase):
+    def setUp(self):
+        repository = Path(__file__).resolve().parents[2]
+        temporary = repository / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=temporary)
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / "scripts").mkdir()
+        self.log = self.root / "calls.log"
+        fake_bin = self.root / "bin"
+        fake_bin.mkdir()
+        self.environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
+                                BUILD_TEST_LOG=str(self.log), BUILD_TEST_APP_EXIT="0",
+                                BUILD_TEST_VIEWER_EXIT="0")
+        if os.name == "nt":
+            entry = "build.bat"
+            (fake_bin / "cargo.cmd").write_text(
+                '@echo off\n>>"%BUILD_TEST_LOG%" echo cargo %*\nexit /b %BUILD_TEST_APP_EXIT%\n')
+            (self.root / "scripts/build-viewers.ps1").write_text(
+                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "viewer $Profile"\n'
+                'exit ([int]$env:BUILD_TEST_VIEWER_EXIT)\n')
+            self.command = ["cmd.exe", "/d", "/c", str(self.root / entry)]
+        else:
+            entry = "build.sh"
+            cargo = fake_bin / "cargo"
+            cargo.write_text('#!/bin/sh\nprintf "cargo %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
+                             'exit "$BUILD_TEST_APP_EXIT"\n')
+            cargo.chmod(0o755)
+            (self.root / "scripts/build-viewers.sh").write_text(
+                '#!/bin/sh\nprintf "viewer %s\\n" "$1" >> "$BUILD_TEST_LOG"\n'
+                'exit "$BUILD_TEST_VIEWER_EXIT"\n')
+            self.command = ["sh", str(self.root / entry)]
+        shutil.copyfile(repository / entry, self.root / entry)
+
+    def run_build(self, profile="release", app_exit="0", viewer_exit="0"):
+        environment = dict(self.environment, BUILD_TEST_APP_EXIT=app_exit,
+                           BUILD_TEST_VIEWER_EXIT=viewer_exit)
+        result = subprocess.run(self.command + [profile], cwd=self.root, env=environment,
+                                capture_output=True, text=True, timeout=30)
+        calls = self.log.read_text().splitlines() if self.log.exists() else []
+        return result.returncode, calls
+
+    def test_success_builds_application_then_viewers_for_same_profile(self):
+        code, calls = self.run_build()
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release", "viewer release"])
+
+    def test_application_failure_skips_viewer_build(self):
+        code, calls = self.run_build(app_exit="35")
+        self.assertEqual(code, 35)
+        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release"])
+
+    def test_viewer_failure_is_returned_to_caller(self):
+        code, calls = self.run_build(viewer_exit="43")
+        self.assertEqual(code, 43)
+        self.assertEqual(calls[-1], "viewer release")
+
+    def test_invalid_profile_does_not_start_any_build(self):
+        code, calls = self.run_build(profile="unknown")
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -5,7 +5,9 @@ Complete and verify each stage before starting the next.
 
 Stage 1 is implemented and verified; results and platform/profile limits are in
 [the verification record](../../verification/midnight-explorer-operations.md).
-The next implementation stage is 2. Later stages remain pending.
+Stage 2 is also implemented: see the [viewer verification record](../../verification/viewer-implementation.md)
+for the independently built plugins, F4, platform checks and current limits.
+The next unfinished operation stage is the complete copy/move workflow in stage 3.
 
 1. Finish native rename/delete/F7, locale and tab persistence, smooth scrolling,
    panel modes, Midnight Explorer branding and optimized release configuration.
@@ -18,7 +20,7 @@ The next implementation stage is 2. Later stages remain pending.
    `plugins/`; only public API/SDK is shared, and plugin builds/tests cannot modify
    the host. Verify exported plugin projects without application sources.
    Keep empty-file creation separate from automatically launching the editor;
-   explicit F4 becomes available after viewer/editor implementation.
+   explicit F4 is available through the configured external editor.
 3. Implement copy and move according to the existing architecture, consulting
    Salamander. Use a bounded background operation queue, multiselection and overwrite
    prompts showing source/target metadata with per-item and remaining-conflict choices.

@@ -40,6 +40,8 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | Escape during search | Leave search and restore the complete listing |
 | Backspace during search | Remove one extended grapheme; an empty query exits |
 | Enter | Enter a folder or open the focused file through its host association |
+| F3 / Alt+F3 in files | Open the applicable installed viewer / force basic Text mode |
+| F4 in files | Open the focused regular local file with the configured external editor |
 | Backspace / Ctrl+PageUp | Parent folder |
 | Alt+← / Alt+→ | Back / forward history |
 | Ctrl+Backspace / Shift+Backspace / Ctrl+Backslash | Native filesystem root |
@@ -165,20 +167,38 @@ bookmarks are suspended during search/composition. Queries are independent per
 pane, survive sorting/refresh and clear on folder/tab navigation. Pending or
 empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 
-F3 View, F4 Edit, F5 Copy and F6 Move remain reserved for later stages.
+F5 Copy and F6 Move remain reserved for later stages.
 Options follows F12 on the bottom bar; Jobs shows queued/running operations and
 allows cancellation. Cancellation retains changes already completed. No Trash
 failure ever falls back to permanent deletion. F7 does not follow links inside
 the entered relative path and leaves already-created intermediate folders on error.
-Viewer design: F3 routes by extension to an applicable installed viewer; Alt+F3
-forces the basic plain-text viewer, preserving Unicode and disabling highlighting
-and markup rendering. Both remain unavailable until the viewer plugin is implemented.
+F3 routes by extension to an applicable installed viewer; Alt+F3 forces the basic
+plain-text viewer, preserving Unicode and disabling highlighting and markup rendering.
+Both require a compatible, enabled package in the installation's `viewers/` directory.
 Clipboard copy has a background queue and mandatory SHA-256 destination readback.
 Existing names offer Skip, Skip all, Copy as, Cancel job and Decide later; Jobs can
 reopen deferred conflicts while browsing continues. Sources are retained. Replacing
 existing files, directory merging and Move/Cut remain unavailable in this stage.
 Other unlisted Salamander/Total Commander
 shortcuts, such as Shift+F9 for a bookmark menu, are not implemented.
+
+Viewer windows have their own configurable shortcut context:
+
+| Keys | Viewer action |
+| --- | --- |
+| Escape | Close the viewer, including when search has focus |
+| Space in content | Next regular file in captured panel order, wrapping at the end |
+| Ctrl+F | Focus search |
+| Enter in search / F3 | Next match |
+| Shift+F3 | Previous match |
+| Ctrl+A in content | Select the loaded page (bounded copy) |
+| Ctrl+C in content | Copy selected displayed text |
+| Arrows / PageUp / PageDown | Scroll content |
+| Ctrl+Home / Ctrl+End | First / last page |
+
+Search retains ordinary text editing, clipboard keys and spaces. Main-window actions
+do not dispatch inside viewer windows. Viewer mode is selected using the bottom
+dropdown; Markdown search/copy uses rendered text, while Text mode uses literal source.
 
 Bulk selection runs through the backend and excludes `..`. Text editors retain
 their ordinary Ctrl+A behavior. The requested Ctrl+D takes precedence over

@@ -23,9 +23,20 @@ const MAX_SPANS: usize = 4096;
 const MAX_LINES: usize = 4096;
 
 /// A paint-only range in the decoded UTF-8 page, sorted without overlaps.
+#[derive(Clone)]
 pub struct ColorSpan {
     pub range: Range<usize>,
     pub color: [u8; 4],
+}
+
+/// Host-selected typography for a bounded semantic range (for example a heading).
+#[derive(Clone)]
+pub struct StyleSpan {
+    pub range: Range<usize>,
+    pub weight: u16,
+    pub italic: bool,
+    pub underline: bool,
+    pub size: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,7 +75,31 @@ impl TextRenderer {
         options: &TextOptions<'_>,
         spans: &[ColorSpan],
     ) -> Result<TextPage, LayoutError> {
+        self.layout_with_styles(text, options, spans, &[])
+    }
+
+    pub fn layout_with_styles(
+        &mut self,
+        text: &str,
+        options: &TextOptions<'_>,
+        spans: &[ColorSpan],
+        styles: &[StyleSpan],
+    ) -> Result<TextPage, LayoutError> {
         validate_input(text, options.size, options.scale, spans)?;
+        if styles.len() > MAX_SPANS {
+            return Err(LayoutError::LimitExceeded);
+        }
+        for style in styles {
+            if text.get(style.range.clone()).is_none() || style.range.is_empty() {
+                return Err(LayoutError::InvalidRange);
+            }
+            if !style.size.is_finite()
+                || !(1.0..=256.0).contains(&(style.size * options.scale))
+                || !(1..=1000).contains(&style.weight)
+            {
+                return Err(LayoutError::LimitExceeded);
+            }
+        }
         if options.family.len() > 256
             || options.size * options.scale > 256.0
             || !(1..=64).contains(&options.tab_width)
@@ -89,6 +124,24 @@ impl TextRenderer {
             FontStyle::Normal
         }));
         builder.push_default(StyleProperty::Brush(options.foreground));
+        for style in styles {
+            let range =
+                source_map.to_layout(style.range.start)..source_map.to_layout(style.range.end);
+            builder.push(StyleProperty::FontSize(style.size), range.clone());
+            builder.push(
+                StyleProperty::FontWeight(FontWeight::new(f32::from(style.weight))),
+                range.clone(),
+            );
+            builder.push(
+                StyleProperty::FontStyle(if style.italic {
+                    FontStyle::Italic
+                } else {
+                    FontStyle::Normal
+                }),
+                range.clone(),
+            );
+            builder.push(StyleProperty::Underline(style.underline), range);
+        }
         for span in spans {
             let range =
                 source_map.to_layout(span.range.start)..source_map.to_layout(span.range.end);
@@ -139,6 +192,10 @@ impl TextPage {
 
     pub fn width(&self) -> f32 {
         self.layout.width()
+    }
+
+    pub fn height(&self) -> f32 {
+        self.layout.height()
     }
 }
 

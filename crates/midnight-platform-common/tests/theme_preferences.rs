@@ -32,7 +32,7 @@ fn all_eight_theme_names_roundtrip_without_changing_the_schema_or_other_preferen
         let output: serde_json::Value =
             serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
         assert_eq!(output, input, "theme {name}");
-        assert_eq!(output["version"], 8);
+        assert_eq!(output["version"], 10);
     }
 }
 
@@ -58,6 +58,8 @@ fn all_previous_schema_versions_keep_the_original_theme_names() {
                 (6, "panel_view_modes"),
                 (7, "shortcuts"),
                 (8, "panel_filters"),
+                (9, "editor"),
+                (10, "disabled_viewer_plugins"),
             ];
             for (introduced, field) in fields {
                 if version < introduced {
@@ -68,7 +70,7 @@ fn all_previous_schema_versions_keep_the_original_theme_names() {
             let output: serde_json::Value =
                 serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
             assert_eq!(output["theme"], *name, "version {version}");
-            assert_eq!(output["version"], 8);
+            assert_eq!(output["version"], 10);
         }
     }
 }

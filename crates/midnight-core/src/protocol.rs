@@ -42,6 +42,7 @@ pub struct SelectedFiles {
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    ListViewerPlugins,
     LoadLocale,
     ManageNetworkConnections {
         disconnect: bool,
@@ -109,6 +110,12 @@ pub enum Command {
     ListDesktopContext,
     LoadPreferences,
     ListFontFamilies,
+    ResolveDefaultEditor,
+    EditFile {
+        request: DesktopRequestId,
+        path: PathBuf,
+        editor: crate::EditorPreferences,
+    },
     SavePreferences {
         revision: PreferencesRevision,
         preferences: UserPreferences,
@@ -201,6 +208,7 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
     DirectoriesCompared {
         id: crate::CompareId,
         result: Result<Arc<crate::CompareResult>, FsError>,
@@ -251,6 +259,7 @@ pub enum Event {
         error: FsError,
     },
     FontFamiliesLoaded(Result<Vec<String>, FsError>),
+    EditorDefaultResolved(Result<crate::EditorCommand, FsError>),
     PreferencesLoaded(Result<UserPreferences, FsError>),
     PreferencesSaved {
         revision: PreferencesRevision,

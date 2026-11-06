@@ -21,7 +21,9 @@ fn ordered_native_tab_paths_and_active_indices_roundtrip() {
     let output: serde_json::Value =
         serde_json::from_slice(&encode_preferences(decoded).unwrap()).unwrap();
     let mut migrated = input;
-    migrated["version"] = 8.into();
+    migrated["version"] = 10.into();
+    migrated["disabled_viewer_plugins"] = serde_json::json!([]);
+    migrated["editor"] = serde_json::json!({"executable":null,"arguments":["{file}"]});
     migrated["shortcuts"] = serde_json::json!([]);
     migrated["panel_filters"] = serde_json::json!([{ "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }, { "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }]);
     assert_eq!(output, migrated);
@@ -36,7 +38,7 @@ fn legacy_preferences_migrate_without_inventing_saved_tab_locations() {
     let decoded = decode_preferences(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     let output: serde_json::Value =
         serde_json::from_slice(&encode_preferences(decoded).unwrap()).unwrap();
-    assert_eq!(output["version"], 8);
+    assert_eq!(output["version"], 10);
     assert_eq!(
         output["tabs"],
         serde_json::json!([

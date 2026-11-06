@@ -380,12 +380,12 @@ exists. Internal panel dragging remains available. X11 incremental transfers are
 bounded and timed out. Move proposals may negotiate Copy only when the source
 explicitly offers Copy; a Move-only offer is rejected.
 
-## Planned dynamic viewer/filesystem plugins
+## Dynamic viewers and planned filesystem plugins
 
 The [plugin interface design](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
-defines the next implementation; no dynamic plugin loader or internal viewer is
-enabled today. Each viewer/provider, including the OS-native filesystem, becomes
-a removable library under the installation's `viewers/` or `filesystems/` root.
+defines the implementation boundary. Basic text/binary, source and Markdown viewers
+are separate removable libraries under the installation's `viewers/` root. The
+`filesystems/` providers and migration of the OS-native filesystem remain planned.
 
 - Native plugins run with application authority. Neither a C ABI nor capability
   validation isolates malicious code, memory faults or a stuck native parser.
@@ -394,6 +394,11 @@ a removable library under the installation's `viewers/` or `filesystems/` root.
   before loading code, checks platform/ABI/identity, and never searches the active
   panel, working directory, PATH or an archive for executable extensions. Native
   dependency lookup is constrained by separate platform loader implementations.
+- Discovery and lazy loading reject untrusted ownership/write permissions on the
+  package and unsafe replacement permissions on its ancestors. Windows uses native
+  DACL/owner checks; Linux uses native uid/mode and sticky-directory rules. A private
+  child inside a replaceable parent is insufficient. This does not turn trusted
+  native code into a sandbox or authenticate a publisher's identity.
 - Plugin projects share one Git repository but only depend on the public API/SDK.
   Their independent Cargo workspaces and CI jobs
   contain their tests and have no write access to the host application's sources.
@@ -409,6 +414,15 @@ a removable library under the installation's `viewers/` or `filesystems/` root.
   executable markup or source-directory grammars. Parsing and decompression run
   on bounded backend workers; cancellation is cooperative, not a promise to kill
   a blocked thread safely.
+- The native content broker provides LiveValidated reads, not a filesystem snapshot:
+  it prepares identity, opens without following links, and checks revision before
+  and after reads. Replaced/changed files report an error. Reads are bounded to
+  256 KiB and use u64 offsets. Four live sessions share the host limits; decoded
+  pages, wire items, retained service replies and raster surfaces have separate
+  explicit budgets. Selection/copy is limited to the loaded page.
+- Markdown returns semantic text blocks and inert link metadata. The host does not
+  execute HTML/scripts or load remote images, styles, fonts or links. Source syntax
+  definitions are packaged code, never executable configuration from the opened folder.
 - Archive browsing is read-only. Names, links and declared sizes are untrusted;
   actual decompression, dictionaries, indexes, nesting and cache use share
   budgets. Listing never extracts a member to its declared host pathname.

@@ -163,6 +163,8 @@ pub enum PanelViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
+    pub disabled_viewer_plugins: Vec<String>,
+    pub editor: crate::EditorPreferences,
     pub theme: PreferenceTheme,
     pub density: UiDensity,
     pub windows_shell: WindowsShell,
@@ -192,6 +194,8 @@ pub const MAX_FONT_FAMILY_BYTES: usize = 512;
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            disabled_viewer_plugins: Vec::new(),
+            editor: crate::EditorPreferences::default(),
             theme: PreferenceTheme::default(),
             density: UiDensity::default(),
             windows_shell: WindowsShell::default(),
@@ -232,6 +236,12 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if let Err(error) = crate::validate_disabled_viewers(&self.disabled_viewer_plugins) {
+            message = Some(error);
+        }
+        if let Err(error) = self.editor.validate() {
+            message = Some(error);
+        }
         for filter in &self.panel_filters {
             if let Err(error) = filter.validate_bounds() {
                 message = Some(error);

@@ -2,8 +2,122 @@ name: build-and-test
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
+env:
+  # Formatting metadata needs the public registry name even before --config is
+  # passed to compilation; dependency resolution uses the released local bundle.
+  CARGO_REGISTRIES_MIDNIGHT_INDEX: https://midnight-explorer.invalid/api-index
+
 jobs:
+  public-sdk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /api/
+            /rust-toolchain.toml
+      - name: Prepare SDK release workspace
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/_build/tmp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/_build/tmp" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/_build/sdk-target" >> "$GITHUB_ENV"
+          rustup show
+      - name: Public API and SDK checks
+        run: |
+          cargo fetch --manifest-path api/Cargo.toml --locked
+          cargo fmt --manifest-path api/Cargo.toml --all -- --check
+          cargo test --manifest-path api/Cargo.toml --all-targets --locked --offline
+          cargo clippy --manifest-path api/Cargo.toml --all-targets --locked --offline -- -D warnings
+      - name: Build public SDK release bundle
+        id: sdk
+        run: |
+          output=$(bash api/scripts/package.sh)
+          printf '%s\n' "$output"
+          bundle=$(printf '%s\n' "$output" | sed -n 's/^Public API\/SDK release bundle: //p' | tail -n 1)
+          test -f "$bundle/.cargo/config.toml"
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: released-plugin-sdk
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            ${{ steps.sdk.outputs.bundle }}/.cargo/config.toml
+            ${{ steps.sdk.outputs.bundle }}/registry/
+            ${{ steps.sdk.outputs.bundle }}/vendor/
+            ${{ steps.sdk.outputs.bundle }}/include/
+            ${{ steps.sdk.outputs.bundle }}/artifacts.json
+
+  viewers:
+    needs: public-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+        plugin: [basic, source, markdown]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # These builds have no application or unpublished API/SDK source available.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /plugins/midnight-viewer-${{ matrix.plugin }}/
+            /rust-toolchain.toml
+      - uses: actions/download-artifact@v4
+        with:
+          name: released-plugin-sdk
+          path: _build/released-sdk
+      - name: Prepare independent workspace
+        shell: pwsh
+        run: |
+          $temporaryDirectory = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
+          New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
+          @("TEMP=$temporaryDirectory", "TMP=$temporaryDirectory", "TMPDIR=$temporaryDirectory") |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          rustup show
+          if (Test-Path -LiteralPath 'crates') { throw 'Application source leaked into plugin job' }
+          if (Test-Path -LiteralPath 'api') { throw 'Unreleased SDK source leaked into plugin job' }
+      - name: Independent plugin tests and package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pluginRoot = 'plugins/midnight-viewer-${{ matrix.plugin }}'
+          $sdk = (Resolve-Path '_build/released-sdk/.cargo/config.toml').Path
+          $build = Join-Path $env:GITHUB_WORKSPACE '_build/viewer-ci'
+          $config = $sdk
+          if (Test-Path "$pluginRoot/scripts/prepare-sdk.ps1") {
+            $config = & "$pluginRoot/scripts/prepare-sdk.ps1" -SdkConfig $sdk -BuildRoot $build
+          }
+          cargo --config $config fetch --manifest-path "$pluginRoot/Cargo.toml" --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed' }
+          & "$pluginRoot/scripts/ci.ps1" -SdkConfig $sdk -BuildRoot $build
+          if ($LASTEXITCODE -ne 0) { throw 'Independent viewer checks failed' }
+      - name: Independent plugin tests and package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          plugin_root='plugins/midnight-viewer-${{ matrix.plugin }}'
+          sdk="$GITHUB_WORKSPACE/_build/released-sdk/.cargo/config.toml"
+          build="$GITHUB_WORKSPACE/_build/viewer-ci"
+          config="$sdk"
+          if [[ -f "$plugin_root/scripts/prepare-sdk.py" ]]; then
+            config=$(python3 -B "$plugin_root/scripts/prepare-sdk.py" "$sdk" "$build")
+          fi
+          cargo --config "$config" fetch --manifest-path "$plugin_root/Cargo.toml" --locked
+          bash "$plugin_root/scripts/ci.sh" "$sdk" "$build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-${{ runner.os }}-${{ matrix.plugin }}
+          if-no-files-found: error
+          path: _build/viewer-ci/package/
+
   check:
+    needs: viewers
     strategy:
       fail-fast: false
       matrix:
@@ -11,13 +125,47 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare build temporary directory
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: viewer-${{ runner.os }}-*
+          merge-multiple: true
+          path: _build/viewer-packages
+      - name: Prepare build temporary directory and private native test installation
         shell: pwsh
         run: |
           $temporaryDirectory = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
           New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
           @("TEMP=$temporaryDirectory", "TMP=$temporaryDirectory", "TMPDIR=$temporaryDirectory") |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($IsWindows) {
+            $testRoot = Join-Path $env:USERPROFILE ('MidnightViewerTests-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $testRoot | Out-Null
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $acl = New-Object Security.AccessControl.DirectorySecurity
+            $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+              [Security.AccessControl.AccessControlSections]::Access)
+            Set-Acl -LiteralPath $testRoot -AclObject $acl
+            $library = 'midnight_viewer_basic.dll'
+          } else {
+            $testRoot = Join-Path $env:RUNNER_TEMP ('_build/viewer-tests-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+            chmod 700 $testRoot
+            $library = 'libmidnight_viewer_basic.so'
+          }
+          "HOST_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $plugin = Join-Path $env:GITHUB_WORKSPACE "_build/viewer-packages/midnight-viewer-basic/$library"
+          "HOST_TEST_PLUGIN=$plugin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $installedViewers = Join-Path $testRoot 'viewers'
+          Copy-Item -LiteralPath '_build/viewer-packages' -Destination $installedViewers -Recurse
+          if (-not $IsWindows) {
+            chmod 700 $installedViewers
+            Get-ChildItem -LiteralPath $installedViewers -Force -Recurse | ForEach-Object {
+              $mode = if ($_.PSIsContainer) { '700' } else { '600' }
+              chmod $mode -- $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw 'Private test installation permissions failed' }
+            }
+          }
+          "MIDNIGHT_VIEWER_TEST_INSTALL=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Linux prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth
@@ -27,6 +175,9 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Release packaging tests
         run: python -B -m unittest discover -s scripts/tests -v
+      - name: Private deployment tests (Windows)
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoProfile -File scripts/tests/test-private-deployment.ps1
       - name: Source size (Windows)
         if: runner.os == 'Windows'
         run: pwsh scripts/check-source-size.ps1
@@ -35,6 +186,18 @@ jobs:
         run: bash scripts/check-source-size.sh
       - name: Test
         run: cargo test --workspace --locked
+      - name: Native viewer ABI rejection fixture
+        shell: pwsh
+        run: |
+          cargo build --manifest-path crates/midnight-plugin-host/tests/fixtures/bad-descriptor/Cargo.toml --locked --offline --target-dir _build/bad-viewer-descriptor
+          if ($LASTEXITCODE -ne 0) { throw 'Bad descriptor fixture build failed' }
+          $library = if ($IsWindows) { 'midnight_host_bad_descriptor.dll' } else { 'libmidnight_host_bad_descriptor.so' }
+          $path = Join-Path $env:GITHUB_WORKSPACE "_build/bad-viewer-descriptor/debug/$library"
+          "HOST_BAD_PLUGIN=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Native viewer open, viewport, search and quiescent close
+        run: cargo test -p midnight-plugin-host --locked -- --include-ignored
+      - name: Native viewer engine rendering, search, copy, mode and file-cycle integration
+        run: cargo test -p midnight-viewer-engine --lib --locked -- --ignored --nocapture
       - name: Native X11 drag and drop (isolated display)
         if: runner.os == 'Linux'
         run: >-
@@ -46,5 +209,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optimized release build
         run: cargo build -p midnight-explorer --release --locked
+      - name: Install independently built viewer packages beside executable
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath '_build/viewer-packages' -Destination '_build/release/viewers' -Recurse
       - name: Release filesystem smoke test
         run: cargo run -p midnight-explorer --release --locked -- --smoke-test

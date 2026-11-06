@@ -390,9 +390,9 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         Command::ShowSelectionProperties { .. }
     ));
     commands.borrow_mut().clear();
-    // Rename, create and delete are covered by mutation_controls. Only the
-    // pending viewer/editor/transfer stage still has unavailable commands.
-    for shortcut in [Key::F3, Key::F4, Key::F5, Key::F6] {
+    // Rename/create/delete and viewer/editor behavior have dedicated tests.
+    // The full transfer dialogs remain unavailable in this stage.
+    for shortcut in [Key::F5, Key::F6] {
         key(&window, shortcut);
     }
     assert!(

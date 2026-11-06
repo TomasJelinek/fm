@@ -159,6 +159,8 @@ pub enum ShortcutContext {
     Command,
     Other,
     Volume,
+    Viewer,
+    ViewerSearch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +172,8 @@ pub enum ShortcutScope {
     Command,
     Global,
     Volume,
+    ViewerContent,
+    ViewerAny,
 }
 
 impl ShortcutScope {
@@ -181,8 +185,10 @@ impl ShortcutScope {
             Self::FilesAny => matches!(context, Files | Search),
             Self::FilesOrCommand => matches!(context, Files | Search | Command),
             Self::Command => context == Command,
-            Self::Global => true,
+            Self::Global => !matches!(context, Viewer | ViewerSearch),
             Self::Volume => context == Volume,
+            Self::ViewerContent => context == Viewer,
+            Self::ViewerAny => matches!(context, Viewer | ViewerSearch),
         }
     }
 
@@ -195,6 +201,8 @@ impl ShortcutScope {
             Self::Command => "Command editor",
             Self::Global => "Application window",
             Self::Volume => "Volume choices popup",
+            Self::ViewerContent => "Viewer content",
+            Self::ViewerAny => "Viewer window and search",
         }
     }
 }
@@ -263,7 +271,10 @@ impl ShortcutDefinition {
                 chord.display()
             ));
         }
-        if !scope.includes(ShortcutContext::Command) && !scope.includes(ShortcutContext::Other) {
+        if !scope.includes(ShortcutContext::Command)
+            && !scope.includes(ShortcutContext::Other)
+            && !scope.includes(ShortcutContext::ViewerSearch)
+        {
             return Ok(());
         }
         let key = chord.key.as_str();
@@ -322,7 +333,9 @@ impl ShortcutDefinition {
                 | "PageDown"
                 | "Tab"
         );
-        let widget_submit = scope != ShortcutScope::Command && matches!(key, "Enter" | "Escape");
+        let viewer_escape = scope == ShortcutScope::ViewerAny && key == "Escape";
+        let widget_submit =
+            scope != ShortcutScope::Command && !viewer_escape && matches!(key, "Enter" | "Escape");
         if editor_chord || (plain && (printable || editing_key || widget_submit)) {
             Err(format!(
                 "{} is reserved for native text editing in {}.",
@@ -338,7 +351,7 @@ impl ShortcutDefinition {
 /// Compiled once when preferences change; resolving a chord performs no allocation.
 #[derive(Clone, Debug)]
 pub struct ShortcutMap {
-    resolved: HashMap<ShortcutChord, [Option<usize>; 5]>,
+    resolved: HashMap<ShortcutChord, [Option<usize>; 7]>,
     bindings: HashMap<String, Vec<ShortcutChord>>,
 }
 
@@ -400,6 +413,8 @@ impl ShortcutMap {
                     ShortcutContext::Command,
                     ShortcutContext::Other,
                     ShortcutContext::Volume,
+                    ShortcutContext::Viewer,
+                    ShortcutContext::ViewerSearch,
                 ]
                 .into_iter()
                 .enumerate()
@@ -437,6 +452,8 @@ impl ShortcutMap {
             ShortcutContext::Command => 2,
             ShortcutContext::Other => 3,
             ShortcutContext::Volume => 4,
+            ShortcutContext::Viewer => 5,
+            ShortcutContext::ViewerSearch => 6,
         };
         self.resolved.get(chord)?[position].map(|index| &shortcut_catalog()[index])
     }

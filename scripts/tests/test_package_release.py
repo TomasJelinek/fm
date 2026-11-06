@@ -1,7 +1,10 @@
 """Regression checks for the release dependency inventory."""
 import importlib.util
+import hashlib
+import os
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from pathlib import Path
@@ -70,6 +73,114 @@ class ArchivePermissionsTests(unittest.TestCase):
                         with zipfile.ZipFile(archive) as bundle:
                             self.assertEqual(bundle.getinfo("release/me").external_attr >> 16 & 0o777, 0o755)
                             self.assertEqual(bundle.getinfo("release/README.txt").external_attr >> 16 & 0o777, 0o644)
+
+
+class ViewerPackageTests(unittest.TestCase):
+    def setUp(self):
+        temporary = Path(__file__).resolve().parents[2] / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=temporary)
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.viewers = self.root / "input-viewers"
+        self.viewers.mkdir()
+        self.stage = self.root / "release"
+        self.stage.mkdir()
+        self.target = "x86_64-pc-windows-msvc"
+
+    def package(self, name="basic", identity="midnight.viewer.basic", entry="viewer.dll"):
+        package = self.viewers / name
+        package.mkdir()
+        manifest = (f'schema_version=1\nid="{identity}"\nkind="viewer"\nversion="0.1.0"\n'
+                    f'entry_library="{entry}"\ntarget="{self.target}"\nabi_major=1\n'
+                    'minimum_host_minor=0\nmodels=["text-page.v1"]\nmodes=["text"]\n')
+        (package / "plugin.toml").write_text(manifest, encoding="utf-8")
+        (package / "viewer.dll").write_bytes(b"independent native fixture")
+        (package / "LICENSE").write_text("Plugin license", encoding="utf-8")
+        (package / "THIRD-PARTY.md").write_text("Dependency notices", encoding="utf-8")
+        notices = package / "notices"
+        notices.mkdir()
+        (notices / "upstream-LICENSE").write_text("Upstream terms", encoding="utf-8")
+        return package
+
+    def test_copies_plugin_manifest_library_and_nested_notices_with_inventory_hashes(self):
+        self.package()
+        inventory = packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0]["id"], "midnight.viewer.basic")
+        files = {item["path"]: item for item in inventory[0]["files"]}
+        library = files["viewers/basic/viewer.dll"]
+        self.assertEqual(library["sha256"], hashlib.sha256(b"independent native fixture").hexdigest())
+        self.assertEqual(len(inventory[0]["package_sha256"]), 64)
+        self.assertEqual((self.stage / "viewers/basic/notices/upstream-LICENSE").read_text(), "Upstream terms")
+        archive = self.root / "release.zip"
+        packaging.write_archive(self.stage, archive, "me.exe", "zip")
+        with zipfile.ZipFile(archive) as bundle:
+            self.assertEqual(bundle.read("release/viewers/basic/viewer.dll"), b"independent native fixture")
+
+    def test_duplicate_id_target_mismatch_and_entry_escape_are_refused(self):
+        for change in ("duplicate", "target", "escape"):
+            with self.subTest(change=change):
+                first = self.package(change, identity=f"viewer.{change}")
+                if change == "duplicate":
+                    self.package("duplicate-other", identity="viewer.duplicate")
+                elif change == "target":
+                    manifest = first / "plugin.toml"
+                    manifest.write_text(manifest.read_text().replace(self.target, "wrong-target"))
+                else:
+                    manifest = first / "plugin.toml"
+                    manifest.write_text(manifest.read_text().replace('entry_library="viewer.dll"', 'entry_library="../outside.dll"'))
+                with self.assertRaises(ValueError):
+                    packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
+                for child in tuple(self.viewers.iterdir()):
+                    import shutil
+                    shutil.rmtree(child)
+
+    def test_release_requires_all_selected_plugins_and_license_notices(self):
+        package = self.package()
+        with self.assertRaises(ValueError):
+            packaging.copy_viewer_packages(self.stage, self.viewers, self.target,
+                                          required_ids=("midnight.viewer.basic", "midnight.viewer.source"))
+        (package / "LICENSE").unlink()
+        with self.assertRaises(ValueError):
+            packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
+
+    def test_symlinked_package_content_and_zip_stage_are_rejected(self):
+        package = self.package()
+        outside = self.root / "outside.txt"
+        outside.write_text("not part of this package")
+        link = package / "notices" / "redirect"
+        try:
+            link.symlink_to(outside)
+        except OSError as error:
+            self.skipTest(f"OS does not permit fixture symlink creation: {error}")
+        with self.assertRaises(ValueError):
+            packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
+        (self.stage / "redirect").symlink_to(outside)
+        with self.assertRaises(ValueError):
+            packaging.write_archive(self.stage, self.root / "unsafe.zip", "me.exe", "zip")
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot create a literal backslash filename")
+    def test_unix_filename_cannot_become_a_windows_archive_path_escape(self):
+        package = self.package()
+        (package / "notices" / "..\\..\\..\\escape.txt").write_text("ambiguous archive path")
+        with self.assertRaises(ValueError):
+            packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
+        (self.stage / "..\\escape.txt").write_text("ambiguous archive path")
+        with self.assertRaises(ValueError):
+            packaging.write_archive(self.stage, self.root / "unsafe-name.zip", "me.exe", "zip")
+
+
+class IndependentPluginNoticeTests(unittest.TestCase):
+    def test_basic_carries_notices_for_every_pinned_third_party_crate(self):
+        root = Path(__file__).resolve().parents[2] / "plugins/midnight-viewer-basic"
+        lock = tomllib.loads((root / "Cargo.lock").read_text())
+        for package in lock["package"]:
+            if package.get("source", "").startswith("registry+https://github.com/rust-lang/crates.io-index"):
+                directory = root / "notices" / f'{package["name"]}-{package["version"]}'
+                with self.subTest(dependency=directory.name):
+                    self.assertTrue(directory.is_dir(), f"Missing independent package notices: {directory.name}")
+                    self.assertTrue(any(path.is_file() and path.stat().st_size > 0 for path in directory.iterdir()))
 
 
 if __name__ == "__main__":

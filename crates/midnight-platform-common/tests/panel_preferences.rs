@@ -27,7 +27,9 @@ fn exact_command_text_shell_and_size_preferences_roundtrip() {
     let output: serde_json::Value =
         serde_json::from_slice(&encode_preferences(decoded).unwrap()).unwrap();
     let mut expected = input;
-    expected["version"] = 8.into();
+    expected["version"] = 10.into();
+    expected["disabled_viewer_plugins"] = serde_json::json!([]);
+    expected["editor"] = serde_json::json!({"executable":null,"arguments":["{file}"]});
     expected["shortcuts"] = serde_json::json!([]);
     expected["panel_filters"] = serde_json::json!([{ "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }, { "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }]);
     expected["tabs"] = serde_json::json!([
@@ -62,7 +64,7 @@ fn version_four_migrates_with_readable_sizes_empty_persistent_history() {
     let decoded = decode_preferences(&serde_json::to_vec(&input).unwrap()).unwrap();
     let output: serde_json::Value =
         serde_json::from_slice(&encode_preferences(decoded).unwrap()).unwrap();
-    assert_eq!(output["version"], 8);
+    assert_eq!(output["version"], 10);
     assert_eq!(output["size_display"], "readable");
     assert_eq!(output["remember_command_history"], true);
     assert_eq!(output["command_history"], serde_json::json!([]));

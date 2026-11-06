@@ -4,6 +4,8 @@ import { CompactPicker } from "controls.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { KeyboardOptions } from "keyboard-options.slint";
+import { EditorOptions } from "editor-options.slint";
+import { PluginOptions } from "plugin-options.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -28,6 +30,13 @@ component OptionPicker inherits Rectangle {
 }
 
 export component OptionsBody inherits Rectangle {
+    in property <string> editor-default-label;
+    in property <string> editor-executable;
+    in property <string> editor-arguments;
+    in property <string> editor-revision;
+    in property <string> editor-error;
+    callback editor-apply(string, string);
+    callback editor-restore();
     in property <ActionIcons> action-icons;
     in-out property <int> topic-index;
     in property <int> theme-index;
@@ -69,7 +78,7 @@ export component OptionsBody inherits Rectangle {
             height: Theme.control-height + 4px;
             HorizontalLayout {
                 spacing: 0px;
-                for label[index] in ["Panel", "Appearance", "Command", "Keyboard"] : Rectangle {
+                for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins"] : Rectangle {
                     horizontal-stretch: 1;
                     background: root.topic-index == index ? Theme.active-header
                         : tab-area.has-hover ? Theme.hover : Theme.secondary-surface;
@@ -88,7 +97,7 @@ export component OptionsBody inherits Rectangle {
                             if event.text == Key.Return || event.text == Key.Space {
                                 root.topic-index = index; return accept;
                             }
-                            if event.text == Key.RightArrow { root.topic-index = min(3, root.topic-index + 1); return accept; }
+                            if event.text == Key.RightArrow { root.topic-index = min(5, root.topic-index + 1); return accept; }
                             if event.text == Key.LeftArrow { root.topic-index = max(0, root.topic-index - 1); return accept; }
                             reject
                         }
@@ -99,6 +108,13 @@ export component OptionsBody inherits Rectangle {
         }
         ScrollView {
             horizontal-scrollbar-policy: always-off;
+            if root.topic-index == 5 : PluginOptions { }
+            if root.topic-index == 4 : EditorOptions {
+                default-label: root.editor-default-label; executable: root.editor-executable;
+                arguments: root.editor-arguments; revision: root.editor-revision; error: root.editor-error;
+                apply(executable, arguments) => { root.editor-apply(executable, arguments); }
+                restore => { root.editor-restore(); }
+            }
             if root.topic-index == 3 : KeyboardOptions {
                 actions: root.keyboard-actions; selected: root.keyboard-selected;
                 action-id: root.keyboard-action-id; bindings: root.keyboard-bindings;

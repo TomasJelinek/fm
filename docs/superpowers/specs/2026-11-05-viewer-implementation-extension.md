@@ -6,6 +6,12 @@ without replacing its ABI, ownership, asynchronous work or safety requirements.
 This extension takes precedence over the older combined text/source plugin and
 Markdown-after-archives ordering: the user now requests three viewer packages first.
 
+Implementation details and verification are maintained in
+[viewer-implementation.md](../../verification/viewer-implementation.md), including
+the four-session limit, page-bounded selection/copy, native installation trust checks,
+restart-based plugin preferences and the actual syntax catalogue. These limits apply
+to this initial delivery; archive/native filesystem plugin migration remains separate.
+
 ## Delivery and independence
 
 Deliver three independently built viewer packages: basic text/binary, source

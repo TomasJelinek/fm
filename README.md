@@ -8,7 +8,9 @@ Product version **0.1** (Cargo SemVer `0.1.0`); the native window title shows
 Prebuilt Windows/Linux previews are published on the
 [GitHub Releases page](https://github.com/TomasJelinek/fm/releases).
 See [feature status](docs/FEATURE_STATUS.md) for the distinction between implemented
-functionality and the viewer, complete Copy/Move, Find and filesystem-plugin backlog.
+functionality and the complete Copy/Move, Find and filesystem-plugin backlog.
+Published preview archives may precede the current source; their bundled feature-status file
+describes that particular build.
 
 Lossless Unicode throughout the product, security and backend-only non-UI work
 are explicit requirements. See [security and integrity rules](SECURITY.md).
@@ -22,8 +24,8 @@ permanent deletion with Shift). Empty-file creation accepts a name and never
 overwrites an existing entry.
 Explicitly opened files use host associations,
 and explicitly submitted shell commands run with
-the selected user/sudo permissions. Viewer plugins and configurable external editing
-are the next stage. Ctrl+C/Ctrl+V copies files and ordinary folders through a
+the selected user/sudo permissions. F3 opens an installed internal viewer; Alt+F3 forces
+plain text, and F4 opens the configured external editor. Ctrl+C/Ctrl+V copies files and ordinary folders through a
 background queue with independent SHA-256 destination readback. Existing names
 prompt for skip or a different name; overwrite, merge, Cut/Move, links and full
 metadata preservation are not implemented. See the platform capability limits in
@@ -67,7 +69,10 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They do not install system packages or launch the application.
+exit status. They also build the three independent viewer packages using the public
+SDK and install their artifacts under the executable's `viewers/` directory. They do
+not install system packages or launch the application. Direct `cargo build` builds
+the host only; run `scripts/build-viewers.ps1` or `scripts/build-viewers.sh` to add viewers.
 The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
 and `me` on Linux.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
@@ -90,7 +95,7 @@ Build from PowerShell or Command Prompt:
 .\build.bat release
 ```
 
-Equivalent commands with a normal Rust installation:
+Host-only commands with a normal Rust installation (viewer packages are built separately):
 
 ```powershell
 cargo build -p midnight-explorer --locked
@@ -132,18 +137,19 @@ that PowerShell helper. Regular `cargo` commands use the ordinary `--` separator
 ### Linux / Ubuntu / Mint
 
 Install the native compiler/linker and development libraries used by the current
-Linux build. For Ubuntu/Mint this matches CI prerequisites plus `build-essential`:
+Linux build. Viewer package helpers also require Python 3.11 or newer for the
+released SDK configuration. For Ubuntu/Mint:
 
 ```sh
 sudo apt update
-sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype6-dev \
+sudo apt install build-essential python3 pkg-config libfontconfig1-dev libfreetype6-dev \
     libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev
 ```
 
 Fedora 44+ (maintained desktop release, x86-64):
 
 ```sh
-sudo dnf install gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel freetype-devel \
+sudo dnf install gcc gcc-c++ make python3 pkgconf-pkg-config fontconfig-devel freetype-devel \
     libxkbcommon-devel libxkbcommon-x11-devel libX11-devel libXcursor-devel \
     libxcb-devel wayland-devel systemd-devel xdg-utils
 ```
@@ -151,7 +157,7 @@ sudo dnf install gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel freetype-d
 openSUSE Leap 16.x / Tumbleweed (x86-64):
 
 ```sh
-sudo zypper install gcc gcc-c++ make pkg-config xdg-utils \
+sudo zypper install gcc gcc-c++ make python3 pkg-config xdg-utils \
     'pkgconfig(fontconfig)' 'pkgconfig(freetype2)' 'pkgconfig(xkbcommon)' \
     'pkgconfig(xkbcommon-x11)' 'pkgconfig(x11)' 'pkgconfig(xcursor)' \
     'pkgconfig(xcb)' 'pkgconfig(wayland-client)' 'pkgconfig(libudev)'
@@ -171,7 +177,7 @@ automatically supported by the current launcher.
 
 Install Rust using the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
-Build using the POSIX helper or Cargo:
+Build using the POSIX helper, or build only the host with Cargo:
 
 ```sh
 ./build.sh
@@ -217,6 +223,8 @@ build, from the repository root:
 
 ```sh
 install -Dm755 _build/release/me "$HOME/.local/bin/me"
+mkdir -p "$HOME/.local/bin/viewers"
+cp -R _build/release/viewers/. "$HOME/.local/bin/viewers/"
 install -Dm644 packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop \
     "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
 install -Dm644 assets/branding/midnight-explorer.png \
@@ -465,7 +473,7 @@ Slint Rust, dependency outputs, incremental caches and rustdoc output:
 | `_build/qa/` | New test logs, screenshots, diagnostics and disposable experiments | Ignored |
 | `.tools/` | Optional existing toolchains/dependency caches/native prerequisites and retained historical QA artifacts | Ignored |
 | `.superpowers/` | Retained historical execution/verification evidence | Ignored |
-| `crates/`, `scripts/`, `.cargo/`, `.github/`, root `build.bat` / `build.sh` | Handwritten code, tests, build helpers/configuration and CI | Tracked |
+| `crates/`, `api/`, `plugins/`, `scripts/`, `.cargo/`, `.github/`, root build helpers | Handwritten code, independent plugin/API projects, tests, build configuration and CI | Tracked |
 | `docs/` | Design, keyboard map and intended documentation images | Tracked |
 
 Cargo writes directly into `_build/`; there is no separate `target/` directory
@@ -564,7 +572,57 @@ public API/SDK and must build from an exported plugin directory without host
 sources. Plugins cannot depend on private
 application crates or modify the main application's sources; API extensions are
 separate host-owned changes. Distribution packaging consumes plugin artifacts.
-These are designs, not enabled viewer/VFS/session-reuse implementations. Each OS
+The three viewer packages and their generic host are implemented; archive/native-provider
+plugin migration and reusable terminal sessions remain planned. Each OS
 will have its own native provider; archives and typed Registry values use the
 same provider boundary. Copy/move conflicts require a source/destination metadata
 comparison and explicit overwrite policy before publication.
+
+### Internal viewers
+
+F3 opens Markdown for `.md`/`.markdown`, source highlighting for the package's
+[supported language catalogue](plugins/midnight-viewer-source/README.md), and the basic
+text/hex viewer for other files. Alt+F3 always requests the basic plugin's Text mode,
+including for binary input. The mode selector changes between modes supported by
+the current plugin. Unknown or budget-limited syntax stays readable as plain text.
+
+Each viewer starts at the main window's size. Escape closes it, including from its
+search field. Space in the content area advances through the captured panel order,
+wrapping after the last regular file. Ctrl+F opens search; F3/Shift+F3 find the next/
+previous match. Scrollbars, the wheel, arrows, Page Up/Down and Ctrl+Home/End navigate
+without loading the complete file. Drag selects text; Ctrl+A selects the loaded page
+and Ctrl+C copies the selection. These shortcuts are configurable in Options → Keyboard.
+
+Plugins are independent Cargo projects in `plugins/`, with their own tests and locks.
+Only built packages under `viewers/<package>/plugin.toml` beside the executable are
+discovered. Options → Plugins lists available/refused packages and lets you disable
+or enable them for the next startup. Missing or disabled plugins remove their
+capability; the host has no built-in parser fallback. At most four viewer windows
+may be open. Reading, parsing, search, layout and rasterization run on backend workers.
+
+Native plugin code is trusted application code, **not sandboxed**. The loader rejects
+installations writable or replaceable by untrusted users, including unsafe ancestors.
+Build artifacts in a shared checkout may therefore be refused. Deploy the executable
+and `viewers/` together into a private user-owned or administrator-owned installation;
+do not relax the check or install DLLs from the directory being browsed. On Linux,
+directories should normally be `0755` and package files `0644`, with no group/world
+write access. On Windows, keep modification rights restricted to your account,
+Administrators and SYSTEM. See [verification and limits](docs/verification/viewer-implementation.md).
+
+For a Windows checkout on a shared/writable drive, deploy a private runnable copy:
+
+```powershell
+.\build.bat release
+powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release
+```
+
+The deployment helper prints a fresh installation path under your user profile.
+Run `me.exe` from that path. It copies the executable and viewer packages, protects
+the new installation's permissions, and refuses unsafe parents or an existing
+destination. It never changes the checkout's permissions or launches the app.
+This is a runtime installation; compiler and intermediate files remain in `_build`.
+
+Options → Editors configures F4 using an absolute executable and a JSON array of
+literal arguments. `{file}` must occupy a complete argument; paths are never expanded
+through a shell. The platform default and launch errors are shown explicitly. See
+[external editor verification](docs/verification/external-editor.md).

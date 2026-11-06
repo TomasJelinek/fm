@@ -22,6 +22,8 @@ import { PanelSplitter } from "panel-splitter.slint";
 import { DragFeedback } from "drag-feedback.slint";
 import { TerminalControl } from "terminal-control.slint";
 import { OptionsBody } from "options-dialog.slint";
+import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
+export { ViewerPluginsView, ViewerPluginRow }
 import { OperationDialog, OperationsBody, OperationRow } from "operation-controls.slint";
 import { CopyConflictDialog } from "copy-controls.slint";
 import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
@@ -580,6 +582,8 @@ export component MainWindow inherits Window {
     callback window-key(KeyEvent) -> bool;
     callback window-key-release(KeyEvent);
     callback function-action(string, int);
+    callback view-file(int, bool);
+    callback edit-file(int);
     in-out property <bool> control-layer;
     callback volume-key(KeyEvent) -> int;
     callback physical-shortcut(string, bool, bool, bool, bool) -> bool;
@@ -910,6 +914,13 @@ export component MainWindow inherits Window {
     callback preferences-changed(int, int, int);
     callback font-options-changed(int, int, int, int);
     callback options-opened();
+    in property <string> editor-default-label;
+    in property <string> editor-executable;
+    in property <string> editor-arguments;
+    in property <string> editor-revision;
+    in property <string> editor-error;
+    callback editor-apply(string, string);
+    callback editor-restore();
     callback terminal-changed(int);
     callback open-terminal();
     callback command-edited(bool);
@@ -1391,6 +1402,10 @@ export component MainWindow inherits Window {
         width: min(root.width - 24px, max(600px, Theme.font-size * 26));
         height: min(root.height - 24px, Theme.touch ? 510px : 420px);
         options-body := OptionsBody {
+            editor-default-label: root.editor-default-label; editor-executable: root.editor-executable;
+            editor-arguments: root.editor-arguments; editor-revision: root.editor-revision; editor-error: root.editor-error;
+            editor-apply(executable, arguments) => { root.editor-apply(executable, arguments); }
+            editor-restore => { root.editor-restore(); }
             keyboard-actions: root.keyboard-actions; keyboard-selected: root.keyboard-selected;
             keyboard-action-id: root.keyboard-action-id; keyboard-bindings: root.keyboard-bindings;
             keyboard-revision: root.keyboard-revision; keyboard-scope: root.keyboard-scope;

@@ -191,7 +191,7 @@ fn installed_shell(executable: PathBuf, name: &str) -> io::Result<PathBuf> {
     }
 }
 
-fn system_directory() -> io::Result<PathBuf> {
+pub(crate) fn system_directory() -> io::Result<PathBuf> {
     // Query the OS rather than mutable PATH/SystemRoot/COMSPEC environment variables.
     let mut buffer = vec![0u16; 256];
     loop {

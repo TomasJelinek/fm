@@ -4,6 +4,7 @@
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
+mod viewers;
 mod visible_sync;
 mod wake_gate;
 mod window_backend;
@@ -53,7 +54,7 @@ fn options() -> Result<Option<Options>, String> {
         match argument.to_str() {
             Some("--help" | "-h") => {
                 println!(
-                    "Midnight Explorer — dual-pane file manager\n\nUsage: me [--left PATH] [--right PATH] [--software]\n       me --smoke-test [--left PATH] [--right PATH]\n       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, rename, empty-file and directory creation, confirmed deletion, and verified clipboard copying. Viewer plugins and moving files are planned."
+                    "Midnight Explorer — dual-pane file manager\n\nUsage: me [--left PATH] [--right PATH] [--software]\n       me --smoke-test [--left PATH] [--right PATH]\n       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, installed viewer plugins, external editing, rename, empty-file and directory creation, confirmed deletion, and verified clipboard copying. Moving files is planned."
                 );
                 return Ok(None);
             }
@@ -259,6 +260,7 @@ fn run_window(
         Engine::with_wakeup(local.clone(), event_sender, notify.clone())
             .with_shell_menu(local.clone())
             .with_transfers(local.clone())
+            .with_editor(local.clone())
             .with_drag_drop(local)
             .with_locale(midnight_platform::locale_service())
             .with_mutations(mutations)
@@ -419,6 +421,12 @@ fn run_window(
         presenter.clone(),
         Rc::new(move |command| sender.try_send(command).is_ok()),
     );
+    let viewers = viewers::install(
+        &window,
+        presenter.clone(),
+        commands.clone(),
+        runtime.handle(),
+    );
     // Both panes share a four-Hz size pulse. Interactive/backend events still
     // repaint immediately and include the latest cached totals.
     let size_timer = slint::Timer::default();
@@ -440,6 +448,7 @@ fn run_window(
     let sync_state = presenter.clone();
     let sync_commands = commands.clone();
     let sync_window = window.as_weak();
+    let sync_viewers = viewers.clone();
     visible_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
@@ -449,7 +458,14 @@ fn run_window(
                 && let Some(window) = sync_window.upgrade()
             {
                 state.shutdown_drag_drop(&|command| sync_commands.try_send(command).is_ok());
+                sync_viewers.close_all();
                 let _ = window.hide();
+            }
+            if sync_window
+                .upgrade()
+                .is_none_or(|window| !window.window().is_visible())
+            {
+                sync_viewers.close_all();
             }
             state.flush_selection(&|command| sync_commands.try_send(command).is_ok());
             state.flush_filters(&|command| sync_commands.try_send(command).is_ok());
@@ -480,6 +496,7 @@ fn run_window(
         .borrow_mut()
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
     let result = result.and(window.hide().map_err(|error| error.to_string()));
+    viewers.close_all();
     visible_timer.stop();
     size_timer.stop();
     // Detach the receiver from dormant UI callbacks without holding a RefCell

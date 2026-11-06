@@ -31,6 +31,24 @@ impl GlyphPainter {
                     continue;
                 };
                 let run = glyph_run.run();
+                if let Some(decoration) = &glyph_run.style().underline {
+                    let y = glyph_run.baseline()
+                        - decoration.offset.unwrap_or(run.metrics().underline_offset);
+                    let height = decoration
+                        .size
+                        .unwrap_or(run.metrics().underline_size)
+                        .max(1.0);
+                    raster.fill(
+                        crate::Rect {
+                            x0: f64::from(glyph_run.offset()),
+                            y0: f64::from(y),
+                            x1: f64::from(glyph_run.offset() + glyph_run.advance()),
+                            y1: f64::from(y + height),
+                        },
+                        view.origin,
+                        decoration.brush,
+                    );
+                }
                 if run.normalized_coords().len() > 64 {
                     return Err(LayoutError::InvalidFont);
                 }

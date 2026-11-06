@@ -30,6 +30,8 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
         FileKey::Properties => window.invoke_properties(pane),
         FileKey::DriveInfo => window.invoke_drive_info(pane),
         FileKey::Metadata(case) => window.invoke_open_metadata(pane, case),
+        FileKey::View(basic) => window.invoke_view_file(pane, basic),
+        FileKey::Edit => window.invoke_edit_file(pane),
         FileKey::Compare => window.invoke_open_comparison(),
         FileKey::Filter => window.invoke_open_panel_filter(pane),
         FileKey::Zoom => window.invoke_toggle_panel_zoom(pane),

@@ -67,39 +67,39 @@ are staged under `_build`, without requiring publication to a public registry.
 
 ## Task 2: Host loader, content broker and shared renderer
 
-- [ ] Measure generated Slint compilation before adding another host window.
+- [x] Measure generated Slint compilation before adding another host window.
   Evaluate a small bindings-only crate with `lib.test = false` so the same generated
   module is not compiled again inside every UI unit-test build. Keep handwritten
   presenter debugging available. This is a build-cost experiment, not a claim that
   moving files reduces generated source size; retain it only with measured benefit.
 
 Files: `crates/midnight-plugin-host`, per-platform loader files, core viewer/content
-contracts, engine viewer/session controller, `midnight-ui/ui/viewer-window.slint`,
+contracts, `midnight-viewer-engine`, `midnight-viewer-ui/ui/viewer.slint`,
 UI viewer presenter/renderer adapter and host integration tests.
 
-- [ ] Test executable-relative discovery, duplicate IDs, invalid manifests, wrong ABI,
+- [x] Test executable-relative discovery, duplicate IDs, invalid manifests, wrong ABI,
   plugin removal, escaped package paths and blocked/cancelled content services.
-- [ ] Implement native secure loaders and descriptor validation, bounded host work and
+- [x] Implement native secure loaders and descriptor validation, bounded host work and
   readonly content leases with stable revision checks. Preserve library lifetime until
   all callbacks/buffers/sessions quiesce. Test callbacks after cancellation.
-- [ ] Spike Slint's existing StyledText paragraph shaping with generated semantic styles;
+- [x] Extend the Task 1 shared Parley renderer with generated semantic styles;
   test raw Unicode/RTL/combining and exact decoded text before/after styling. Do not split
   paragraphs into independently shaped token widgets or copy Slint into plugins.
-- [ ] Add virtualized viewer UI and tests for scrollbar/viewport requests, selection,
+- [x] Add virtualized viewer UI and tests for scrollbar/viewport requests, selection,
   Ctrl+F/next/previous, Escape, window size and Space cycling the captured panel order.
   Prove typing Space in search does not advance the file.
-- [ ] Run generic host integration tests using separately built fixture DLL/SO packages.
+- [x] Run generic host integration tests using separately built fixture DLL/SO packages.
 
 ## Task 3: Basic text and binary plugin
 
 Files: independent `plugins/midnight-viewer-basic` workspace, manifest, parser/index/
 search modules, fixtures/tests, build helpers and CI. No host source modifications.
 
-- [ ] Add failing fixtures for UTF-8/UTF-16 boundaries, invalid/control bytes, all newline
+- [x] Add failing fixtures for UTF-8/UTF-16 boundaries, invalid/control bytes, all newline
   forms, binary hex rows, enormous lines, u64 offsets and cross-page/cancelled search.
-- [ ] Implement bounded viewport-first decoding, sparse indexing, search and source maps
+- [x] Implement bounded viewport-first decoding, sparse indexing, search and source maps
   using only public API content/work services. Report partial/limited states explicitly.
-- [ ] Run plugin tests and package it beside a released host in a disposable install tree.
+- [x] Run plugin tests and package it beside a released host in a disposable install tree.
   Verify F3 unknown-type routing, Alt+F3, binary mode and plugin removal on Windows/Linux.
 
 ## Task 4: Syntax and Markdown plugins
@@ -107,24 +107,24 @@ search modules, fixtures/tests, build helpers and CI. No host source modificatio
 Files: independent `plugins/midnight-viewer-source` and `plugins/midnight-viewer-markdown` workspaces,
 each with its own manifests/dependencies/locks/tests/fixtures/build/CI.
 
-- [ ] Pin reviewed syntax/Markdown libraries and publish their actual supported catalogue
+- [x] Pin reviewed syntax/Markdown libraries and publish their actual supported catalogue
   and licences. Test every declared syntax, multiline context and unknown-type fallback.
-- [ ] Implement source highlighting through semantic spans; test budget exhaustion and
+- [x] Implement source highlighting through semantic spans; test budget exhaustion and
   unchanged raw text/selection. Reuse only public SDK mechanisms, no cross-plugin imports.
-- [ ] Implement Markdown semantic blocks, source maps and safe link metadata; test raw
+- [x] Implement Markdown semantic blocks, source maps and safe link metadata; test raw
   HTML/script, remote images, malformed/large nesting and cancellation. No automatic fetch.
-- [ ] Run each independent suite and real-host routing/absence/theme/Unicode integration.
+- [x] Run each independent suite and real-host routing/absence/theme/Unicode integration.
 
 ## Task 5: External editor and settings
 
 Files: core editor capability/preferences, platform-specific editor service and tests,
 common settings codec/migration, engine launch controller, UI options/F4 wiring.
 
-- [ ] Test literal native path argv, shell metacharacters, missing editor, unsupported
+- [x] Test literal native path argv, shell metacharacters, missing editor, unsupported
   nonlocal entries, settings persistence and launch failure reporting.
-- [ ] Implement backend default detection and explicit executable/argument settings;
+- [x] Implement backend default detection and explicit executable/argument settings;
   substitute `{file}` only as a full argument. Add no shell parser for application paths.
-- [ ] Wire F4 with editor-focus guards and Options. Test focused-file dispatch without
+- [x] Wire F4 with editor-focus guards and Options. Test focused-file dispatch without
   accidentally opening all multiselected files or interpreting a directory as text.
 - [x] Add toolbar New empty file and Shift+F4, reusing the operation name dialog and
   bounded mutation queue. Add a prepared native creation capability with exclusive
@@ -132,13 +132,18 @@ common settings codec/migration, engine launch controller, UI options/F4 wiring.
   replaced parent, cancellation and literal zero-byte contents on each platform.
   Delivered early in the [empty-file stage](2026-11-05-empty-file.md); it creates
   the file without launching an editor. Do not reimplement it during F4 work.
-- [ ] Run platform/host tests and native smoke checks; document defaults and limitations.
+- [x] Run platform/host tests and native smoke checks; document defaults and limitations.
 
 ## Task 6: Distribution, review and delivery
 
-- [ ] Run each independent plugin CI/test command, host tests, fmt, Clippy and size guards.
-- [ ] Build optimized host and plugin releases; package only versioned plugin artifacts.
-- [ ] Measure startup, first viewport, bounded memory, cancellation and large-file scroll/search.
-- [ ] Review ABI/lifetime and native launch boundaries independently; fix material findings.
-- [ ] Update README, architecture, keyboard help, security and verification records; commit
-  the host and independent plugin sources in the shared Git repository and push its remote.
+- [x] Run each independent plugin CI/test command, host tests, fmt, Clippy and size guards.
+- [x] Build optimized host and plugin releases; package only versioned plugin artifacts.
+- [x] Measure startup, first viewport, bounded memory, cancellation and large-file scroll/search.
+- [x] Review ABI/lifetime and native launch boundaries independently; fix material findings.
+- [x] Update README, architecture, keyboard help, security and verification records, and
+  prepare the host and independent plugin sources for commit/push in the shared repository.
+
+The [verification record](../../verification/viewer-implementation.md) contains final
+Windows/Ubuntu results and limits. Delivery uses the existing feature branch and
+the user's authorized commit/push workflow; publishing another GitHub release is
+separate from this implementation stage.

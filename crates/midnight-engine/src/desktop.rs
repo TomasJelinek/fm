@@ -289,6 +289,99 @@ impl Desktop {
         });
     }
 
+    pub(crate) async fn resolve_editor(
+        &self,
+        services: Option<Arc<dyn EditorService>>,
+        tasks: &mut JoinSet<()>,
+    ) {
+        let outbox = self.outbox.clone();
+        let Ok(permit) = self.launch_budget.clone().try_acquire_owned() else {
+            outbox
+                .send(Event::EditorDefaultResolved(Err(editor_error(
+                    "Editor discovery is busy. Reopen Options to retry.",
+                ))))
+                .await;
+            return;
+        };
+        let Some(services) = services else {
+            outbox
+                .send(Event::EditorDefaultResolved(Err(editor_error(
+                    "External editing is unavailable.",
+                ))))
+                .await;
+            return;
+        };
+        tasks.spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || (services.default_editor(), permit)).await;
+            let (result, _permit) = match result {
+                Ok((result, permit)) => (result, Some(permit)),
+                Err(cause) => (Err(worker_error("find editor", Path::new(""), cause)), None),
+            };
+            outbox.send(Event::EditorDefaultResolved(result)).await;
+        });
+    }
+
+    pub(crate) async fn edit_file(
+        &self,
+        services: Option<Arc<dyn EditorService>>,
+        request: DesktopRequestId,
+        path: PathBuf,
+        editor: EditorPreferences,
+        tasks: &mut JoinSet<()>,
+    ) {
+        let Some(services) = services else {
+            self.editor_failure(request, "External editing is unavailable.")
+                .await;
+            return;
+        };
+        let Ok(permit) = self.open_budget.clone().try_acquire_owned() else {
+            self.editor_failure(request, "Editor launch is busy. Try again.")
+                .await;
+            return;
+        };
+        let Ok(slot) = self.open_slots.clone().try_acquire_owned() else {
+            self.editor_failure(request, "Too many external editor processes are active.")
+                .await;
+            return;
+        };
+        let children = self.children.clone();
+        let outbox = self.outbox.clone();
+        tasks.spawn(async move {
+            let target = path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                (services.launch_editor(&target, &editor), permit)
+            })
+            .await;
+            let (result, _permit) = match result {
+                Ok((Ok(child), permit)) => {
+                    let _ = children
+                        .send(TrackedChild {
+                            child,
+                            _slot: slot,
+                            completion: None,
+                        })
+                        .await;
+                    (Ok(DesktopActionResult::EditorStarted), Some(permit))
+                }
+                Ok((Err(error), permit)) => (Err(error), Some(permit)),
+                Err(error) => (Err(worker_error("external editor", &path, error)), None),
+            };
+            outbox
+                .send(Event::DesktopActionFinished { request, result })
+                .await;
+        });
+    }
+
+    async fn editor_failure(&self, request: DesktopRequestId, message: &'static str) {
+        self.outbox
+            .send(Event::DesktopActionFinished {
+                request,
+                result: Err(editor_error(message)),
+            })
+            .await;
+    }
+
     fn fail(&self, request: DesktopRequestId, message: &'static str, tasks: &mut JoinSet<()>) {
         let outbox = self.outbox.clone();
         tasks.spawn(async move {
@@ -304,6 +397,10 @@ impl Desktop {
                 .await;
         });
     }
+}
+
+fn editor_error(message: &'static str) -> FsError {
+    FsError::from_io("external editor", Path::new(""), io::Error::other(message))
 }
 
 fn metadata_properties(

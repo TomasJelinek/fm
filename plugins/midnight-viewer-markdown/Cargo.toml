@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "midnight-viewer-markdown"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+midnight-plugin-sdk = { version = "=0.1.0", registry = "midnight" }
+pulldown-cmark = { version = "=0.13.6", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+overflow-checks = true
+panic = "unwind"
+
+[lints.rust]
+unsafe_code = "deny"

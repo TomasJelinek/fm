@@ -1,0 +1,22 @@
+[package]
+name = "midnight-ui-bindings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Generated bindings have no unit tests. Keep presenter tests in midnight-ui so
+# the large generated module is not compiled again as part of its test harness.
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+i-slint-compiler = { version = "=1.18.1", default-features = false, features = ["rust"] }
+spin_on = "=0.1.1"
+prettyplease = "=0.2.37"
+syn = { version = "=2.0.119", features = ["full"] }

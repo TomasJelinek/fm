@@ -65,6 +65,8 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     let tabs = p.tabs(PaneId::Left);
     let generation = p.panes[0].generation;
     let saved = UserPreferences {
+        disabled_viewer_plugins: Vec::new(),
+        editor: EditorPreferences::default(),
         theme: PreferenceTheme::Light,
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,

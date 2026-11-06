@@ -2,6 +2,53 @@
 use super::*;
 
 impl Presenter {
+    /// Capture the exact displayed ordering without walking or opening any files.
+    pub fn viewer_launch(&self, pane: PaneId, basic: bool) -> Option<ViewerLaunch> {
+        let disabled_plugins = self.viewer_plugins.startup_disabled.clone()?;
+        let panel = &self.panes[pane.index()];
+        if panel.loading || panel.parent_cursor || !panel.search_allows_activation() {
+            return None;
+        }
+        let entry = panel.cursor.and_then(|id| panel.entry_by_id(id))?;
+        if entry.kind != EntryKind::File {
+            return None;
+        }
+        Some(ViewerLaunch {
+            entries: panel.entries.clone(),
+            view: panel.display_index().clone(),
+            focused: entry.path.clone(),
+            basic,
+            disabled_plugins,
+        })
+    }
+
+    pub fn report_viewer_error(&mut self, message: String) {
+        self.desktop.report("Cannot open viewer", message);
+    }
+
+    pub fn copy_viewer_text(&mut self, text: String, send: &dyn Fn(Command) -> bool) {
+        self.queue_clipboard_text(text, send);
+    }
+
+    pub fn viewer_key(
+        &self,
+        event: &i_slint_core::input::KeyEvent,
+        search: bool,
+    ) -> Option<String> {
+        let chord = crate::shortcut_input::chord(event)?;
+        let context = if search {
+            ShortcutContext::ViewerSearch
+        } else {
+            ShortcutContext::Viewer
+        };
+        self.keyboard
+            .bindings
+            .borrow()
+            .map
+            .resolve(&chord, context)
+            .map(|action| action.id.clone())
+    }
+
     /// Navigate to the displayed path's native absolute anchor without resolving it.
     pub(crate) fn go_root(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
         let p = &mut self.panes[pane.index()];
