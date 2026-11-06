@@ -1,0 +1,3 @@
+[build]
+target-dir = "../_build/api"
+jobs = 4

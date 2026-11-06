@@ -1,0 +1,12 @@
+language = "C"
+include_guard = "MIDNIGHT_PLUGIN_V1_H"
+cpp_compat = true
+documentation = true
+autogen_warning = "/* Generated from src/abi.rs by midnight-api-headergen. Do not edit. */"
+usize_is_size_t = true
+line_length = 100
+style = "both"
+
+[export]
+prefix = "Midnight"
+include = ["Header", "ByteSlice", "Buffer", "Request", "Event", "Work", "HostApi", "PluginApi", "Entry"]

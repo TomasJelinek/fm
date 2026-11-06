@@ -1,12 +1,15 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $maximumSourceBytes = 100000
-$sourceExtensions = @('.rs', '.slint', '.ps1', '.sh', '.bat')
+$sourceExtensions = @('.rs', '.slint', '.ps1', '.sh', '.bat', '.c', '.h')
 $checked = 0
 $oversized = 0
 $sourceFiles = @(Get-ChildItem -LiteralPath $projectRoot -File)
-foreach ($directory in @('crates', 'scripts')) {
-    $sourceFiles += Get-ChildItem -LiteralPath (Join-Path $projectRoot $directory) -Recurse -File
+foreach ($directory in @('crates', 'scripts', 'api', 'plugins')) {
+    $sourceDirectory = Join-Path $projectRoot $directory
+    if (Test-Path -LiteralPath $sourceDirectory -PathType Container) {
+        $sourceFiles += Get-ChildItem -LiteralPath $sourceDirectory -Recurse -File
+    }
 }
 foreach ($source in $sourceFiles) {
     if ($source.Extension -notin $sourceExtensions) { continue }

@@ -1,0 +1,8 @@
+[package]
+name = "midnight-api-headergen"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+cbindgen = { version = "=0.29.4", default-features = false }

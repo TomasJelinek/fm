@@ -1,6 +1,6 @@
 # Midnight Explorer — dvoupanelový souborový manažer v Rustu
 
-Datum: 4. listopadu 2026; doplněno 5. listopadu 2026
+Datum: 4. listopadu 2026; doplněno 6. listopadu 2026
 
 Stav: průběžný návrh produktu Midnight Explorer 0.1. Aktuální rozšíření operací,
 ovládání a pluginů níže mají přednost před historickými etapami tohoto dokumentu.
@@ -9,6 +9,11 @@ Pořadí přijatých navazujících implementací zachycuje
 
 [Nový prázdný soubor](2026-11-05-empty-file-design.md): tlačítko v panelu a Shift+F4,
 dialog názvu, výhradní vytvoření na backendu bez přepsání existujícího souboru.
+
+Viewer etapa: ověřený [sdílený Unicode renderer](../../verification/viewer-renderer.md)
+a rozpracované [veřejné API](../../../api/README.md) v nezávislém Cargo workspace.
+Pluginy zůstávají v jednom Git repozitáři, každý ve vlastním projektu/testech.
+Loader, SDK lifecycle a okna F3 zatím nejsou hotové; API není vydané ani zmrazené.
 
 ## 1. Záměr a potvrzená rozhodnutí
 
