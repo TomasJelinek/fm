@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+import stat
 import tarfile
 import tomllib
 import zipfile
@@ -86,6 +87,35 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         encoding="utf-8")
 
 
+def write_archive(stage, archive, binary_name, archive_format):
+    binary_path = f"{stage.name}/{binary_name}"
+
+    def safe_tar_member(member):
+        if not (member.isdir() or member.isfile()):
+            raise ValueError(f"Unexpected archive entry type: {member.name}")
+        member.mode = 0o755 if member.isdir() or member.name == binary_path else 0o644
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        member.mtime = int(member.mtime)
+        member.pax_headers = {}
+        return member
+
+    if archive_format == "zip":
+        with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+            for path in sorted(stage.rglob("*")):
+                if path.is_file():
+                    info = zipfile.ZipInfo.from_file(path, path.relative_to(stage.parent))
+                    info.create_system = 3
+                    mode = 0o755 if info.filename == binary_path else 0o644
+                    info.external_attr = (stat.S_IFREG | mode) << 16
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    with path.open("rb") as source, bundle.open(info, "w") as target:
+                        shutil.copyfileobj(source, target)
+    else:
+        with tarfile.open(archive, "x:gz", compresslevel=9) as bundle:
+            bundle.add(stage, arcname=stage.name, filter=safe_tar_member)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -137,14 +167,7 @@ def main():
     archive = output / f"{name}.{args.format}"
     if archive.exists():
         raise FileExistsError(archive)
-    if args.format == "zip":
-        with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-            for path in sorted(stage.rglob("*")):
-                if path.is_file():
-                    bundle.write(path, path.relative_to(output))
-    else:
-        with tarfile.open(archive, "x:gz", compresslevel=9) as bundle:
-            bundle.add(stage, arcname=name)
+    write_archive(stage, archive, binary.name, args.format)
     print(archive)
 
 

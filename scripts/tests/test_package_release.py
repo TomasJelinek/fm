@@ -1,6 +1,9 @@
 """Regression checks for the release dependency inventory."""
 import importlib.util
+import tarfile
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
@@ -39,6 +42,34 @@ class DependencyInventoryTests(unittest.TestCase):
         self.metadata["packages"].append(package("runtime", "git+https://example.invalid/fork"))
         with self.assertRaises(ValueError):
             packaging.dependency_packages(self.metadata, tree)
+
+
+class ArchivePermissionsTests(unittest.TestCase):
+    def test_archive_modes_do_not_inherit_world_writable_staging_permissions(self):
+        temporary = Path(__file__).resolve().parents[2] / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            folder = Path(directory)
+            stage = folder / "release"
+            stage.mkdir()
+            for name in ("me", "README.txt"):
+                path = stage / name
+                path.write_text("fixture", encoding="utf-8")
+                path.chmod(0o777)
+            for archive_format in ("tar.gz", "zip"):
+                with self.subTest(format=archive_format):
+                    archive = folder / f"release.{archive_format}"
+                    packaging.write_archive(stage, archive, "me", archive_format)
+                    if archive_format == "tar.gz":
+                        with tarfile.open(archive) as bundle:
+                            self.assertEqual(bundle.getmember("release/me").mode, 0o755)
+                            self.assertEqual(bundle.getmember("release/README.txt").mode, 0o644)
+                            self.assertEqual(bundle.getmember("release").mode, 0o755)
+                            self.assertEqual(bundle.getmember("release/me").uid, 0)
+                    else:
+                        with zipfile.ZipFile(archive) as bundle:
+                            self.assertEqual(bundle.getinfo("release/me").external_attr >> 16 & 0o777, 0o755)
+                            self.assertEqual(bundle.getinfo("release/README.txt").external_attr >> 16 & 0o777, 0o644)
 
 
 if __name__ == "__main__":

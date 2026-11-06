@@ -80,7 +80,9 @@ python -B scripts/package-release.py --binary _build/release/me.exe `
 Replace `RUST_SYSROOT` with `rustc --print sysroot`. For Linux, use the Linux
 binary/metadata/target, `--format tar.gz`, `packaging/linux/README.txt`, and
 `--desktop-entry packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop`.
-The tar archive preserves executable permission. Keep Windows and Linux native
+Archives normalize the executable/directories to mode 0755 and documentation to
+0644, independent of Windows-mounted staging permissions; tar ownership is cleared
+to uid/gid 0 with no builder names. Keep Windows and Linux native
 build directories separate when sharing one checkout.
 
 Archives include run instructions, feature/shortcut/security requirements,
