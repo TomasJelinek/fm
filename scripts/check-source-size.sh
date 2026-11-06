@@ -7,7 +7,7 @@ checked=0
 oversized=0
 while IFS= read -r -d '' source; do
     case "$source" in
-        *.rs|*.slint|*.ps1|*.sh|*.bat|*.c|*.h) ;;
+        *.rs|*.slint|*.ps1|*.sh|*.bat|*.py|*.c|*.h) ;;
         *) continue ;;
     esac
     size=$(wc -c < "$source")

@@ -25,6 +25,8 @@ jobs:
         run: rustup show
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Release packaging tests
+        run: python -B -m unittest discover -s scripts/tests -v
       - name: Source size (Windows)
         if: runner.os == 'Windows'
         run: pwsh scripts/check-source-size.ps1

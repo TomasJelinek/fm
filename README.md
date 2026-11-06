@@ -5,6 +5,11 @@ A dual-pane desktop file manager written in Rust with Slint and Tokio.
 Product version **0.1** (Cargo SemVer `0.1.0`); the native window title shows
 `Midnight Explorer 0.1 — File Manager`. The displayed version is derived from the package version.
 
+Prebuilt Windows/Linux previews are published on the
+[GitHub Releases page](https://github.com/TomasJelinek/fm/releases).
+See [feature status](docs/FEATURE_STATUS.md) for the distinction between implemented
+functionality and the viewer, complete Copy/Move, Find and filesystem-plugin backlog.
+
 Lossless Unicode throughout the product, security and backend-only non-UI work
 are explicit requirements. See [security and integrity rules](SECURITY.md).
 

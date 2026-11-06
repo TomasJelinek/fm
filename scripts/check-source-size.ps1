@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $maximumSourceBytes = 100000
-$sourceExtensions = @('.rs', '.slint', '.ps1', '.sh', '.bat', '.c', '.h')
+$sourceExtensions = @('.rs', '.slint', '.ps1', '.sh', '.bat', '.py', '.c', '.h')
 $checked = 0
 $oversized = 0
 $sourceFiles = @(Get-ChildItem -LiteralPath $projectRoot -File)
