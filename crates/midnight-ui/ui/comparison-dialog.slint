@@ -1,0 +1,74 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+export struct ComparisonView {
+    open: bool, busy: bool, error: string, summary: string,
+    left-path: string, right-path: string,
+    by-size: bool, by-modified: bool, case-sensitive: bool,
+    tolerance-seconds: string, unmatched-directories: bool,
+}
+
+export component CompareDirectoriesDialog inherits Rectangle {
+    in property <ComparisonView> model;
+    callback submit(bool, bool, bool, string, bool);
+    callback cancel();
+    public function begin() {
+        sizes.checked = root.model.by-size;
+        times.checked = root.model.by-modified;
+        names.checked = root.model.case-sensitive;
+        tolerance.text = root.model.tolerance-seconds;
+        directories.checked = root.model.unmatched-directories;
+        sizes.focus();
+    }
+    background: Theme.surface; border-radius: 8px;
+    border-width: 1px; border-color: Theme.active-frame;
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.cancel(); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            padding: 20px; spacing: 12px;
+            Text { text: "Compare displayed directories"; color: Theme.strong-text; font-size: Theme.font-size + 5px; wrap: word-wrap; }
+            ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    spacing: 12px; alignment: start;
+                    Text { text: root.model.left-path + "\n" + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    Text { text: "Metadata only · displayed files · no recursion"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    sizes := HintedCheckBox {
+                        text: "Compare file size"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are not read.";
+                    }
+                    times := HintedCheckBox {
+                        text: "Compare modification time"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Select the newer file, comparing whole seconds with the chosen tolerance.";
+                    }
+                    Text { text: "Time tolerance (seconds)"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    tolerance := HintedLineEdit {
+                        enabled: !root.model.busy; accessible-label: "Time tolerance in seconds"; min-height: Theme.control-height;
+                        hint: "A whole number from 0 to 86400. A difference exactly equal to the tolerance counts as equal.";
+                    }
+                    names := HintedCheckBox {
+                        text: "Match names with exact case"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Turn off to use Unicode case folding. Ambiguous folded names are all selected; native filenames are never changed.";
+                    }
+                    directories := HintedCheckBox {
+                        text: "Select unmatched directories"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
+                    }
+                    if root.model.busy: Text { text: "Comparing…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    if root.model.error != "": Text { text: root.model.error; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                Button { text: "Compare"; enabled: !root.model.busy; min-height: Theme.control-height;
+                    clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked); } }
+                Button { text: root.model.busy ? "Cancel" : "Close"; min-height: Theme.control-height; clicked => { root.cancel(); } }
+            }
+        }
+    }
+}

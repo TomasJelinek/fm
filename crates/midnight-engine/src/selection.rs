@@ -221,6 +221,7 @@ struct State {
     current: Arc<SelectionSnapshot>,
     deferred: Option<Deferred>,
     protected: Option<(SelectionOrigin, Arc<SelectionSnapshot>)>,
+    authoritative: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -257,6 +258,22 @@ impl State {
         {
             return Ok(None);
         }
+        let authority = request
+            .authoritative
+            .as_ref()
+            .filter(|seed| seed.id > self.authoritative);
+        if let Some(seed) = authority {
+            if seed.origin.navigation == self.context && seed.origin.location == self.location {
+                self.current = seed.snapshot.clone();
+                self.deferred = None;
+            }
+            // The worker may never have received a selection command in the old
+            // source. Preserve the exact captured comparison for a failed move away.
+            if request.preserve.as_ref() == Some(&seed.origin) {
+                self.protected = Some((seed.origin.clone(), seed.snapshot.clone()));
+            }
+            self.authoritative = seed.id;
+        }
         if let Some(origin) = &request.preserve {
             // A same-path refresh may already use a newer navigation token;
             // the still-live source selection is identified by its raw location.
@@ -268,13 +285,23 @@ impl State {
             navigation: request.context,
             location: request.location.clone(),
         };
-        let restored = self
-            .protected
-            .as_ref()
-            .filter(|(saved, _)| *saved == desired)
-            .map(|(_, value)| value.clone());
+        let restored = authority
+            .filter(|seed| seed.origin == desired)
+            .map(|seed| seed.snapshot.clone())
+            .or_else(|| {
+                self.protected
+                    .as_ref()
+                    .filter(|(saved, _)| *saved == desired)
+                    .map(|(_, value)| value.clone())
+            });
         if request.context != self.context || request.location != self.location {
             self.current = restored.unwrap_or_else(|| request.seed.clone());
+            self.deferred = None;
+        } else if request.seed_revision > self.revision {
+            if request.seed_revision >= request.revision {
+                return Err("An authoritative seed must precede its selection action");
+            }
+            self.current = request.seed.clone();
             self.deferred = None;
         }
         if request.preserve.is_none() {
@@ -454,6 +481,7 @@ impl Deferred {
             by_path.insert(path, id);
         }
         Arc::new(DirectoryIndex {
+            file_sizes: vec![None; by_id.len()],
             by_id,
             by_path,
             directory_bits,
@@ -631,6 +659,8 @@ mod tests {
             location: "root".into(),
             view,
             seed: Arc::default(),
+            seed_revision: SelectionRevision(0),
+            authoritative: None,
             reset: false,
             preserve: None,
             restore: None,
@@ -641,6 +671,123 @@ mod tests {
 
     fn apply(state: &mut State, request: SelectionRequest) -> Arc<SelectionSnapshot> {
         state.apply(&request).unwrap().unwrap().0
+    }
+
+    #[test]
+    fn authoritative_comparison_seed_is_adopted_once_before_queued_toggles() {
+        let mut state = State::default();
+        let index = view(&["a", "b", "c"]);
+        apply(
+            &mut state,
+            request(
+                1,
+                Some(index.clone()),
+                SelectionAction::Bulk(SelectionOperation::Clear),
+            ),
+        );
+        let seed = Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![1]).unwrap());
+        for (revision, name, expected) in [(3, "b", 0b011), (4, "c", 0b111)] {
+            let mut next = request(
+                revision,
+                Some(index.clone()),
+                SelectionAction::Toggle(name.into()),
+            );
+            next.seed = seed.clone();
+            next.seed_revision = SelectionRevision(2);
+            assert_eq!(apply(&mut state, next).bits(), &[expected]);
+        }
+    }
+
+    #[test]
+    fn comparison_selection_survives_a_refresh_that_resets_request_revisions() {
+        let mut state = State::default();
+        let index = view(&["a", "b", "c"]);
+        apply(
+            &mut state,
+            request(
+                1,
+                Some(index.clone()),
+                SelectionAction::Bulk(SelectionOperation::Clear),
+            ),
+        );
+        let snapshot = Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![1]).unwrap());
+        let mut refresh = request(1, Some(index), SelectionAction::Rebase);
+        refresh.navigation = NavigationId(2);
+        refresh.seed = snapshot.clone();
+        refresh.authoritative = Some(Arc::new(AuthoritativeSelection {
+            id: 1,
+            origin: SelectionOrigin {
+                navigation: NavigationId(1),
+                location: "root".into(),
+            },
+            snapshot,
+        }));
+        // The presenter starts request revisions over on each navigation.
+        refresh.seed_revision = SelectionRevision(0);
+        assert_eq!(apply(&mut state, refresh).bits(), &[1]);
+    }
+
+    #[test]
+    fn comparison_authority_survives_failed_navigation_and_cannot_replay_over_edits() {
+        for initialized in [false, true] {
+            let mut state = State::default();
+            let index = view(&["a", "b", "c"]);
+            if initialized {
+                apply(
+                    &mut state,
+                    request(
+                        1,
+                        Some(index.clone()),
+                        SelectionAction::Bulk(SelectionOperation::Clear),
+                    ),
+                );
+            }
+            let origin = SelectionOrigin {
+                navigation: NavigationId(1),
+                location: "root".into(),
+            };
+            let authority = Arc::new(AuthoritativeSelection {
+                id: 1,
+                origin: origin.clone(),
+                snapshot: Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![1]).unwrap()),
+            });
+            let mut away = request(1, None, SelectionAction::Toggle("other/x".into()));
+            away.navigation = NavigationId(2);
+            away.context = NavigationId(2);
+            away.location = "other".into();
+            away.preserve = Some(origin.clone());
+            away.authoritative = Some(authority.clone());
+            apply(&mut state, away);
+            let mut restore = request(2, Some(index.clone()), SelectionAction::Rebase);
+            restore.navigation = NavigationId(2);
+            restore.restore = Some(origin.clone());
+            restore.authoritative = Some(authority.clone());
+            assert_eq!(apply(&mut state, restore).bits(), &[1]);
+            for (revision, path, expected) in [(3, "b", 0b011), (4, "a", 0b010)] {
+                let mut edit = request(
+                    revision,
+                    Some(index.clone()),
+                    SelectionAction::Toggle(path.into()),
+                );
+                edit.navigation = NavigationId(2);
+                edit.authoritative = Some(authority.clone());
+                assert_eq!(apply(&mut state, edit).bits(), &[expected]);
+            }
+            let mut next = request(5, Some(index.clone()), SelectionAction::Toggle("b".into()));
+            next.navigation = NavigationId(2);
+            next.authoritative = Some(Arc::new(AuthoritativeSelection {
+                id: 2,
+                origin,
+                snapshot: Arc::new(
+                    SelectionSnapshot::from_bits(index.clone(), vec![0b100]).unwrap(),
+                ),
+            }));
+            assert_eq!(apply(&mut state, next).bits(), &[0b110]);
+            let mut stale = request(6, Some(index), SelectionAction::Toggle("a".into()));
+            stale.navigation = NavigationId(2);
+            stale.authoritative = Some(authority);
+            assert_eq!(apply(&mut state, stale).bits(), &[0b111]);
+        }
     }
 
     #[test]

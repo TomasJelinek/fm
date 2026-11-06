@@ -1,0 +1,282 @@
+//! Immutable bindings and display strings are rebuilt only when overrides change.
+use super::*;
+use slint::SharedString;
+use std::{cell::RefCell, rc::Rc};
+
+#[path = "function_slots.rs"]
+mod function_slots;
+
+pub(crate) struct KeyboardBindings {
+    pub(crate) map: ShortcutMap,
+    pub(crate) revision: u64,
+    pub(crate) revision_text: SharedString,
+    pub(crate) help: SharedString,
+    overrides: Vec<ShortcutBinding>,
+    hints: HashMap<String, (SharedString, SharedString)>,
+    editor_text: HashMap<String, String>,
+    scopes: HashMap<String, String>,
+    control_files: [crate::FunctionSlot; 12],
+    control_search: [crate::FunctionSlot; 12],
+}
+
+impl KeyboardBindings {
+    fn new(overrides: &[ShortcutBinding], revision: u64) -> Result<Self, String> {
+        let map = ShortcutMap::new(overrides)?;
+        let mut hints = HashMap::new();
+        let mut editor_text = HashMap::new();
+        let mut scopes = HashMap::new();
+        let mut help = String::new();
+        for action in shortcut_catalog() {
+            let keys = map.bindings(&action.id).expect("catalog action");
+            let primary = keys
+                .iter()
+                .find(|key| {
+                    !key.control
+                        && !key.alt
+                        && !key.shift
+                        && !key.meta
+                        && key.key.starts_with('F')
+                        && key.key[1..].parse::<u8>().is_ok()
+                })
+                .or_else(|| keys.first());
+            let primary = primary.map(display_key).unwrap_or_default();
+            let aliases = keys.iter().map(display_key).collect::<Vec<_>>().join(" / ");
+            let canonical = keys
+                .iter()
+                .map(ShortcutChord::display)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let scope = match keys.first() {
+                Some(first)
+                    if keys
+                        .iter()
+                        .any(|key| action.scope_for(key) != action.scope_for(first)) =>
+                {
+                    keys.iter()
+                        .map(|key| {
+                            format!("{} — {}", display_key(key), action.scope_for(key).label())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+                Some(first) => action.scope_for(first).label().to_owned(),
+                None => action.scope.label().to_owned(),
+            };
+            help.push_str(&format!(
+                "{} — {}\n{}\n\n",
+                action.label,
+                if aliases.is_empty() {
+                    "Unassigned"
+                } else {
+                    &aliases
+                },
+                scope
+            ));
+            hints.insert(action.id.clone(), (primary.into(), aliases.into()));
+            editor_text.insert(action.id.clone(), canonical);
+            scopes.insert(action.id.clone(), scope);
+        }
+        Ok(Self {
+            control_files: function_slots::build(&map, ShortcutContext::Files),
+            control_search: function_slots::build(&map, ShortcutContext::Search),
+            map,
+            revision,
+            help: help.into(),
+            revision_text: revision.to_string().into(),
+            overrides: overrides.to_vec(),
+            hints,
+            editor_text,
+            scopes,
+        })
+    }
+
+    pub(crate) fn hint(&self, action: &str, all: bool) -> &str {
+        self.hints
+            .get(action)
+            .map_or("", |(primary, aliases)| if all { aliases } else { primary })
+    }
+
+    pub(crate) fn editor_text(&self, action: &str) -> &str {
+        self.editor_text.get(action).map_or("", String::as_str)
+    }
+
+    pub(crate) fn scope(&self, action: &str) -> &str {
+        self.scopes.get(action).map_or("", String::as_str)
+    }
+
+    pub(crate) fn hint_owned(&self, action: &str, all: bool) -> SharedString {
+        self.hints
+            .get(action)
+            .map_or_else(SharedString::default, |(primary, aliases)| {
+                if all {
+                    aliases.clone()
+                } else {
+                    primary.clone()
+                }
+            })
+    }
+}
+
+fn display_key(key: &ShortcutChord) -> String {
+    let mut key = key.clone();
+    if let Some(digit) = key.key.strip_prefix("Digit") {
+        key.key = digit.to_owned();
+    } else {
+        key.key = match key.key.as_str() {
+            "Period" => ".",
+            "Comma" => ",",
+            "Plus" => "+",
+            "Minus" => "-",
+            "Equal" => "=",
+            "BracketLeft" => "[",
+            "BracketRight" => "]",
+            "Backslash" => "\\",
+            "Slash" => "/",
+            "Semicolon" => ";",
+            "Quote" => "'",
+            "Backquote" => "`",
+            other => other,
+        }
+        .to_owned();
+    }
+    key.display()
+}
+
+pub(crate) struct KeyboardState {
+    // UI callbacks clone this small cell, so layout never re-borrows Presenter.
+    pub(crate) bindings: Rc<RefCell<Arc<KeyboardBindings>>>,
+    pub(crate) snapshot: Arc<KeyboardBindings>,
+    pub(crate) selected: usize,
+    pub(crate) error: String,
+    editor_revision: u64,
+    pub(crate) editor_revision_text: SharedString,
+}
+
+impl Default for KeyboardState {
+    fn default() -> Self {
+        let snapshot =
+            Arc::new(KeyboardBindings::new(&[], 0).expect("validated default shortcuts"));
+        Self {
+            bindings: Rc::new(RefCell::new(snapshot.clone())),
+            snapshot,
+            selected: 0,
+            error: String::new(),
+            editor_revision: 0,
+            editor_revision_text: "0".into(),
+        }
+    }
+}
+
+impl KeyboardState {
+    pub(super) fn sync(&mut self, overrides: &[ShortcutBinding]) -> Result<(), String> {
+        if overrides == self.snapshot.overrides {
+            return Ok(());
+        }
+        let snapshot = Arc::new(KeyboardBindings::new(
+            overrides,
+            self.snapshot.revision.saturating_add(1),
+        )?);
+        self.snapshot = snapshot.clone();
+        *self.bindings.borrow_mut() = snapshot;
+        self.reset_editor();
+        Ok(())
+    }
+
+    fn reset_editor(&mut self) {
+        self.editor_revision = self.editor_revision.saturating_add(1);
+        self.editor_revision_text = self.editor_revision.to_string().into();
+    }
+}
+
+impl Presenter {
+    pub(crate) fn shortcut_hint(&self, action: &str) -> &str {
+        self.keyboard.snapshot.hint(action, true)
+    }
+
+    pub(crate) fn shortcut_key(&self, action: &str) -> &str {
+        self.keyboard.snapshot.hint(action, false)
+    }
+
+    pub(crate) fn select_shortcut(&mut self, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if index < shortcut_catalog().len() {
+            self.keyboard.selected = index;
+            self.keyboard.error.clear();
+        }
+    }
+
+    pub(crate) fn change_shortcuts(
+        &mut self,
+        action: &str,
+        keys: Vec<String>,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if !shortcut_catalog()
+            .iter()
+            .any(|definition| definition.id == action)
+        {
+            self.keyboard.error = "Choose an existing shortcut action.".into();
+            return false;
+        }
+        let mut values = self.preferences.values.clone();
+        if let Some(entry) = values
+            .shortcuts
+            .iter_mut()
+            .find(|entry| entry.action == action)
+        {
+            entry.keys = keys;
+        } else {
+            values.shortcuts.push(ShortcutBinding {
+                action: action.into(),
+                keys,
+            });
+        }
+        self.apply_shortcut_values(values, send)
+    }
+
+    pub(crate) fn restore_shortcut(
+        &mut self,
+        action: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if !shortcut_catalog()
+            .iter()
+            .any(|definition| definition.id == action)
+        {
+            self.keyboard.error = "Choose an existing shortcut action.".into();
+            return false;
+        }
+        let mut values = self.preferences.values.clone();
+        values.shortcuts.retain(|entry| entry.action != action);
+        self.apply_shortcut_values(values, send)
+    }
+
+    pub(crate) fn restore_shortcuts(&mut self, send: &dyn Fn(Command) -> bool) {
+        let mut values = self.preferences.values.clone();
+        values.shortcuts.clear();
+        self.apply_shortcut_values(values, send);
+    }
+
+    fn apply_shortcut_values(
+        &mut self,
+        values: UserPreferences,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let previous_revision = self.keyboard.editor_revision;
+        if let Err(error) = self.keyboard.sync(&values.shortcuts) {
+            self.keyboard.error = error;
+            return false;
+        }
+        // A successful restore must discard the draft even when defaults were
+        // already effective. Keep that invalidation separate from the map cache.
+        if self.keyboard.editor_revision == previous_revision {
+            self.keyboard.reset_editor();
+        }
+        self.preferences.edited.shortcuts = true;
+        self.keyboard.error.clear();
+        self.update_preferences(values, send);
+        true
+    }
+}

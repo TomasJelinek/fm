@@ -171,7 +171,7 @@ fn font_options_keep_family_and_density_bases_independent() {
         assert_eq!(theme.get_font_size(), 32.0);
         assert!(theme.get_row_height() >= 40.0);
         assert!(theme.get_control_height() >= 42.0);
-        assert!(theme.get_command_height() >= theme.get_control_height() + 8.0);
+        assert_eq!(theme.get_command_height(), theme.get_bottom_height());
     }
     window.invoke_apply_fonts("".into(), 8, 8);
     assert_eq!(theme.get_small_font(), 8.0);

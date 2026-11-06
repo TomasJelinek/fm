@@ -2,18 +2,28 @@
 #![deny(unsafe_code)]
 mod action_icons;
 mod command_line;
+mod commander_presentation;
+mod copy_presentation;
 mod detail_attributes;
+mod drag_bridge;
+mod drag_lifecycle;
 mod file_key_bridge;
 mod file_keys;
 mod font_model;
+mod metadata_input;
+mod metadata_presentation;
 mod native_shortcuts;
 mod navigation_models;
+mod operation_detail;
 mod operation_presentation;
 mod panel_models;
 mod panel_view_navigation;
 mod presenter;
 mod scroll_input;
 mod search_input;
+mod shell_bridge;
+mod shortcut_bridge;
+mod shortcut_input;
 mod size_presentation;
 mod time_presentation;
 mod tooltip;
@@ -254,6 +264,11 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    drag_bridge::refresh(window, presenter);
+    commander_presentation::refresh(window, presenter);
+    metadata_presentation::refresh(window, presenter);
+    shortcut_bridge::refresh_bindings(window, presenter);
+    shell_bridge::update(window, presenter);
     operation_presentation::refresh(window, presenter);
     window.set_action_icons(action_icons::palette(presenter));
     panel_models::refresh(window, presenter);
@@ -285,16 +300,55 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         }
     }
     choices.extend(panel_models::bookmark_choices(presenter));
+    let as_other_key = presenter.shortcut_key("panel.as-other");
     choices.push(NavigationChoiceRow {
         identity: "other-panel".into(),
-        label: ". As Other Panel".into(),
+        label: if as_other_key.is_empty() {
+            "As Other Panel".into()
+        } else {
+            format!("{as_other_key} As Other Panel").into()
+        },
         compact_label: "As Other Panel".into(),
-        tooltip: "Open the other panel's current folder (.).".into(),
+        tooltip: if as_other_key.is_empty() {
+            "Open the other panel's current folder.".into()
+        } else {
+            format!(
+                "Open the other panel's current folder ({}).",
+                presenter.shortcut_hint("panel.as-other")
+            )
+            .into()
+        },
         icon: presenter
             .desktop
             .image(&IconKey::action(ActionIcon::OpenPath)),
         kind: LocationRole::Documents,
     });
+    // Group display choices without changing their native identity tokens or the
+    // toolbar's original location indices. Separators are presentation only.
+    let left_key = usize::try_from(left_choice)
+        .ok()
+        .and_then(|index| choices.get(index))
+        .map(|choice| choice.identity.clone());
+    let right_key = usize::try_from(right_choice)
+        .ok()
+        .and_then(|index| choices.get(index))
+        .map(|choice| choice.identity.clone());
+    choices.sort_by_key(|choice| {
+        if choice.identity == "other-panel" {
+            return 3;
+        }
+        match choice.kind {
+            LocationRole::Drive | LocationRole::Network => 0,
+            LocationRole::HotPath => 2,
+            _ => 1,
+        }
+    });
+    let position = |key: Option<SharedString>| {
+        key.and_then(|key| choices.iter().position(|choice| choice.identity == key))
+            .map_or(-1, |index| index as i32)
+    };
+    left_choice = position(left_key);
+    right_choice = position(right_key);
     navigation_models::update(
         window.get_navigation_choices(),
         choices.clone(),
@@ -449,7 +503,11 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .map_or(-1, |(i, _)| i as i32);
         let mut status = format!("{} items  ·  {} selected", p.rows().len(), p.selected.len());
         if p.size_scan.is_some() {
-            status.push_str("  ·  Measuring folders… (Ctrl+Shift+S cancels)");
+            status.push_str("  ·  Measuring folders…");
+            let keys = presenter.shortcut_hint("panel.folder-sizes");
+            if !keys.is_empty() {
+                status.push_str(&format!(" ({keys} cancels)"));
+            }
         }
         if let Some(space) = p.visible_space() {
             status.push_str(&format!(
@@ -485,13 +543,13 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     navigation_models::update(
         window.get_left_locations(),
-        navigation_models::locations(&locations, left_choice),
+        navigation_models::locations(&locations, presenter.navigation_choice_index(PaneId::Left)),
         |location| location.identity.clone(),
         |model| window.set_left_locations(model),
     );
     navigation_models::update(
         window.get_right_locations(),
-        navigation_models::locations(&locations, right_choice),
+        navigation_models::locations(&locations, presenter.navigation_choice_index(PaneId::Right)),
         |location| location.identity.clone(),
         |model| window.set_right_locations(model),
     );
@@ -616,12 +674,12 @@ fn update_model<T: Clone + PartialEq + 'static>(
     }
 }
 
-/// Register the shared file-panel keyboard policy on a standalone Slint window.
+/// Register default application keys and cached hints on a standalone Slint window.
 ///
 /// [`install`] includes this initializer. UI-only hosts that attach individual
 /// callbacks can use it without a presenter or backend; native editors retain focus.
 pub fn install_file_keys(window: &MainWindow) {
-    file_key_bridge::install(window);
+    shortcut_bridge::install_default(window);
 }
 
 /// Register UI callbacks and request the initial locations. The sender must be nonblocking.
@@ -630,9 +688,13 @@ pub fn install(
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
-    install_file_keys(window);
+    shortcut_bridge::install(window, presenter.clone(), send.clone());
+    commander_presentation::bind(window, &presenter, &send);
+    metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
+    shell_bridge::install(window, presenter.clone(), send.clone());
+    drag_bridge::install(window, presenter.clone(), send.clone());
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
     window.set_left_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Left)));
     window.set_right_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Right)));
@@ -690,9 +752,39 @@ pub fn install(
         }
     });
     callback!(on_cancel_operation, |w, p, s, token| {
-        p.cancel_operation(token.as_str(), s);
-        if p.operations.preview.is_none() {
-            w.invoke_focus_files();
+        if let Some(token) = token.strip_prefix("metadata-job:") {
+            p.cancel_operation(token, s);
+            return;
+        }
+        if token.starts_with("copy-job:") {
+            p.cancel_copy(token.as_str(), s);
+        } else {
+            p.cancel_operation(token.as_str(), s);
+            if p.operations.preview.is_none() {
+                w.invoke_focus_files();
+            }
+        }
+    });
+    callback!(on_decide_copy, |w, p, s, token, choice, name| {
+        p.decide_copy(token.as_str(), choice, name.to_string(), s);
+        let _ = w;
+    });
+    callback!(on_resolve_copy, |w, p, _s, token| {
+        if let Some(conflict) = p
+            .operations
+            .metadata_conflicts
+            .iter()
+            .find(|conflict| token == format!("metadata-job:{}", conflict.id.0))
+        {
+            metadata_presentation::show_conflict(&w, conflict, true);
+            return;
+        }
+        if p.copies
+            .conflicts
+            .iter()
+            .any(|c| token == format!("copy-job:{}", c.id.0))
+        {
+            w.invoke_show_copy_conflict();
         }
     });
     callback!(on_navigate, |w, p, s, id, text| {
@@ -705,7 +797,7 @@ pub fn install(
         } else if token == "network" {
             p.desktop.report(
                 "Network",
-                "Device discovery is not available yet. Use Ctrl+G to enter a known network path."
+                "Device discovery is not available yet. Enter a known network path in the path editor."
                     .into(),
             );
             false
@@ -763,6 +855,20 @@ pub fn install(
             w.invoke_focus_command();
         }
     });
+    callback!(on_command_history_step, |w, p, _s, older| {
+        if let Some(command) = p.rotate_command_history(older, w.get_command_text().as_str()) {
+            let cursor = i32::try_from(command.len()).unwrap_or(i32::MAX);
+            w.invoke_set_history_command(command.into(), cursor);
+        }
+    });
+    {
+        let state = presenter.clone();
+        window.on_command_history_reset(move || {
+            if let Ok(mut presenter) = state.try_borrow_mut() {
+                presenter.reset_command_history_cursor();
+            }
+        });
+    }
     callback!(on_tab_number, |w, p, s, id, number| {
         if p.select_tab_number(pane(id), number, s) {
             p.active = pane(id);
@@ -1122,6 +1228,7 @@ pub fn install(
                     window.invoke_show_operations();
                     refresh(&window, &state.borrow());
                 } else {
+                    state.borrow_mut().shutdown_drag_drop(sender.as_ref());
                     let _ = window.hide();
                 }
             }

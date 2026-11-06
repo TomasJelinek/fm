@@ -1,6 +1,18 @@
 //! Small shared projections for navigation menus, breadcrumbs and focused-entry details.
 use crate::*;
 
+fn bookmark_tooltip(presenter: &Presenter, bookmark: &midnight_core::Bookmark) -> String {
+    let mut text = format!("{}\n{}", bookmark.name, bookmark.path.display());
+    if let Some(slot) = bookmark.slot {
+        let keys = presenter.shortcut_hint(&format!("bookmark.open.{slot}"));
+        if !keys.is_empty() {
+            text.push('\n');
+            text.push_str(keys);
+        }
+    }
+    text
+}
+
 pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
     presenter
         .bookmarks()
@@ -13,7 +25,7 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
             .into(),
             label: format!("{} — {}", bookmark.name, bookmark.path.display()).into(),
             compact_label: bookmark.name.as_str().into(),
-            tooltip: format!("{}\n{}", bookmark.name, bookmark.path.display()).into(),
+            tooltip: bookmark_tooltip(presenter, bookmark).into(),
             icon: presenter
                 .desktop
                 .image(&IconKey::action(ActionIcon::Bookmarks)),
@@ -41,9 +53,21 @@ fn history_choices(presenter: &Presenter, pane: PaneId, forward: bool) -> Vec<Na
 }
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
+    window.set_left_free_space(volume_presentation::panel_space(presenter, PaneId::Left).into());
+    window.set_right_free_space(volume_presentation::panel_space(presenter, PaneId::Right).into());
     window.set_sizes_in_bytes(presenter.preferences.values.size_display == SizeDisplay::Bytes);
     window.set_remember_command_history(presenter.preferences.values.remember_command_history);
     let mut hot_paths = bookmark_choices(presenter);
+    hot_paths.push(NavigationChoiceRow {
+        identity: "add-hot-path".into(),
+        label: "Add path".into(),
+        compact_label: "Add path".into(),
+        tooltip: "Save the active panel's current folder".into(),
+        icon: presenter
+            .desktop
+            .image(&IconKey::action(ActionIcon::AddBookmark)),
+        kind: LocationRole::HotPath,
+    });
     hot_paths.push(NavigationChoiceRow {
         identity: "manage-hot-paths".into(),
         label: "Manage Hot Paths…".into(),

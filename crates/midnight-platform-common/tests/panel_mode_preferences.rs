@@ -17,7 +17,11 @@ fn independent_panel_modes_roundtrip_as_stable_names() {
     let loaded = decode_preferences(&serde_json::to_vec(&input).unwrap()).unwrap();
     let output: serde_json::Value =
         serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
-    assert_eq!(output, input);
+    let mut migrated = input;
+    migrated["version"] = 8.into();
+    migrated["shortcuts"] = serde_json::json!([]);
+    migrated["panel_filters"] = serde_json::json!([{ "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }, { "enabled": false, "mode": "masks", "expression": "*.*", "case_sensitive": false }]);
+    assert_eq!(output, migrated);
 }
 
 #[test]

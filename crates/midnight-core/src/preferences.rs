@@ -1,5 +1,5 @@
 //! User-visible preferences; native storage belongs to backend platform services.
-use crate::{CommandHistoryEntry, FsError, validate_command_history};
+use crate::{CommandHistoryEntry, FsError, ShortcutBinding, ShortcutMap, validate_command_history};
 use std::{collections::HashSet, path::PathBuf};
 
 /// Stable callback identity; names and displayed paths are never identifiers.
@@ -76,11 +76,60 @@ impl Bookmark {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum PreferenceTheme {
     #[default]
-    Blue,
-    Dark,
-    Light,
+    Blue = 0,
+    Dark = 1,
+    Light = 2,
+    Dracula = 3,
+    Nord = 4,
+    GruvboxDark = 5,
+    CatppuccinMocha = 6,
+    SolarizedLight = 7,
+}
+
+impl PreferenceTheme {
+    /// Stable picker order. Existing indices and persisted names must not change.
+    pub const ALL: [Self; 8] = [
+        Self::Blue,
+        Self::Dark,
+        Self::Light,
+        Self::Dracula,
+        Self::Nord,
+        Self::GruvboxDark,
+        Self::CatppuccinMocha,
+        Self::SolarizedLight,
+    ];
+
+    pub const fn index(self) -> i32 {
+        self as i32
+    }
+
+    pub fn from_index(index: i32) -> Option<Self> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+    }
+
+    pub const fn storage_name(self) -> &'static str {
+        match self {
+            Self::Blue => "blue",
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Dracula => "dracula",
+            Self::Nord => "nord",
+            Self::GruvboxDark => "gruvbox-dark",
+            Self::CatppuccinMocha => "catppuccin-mocha",
+            Self::SolarizedLight => "solarized-light",
+        }
+    }
+
+    pub fn from_storage_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|theme| theme.storage_name() == name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -131,6 +180,9 @@ pub struct UserPreferences {
     /// Left and right panel locations, in their displayed order.
     pub tabs: [PaneTabPreferences; 2],
     pub panel_view_modes: [PanelViewMode; 2],
+    /// Only deviations from the application shortcut catalog are persisted.
+    pub shortcuts: Vec<ShortcutBinding>,
+    pub panel_filters: [crate::PanelFilter; 2],
 }
 
 pub const FONT_SIZE_MIN: u16 = 8;
@@ -153,12 +205,21 @@ impl Default for UserPreferences {
             bookmarks: Vec::new(),
             tabs: Default::default(),
             panel_view_modes: Default::default(),
+            shortcuts: Vec::new(),
+            panel_filters: Default::default(),
         }
     }
 }
 
 impl UserPreferences {
     pub fn validate(&self) -> Result<(), FsError> {
+        ShortcutMap::new(&self.shortcuts).map_err(|message| {
+            FsError::from_io(
+                "validate preferences",
+                std::path::Path::new(""),
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+            )
+        })?;
         let message = if self.font_family.len() > MAX_FONT_FAMILY_BYTES {
             Some("Font family exceeds 512 UTF-8 bytes.")
         } else if self.font_family.chars().any(char::is_control) {
@@ -171,6 +232,11 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        for filter in &self.panel_filters {
+            if let Err(error) = filter.validate_bounds() {
+                message = Some(error);
+            }
+        }
         for tabs in &self.tabs {
             if let Err(error) = tabs.validate() {
                 message = Some(error);

@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 //! Portable, blocking local directory and capacity services shared by native adapters.
+pub mod filter;
 pub mod fonts;
+pub mod metadata;
 pub mod settings;
+pub mod transfer;
 
 use midnight_core::{
     Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, FsError, SpaceInfo,

@@ -103,16 +103,19 @@ fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_im
     });
     let theme = window.global::<Theme>();
     let mut pixels = vec![Rgb8Pixel::default(); WIDTH * HEIGHT];
-    for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
+    for (density, font) in [(0, 8), (1, 8), (0, 11), (1, 11), (1, 15), (0, 32), (1, 32)] {
         window.invoke_apply_fonts("".into(), font, font);
         window.invoke_apply_preferences(0, density);
         let top = HEIGHT as f32 - theme.get_window_padding() - theme.get_bottom_height();
         let bottom = top + theme.get_bottom_height();
         let center = (top + bottom) / 2.0;
-        // Include the adjacent space so containment assertions detect paint
-        // outside a button instead of silently clipping the measured bounds.
-        let band = (top - font as f32).max(0.0) as usize
-            ..(bottom + font as f32).min(HEIGHT as f32) as usize;
+        // Include the surrounding gap so containment assertions detect escaped
+        // paint, but stop before the neighboring command row. A font-sized margin
+        // includes its shell icon at large fonts and misidentifies that as label ink.
+        let band = (top - theme.get_gap() / 2.0).floor().max(0.0) as usize
+            ..(bottom + theme.get_window_padding() / 2.0)
+                .ceil()
+                .min(HEIGHT as f32) as usize;
         for (source_width, source_height) in [(1, 1), (2, 1), (1, 2)] {
             window.set_action_icons(ActionIcons {
                 help: solid_native(source_width, source_height),
@@ -154,15 +157,19 @@ fn footer_icons_and_labels_render_centered_without_resizing_or_tinting_native_im
                 .find(|x| pixels[center as usize * WIDTH + x] == background)
                 .expect("the Help button must end before the next function button");
             let foreground = rgb(theme.get_text());
+            // At 8px, glyphs can consist mostly of partially covered pixels.
+            // Include those without admitting the much darker button background;
+            // retain the original mask for the default and large-font cases.
+            let ink_tolerance = if font < 11 { 80 } else { 40 };
             let label = bounds(&pixels, label_left..right, band.clone(), |pixel| {
-                pixel.r.abs_diff(foreground.r) <= 40
-                    && pixel.g.abs_diff(foreground.g) <= 40
-                    && pixel.b.abs_diff(foreground.b) <= 40
+                pixel.r.abs_diff(foreground.r) <= ink_tolerance
+                    && pixel.g.abs_diff(foreground.g) <= ink_tolerance
+                    && pixel.b.abs_diff(foreground.b) <= ink_tolerance
             })
             .expect("the Help label must remain visible");
             assert!(
                 label.height() >= font as f32 * 0.4,
-                "a function key must remain identifiable instead of an ellipsis alone: {label:?}"
+                "a function key must remain identifiable instead of an ellipsis alone: density={density}, font={font}, source={source_width}x{source_height}, label={label:?}"
             );
             // Glyph ink is asymmetric (ascenders/descenders and elision). Its
             // center has a small font-relative tolerance, unlike the image box.

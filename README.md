@@ -18,16 +18,37 @@ overwrites an existing entry.
 Explicitly opened files use host associations,
 and explicitly submitted shell commands run with
 the selected user/sudo permissions. Viewer plugins and configurable external editing
-are the next stage. Planned copying requires BLAKE3 destination read-back verification;
-no unverified copy operation is exposed.
+are the next stage. Ctrl+C/Ctrl+V copies files and ordinary folders through a
+background queue with independent SHA-256 destination readback. Existing names
+prompt for skip or a different name; overwrite, merge, Cut/Move, links and full
+metadata preservation are not implemented. See the platform capability limits in
+[the copy contract](SECURITY.md#verified-clipboard-copying-and-the-copy-contract).
+
+Mouse file dragging uses the same verified copy queue for drops into either panel's
+displayed directory. Dragging a selected row keeps the selected group; dragging
+an unselected row targets that item. Native exchange with other applications uses
+Windows OLE or Linux X11/XWayland XDND. Native Wayland currently supports internal
+panel dragging only. Drops copy and retain sources; copying out is performed by
+the receiving application. See [drag/drop controls](docs/KEYBOARD_SHORTCUTS.md)
+and the [native boundary](SECURITY.md#file-drag-and-drop).
 
 ## Build and run
+
+See [system requirements](docs/SYSTEM_REQUIREMENTS.md) for OS versions, runtime
+libraries, RAM and development-machine requirements. Current compatibility targets
+are Windows 10 22H2 / Windows 11 x64, Ubuntu 24.04+ LTS, Mint 22.x,
+Fedora 44 and newer maintained releases, and openSUSE Leap 16.x / Tumbleweed on x86-64;
+qualification gaps and the planned macOS port are documented there. Provision
+4 GB total RAM (6 GB for Ubuntu 26.04), preferably 8 GB, with 1 GiB
+available for ordinary application use. These are provisional budgets, not measured
+hard minima; building the project needs substantially more memory.
 
 Release builds use full optimization, fat LTO and one code-generation unit while
 retaining integrity checks. See [release settings and verification](docs/RELEASE_BUILD.md).
 
-Supported desktop targets are **Windows x64 with MSVC** and **Linux**, including
-Ubuntu and Linux Mint. macOS is planned; it has no platform adapter and does not
+Desktop compatibility targets are **Windows x64 with MSVC** and **Linux**, including
+Ubuntu, Linux Mint, Fedora and openSUSE. Fedora/openSUSE are newly added targets;
+their native qualification runs are pending. macOS is planned; it has no platform adapter and does not
 currently build. Slint's own macOS support does not change Midnight Explorer's platform support.
 
 Install [Rust with rustup](https://rust-lang.org/tools/install/), then reopen your
@@ -106,13 +127,42 @@ that PowerShell helper. Regular `cargo` commands use the ordinary `--` separator
 ### Linux / Ubuntu / Mint
 
 Install the native compiler/linker and development libraries used by the current
-Linux build. This matches the repository's CI prerequisites plus `build-essential`:
+Linux build. For Ubuntu/Mint this matches CI prerequisites plus `build-essential`:
 
 ```sh
 sudo apt update
 sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype6-dev \
-    libxkbcommon-dev libx11-dev libxcb1-dev libwayland-dev libudev-dev
+    libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev
 ```
+
+Fedora 44+ (maintained desktop release, x86-64):
+
+```sh
+sudo dnf install gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel freetype-devel \
+    libxkbcommon-devel libxkbcommon-x11-devel libX11-devel libXcursor-devel \
+    libxcb-devel wayland-devel systemd-devel xdg-utils
+```
+
+openSUSE Leap 16.x / Tumbleweed (x86-64):
+
+```sh
+sudo zypper install gcc gcc-c++ make pkg-config xdg-utils \
+    'pkgconfig(fontconfig)' 'pkgconfig(freetype2)' 'pkgconfig(xkbcommon)' \
+    'pkgconfig(xkbcommon-x11)' 'pkgconfig(x11)' 'pkgconfig(xcursor)' \
+    'pkgconfig(xcb)' 'pkgconfig(wayland-client)' 'pkgconfig(libudev)'
+```
+
+The openSUSE command asks Zypper for library capabilities so it can select the
+distribution's development packages. Fedora/openSUSE instructions have not yet
+been exercised on clean native machines. Keep the distro's normal security policy
+enabled when qualifying filesystem operations and desktop integration. See
+[Fedora's C++ setup](https://developer.fedoraproject.org/tech/languages/c/cpp_installation.html)
+and the [Zypper manual](https://manpages.opensuse.org/Tumbleweed/zypper/zypper.8.en.html).
+
+For command-line execution, install a currently recognized terminal: `xterm`,
+Konsole, GNOME Terminal or Xfce Terminal. For example, `sudo dnf install xterm`
+or `sudo zypper install xterm`. An arbitrary desktop's default terminal is not
+automatically supported by the current launcher.
 
 Install Rust using the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
@@ -154,9 +204,30 @@ It forwards arguments and Cargo's exit status and uses `cargo` on `PATH`.
 When Windows and WSL use the same checkout, give Linux its separate cache:
 `CARGO_TARGET_DIR="$PWD/_build/linux" sh scripts/cargo.sh test --workspace --locked`.
 
+### Linux desktop launcher
+
+The moon icon is embedded for X11. Native Wayland resolves it using the application
+ID and an installed desktop entry. Optional per-user installation after a release
+build, from the repository root:
+
+```sh
+install -Dm755 _build/release/me "$HOME/.local/bin/me"
+install -Dm644 packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop \
+    "$HOME/.local/share/applications/io.github.TomasJelinek.MidnightExplorer.desktop"
+install -Dm644 assets/branding/midnight-explorer.png \
+    "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.TomasJelinek.MidnightExplorer.png"
+```
+
+The graphical session's `PATH` must include `$HOME/.local/bin`; sign in again after
+changing that environment. If using custom XDG data directories, install the entry
+and icon under `$XDG_DATA_HOME` instead of `$HOME/.local/share`. These commands
+install the application but do not make it the default file manager.
+
 ### Rendering diagnostics
 
-Normal rendering uses Slint FemtoVG-WGPU with system-font fallback. The separate
+Normal rendering uses Slint FemtoVG-WGPU with system-font fallback. Windows defaults
+to Direct3D; explicit `SLINT_BACKEND` / `WGPU_BACKEND` overrides remain available.
+The separate
 software renderer is a developer diagnostic option; it is not a qualified
 full-Unicode production fallback:
 
@@ -166,6 +237,10 @@ cargo run -p midnight-explorer --locked -- --software
 
 `SLINT_BACKEND` is respected when `--software` is not supplied. GUI smoke checks
 and `--snapshot FILE.png` need a working display; see [Checks](#checks) below.
+On an isolated Linux display without a suitable GPU, Slint may fall back to
+software, which does not render bitmap emoji. For WGPU diagnostics only,
+`SLINT_WGPU_CPU=1 ./_build/debug/me` permits a CPU adapter. This still needs the
+graphics runtime and fonts; it does not establish production GPU performance.
 
 ## Controls
 
@@ -228,14 +303,18 @@ editor scope and shortcuts reserved for later stages.
   all discovered drives and special locations, with full-path tooltips.
   Suitable host icons load on the backend; missing native action icons retain
   semantic application vectors and native colors remain intact.
-- Options beside Run has Panel, Appearance and Command tabs. It offers readable
-  or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Desktop/Touch spacing, an installed
+- Options after F12 has Panel, Appearance, Command and Keyboard tabs. It offers readable
+  or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Dracula, Nord,
+  Gruvbox Dark, Catppuccin Mocha, Solarized Light, Desktop/Touch spacing, an installed
   font family and independent Desktop/Touch base sizes (8–32px). Preview
   is immediate; typed preferences are saved asynchronously by the backend.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
   appears in full beside the command input in the same single row, without
   elision or a fixed path-width cap. Extreme paths remain fully accessible in a
   horizontal viewport while preserving editor space.
+  The command row uses the same height as the function-button toolbar. Alt+Up
+  and Alt+Down rotate stored commands without changing the chosen terminal;
+  Enter submits the displayed draft.
   At large fonts, the window minimum grows to preserve readable controls and
   a complete file row; ordinary fonts retain the 480 px minimum-height floor.
 - Panel scrolling animates discrete wheel input in pixels and gently settles on
@@ -257,6 +336,27 @@ editor scope and shortcuts reserved for later stages.
   explicitly confirm permanent deletion. A Trash failure never permanently deletes.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
   Options follows F12; Jobs shows the operation queue, progress and cancellation.
+- Hold Ctrl to show the effective Ctrl+F1–F12 captions and actions in the footer.
+  Remapped or disabled shortcuts are reflected in this layer. Ctrl+F11 expands
+  the active panel and leaves a rail for switching to the other panel; another
+  Ctrl+F11 restores the previous split. Double-clicking the splitter centers it.
+- Ctrl+F10 compares the two displayed directories on the backend, selecting
+  missing, larger or newer files. Size and modified time are enabled by default,
+  with a two-second timestamp tolerance. Name-case matching and unmatched
+  directories are configurable. Matching metadata does **not** verify file contents;
+  content and recursive comparison are planned extensions.
+- Ctrl+F12 opens a saved per-panel file filter. Choose wildcard masks or a Rust
+  regular expression, with explicit case sensitivity. Directories remain visible;
+  the filter combines with typing-based filename search. Invalid expressions do
+  not replace the active filter.
+- Ctrl+F2 or the panel's attributes icon opens **Attributes, times and case**.
+  Ctrl+F7 opens the same editor with case conversion enabled. Other edits start
+  as Leave unchanged. Preview the captured selection, then Apply to queue the
+  reviewed draft. Native Windows attributes/compression/timestamps and Linux
+  permissions/timestamps follow reported capabilities. Unicode case conversion
+  supports whole names, basenames and extensions. Recursive edits process
+  children first without following links or crossing mount points. Name conflicts
+  offer Skip, Skip all or Cancel; existing entries are never overwritten.
 - Click the blank area after the top breadcrumb to enter a custom path; Enter
   navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.
 - Panel view picker: independent Brief, Detailed and large-icon Thumbnails modes.
@@ -270,7 +370,13 @@ editor scope and shortcuts reserved for later stages.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are
   retained and sorted on the backend; Refresh invalidates these live estimates.
 
-Options, tabs, bookmarks and enabled command history are stored as version 6 UTF-8 JSON in the native
+Application hotkeys can be changed, disabled, or restored in **Options → Keyboard**.
+Bindings are validated for conflicts in their applicable contexts; native text editing
+and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
+lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
+
+Options, tabs, bookmarks, panel filters, enabled command history and shortcut overrides are stored
+as version 8 UTF-8 JSON in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -280,7 +386,14 @@ Storage and font/icon discovery run on backend workers. See the
 [navigation and appearance design](docs/superpowers/specs/2026-11-04-navigation-and-appearance-design.md).
 Exact byte sizes and date/time use system regional settings captured on the backend;
 restart after changing the OS locale. Missing native formats use invariant/UTC
-fallbacks. The current [operation design](docs/superpowers/specs/2026-11-05-rename-delete-scroll-design.md)
+fallbacks. Name and extension sorting uses native system-locale case and accent
+weights; equal size/date values use that same name order. The locale is captured
+until restart. Invalid native names remain lossless and use deterministic raw-name
+ordering after collatable names. Linux falls back to the C locale when the configured
+locale is unavailable. Cached backend sort keys have a 4 MiB resource budget per key;
+names are never truncated. See the [locale sorting design](docs/superpowers/specs/2026-11-06-locale-sorting-design.md).
+
+The current [operation design](docs/superpowers/specs/2026-11-05-rename-delete-scroll-design.md)
 documents confirmations, cancellation and native limitations: Linux mutations need
 Linux5.6+ and same-device home Trash; Windows Shell Trash can refuse long paths
 that native rename/create/permanent operations support.
@@ -404,6 +517,9 @@ cargo run -p midnight-explorer -- --ui-smoke-test --software
 
 The application also supports `--snapshot FILE.png` for a native-window smoke
 check which saves a screenshot after both real directories have finished loading.
+UI smoke checks use fresh in-memory preferences and never load or save the user's
+settings. Application error dialogs fail the check instead of producing a passing
+screenshot.
 Image encoding/writing runs in a backend worker and refuses to overwrite an
 existing file. Linux and Windows use the
 same source; see `.github/workflows/ci.yml` for automated build/test commands.

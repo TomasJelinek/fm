@@ -2,10 +2,38 @@
 
 Datum: 4. listopadu 2026
 
-Stav: **návrh, bez implementace**. Copy/Move/Delete zůstávají vypnuté. Tento
-doplněk zpřesňuje oddíly 8, 9, 17 a 25 hlavního návrhu; nemění `SECURITY.md` ani
-povinné ověření každého souboru. Číselné výchozí limity jsou doporučení návrhu,
-která se musí ověřit měřením, nikoli tvrzení o naměřeném výkonu aplikace.
+Stav k 6. listopadu 2026: **SSD souběh je návrh, bez implementace**. Ověřené
+Copy je implementováno konzervativně: jedna aktivní kopírovací úloha a nejvýše
+jeden nativní I/O krok v celé frontě, na všech druzích úložiště včetně SSD→SSD.
+Move zůstává nepodporované. Copy a samostatná implementovaná fronta mutací sdílejí
+jeden mutační permit. Současná kopie používá opakovaně použitelný 256KiB buffer,
+SHA-256 a samostatný úplný readback cíle; budoucí BLAKE3 níže není současná
+implementace. Tento doplněk zpřesňuje oddíly 8, 9, 17 a 25 hlavního návrhu a
+musí zachovat `SECURITY.md` i povinné ověření každého souboru. Číselné výchozí
+limity jsou doporučení návrhu, která se musí ověřit měřením, nikoli tvrzení
+o naměřeném výkonu aplikace.
+
+## Podmínka obou konců přenosu
+
+Více souběžných kopírovacích/přesouvacích I/O proudů lze v budoucnu povolit
+**jen tehdy, jsou-li zdroj i cíl pozitivně určeny jako lokální SSD**. Nestačí
+pozitivní určení jediného konce. HDD, síť, neznámý druh, smíšená topologie nebo
+chyba detekce na kterémkoli konci znamenají sériový přenos. Síťový server s SSD
+je stále síť. Klasifikace v této matici je nutná podmínka, nikoli sama o sobě
+oprávnění obejít rozpočty fyzických zařízení, integritu nebo zámky operací.
+
+| Zdroj \ Cíl | Lokální SSD | HDD | Síť | Neznámý / chyba |
+| --- | --- | --- | --- | --- |
+| Lokální SSD | Souběh přípustný až s budoucím schedulerem | Sériově | Sériově | Sériově |
+| HDD | Sériově | Sériově | Sériově | Sériově |
+| Síť | Sériově | Sériově | Sériově | Sériově |
+| Neznámý / chyba | Sériově | Sériově | Sériově | Sériově |
+
+**Současná implementace je sériová ve všech 16 kombinacích.** Jednotlivé kroky
+mohou běžet na různých backendových vláknech, ale jejich I/O se nepřekrývá.
+Blokující nativní volání drží permit i po žádosti o zrušení; další úloha nezačne
+před jeho skutečným návratem a úklidem. Čtecí scheduler velikostí složek je
+samostatná služba a jeho SSD hint nesmí povolit souběh kopií.
 
 ## Proč omezený souběh
 
@@ -32,7 +60,8 @@ kopírovacích workerů. [Solidigm: PC Storage Performance in the Real World](ht
 
 ## Rozpočty a fyzická identita
 
-- Pro pozitivně určené **lokální SSD** navrhnout 2 aktivní I/O proudy na zařízení.
+- Jen pro přenosy s pozitivně určeným **lokálním SSD na obou koncích** navrhnout
+  2 aktivní I/O proudy na zařízení.
   Nastavení smí snížit limit na 1; zvýšení nejvýše na 4 vyžaduje prokázaný přínos
   bez zhoršení interaktivní odezvy. Počet CPU jader neurčuje tento limit.
 - HDD má 1 proud na zařízení. Síť má 1 ve sdílené skupině endpointu; nelze-li
@@ -50,7 +79,8 @@ kopírovacích workerů. [Solidigm: PC Storage Performance in the Real World](ht
   jeden permit lze použít pro jeho střídající se čtení/zápis/readback na témže
   zařízení. Pokud se fáze překrývají, každý skutečně souběžný I/O proud musí mít
   permit. Dva aktivní soubory nesmějí skrytě vytvořit čtyři neúčtované proudy.
-- Různá prokázaná fyzická zařízení mohou pracovat současně: například čtení
+- Různá prokázaná fyzická SSD u přenosů splňujících podmínku obou konců mohou
+  pracovat současně: například čtení
   dalšího aktivního souboru na SSD A se překryje se zápisem jiného na SSD B nebo
   s jeho ověřením. Každá fáze má vlastní účtování zařízení a omezený buffer.
   To umožňuje pipeline mezi soubory bez paralelního čtení bloků jednoho souboru.

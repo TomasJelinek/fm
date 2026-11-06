@@ -38,6 +38,7 @@ use std::{
 };
 
 mod create;
+mod metadata;
 mod trash;
 mod tree;
 
@@ -224,6 +225,30 @@ impl Prepared {
 impl PreparedMutation for Prepared {
     fn item(&self) -> &MutationItem {
         &self.item
+    }
+    fn metadata_snapshot(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::MetadataSnapshot, FsError> {
+        metadata::snapshot(self, cancel)
+    }
+    fn metadata_children(
+        &self,
+        cancel: &Cancellation,
+        max_targets: usize,
+    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+        metadata::children(self, cancel, max_targets)
+    }
+    fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
+        metadata::name_available(self, name, cancel)
+    }
+    fn edit_metadata(
+        &self,
+        patch: &midnight_core::MetadataPatch,
+        name: Option<&OsStr>,
+        cancel: &Cancellation,
+    ) -> midnight_core::MetadataOutcome {
+        metadata::edit(self, patch, name, cancel)
     }
 
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {

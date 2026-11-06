@@ -1,6 +1,10 @@
 //! Input choices and revision ordering; settings storage stays on the backend.
 use super::*;
 
+#[cfg(test)]
+#[path = "preferences/theme_tests.rs"]
+mod theme_tests;
+
 #[derive(Default)]
 pub(crate) struct PreferencesState {
     pub(crate) values: UserPreferences,
@@ -28,16 +32,14 @@ pub(super) struct EditedFields {
     pub(super) command_history: bool,
     pub(super) command_history_cleared: bool,
     pub(super) panel_view_modes: [bool; 2],
+    pub(super) panel_filters: [bool; 2],
+    pub(super) shortcuts: bool,
     bookmarks: bool,
 }
 
 impl PreferencesState {
     pub(crate) fn theme_index(&self) -> i32 {
-        match self.values.theme {
-            PreferenceTheme::Blue => 0,
-            PreferenceTheme::Dark => 1,
-            PreferenceTheme::Light => 2,
-        }
+        self.values.theme.index()
     }
     pub(crate) fn density_index(&self) -> i32 {
         match self.values.density {
@@ -111,7 +113,13 @@ impl Presenter {
                 if edited.remember_command_history {
                     loaded.remember_command_history = local.remember_command_history;
                 }
+                if edited.shortcuts {
+                    loaded.shortcuts = local.shortcuts.clone();
+                }
                 for slot in 0..2 {
+                    if edited.panel_filters[slot] {
+                        loaded.panel_filters[slot] = local.panel_filters[slot].clone();
+                    }
                     if edited.panel_view_modes[slot] {
                         loaded.panel_view_modes[slot] = local.panel_view_modes[slot];
                     }
@@ -166,6 +174,10 @@ impl Presenter {
                     loaded.bookmarks.append(&mut local.bookmarks);
                 }
                 self.preferences.bookmark_generation = generation;
+                if let Err(error) = self.keyboard.sync(&loaded.shortcuts) {
+                    loaded.shortcuts = self.preferences.values.shortcuts.clone();
+                    self.desktop.report("Cannot apply keyboard options", error);
+                }
                 self.retired
                     .push(Box::new(mem::replace(&mut self.preferences.values, loaded)));
             }
@@ -180,9 +192,8 @@ impl Presenter {
             }
         }
         self.preferences.flush_after_load = self.preferences.unsaved;
-        if previous_filter != self.preferences.values.quick_search_filter {
-            self.search_filter_changed();
-        }
+        let _ = previous_filter;
+        self.search_filter_changed();
     }
 
     pub(super) fn flush_loaded_preferences(&mut self, send: &dyn Fn(Command) -> bool) {
@@ -229,11 +240,8 @@ impl Presenter {
             _ => {} // Save again changes no field merely by being clicked.
         }
         let preferences = UserPreferences {
-            theme: match theme {
-                1 => PreferenceTheme::Dark,
-                2 => PreferenceTheme::Light,
-                _ => PreferenceTheme::Blue,
-            },
+            // Keep the existing Blue fallback for malformed picker callbacks.
+            theme: PreferenceTheme::from_index(theme).unwrap_or_default(),
             density: if density == 1 {
                 UiDensity::Touch
             } else {
@@ -310,6 +318,10 @@ impl Presenter {
         preferences: UserPreferences,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if let Err(error) = self.keyboard.sync(&preferences.shortcuts) {
+            self.keyboard.error = error;
+            return;
+        }
         if preferences == self.preferences.values
             && !self.preferences.unsaved
             && self.preferences.revision.0 != 0
@@ -324,14 +336,19 @@ impl Presenter {
         edited.font_family |= preferences.font_family != previous.font_family;
         edited.desktop_font_size |= preferences.desktop_font_size != previous.desktop_font_size;
         edited.touch_font_size |= preferences.touch_font_size != previous.touch_font_size;
-        let filter_changed = preferences.quick_search_filter != previous.quick_search_filter;
-        edited.quick_search_filter |= filter_changed;
+        let filter_changed = preferences.quick_search_filter != previous.quick_search_filter
+            || preferences.panel_filters != previous.panel_filters;
+        edited.quick_search_filter |=
+            preferences.quick_search_filter != previous.quick_search_filter;
         edited.size_display |= preferences.size_display != previous.size_display;
         edited.remember_command_history |=
             preferences.remember_command_history != previous.remember_command_history;
         edited.command_history |= preferences.command_history != previous.command_history;
         edited.bookmarks |= preferences.bookmarks != previous.bookmarks;
+        edited.shortcuts |= preferences.shortcuts != previous.shortcuts;
         for slot in 0..2 {
+            edited.panel_filters[slot] |=
+                preferences.panel_filters[slot] != previous.panel_filters[slot];
             edited.panel_view_modes[slot] |=
                 preferences.panel_view_modes[slot] != previous.panel_view_modes[slot];
         }

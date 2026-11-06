@@ -1,0 +1,34 @@
+import { Theme } from "theme.slint";
+import { DialogText } from "dialog-text.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+export component HelpBody inherits Rectangle {
+    in property <image> close-icon;
+    callback close();
+    background: Theme.surface; border-radius: 8px;
+    border-color: Theme.active-frame; border-width: 1px;
+    VerticalLayout {
+        padding: 20px; spacing: 13px;
+        Text {
+            text: "Midnight Explorer keyboard help";
+            color: Theme.strong-text; font-size: 20px; wrap: word-wrap;
+        }
+        DialogText {
+            text: "Change application shortcuts in Options → Keyboard. The bindings below are your current settings. Native editor and IME keys retain their usual behavior; operating-system shortcuts may take precedence.\n\n"
+                + ShortcutHints.help()
+                + "\n\nMouse: a plain left double-click opens a file or folder. Ctrl+click toggles selection, Shift+click selects a range, and Ctrl+Shift+click adds a range. Middle-click closes a folder tab. Drag the panel divider to resize; double-click it to center. Right-click files or drives for available system/application actions. Right-click a path prefix to copy it."
+                + "\n\nTyping in a file panel searches Unicode filename prefixes, ignoring case. Options can filter the list to matches. Amber folder sizes are still being counted; ≈ means a partial or approximate total. Links and special files are excluded from size scans. A small C on the icon indicates native filesystem compression."
+                + "\n\nClipboard copies run in the background and verify destination bytes with SHA-256. Jobs shows progress, cancellation and deferred name conflicts. Sources are retained. Replacing existing targets, directory merging and Move/Cut are not available yet. Deletion always asks for confirmation; a failed Trash operation never becomes permanent deletion."
+                + "\n\nThe terminal icon opens an interactive terminal. Its arrow selects the shell; command history fills the draft without executing it. Only Run or the configured Execute command shortcut submits it. Sudo authentication remains inside the external terminal."
+                + "\n\nThe Hot Paths star adds the current folder; its arrow opens saved paths and Manage. Tabs, bookmarks and enabled command history are saved. View, Edit and the direct Copy/Move buttons await their next implementation stages.";
+        }
+        HintedActionButton {
+            native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
+            text: "Close"; min-height: Theme.control-height;
+            hint: "Close this dialog and return to the file manager.";
+            clicked => { root.close(); }
+        }
+    }
+}

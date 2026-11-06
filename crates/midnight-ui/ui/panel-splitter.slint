@@ -4,16 +4,20 @@ export component PanelSplitter inherits Rectangle {
     in property <length> available-width;
     in property <length> minimum-pane-width;
     in-out property <float> fraction: 0.5;
+    callback centered();
+    callback resized();
+    public function center() { root.fraction = 0.5; root.centered(); }
     width: Theme.touch ? 12px : 6px;
     accessible-role: button;
     accessible-label: "Panel splitter";
-    accessible-action-default => { root.fraction = 0.5; }
+    accessible-action-default => { root.center(); }
     forward-focus: focus;
     public function adjust(delta: length) {
         if root.available-width > 0px {
             let minimum = min(0.5, root.minimum-pane-width / root.available-width);
-            root.fraction = clamp(root.fraction + delta / root.available-width,
+            root.fraction = clamp((root.x + delta) / root.available-width,
                 minimum, 1 - minimum);
+            root.resized();
         }
     }
     Rectangle {
@@ -26,7 +30,7 @@ export component PanelSplitter inherits Rectangle {
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
                 if event.text == Key.LeftArrow { root.adjust(-12px); return accept; }
                 if event.text == Key.RightArrow { root.adjust(12px); return accept; }
-                if event.text == Key.Return { root.fraction = 0.5; return accept; }
+                if event.text == Key.Return { root.center(); return accept; }
             }
             reject
         }
@@ -34,7 +38,7 @@ export component PanelSplitter inherits Rectangle {
             mouse-cursor: ew-resize;
             moved => { if self.pressed { root.adjust(self.mouse-x - self.pressed-x); } }
             clicked => { focus.focus(); }
-            double-clicked => { root.fraction = 0.5; }
+            double-clicked => { root.center(); }
         }
     }
 }

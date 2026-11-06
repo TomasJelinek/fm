@@ -15,13 +15,7 @@ use slint::{
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
+use ui::platform_keys;
 #[cfg(windows)]
 #[path = "support/windows_search_keys.rs"]
 mod search_keys;
@@ -86,6 +80,17 @@ fn accept(
             revision: request.revision,
             result: Arc::new(SearchResult {
                 source: request.source.clone(),
+                filtered: request
+                    .source
+                    .iter()
+                    .enumerate()
+                    .map(|(source_row, _)| SearchMatch {
+                        source_row,
+                        display_prefix_end: 0,
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+                filtered_index: Arc::new(DirectoryIndex::from_entries(&request.source)),
                 matches: rows
                     .iter()
                     .map(|row| SearchMatch {

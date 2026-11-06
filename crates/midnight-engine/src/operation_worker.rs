@@ -9,10 +9,14 @@ use std::{
 pub(super) struct Job {
     pub(super) cancel: Cancellation,
     pub(super) status: Status,
-    targets: Vec<Arc<dyn PreparedMutation>>,
+    pub(super) targets: Vec<Arc<dyn PreparedMutation>>,
     directory: Option<Arc<dyn PreparedDirectory>>,
     name: Option<OsString>,
     preview: OperationPreview,
+    pub(super) metadata: Option<super::metadata::Edit>,
+    pub(super) metadata_budget: Arc<Semaphore>,
+    // Declared after targets so native resources close before permits are returned.
+    metadata_permits: Vec<tokio::sync::OwnedSemaphorePermit>,
 }
 
 pub(super) fn initial(request: &PrepareOperation) -> OperationProgress {
@@ -67,6 +71,7 @@ pub(super) fn prepare(
     service: Option<Arc<dyn MutationService>>,
     cancel: Cancellation,
     status: Status,
+    metadata_budget: Arc<Semaphore>,
 ) -> Result<Job, FsError> {
     let source = &request.source.path;
     let service =
@@ -77,6 +82,9 @@ pub(super) fn prepare(
         targets: vec![],
         directory: None,
         name: None,
+        metadata: None,
+        metadata_budget,
+        metadata_permits: vec![],
         preview: OperationPreview {
             id: request.id,
             kind: request.kind,
@@ -98,8 +106,10 @@ pub(super) fn prepare(
     ) {
         job.directory = Some(service.prepare_create(source, &job.cancel)?);
     } else {
-        let selected =
-            matches!(request.kind, MutationKind::Delete(_)) && !request.selection.is_empty();
+        let selected = matches!(
+            request.kind,
+            MutationKind::Delete(_) | MutationKind::EditMetadata
+        ) && !request.selection.is_empty();
         // Resolve on a worker in visible listing order; IDs alone are never paths.
         for entry in request.source.entries.iter() {
             if job.cancel.is_cancelled() {
@@ -128,6 +138,19 @@ pub(super) fn prepare(
                     &entry.path,
                     "Only immediate entries of the captured folder are allowed.",
                 ));
+            }
+            if request.kind == MutationKind::EditMetadata
+                && job.targets.len() >= MAX_METADATA_TARGETS
+            {
+                return Err(error(
+                    source,
+                    "Metadata selection exceeds the 256 pinned-target budget.",
+                ));
+            }
+            if request.kind == MutationKind::EditMetadata {
+                let permit = job.metadata_budget.clone().try_acquire_owned()
+                    .map_err(|_| error(source, "The shared metadata handle budget is in use. Close another preview or wait for its job."))?;
+                job.metadata_permits.push(permit);
             }
             let prepared = service.prepare(&entry.path, &job.cancel)?;
             if prepared.item().path != entry.path {
@@ -158,6 +181,13 @@ pub(super) fn prepare(
     } else {
         job.targets.len() as u64
     };
+    if request.kind == MutationKind::EditMetadata {
+        job.metadata = Some(super::metadata::Edit::prepare(
+            request.id,
+            &job.targets,
+            &job.cancel,
+        )?);
+    }
     Ok(job)
 }
 
@@ -221,10 +251,19 @@ impl Job {
                 ));
             }
             MutationKind::Delete(_) => {}
+            MutationKind::EditMetadata => {
+                return Err(error(
+                    &progress.source_directory,
+                    "Metadata changes require a matching preview revision.",
+                ));
+            }
         }
         Ok(())
     }
     pub(super) fn execute(self, outbox: Outbox) -> OperationProgress {
+        if self.metadata.is_some() {
+            return super::metadata::execute(self, outbox);
+        }
         let mut progress = self.progress();
         let mut last = Instant::now();
         let count = progress.total as usize;
@@ -282,6 +321,7 @@ impl Job {
                         }
                     })
                     .map(|()| None),
+                MutationKind::EditMetadata => unreachable!("metadata jobs use their typed worker"),
             };
             match result {
                 Ok(destination) => {

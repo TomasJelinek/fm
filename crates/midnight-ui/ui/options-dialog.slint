@@ -3,6 +3,7 @@ import { HintedCheckBox, HintedComboBox, HintedActionButton } from "hinted-input
 import { CompactPicker } from "controls.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
+import { KeyboardOptions } from "keyboard-options.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -41,6 +42,17 @@ export component OptionsBody inherits Rectangle {
     in property <bool> sizes-in-bytes;
     in property <bool> remember-command-history;
     in property <bool> command-history-empty;
+    in property <[string]> keyboard-actions;
+    in property <int> keyboard-selected;
+    in property <string> keyboard-action-id;
+    in property <string> keyboard-bindings;
+    in property <string> keyboard-revision;
+    in property <string> keyboard-scope;
+    in property <string> keyboard-error;
+    callback keyboard-select(int);
+    callback keyboard-apply(string, string);
+    callback keyboard-restore(string);
+    callback keyboard-restore-all();
     callback preferences-changed(int, int, int);
     callback font-options-changed(int, int, int, int);
     callback search-filter-changed(bool);
@@ -57,7 +69,7 @@ export component OptionsBody inherits Rectangle {
             height: Theme.control-height + 4px;
             HorizontalLayout {
                 spacing: 0px;
-                for label[index] in ["Panel", "Appearance", "Command"] : Rectangle {
+                for label[index] in ["Panel", "Appearance", "Command", "Keyboard"] : Rectangle {
                     horizontal-stretch: 1;
                     background: root.topic-index == index ? Theme.active-header
                         : tab-area.has-hover ? Theme.hover : Theme.secondary-surface;
@@ -76,7 +88,7 @@ export component OptionsBody inherits Rectangle {
                             if event.text == Key.Return || event.text == Key.Space {
                                 root.topic-index = index; return accept;
                             }
-                            if event.text == Key.RightArrow { root.topic-index = min(2, root.topic-index + 1); return accept; }
+                            if event.text == Key.RightArrow { root.topic-index = min(3, root.topic-index + 1); return accept; }
                             if event.text == Key.LeftArrow { root.topic-index = max(0, root.topic-index - 1); return accept; }
                             reject
                         }
@@ -87,6 +99,15 @@ export component OptionsBody inherits Rectangle {
         }
         ScrollView {
             horizontal-scrollbar-policy: always-off;
+            if root.topic-index == 3 : KeyboardOptions {
+                actions: root.keyboard-actions; selected: root.keyboard-selected;
+                action-id: root.keyboard-action-id; bindings: root.keyboard-bindings;
+                revision: root.keyboard-revision; scope: root.keyboard-scope; error: root.keyboard-error;
+                select(index) => { root.keyboard-select(index); }
+                apply(action, keys) => { root.keyboard-apply(action, keys); }
+                restore(action) => { root.keyboard-restore(action); }
+                restore-all => { root.keyboard-restore-all(); }
+            }
             if root.topic-index == 0 : VerticalLayout {
                 spacing: 16px; alignment: start;
                 HintedCheckBox {
@@ -105,8 +126,8 @@ export component OptionsBody inherits Rectangle {
             if root.topic-index == 1 : VerticalLayout {
                 spacing: 10px; alignment: start;
                 theme := OptionPicker {
-                    label: "Theme"; model: ["Blue", "Dark", "Light"]; current-index: root.theme-index;
-                    hint: "Choose Blue, Dark or Light. Changes apply immediately.";
+                    label: "Theme"; model: ThemePalettes.names; current-index: root.theme-index;
+                    hint: "Choose one of eight color themes. Changes apply immediately.";
                     selected(index) => { root.preferences-changed(index, root.density-index, 0); }
                 }
                 density := OptionPicker {
@@ -173,3 +194,4 @@ export component OptionsBody inherits Rectangle {
         }
     }
 }
+import { ThemePalettes } from "theme-palettes.slint";

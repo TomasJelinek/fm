@@ -17,6 +17,7 @@ pub(crate) struct DesktopState {
     pub(crate) terminal_mode: TerminalMode,
     pub(crate) draft_nonempty: bool,
     pub(crate) draft_shell: Option<ShellFlavor>,
+    pub(crate) command_history_cursor: Option<String>,
     pub(crate) terminal_guidance: Option<&'static str>,
     images: HashMap<IconKey, Image>,
     image_order: VecDeque<IconKey>,

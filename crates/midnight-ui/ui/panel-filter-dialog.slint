@@ -1,0 +1,64 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+export struct PanelFilterView {
+    open: bool, pane: int, enabled: bool, regex: bool,
+    expression: string, case-sensitive: bool, busy: bool, error: string,
+}
+
+export component PanelFilterDialog inherits Rectangle {
+    in property <PanelFilterView> model;
+    callback apply(bool, bool, string, bool);
+    callback cancel();
+    public function begin() {
+        enabled.checked = root.model.enabled;
+        regex.checked = root.model.regex;
+        expression.text = root.model.expression;
+        names.checked = root.model.case-sensitive;
+        expression.focus();
+    }
+    background: Theme.surface; border-radius: 8px;
+    border-width: 1px; border-color: Theme.active-frame;
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.cancel(); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            padding: 20px; spacing: 12px;
+            Text { text: "Panel file filter"; color: Theme.strong-text; font-size: Theme.font-size + 5px; wrap: word-wrap; }
+            ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    spacing: 12px; alignment: start;
+                    enabled := HintedCheckBox {
+                        text: "Enable persistent file filter"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Save an independent filter for this panel. It follows the panel across folders and combines with quick search.";
+                    }
+                    regex := HintedCheckBox {
+                        text: "Use regular expression"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Rust regular expression syntax. A match anywhere in the filename is included; use ^ and $ for a whole name.";
+                    }
+                    expression := HintedLineEdit {
+                        enabled: !root.model.busy; accessible-label: "File filter expression"; min-height: Theme.control-height;
+                        hint: "Masks: * matches any text, ? one character, ; separates masks, | starts exclusions, ;; means a literal semicolon. Example: *.txt;*.md|secret*. *.* includes extensionless files. Maximum 4096 UTF-8 bytes.";
+                    }
+                    names := HintedCheckBox {
+                        text: "Case sensitive"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        hint: "Compare Unicode letters with exact case. Native filenames are never changed.";
+                    }
+                    Text { text: "Directories remain visible."; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    if root.model.busy: Text { text: "Validating filter…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    if root.model.error != "": Text { text: root.model.error; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                Button { text: "Apply"; enabled: !root.model.busy; min-height: Theme.control-height;
+                    clicked => { root.apply(enabled.checked, regex.checked, expression.text, names.checked); } }
+                Button { text: "Cancel"; min-height: Theme.control-height; clicked => { root.cancel(); } }
+            }
+        }
+    }
+}

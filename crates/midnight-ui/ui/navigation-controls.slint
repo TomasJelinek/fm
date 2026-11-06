@@ -5,6 +5,7 @@ import { Theme } from "theme.slint";
 import { TipBody, CompactPicker } from "controls.slint";
 import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
 
 export component NavigationButton inherits Rectangle {
     in property <image> icon;
@@ -81,6 +82,8 @@ export component NavigationButton inherits Rectangle {
 }
 
 export component HistoryNavigation inherits Rectangle {
+    in property <length> primary-width: Theme.tool-width;
+    in property <length> arrow-width: Theme.touch ? 26px : 22px;
     in property <image> icon;
     in property <image> native-icon;
     in property <string> hint;
@@ -89,21 +92,21 @@ export component HistoryNavigation inherits Rectangle {
     callback step();
     callback selected(string);
     callback dismissed();
-    width: Theme.tool-width + (Theme.touch ? 26px : 22px);
+    width: root.primary-width + root.arrow-width;
     height: Theme.control-height;
     background: Theme.surface;
     border-width: 1px; border-radius: 4px; border-color: Theme.frame;
     HorizontalLayout {
         spacing: 0px; cross-axis-alignment: center;
         NavigationButton {
-            width: Theme.tool-width; icon: root.icon; native-icon: root.native-icon;
+            width: root.primary-width; icon: root.icon; native-icon: root.native-icon;
             hint: root.hint; enabled: root.model.length > 0;
             model-revision: root.revision;
             identity: root.model.length > 0 ? root.model[0].identity : "";
             clicked => { root.step(); }
         }
         CompactPicker {
-            width: Theme.touch ? 26px : 22px; minimum-control-width: 0px;
+            width: root.arrow-width; minimum-control-width: 0px;
             framed: false;
             choices: root.model; model-revision: root.revision;
             show-row-icons: false; popup-align-right: true;
@@ -116,7 +119,7 @@ export component HistoryNavigation inherits Rectangle {
         }
     }
     Rectangle {
-        x: Theme.tool-width; y: 4px; width: 1px; height: root.height - 8px;
+        x: root.primary-width; y: 4px; width: 1px; height: root.height - 8px;
         background: Theme.frame;
     }
 }
@@ -228,7 +231,7 @@ export component TabStrip inherits Rectangle {
                         identity: tab.identity; model-revision: root.revision;
                         icon: FallbackIcons.close-tab;
                         native-icon: root.action-icons.close-tab;
-                        hint: "Close tab: " + tab.label + "\n" + tab.path + "\nCtrl+W closes the active tab. The last tab stays open.";
+                        hint: "Close tab: " + tab.label + "\n" + tab.path + "\n" + ShortcutHints.hint("Close active tab", "tab.close") + ". The last tab stays open.";
                         enabled: root.model.length > 1;
                         clicked => { root.close-tab(tab.identity); }
                         middle-clicked => { root.close-tab(tab.identity); }
@@ -250,7 +253,7 @@ export component TabStrip inherits Rectangle {
         NavigationButton {
             icon: FallbackIcons.tab-add; native-icon: root.action-icons.tab-add;
             enabled: root.model.length < 32;
-            hint: root.model.length < 32 ? "Open a new folder tab (Ctrl+T)." : "A panel can have up to 32 folder tabs.";
+            hint: root.model.length < 32 ? ShortcutHints.hint("Open a new folder tab", "tab.new") : "A panel can have up to 32 folder tabs.";
             clicked => { root.new-tab(); }
         }
     }
@@ -267,6 +270,9 @@ export component BookmarkMenu inherits Rectangle {
     private property <int> draft-slot;
     private property <string> draft-name;
     private property <int> revision;
+    pure function slot-label(slot: int) -> string {
+        return ShortcutHints.hint("Hot Path " + slot, "bookmark.open." + slot);
+    }
     callback opening();
     callback dismissed();
     callback open-bookmark(string);
@@ -288,7 +294,7 @@ export component BookmarkMenu inherits Rectangle {
         width: root.width;
         icon: FallbackIcons.bookmarks;
         native-icon: root.action-icons.bookmarks;
-        hint: "Manage Bookmarks and Hot Paths\nSave, open or remove a favorite folder. Ctrl+1…9 / Ctrl+0 opens a Hot Path; assign shortcuts in this dialog.";
+        hint: "Manage Bookmarks and Hot Paths\nSave, open or remove a favorite folder. Assign a numbered slot here; change its keys in Options → Keyboard.";
         clicked => { root.open(); }
     }
     popup := PopupWindow {
@@ -316,12 +322,12 @@ export component BookmarkMenu inherits Rectangle {
                             background: row-area.has-hover ? Theme.hover : transparent;
                             border-width: 1px; border-color: bookmark-focus.has-focus ? Theme.active-frame : transparent;
                             accessible-role: button;
-                            accessible-label: bookmark.label + "\n" + bookmark.path + (bookmark.slot > 0 ? "\nHot Path Ctrl+" + (bookmark.slot == 10 ? 0 : bookmark.slot) : "");
+                            accessible-label: bookmark.label + "\n" + bookmark.path + (bookmark.slot > 0 ? "\n" + root.slot-label(bookmark.slot) : "");
                             accessible-action-default => { root.select-bookmark(bookmark.identity); }
                             forward-focus: bookmark-focus;
                             VerticalLayout {
                                 padding-left: 8px; padding-right: Theme.control-height + 8px; spacing: 0px;
-                                Text { text: bookmark.label + (bookmark.slot > 0 ? "  ·  Ctrl+" + (bookmark.slot == 10 ? 0 : bookmark.slot) : ""); color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; overflow: elide; }
+                                Text { text: bookmark.label + (bookmark.slot > 0 ? "  ·  " + root.slot-label(bookmark.slot) : ""); color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; overflow: elide; }
                                 Text { text: bookmark.path; color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
                             }
                             bookmark-focus := FocusScope {
@@ -375,10 +381,10 @@ export component BookmarkMenu inherits Rectangle {
                         HintedComboBox {
                             accessible-label: "Hot Path shortcut";
                             min-height: Theme.control-height;
-                            model: ["No shortcut", "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9", "Ctrl+0"];
+                            model: ["No Hot Path", root.slot-label(1), root.slot-label(2), root.slot-label(3), root.slot-label(4), root.slot-label(5), root.slot-label(6), root.slot-label(7), root.slot-label(8), root.slot-label(9), root.slot-label(10)];
                             current-index: root.draft-slot;
                             selected(value) => { root.draft-slot = self.current-index; }
-                            hint: "Optional Hot Path shortcut. Assigning an occupied slot moves the shortcut to this folder.";
+                            hint: "Optional Hot Path slot. Assigning an occupied slot moves it to this folder. Configure each slot's keys in Options → Keyboard.";
                         }
                         HintedActionButton {
                             native-icon: root.action-icons.add-bookmark;

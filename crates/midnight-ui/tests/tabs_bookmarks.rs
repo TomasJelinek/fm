@@ -16,12 +16,7 @@ use slint::{
 };
 use std::{cell::RefCell, rc::Rc};
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
+use ui::platform_keys;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {
@@ -72,7 +67,7 @@ fn tab(identity: &str, label: &str, active: bool) -> TabRow {
 
 fn close_tab_hint(label: &str) -> String {
     format!(
-        "Close tab: {label}\nD:\\文档\\{label}\nCtrl+W closes the active tab. The last tab stays open."
+        "Close tab: {label}\nD:\\文档\\{label}\nClose active tab (Ctrl+W). The last tab stays open."
     )
 }
 
@@ -374,7 +369,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     );
     ui::click_root(
         &window,
-        "Open a new folder tab (Ctrl+T).",
+        "Open a new folder tab (Ctrl+T)",
         AccessibleRole::Button,
     );
     assert_eq!(events.borrow().last().unwrap(), "new:0");
@@ -458,7 +453,7 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     );
     ui::click_popup(
         &window,
-        "文档 [work]\nD:\\文档\\work\nHot Path Ctrl+1",
+        "文档 [work]\nD:\\文档\\work\nHot Path 1 (Ctrl+1 / Shift+1)",
         AccessibleRole::Button,
     );
     assert_eq!(events.borrow().last().unwrap(), "open:0:31");

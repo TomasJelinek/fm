@@ -26,6 +26,7 @@ fn query(pane: PaneId, revision: u64, text: &str) -> SearchRequest {
             .into(),
         location,
         query: text.into(),
+        filter: Default::default(),
     }
 }
 

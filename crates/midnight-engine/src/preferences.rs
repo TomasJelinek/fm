@@ -42,7 +42,7 @@ struct Save {
 
 enum Work {
     Load,
-    Save(Save),
+    Save(Box<Save>),
     Wait,
     Stop,
 }
@@ -164,7 +164,7 @@ impl Shared {
     fn take_work(&self) -> Work {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(save) = state.save_pending.take() {
-            return Work::Save(save);
+            return Work::Save(Box::new(save));
         }
         if state.stopping {
             return Work::Stop;
@@ -194,6 +194,7 @@ async fn run(service: Arc<dyn SettingsService>, outbox: Outbox, shared: Arc<Shar
                 Event::PreferencesLoaded(result)
             }
             Work::Save(save) => {
+                let save = *save;
                 let service = service.clone();
                 let result =
                     tokio::task::spawn_blocking(move || service.save_preferences(save.preferences))

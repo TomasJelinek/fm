@@ -1,0 +1,51 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { DialogText } from "dialog-text.slint";
+
+export component CopyConflictDialog inherits Rectangle {
+    in property <string> body;
+    in property <string> initial-name;
+    in property <string> token;
+    in property <image> native-icon;
+    in property <bool> allow-alternate-name: true;
+    callback decide(int, string);
+    callback later();
+    background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+    forward-focus: scope;
+    init => { name.text = root.initial-name; }
+    changed token => { name.text = root.initial-name; }
+    scope := FocusScope {
+        forward-focus: later-button;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.later(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: 16px; spacing: 10px;
+            HorizontalLayout {
+                spacing: 12px; cross-axis-alignment: center;
+                NativeActionImage { native-icon: root.native-icon; fallback-icon: FallbackIcons.copy; width: 36px; height: 36px; }
+                Text { text: "Item already exists"; color: Theme.text; font-size: Theme.font-size * 1.2; font-weight: 600; wrap: word-wrap; }
+            }
+            DialogText { text: root.body; vertical-stretch: 1; }
+            name := LineEdit {
+                visible: root.allow-alternate-name;
+                accessible-label: "Copy under a different name";
+                accepted => { if self.text != "" { root.decide(2, self.text); } }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Skip"; hint: "Keep the existing item and skip this source."; clicked => { root.decide(0, ""); } }
+                HintedActionButton { text: "Skip all"; hint: "Skip all name conflicts in this job only."; clicked => { root.decide(1, ""); } }
+                if root.allow-alternate-name : HintedActionButton { text: "Copy as"; hint: "Copy using the entered name. Existing items are never replaced."; enabled: name.text != ""; clicked => { root.decide(2, name.text); } }
+            }
+            HorizontalLayout {
+                alignment: end; spacing: 8px;
+                HintedActionButton { text: "Cancel job"; hint: "Stop this job. Completed changes are retained."; clicked => { root.decide(3, ""); } }
+                later-button := HintedActionButton { text: "Decide later"; hint: "Continue browsing; resolve this conflict from Jobs."; clicked => { root.later(); } }
+            }
+        }
+    }
+}

@@ -88,6 +88,7 @@ async fn engine_search_uses_the_exact_accepted_snapshot_without_filesystem_work(
             location,
             source: source.clone(),
             query: "STRASS".into(),
+            filter: Default::default(),
         }))
         .await
         .unwrap();

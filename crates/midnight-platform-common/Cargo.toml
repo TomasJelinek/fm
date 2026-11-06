@@ -8,8 +8,12 @@ publish.workspace = true
 [dependencies]
 midnight-core.workspace = true
 fs2 = "0.4"
+icu_casemap = "=2.4.0"
+icu_locale_core = "=2.4.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "=0.10.9"
+regex = "=1.13.1"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -12,7 +12,7 @@ pub(crate) fn modified(metadata: &EntryMetadata) -> Option<LocalizedDateTime> {
 
 // Unavailable native formatting still has a deterministic, explicitly labelled fallback.
 // Formatting an existing timestamp never queries the OS timezone or locale on the UI thread.
-fn utc_fallback(time: SystemTime) -> Option<LocalizedDateTime> {
+pub(crate) fn utc_fallback(time: SystemTime) -> Option<LocalizedDateTime> {
     let (seconds, nanos) = match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => (i128::from(duration.as_secs()), duration.subsec_nanos()),
         Err(error) => {

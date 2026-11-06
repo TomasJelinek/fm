@@ -17,6 +17,7 @@ pub enum MutationKind {
     CreateFile,
     CreateDirectory,
     Rename,
+    EditMetadata,
     Delete(DeleteMode),
 }
 
@@ -33,6 +34,50 @@ pub struct MutationItem {
 /// permanent deletion. OS limitations must be returned as errors.
 pub trait PreparedMutation: Send + Sync {
     fn item(&self) -> &MutationItem;
+    fn metadata_snapshot(&self, cancel: &Cancellation) -> Result<crate::MetadataSnapshot, FsError> {
+        let _ = cancel;
+        Err(FsError::from_io(
+            "inspect metadata",
+            &self.item().path,
+            std::io::ErrorKind::Unsupported.into(),
+        ))
+    }
+    /// Read-only conflict probe; the eventual no-replacement rename remains authoritative.
+    fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
+        let _ = (name, cancel);
+        Ok(())
+    }
+    /// Snapshot child names and pin identities before any child is renamed. Implementations
+    /// reject links/mount crossings and enforce MAX_METADATA_TARGETS / names-byte limits.
+    fn metadata_children(
+        &self,
+        cancel: &Cancellation,
+        max_targets: usize,
+    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+        let _ = (cancel, max_targets);
+        Err(FsError::from_io(
+            "inspect children",
+            &self.item().path,
+            std::io::ErrorKind::Unsupported.into(),
+        ))
+    }
+    /// One combined edit; the supplied name is already derived from the raw native name.
+    /// Keep the same native identity through rename and subsequent metadata changes.
+    fn edit_metadata(
+        &self,
+        patch: &crate::MetadataPatch,
+        name: Option<&OsStr>,
+        cancel: &Cancellation,
+    ) -> crate::MetadataOutcome {
+        let _ = (patch, name, cancel);
+        let mut result = crate::MetadataOutcome::unchanged(self.item().path.clone());
+        result.error = Some(FsError::from_io(
+            "edit metadata",
+            &self.item().path,
+            std::io::ErrorKind::Unsupported.into(),
+        ));
+        result
+    }
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError>;
     fn delete(
         &self,

@@ -1,6 +1,18 @@
 //! Pure presentation of cached native metadata; hover never triggers I/O.
 use super::*;
 
+pub(super) fn panel_space(presenter: &Presenter, pane: PaneId) -> String {
+    if let Some(space) = presenter.panes[pane.index()].visible_space() {
+        return format!(
+            "{} free",
+            format_size(space.available, &presenter.number_locale)
+        );
+    }
+    // Lexical prefixes cannot identify a filesystem across mounts or junctions.
+    // Only a result tied to this pane's current navigation can report its capacity.
+    "Free space —".into()
+}
+
 pub(super) fn details<'a>(presenter: &'a Presenter, volume: &Volume) -> Option<&'a VolumeDetails> {
     presenter
         .volume_details
@@ -62,6 +74,57 @@ pub(super) fn volume_tooltip(
 mod tests {
     use super::*;
     use std::{ffi::OsString, io, path::Path};
+
+    #[test]
+    fn panel_capacity_never_guesses_a_filesystem_from_its_lexical_path_prefix() {
+        let root = std::env::temp_dir();
+        let mut p = Presenter::new(root.join("junction-to-another-volume"), root.clone());
+        p.volumes.push(Volume {
+            id: "root".into(),
+            label: "Root".into(),
+            root: root.clone(),
+        });
+        p.volume_details.insert(
+            "root".into(),
+            (
+                root.clone(),
+                VolumeDetails {
+                    label: Ok(None),
+                    space: Ok(SpaceInfo {
+                        available: 1 << 30,
+                        total: 2 << 30,
+                    }),
+                },
+            ),
+        );
+        assert_eq!(panel_space(&p, PaneId::Left), "Free space —");
+        p.panes[0].space = Some(SpaceInfo {
+            available: 123,
+            total: 999,
+        });
+        assert_eq!(panel_space(&p, PaneId::Left), "123 B free");
+        assert!(p.navigate(PaneId::Left, root.join("another-volume"), None, &|_| true));
+        assert_eq!(panel_space(&p, PaneId::Left), "Free space —");
+        p.apply(Event::SpaceUpdated {
+            pane: PaneId::Left,
+            navigation: NavigationId(0),
+            space: SpaceInfo {
+                available: 999,
+                total: 999,
+            },
+        });
+        assert_eq!(panel_space(&p, PaneId::Left), "Free space —");
+        let navigation = NavigationId(p.panes[0].generation);
+        p.apply(Event::SpaceUpdated {
+            pane: PaneId::Left,
+            navigation,
+            space: SpaceInfo {
+                available: 456,
+                total: 999,
+            },
+        });
+        assert_eq!(panel_space(&p, PaneId::Left), "456 B free");
+    }
 
     #[test]
     fn native_name_and_space_are_literal_unicode_without_affecting_the_root() {

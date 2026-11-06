@@ -173,6 +173,7 @@ impl Harness {
                 sender,
                 wakeup: Arc::new(|| {}),
             },
+            Arc::new(Semaphore::new(1)),
             &mut tasks,
         );
         Self {

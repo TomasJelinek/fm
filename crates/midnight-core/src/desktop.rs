@@ -419,6 +419,27 @@ pub trait LocationService: Send + Sync + 'static {
 /// A thread-affine native clipboard owner. Create, use and drop it on one backend worker.
 pub trait ClipboardSession {
     fn copy_text(&mut self, text: &str) -> Result<(), FsError>;
+    fn copy_files(&mut self, _files: &crate::FileClipboard) -> Result<(), FsError> {
+        Err(unsupported_file_clipboard())
+    }
+    fn read_files(&mut self) -> Result<crate::FileClipboard, FsError> {
+        Err(unsupported_file_clipboard())
+    }
+    /// Pump bounded native clipboard-owner events on the session's own backend thread.
+    fn service_pending(&mut self) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+
+fn unsupported_file_clipboard() -> FsError {
+    FsError::from_io(
+        "file clipboard",
+        Path::new(""),
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Native file clipboard is unavailable.",
+        ),
+    )
 }
 
 pub trait ClipboardService: Send + Sync + 'static {

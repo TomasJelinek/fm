@@ -6,6 +6,36 @@ use super::*;
 mod command_history_tests;
 
 impl Presenter {
+    /// Rotation fills the draft using the currently selected terminal. The token
+    /// is exact text, so edits and history changes cannot reuse a stale row index.
+    pub(crate) fn rotate_command_history(&mut self, older: bool, draft: &str) -> Option<String> {
+        let history = &self.preferences.values.command_history;
+        if history.is_empty() {
+            self.desktop.command_history_cursor = None;
+            return None;
+        }
+        let position = self
+            .desktop
+            .command_history_cursor
+            .as_deref()
+            .filter(|previous| *previous == draft)
+            .and_then(|previous| history.iter().position(|entry| entry.command == previous));
+        let next = match (position, older) {
+            (Some(index), true) => (index + 1) % history.len(),
+            (Some(index), false) => (index + history.len() - 1) % history.len(),
+            (None, true) => 0,
+            (None, false) => history.len() - 1,
+        };
+        let command = history[next].command.clone();
+        self.track_draft(!command.is_empty());
+        self.desktop.command_history_cursor = Some(command.clone());
+        Some(command)
+    }
+
+    pub(crate) fn reset_command_history_cursor(&mut self) {
+        self.desktop.command_history_cursor = None;
+    }
+
     /// Exact command text is a stable callback token; a stale removed row does nothing.
     pub(crate) fn command_history_choices(&self) -> Vec<(String, String)> {
         self.preferences
@@ -28,6 +58,7 @@ impl Presenter {
 
     /// Recall edits the draft only. It cannot launch or revive elevated permissions.
     pub(crate) fn recall_command(&mut self, token: &str) -> Option<String> {
+        self.reset_command_history_cursor();
         let entry = self
             .preferences
             .values
@@ -133,18 +164,14 @@ impl Presenter {
 
     pub(crate) fn terminal_hint(&self) -> &'static str {
         match self.effective_shell() {
-            Some(ShellFlavor::PowerShell) => {
-                "PowerShell · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths"
-            }
-            Some(ShellFlavor::Cmd) => "cmd · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths",
+            Some(ShellFlavor::PowerShell) => "PowerShell · Run in the active panel's folder",
+            Some(ShellFlavor::Cmd) => "cmd · Run in the active panel's folder",
             Some(ShellFlavor::Posix)
                 if self.effective_terminal_mode() == TerminalMode::Elevated =>
             {
-                "sudo · Enter opens a terminal password prompt · Ctrl+[ / Ctrl+] paths"
+                "Terminal (sudo) · Authentication stays in the external terminal"
             }
-            Some(ShellFlavor::Posix) => {
-                "Terminal · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths"
-            }
+            Some(ShellFlavor::Posix) => "Terminal · Run in the active panel's folder",
             None => "Loading terminal choices…",
         }
     }

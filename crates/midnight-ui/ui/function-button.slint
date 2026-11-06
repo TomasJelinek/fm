@@ -1,0 +1,96 @@
+import { Theme } from "theme.slint";
+import { NativeActionImage } from "action-icons.slint";
+import { TipBody } from "controls.slint";
+
+// Native buttons enforce a taller minimum; these fixed-height function keys
+// share the same focus, pointer and accessibility behavior at either density.
+export component FunctionButton inherits Rectangle {
+    in property <image> native-icon;
+    in property <image> fallback-icon;
+    in property <string> text;
+    in property <string> compact-text;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <string> action-id;
+    in property <int> pane;
+    private property <bool> pointer-armed;
+    private property <string> pressed-action;
+    private property <int> pressed-pane;
+    callback clicked();
+    callback activated(string, int);
+    function trigger(action: string, pane: int) { root.clicked(); root.activated(action, pane); }
+    height: Theme.bottom-height;
+    min-width: max(Theme.touch ? 44px : 40px, Theme.icon-size + 12px);
+    preferred-width: max(root.min-width, caption-metrics.preferred-width + Theme.icon-size + 12px);
+    private property <bool> full-caption: caption-metrics.preferred-width <= root.width - Theme.icon-size - 12px;
+    // Fit compact keys to host font metrics without increasing footer layout minima.
+    // Keep normal-density text readable and leave smaller user font choices intact.
+    private property <length> compact-font-size: clamp(
+        Theme.font-size * max(0px, root.width - Theme.icon-size - 13px)
+            / max(1px, compact-metrics.preferred-width),
+        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size);
+    caption-metrics := Text { visible: false; text: root.text; font-size: Theme.font-size; }
+    compact-metrics := Text { visible: false; text: root.compact-text; font-size: Theme.font-size; }
+    horizontal-stretch: 1;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
+    background: area.has-hover && root.enabled ? Theme.hover : Theme.surface;
+    accessible-role: button;
+    accessible-label: root.text + (root.enabled ? "" : " — unavailable");
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.trigger(root.action-id, root.pane); } }
+    forward-focus: focus;
+    // Explicit geometry keeps width-dependent caption choices out of parent
+    // layout metrics, avoiding a preferred-width binding cycle.
+    Rectangle {
+        width: parent.width - 8px; height: parent.height; x: 4px;
+        NativeActionImage {
+            native-icon: root.native-icon; fallback-icon: root.fallback-icon;
+            action-enabled: root.enabled; width: Theme.icon-size; height: Theme.icon-size;
+            x: root.full-caption || root.compact-text != "" ? 0px : (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            visible: root.full-caption || root.compact-text != "";
+            x: Theme.icon-size + 4px; width: max(0px, parent.width - self.x);
+            height: parent.height;
+            text: root.full-caption ? root.text : root.compact-text;
+            font-size: root.full-caption ? Theme.font-size : root.compact-font-size;
+            color: root.enabled ? Theme.text : Theme.muted-text;
+            horizontal-alignment: center; vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled || root.pointer-armed;
+        key-pressed(event) => {
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
+                && (event.text == Key.Return || event.text == Key.Space) {
+                if root.enabled { root.trigger(root.action-id, root.pane); }
+                return accept;
+            }
+            reject
+        }
+        area := TouchArea {
+            enabled: root.enabled || root.pointer-armed;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.pointer-armed = root.enabled && event.button == PointerEventButton.left;
+                    root.pressed-action = root.action-id;
+                    root.pressed-pane = root.pane;
+                } else if event.kind == PointerEventKind.cancel
+                    || (event.kind == PointerEventKind.up && event.button == PointerEventButton.left) {
+                    root.pointer-armed = false;
+                }
+            }
+            clicked => {
+                if root.pointer-armed {
+                    focus.focus();
+                    root.trigger(root.pressed-action, root.pressed-pane);
+                }
+            }
+        }
+    }
+    Tooltip { TipBody { text: root.hint; } }
+}

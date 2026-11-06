@@ -1,20 +1,29 @@
 use midnight_core::*;
 mod bookmarks;
 mod choices;
+mod comparison;
+mod copies;
 mod desktop;
+pub(crate) mod drag_drop;
 mod entry_sizes;
+mod file_actions;
+mod filter;
 mod fonts;
+pub(crate) mod keyboard;
+mod metadata;
 mod operations;
 mod panel_details;
 mod panel_navigation;
 mod preferences;
 mod search;
 mod selection;
+mod selection_actions;
 mod selection_preview;
 mod shortcuts;
 mod tabs;
 mod terminal;
 mod volumes;
+pub(crate) use file_actions::MenuAnchor;
 use std::{
     collections::{HashMap, HashSet},
     mem,
@@ -108,11 +117,18 @@ pub struct Presenter {
     pub(crate) desktop: desktop::DesktopState,
     pub(crate) preferences: preferences::PreferencesState,
     pub(crate) fonts: fonts::FontsState,
+    pub(crate) keyboard: keyboard::KeyboardState,
     pub(crate) operations: operations::OperationsState,
+    pub(crate) metadata: metadata::MetadataState,
+    pub(crate) comparison: comparison::ComparisonState,
+    pub(crate) filter_dialog: filter::FilterDialogState,
+    pub(crate) copies: copies::CopiesState,
     pub(crate) number_locale: NumberLocale,
     tabs: tabs::TabsState,
     choices: choices::ChoicesState,
-    selection_properties: [Option<selection::PendingProperties>; 2],
+    selection_actions: [Option<selection_actions::PendingSelectionAction>; 2],
+    file_actions: file_actions::FileActionsState,
+    pub(crate) drag_drop: drag_drop::DragDropState,
     search_revisions: [SearchRevision; 2],
     search_cancellations: [Option<SearchRevision>; 2],
     retired: Vec<DeferredDrop>,
@@ -124,7 +140,9 @@ impl Presenter {
         Self {
             tabs: tabs::TabsState::new(),
             choices: choices::ChoicesState::default(),
-            selection_properties: [None, None],
+            selection_actions: [None, None],
+            file_actions: file_actions::FileActionsState::default(),
+            drag_drop: drag_drop::DragDropState::default(),
             search_revisions: [SearchRevision(0); 2],
             search_cancellations: [None, None],
             panes: [Pane::new(left), Pane::new(right)],
@@ -136,7 +154,12 @@ impl Presenter {
             desktop: desktop::DesktopState::default(),
             preferences: preferences::PreferencesState::default(),
             fonts: fonts::FontsState::default(),
+            keyboard: keyboard::KeyboardState::default(),
             operations: operations::OperationsState::default(),
+            metadata: metadata::MetadataState::default(),
+            comparison: comparison::ComparisonState::default(),
+            filter_dialog: filter::FilterDialogState::default(),
+            copies: copies::CopiesState::default(),
             number_locale: NumberLocale::default(),
             retired: vec![],
         }
@@ -184,9 +207,11 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.retire_drag_drop();
         self.retired
             .push(Box::new(mem::take(&mut self.choices.items)));
-        self.retire_selection_properties();
+        self.retire_selection_actions();
+        self.retire_file_actions();
         self.tabs.retire(&mut self.retired);
         for p in &mut self.panes {
             self.retired.push(Box::new(p.search.result.take()));
@@ -240,6 +265,15 @@ impl Presenter {
         resort: bool,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        drag_drop::invalidate(&self.drag_drop.targets);
+        if self
+            .drag_drop
+            .lifecycle
+            .active
+            .is_some_and(|g| g.source.pane == pane.index())
+        {
+            self.cancel_file_drag(send);
+        }
         let p = &mut self.panes[pane.index()];
         let navigation = NavigationId(p.generation + 1);
         let command = if resort {
@@ -378,6 +412,12 @@ impl Presenter {
     /// Apply a backend event and dispatch any validated directory-link followup.
     /// The sender must be bounded and nonblocking, like the regular UI callbacks.
     pub fn apply_with_sender(&mut self, event: Event, send: &dyn Fn(Command) -> bool) {
+        let Some(event) = self.dispatch_drag_event(event, send) else {
+            return;
+        };
+        let Some(event) = self.dispatch_file_action_event(event, send) else {
+            return;
+        };
         if matches!(&event, Event::NetworkConnectionsFinished(Ok(()))) {
             let _ = send(Command::ListVolumes);
         }
@@ -394,20 +434,32 @@ impl Presenter {
             }
             _ => None,
         };
-        self.dispatch_selection_properties(&event, send);
+        self.dispatch_selection_actions(&event, send);
         self.apply(event);
         self.refresh_operation_paths(send);
         if let Some(pane) = committed {
             self.panes[pane.index()].selection_rebase_pending = true;
         }
+        self.flush_filters(send);
         self.flush_search(send);
         self.flush_selection(send);
+        self.flush_drag_commands(send);
+        self.flush_comparison(send);
         self.dispatch_open_directories(send);
         self.flush_loaded_preferences(send);
     }
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        if matches!(
+            event,
+            Event::ClipboardFilesRead { .. } | Event::ShellMenuFinished { .. } | Event::DragDrop(_)
+        ) {
+            // These actions require the sender; a plain apply must neither
+            // dispatch an action nor destroy an owned clipboard list on UI.
+            self.retired.push(Box::new(event));
+            return;
+        }
         if let Event::LocaleLoaded(result) = event {
             match result {
                 Ok(locale) => self.number_locale = locale,
@@ -424,6 +476,15 @@ impl Presenter {
             }
             return;
         }
+        let Some(event) = self.apply_comparison_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_filter_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_copy_event(event) else {
+            return;
+        };
         let Some(event) = self.apply_operation(event) else {
             return;
         };
@@ -513,7 +574,7 @@ impl Presenter {
                 .as_ref()
                 .is_some_and(|request| !request.keep_rows)
         {
-            self.cancel_selection_properties(pane);
+            self.cancel_selection_actions(pane);
         }
         let p = &mut self.panes[pane.index()];
         if navigation.0 != p.generation

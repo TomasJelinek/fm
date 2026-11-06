@@ -4,7 +4,7 @@ use i_slint_core::input::{InternalKeyEvent, KeyEvent, KeyEventType};
 use midnight_ui::MainWindow;
 use slint::{ComponentHandle, SharedString, platform::WindowEvent};
 
-pub(super) fn key(window: &MainWindow, text: SharedString) {
+pub(crate) fn key(window: &MainWindow, text: SharedString) {
     for event_type in [KeyEventType::KeyPressed, KeyEventType::KeyReleased] {
         let mut key_event = KeyEvent::default();
         key_event.text = text.clone();

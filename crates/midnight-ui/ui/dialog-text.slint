@@ -1,0 +1,18 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// Explicit content geometry keeps long descriptions scrollable from their first line.
+export component DialogText inherits ScrollView {
+    in property <string> text;
+    horizontal-scrollbar-policy: always-off;
+    content-width: root.visible-width;
+    content-height: max(root.visible-height, description.preferred-height);
+    description := Text {
+        x: 0px; y: 0px;
+        width: max(0px, root.visible-width - 16px);
+        height: self.preferred-height;
+        text: root.text; wrap: word-wrap;
+        horizontal-alignment: left; vertical-alignment: top;
+        color: Theme.text; font-size: Theme.font-size;
+    }
+}

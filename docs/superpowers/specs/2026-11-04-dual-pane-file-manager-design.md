@@ -1147,3 +1147,125 @@ Podrobnosti jsou v [release konfiguraci](../../RELEASE_BUILD.md).
 tři samostatné pluginy, Escape/Space, velikost okna podle aplikace a externí editor F4.
 Následuje ověřené dávkové copy/move, změna atributů/časů a nemodální hledání podle
 [přijatého pořadí etap](../plans/2026-11-05-follow-up-stages.md).
+
+## 34. Systémové nabídky, schránka a nastavitelné zkratky
+
+[Rozšíření ovládání panelů](2026-11-06-panel-shell-design.md) přidává systémové
+nabídky souborů a disků, Ctrl+C/Ctrl+V, ověřené kopírování s frontou, součet bajtů
+vybraných souborů, volné místo, řazení ve všech režimech a oddělené akce Hot Paths.
+Dvojklik zachovává identitu buňky i během překreslení. Ctrl+Enter vloží název
+souboru a zaměří příkazový řádek. SHA-256 porovnává čtení zdroje s nezávislým
+čtením zapsaného cíle; náhrada existujícího cíle a Move zatím zůstávají nepodporované.
+
+[Nastavitelné klávesové zkratky](2026-11-06-configurable-shortcuts-design.md)
+používají společný katalog akcí, kontexty, kontrolu kolizí, ukládání v Options
+a obnovení výchozích hodnot. Standardní editace textu, IME a klávesy rezervované
+operačním systémem zachovávají své nativní chování.
+
+## 35. Řazení podle systémového locale
+
+[Rozšíření řazení](2026-11-06-locale-sorting-design.md) používá nativní váhy názvů
+a přípon včetně velikosti písmen a diakritiky. Shodné velikosti a časy se řadí
+stejným pravidlem podle názvu. Locale se zachytí do restartu aplikace; Linux při
+nedostupném locale použije C. Neplatné nativní kódování se nikdy nenahrazuje ani
+nezkracuje: používá deterministické pořadí původních názvů. Klíče vznikají na
+backendu, mají limit 4 MiB na klíč a zůstávají v paměti pro další řazení.
+[Implementační plán](../plans/2026-11-06-locale-sorting.md) popisuje testy a
+oddělené adaptéry Windows/Linux.
+
+## 36. Osm témat a kompaktní příkazový řádek
+
+[Rozšíření vzhledu](2026-11-06-theme-expansion-design.md) zachovává Blue, Dark
+a Light a přidává Dracula, Nord, Gruvbox Dark, Catppuccin Mocha a Solarized Light.
+Palety sdílejí sémantické barvy všech komponent; systémové ikony se nepřebarvují.
+Nové palety mají testovaný kontrast textu nejméně 4,5:1 a zvýrazněných hran 3:1.
+Volba se ukládá stabilním názvem. Editor příkazů, jeho cesta, historie i tlačítka
+mají shodnou výšku se spodní funkční lištou, při zachování Desktop/Touch a fontu.
+
+## 37. Porovnání, filtry, Ctrl lišta a editor metadat
+
+[Návrh Commander nástrojů](2026-11-06-commander-tools-design.md) rozpracovává
+nově zadané funkce podle zdrojů Salamanderu. Alt+nahoru/dolů v příkazovém editoru
+cyklicky prochází uložených nejvýše 100 unikátních příkazů a nemění typ terminálu.
+Enter příkaz spustí. Držení Ctrl přepne spodní lištu podle skutečně nastavených
+vazeb Ctrl+F1 až Ctrl+F12. Uvolnění klávesy ani změna focusu nesmějí změnit akci
+už stisknutého tlačítka; AltGr tuto vrstvu nezapíná.
+
+Ctrl+F10 porovnává viditelné adresáře na backendu podle velikosti a změnového
+času s volitelnou tolerancí (výchozí dvě sekundy). Označuje chybějící, větší nebo
+novější soubory. Shoda metadat neznamená shodu obsahu. Rozšíření o porovnání
+obsahu a rekurzi zůstává další etapou. Zrušený nebo zastaralý výsledek nemění
+výběr. Ctrl+F12 nastavuje samostatný uložený filtr panelu s maskami nebo regulárním
+výrazem; složky zůstávají viditelné. Ctrl+F11 zvětšuje aktivní panel, ponechá
+aktivační pruh druhého a při vypnutí obnoví původní poměr šířek.
+
+Ctrl+F2 otevírá společný editor atributů, časů a velikosti písmen; Ctrl+F7 tentýž
+editor se zapnutou změnou písmen. Výchozí stav ostatních polí je „beze změny“.
+Náhled i provedení mají identitu operace a revizi návrhu, aby starší náhled nemohl
+potvrdit jiné změny. Windows a Linux mají samostatné nativní implementace a své
+schopnosti. Časy vyžadují explicitní časové pásmo; „aktuální čas“ zachytí backend
+jednou pro celou dávku. Unicode převod zachovává původní nativní části názvu,
+nikdy neodvozuje název ze ztrátového zobrazovacího řetězce. Rekurze nenásleduje
+odkazy a zpracuje potomky před rodičem. Kolize nesmí přepsat jiný soubor.
+Podrobný návrh stanoví limity zdrojů, částečné výsledky a testy nativních operací.
+
+## 38. Přetahování souborů a zpřesnění vzhledu
+
+[Návrh drag-and-drop](2026-11-06-file-drag-drop-design.md) přidává kopírování mezi
+panely a předávání souborů jiným aplikacím. Příjem v aplikaci používá stejnou frontu
+a nezávislé ověření SHA-256 jako schránka. Nativní transport má samostatné adaptéry
+Windows a Linux/X11, omezené fronty a zachovává původní Unicode/nativní názvy.
+Přetažení ven provádí cílová aplikace. Výchozí akce nepřesouvá ani nemaže zdroj.
+
+Horní lišta má stejný odstup od disků jako disky od cesty. Dlouhá cesta zůstává
+viditelná od konce, s výpustkou vlevo a možností otevřít celý editor. Viditelné
+části zachovávají původní tokeny pro navigaci i kopírování. Všech osm témat má
+výraznější rozlišení ploch, výběru a okrajů; kontrast se kontroluje společným testem.
+
+## 39. Podporované systémy a minimální prostředky
+
+Závazný přehled cílových verzí OS, architektur, knihoven a ověření obsahují
+[systémové požadavky](../../SYSTEM_REQUIREMENTS.md). Pro verzi 0.1 je cílem
+Windows 10 22H2 / Windows 11 x64 s MSVC, Ubuntu od 24.04 LTS a Mint 22.x x86-64.
+macOS nemá implementovaný adaptér, proto zatím nemá podporovanou verzi ani
+ověřené minimum RAM. Nová platforma musí projít vlastní kvalifikací.
+
+Výslovné linuxové cíle zahrnují také udržované stabilní Fedory od verze 44 a openSUSE Leap 16.x
+i Tumbleweed. Používají stejný linuxový adaptér; rozdíly patří do balíčkování,
+závislostí a detekce schopností, nikoli do kopie implementace filesystemu pro každou
+distribuci. README uvádí `dnf` a `zypper`. Nativní testy Fedory/openSUSE zatím nejsou
+provedené; ověření musí pokrýt X11/Wayland, běžná bezpečnostní pravidla, Btrfs/ext4
+a příslušné grafické ovladače. U Tumbleweed zaznamenáváme přesný snapshot. SUSE
+Linux Enterprise potřebuje samostatně určenou a ověřenou verzi.
+
+Pro běžný provoz plánujeme alespoň 4 GB celkové RAM (Ubuntu Desktop 26.04: 6 GB),
+doporučeně 8 GB, a dostupnou rezervu 1 GiB pro aplikaci; pro velké adresáře
+a souběžné úlohy alespoň 2 GiB. Jde o plánovací hodnoty, nikoli naměřenou dolní
+mez nebo pevný limit procesu. Kopírování a checksumy jsou proudové a nesmějí
+alokovat celý soubor. Testy na omezené RAM musí před vydáním ověřit velké výpisy,
+ikony, hledání, více úloh a odezvu UI. Nároky pluginů se uvádějí samostatně.
+
+Pro kompilaci doporučujeme 16 GB RAM, pro souběžné sestavení a fat LTO 32 GB.
+Varianta 8 GB s jednou Cargo úlohou není zatím ověřené minimum. Vývojové cache
+pro více platforem a profilů mohou zabrat přes 100 GiB; veškeré sestavené a dočasné
+výstupy zůstávají pod `_build`. Distribuovaný Linux build používá nejstarší cílový
+userspace Ubuntu 24.04 / glibc 2.39. Bezpečné nativní operace mají navíc konkrétní
+požadavky na kernel a schopnosti souborového systému; neúspěch nikdy nevede
+k vypnutí kontrol identity nebo ověření kopie.
+
+Ověření Unicode musí kontrolovat skutečný renderer a viditelné glyphy. Na virtuálním
+Linux displeji může Slint bez vhodného GPU přejít na softwarový renderer, který
+nezobrazuje bitmapové emoji. QA může pro ověření WGPU použít `SLINT_WGPU_CPU=1`
+a testovací fonty; takový výsledek není kvalifikací fyzického GPU ani výkonu.
+
+## 40. Ikona aplikace
+
+Ikonou Midnight Exploreru je měsíc se světlou stříbrnou a tmavou modrošedou
+polovinou na průhledném pozadí. Okno používá vložený PNG zdroj; Windows EXE
+obsahuje ICO s velikostmi 16 až 256 px pro Průzkumník, titulkový pruh a hlavní
+panel. Systémové ikony souborů a disků tím nejsou nahrazeny. Zdrojový obrázek,
+exporty a popis jejich původu jsou v `assets/branding`; běžná kompilace nepotřebuje
+obrázkovou službu ani nástroje pro převod grafiky. Windows resource compiler běží
+pouze při sestavení a jeho výstup zůstává v Cargo `OUT_DIR` pod `_build`.
+Wayland používá shodný XDG identifikátor aplikace, desktopový soubor a nainstalovanou
+PNG ikonu; samotná vlastnost ikony okna tam nestačí. Postup instalace je v README.

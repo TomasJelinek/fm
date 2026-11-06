@@ -14,15 +14,25 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "operation_metadata.rs"]
+mod metadata;
 #[path = "operation_worker.rs"]
 mod worker;
 type Status = Arc<Mutex<OperationProgress>>;
 type Registry = Arc<Mutex<HashMap<OperationId, (Cancellation, Status)>>>;
+type Running = (
+    Status,
+    Result<OperationProgress, tokio::task::JoinError>,
+    Option<Arc<MetadataResult>>,
+);
 const MAX_JOBS: usize = 32;
 
 enum Message {
     Prepare(PrepareOperation, Cancellation, Status),
     Confirm(OperationId, Option<String>),
+    PreviewMetadata(OperationId, u64, MetadataPatch),
+    ConfirmMetadata(OperationId, u64, MetadataConflictPolicy),
+    ResolveMetadataConflict(OperationId, u64, MetadataConflictPolicy),
     Wake,
 }
 
@@ -40,6 +50,7 @@ impl Controller {
         service: Option<Arc<dyn MutationService>>,
         snapshots: Snapshots,
         outbox: Outbox,
+        mutation_gate: Arc<Semaphore>,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(64);
@@ -51,6 +62,7 @@ impl Controller {
             registry.clone(),
             cancel.clone(),
             outbox.clone(),
+            mutation_gate,
         ));
         Self {
             sender,
@@ -123,6 +135,39 @@ impl Controller {
     pub(crate) async fn confirm(&self, id: OperationId, name: Option<String>) {
         let _ = self.sender.send(Message::Confirm(id, name)).await;
     }
+    pub(crate) async fn preview_metadata(
+        &self,
+        id: OperationId,
+        revision: u64,
+        patch: MetadataPatch,
+    ) {
+        let _ = self
+            .sender
+            .send(Message::PreviewMetadata(id, revision, patch))
+            .await;
+    }
+    pub(crate) async fn confirm_metadata(
+        &self,
+        id: OperationId,
+        revision: u64,
+        conflicts: MetadataConflictPolicy,
+    ) {
+        let _ = self
+            .sender
+            .send(Message::ConfirmMetadata(id, revision, conflicts))
+            .await;
+    }
+    pub(crate) async fn resolve_metadata_conflict(
+        &self,
+        id: OperationId,
+        token: u64,
+        choice: MetadataConflictPolicy,
+    ) {
+        let _ = self
+            .sender
+            .send(Message::ResolveMetadataConflict(id, token, choice))
+            .await;
+    }
     pub(crate) fn cancel(&self, id: OperationId) {
         if let Some((cancel, _)) = self
             .registry
@@ -165,12 +210,16 @@ async fn run(
     registry: Registry,
     cancel: Cancellation,
     outbox: Outbox,
+    mutation_gate: Arc<Semaphore>,
 ) {
     let budget = Arc::new(Semaphore::new(2));
+    let metadata_budget = Arc::new(Semaphore::new(MAX_METADATA_TARGETS));
     let mut preparing = JoinSet::new();
-    let mut running = JoinSet::<(Status, Result<OperationProgress, tokio::task::JoinError>)>::new();
+    let mut running = JoinSet::<Running>::new();
     let mut disposing = JoinSet::new();
     let mut prepared = HashMap::<OperationId, worker::Job>::new();
+    let mut drafts = HashMap::<OperationId, (u64, MetadataPatch)>::new();
+    let mut conflict_states = HashMap::<OperationId, Arc<metadata::ConflictState>>::new();
     let mut queued = VecDeque::<worker::Job>::new();
     let mut timer = tokio::time::interval(Duration::from_millis(50));
     let mut accepting = true;
@@ -180,12 +229,13 @@ async fn run(
                 Some(Message::Prepare(request, job_cancel, status)) => {
                     let budget = budget.clone();
                     let service = service.clone();
+                    let metadata_budget = metadata_budget.clone();
                     preparing.spawn(async move {
                         let original = status.clone();
                         let permit = budget.acquire_owned().await.expect("operation semaphore stays open");
                         let result = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            worker::prepare(request, service, job_cancel, status)
+                            worker::prepare(request, service, job_cancel, status, metadata_budget)
                         }).await;
                         (original, result)
                     });
@@ -201,6 +251,38 @@ async fn run(
                         }
                     }
                 }
+                Some(Message::PreviewMetadata(id, revision, patch)) => {
+                    let awaiting = registry.lock().unwrap_or_else(|e| e.into_inner()).get(&id)
+                        .is_some_and(|(_, status)| {
+                            let progress = status.lock().unwrap_or_else(|e| e.into_inner());
+                            progress.kind == MutationKind::EditMetadata && matches!(progress.state, OperationState::Preparing | OperationState::AwaitingConfirmation)
+                        });
+                    if awaiting && revision > 0 && drafts.get(&id).is_none_or(|(latest, _)| revision > *latest) {
+                        if let Some(job) = prepared.remove(&id) {
+                            if job.metadata.as_ref().is_some_and(|edit| revision > edit.preview.revision) {
+                                spawn_preview(&mut preparing, job, revision, patch, budget.clone());
+                            } else { prepared.insert(id, job); }
+                        } else { drafts.insert(id, (revision, patch)); }
+                    }
+                }
+                Some(Message::ConfirmMetadata(id, revision, conflicts)) => {
+                    let valid = !drafts.contains_key(&id) && prepared.get(&id).is_some_and(|job|
+                        job.metadata.as_ref().is_some_and(|edit| edit.preview.revision == revision && !edit.preview.patch.is_empty()
+                            && edit.preview.unsupported == 0));
+                    if valid && let Some(mut job) = prepared.remove(&id) {
+                        if conflicts == MetadataConflictPolicy::Cancel && job.metadata.as_ref().is_some_and(|edit| edit.preview.conflicts > 0) {
+                            disposing.spawn(job.cancelled());
+                            continue;
+                        }
+                        job.metadata.as_mut().expect("validated metadata job").conflicts = conflicts;
+                        job.set_state(OperationState::Queued);
+                        publish(&outbox, &job.progress()).await;
+                        queued.push_back(job);
+                    }
+                }
+                Some(Message::ResolveMetadataConflict(id, token, choice)) => {
+                    if let Some(state) = conflict_states.get(&id) { state.resolve(token, choice); }
+                }
                 Some(Message::Wake) => {}
                 None => { accepting = false; cancel.cancel(); }
             },
@@ -208,9 +290,19 @@ async fn run(
                 let Ok((status, result)) = result else { continue; };
                 match result {
                     Ok(Ok(job)) if !job.cancel.is_cancelled() => {
+                        let id = job.progress().id;
+                        if let Some((revision, patch)) = drafts.remove(&id)
+                            && job.metadata.as_ref().is_some_and(|edit| revision > edit.preview.revision) {
+                            spawn_preview(&mut preparing, job, revision, patch, budget.clone());
+                            continue;
+                        }
                         job.set_state(OperationState::AwaitingConfirmation);
                         publish(&outbox, &job.progress()).await;
                         outbox.send(Event::Operation(OperationEvent::Preview(Arc::new(job.preview())))).await;
+                        if let Some(edit) = &job.metadata {
+                            conflict_states.insert(id, edit.conflict_state.clone());
+                            outbox.send(Event::Operation(OperationEvent::MetadataPreview(Arc::new(edit.preview.clone())))).await;
+                        }
                         prepared.insert(job.progress().id, job);
                     }
                     Ok(Ok(job)) => { disposing.spawn(job.cancelled()); }
@@ -225,8 +317,11 @@ async fn run(
                 }
             },
             Some(result) = running.join_next(), if !running.is_empty() => {
-                if let Ok((status, result)) = result {
+                if let Ok((status, result, metadata_result)) = result {
                     let progress = result.unwrap_or_else(|error| worker::panicked(&status, error.to_string()));
+                    if let Some(result) = metadata_result {
+                        outbox.send(Event::Operation(OperationEvent::MetadataResult(result))).await;
+                    }
                     finish(&registry, &outbox, progress).await;
                 }
             },
@@ -243,6 +338,7 @@ async fn run(
             .map(|(id, _)| *id)
             .collect();
         for id in cancelled {
+            drafts.remove(&id);
             if let Some(job) = prepared.remove(&id) {
                 disposing.spawn(job.cancelled());
             }
@@ -273,16 +369,50 @@ async fn run(
         for progress in updates {
             publish(&outbox, &progress).await;
         }
+        // Failed/panicked preparation and cancelled in-flight previews also retire drafts.
+        // Keep this cleanup independent of which terminal path removed the registry entry.
+        drafts.retain(|id, _| {
+            registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(id)
+        });
+        conflict_states.retain(|id, _| {
+            registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(id)
+        });
         if running.is_empty()
             && let Some(job) = queued.pop_front()
         {
             let status = job.status.clone();
-            job.set_state(OperationState::Running);
-            publish(&outbox, &job.progress()).await;
             let output = outbox.clone();
+            let gate = mutation_gate.clone();
             running.spawn(async move {
-                let result = tokio::task::spawn_blocking(move || job.execute(output)).await;
-                (status, result)
+                let acquire = gate.acquire_owned();
+                tokio::pin!(acquire);
+                let permit = loop {
+                    tokio::select! {
+                        permit = &mut acquire => break permit.expect("mutation gate stays open"),
+                        _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                            if job.cancel.is_cancelled() {
+                                return (status, Ok(job.cancelled().await), None);
+                            }
+                        }
+                    }
+                };
+                job.set_state(OperationState::Running);
+                publish(&output, &job.progress()).await;
+                let result_slot = job.metadata.as_ref().map(|edit| edit.result.clone());
+                let result = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    job.execute(output)
+                })
+                .await;
+                let metadata_result = result_slot
+                    .and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
+                (status, result, metadata_result)
             });
         }
         if cancel.is_cancelled()
@@ -299,6 +429,40 @@ async fn run(
     }
 }
 
+type Preparation = (
+    Status,
+    Result<Result<worker::Job, FsError>, tokio::task::JoinError>,
+);
+
+fn spawn_preview(
+    tasks: &mut JoinSet<Preparation>,
+    mut job: worker::Job,
+    revision: u64,
+    patch: MetadataPatch,
+    budget: Arc<Semaphore>,
+) {
+    job.set_state(OperationState::Preparing);
+    tasks.spawn(async move {
+        let status = job.status.clone();
+        let permit = budget
+            .acquire_owned()
+            .await
+            .expect("operation semaphore stays open");
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            if let Some(edit) = &mut job.metadata {
+                edit.update(revision, patch, &job.targets, &job.cancel);
+            }
+            Ok(job)
+        })
+        .await;
+        (status, result)
+    });
+}
+
+#[cfg(test)]
+#[path = "operation_metadata_tests.rs"]
+mod metadata_tests;
 #[cfg(test)]
 #[path = "operation_tests.rs"]
 mod tests;

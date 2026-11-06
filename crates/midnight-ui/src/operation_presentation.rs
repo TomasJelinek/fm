@@ -3,6 +3,7 @@ use super::*;
 fn title(kind: MutationKind) -> &'static str {
     match kind {
         MutationKind::Rename => "Rename",
+        MutationKind::EditMetadata => "Attributes, times and case",
         MutationKind::CreateFile => "New empty file",
         MutationKind::CreateDirectory => "Create directory",
         MutationKind::Delete(DeleteMode::Trash) => "Move to Trash",
@@ -14,11 +15,15 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     if state.closing && !presenter.has_live_operations() {
         let _ = window.hide();
     }
-    let rows = state
+    let mut rows: Vec<_> = state
         .progress
         .iter()
         .rev()
         .map(|progress| {
+            let conflict = state
+                .metadata_conflicts
+                .iter()
+                .any(|conflict| conflict.id == progress.id);
             let status = match progress.state {
                 OperationState::Preparing => "Preparing",
                 OperationState::AwaitingConfirmation => "Awaiting confirmation",
@@ -31,28 +36,32 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 OperationState::Failed => "Failed",
             };
             OperationRow {
-                identity: progress.id.0.to_string().into(),
+                identity: if progress.kind == MutationKind::EditMetadata {
+                    format!("metadata-job:{}", progress.id.0).into()
+                } else {
+                    progress.id.0.to_string().into()
+                },
                 title: format!("{} — {status}", title(progress.kind)).into(),
-                detail: format!(
-                    "{} / {} targets · {} errors · {} entries processed\n{}",
-                    progress.completed,
-                    progress.total,
-                    progress.failed,
-                    progress.processed_entries,
-                    progress
-                        .current_path
-                        .as_deref()
-                        .unwrap_or(&progress.source_directory)
-                        .display()
+                detail: operation_detail::detail(
+                    progress,
+                    &state
+                        .metadata_results
+                        .iter()
+                        .find(|result| result.id == progress.id)
+                        .map(|result| metadata_presentation::result_detail(result))
+                        .unwrap_or_default(),
                 )
                 .into(),
                 cancellable: !progress.state.is_terminal(),
+                attention: conflict,
             }
         })
         .collect();
+    rows.extend(copy_presentation::rows(presenter));
     update_model(window.get_operations(), rows, |model| {
         window.set_operations(model)
     });
+    copy_presentation::refresh(window, presenter);
     let Some(preview) = &state.preview else {
         window.set_operation_token("".into());
         return;
@@ -62,6 +71,10 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         return;
     }
     let kind = preview.kind;
+    if kind == MutationKind::EditMetadata {
+        window.set_operation_token("".into());
+        return;
+    }
     let has_name = matches!(
         kind,
         MutationKind::Rename | MutationKind::CreateDirectory | MutationKind::CreateFile
@@ -81,6 +94,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         MutationKind::CreateFile => "Create an empty file without overwriting an existing name.".into(),
         MutationKind::CreateDirectory => "Enter a folder name or a relative nested path. Existing intermediate folders are reused; links are not followed.".into(),
         MutationKind::Rename => "Rename the focused entry. Existing names are never overwritten.".into(),
+        MutationKind::EditMetadata => String::new(),
         MutationKind::Delete(mode) => format!("{} files and {} folders. {}", preview.files, preview.folders,
             if mode == DeleteMode::Trash { "Move these items to the system Trash? If unavailable, they will remain in place." }
             else { "Permanently delete these items and folder contents? This cannot be undone. Links are removed without deleting their targets." }),
@@ -114,6 +128,25 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         body.push_str("\n… Additional selected targets included.");
     }
     window.set_operation_title(title(kind).into());
+    let (role, kind_id, warning) = match kind {
+        MutationKind::Rename => (ActionIcon::Rename, 0, ""),
+        MutationKind::Delete(DeleteMode::Trash) => (
+            ActionIcon::Delete,
+            1,
+            "Selected items will be removed from this folder and moved to Trash.",
+        ),
+        MutationKind::Delete(DeleteMode::Permanent) => (
+            ActionIcon::Delete,
+            2,
+            "Permanent deletion cannot be undone.",
+        ),
+        MutationKind::CreateDirectory => (ActionIcon::NewFolder, 3, ""),
+        MutationKind::CreateFile => (ActionIcon::NewFile, 4, ""),
+        MutationKind::EditMetadata => return,
+    };
+    window.set_operation_icon(presenter.desktop.image(&IconKey::action(role)));
+    window.set_operation_kind(kind_id);
+    window.set_operation_warning(warning.into());
     window.set_operation_body(body.into());
     window.set_operation_name(name.into());
     window.set_operation_selection_end(select as i32);

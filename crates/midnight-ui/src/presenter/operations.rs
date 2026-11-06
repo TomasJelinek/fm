@@ -3,12 +3,14 @@ use super::*;
 
 #[derive(Default)]
 pub(crate) struct OperationsState {
-    next_id: u64,
+    pub(super) next_id: u64,
     pub(crate) pending: Option<OperationId>,
     pub(crate) preview: Option<Arc<OperationPreview>>,
     pub(crate) progress: Vec<Arc<OperationProgress>>,
+    pub(crate) metadata_conflicts: Vec<Arc<MetadataConflict>>,
+    pub(crate) metadata_results: Vec<Arc<MetadataResult>>,
     pub(crate) closing: bool,
-    refresh: Vec<(PaneId, PathBuf, Option<PathBuf>)>,
+    pub(super) refresh: Vec<(PaneId, PathBuf, Option<PathBuf>)>,
 }
 
 impl Presenter {
@@ -21,9 +23,9 @@ impl Presenter {
         if self.operations.closing {
             return;
         }
-        let Some(source) = self.visible_directory(pane) else {
+        if self.visible_directory(pane).is_none() {
             return;
-        };
+        }
         let p = &self.panes[pane.index()];
         if p.search_view_waiting() {
             return;
@@ -36,6 +38,41 @@ impl Presenter {
             return;
         }
         if kind == MutationKind::Rename && (p.parent_cursor || p.cursor.is_none()) {
+            return;
+        }
+        let files = SelectedFiles {
+            view: p.display_index().clone(),
+            selection: p.selected.clone(),
+            fallback: (!p.parent_cursor)
+                .then(|| {
+                    p.cursor
+                        .and_then(|id| p.entry_by_id(id))
+                        .map(|entry| entry.path.clone())
+                })
+                .flatten(),
+        };
+        self.start_captured_operation(pane, kind, &files, send);
+    }
+
+    pub(super) fn start_captured_operation(
+        &mut self,
+        pane: PaneId,
+        kind: MutationKind,
+        files: &SelectedFiles,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        if self.operations.closing {
+            return;
+        }
+        let Some(source) = self.visible_directory(pane) else {
+            return;
+        };
+        let focused = files
+            .fallback
+            .as_ref()
+            .and_then(|path| files.view.by_path.get(path))
+            .copied();
+        if kind == MutationKind::Rename && focused.is_none() {
             return;
         }
         if let Some(id) = self.operations.pending
@@ -51,9 +88,9 @@ impl Presenter {
             id,
             kind,
             source,
-            view: p.display_index().clone(),
-            selection: p.selected.clone(),
-            focused: if p.parent_cursor { None } else { p.cursor },
+            view: files.view.clone(),
+            selection: files.selection.clone(),
+            focused,
         };
         if send(Command::PrepareOperation(request)) {
             self.operations.next_id = next;
@@ -71,7 +108,7 @@ impl Presenter {
                 current_path: None,
                 message: String::new(),
                 errors: vec![],
-                source_directory: p.path.clone(),
+                source_directory: self.panes[pane.index()].path.clone(),
                 renamed_to: None,
             }));
         } else {
@@ -94,6 +131,7 @@ impl Presenter {
         }
         let id = preview.id;
         let name = match preview.kind {
+            MutationKind::EditMetadata => return,
             MutationKind::Delete(_) => None,
             MutationKind::Rename => {
                 if preview.sample.first().is_some_and(|item| {
@@ -123,15 +161,26 @@ impl Presenter {
         }
     }
     pub fn has_live_operations(&self) -> bool {
-        self.operations
-            .progress
-            .iter()
-            .any(|p| !p.state.is_terminal())
+        self.copies.progress.iter().any(|p| !p.state.is_terminal())
+            || self
+                .operations
+                .progress
+                .iter()
+                .any(|p| !p.state.is_terminal())
     }
     pub fn request_operation_shutdown(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.shutdown_drag_drop(send);
+        self.metadata = metadata::MetadataState::default();
         self.operations.closing = true;
         self.operations.pending = None;
         self.operations.preview = None;
+        self.copies.conflicts.clear();
+        self.operations.metadata_conflicts.clear();
+        for progress in &self.copies.progress {
+            if !progress.state.is_terminal() {
+                let _ = send(Command::CancelCopy(progress.id));
+            }
+        }
         for progress in &self.operations.progress {
             if !progress.state.is_terminal() {
                 let _ = send(Command::CancelOperation(progress.id));
@@ -150,13 +199,33 @@ impl Presenter {
             return Some(event);
         };
         match event {
+            OperationEvent::MetadataPreview(preview) => self.apply_metadata_preview(preview),
+            OperationEvent::MetadataResult(result) => {
+                self.operations
+                    .metadata_results
+                    .retain(|old| old.id != result.id);
+                self.operations.metadata_results.push(result);
+                if self.operations.metadata_results.len() > 16 {
+                    self.operations.metadata_results.remove(0);
+                }
+            }
+            OperationEvent::MetadataConflict(conflict) => self.apply_metadata_conflict(conflict),
             OperationEvent::Preview(preview) => {
-                if self.operations.pending == Some(preview.id) && !self.operations.closing {
+                if preview.kind != MutationKind::EditMetadata
+                    && self.operations.pending == Some(preview.id)
+                    && !self.operations.closing
+                {
                     self.operations.preview = Some(preview);
                 }
             }
             OperationEvent::Progress(progress) => {
                 if progress.state.is_terminal() {
+                    self.operations
+                        .metadata_conflicts
+                        .retain(|conflict| conflict.id != progress.id);
+                    if self.metadata.id == Some(progress.id) {
+                        self.metadata = metadata::MetadataState::default();
+                    }
                     if self.operations.pending == Some(progress.id) {
                         self.operations.pending = None;
                         self.operations.preview = None;

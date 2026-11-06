@@ -1,23 +1,11 @@
-//! Physical Hot Path digits keep their meaning across keyboard layouts.
+//! Physical digit chords are resolved by the same catalog as logical UI keys.
 use crate::MainWindow;
+use midnight_core::ShortcutChord;
 use slint::winit_030::winit::{
     event::{ElementState, WindowEvent},
     keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey},
 };
 use std::collections::HashSet;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
-    Jump(i32, i32),
-    Assign(i32, i32),
-    Tab(i32, i32),
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Decision {
-    consume: bool,
-    action: Option<Action>,
-}
 
 struct KeyInput<'a> {
     physical: PhysicalKey,
@@ -27,41 +15,33 @@ struct KeyInput<'a> {
     synthetic: bool,
 }
 
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Decision {
+    consumed: bool,
+    physical_digit: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct ShortcutState {
     modifiers: ModifiersState,
     right_alt: bool,
     held: HashSet<PhysicalKey>,
-    search_active: bool,
+    controls: HashSet<PhysicalKey>,
 }
 
 impl ShortcutState {
     pub(crate) fn handle(&mut self, window: &MainWindow, event: &WindowEvent) -> bool {
-        self.search_active = match window.get_focused_pane() {
-            0 => window.get_left_search_active(),
-            1 => window.get_right_search_active(),
-            _ => false,
-        };
-        let decision = self.observe(event, window.get_focused_pane());
-        match decision.action {
-            Some(Action::Jump(pane, slot)) => window.invoke_bookmark_jump(pane, slot),
-            Some(Action::Assign(pane, slot)) => window.invoke_bookmark_slot(pane, slot),
-            Some(Action::Tab(pane, number)) => window.invoke_tab_number(pane, number),
-            None => {}
-        }
-        decision.consume
-    }
-
-    fn observe(&mut self, event: &WindowEvent, pane: i32) -> Decision {
+        self.observe_modifiers(event);
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::Focused(false) | WindowEvent::Destroyed => *self = Self::default(),
+            WindowEvent::Focused(false) | WindowEvent::Destroyed => {
+                window.set_native_digit_event(false);
+            }
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic,
                 ..
             } => {
-                return self.key(
+                let result = self.key(
                     KeyInput {
                         physical: event.physical_key,
                         logical: event.logical_key.as_ref(),
@@ -69,79 +49,124 @@ impl ShortcutState {
                         repeat: event.repeat,
                         synthetic: *is_synthetic,
                     },
-                    pane,
+                    |chord| {
+                        window.invoke_physical_shortcut(
+                            chord.key.into(),
+                            chord.control,
+                            chord.alt,
+                            chord.shift,
+                            chord.meta,
+                        )
+                    },
                 );
+                window.set_native_digit_event(result.physical_digit);
+                window.set_native_alt_gr(self.right_alt);
+                window.set_control_layer(self.control_layer());
+                return result.consumed;
             }
             _ => {}
         }
-        Decision::default()
+        window.set_native_alt_gr(self.right_alt);
+        window.set_control_layer(self.control_layer());
+        false
     }
 
-    fn key(&mut self, input: KeyInput<'_>, pane: i32) -> Decision {
+    fn observe_modifiers(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+                if !self.modifiers.control_key() {
+                    self.controls.clear();
+                }
+            }
+            WindowEvent::Focused(false) | WindowEvent::Destroyed => *self = Self::default(),
+            _ => {}
+        }
+    }
+
+    fn control_layer(&self) -> bool {
+        self.modifiers == ModifiersState::CONTROL && !self.right_alt
+    }
+
+    fn key(
+        &mut self,
+        input: KeyInput<'_>,
+        mut dispatch: impl FnMut(ShortcutChord) -> bool,
+    ) -> Decision {
+        let digit = digit(input.physical);
+        let mut decision = Decision {
+            physical_digit: digit.is_some(),
+            consumed: false,
+        };
+        // Winit normally follows key edges with ModifiersChanged. Reflect the
+        // edge immediately so a mouse release cannot see a stale Ctrl layer.
+        if matches!(
+            input.physical,
+            PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight)
+        ) {
+            if input.state == ElementState::Pressed {
+                self.controls.insert(input.physical);
+            } else {
+                self.controls.remove(&input.physical);
+            }
+            self.modifiers
+                .set(ModifiersState::CONTROL, !self.controls.is_empty());
+        }
         if input.physical == PhysicalKey::Code(KeyCode::AltRight)
             || matches!(input.logical, Key::Named(NamedKey::AltGraph))
         {
             self.right_alt = input.state == ElementState::Pressed;
-            return Decision::default();
+            return decision;
         }
-        let files_focused = matches!(pane, 0 | 1);
         if input.state == ElementState::Released {
-            return Decision {
-                consume: self.held.remove(&input.physical) && files_focused,
-                action: None,
-            };
-        }
-        if !files_focused || input.synthetic {
-            return Decision::default();
+            decision.consumed = self.held.remove(&input.physical);
+            return decision;
         }
         if self.held.contains(&input.physical) {
-            return Decision {
-                consume: true,
-                action: None,
-            };
+            decision.consumed = true;
+            return decision;
         }
-        if input.repeat || self.right_alt || self.modifiers.super_key() {
-            return Decision::default();
+        if input.repeat || input.synthetic || self.right_alt {
+            return decision;
         }
-        let slot = match input.physical {
-            PhysicalKey::Code(KeyCode::Digit1) => 1,
-            PhysicalKey::Code(KeyCode::Digit2) => 2,
-            PhysicalKey::Code(KeyCode::Digit3) => 3,
-            PhysicalKey::Code(KeyCode::Digit4) => 4,
-            PhysicalKey::Code(KeyCode::Digit5) => 5,
-            PhysicalKey::Code(KeyCode::Digit6) => 6,
-            PhysicalKey::Code(KeyCode::Digit7) => 7,
-            PhysicalKey::Code(KeyCode::Digit8) => 8,
-            PhysicalKey::Code(KeyCode::Digit9) => 9,
-            PhysicalKey::Code(KeyCode::Digit0) => 10,
-            _ => return Decision::default(),
+        let Some(digit) = digit else {
+            return decision;
         };
-        let control = self.modifiers.control_key();
-        let shift = self.modifiers.shift_key();
-        let alt = self.modifiers.alt_key();
-        if self.search_active && shift && !control && !alt {
-            return Decision::default();
-        }
-        let action = match (control, shift, alt) {
-            (true, true, false) if slot <= 9 => Action::Tab(pane, slot),
-            (true, true, false) => Action::Assign(pane, slot),
-            (true, false, _) | (false, true, _) => {
-                Action::Jump(if alt { 1 - pane } else { pane }, slot)
-            }
-            _ => return Decision::default(),
+        let chord = ShortcutChord {
+            key: format!("Digit{digit}"),
+            control: self.modifiers.control_key(),
+            alt: self.modifiers.alt_key(),
+            shift: self.modifiers.shift_key(),
+            meta: self.modifiers.super_key(),
         };
-        self.held.insert(input.physical);
-        Decision {
-            consume: true,
-            action: Some(action),
+        if dispatch(chord) {
+            self.held.insert(input.physical);
+            decision.consumed = true;
         }
+        decision
     }
+}
+
+fn digit(key: PhysicalKey) -> Option<u8> {
+    Some(match key {
+        PhysicalKey::Code(KeyCode::Digit0) => 0,
+        PhysicalKey::Code(KeyCode::Digit1) => 1,
+        PhysicalKey::Code(KeyCode::Digit2) => 2,
+        PhysicalKey::Code(KeyCode::Digit3) => 3,
+        PhysicalKey::Code(KeyCode::Digit4) => 4,
+        PhysicalKey::Code(KeyCode::Digit5) => 5,
+        PhysicalKey::Code(KeyCode::Digit6) => 6,
+        PhysicalKey::Code(KeyCode::Digit7) => 7,
+        PhysicalKey::Code(KeyCode::Digit8) => 8,
+        PhysicalKey::Code(KeyCode::Digit9) => 9,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slint::winit_030::winit::keyboard::NamedKey;
+    use midnight_core::{ShortcutBinding, ShortcutContext, ShortcutMap};
 
     fn input(code: KeyCode, text: &'static str) -> KeyInput<'static> {
         KeyInput {
@@ -152,210 +177,210 @@ mod tests {
             synthetic: false,
         }
     }
-    fn modifiers(state: &mut ShortcutState, value: ModifiersState) {
-        state.observe(&WindowEvent::ModifiersChanged(value.into()), -1);
+
+    #[test]
+    fn control_footer_tracks_both_control_keys_and_clears_on_native_focus_loss() {
+        let mut state = ShortcutState::default();
+        state.key(input(KeyCode::ControlLeft, ""), |_| false);
+        state.key(input(KeyCode::ControlRight, ""), |_| false);
+        assert!(state.control_layer());
+        let mut release = input(KeyCode::ControlLeft, "");
+        release.state = ElementState::Released;
+        state.key(release, |_| false);
+        assert!(state.control_layer(), "the other Ctrl is still held");
+        state.key(input(KeyCode::AltRight, ""), |_| false);
+        assert!(
+            !state.control_layer(),
+            "AltGr never activates the Ctrl footer"
+        );
+        state.observe_modifiers(&WindowEvent::Focused(false));
+        assert!(!state.control_layer());
+        assert!(!state.right_alt);
+        assert!(state.controls.is_empty());
+        assert!(state.held.is_empty());
+        state.observe_modifiers(&WindowEvent::Focused(true));
+        assert!(
+            !state.control_layer(),
+            "focus restoration does not revive a stale key"
+        );
+        state.key(input(KeyCode::ControlRight, ""), |_| false);
+        assert!(state.control_layer());
+        let mut release = input(KeyCode::ControlRight, "");
+        release.state = ElementState::Released;
+        state.key(release, |_| false);
+        assert!(
+            !state.control_layer(),
+            "key-up clears before ModifiersChanged arrives"
+        );
     }
-    fn accepted(action: Action) -> Decision {
-        Decision {
-            consume: true,
-            action: Some(action),
+
+    #[test]
+    fn physical_digits_use_configured_actions_instead_of_logical_punctuation() {
+        let map = ShortcutMap::new(&[
+            ShortcutBinding {
+                action: "bookmark.open.1".into(),
+                keys: vec![],
+            },
+            ShortcutBinding {
+                action: "files.copy".into(),
+                keys: vec!["Ctrl+Digit1".into()],
+            },
+        ])
+        .unwrap();
+        for text in ["1", "+", "!"] {
+            let mut state = ShortcutState {
+                modifiers: ModifiersState::CONTROL,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let result = state.key(input(KeyCode::Digit1, text), |chord| {
+                let action = map.resolve(&chord, ShortcutContext::Files).unwrap();
+                actions.push(action.id.clone());
+                true
+            });
+            assert_eq!(actions, ["files.copy"]);
+            assert!(result.consumed && result.physical_digit);
         }
     }
 
     #[test]
-    fn physical_digits_ignore_us_and_czech_logical_punctuation() {
-        for (code, text, mods, pane, action) in [
-            (
-                KeyCode::Digit1,
-                "!",
-                ModifiersState::SHIFT,
-                0,
-                Action::Jump(0, 1),
-            ),
-            (
-                KeyCode::Digit1,
-                "1",
-                ModifiersState::SHIFT,
-                1,
-                Action::Jump(1, 1),
-            ),
-            (
-                KeyCode::Digit1,
-                "+",
-                ModifiersState::CONTROL,
-                0,
-                Action::Jump(0, 1),
-            ),
-            (
-                KeyCode::Digit2,
-                "ě",
-                ModifiersState::CONTROL,
-                1,
-                Action::Jump(1, 2),
-            ),
-            (
-                KeyCode::Digit0,
-                ")",
-                ModifiersState::CONTROL | ModifiersState::SHIFT,
-                0,
-                Action::Assign(0, 10),
-            ),
-            (
-                KeyCode::Digit0,
-                "0",
-                ModifiersState::CONTROL | ModifiersState::SHIFT,
-                1,
-                Action::Assign(1, 10),
-            ),
-            (
-                KeyCode::Digit3,
-                "3",
-                ModifiersState::CONTROL | ModifiersState::ALT,
-                0,
-                Action::Jump(1, 3),
-            ),
-            (
-                KeyCode::Digit4,
-                "$",
-                ModifiersState::SHIFT | ModifiersState::ALT,
-                1,
-                Action::Jump(0, 4),
-            ),
+    fn unbound_digits_and_search_typing_still_mark_the_logical_event_as_physical() {
+        let map = ShortcutMap::new(&[ShortcutBinding {
+            action: "bookmark.open.1".into(),
+            keys: vec![],
+        }])
+        .unwrap();
+        for context in [
+            ShortcutContext::Files,
+            ShortcutContext::Search,
+            ShortcutContext::Command,
         ] {
-            let mut state = ShortcutState::default();
-            modifiers(&mut state, mods);
-            assert_eq!(state.key(input(code, text), pane), accepted(action));
-        }
-    }
-
-    #[test]
-    fn editors_popups_and_unsupported_modifiers_propagate_without_actions() {
-        for pane in [-1, 2] {
-            let mut state = ShortcutState::default();
-            modifiers(&mut state, ModifiersState::CONTROL | ModifiersState::SHIFT);
+            let mut state = ShortcutState {
+                modifiers: ModifiersState::CONTROL,
+                ..Default::default()
+            };
+            let result = state.key(input(KeyCode::Digit1, "+"), |chord| {
+                map.resolve(&chord, context).is_some()
+            });
             assert_eq!(
-                state.key(input(KeyCode::Digit1, "!"), pane),
-                Decision::default()
+                result,
+                Decision {
+                    consumed: false,
+                    physical_digit: true
+                }
             );
         }
-        for mods in [
-            ModifiersState::empty(),
-            ModifiersState::SUPER | ModifiersState::CONTROL,
-            ModifiersState::CONTROL | ModifiersState::SHIFT | ModifiersState::ALT,
-        ] {
-            let mut state = ShortcutState::default();
-            modifiers(&mut state, mods);
-            assert_eq!(
-                state.key(input(KeyCode::Digit1, "1"), 0),
-                Decision::default()
-            );
-        }
-        let mut state = ShortcutState::default();
-        modifiers(&mut state, ModifiersState::CONTROL | ModifiersState::SHIFT);
-        for code in [KeyCode::Equal, KeyCode::NumpadAdd, KeyCode::Enter] {
-            assert_eq!(state.key(input(code, "+"), 0), Decision::default());
-        }
+        let map = ShortcutMap::new(&[]).unwrap();
+        let mut state = ShortcutState {
+            modifiers: ModifiersState::SHIFT,
+            ..Default::default()
+        };
+        assert!(
+            !state
+                .key(input(KeyCode::Digit1, "!"), |chord| map
+                    .resolve(&chord, ShortcutContext::Search)
+                    .is_some())
+                .consumed
+        );
     }
 
     #[test]
-    fn right_alt_never_triggers_hot_paths_and_left_alt_can_target_the_other_pane() {
-        let mut state = ShortcutState::default();
-        modifiers(&mut state, ModifiersState::CONTROL | ModifiersState::ALT);
-        let mut right_alt = input(KeyCode::AltRight, "");
-        right_alt.logical = Key::Named(NamedKey::AltGraph);
-        state.key(right_alt, -1);
-        assert_eq!(
-            state.key(input(KeyCode::Digit2, "@"), 0),
-            Decision::default()
+    fn alt_gr_never_dispatches_and_left_alt_can_address_the_other_panel() {
+        let map = ShortcutMap::new(&[]).unwrap();
+        let mut state = ShortcutState {
+            modifiers: ModifiersState::CONTROL | ModifiersState::ALT,
+            ..Default::default()
+        };
+        state.key(input(KeyCode::AltRight, ""), |_| {
+            panic!("modifier cannot dispatch")
+        });
+        assert!(state.right_alt);
+        assert!(
+            !state
+                .key(input(KeyCode::Digit1, "+"), |_| panic!(
+                    "AltGr cannot dispatch"
+                ))
+                .consumed
         );
         let mut release = input(KeyCode::AltRight, "");
         release.state = ElementState::Released;
-        state.key(release, -1);
-        state.key(input(KeyCode::AltLeft, ""), -1);
-        assert_eq!(
-            state.key(input(KeyCode::Digit2, "2"), 0),
-            accepted(Action::Jump(1, 2))
+        state.key(release, |_| false);
+        assert!(!state.right_alt);
+        assert!(
+            state
+                .key(input(KeyCode::Digit1, "1"), |chord| {
+                    assert_eq!(
+                        map.resolve(&chord, ShortcutContext::Files).unwrap().id,
+                        "bookmark.other.1"
+                    );
+                    true
+                })
+                .consumed
         );
     }
 
     #[test]
-    fn repeats_do_not_save_again_and_matched_releases_are_consumed_once() {
+    fn repeats_synthetic_input_and_releases_cannot_dispatch_twice() {
         let mut state = ShortcutState::default();
-        modifiers(&mut state, ModifiersState::CONTROL | ModifiersState::SHIFT);
-        assert_eq!(
-            state.key(input(KeyCode::Digit1, "!"), 0),
-            accepted(Action::Tab(0, 1))
-        );
-        let mut repeated = input(KeyCode::Digit1, "!");
-        repeated.repeat = true;
-        assert_eq!(
-            state.key(repeated, 0),
-            Decision {
-                consume: true,
-                action: None
-            }
-        );
-        let mut release = input(KeyCode::Digit1, "!");
-        release.state = ElementState::Released;
-        assert_eq!(
-            state.key(release, 0),
-            Decision {
-                consume: true,
-                action: None
-            }
-        );
-        let mut repeated = input(KeyCode::Digit1, "!");
-        repeated.repeat = true;
-        assert_eq!(state.key(repeated, 0), Decision::default());
-        let mut synthetic = input(KeyCode::Digit1, "!");
-        synthetic.synthetic = true;
-        assert_eq!(state.key(synthetic, 0), Decision::default());
-    }
-
-    #[test]
-    fn editor_focus_and_window_focus_loss_clear_consumption_without_stealing_input() {
-        let mut state = ShortcutState::default();
-        modifiers(&mut state, ModifiersState::CONTROL);
-        assert_eq!(
-            state.key(input(KeyCode::Digit1, "1"), 0),
-            accepted(Action::Jump(0, 1))
+        assert!(state.key(input(KeyCode::Digit1, "1"), |_| true).consumed);
+        let mut repeat = input(KeyCode::Digit1, "1");
+        repeat.repeat = true;
+        assert!(
+            state
+                .key(repeat, |_| panic!("held key must not dispatch"))
+                .consumed
         );
         let mut release = input(KeyCode::Digit1, "1");
         release.state = ElementState::Released;
-        assert_eq!(state.key(release, -1), Decision::default());
-        state.key(input(KeyCode::AltRight, ""), -1);
-        state.observe(&WindowEvent::Focused(false), -1);
-        assert_eq!(
-            state.key(input(KeyCode::Digit1, "1"), 0),
-            Decision::default()
+        assert!(
+            state
+                .key(release, |_| panic!("release must not dispatch"))
+                .consumed
         );
-        modifiers(&mut state, ModifiersState::CONTROL);
-        assert_eq!(
-            state.key(input(KeyCode::Digit1, "+"), 1),
-            accepted(Action::Jump(1, 1))
+        let mut synthetic = input(KeyCode::Digit1, "1");
+        synthetic.synthetic = true;
+        assert!(
+            !state
+                .key(synthetic, |_| panic!("synthetic key must not dispatch"))
+                .consumed
         );
+        assert!(state.held.is_empty());
     }
 
     #[test]
-    fn search_or_preedit_reserves_shift_digits_but_preserves_control_and_alt_hot_paths() {
-        for (mods, expected) in [
-            (ModifiersState::SHIFT, Decision::default()),
-            (ModifiersState::CONTROL, accepted(Action::Jump(0, 1))),
+    fn default_tab_numbers_and_custom_meta_chords_resolve_through_the_catalog() {
+        for (mods, binding, expected) in [
             (
                 ModifiersState::CONTROL | ModifiersState::SHIFT,
-                accepted(Action::Tab(0, 1)),
+                None,
+                "tab.1",
             ),
-            (
-                ModifiersState::ALT | ModifiersState::SHIFT,
-                accepted(Action::Jump(1, 1)),
-            ),
+            (ModifiersState::SUPER, Some("Meta+Digit1"), "files.copy"),
         ] {
+            let overrides = binding
+                .map(|keys| {
+                    vec![ShortcutBinding {
+                        action: "files.copy".into(),
+                        keys: vec![keys.into()],
+                    }]
+                })
+                .unwrap_or_default();
+            let map = ShortcutMap::new(&overrides).unwrap();
             let mut state = ShortcutState {
-                search_active: true,
+                modifiers: mods,
                 ..Default::default()
             };
-            modifiers(&mut state, mods);
-            assert_eq!(state.key(input(KeyCode::Digit1, "!"), 0), expected);
+            assert!(
+                state
+                    .key(input(KeyCode::Digit1, "!"), |chord| {
+                        assert_eq!(
+                            map.resolve(&chord, ShortcutContext::Files).unwrap().id,
+                            expected
+                        );
+                        true
+                    })
+                    .consumed
+            );
         }
     }
 }

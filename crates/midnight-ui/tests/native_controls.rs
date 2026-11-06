@@ -26,13 +26,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
+use ui::platform_keys;
 #[cfg(windows)]
 #[path = "support/windows_raw_paths.rs"]
 mod raw_paths;

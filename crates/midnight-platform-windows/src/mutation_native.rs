@@ -31,12 +31,12 @@ use windows_sys::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct Identity {
-    volume: u64,
-    id: [u8; 16],
+pub(crate) struct Identity {
+    pub(crate) volume: u64,
+    pub(crate) id: [u8; 16],
 }
 
-pub(super) fn identity(file: &File) -> io::Result<Identity> {
+pub(crate) fn identity(file: &File) -> io::Result<Identity> {
     let mut information = FILE_ID_INFO::default();
     // SAFETY: file owns a live handle; information is writable for the duration of the call.
     if unsafe {
@@ -56,7 +56,7 @@ pub(super) fn identity(file: &File) -> io::Result<Identity> {
     })
 }
 
-pub(super) fn open_parent(path: &Path) -> io::Result<File> {
+pub(crate) fn open_parent(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES | FILE_TRAVERSE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -109,7 +109,7 @@ pub(super) fn create_empty_file(parent: &File, name: &OsStr) -> io::Result<File>
     )
 }
 
-fn open_relative(
+pub(crate) fn open_relative(
     parent: &File,
     name: &OsStr,
     access: u32,
@@ -170,7 +170,7 @@ fn open_relative(
     Ok(unsafe { File::from_raw_handle(result) })
 }
 
-pub(super) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
+pub(crate) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
     let name: Vec<_> = name.encode_wide().chain(Some(0)).collect();
     let length = size_of::<FILE_RENAME_INFORMATION>() + name.len() * 2;
     let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];
@@ -203,7 +203,7 @@ pub(super) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-fn remove(source: &File) -> io::Result<()> {
+pub(crate) fn remove(source: &File) -> io::Result<()> {
     let information = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     };
@@ -308,7 +308,7 @@ fn visit_delete_entry(
     }))
 }
 
-fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io::Result<File> {
+pub(super) fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io::Result<File> {
     // Listing access shares its bit with file-content read. Only ordinary directories reach
     // here. Keep source's no-delete-sharing guard while opening relative to its pinned parent;
     // the extra handle allows sharing DELETE because source already holds that access.
@@ -330,7 +330,39 @@ fn open_enumeration(parent: &File, source: &File, name: &OsStr) -> io::Result<Fi
 }
 
 fn child_names(directory: &File, cancel: &Cancellation) -> io::Result<Vec<OsString>> {
+    bounded_child_names(directory, cancel, usize::MAX, usize::MAX)
+}
+
+pub(super) fn bounded_child_names(
+    directory: &File,
+    cancel: &Cancellation,
+    max_names: usize,
+    max_bytes: usize,
+) -> io::Result<Vec<OsString>> {
+    collect_child_names(directory, cancel, max_names, max_bytes, None)
+}
+
+pub(super) fn has_exact_child_name(
+    directory: &File,
+    name: &OsStr,
+    cancel: &Cancellation,
+) -> io::Result<bool> {
+    Ok(
+        !collect_child_names(directory, cancel, 1_000_000, 64 * 1024 * 1024, Some(name))?
+            .is_empty(),
+    )
+}
+
+fn collect_child_names(
+    directory: &File,
+    cancel: &Cancellation,
+    max_names: usize,
+    max_bytes: usize,
+    find: Option<&OsStr>,
+) -> io::Result<Vec<OsString>> {
     let mut names = Vec::new();
+    let mut name_bytes = 0usize;
+    let mut name_count = 0usize;
     let mut buffer = vec![0u64; 8192];
     loop {
         // SAFETY: aligned 64 KiB buffer is writable; directory owns a synchronous directory
@@ -378,7 +410,20 @@ fn child_names(directory: &File, cancel: &Cancellation) -> io::Result<Vec<OsStri
             let units = unsafe { std::slice::from_raw_parts(record.FileName.as_ptr(), bytes / 2) };
             let name = OsString::from_wide(units);
             if name != "." && name != ".." {
-                names.push(name);
+                name_bytes = name_bytes.saturating_add(bytes);
+                if name_count >= max_names || name_bytes > max_bytes {
+                    return Err(io::Error::other(
+                        "metadata directory snapshot exceeds its resource budget",
+                    ));
+                }
+                name_count += 1;
+                if let Some(find) = find {
+                    if name == find {
+                        return Ok(vec![name]);
+                    }
+                } else {
+                    names.push(name);
+                }
             }
             if record.NextEntryOffset == 0 {
                 break;

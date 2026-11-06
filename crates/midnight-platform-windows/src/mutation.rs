@@ -18,8 +18,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 #[path = "mutation_create.rs"]
 mod create;
+#[path = "mutation_metadata.rs"]
+mod metadata;
 #[path = "mutation_native.rs"]
-mod native;
+pub(crate) mod native;
 #[path = "mutation_trash.rs"]
 mod trash;
 
@@ -133,6 +135,31 @@ impl PreparedMutation for WindowsMutation {
         &self.item
     }
 
+    fn metadata_snapshot(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::MetadataSnapshot, FsError> {
+        metadata::snapshot(self, cancel)
+    }
+    fn metadata_children(
+        &self,
+        cancel: &Cancellation,
+        max_targets: usize,
+    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+        metadata::children(self, cancel, max_targets)
+    }
+    fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
+        metadata::name_available(self, name, cancel)
+    }
+    fn edit_metadata(
+        &self,
+        patch: &midnight_core::MetadataPatch,
+        name: Option<&OsStr>,
+        cancel: &Cancellation,
+    ) -> midnight_core::MetadataOutcome {
+        metadata::edit(self, patch, name, cancel)
+    }
+
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
         let path = &self.item.path;
         checked(cancel, path)?;
@@ -164,7 +191,7 @@ impl PreparedMutation for WindowsMutation {
     }
 }
 
-fn validate_path(path: &Path, allow_root: bool) -> Result<(), FsError> {
+pub(crate) fn validate_path(path: &Path, allow_root: bool) -> Result<(), FsError> {
     reject_dot_components(path)?;
     if !path.is_absolute() || (!allow_root && path.file_name().is_none()) {
         return Err(invalid(
@@ -211,7 +238,7 @@ fn reject_dot_components(path: &Path) -> Result<(), FsError> {
     Ok(())
 }
 
-fn validate_name(name: &OsStr) -> io::Result<()> {
+pub(crate) fn validate_name(name: &OsStr) -> io::Result<()> {
     let units: Vec<_> = name.encode_wide().collect();
     let invalid = || {
         io::Error::new(

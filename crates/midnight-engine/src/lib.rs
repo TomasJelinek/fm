@@ -1,8 +1,13 @@
 #![forbid(unsafe_code)]
 
 mod clipboard;
+mod comparison;
+mod copy_operations;
 mod desktop;
+mod drag_drop;
 mod entry_sizes;
+mod file_targets;
+mod filters;
 mod folder_sizes;
 mod fonts;
 mod operations;
@@ -13,6 +18,7 @@ pub mod reclaim;
 mod scan_cache;
 mod search;
 mod selection;
+mod shell_menu;
 pub mod snapshot;
 mod streaming_selection;
 mod volumes;
@@ -95,6 +101,9 @@ pub struct Engine {
     watch: Option<Arc<dyn WatchService>>,
     settings: Option<Arc<dyn SettingsService>>,
     clipboard: Option<Arc<dyn midnight_core::ClipboardService>>,
+    shell_menu: Option<Arc<dyn midnight_core::ShellMenuService>>,
+    transfers: Option<Arc<dyn midnight_core::TransferService>>,
+    drag_drop: Option<Arc<dyn midnight_core::FileDragDropService>>,
 }
 
 #[derive(Default)]
@@ -158,6 +167,9 @@ impl Engine {
             watch: None,
             settings: None,
             clipboard: None,
+            shell_menu: None,
+            transfers: None,
+            drag_drop: None,
             outbox: Outbox {
                 sender: events,
                 wakeup,
@@ -185,6 +197,21 @@ impl Engine {
 
     pub fn with_clipboard(mut self, clipboard: Arc<dyn midnight_core::ClipboardService>) -> Self {
         self.clipboard = Some(clipboard);
+        self
+    }
+
+    pub fn with_shell_menu(mut self, service: Arc<dyn midnight_core::ShellMenuService>) -> Self {
+        self.shell_menu = Some(service);
+        self
+    }
+
+    pub fn with_transfers(mut self, service: Arc<dyn midnight_core::TransferService>) -> Self {
+        self.transfers = Some(service);
+        self
+    }
+
+    pub fn with_drag_drop(mut self, service: Arc<dyn midnight_core::FileDragDropService>) -> Self {
+        self.drag_drop = Some(service);
         self
     }
 
@@ -233,10 +260,30 @@ impl Engine {
             &mut tasks,
         );
         let mut clipboard = clipboard::Controller::new(self.clipboard, self.outbox.clone());
+        let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
         let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let comparison =
+            comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
+        let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
+        let mutation_gate = Arc::new(Semaphore::new(1));
         let operations = operations::Controller::new(
             self.mutations,
             snapshots.clone(),
+            self.outbox.clone(),
+            mutation_gate.clone(),
+            &mut tasks,
+        );
+        let copies = copy_operations::Controller::new(
+            self.transfers,
+            self.outbox.clone(),
+            mutation_gate,
+            Arc::new(Semaphore::new(1)),
+            &mut tasks,
+        );
+        let mut drag_drop = drag_drop::Controller::new(
+            self.drag_drop,
+            snapshots.clone(),
+            copies.capacity(),
             self.outbox.clone(),
             &mut tasks,
         );
@@ -314,6 +361,23 @@ impl Engine {
                         Some(Command::PrepareOperation(request)) => operations.prepare(request).await,
                         Some(Command::ConfirmOperation { id, new_name }) => operations.confirm(id, new_name).await,
                         Some(Command::CancelOperation(id)) => operations.cancel(id),
+                        Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,
+                        Some(Command::ConfirmMetadata { id, revision, conflicts }) => operations.confirm_metadata(id, revision, conflicts).await,
+                        Some(Command::ResolveMetadataConflict { id, token, choice }) => operations.resolve_metadata_conflict(id, token, choice).await,
+                        Some(Command::CompareDirectories(request)) => comparison.compare(request),
+                        Some(Command::CancelComparison(id)) => comparison.cancel(id),
+                        Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
+                        Some(Command::EnqueueCopy(request)) => copies.enqueue(request).await,
+                        Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
+                        Some(Command::CancelCopy(id)) => copies.cancel(id),
+                        Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut tasks).await,
+                        Some(Command::DetachDragDrop { host_generation }) => drag_drop.detach(host_generation),
+                        Some(Command::PrepareDrag { id, pane, navigation, files }) => drag_drop.prepare(id, pane, navigation, files).await,
+                        Some(Command::StartDrag(id)) => drag_drop.start(id).await,
+                        Some(Command::CancelDrag(id)) => drag_drop.cancel(id).await,
+                        Some(Command::AcceptDrop { token, id }) => drag_drop.accept(token, id, &copies).await,
+                        Some(Command::RejectDrop(token)) => drag_drop.reject(token),
+                        Some(Command::InternalDrop { id, target, targets_revision }) => drag_drop.internal(id, target, targets_revision).await,
                         Some(Command::Search(request)) => search.query(request),
                         Some(Command::CancelSearch { pane, revision }) => search.cancel(pane, revision),
                         None | Some(Command::Shutdown) => break,
@@ -348,7 +412,12 @@ impl Engine {
                             if let Some(watcher) = &watcher { watcher.set_visible(watch_target); }
                         }
                         Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks),
-                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks),
+                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
+                        Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut tasks).await,
+                        Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut tasks).await,
+                        Some(Command::ShowShellMenu { request, files, owner, position, modifiers, target }) => {
+                            shell_menu.show(shell_menu::Input { request, files, owner, position, modifiers, target }, &mut tasks).await;
+                        }
                         Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks),
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
                             selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback },
@@ -435,6 +504,7 @@ impl Engine {
                                 .then(|| entry_sizes.continued_sizes(pane, &path, continued_scan)).flatten();
                             entry_sizes.navigate(pane, &path, refresh || resort);
                             search.invalidate(pane);
+                            comparison.invalidate(pane);
                             let keep_scan = size_requests[pane.index()].as_ref().is_some_and(|request|
                                 request.path == path && (resort || (refresh && continued_scan == Some(request.scan))));
                             let continued_sizes = keep_scan.then(|| size_requests[pane.index()].as_ref().expect("validated scan").sizes.clone()).or(continued_entry_sizes);
@@ -463,6 +533,7 @@ impl Engine {
                             let filesystem = self.filesystem.clone();
                             let outbox = self.outbox.clone();
                             let budget = listing_budgets[pane.index()].clone();
+                            let locale = self.locale.clone();
                             let request_cancel = cancel.clone();
                             let listing_path = path.clone();
                             let icons = desktop.icon_sender();
@@ -480,7 +551,7 @@ impl Engine {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { filesystem, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream });
+                                    list_directory(ListingTask { filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream });
                                 }).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -517,7 +588,9 @@ impl Engine {
             }
         }
 
+        drag_drop.shutdown();
         operations.shutdown();
+        copies.shutdown();
         for request in requests.into_iter().flatten() {
             request.cancel();
         }
@@ -530,6 +603,7 @@ impl Engine {
         drop(selection);
         entry_sizes.shutdown();
         clipboard.shutdown();
+        shell_menu.shutdown();
         drop(search);
         fonts.shutdown();
         if let Some(settings) = settings {
@@ -545,6 +619,7 @@ impl Engine {
 struct ListingTask {
     selection_stream: streaming_selection::StreamingSelections,
     filesystem: Arc<dyn FileSystem>,
+    locale: Option<Arc<dyn midnight_core::LocaleService>>,
     outbox: Outbox,
     pane: PaneId,
     navigation: NavigationId,
@@ -561,6 +636,7 @@ fn list_directory(task: ListingTask) {
     let ListingTask {
         selection_stream,
         filesystem,
+        locale,
         outbox,
         pane,
         navigation,
@@ -577,6 +653,7 @@ fn list_directory(task: ListingTask) {
         publish_listing(
             &outbox,
             &snapshots,
+            locale.as_deref(),
             pane,
             sort,
             &cancel,
@@ -688,6 +765,7 @@ fn list_directory(task: ListingTask) {
     publish_listing(
         &outbox,
         &snapshots,
+        locale.as_deref(),
         pane,
         sort,
         &cancel,
@@ -703,6 +781,7 @@ fn list_directory(task: ListingTask) {
 fn publish_listing(
     outbox: &Outbox,
     snapshots: &Snapshots,
+    locale: Option<&dyn midnight_core::LocaleService>,
     pane: PaneId,
     sort: SortSpec,
     cancel: &Cancellation,
@@ -729,7 +808,27 @@ fn publish_listing(
             }
         }
     }
+    if let Some(locale) = locale
+        && let Err(error) =
+            midnight_core::prepare_sort_keys(Arc::make_mut(&mut snapshot.entries), locale, cancel)
+    {
+        if !cancel.is_cancelled() {
+            listing_failed(snapshots, pane, snapshot.navigation);
+            outbox.blocking_send(
+                Event::ListingFailed {
+                    pane,
+                    navigation: snapshot.navigation,
+                    error,
+                },
+                cancel,
+            );
+        }
+        return;
+    }
     sort_entries(Arc::make_mut(&mut snapshot.entries), sort);
+    if cancel.is_cancelled() {
+        return;
+    }
     let index = Arc::new(midnight_core::DirectoryIndex::from_entries(
         &snapshot.entries,
     ));

@@ -7,14 +7,42 @@ import { DetailRow } from "navigation-models.slint";
 // on the backend; clipping never changes the value copied to the clipboard.
 export component PanelDetails inherits Rectangle {
     in property <[DetailRow]> model;
+    in property <string> free-space;
     callback copy-field(string);
     private property <int> revision;
     changed model => { root.revision += 1; }
     height: Theme.status-height;
     background: Theme.secondary-surface;
     Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame; }
+    capacity := Rectangle {
+        width: root.free-space == "" ? 0px : min(root.width * 0.38, capacity-text.preferred-width + 16px);
+        x: root.width - self.width; y: 1px; height: root.height - 1px;
+        background: Theme.secondary-surface;
+        accessible-role: button;
+        accessible-label: root.free-space + ". Copy to clipboard";
+        accessible-action-default => { root.copy-field("capacity:" + root.free-space); }
+        Rectangle { x: 0px; y: 5px; width: 1px; height: parent.height - 10px; background: Theme.frame; }
+        capacity-text := Text {
+            x: 8px; width: parent.width - 16px; height: parent.height;
+            text: root.free-space; font-size: Theme.small-font; color: Theme.secondary-text;
+            horizontal-alignment: right; vertical-alignment: center; overflow: elide;
+            accessible-role: text; accessible-label: root.free-space;
+        }
+        TouchArea {
+            private property <string> pressed-value;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    self.pressed-value = root.free-space;
+                }
+            }
+            clicked => {
+                if self.pressed-value == root.free-space { root.copy-field("capacity:" + self.pressed-value); }
+            }
+        }
+        Tooltip { TipBody { text: root.free-space + "\nClick to copy this value."; } }
+    }
     ScrollView {
-        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        x: 1px; y: 1px; width: max(0px, parent.width - capacity.width - 2px); height: parent.height - 2px;
         horizontal-scrollbar-policy: always-off;
         vertical-scrollbar-policy: always-off;
         mouse-drag-pan-enabled: true;

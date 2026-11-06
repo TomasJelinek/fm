@@ -17,6 +17,7 @@ export component CompactLocationButton inherits Rectangle {
     in property <bool> selected;
     in property <bool> is-drive;
     callback clicked();
+    callback context-menu(float, float, bool, bool);
     width: root.is-drive
         ? max(Theme.touch ? 56px : 46px, caption.preferred-width + (Theme.touch ? 40px : 26px))
         : Theme.tool-width;
@@ -66,10 +67,29 @@ export component CompactLocationButton inherits Rectangle {
         area := TouchArea {
             private property <string> pressed-identity;
             private property <int> pressed-revision;
+            private property <bool> right-pressed;
+            private property <bool> control-pressed;
+            private property <bool> shift-pressed;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     self.pressed-identity = root.identity;
                     self.pressed-revision = root.model-revision;
+                    self.right-pressed = event.button == PointerEventButton.right;
+                    self.control-pressed = event.modifiers.control;
+                    self.shift-pressed = event.modifiers.shift;
+                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                    if root.is-drive && self.right-pressed && self.pressed-identity == root.identity
+                        && self.pressed-revision == root.model-revision
+                        && self.mouse-x >= 0px && self.mouse-x < self.width
+                        && self.mouse-y >= 0px && self.mouse-y < self.height {
+                        root.context-menu((self.absolute-position.x + self.mouse-x) / 1px,
+                            (self.absolute-position.y + self.mouse-y) / 1px,
+                            self.control-pressed, self.shift-pressed);
+                    }
+                    self.right-pressed = false;
+                } else if event.kind == PointerEventKind.cancel {
+                    self.right-pressed = false;
+                    self.pressed-identity = "";
                 }
             }
             clicked => {

@@ -1,0 +1,31 @@
+// Rust caches the strings alongside the compiled bindings. Revision is the only
+// dependency needed to refresh labels after an edit or settings load.
+import { FunctionSlot } from "function-models.slint";
+
+export global ShortcutHints {
+    in-out property <string> revision;
+    pure callback lookup(string, bool) -> string;
+    pure callback lookup-help() -> string;
+    pure callback lookup-control(int, bool) -> FunctionSlot;
+    pure public function control(index: int, searching: bool) -> FunctionSlot {
+        return ShortcutHints.revision == "" ? { action: "", label: "", key: "", hint: "", icon: 9 }
+            : ShortcutHints.lookup-control(index, searching);
+    }
+    pure public function help() -> string {
+        return ShortcutHints.revision == "" ? "" : ShortcutHints.lookup-help();
+    }
+    pure public function key(action: string) -> string {
+        return ShortcutHints.revision == "" ? "" : ShortcutHints.lookup(action, false);
+    }
+    pure public function keys(action: string) -> string {
+        return ShortcutHints.revision == "" ? "" : ShortcutHints.lookup(action, true);
+    }
+    pure public function hint(label: string, action: string) -> string {
+        let keys = ShortcutHints.keys(action);
+        return keys == "" ? label : label + " (" + keys + ")";
+    }
+    pure public function caption(label: string, action: string) -> string {
+        let key = ShortcutHints.key(action);
+        return key == "" ? label : key + " " + label;
+    }
+}

@@ -45,6 +45,8 @@ export component CompactPicker inherits Rectangle {
     in property <bool> arrow-trigger-only;
     in property <bool> show-row-icons: true;
     in property <bool> popup-align-right;
+    in property <bool> group-separators;
+    in property <string> separator-before-key;
     in property <bool> enabled: true;
     in property <bool> framed: true;
     in property <bool> popup-above;
@@ -54,6 +56,7 @@ export component CompactPicker inherits Rectangle {
         + (root.has-leading-icon ? Theme.picker-location-icon-size + 4px : 0px);
     private property <int> pending-index: -1;
     private property <bool> expanded;
+    out property <bool> popup-open: root.expanded;
     private property <bool> has-leading-icon: root.show-row-icons && !root.icon-only && !root.arrow-trigger-only
         && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length);
     private property <bool> arrow-only: !root.icon-only && root.label == "" && !root.has-leading-icon;
@@ -62,6 +65,8 @@ export component CompactPicker inherits Rectangle {
     private property <int> opened-revision;
     callback selected(int);
     callback selected-key(string);
+    callback shortcut-event(KeyEvent) -> int;
+    callback context-menu(string, float, float, bool, bool);
     callback dismissed();
     height: Theme.control-height;
     caption-metrics := Text { visible: false; text: root.label; font-size: Theme.font-size; }
@@ -86,6 +91,7 @@ export component CompactPicker inherits Rectangle {
         if index < 0 || index >= root.item-count { return ""; }
         return root.choices.length > 0 ? root.choices[index].label : root.model[index];
     }
+    public function activate-shortcut() { root.commit(root.shortcut-index); }
     pure function row-key(index: int) -> string {
         return index >= 0 && index < root.choices.length ? root.choices[index].identity : "";
     }
@@ -94,6 +100,18 @@ export component CompactPicker inherits Rectangle {
     }
     pure function row-icon(index: int) -> image {
         return root.choices.length > 0 ? root.choices[index].icon : root.icons[index];
+    }
+    pure function choice-group(index: int) -> int {
+        if root.row-key(index) == "other-panel" { return 3; }
+        let kind = root.choices[index].kind;
+        if kind == LocationRole.drive || kind == LocationRole.network { return 0; }
+        if kind == LocationRole.hot-path { return 2; }
+        return 1;
+    }
+    pure function has-separator(index: int) -> bool {
+        if index <= 0 || index >= root.choices.length { return false; }
+        return (root.separator-before-key != "" && root.row-key(index) == root.separator-before-key)
+            || (root.group-separators && root.choice-group(index) != root.choice-group(index - 1));
     }
 
     public function open() {
@@ -175,6 +193,34 @@ export component CompactPicker inherits Rectangle {
         }
         area := TouchArea {
             enabled: root.enabled;
+            private property <string> pressed-key;
+            private property <int> pressed-revision;
+            private property <bool> right-pressed;
+            private property <bool> control-pressed;
+            private property <bool> shift-pressed;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    self.pressed-key = root.row-key(root.current-index);
+                    self.pressed-revision = root.model-revision;
+                    self.right-pressed = event.button == PointerEventButton.right;
+                    self.control-pressed = event.modifiers.control;
+                    self.shift-pressed = event.modifiers.shift;
+                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                    if self.right-pressed && self.pressed-key != ""
+                        && self.pressed-key == root.row-key(root.current-index)
+                        && self.pressed-revision == root.model-revision
+                        && self.mouse-x >= 0px && self.mouse-x < self.width
+                        && self.mouse-y >= 0px && self.mouse-y < self.height {
+                        root.context-menu(self.pressed-key,
+                            (self.absolute-position.x + self.mouse-x) / 1px,
+                            (self.absolute-position.y + self.mouse-y) / 1px,
+                            self.control-pressed, self.shift-pressed);
+                    }
+                    self.right-pressed = false;
+                } else if event.kind == PointerEventKind.cancel {
+                    self.right-pressed = false;
+                }
+            }
             clicked => { focus.focus(); root.open(); }
         }
     }
@@ -190,6 +236,9 @@ export component CompactPicker inherits Rectangle {
         popup-focus := FocusScope {
             focus-changed-event => { root.expanded = self.has-focus; }
             key-pressed(event) => {
+                let shortcut = root.shortcut-event(event);
+                if shortcut == 1 { root.commit(root.shortcut-index); return accept; }
+                if shortcut == 2 { return accept; }
                 if root.shortcut-key != "" && event.text == root.shortcut-key
                     && !event.modifiers.control && !event.modifiers.alt
                     && !event.modifiers.shift && !event.modifiers.meta {
@@ -235,8 +284,13 @@ export component CompactPicker inherits Rectangle {
                         accessible-role: button;
                         accessible-label: root.row-label(index);
                         accessible-action-default => { root.commit(index); }
+                        if root.has-separator(index) : Rectangle {
+                            x: 8px; y: 1px; width: parent.width - 16px; height: 1px;
+                            background: Theme.frame;
+                        }
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px; spacing: 8px;
+                            padding-top: root.has-separator(index) ? 4px : 0px;
                             cross-axis-alignment: center;
                             Text {
                                 text: index == root.current-index ? "✓" : "";
@@ -253,6 +307,8 @@ export component CompactPicker inherits Rectangle {
                             }
                         }
                         row-area := TouchArea {
+                            y: root.has-separator(index) ? 4px : 0px;
+                            height: parent.height - self.y;
                             private property <string> pressed-key;
                             private property <int> pressed-revision;
                             pointer-event(event) => {

@@ -11,7 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 mod clipboard;
 mod desktop;
+mod file_clipboard;
+mod file_drag_drop;
 pub use clipboard::NativeClipboard;
+pub use file_drag_drop::NativeFileDragDrop;
 mod fonts;
 mod icons;
 #[allow(unsafe_code)]
@@ -21,7 +24,11 @@ mod mounts;
 mod mutation;
 mod open;
 mod settings;
+mod shell_menu;
+#[allow(unsafe_code)]
+mod sort_keys;
 mod storage_kind;
+mod transfer;
 mod watch;
 use mounts::mount_paths;
 

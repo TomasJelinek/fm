@@ -34,6 +34,15 @@ pub struct SelectionOrigin {
     pub location: PathBuf,
 }
 
+/// A comparison snapshot whose identity survives per-navigation revision resets.
+/// The worker consumes each monotonic stamp once, before protecting an old source.
+#[derive(Clone, Debug)]
+pub struct AuthoritativeSelection {
+    pub id: u64,
+    pub origin: SelectionOrigin,
+    pub snapshot: Arc<SelectionSnapshot>,
+}
+
 /// Cheap UI-to-backend message; the index and previous selection are shared.
 #[derive(Clone, Debug)]
 pub struct SelectionRequest {
@@ -45,6 +54,10 @@ pub struct SelectionRequest {
     pub location: PathBuf,
     pub view: Option<Arc<DirectoryIndex>>,
     pub seed: Arc<SelectionSnapshot>,
+    /// Revision of an authoritative snapshot, including a two-panel comparison.
+    /// A worker adopts a newer seed once, then preserves subsequent queued edits.
+    pub seed_revision: SelectionRevision,
+    pub authoritative: Option<Arc<AuthoritativeSelection>>,
     pub reset: bool,
     pub preserve: Option<SelectionOrigin>,
     pub restore: Option<SelectionOrigin>,
@@ -61,6 +74,7 @@ pub struct SelectionSnapshot {
     bits: Arc<[u64]>,
     selected_count: usize,
     selected_folders: usize,
+    file_bytes: Option<u64>,
 }
 
 impl SelectionSnapshot {
@@ -72,6 +86,9 @@ impl SelectionSnapshot {
         }
         if basis.directory_bits.len() != count.div_ceil(64) {
             return Err("selection directory kinds do not match index length");
+        }
+        if basis.file_sizes.len() != count {
+            return Err("selection file sizes do not match index length");
         }
         let mut seen = vec![false; count];
         for position in basis.by_id.values() {
@@ -113,11 +130,23 @@ impl SelectionSnapshot {
             .zip(&basis.directory_bits)
             .map(|(selected, folders)| (selected & folders).count_ones() as usize)
             .sum();
+        let mut file_bytes = Some(0_u64);
+        for (word_index, word) in bits.iter().copied().enumerate() {
+            let mut remaining = word;
+            while remaining != 0 {
+                let index = word_index * 64 + remaining.trailing_zeros() as usize;
+                file_bytes = file_bytes
+                    .zip(basis.file_sizes[index])
+                    .and_then(|(total, size)| total.checked_add(size));
+                remaining &= remaining - 1;
+            }
+        }
         Ok(Self {
             basis,
             bits: bits.into(),
             selected_count,
             selected_folders,
+            file_bytes,
         })
     }
     pub fn contains_path(&self, path: &Path) -> bool {
@@ -143,6 +172,11 @@ impl SelectionSnapshot {
     }
     pub fn folder_count(&self) -> usize {
         self.selected_folders
+    }
+    /// Exact known sum, computed on the selection worker. None includes unknown
+    /// lengths, selected non-regular entries and totals exceeding u64.
+    pub fn file_bytes(&self) -> Option<u64> {
+        self.file_bytes
     }
     pub fn basis(&self) -> &Arc<DirectoryIndex> {
         &self.basis
@@ -222,6 +256,38 @@ mod tests {
             }
             assert!(SelectionSnapshot::from_bits(Arc::new(index), vec![3]).is_err());
         }
+    }
+
+    #[test]
+    fn selected_bytes_are_exact_only_for_known_regular_files() {
+        let mut entries: Vec<_> = (0..4)
+            .map(|id| Entry::new(EntryId(id), format!("file-{id}").into(), EntryKind::File))
+            .collect();
+        entries[0].metadata.size = Some(12);
+        entries[1].metadata.size = Some(34);
+        entries[2].metadata.size = Some(u64::MAX);
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        let selected = SelectionSnapshot::from_bits(index, vec![0b11]).unwrap();
+        assert_eq!(selected.file_bytes(), Some(46));
+        assert_eq!(selected.with_bits(vec![0]).unwrap().file_bytes(), Some(0));
+        assert_eq!(selected.with_bits(vec![0b1001]).unwrap().file_bytes(), None);
+        assert_eq!(selected.with_bits(vec![0b0101]).unwrap().file_bytes(), None);
+        entries[1].kind = EntryKind::Directory;
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        assert_eq!(
+            SelectionSnapshot::from_bits(index, vec![3])
+                .unwrap()
+                .file_bytes(),
+            None
+        );
+        entries[1].kind = EntryKind::Symlink;
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        assert_eq!(
+            SelectionSnapshot::from_bits(index, vec![3])
+                .unwrap()
+                .file_bytes(),
+            None
+        );
     }
 
     #[test]

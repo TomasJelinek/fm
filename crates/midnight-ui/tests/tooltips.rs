@@ -224,7 +224,7 @@ fn moving_footer(
     time: &Cell<Duration>,
     pixels: &mut [slint::Rgb8Pixel],
 ) {
-    let hint = "F1 Help · keyboard shortcuts and usage help";
+    let hint = "Help (F1) · current keyboard shortcuts and usage help";
     for visible in [false, true] {
         window.window().dispatch_event(WindowEvent::PointerExited);
         window.set_desktop_feedback_important(false);
@@ -385,8 +385,11 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             );
         }
         for (label, hint) in [
-            ("F1 Help", "F1 Help · keyboard shortcuts and usage help"),
-            ("F10 Menu", "F10 Menu · options, refresh, help and exit"),
+            (
+                "F1 Help",
+                "Help (F1) · current keyboard shortcuts and usage help",
+            ),
+            ("F10 Menu", "Menu (F10) · options, refresh, help and exit"),
         ] {
             let button = find(root(&window), label, AccessibleRole::Button).remove(0);
             hover(&window, &native, &time, &mut pixels, center(&button), hint);
@@ -398,7 +401,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         draw(&native, &mut pixels);
         let folder_path = find(root(&window), "Folder path", AccessibleRole::TextInput).remove(0);
         let folder_hint = format!(
-            "Folder path: {}\n{}{}\nEdit and press Enter to open a folder. Ctrl+G focuses this field.",
+            "Folder path: {}\n{}{}\nEdit and press Enter to open a folder. Focus path editor (Ctrl+G)",
             window.get_left_path(),
             window.get_left_status(),
             if window.get_left_loading() {
@@ -453,7 +456,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             position,
-            "Choose the theme, font family, font sizes and compact desktop or larger touch controls.",
+            "Choose panel behavior, appearance, command history and keyboard shortcuts.",
         );
         click(&window, position);
         draw(&native, &mut pixels);
@@ -467,7 +470,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             center(&theme),
-            "Choose Blue, Dark or Light. Changes apply immediately.",
+            "Choose one of eight color themes. Changes apply immediately.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
         let panel = find(popup_root(&window), "Panel", AccessibleRole::Button).remove(0);

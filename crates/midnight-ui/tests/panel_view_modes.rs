@@ -242,6 +242,7 @@ fn independent_modes_preserve_file_identity_and_virtualize_column_and_icon_layou
     for (label, role) in [
         ("New empty file (Shift+F4)", AccessibleRole::Button),
         ("Left panel view mode", AccessibleRole::Combobox),
+        ("Left panel sort", AccessibleRole::Combobox),
     ] {
         let item = ui::root_item(&ui.window, label, role);
         let (x, _) = origin(&item);

@@ -1,0 +1,209 @@
+//! Bounded independent SHA-256 readback; native adapters own all filesystem publication.
+use midnight_core::{
+    Cancellation, EntryKind, FsError, StagedTransferFile, TransferEntry, TransferPublication,
+    TransferSource,
+};
+use sha2::{Digest, Sha256};
+use std::{
+    ffi::OsStr,
+    io::{self, SeekFrom},
+    path::Path,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyPhase {
+    Copying,
+    Syncing,
+    Verifying,
+    ReadyToPublish,
+    Published,
+    Failed,
+}
+
+pub struct VerifiedFileCopy {
+    source: Box<dyn TransferSource>,
+    stage: Box<dyn StagedTransferFile>,
+    phase: CopyPhase,
+    buffer: Vec<u8>,
+    source_hash: Sha256,
+    target_hash: Sha256,
+    copied: u64,
+    verified: u64,
+}
+impl VerifiedFileCopy {
+    pub fn new(
+        source: Box<dyn TransferSource>,
+        stage: Box<dyn StagedTransferFile>,
+    ) -> Result<Self, FsError> {
+        if source.entry().item.kind != EntryKind::File
+            || source.entry().item.metadata.size.is_none()
+        {
+            return Err(failure(
+                &source.entry().item.path,
+                "a regular source file with known length is required",
+            ));
+        }
+        Ok(Self {
+            source,
+            stage,
+            phase: CopyPhase::Copying,
+            buffer: vec![0; 256 * 1024],
+            source_hash: Sha256::new(),
+            target_hash: Sha256::new(),
+            copied: 0,
+            verified: 0,
+        })
+    }
+    pub fn source_entry(&self) -> &TransferEntry {
+        self.source.entry()
+    }
+    pub fn phase(&self) -> CopyPhase {
+        self.phase
+    }
+    pub fn copied_bytes(&self) -> u64 {
+        self.copied
+    }
+    pub fn verified_bytes(&self) -> u64 {
+        self.verified
+    }
+    /// Explicit worker-side cancellation cleanup lets callers surface native cleanup
+    /// errors. Dropping the job also drops the owned staging inode as a final guard.
+    pub fn cleanup(&mut self) -> Result<(), FsError> {
+        if self.phase != CopyPhase::Published {
+            self.phase = CopyPhase::Failed;
+        }
+        self.stage.cleanup()
+    }
+    /// At most one 256 KiB source/readback block, or one sync phase. The caller owns
+    /// the storage permit until this synchronous method actually returns.
+    pub fn step(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
+        let result = self.advance(cancel);
+        if result.is_err() {
+            self.phase = CopyPhase::Failed;
+        }
+        result
+    }
+    fn advance(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
+        check_cancel(cancel, &self.source.entry().item.path)?;
+        let path = &self.source.entry().item.path;
+        match self.phase {
+            CopyPhase::Copying => {
+                let count = self.source.read_chunk(&mut self.buffer, cancel)?;
+                if count == 0 {
+                    self.source.revalidate(cancel)?;
+                    if Some(self.copied) != self.source.entry().item.metadata.size {
+                        return Err(failure(
+                            &self.source.entry().item.path,
+                            "source length changed during copy",
+                        ));
+                    }
+                    self.phase = CopyPhase::Syncing;
+                } else {
+                    let path = &self.source.entry().item.path;
+                    let copied = self
+                        .copied
+                        .checked_add(count as u64)
+                        .ok_or_else(|| failure(path, "copied byte count overflow"))?;
+                    if self
+                        .source
+                        .entry()
+                        .item
+                        .metadata
+                        .size
+                        .is_some_and(|size| copied > size)
+                    {
+                        return Err(failure(path, "source grew during copy"));
+                    }
+                    self.stage
+                        .write_all(&self.buffer[..count])
+                        .map_err(|e| io_error(path, e))?;
+                    self.source_hash.update(&self.buffer[..count]);
+                    self.copied = copied;
+                }
+            }
+            CopyPhase::Syncing => {
+                self.stage.flush().map_err(|e| io_error(path, e))?;
+                self.stage.sync(cancel)?;
+                self.stage
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|e| io_error(path, e))?;
+                self.phase = CopyPhase::Verifying;
+            }
+            CopyPhase::Verifying => {
+                let count = self
+                    .stage
+                    .read(&mut self.buffer)
+                    .map_err(|e| io_error(path, e))?;
+                if count == 0 {
+                    if self.verified != self.copied
+                        || self.stage.len()? != self.copied
+                        || self.source_hash.clone().finalize()
+                            != self.target_hash.clone().finalize()
+                    {
+                        return Err(failure(
+                            path,
+                            "independent target checksum or length verification failed",
+                        ));
+                    }
+                    self.source.revalidate(cancel)?;
+                    self.phase = CopyPhase::ReadyToPublish;
+                } else {
+                    self.verified = self
+                        .verified
+                        .checked_add(count as u64)
+                        .ok_or_else(|| failure(path, "verified byte count overflow"))?;
+                    if self.verified > self.copied {
+                        return Err(failure(path, "target grew during verification"));
+                    }
+                    self.target_hash.update(&self.buffer[..count]);
+                }
+            }
+            CopyPhase::ReadyToPublish | CopyPhase::Published => {}
+            CopyPhase::Failed => return Err(failure(path, "failed copy cannot resume")),
+        }
+        Ok(self.phase)
+    }
+    /// Publication is separate so a conflict never blocks a worker. A no-replace
+    /// collision leaves the verified stage ready for an explicit different name.
+    pub fn publish(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        let path = &self.source.entry().item.path;
+        check_cancel(cancel, path)?;
+        if self.phase != CopyPhase::ReadyToPublish {
+            return Err(failure(
+                path,
+                "copy must be completely verified before publication",
+            ));
+        }
+        if let Err(error) = self.source.revalidate(cancel) {
+            self.phase = CopyPhase::Failed;
+            return Err(error);
+        }
+        let outcome = self.stage.publish_no_replace(name, cancel)?;
+        self.phase = CopyPhase::Published;
+        Ok(outcome)
+    }
+}
+fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
+    if cancel.is_cancelled() {
+        Err(io_error(path, io::ErrorKind::Interrupted.into()))
+    } else {
+        Ok(())
+    }
+}
+fn io_error(path: &Path, error: io::Error) -> FsError {
+    FsError::from_io("verified copy", path, error)
+}
+fn failure(path: &Path, message: &str) -> FsError {
+    FsError::from_io(
+        "verified copy",
+        path,
+        std::io::Error::new(std::io::ErrorKind::InvalidData, message),
+    )
+}
+#[cfg(test)]
+#[path = "transfer_tests.rs"]
+mod tests;

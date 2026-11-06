@@ -61,6 +61,14 @@ pub struct LocalizedDateTime {
 /// Optional native locale discovery. Call only on a startup/backend worker.
 pub trait LocaleService: Send + Sync {
     fn number_locale(&self) -> Result<NumberLocale, FsError>;
+
+    /// Produce an opaque, lexicographically comparable key using one immutable
+    /// session locale. Call only on a backend worker, never in a sort comparator.
+    /// None preserves an unrepresentable native name through deterministic raw
+    /// ordering. A native transformation failure is an error, never truncation.
+    fn collation_key(&self, _value: &std::ffi::OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

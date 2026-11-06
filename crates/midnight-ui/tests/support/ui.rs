@@ -17,6 +17,13 @@ use slint::{
 };
 use std::rc::Rc;
 
+#[cfg(windows)]
+#[path = "windows_keys.rs"]
+pub mod platform_keys;
+#[cfg(not(windows))]
+#[path = "default_keys.rs"]
+pub mod platform_keys;
+
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
@@ -75,7 +82,7 @@ impl TestUi {
     pub fn options_topic(&mut self, topic: i32) {
         click_popup(
             &self.window,
-            ["Panel", "Appearance", "Command"][topic as usize],
+            ["Panel", "Appearance", "Command", "Keyboard"][topic as usize],
             AccessibleRole::Button,
         );
         self.draw();
@@ -88,6 +95,10 @@ impl TestUi {
 }
 
 pub fn click_popup(window: &MainWindow, label: &str, role: AccessibleRole) {
+    click_item(window, popup_item(window, label, role));
+}
+
+pub fn popup_item(window: &MainWindow, label: &str, role: AccessibleRole) -> ItemRc {
     let inner = WindowInner::from_pub(window.window());
     let popups = inner.active_popups();
     let popup = popups
@@ -95,10 +106,8 @@ pub fn click_popup(window: &MainWindow, label: &str, role: AccessibleRole) {
         .rev()
         .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
         .expect("an open control popup");
-    let item = find(ItemRc::new_root(popup.component.clone()), label, role)
-        .unwrap_or_else(|| panic!("no accessible popup control: {label}"));
-    drop(popups);
-    click_item(window, item);
+    find(ItemRc::new_root(popup.component.clone()), label, role)
+        .unwrap_or_else(|| panic!("no accessible popup control: {label}"))
 }
 
 pub fn click_root(window: &MainWindow, label: &str, role: AccessibleRole) {
@@ -179,13 +188,7 @@ fn find(item: ItemRc, label: &str, role: AccessibleRole) -> Option<ItemRc> {
 }
 
 pub fn key(window: &MainWindow, text: impl Into<SharedString>) {
-    let text = text.into();
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
+    platform_keys::key(window, text.into());
 }
 
 pub fn chord(window: &MainWindow, modifiers: &[Key], text: impl Into<SharedString>) {

@@ -31,6 +31,15 @@ impl PaneId {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NavigationId(pub u64);
 
+/// Shared selection captured at the instant of the user's action. Expansion belongs to workers.
+#[derive(Clone, Debug)]
+pub struct SelectedFiles {
+    pub selection: Arc<SelectionSnapshot>,
+    pub view: Arc<DirectoryIndex>,
+    /// Used only when the captured selection is empty, never when selected entries disappeared.
+    pub fallback: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Command {
     LoadLocale,
@@ -44,6 +53,52 @@ pub enum Command {
         new_name: Option<String>,
     },
     CancelOperation(crate::OperationId),
+    PreviewMetadata {
+        id: crate::OperationId,
+        revision: u64,
+        patch: crate::MetadataPatch,
+    },
+    ConfirmMetadata {
+        id: crate::OperationId,
+        revision: u64,
+        conflicts: crate::MetadataConflictPolicy,
+    },
+    ResolveMetadataConflict {
+        id: crate::OperationId,
+        token: u64,
+        choice: crate::MetadataConflictPolicy,
+    },
+    CompareDirectories(crate::CompareRequest),
+    CancelComparison(crate::CompareId),
+    ValidatePanelFilter(crate::FilterValidationRequest),
+    EnqueueCopy(crate::CopyRequest),
+    DecideCopy(crate::CopyDecision),
+    CancelCopy(crate::OperationId),
+    AttachDragDrop {
+        host: crate::DragHost,
+        targets: crate::SharedDropTargets,
+    },
+    DetachDragDrop {
+        host_generation: u64,
+    },
+    PrepareDrag {
+        id: crate::DragId,
+        pane: PaneId,
+        navigation: NavigationId,
+        files: SelectedFiles,
+    },
+    StartDrag(crate::DragId),
+    CancelDrag(crate::DragId),
+    AcceptDrop {
+        token: crate::DropToken,
+        id: crate::OperationId,
+    },
+    RejectDrop(crate::DropToken),
+    InternalDrop {
+        id: crate::DragId,
+        target: crate::FileDropTarget,
+        targets_revision: u64,
+    },
     Search(SearchRequest),
     CancelSearch {
         pane: PaneId,
@@ -67,6 +122,22 @@ pub enum Command {
     CopyText {
         request: DesktopRequestId,
         text: String,
+    },
+    CopyFiles {
+        request: DesktopRequestId,
+        files: SelectedFiles,
+    },
+    ReadFileClipboard {
+        request: DesktopRequestId,
+        destination: PathBuf,
+    },
+    ShowShellMenu {
+        request: DesktopRequestId,
+        files: SelectedFiles,
+        owner: usize,
+        position: crate::ShellMenuPosition,
+        modifiers: crate::ShellMenuModifiers,
+        target: crate::ShellMenuTarget,
     },
     ShowProperties {
         request: DesktopRequestId,
@@ -130,6 +201,25 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    DirectoriesCompared {
+        id: crate::CompareId,
+        result: Result<Arc<crate::CompareResult>, FsError>,
+    },
+    PanelFilterValidated {
+        request: crate::FilterValidationRequest,
+        result: Result<(), FsError>,
+    },
+    Copy(crate::CopyEvent),
+    DragDrop(crate::DragDropEvent),
+    ClipboardFilesRead {
+        request: DesktopRequestId,
+        destination: PathBuf,
+        result: Result<crate::FileClipboard, FsError>,
+    },
+    ShellMenuFinished {
+        request: DesktopRequestId,
+        result: Result<crate::ShellMenuOutcome, FsError>,
+    },
     LocaleLoaded(Result<crate::NumberLocale, crate::FsError>),
     NetworkConnectionsFinished(Result<(), crate::FsError>),
     Operation(crate::OperationEvent),

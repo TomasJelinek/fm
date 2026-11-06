@@ -21,6 +21,7 @@ fn request(query: &str, names: &[&str]) -> SearchRequest {
             .collect::<Vec<_>>()
             .into(),
         query: query.into(),
+        filter: Default::default(),
     }
 }
 
@@ -38,6 +39,30 @@ fn rows(result: &SearchResult) -> Vec<(usize, usize)> {
         .iter()
         .map(|matched| (matched.source_row, matched.display_prefix_end))
         .collect()
+}
+
+#[test]
+fn persistent_masks_compose_with_prefix_and_keep_directories() {
+    let mut request = request("a", &["alpha.txt", "alpha.bin", "folder", "beta.txt"]);
+    request.filter = midnight_core::PanelFilter {
+        enabled: true,
+        expression: "*.txt".into(),
+        ..Default::default()
+    };
+    Arc::make_mut(&mut request.source)[2].kind = EntryKind::DirectoryLink;
+    Arc::make_mut(&mut request.source)[0].metadata.size = Some(42);
+    let result = ready(&request);
+    assert_eq!(rows(&result), [(0, 1)]);
+    assert_eq!(
+        result
+            .filtered
+            .iter()
+            .map(|row| row.source_row)
+            .collect::<Vec<_>>(),
+        [0, 2, 3]
+    );
+    assert_eq!(result.filtered_index.file_sizes, [Some(42), None, None]);
+    assert!(result.filtered_index.is_directory(EntryId(3)));
 }
 
 #[test]
@@ -111,6 +136,38 @@ fn projection_indexes_are_contiguous_and_keep_distinct_raw_casefold_equal_paths(
             .by_path
             .contains_key(&PathBuf::from("folder/SS.txt"))
     );
+}
+
+#[test]
+fn projected_file_sizes_keep_filtered_positions_and_selection_totals_valid() {
+    let mut request = request(
+        "match",
+        &[
+            "omitted",
+            "match-file",
+            "match-unknown",
+            "match-link",
+            "match-folder",
+        ],
+    );
+    let source = Arc::make_mut(&mut request.source);
+    source[0].metadata.size = Some(900);
+    source[1].metadata.size = Some(37);
+    source[3].kind = EntryKind::Symlink;
+    source[3].metadata.size = Some(700);
+    source[4].kind = EntryKind::Directory;
+    source[4].metadata.size = Some(800);
+    let result = ready(&request);
+    assert_eq!(result.index.file_sizes, [Some(37), None, None, None]);
+    let selected =
+        midnight_core::SelectionSnapshot::from_bits(result.index.clone(), vec![1]).unwrap();
+    assert_eq!(selected.file_bytes(), Some(37));
+    for unknown in [0b10, 0b100, 0b1000] {
+        let selected =
+            midnight_core::SelectionSnapshot::from_bits(result.index.clone(), vec![unknown])
+                .unwrap();
+        assert_eq!(selected.file_bytes(), None);
+    }
 }
 
 #[test]

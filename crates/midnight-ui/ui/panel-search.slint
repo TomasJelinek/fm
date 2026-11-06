@@ -1,6 +1,7 @@
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
 
 
 export struct SearchTextEdit { text: string, cursor: int }
@@ -162,6 +163,6 @@ export component PanelSearch inherits Rectangle {
         native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
         accessible-label: "Clear filename search";
         clicked => { root.clear-query(); root.focus-input(); }
-        hint: "Clear filename search · Escape";
+        hint: ShortcutHints.hint("Clear filename search", "search.clear");
     }
 }

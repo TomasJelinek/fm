@@ -10,7 +10,9 @@ file encoding/writes execute in backend workers.
 Rename/F2, create-directory/F7 and deletion are explicit, confirmed operations.
 Preparation pins native identity before showing the confirmation; navigation never
 retargets a queued job. The backend permits at most 32 preparing/prepared/queued/
-running jobs, two preparation workers and one active mutation. Native handles
+running mutation jobs and 32 copy jobs, two mutation preparation workers and one
+active mutating job across both queues. Each queue is FIFO; cross-queue ordering
+is acquisition order at the shared mutation gate. Native handles
 scale with the selected root count and traversal depth; resource failure is an
 error, never permission to substitute a target. Duplicate operation IDs cannot
 execute twice. Rename never overwrites. F7 accepts a relative nested path and
@@ -81,7 +83,11 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Version6 includes tabs, panel modes, bookmarks, fonts and command history, with v1–5 migration.
+  Version 8 includes tabs, panel modes, bookmarks, fonts, command history, shortcut
+  overrides and panel filters, with v1–7 migration. Shortcut settings accept only known semantic action
+  IDs and bounded key chords, never executable commands. Duplicate, malformed and
+  overlapping bindings fail validation atomically. Native editor/IME chords cannot be
+  reassigned to broad application actions.
   Its 4MiB aggregate bound is a settings resource limit, not a path-length limit.
   Native path encodings are lossless and platform-specific; malformed/foreign
   encodings, duplicate IDs/slots and NUL paths are rejected. Late initial loads
@@ -149,7 +155,7 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   Stale/rejected work cannot select a replacement entry by recycled numeric ID.
   Size scans retain a separate identity across display sorting and same-path
   refresh; each replacement scan owns a fresh cache. Size-only paints are
-  coalesced to250ms without throttling input or error delivery.
+  coalesced to 250ms without throttling input or error delivery.
   Progress and completion never trigger automatic row reordering.
 - Runtime filesystem errors retain operation/path context. Unknown or failed
   metadata is not represented as successful zero-length data.
@@ -164,7 +170,41 @@ The directory model still uses memory proportional to the number of entries.
 Worker/front-queue bounds are not a promise that arbitrarily large directories
 fit in RAM. Precise latency and memory targets require measured workloads.
 
-## Mandatory copy contract for the next milestone
+## Verified clipboard copying and the copy contract
+
+Ctrl+C publishes lossless native paths; Ctrl+V captures the destination path and
+queues verified copying. Native identities are opened and pinned when that job
+starts. An external rename before then is not a snapshot of the original namespace.
+Clipboard payloads are untrusted: at most 4096 paths and 4MiB, with whole-request
+rejection of malformed/NUL/relative data. No shell command parses a filename.
+Copying is serial and conservative on all storage classes in this milestone;
+one copy job and one native I/O step run at a time across the copy queue, including
+source reads, destination writes and independent verification reads. Cancellation
+retains capacity until the in-flight native call and cleanup actually return.
+Future parallel Copy/Move is permitted only when **both source and destination
+are positively identified as local SSDs**, with a shared physical-device scheduler.
+HDD, network, unknown or failed classification on either endpoint requires serial
+copying; an SSD at the other endpoint does not override this. SSD-to-SSD copying
+also remains serial today. Move remains unavailable.
+
+Source files remain untouched. Move/Cut intents are explicitly unsupported.
+Files and ordinary directories are supported; links/special files are rejected.
+Existing items are never replaced or merged. Conflicts show source and target
+metadata and accept versioned Skip, Skip all for this job, another name, or Cancel.
+Waiting for a decision holds no blocking thread; Jobs can reopen a deferred dialog.
+Already published files/directories remain after cancellation or partial failure.
+The private unfinished file is cleaned by its native handle/descriptor.
+
+Linux uses anonymous O_TMPFILE staging and descriptor-based no-replace publication;
+filesystems without that capability return Unsupported. New copy directories are
+private (0700). Creation rejects destination parents owned by an untrusted UID,
+or shared-writable parents lacking sticky protection. mkdir/open is not an atomic
+operation; same-UID/root interference remains outside this isolation boundary.
+Windows uses exclusive staging and a retained handle for no-replace rename.
+Content verification does not promise preservation of ACLs, alternate streams,
+xattrs, sparse allocation, timestamps or links. Windows file sync does not promise
+power-loss durability of the parent entry; Linux separately reports parent-sync
+failure even if publication succeeded.
 
 1. Only supported ordinary file types are copied. Opened file identities and
    source/destination alias checks are used; no unchecked traversal of recursive
@@ -172,13 +212,17 @@ fit in RAM. Precise latency and memory targets require measured workloads.
 2. Use an exclusively created temporary destination on the target filesystem.
    Handle short reads/writes, propagate errors and retain ownership through
    outstanding I/O and cancellation. Never delete the existing target first.
-3. Hash the exact source bytes read, using BLAKE3-256 by default. Complete and
+3. Hash the exact source bytes read, using SHA-256 in this implementation. Complete and
    synchronize the writes, then perform a separate full read of the destination.
    Compare both lengths and cryptographic digests. Hashing the outgoing buffer
    twice, checking timestamps or comparing sizes alone is insufficient.
 4. Reject any detected source change. Source metadata checks do not prove a
    point-in-time snapshot against concurrent writers; a stronger snapshot promise
-   requires supported write exclusion or filesystem snapshots. Report what was
+   requires supported write exclusion or filesystem snapshots. In particular,
+   same-length rewrites within one filesystem timestamp quantum can retain both
+   modification and change times and evade metadata revalidation. The digest
+   proves the destination matches the source byte stream that was read, not the
+   source's later contents. Report what was
    actually verified, never an unsupported stronger guarantee.
 5. Publish only after successful verification, using the target platform's tested
    no-replace/replacement contract. Unsupported atomicity must cause an explicit
@@ -188,13 +232,27 @@ fit in RAM. Precise latency and memory targets require measured workloads.
    A cached readback is not necessarily a physical-media reread. Hashes do not
    establish ACL/ADS/xattr/link preservation; those have separate declared rules.
 
-Multi-file Copy/Move/Delete requests share the engine's operation queue. Capture
-selection and destination identities when accepting a request; later navigation
+Multi-file Copy/Delete requests share the engine's mutation exclusion. Capture
+selection and destination paths when accepting a request; later navigation
 must not retarget it. Enqueueing stays nonblocking while another job runs.
 Serialize conflicting paths/aliases and prevent a queued destructive dependency
 from deleting a source after its preceding copy failed. Per-job cancellation,
 phase progress and partial results must stay truthful; a completed write is not
 a completed verified copy.
+
+Windows context menus run on a bounded STA with an independent native owner and
+message loop. The owner never joins the UI thread's input queue. Canonical copy,
+cut, paste, delete and rename verbs return to host policy before executing; other
+explicitly chosen extension verbs remain native Shell actions. Shell extensions
+are in-process OS integrations, not sandboxed plugins. Linux has no equivalent
+universal context-menu API and uses an application action menu.
+
+Windows file clipboard uses CF_HDROP and Preferred DropEffect without lossy
+canonicalization. Linux X11/XWayland uses raw-byte file URIs with GNOME/KDE intent,
+bounded incremental transfers, and an owner pumped by the backend worker.
+Native Wayland file-copy ownership is unavailable until a bounded writer is
+implemented; a usable XWayland bridge is preferred. Native Wayland file-list reads
+remain bounded. No per-copy detached ownership threads may accumulate.
 
 Required corruption/failure tests include modified destination bytes, truncated
 data, same-size edits, changed sources, short reads/writes, disk-full/disconnect,
@@ -240,6 +298,87 @@ FemtoVG-WGPU is the normal renderer. Slint's documented western-script limitatio
 means its separate software renderer remains a developer diagnostic path until
 it is independently qualified; it must not be advertised as a fully Unicode
 production fallback.
+
+## Directory comparison, filters and metadata editing
+
+Directory comparison reads captured directory metadata on a bounded worker. It
+does not verify file contents. Both selections are published together only while
+their source identities, navigation, filters and selection revisions still match.
+The resulting selection becomes the selection worker's authoritative input;
+subsequent toggles or refreshes must not revive a pre-comparison selection.
+
+Saved panel filters and temporary prefix searches share one backend projection.
+Hidden rows cannot be operation targets, including the old caret when the result
+is empty. Raw names that are not valid Unicode remain visible. Filter expressions
+are limited to 4,096 UTF-8 bytes, 64 wildcard alternatives and a 2 MiB compiled
+regex budget. Rust regex matching does not use unbounded backtracking.
+
+Attributes, timestamps and filename case changes require an explicit preview and
+confirmation of its exact revision. Preparation captures native object identities;
+each OS adapter revalidates them and applies changes through pinned handles.
+Recursive traversal does not follow links or cross mounts. It snapshots child
+names before changing them and processes children before their parent. Selection
+and traversal share a 256-target pin budget across pending metadata jobs; depth
+is limited to 64 and each name snapshot to 4 MiB. Resource exhaustion is reported
+as an error, not as a successful truncated operation. These are operation resource
+budgets, not path-length limits. Preview and result samples contain at most 32 items.
+
+Filename conversion uses full Unicode case mapping with the root locale while
+preserving untouched native bytes/code units. An undecodable transformed component
+is rejected. Existing destination entries, including another hard-link name, are
+never replaced. Collision decisions are bound to a live job and monotonically
+increasing token; stale replies cannot authorize a different item. Skip affects
+one item, Skip all covers later collisions, and Cancel stops remaining work.
+
+Metadata edits are not transactions: cancellation or an OS error can leave earlier
+items or fields changed. Per-item results record actual changes, including changes
+completed before cancellation. Results are delivered after the native worker
+releases its mutation gate. Hard-link effects are disclosed in the preview.
+Windows encryption is displayed only; this editor does not perform EFS mutation.
+Linux creation timestamps are not editable. Unsupported operations fail explicitly.
+
+## File drag and drop
+
+Incoming and internal file drops enter the same copy service as clipboard paste,
+with independent SHA-256 destination readback and no source deletion. Outgoing
+drags offer Copy only; the receiving application owns the copy and its integrity
+checks. A native "accepted" response means admission to the queue, not a completed
+or verified copy. Drag/drop never grants overwrite, Move or Link permission.
+
+The native callback validates its captured destination/navigation/geometry against
+the current shared snapshot and immediately reserves actual capacity in the same
+32-job copy budget before acknowledging success. The immutable request keeps that
+permit until the UI supplies its normal operation ID and the backend enqueues it.
+Queue saturation, stale destinations and failed delivery are rejected. Shutdown
+and rejection release reservations; neither can leave an unbounded pending queue.
+
+Pending drop admissions retain their ordering relative to later clipboard copies.
+Cancelling one before backend enqueue rejects its token rather than sending a
+CancelCopy that could arrive before the job exists. Transient native grab failures
+must not permanently disable a healthy session or revive an ended gesture.
+
+Payloads retain raw UTF-16 on Windows and raw filename bytes through X11 URI
+encoding. The existing 4,096-path / 4 MiB payload limits apply; malformed and
+non-local URI lists are rejected as a whole. Native serialization/admission never
+canonicalizes paths or probes filesystem objects on the UI thread. The copy worker
+performs its normal identity and containment checks. Dragging leaves clipboard
+ownership untouched and never submits a terminal command.
+
+Source preparation captures a selection revision and runs on a bounded worker.
+Delayed preparation cannot revive a released/cancelled gesture. Native window
+lifetimes and shared drop regions are invalidated synchronously before hide/close;
+navigation, modal UI, resize and DPI changes invalidate stale regions. Input-grab
+release belongs to narrowly scoped, per-OS UI bridges; COM/X11 data transfer runs
+on the thread-affine backend actor. Windows COM sources/targets are non-agile so
+calls remain in that actor's message-pumped STA.
+
+Linux uses a verified worker-owned XDND proxy. The host window's XDND advertisement
+is removed while the proxy is installed, preventing normal legacy sources from
+using winit's lossy UI-thread parser. The proxy advertises XDND v5; native Wayland
+external transport is unavailable until same-connection seat/data-device support
+exists. Internal panel dragging remains available. X11 incremental transfers are
+bounded and timed out. Move proposals may negotiate Copy only when the source
+explicitly offers Copy; a Move-only offer is rejected.
 
 ## Planned dynamic viewer/filesystem plugins
 

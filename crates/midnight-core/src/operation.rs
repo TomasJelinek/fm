@@ -73,4 +73,7 @@ pub struct OperationProgress {
 pub enum OperationEvent {
     Preview(Arc<OperationPreview>),
     Progress(Arc<OperationProgress>),
+    MetadataPreview(Arc<crate::MetadataPreview>),
+    MetadataResult(Arc<crate::MetadataResult>),
+    MetadataConflict(Arc<crate::MetadataConflict>),
 }

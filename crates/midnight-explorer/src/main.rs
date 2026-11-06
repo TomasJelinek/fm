@@ -3,8 +3,10 @@
 
 mod shutdown_preferences;
 mod size_refresh;
+mod smoke_settings;
 mod visible_sync;
 mod wake_gate;
+mod window_backend;
 
 use midnight_core::{
     Command, DesktopServices, Event, FileSystem, NavigationId, PaneId, SettingsService, SortSpec,
@@ -51,7 +53,7 @@ fn options() -> Result<Option<Options>, String> {
         match argument.to_str() {
             Some("--help" | "-h") => {
                 println!(
-                    "Midnight Explorer — dual-pane file manager\n\nUsage: me [--left PATH] [--right PATH] [--software]\n       me --smoke-test [--left PATH] [--right PATH]\n       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, rename, empty-file and directory creation, and confirmed deletion. Viewer plugins and verified copying are planned."
+                    "Midnight Explorer — dual-pane file manager\n\nUsage: me [--left PATH] [--right PATH] [--software]\n       me --smoke-test [--left PATH] [--right PATH]\n       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, rename, empty-file and directory creation, confirmed deletion, and verified clipboard copying. Viewer plugins and moving files are planned."
                 );
                 return Ok(None);
             }
@@ -128,7 +130,7 @@ fn run() -> Result<(), String> {
     }
     let result = run_window(
         &runtime,
-        filesystem,
+        local.clone(),
         local.clone(),
         local.clone(),
         local.clone(),
@@ -143,7 +145,11 @@ fn run() -> Result<(), String> {
 async fn smoke_test(filesystem: Arc<dyn FileSystem>, options: &Options) -> Result<(), String> {
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(16);
-    let engine = tokio::spawn(Engine::new(filesystem, sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(filesystem, sender)
+            .with_locale(midnight_platform::locale_service())
+            .run(receiver),
+    );
     commands
         .send(Command::ListVolumes)
         .await
@@ -204,26 +210,14 @@ async fn smoke_test(filesystem: Arc<dyn FileSystem>, options: &Options) -> Resul
 
 fn run_window(
     runtime: &tokio::runtime::Runtime,
-    filesystem: Arc<dyn FileSystem>,
+    local: Arc<LocalFileSystem>,
     desktop: Arc<dyn DesktopServices>,
     watch: Arc<dyn WatchService>,
     settings: Arc<dyn SettingsService>,
     mutations: Arc<dyn midnight_core::MutationService>,
     options: &Options,
 ) -> Result<(), String> {
-    if options.software {
-        slint::BackendSelector::new()
-            .backend_name("winit".into())
-            .renderer_name("software".into())
-            .select()
-            .map_err(|error| error.to_string())?;
-    } else if std::env::var_os("SLINT_BACKEND").is_none() {
-        slint::BackendSelector::new()
-            .backend_name("winit".into())
-            .renderer_name("femtovg-wgpu".into())
-            .select()
-            .map_err(|error| error.to_string())?;
-    }
+    window_backend::select(options.software)?;
     let window = MainWindow::new()
         .map_err(|error| format!("Cannot create window: {error}. Try --software."))?;
     let package_version = env!("CARGO_PKG_VERSION");
@@ -262,14 +256,17 @@ fn run_window(
     let retire_queue = reclaim::start(runtime.handle(), notify.clone());
     let retire_pending = Rc::new(RefCell::new(None::<reclaim::Retired>));
     let engine = runtime.spawn(
-        Engine::with_wakeup(filesystem, event_sender, notify.clone())
+        Engine::with_wakeup(local.clone(), event_sender, notify.clone())
+            .with_shell_menu(local.clone())
+            .with_transfers(local.clone())
+            .with_drag_drop(local)
             .with_locale(midnight_platform::locale_service())
             .with_mutations(mutations)
             .with_network(network)
             .with_desktop(desktop)
             .with_clipboard(Arc::new(midnight_platform::NativeClipboard))
             .with_watch(watch)
-            .with_settings(settings)
+            .with_settings(smoke_settings::for_run(options.ui_smoke, settings))
             .run(command_receiver),
     );
 
@@ -373,12 +370,20 @@ fn run_window(
             let state = state.clone();
             let output = output.clone();
             let errors = error_state.clone();
+            let shutdown_commands = ui_commands.clone();
             slint::Timer::single_shot(Duration::from_millis(350), move || {
                 if state.borrow().has_errors() {
                     *errors.borrow_mut() =
                         Some("UI smoke test encountered a listing/volume error".into());
                 }
                 if let Some(window) = weak.upgrade() {
+                    if window.get_message_generation() != 0 {
+                        *errors.borrow_mut() = Some(format!(
+                            "UI smoke test reported {}: {}",
+                            window.get_message_title(),
+                            window.get_message_body()
+                        ));
+                    }
                     // Exercise real Slint focus routing without changing paths:
                     // empty Back history still uses the toolbar action callback.
                     window.invoke_action(1, 0);
@@ -400,6 +405,9 @@ fn run_window(
                         }
                     }
                 }
+                state
+                    .borrow_mut()
+                    .shutdown_drag_drop(&|command| shutdown_commands.try_send(command).is_ok());
                 let _ = slint::quit_event_loop();
             });
         }
@@ -440,21 +448,38 @@ fn run_window(
             if state.continue_operation_shutdown(&|command| sync_commands.try_send(command).is_ok())
                 && let Some(window) = sync_window.upgrade()
             {
+                state.shutdown_drag_drop(&|command| sync_commands.try_send(command).is_ok());
                 let _ = window.hide();
             }
             state.flush_selection(&|command| sync_commands.try_send(command).is_ok());
+            state.flush_filters(&|command| sync_commands.try_send(command).is_ok());
             state.flush_search(&|command| sync_commands.try_send(command).is_ok());
+            state.flush_comparison(&|command| sync_commands.try_send(command).is_ok());
             sync_visible(&state, &sync_commands, &visible_sync);
         },
     );
     if options.ui_smoke {
         let error_state = smoke_error.clone();
+        let state = presenter.clone();
+        let shutdown_commands = commands.clone();
         slint::Timer::single_shot(Duration::from_secs(30), move || {
             *error_state.borrow_mut() = Some("UI smoke test timed out".into());
+            state
+                .borrow_mut()
+                .shutdown_drag_drop(&|command| shutdown_commands.try_send(command).is_ok());
             let _ = slint::quit_event_loop();
         });
     }
-    let result = window.run().map_err(|error| error.to_string());
+    // ComponentHandle::run hides before returning. Keep these steps explicit so
+    // native drop targets become invalid before that hide, including loop errors.
+    let result = window
+        .show()
+        .and_then(|()| slint::run_event_loop())
+        .map_err(|error| error.to_string());
+    presenter
+        .borrow_mut()
+        .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
+    let result = result.and(window.hide().map_err(|error| error.to_string()));
     visible_timer.stop();
     size_timer.stop();
     // Detach the receiver from dormant UI callbacks without holding a RefCell

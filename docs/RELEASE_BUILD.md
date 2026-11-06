@@ -3,6 +3,11 @@
 The application package `midnight-explorer` builds `me.exe` on Windows and `me` on
 Linux. Native output is `_build/release/me.exe` or `_build/release/me`.
 
+OS baselines, runtime dependencies and build RAM/storage allowances are specified
+in [system requirements](SYSTEM_REQUIREMENTS.md). Release qualification must include
+those baselines; a successful build on a newer host does not prove compatibility
+with an older OS, glibc or graphics driver.
+
 The workspace release profile enables Rust's highest standard optimization level
 (`opt-level = 3`), whole-program **fat LTO**, a single code-generation unit and no
 incremental compilation. Release artifacts omit debug information and strip

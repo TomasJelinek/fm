@@ -9,6 +9,35 @@ fn entry(command: &str, shell: ShellFlavor) -> CommandHistoryEntry {
 }
 
 #[test]
+fn rotation_handles_empty_single_and_replaced_history_without_changing_terminal_mode() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.desktop.shell = Some(ShellFlavor::Posix);
+    p.desktop.terminal_mode = TerminalMode::Elevated;
+    assert_eq!(p.rotate_command_history(false, "draft"), None);
+    p.record_command_history(entry("one 文档", ShellFlavor::Posix));
+    assert_eq!(
+        p.rotate_command_history(false, "draft").as_deref(),
+        Some("one 文档")
+    );
+    for older in [false, true] {
+        assert_eq!(
+            p.rotate_command_history(older, "one 文档").as_deref(),
+            Some("one 文档")
+        );
+        assert_eq!(p.effective_terminal_mode(), TerminalMode::Elevated);
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::Posix));
+        assert!(p.desktop.terminal_pending.is_none());
+    }
+    p.clear_command_history(&|_| true);
+    assert_eq!(p.rotate_command_history(true, "one 文档"), None);
+    p.record_command_history(entry("replacement", ShellFlavor::Posix));
+    assert_eq!(
+        p.rotate_command_history(true, "one 文档").as_deref(),
+        Some("replacement")
+    );
+}
+
+#[test]
 fn local_history_and_byte_setting_survive_late_load_without_losing_saved_commands() {
     let mut p = Presenter::new("left".into(), "right".into());
     let sent = RefCell::new(Vec::new());

@@ -311,6 +311,7 @@ fn observe(
         timer.stop();
     }
     window.set_scroll_interaction_active(active);
+    window.set_touch_contact(!state.borrow().pressed.fingers.is_empty());
     if replaced {
         window.window().request_redraw();
     }
@@ -328,11 +329,25 @@ pub(crate) fn install(window: &MainWindow) {
     let weak = window.as_weak();
     let state = Rc::new(RefCell::new(InputState::default()));
     let timer = wheel_timer(window, &state);
+    let release_state = state.clone();
+    let release_window = window.as_weak();
+    window.on_release_drag_input(move || {
+        let mut state = release_state.borrow_mut();
+        state
+            .pressed
+            .buttons
+            .retain(|(_, button)| *button != MouseButton::Left);
+        state.wheel.cancel();
+        if let Some(window) = release_window.upgrade() {
+            window.set_scroll_interaction_active(state.active());
+        }
+    });
     let mut shortcuts = crate::native_shortcuts::ShortcutState::default();
     window.window().on_winit_window_event(move |_, event| {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        crate::drag_bridge::observe_native(&window, event);
         let replaced = observe(&window, &state, &timer, event);
         // This callback runs only for a real Winit adapter. Software-window
         // tests retain the Slint logical-key fallback.

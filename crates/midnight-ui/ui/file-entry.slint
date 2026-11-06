@@ -8,11 +8,17 @@ export component FileEntry inherits Rectangle {
     in property <int> source-index;
     in property <int> view-mode;
     in property <bool> active;
+    in property <bool> touch-contact;
     in property <length> size-column-width;
     in property <string> previous-click-identity;
     callback remember-click(string);
     callback row-click(bool, bool);
+    callback context-menu(float, float, bool, bool);
     callback open();
+    callback begin-drag(string, float, float) -> bool;
+    callback drag-moved(float, float);
+    callback drag-released(float, float);
+    callback drag-cancelled();
     private property <color> text-color: item.selected ? Theme.selected-text
         : item.directory ? Theme.directory-text : Theme.text;
     clip: true;
@@ -107,29 +113,93 @@ export component FileEntry inherits Rectangle {
         private property <bool> shift-pressed;
         private property <bool> modified-pressed;
         private property <bool> same-target-double;
+        private property <bool> right-pressed;
+        private property <bool> left-pressed;
+        private property <bool> click-completed;
+        private property <bool> activation-pending;
+        private property <bool> drag-attempted;
         pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+            if event.kind == PointerEventKind.down {
+                self.right-pressed = event.button == PointerEventButton.right;
+                self.left-pressed = event.button == PointerEventButton.left;
+                self.click-completed = false;
+                self.activation-pending = false;
+                self.drag-attempted = false;
                 self.pressed-identity = item.identity;
                 self.control-pressed = event.modifiers.control;
                 self.shift-pressed = event.modifiers.shift;
                 self.modified-pressed = event.modifiers.control
-                    || event.modifiers.shift || event.modifiers.alt;
+                    || event.modifiers.shift || event.modifiers.alt || event.modifiers.meta;
+            } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if self.drag-attempted {
+                    root.drag-released((self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+                // Slint emits clicked/double-clicked before pointer-up. Wait for
+                // this event so modifiers at either end of the press are checked.
+                let valid = !self.drag-attempted && self.left-pressed && self.click-completed && !self.modified-pressed
+                    && !event.modifiers.control && !event.modifiers.shift
+                    && !event.modifiers.alt && !event.modifiers.meta
+                    && self.pressed-identity == item.identity;
+                let activate = self.activation-pending && valid;
+                root.remember-click(valid ? self.pressed-identity : "");
+                self.left-pressed = false;
+                self.click-completed = false;
+                self.activation-pending = false;
+                if activate { root.open(); }
+            } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                if self.right-pressed && self.pressed-identity == item.identity
+                    && self.mouse-x >= 0px && self.mouse-x < self.width
+                    && self.mouse-y >= 0px && self.mouse-y < self.height {
+                    root.context-menu((self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                        self.control-pressed, self.shift-pressed);
+                }
+                self.right-pressed = false;
             } else if event.kind == PointerEventKind.cancel {
+                if self.drag-attempted { root.drag-cancelled(); }
+                self.right-pressed = false;
+                self.left-pressed = false;
+                self.click-completed = false;
+                self.activation-pending = false;
                 self.pressed-identity = "";
                 self.same-target-double = false;
+            } else if event.kind == PointerEventKind.move && self.left-pressed {
+                self.modified-pressed = self.modified-pressed || event.modifiers.control
+                    || event.modifiers.shift || event.modifiers.alt || event.modifiers.meta;
+            }
+        }
+        moved => {
+            if self.left-pressed && !root.touch-contact {
+                if !self.drag-attempted && self.pressed-identity == item.identity
+                    && (abs(self.mouse-x - self.pressed-x) >= 6px
+                        || abs(self.mouse-y - self.pressed-y) >= 6px) {
+                    self.drag-attempted = true;
+                    self.activation-pending = false;
+                    self.same-target-double = false;
+                    root.remember-click("");
+                    root.begin-drag(self.pressed-identity,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+                if self.drag-attempted {
+                    root.drag-moved((self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
             }
         }
         clicked => {
+            self.click-completed = !self.drag-attempted && self.left-pressed
+                && self.pressed-identity == item.identity;
             self.same-target-double = self.pressed-identity == item.identity
                 && root.previous-click-identity == self.pressed-identity;
-            root.remember-click(self.pressed-identity == item.identity ? self.pressed-identity : "");
-            if self.pressed-identity == item.identity {
+            if self.click-completed {
                 root.row-click(self.control-pressed, self.shift-pressed);
             }
         }
         double-clicked => {
-            if self.same-target-double && !self.modified-pressed
-                && self.pressed-identity == item.identity { root.open(); }
+            self.activation-pending = self.same-target-double && !self.modified-pressed
+                && self.pressed-identity == item.identity;
         }
     }
 }

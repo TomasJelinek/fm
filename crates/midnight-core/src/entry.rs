@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsString, path::PathBuf, time::SystemTime};
+use std::{collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, time::SystemTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntryId(pub u64);
@@ -43,7 +43,8 @@ pub struct Entry {
     pub kind: EntryKind,
     pub metadata: EntryMetadata,
     pub display_name: String,
-    pub sort_name: String,
+    /// Session-only keys prepared once on a worker and shared by captured views.
+    pub(crate) collation: Option<Arc<crate::sorting::EntryCollationKeys>>,
 }
 
 /// Built by a background worker so UI identity lookups never scan a full listing.
@@ -53,6 +54,9 @@ pub struct DirectoryIndex {
     pub by_path: HashMap<PathBuf, EntryId>,
     /// Includes directory links; prepared with the index on a backend worker.
     pub directory_bits: Vec<u64>,
+    /// Logical regular-file lengths prepared with the index on a backend worker.
+    /// Links, directories, special entries and unavailable metadata remain unknown.
+    pub file_sizes: Vec<Option<u64>>,
 }
 
 impl DirectoryIndex {
@@ -74,6 +78,14 @@ impl DirectoryIndex {
                 .map(|entry| (entry.path.clone(), entry.id))
                 .collect(),
             directory_bits,
+            file_sizes: entries
+                .iter()
+                .map(|entry| {
+                    (entry.kind == EntryKind::File)
+                        .then_some(entry.metadata.size)
+                        .flatten()
+                })
+                .collect(),
         }
     }
     pub fn is_directory(&self, id: EntryId) -> bool {
@@ -92,7 +104,6 @@ impl Entry {
     pub fn new(id: EntryId, path: PathBuf, kind: EntryKind) -> Self {
         let name = path.file_name().unwrap_or(path.as_os_str()).to_os_string();
         let display_name = name.to_string_lossy().into_owned();
-        let sort_name = display_name.to_lowercase();
         Self {
             id,
             name,
@@ -100,7 +111,7 @@ impl Entry {
             kind,
             metadata: EntryMetadata::default(),
             display_name,
-            sort_name,
+            collation: None,
         }
     }
 }
@@ -120,58 +131,10 @@ pub struct SortSpec {
     pub descending: bool,
 }
 
-pub fn sort_entries(entries: &mut [Entry], sort: SortSpec) {
-    use std::cmp::Ordering;
-
-    fn optional<T: Ord>(left: Option<T>, right: Option<T>, descending: bool) -> Ordering {
-        match (left, right) {
-            (Some(left), Some(right)) => {
-                let order = left.cmp(&right);
-                if descending { order.reverse() } else { order }
-            }
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        }
-    }
-
-    entries.sort_unstable_by(|left, right| {
-        let is_folder = |kind| matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink);
-        let directory_order = is_folder(right.kind).cmp(&is_folder(left.kind));
-        if directory_order != Ordering::Equal {
-            return directory_order;
-        }
-        let primary = match sort.column {
-            SortColumn::Name => {
-                let order = left.sort_name.cmp(&right.sort_name);
-                if sort.descending {
-                    order.reverse()
-                } else {
-                    order
-                }
-            }
-            SortColumn::Size => optional(left.metadata.size, right.metadata.size, sort.descending),
-            SortColumn::Modified => optional(
-                left.metadata.modified,
-                right.metadata.modified,
-                sort.descending,
-            ),
-            SortColumn::Type => optional(
-                left.path.extension(),
-                right.path.extension(),
-                sort.descending,
-            ),
-        };
-        primary
-            .then_with(|| left.sort_name.cmp(&right.sort_name))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.id.0.cmp(&right.id.0))
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sort_entries;
 
     fn entry(id: u64, name: &str, kind: EntryKind, size: Option<u64>) -> Entry {
         let mut result = Entry::new(EntryId(id), PathBuf::from(name), kind);
@@ -242,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_casefolded_names_have_deterministic_raw_name_order() {
+    fn names_without_native_keys_have_deterministic_raw_order() {
         let mut entries = vec![
             entry(2, "alpha", EntryKind::File, None),
             entry(1, "Alpha", EntryKind::File, None),

@@ -14,6 +14,7 @@ use std::{
 struct LocaleNames {
     numeric: CString,
     time: CString,
+    collation: CString,
 }
 static NAMES: OnceLock<Result<LocaleNames, FsError>> = OnceLock::new();
 
@@ -99,13 +100,14 @@ struct Locales {
 }
 thread_local! { static CURRENT: Result<Locales, FsError> = capture(); }
 
-fn capture() -> Result<Locales, FsError> {
-    let names = NAMES
+fn names() -> Result<&'static LocaleNames, FsError> {
+    NAMES
         .get_or_init(|| {
             let all = std::env::var_os("LC_ALL");
             let language = std::env::var_os("LANG");
             let numeric = std::env::var_os("LC_NUMERIC");
             let time = std::env::var_os("LC_TIME");
+            let collation = std::env::var_os("LC_COLLATE");
             let cstring = |value: OsString| {
                 CString::new(value.as_bytes()).map_err(|error| {
                     locale_error(io::Error::new(io::ErrorKind::InvalidInput, error))
@@ -122,10 +124,23 @@ fn capture() -> Result<Locales, FsError> {
                     time.as_deref(),
                     language.as_deref(),
                 ))?,
+                collation: cstring(selected_locale(
+                    all.as_deref(),
+                    collation.as_deref(),
+                    language.as_deref(),
+                ))?,
             })
         })
         .as_ref()
-        .map_err(Clone::clone)?;
+        .map_err(Clone::clone)
+}
+
+pub(super) fn collation_name() -> Result<&'static CStr, FsError> {
+    Ok(names()?.collation.as_c_str())
+}
+
+fn capture() -> Result<Locales, FsError> {
+    let names = names()?;
     Ok(Locales {
         numeric: NativeLocale::new(&names.numeric).map_err(locale_error)?,
         time: NativeLocale::new(&names.time).map_err(locale_error)?,
@@ -133,6 +148,10 @@ fn capture() -> Result<Locales, FsError> {
 }
 
 impl LocaleService for LinuxFileSystem {
+    fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        crate::sort_keys::key(value)
+    }
+
     fn number_locale(&self) -> Result<NumberLocale, FsError> {
         CURRENT.with(|value| {
             value

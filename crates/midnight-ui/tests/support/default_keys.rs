@@ -2,7 +2,7 @@
 use midnight_ui::MainWindow;
 use slint::{ComponentHandle, SharedString, platform::WindowEvent};
 
-pub(super) fn key(window: &MainWindow, text: SharedString) {
+pub(crate) fn key(window: &MainWindow, text: SharedString) {
     window
         .window()
         .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });

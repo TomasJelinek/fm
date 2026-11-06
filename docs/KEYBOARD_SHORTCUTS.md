@@ -1,6 +1,30 @@
 # Keyboard shortcuts — Midnight Explorer 0.1
 
-These actions are implemented. File navigation, tab and bookmark shortcuts apply
+The table lists default bindings. **Options → Keyboard** can change, disable, or
+restore each application action, including navigation, selection, command editing,
+drive letters, numbered tabs/Hot Paths, and the drive dropdown's As Other Panel action.
+An action accepts up to four alternate single chords. Applying a replacement removes
+its old aliases; conflicts in overlapping contexts are rejected before saving.
+Changes are saved with the other preferences and survive restart. The action catalog
+also supplies the application's displayed shortcut hints and Help.
+
+Native widget editing and IME shortcuts remain native; operating-system-reserved
+keys may not reach the application. Ctrl+Space stays available to the IME, and broad
+application shortcuts cannot take over ordinary typing or editor copy/paste.
+While filename search is active, Ctrl/Meta+C, X, V and the Insert copy/paste aliases
+edit search text even if reassigned to file actions. Those bindings apply to files
+after leaving search. Ctrl+A and Shift+Delete retain their listed file actions.
+Physical number keys may be entered as `Ctrl+1` or `Ctrl+Digit1`; these are the same
+binding. The editor accepts `Ctrl`, `Alt`, `Shift`, `Meta`, named keys such as
+`PageDown`, and Unicode characters. `Plus` denotes the plus key.
+
+Holding Ctrl switches the footer to the effective Ctrl+F1–F12 bindings. Reassigning
+or disabling a binding updates its caption, tooltip and click action. A mouse press
+captures the displayed action and pane even if Ctrl is released before the click
+finishes. AltGr does not activate this layer. While a panel is enlarged, switching
+panels transfers the enlargement; centering the splitter exits enlargement.
+
+File navigation, tab and bookmark shortcuts apply
 in the focused file list, preserving typing in the path/command/options editors.
 Native numbered tabs and hot paths use physical digit keys across keyboard layouts
 and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
@@ -25,11 +49,18 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | . in the drive dropdown | As Other Panel: open the other panel's current folder |
 | Shift+drive letter | Switch volume on Windows, using its remembered path |
 | Ctrl+F1 / Ctrl+L | Read-only cached drive information |
+| Ctrl+F2 | Attributes, times and filename-case editor for the captured selection |
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
 | Ctrl+A / Ctrl+D / Ctrl+I | Select all / clear / invert selection in the focused file pane |
+| Ctrl+C / Ctrl+V in files | Publish the selected/focused files to the native clipboard / queue a verified copy into the captured active folder |
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort by name / type-extension / modified time / size |
+| Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
+| Ctrl+F8 | Unassigned by default; may be configured |
+| Ctrl+F10 | Compare the two displayed directories by size and/or modified time; select differences |
+| Ctrl+F11 | Maximize the active panel; press again to restore the previous split |
+| Ctrl+F12 | Configure the active panel's saved wildcard or regular-expression file filter |
 | Ctrl+Shift+S / Ctrl+Shift+F10 | Start or cancel all-folder size calculation in the active pane |
 | Alt+Enter / Ctrl+Alt+Enter | Properties of selected items, or focused item |
 | Ctrl+T | New tab at the current folder |
@@ -42,11 +73,12 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | Ctrl+1…9/0 or Shift+1…9/0 | Open the numbered bookmark in the focused pane |
 | Ctrl+Alt+number or Shift+Alt+number | Open the numbered bookmark in the other pane |
 | Ctrl+Shift+Plus | Add the current folder as an unnumbered bookmark |
-| Ctrl+Enter in files or command editor | Append the focused basename to the end of the command draft |
+| Ctrl+Enter in files or command editor | Append the focused basename to the end of the command draft and focus the command editor |
 | Ctrl+P in files or command editor | Insert the active pane path at the command selection |
 | Ctrl+[ / Ctrl+] | Insert the left / right pane path at the command selection |
 | Ctrl+Space | Available to the input method (IME); Ctrl+P inserts the path |
 | Enter in command editor | Explicitly submit the command to the selected system terminal |
+| Alt+↑ / Alt+↓ in command editor | Rotate to older / newer stored commands, wrapping; terminal type stays unchanged |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |
 | F1 | Help |
 | F2 | Rename the focused file/folder; Enter confirms, Escape cancels |
@@ -72,8 +104,32 @@ Insert and Space clamp at the last row; `..` is never selected or measured.
 Wheel scrolling animates in pixels and settles on a full row when idle; native
 touch/trackpad gestures retain their own inertia.
 
-The top action toolbar includes Hot Paths; saved paths also appear in the drive
-dropdown. Its `. As Other Panel` item also works by mouse and uses the current
+Drag a file/folder with the left mouse button to copy it after a short movement
+threshold. A selected item supplies the selected group; an unselected item supplies
+only itself. Touch scrolling does not start a file drag. Escape cancels the drag;
+releasing before asynchronous preparation finishes cannot start a delayed drag.
+Drop on the highlighted file-list area to copy into that panel's displayed folder.
+A folder row is not a separate destination in this stage. Editors, toolbars, dialogs
+and the hidden panel's zoom rail do not receive file drops.
+
+Native dragging exchanges files with other applications on Windows and
+X11/XWayland. Native Wayland currently supports dragging between panels only.
+Transfers are Copy-only; use Ctrl/Copy in an external source application if it
+otherwise offers only Move. Legacy X11 sources without XDND proxy support cannot
+drop into the application. Incoming drops share the verified copy queue and its
+conflict prompts. An external destination application performs outgoing copies
+under its own rules; Midnight Explorer never deletes the source after a drag.
+
+Right-click a file/folder or drive to open its Windows system context menu; Linux
+offers the available application actions. A selected group keeps its selection;
+an unselected item targets just that item. Pasting on a sole folder targets that
+folder. Native-menu Copy/Paste uses the same verified copy service as Ctrl+C/V.
+
+The top action toolbar includes a sort chooser beside View, available in every mode.
+The Hot Paths star adds the current folder; its arrow lists saved paths, then
+Add path and Manage below a separator. Saved paths also appear in their own group
+in the drive dropdown after drives and special locations. Its As Other Panel item
+also works by mouse and uses the current
 opposite folder after Ctrl+U swaps the panels. Back/Forward arrows have history
 dropdowns. Tabs sit below the drive
 toolbar. Hovering a path segment highlights its prefix; clicking opens that raw
@@ -85,11 +141,15 @@ splitter to resize the panels, or double-click it to center. Tabs shrink uniform
 and then expose scroll arrows at their minimum width. The details strip below each
 panel copies a field's displayed value
 when clicked (filename, exact bytes, date/time, attributes or Unix permissions).
+File-only selections show their total known byte size using the system locale;
+pending/unknown sizes are identified. Available capacity appears at the right and
+comes from the displayed directory's filesystem query, including mount/junction targets.
 
 The terminal icon opens a new interactive terminal without submitting the draft;
 its adjacent arrow selects the shell. The command directory ends with `>`.
 Command history recalls a draft without
-running it; only Enter/Run submits it. Options has Panel, Appearance and Command
+running it; only the configured Execute command shortcut or Run submits it.
+Options has Panel, Appearance, Command and Keyboard
 topics, including readable/exact-byte sizes, history persistence and Clear.
 History keeps the latest 100 distinct exact command strings across shells,
 newest first, with a 1MiB aggregate text budget. Elevation is never recalled.
@@ -113,8 +173,11 @@ the entered relative path and leaves already-created intermediate folders on err
 Viewer design: F3 routes by extension to an applicable installed viewer; Alt+F3
 forces the basic plain-text viewer, preserving Unicode and disabling highlighting
 and markup rendering. Both remain unavailable until the viewer plugin is implemented.
-Copy/move/delete queues, overwrite decisions and mandatory destination checksum
-verification remain in the design. Other unlisted Salamander/Total Commander
+Clipboard copy has a background queue and mandatory SHA-256 destination readback.
+Existing names offer Skip, Skip all, Copy as, Cancel job and Decide later; Jobs can
+reopen deferred conflicts while browsing continues. Sources are retained. Replacing
+existing files, directory merging and Move/Cut remain unavailable in this stage.
+Other unlisted Salamander/Total Commander
 shortcuts, such as Shift+F9 for a bookmark menu, are not implemented.
 
 Bulk selection runs through the backend and excludes `..`. Text editors retain

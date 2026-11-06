@@ -20,6 +20,7 @@ impl Presenter {
             let folders = p.selected.folder_count();
             let pending = !p.selection_preview.is_empty()
                 || p.selection_deferred
+                || p.selection_pending_bulk
                 || p.selection_rebase_pending;
             let value = format!(
                 "{files} {}, {folders} {}{}",
@@ -27,7 +28,7 @@ impl Presenter {
                 if folders == 1 { "folder" } else { "folders" },
                 if pending { " (updating)" } else { "" }
             );
-            return vec![PanelDetail {
+            let mut details = vec![PanelDetail {
                 identity: format!(
                     "detail:{}:selection:{}:{}:{value}",
                     p.generation, p.selection_applied.0, p.selection_revision.0
@@ -35,6 +36,25 @@ impl Presenter {
                 label: "Selected",
                 value,
             }];
+            if folders == 0 && files > 0 {
+                let value = if pending {
+                    "Size updating…".into()
+                } else {
+                    p.selected.file_bytes().map_or_else(
+                        || "Size unknown".into(),
+                        |bytes| format!("{} bytes", self.number_locale.format_u64(bytes)),
+                    )
+                };
+                details.push(PanelDetail {
+                    identity: format!(
+                        "detail:{}:selection-bytes:{}:{value}",
+                        p.generation, p.selection_applied.0
+                    ),
+                    label: "Selected bytes",
+                    value,
+                });
+            }
+            return details;
         }
         if p.parent_cursor {
             return [("Name", ".."), ("Bytes", "—")]
@@ -115,6 +135,10 @@ impl Presenter {
         token: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if let Some(value) = token.strip_prefix("capacity:") {
+            return value == crate::volume_presentation::panel_space(self, pane)
+                && self.queue_clipboard_text(value.to_owned(), send);
+        }
         let Some(field) = self
             .panel_details(pane)
             .into_iter()
@@ -123,5 +147,46 @@ impl Presenter {
             return false;
         };
         self.queue_clipboard_text(field.value, send)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_file_bytes_are_exact_and_never_include_folder_estimates() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        let entries: Vec<_> = [1234, 5678]
+            .into_iter()
+            .enumerate()
+            .map(|(i, size)| {
+                let mut entry = Entry::new(
+                    EntryId(i as u64),
+                    PathBuf::from(format!("left/{i}")),
+                    EntryKind::File,
+                );
+                entry.metadata.size = Some(size);
+                entry
+            })
+            .collect();
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        p.panes[0].selected = Arc::new(SelectionSnapshot::from_bits(index, vec![3]).unwrap());
+        let expected = format!("{} bytes", p.number_locale.format_u64(6912));
+        assert_eq!(p.panel_details(PaneId::Left)[1].value, expected);
+        let token = p.panel_details(PaneId::Left)[1].identity.clone();
+        assert!(p.copy_panel_detail(PaneId::Left, &token, &|command| {
+            assert!(matches!(command, Command::CopyText {text, ..} if text == expected));
+            true
+        }));
+        p.panes[0].selection_pending_bulk = true;
+        assert_eq!(p.panel_details(PaneId::Left)[1].value, "Size updating…");
+        assert!(!p.copy_panel_detail(PaneId::Left, &token, &|_| panic!("stale field")));
+        p.panes[0].selection_pending_bulk = false;
+        let mut mixed = entries;
+        mixed[1].kind = EntryKind::Directory;
+        let index = Arc::new(DirectoryIndex::from_entries(&mixed));
+        p.panes[0].selected = Arc::new(SelectionSnapshot::from_bits(index, vec![3]).unwrap());
+        assert_eq!(p.panel_details(PaneId::Left).len(), 1);
     }
 }
