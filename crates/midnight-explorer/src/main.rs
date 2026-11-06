@@ -51,7 +51,7 @@ fn options() -> Result<Option<Options>, String> {
         match argument.to_str() {
             Some("--help" | "-h") => {
                 println!(
-                    "Midnight Explorer — dual-pane file manager\n\nUsage: midnight-explorer [--left PATH] [--right PATH] [--software]\n       midnight-explorer --smoke-test [--left PATH] [--right PATH]\n       midnight-explorer --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, rename, empty-file and directory creation, and confirmed deletion. Viewer plugins and verified copying are planned."
+                    "Midnight Explorer — dual-pane file manager\n\nUsage: me [--left PATH] [--right PATH] [--software]\n       me --smoke-test [--left PATH] [--right PATH]\n       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, rename, empty-file and directory creation, and confirmed deletion. Viewer plugins and verified copying are planned."
                 );
                 return Ok(None);
             }

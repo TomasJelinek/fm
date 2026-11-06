@@ -42,6 +42,8 @@ optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
 exit status. They do not install system packages or launch the application.
+The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
+and `me` on Linux.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
 override. Cargo's checked-in configuration puts compiled and generated output
 under `_build/`. The build helpers also keep their child processes'
@@ -77,8 +79,8 @@ changing these profiles recompiles the affected dependencies under `_build`.
 Run either executable directly, or let Cargo build and run it:
 
 ```powershell
-.\_build\debug\midnight-explorer.exe
-.\_build\release\midnight-explorer.exe --left "C:\Users" --right "C:\Program Files"
+.\_build\debug\me.exe
+.\_build\release\me.exe --left "C:\Users" --right "C:\Program Files"
 cargo run -p midnight-explorer --locked -- --left "C:\Users" --right "C:\Windows"
 cargo run -p midnight-explorer --locked --release
 ```
@@ -86,7 +88,7 @@ cargo run -p midnight-explorer --locked --release
 For a filesystem smoke check that exits without opening the UI:
 
 ```powershell
-.\_build\debug\midnight-explorer.exe --smoke-test --left "C:\Users" --right "C:\Windows"
+.\_build\debug\me.exe --smoke-test --left "C:\Users" --right "C:\Windows"
 ```
 
 An existing development checkout may have a private toolchain/cache under
@@ -129,8 +131,8 @@ drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/doc
 describes the display/runtime libraries. The normal renderer is FemtoVG-WGPU.
 
 ```sh
-./_build/debug/midnight-explorer
-./_build/release/midnight-explorer --left "$HOME" --right /tmp
+./_build/debug/me
+./_build/release/me --left "$HOME" --right /tmp
 cargo run -p midnight-explorer --locked -- --left "$HOME" --right /tmp
 cargo run -p midnight-explorer --locked --release
 ```
@@ -138,7 +140,7 @@ cargo run -p midnight-explorer --locked --release
 The filesystem smoke check does not require a display:
 
 ```sh
-./_build/debug/midnight-explorer --smoke-test --left "$HOME" --right /tmp
+./_build/debug/me --smoke-test --left "$HOME" --right /tmp
 ```
 
 Linux discovers already-mounted filesystems through `/proc/self/mountinfo`;

@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "me"
+path = "src/main.rs"
+
 [dependencies]
 midnight-core.workspace = true
 midnight-engine.workspace = true

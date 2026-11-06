@@ -221,7 +221,7 @@ UI rozlišuje `Opening`, `Ready`, `Busy`, `Closing`, `Closed` a chybu. Neoznaču
 draft, cwd, shell a mode právě jednou; změna pickeru nic neodešle a obsah
 editoru neztratí. Zvýšený režim zůstává viditelný a má akci Close session.
 
-Broker může být zvláštní CLI režim téhož `midnight-explorer` executable, obsloužený před
+Broker může být zvláštní CLI režim téhož `me` executable, obsloužený před
 inicializací Slintu a GUI runtime. Linux kód patří do Linux platformních souborů;
 Windows/macOS těla nesmějí být v témže implementačním souboru. Samostatný helper
 binary je alternativa pouze s vyřešeným balením a ověřením identity executable.

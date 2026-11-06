@@ -1,5 +1,8 @@
 # Midnight Explorer release builds
 
+The application package `midnight-explorer` builds `me.exe` on Windows and `me` on
+Linux. Native output is `_build/release/me.exe` or `_build/release/me`.
+
 The workspace release profile enables Rust's highest standard optimization level
 (`opt-level = 3`), whole-program **fat LTO**, a single code-generation unit and no
 incremental compilation. Release artifacts omit debug information and strip

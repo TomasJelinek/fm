@@ -137,7 +137,7 @@ Příklad Windows distribuce; Linux mění knihovny na `.so`, později macOS na 
 
 ```text
 Midnight Explorer/
-  midnight-explorer.exe
+  me.exe
   viewers/
     text/
       plugin.toml
