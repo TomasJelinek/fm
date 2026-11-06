@@ -1074,104 +1074,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
-name = "midnight-explorer"
-version = "0.1.0"
-dependencies = [
- "midnight-core",
- "midnight-engine",
- "midnight-platform",
- "midnight-ui",
- "slint",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "midnight-core"
-version = "0.1.0"
-
-[[package]]
-name = "midnight-engine"
-version = "0.1.0"
-dependencies = [
- "midnight-core",
- "midnight-platform",
- "image",
- "tempfile",
- "tokio",
- "unicase",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "midnight-platform"
-version = "0.1.0"
-dependencies = [
- "midnight-core",
- "midnight-platform-linux",
- "midnight-platform-windows",
- "tempfile",
-]
-
-[[package]]
-name = "midnight-platform-common"
-version = "0.1.0"
-dependencies = [
- "midnight-core",
- "fs2",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "midnight-platform-linux"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "chrono",
- "midnight-core",
- "midnight-platform-common",
- "fontdb",
- "image",
- "libc",
- "notify",
- "rustix 1.1.6",
- "tempfile",
-]
-
-[[package]]
-name = "midnight-platform-windows"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "base64",
- "midnight-core",
- "midnight-platform-common",
- "notify",
- "tempfile",
- "windows",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "midnight-ui"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "midnight-core",
- "i-slint-compiler",
- "i-slint-core",
- "prettyplease",
- "slint",
- "slint-build",
- "spin_on",
- "syn 2.0.119",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2596,6 +2498,114 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "midnight-core"
+version = "0.1.0"
+
+[[package]]
+name = "midnight-engine"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "midnight-core",
+ "midnight-platform",
+ "tempfile",
+ "tokio",
+ "unicase",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "midnight-explorer"
+version = "0.1.0"
+dependencies = [
+ "midnight-core",
+ "midnight-engine",
+ "midnight-platform",
+ "midnight-ui",
+ "slint",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "midnight-platform"
+version = "0.1.0"
+dependencies = [
+ "midnight-core",
+ "midnight-platform-linux",
+ "midnight-platform-windows",
+ "tempfile",
+]
+
+[[package]]
+name = "midnight-platform-common"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "midnight-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "midnight-platform-linux"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "fontdb",
+ "image",
+ "libc",
+ "midnight-core",
+ "midnight-platform-common",
+ "notify",
+ "rustix 1.1.6",
+ "tempfile",
+]
+
+[[package]]
+name = "midnight-platform-windows"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "base64",
+ "midnight-core",
+ "midnight-platform-common",
+ "notify",
+ "tempfile",
+ "windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "midnight-ui"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "i-slint-compiler",
+ "i-slint-core",
+ "midnight-core",
+ "prettyplease",
+ "slint",
+ "slint-build",
+ "spin_on",
+ "syn 2.0.119",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "midnight-viewer-render"
+version = "0.1.0"
+dependencies = [
+ "parley",
+ "swash",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

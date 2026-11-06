@@ -41,9 +41,12 @@ Markdown dependencies selected after their bounded renderer/parser spike.
 
 ## Task 1: Public API/SDK and separately built conformance fixtures
 
-- [ ] First prove no-wrap styled Unicode layout, source-correct selection and hit
+- [x] First prove no-wrap styled Unicode layout, source-correct selection and hit
   testing with Slint's paragraph renderer or a shared Parley adapter. Stock
   StyledText alone wraps and lacks selection; do not freeze incomplete UI models.
+  The shared Parley/Swash adapter passes 13 Windows/Linux tests and visual proof;
+  see [evidence](../../verification/viewer-renderer.md). Host accessibility and
+  aggregate session budgeting remain part of Task 2, not completed UI features.
 
 Files: independent `midnight-plugin-api` and `midnight-plugin-sdk` projects;
 public `include/midnight_plugin_v1.h`, protocol/ownership specifications and fixtures.
