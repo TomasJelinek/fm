@@ -1074,13 +1074,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
-name = "fm-app"
+name = "midnight-explorer"
 version = "0.1.0"
 dependencies = [
- "fm-core",
- "fm-engine",
- "fm-platform",
- "fm-ui",
+ "midnight-core",
+ "midnight-engine",
+ "midnight-platform",
+ "midnight-ui",
  "slint",
  "tokio",
  "tracing",
@@ -1088,15 +1088,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "fm-core"
+name = "midnight-core"
 version = "0.1.0"
 
 [[package]]
-name = "fm-engine"
+name = "midnight-engine"
 version = "0.1.0"
 dependencies = [
- "fm-core",
- "fm-platform",
+ "midnight-core",
+ "midnight-platform",
  "image",
  "tempfile",
  "tokio",
@@ -1105,20 +1105,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "fm-platform"
+name = "midnight-platform"
 version = "0.1.0"
 dependencies = [
- "fm-core",
- "fm-platform-linux",
- "fm-platform-windows",
+ "midnight-core",
+ "midnight-platform-linux",
+ "midnight-platform-windows",
  "tempfile",
 ]
 
 [[package]]
-name = "fm-platform-common"
+name = "midnight-platform-common"
 version = "0.1.0"
 dependencies = [
- "fm-core",
+ "midnight-core",
  "fs2",
  "serde",
  "serde_json",
@@ -1126,38 +1126,41 @@ dependencies = [
 ]
 
 [[package]]
-name = "fm-platform-linux"
+name = "midnight-platform-linux"
 version = "0.1.0"
 dependencies = [
  "arboard",
- "fm-core",
- "fm-platform-common",
+ "chrono",
+ "midnight-core",
+ "midnight-platform-common",
  "fontdb",
  "image",
+ "libc",
  "notify",
  "rustix 1.1.6",
  "tempfile",
 ]
 
 [[package]]
-name = "fm-platform-windows"
+name = "midnight-platform-windows"
 version = "0.1.0"
 dependencies = [
  "arboard",
  "base64",
- "fm-core",
- "fm-platform-common",
+ "midnight-core",
+ "midnight-platform-common",
  "notify",
  "tempfile",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
-name = "fm-ui"
+name = "midnight-ui"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "fm-core",
+ "midnight-core",
  "i-slint-compiler",
  "i-slint-core",
  "prettyplease",

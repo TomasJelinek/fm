@@ -69,7 +69,7 @@ lossy replacement text.
 The query uses text delivered by the native input method/toolkit. Pinned Slint's
 Parley input path normalizes each incoming key/composition event to NFC before
 TextInput receives it; insertion does not normalize existing query contents.
-Separate commits can therefore retain a decomposed query. FM adds no second
+Separate commits can therefore retain a decomposed query. Midnight Explorer adds no second
 normalization and never changes original filesystem names. Input tests distinguish
 single-event composition from separate combining commits rather than asserting
 an unsupported raw-IME-packet guarantee.

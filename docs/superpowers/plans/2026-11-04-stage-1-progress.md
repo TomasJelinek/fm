@@ -9,8 +9,8 @@
 - Pre-flight: Task 4 consumes Task 1 messages and emits commands; Task 5 supplies callbacks, not an engine dependency in UI.
 - Pre-flight: Task 3 final sorted snapshot is shared immutable data; Task 4 must not eagerly convert the full listing to Slint rows.
 - Environment: no preexisting Cargo project/tests; initial source consists only of the approved design document.
-- Task 1: complete — three ordering tests observed failing against the no-op sorter, then `cargo test -p fm-core --offline` passed 3/3.
-- Task 3: initial implementation complete — four engine tests observed failing against the empty engine, then `cargo test -p fm-core -p fm-engine --offline` passed 7/7; final review pending.
+- Task 1: complete — three ordering tests observed failing against the no-op sorter, then `cargo test -p midnight-core --offline` passed 3/3.
+- Task 3: initial implementation complete — four engine tests observed failing against the empty engine, then `cargo test -p midnight-core -p midnight-engine --offline` passed 7/7; final review pending.
 - Toolchain: Rust 1.99.1, Slint 1.18.1 and workspace dependencies downloaded locally; Cargo.lock retained.
 - Task 2: complete — platform agent observed RED then passed 13 Windows tests and package Clippy; `.superpowers/sdd/stage-1/task-2-report.md` contains evidence.
 - Linux validation: Ubuntu 24.04 WSL ran core/platform/engine tests with 22 passed, 0 failed (before the additional worker-capacity regression); GUI prerequisites are not installed, no Linux desktop result claimed.
@@ -24,11 +24,11 @@
 - Ruling: Default FemtoVG-WGPU is the supported Unicode renderer; Slint's separate software renderer remains a diagnostic path because unrestricted scripts are not qualified. Cost: production software fallback still needs separate renderer/font validation.
 - Security S1 fixed: the optional Windows junction test no longer interpolates paths through cmd; a legal ampersand-path fixture observed RED, then passed using a fixed PowerShell -File script with literal parameters.
 - Diagnostic PNG overwrite fixed: existing-file regression observed RED against image::save_buffer, then passed with backend exclusive create_new and explicit flush.
-- Backend-only services: reclamation, bounded handoff/FIFO shutdown barrier, and PNG encoding/writing live in fm-engine. Core/engine/app forbid unsafe; UI denies it except generated Slint bindings. Production Win32 unsafe is the documented no-pointer GetLogicalDrives adapter.
+- Backend-only services: reclamation, bounded handoff/FIFO shutdown barrier, and PNG encoding/writing live in midnight-engine. Core/engine/app forbid unsafe; UI denies it except generated Slint bindings. Production Win32 unsafe is the documented no-pointer GetLogicalDrives adapter.
 - Unicode verification: six real platform/engine integration tests pass, including composed/decomposed names, ZWJ/non-BMP emoji, RTL/CJK names and Windows paths beyond 260 UTF-16 units. Disposable mutation checks demonstrate failure under Unicode corruption or lost final entries.
-- Windows final suite: `cargo test --workspace --offline` passed 62 tests, zero failed/ignored; `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` passed. Native `cargo build -p fm-app --locked --offline` passed.
+- Windows final suite: `cargo test --workspace --offline` passed 62 tests, zero failed/ignored; `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` passed. Native `cargo build -p midnight-explorer --locked --offline` passed.
 - Windows runtime: headless real-filesystem smoke passed; native default-WGPU UI smoke, actual focus routing and PNG capture passed. Inspected docs/screenshots/stage-1-windows.png: Czech, CJK, Arabic, Hebrew, emoji and combining forms render.
-- Linux final verification: current core/platform/engine tests passed 31/31; fm-ui and fm-app compile checks passed in Ubuntu 24.04 WSL. Official native packages were signature/checksum-verified and extracted only under .tools/linux-native. Native Linux/Mint desktop interaction remains untested; no CI run is claimed.
+- Linux final verification: current core/platform/engine tests passed 31/31; midnight-ui and midnight-explorer compile checks passed in Ubuntu 24.04 WSL. Official native packages were signature/checksum-verified and extracted only under .tools/linux-native. Native Linux/Mint desktop interaction remains untested; no CI run is claimed.
 - Dependency audit: verified official cargo-audit 0.22.2 reports zero known vulnerabilities against RustSec DB 965bf9ad083b58e6340d65829d85217b18be9290 (2026-11-03), plus five informational unmaintained transitive-package warnings. Full JSON/report retained under this plan workspace.
 - Final: minor (deferred): Page Up/Down uses a fixed twenty-row step; viewport-sized paging is later polish.
 - Retain plan workspace/evidence because there is no Git history to recover it from; no recursive cleanup of verification artifacts.

@@ -1,0 +1,135 @@
+import { Theme } from "theme.slint";
+import { PrefixName } from "panel-search.slint";
+import { FileRow } from "file-models.slint";
+
+// Each cell keeps pointer identity across virtualized rebinding and refreshes.
+export component FileEntry inherits Rectangle {
+    in property <FileRow> item;
+    in property <int> source-index;
+    in property <int> view-mode;
+    in property <bool> active;
+    in property <length> size-column-width;
+    in property <string> previous-click-identity;
+    callback remember-click(string);
+    callback row-click(bool, bool);
+    callback open();
+    private property <color> text-color: item.selected ? Theme.selected-text
+        : item.directory ? Theme.directory-text : Theme.text;
+    clip: true;
+    private property <color> row-color: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
+        : item.selected ? Theme.selected-background
+        : (mod(root.source-index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
+    background: root.row-color;
+    accessible-role: list-item;
+    accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
+        + (item.compressed ? " · Filesystem compressed" : "");
+    Rectangle {
+        x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
+        background: item.selected ? Theme.selected-edge
+            : item.cursor && root.active ? Theme.cursor-edge : transparent;
+    }
+    if item.selected && item.cursor : Rectangle {
+        x: 4px; y: 0px; width: parent.width - 4px; height: 1px;
+        background: Theme.selected-edge;
+    }
+    if root.view-mode != 2 : HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 8px;
+        HorizontalLayout {
+            spacing: 6px - (Theme.file-icon-size - Theme.icon-size);
+            horizontal-stretch: 1; min-width: root.view-mode == 0 ? 120px : 0px;
+            Rectangle {
+                width: Theme.file-icon-size;
+                Image {
+                    source: item.icon;
+                    width: Theme.file-icon-size; height: Theme.file-icon-size;
+                    y: (parent.height - self.height) / 2;
+                    image-fit: contain;
+                }
+                if item.compressed : Rectangle {
+                    x: parent.width - 8px;
+                    y: (parent.height + Theme.file-icon-size) / 2 - 8px;
+                    width: 9px; height: 9px;
+                    background: Theme.pane-background; border-radius: 2px;
+                    Text {
+                        text: "C"; font-size: 8px; font-weight: 700;
+                        color: Theme.compression-mark;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+            if item.prefix-end > 0 : PrefixName {
+                text: item.name; prefix-end: item.prefix-end;
+                text-color: root.text-color; row-background: root.row-color;
+            }
+            if item.prefix-end <= 0 : Text {
+                text: item.name; color: root.text-color;
+                font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
+                overflow: elide; vertical-alignment: center; horizontal-stretch: 1;
+            }
+        }
+        if root.view-mode == 0 : Text {
+            text: item.size; color: item.size-state == 1 ? Theme.pending-size : Theme.secondary-text;
+            font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font;
+            width: root.size-column-width; overflow: elide;
+            horizontal-alignment: right; vertical-alignment: center;
+        }
+        if root.view-mode == 0 : Text {
+            text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font;
+            width: 132px; overflow: elide; vertical-alignment: center;
+        }
+    }
+    if root.view-mode == 2 : Rectangle {
+        Image {
+            source: item.icon; width: 72px; height: 72px;
+            x: (parent.width - self.width) / 2; y: 12px; image-fit: contain;
+        }
+        if item.compressed : Text {
+            x: parent.width / 2 + 25px; y: 65px; width: 15px; height: 19px;
+            text: "C"; color: Theme.compression-mark; font-size: 12px; font-weight: 700;
+            accessible-role: none;
+        }
+        if item.prefix-end > 0 : PrefixName {
+            x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
+            text: item.name; prefix-end: item.prefix-end; wrapped: true;
+            text-color: root.text-color; row-background: root.row-color;
+        }
+        if item.prefix-end <= 0 : Text {
+            x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
+            text: item.name; color: root.text-color; font-size: Theme.font-size;
+            font-weight: item.selected ? 600 : 400; wrap: char-wrap; overflow: elide;
+            horizontal-alignment: center; vertical-alignment: top;
+        }
+    }
+    TouchArea {
+        private property <string> pressed-identity;
+        private property <bool> control-pressed;
+        private property <bool> shift-pressed;
+        private property <bool> modified-pressed;
+        private property <bool> same-target-double;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.pressed-identity = item.identity;
+                self.control-pressed = event.modifiers.control;
+                self.shift-pressed = event.modifiers.shift;
+                self.modified-pressed = event.modifiers.control
+                    || event.modifiers.shift || event.modifiers.alt;
+            } else if event.kind == PointerEventKind.cancel {
+                self.pressed-identity = "";
+                self.same-target-double = false;
+            }
+        }
+        clicked => {
+            self.same-target-double = self.pressed-identity == item.identity
+                && root.previous-click-identity == self.pressed-identity;
+            root.remember-click(self.pressed-identity == item.identity ? self.pressed-identity : "");
+            if self.pressed-identity == item.identity {
+                root.row-click(self.control-pressed, self.shift-pressed);
+            }
+        }
+        double-clicked => {
+            if self.same-target-double && !self.modified-pressed
+                && self.pressed-identity == item.identity { root.open(); }
+        }
+    }
+}

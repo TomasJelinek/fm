@@ -1,0 +1,84 @@
+//! Backend-only, platform-specific file mutation capabilities.
+use crate::{Cancellation, EntryKind, EntryMetadata, FsError};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteMode {
+    Trash,
+    Permanent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MutationKind {
+    CreateFile,
+    CreateDirectory,
+    Rename,
+    Delete(DeleteMode),
+}
+
+#[derive(Clone, Debug)]
+pub struct MutationItem {
+    pub path: PathBuf,
+    pub kind: EntryKind,
+    pub metadata: EntryMetadata,
+}
+
+/// An identity captured on a worker before confirmation. Implementations must
+/// revalidate it before mutation and never follow directory links recursively.
+/// No operation may silently replace another entry or fall back from trash to
+/// permanent deletion. OS limitations must be returned as errors.
+pub trait PreparedMutation: Send + Sync {
+    fn item(&self) -> &MutationItem;
+    fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError>;
+    fn delete(
+        &self,
+        mode: DeleteMode,
+        cancel: &Cancellation,
+        progress: &mut dyn FnMut(&Path),
+    ) -> Result<(), FsError>;
+}
+
+/// Blocking native operations are called only on the engine's mutation workers.
+/// Preparation itself performs no rename/deletion and rejects roots and `..`.
+pub trait MutationService: Send + Sync {
+    /// Retain the base directory before prompting; preparation never creates anything.
+    fn prepare_create(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn PreparedDirectory>, FsError> {
+        let _ = cancel;
+        Err(FsError::from_io(
+            "prepare create directory",
+            path,
+            std::io::Error::from(std::io::ErrorKind::Unsupported),
+        ))
+    }
+    fn prepare(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn PreparedMutation>, FsError>;
+}
+
+/// A pinned native base for exclusive creation. Child links are never traversed.
+pub trait PreparedDirectory: Send + Sync {
+    /// Accept relative normal components, reusing existing intermediate directories.
+    /// The final directory must be new; errors can leave created intermediates.
+    fn create(&self, relative_path: &Path, cancel: &Cancellation) -> Result<PathBuf, FsError>;
+
+    /// Create one empty regular file exclusively below this prepared directory.
+    /// Accept only a basename; never replace, truncate, or follow an existing entry.
+    fn create_file(&self, name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
+        let _ = cancel;
+        Err(FsError::from_io(
+            "create empty file",
+            Path::new(name),
+            std::io::Error::from(std::io::ErrorKind::Unsupported),
+        ))
+    }
+}

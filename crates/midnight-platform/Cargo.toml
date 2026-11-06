@@ -1,0 +1,18 @@
+[package]
+name = "midnight-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-core.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+midnight-platform-windows.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+midnight-platform-linux.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

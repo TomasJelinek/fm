@@ -1,6 +1,6 @@
 # Panel interaction, layout and responsiveness
 
-Date: 2026-11-05. Implemented continuation of FM 0.1; the viewer extension below
+Date: 2026-11-05. Implemented continuation of Midnight Explorer 0.1; the viewer extension below
 remains a design for the plugin milestone.
 
 ## Behavior
@@ -102,5 +102,5 @@ and inspect native screenshots at both densities. Update the main design,
 keyboard reference, README and verification record before delivery.
 
 Behavioral reference: local Salamander `src/drivelst.cpp:2084` adds the other-panel
-entry with a period shortcut in its Change Drive menu. FM preserves native paths
+entry with a period shortcut in its Change Drive menu. Midnight Explorer preserves native paths
 without copying Salamander's fixed-size path buffers.

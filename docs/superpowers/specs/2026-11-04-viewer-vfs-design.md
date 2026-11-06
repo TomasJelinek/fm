@@ -79,20 +79,21 @@ flowchart LR
     Pages --> Viewer
 ```
 
-`fm-core` obsahuje pouze typy, chyby, kontrakty a zprávy. Provider registry,
-orchestrace, lease registry, cache, rozpočty a copy engine patří `fm-engine`.
-VFS prezentace a viewer widgety patří `fm-ui`; konkrétní provider se do UI
-neimportuje. Nový plugin kontrakt vyžaduje samostatný projekt/repozitář pro každou
+`midnight-core` obsahuje pouze typy, chyby, kontrakty a zprávy. Provider registry,
+orchestrace, lease registry, cache, rozpočty a copy engine patří `midnight-engine`.
+VFS prezentace a viewer widgety patří `midnight-ui`; konkrétní provider se do UI
+neimportuje. Nový plugin kontrakt vyžaduje samostatný Cargo projekt v jednom Git
+repozitáři pro každou
 konkrétní implementaci, vlastní testy a závislost pouze na veřejném API/SDK.
 Pluginy nesmějí importovat interní app crates ani měnit zdrojáky hlavní aplikace.
 
 - `WindowsFileSystem` se přes adaptér stane `WindowsNativeProvider` v dynamickém
-  `fm-fs-native-windows`. Win32, registry a Windows testy zůstanou v OS souborech.
-- `LinuxFileSystem` se stane `LinuxNativeProvider` v dynamickém `fm-fs-native-linux`.
+  `midnight-fs-native-windows`. Win32, registry a Windows testy zůstanou v OS souborech.
+- `LinuxFileSystem` se stane `LinuxNativeProvider` v dynamickém `midnight-fs-native-linux`.
 - macOS později dodá `MacOsNativeProvider` ve vlastním crate a stejné conformance
   testy. Linux implementace se nepoužije jako skrytá macOS větev.
-- `fm-platform-common` smí sdílet skutečně přenositelné bezpečné Rust pomocné
-  operace. `fm-platform` je pouze malý selector/reexport podle targetu.
+- `midnight-platform-common` smí sdílet skutečně přenositelné bezpečné Rust pomocné
+  operace. `midnight-platform` je pouze malý selector/reexport podle targetu.
 
 Hostitelské služby nastavení, terminálu, ikon a loaderu zůstávají odděleně
 vestavěné; chybějící native plugin však nesmí mít statický fallback pro browsing.

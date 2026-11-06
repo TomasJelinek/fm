@@ -6,7 +6,8 @@ zařízení. Platí [společný plugin kontrakt](2026-11-05-dynamic-viewer-files
 
 ## Rozsah a hranice
 
-`fm-fs-network` má vlastní repozitář, build, testy a CI, sdílí pouze veřejné
+`midnight-fs-network` má vlastní Cargo projekt, build, testy a CI v jednom Git
+repozitáři s aplikací; sdílí pouze veřejné
 API/SDK a nesmí upravovat app sources. Balíček je v `filesystems/network/`;
 Windows/Linux a později macOS mají oddělené adaptery a testy.
 

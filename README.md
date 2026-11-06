@@ -1,9 +1,9 @@
-# FM
+# Midnight Explorer
 
 A dual-pane desktop file manager written in Rust with Slint and Tokio.
 
 Product version **0.1** (Cargo SemVer `0.1.0`); the native window title shows
-`FM 0.1 — File Manager`. The displayed version is derived from the package version.
+`Midnight Explorer 0.1 — File Manager`. The displayed version is derived from the package version.
 
 Lossless Unicode throughout the product, security and backend-only non-UI work
 are explicit requirements. See [security and integrity rules](SECURITY.md).
@@ -11,16 +11,24 @@ are explicit requirements. See [security and integrity rules](SECURITY.md).
 Stage 1 provides independent local directory navigation, mounted-volume switching,
 history, sorting, selection, mouse/keyboard navigation, and background metadata/capacity
 queries, native watches, a command editor and appearance preferences. Internal
-file operations remain read-only; explicitly opened files use host associations,
+file operations include confirmed rename, recursive directory creation, empty-file
+creation (toolbar or Shift+F4), and queued deletion (system Trash by default,
+permanent deletion with Shift). Empty-file creation accepts a name and never
+overwrites an existing entry.
+Explicitly opened files use host associations,
 and explicitly submitted shell commands run with
-the selected user/sudo permissions. Copying with mandatory BLAKE3 destination verification
-is the next milestone; no unverified copy operation is exposed.
+the selected user/sudo permissions. Viewer plugins and configurable external editing
+are the next stage. Planned copying requires BLAKE3 destination read-back verification;
+no unverified copy operation is exposed.
 
 ## Build and run
 
+Release builds use full optimization, fat LTO and one code-generation unit while
+retaining integrity checks. See [release settings and verification](docs/RELEASE_BUILD.md).
+
 Supported desktop targets are **Windows x64 with MSVC** and **Linux**, including
 Ubuntu and Linux Mint. macOS is planned; it has no platform adapter and does not
-currently build. Slint's own macOS support does not change FM's platform support.
+currently build. Slint's own macOS support does not change Midnight Explorer's platform support.
 
 Install [Rust with rustup](https://rust-lang.org/tools/install/), then reopen your
 terminal so `cargo` and `rustup` are on `PATH`. The repository pins **Rust 1.99.1**
@@ -32,7 +40,7 @@ installation is needed. The first build takes longer than subsequent builds.
 The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
-(debug), `debug`, or `release`, run a locked build of `fm-app`, and return Cargo's
+(debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
 exit status. They do not install system packages or launch the application.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
 override. Cargo's checked-in configuration puts compiled and generated output
@@ -44,7 +52,7 @@ temporary files under `_build/tmp/`.
 Install the Visual Studio **Desktop development with C++** workload, including
 the MSVC x64/x86 tools and a Windows SDK, as described in the
 [rustup MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html).
-Use the `x86_64-pc-windows-msvc` Rust host toolchain; FM's Windows build does not
+Use the `x86_64-pc-windows-msvc` Rust host toolchain; Midnight Explorer's Windows build does not
 support the GNU/MinGW toolchain. A complete Visual Studio IDE is optional.
 
 Build from PowerShell or Command Prompt:
@@ -57,8 +65,8 @@ Build from PowerShell or Command Prompt:
 Equivalent commands with a normal Rust installation:
 
 ```powershell
-cargo build -p fm-app --locked
-cargo build -p fm-app --locked --release
+cargo build -p midnight-explorer --locked
+cargo build -p midnight-explorer --locked --release
 ```
 
 The default build is debug. The frame rendering libraries use optimization level 2
@@ -69,16 +77,16 @@ changing these profiles recompiles the affected dependencies under `_build`.
 Run either executable directly, or let Cargo build and run it:
 
 ```powershell
-.\_build\debug\fm-app.exe
-.\_build\release\fm-app.exe --left "C:\Users" --right "C:\Program Files"
-cargo run -p fm-app --locked -- --left "C:\Users" --right "C:\Windows"
-cargo run -p fm-app --locked --release
+.\_build\debug\midnight-explorer.exe
+.\_build\release\midnight-explorer.exe --left "C:\Users" --right "C:\Program Files"
+cargo run -p midnight-explorer --locked -- --left "C:\Users" --right "C:\Windows"
+cargo run -p midnight-explorer --locked --release
 ```
 
 For a filesystem smoke check that exits without opening the UI:
 
 ```powershell
-.\_build\debug\fm-app.exe --smoke-test --left "C:\Users" --right "C:\Windows"
+.\_build\debug\midnight-explorer.exe --smoke-test --left "C:\Users" --right "C:\Windows"
 ```
 
 An existing development checkout may have a private toolchain/cache under
@@ -87,7 +95,7 @@ to [scripts/cargo.ps1](scripts/cargo.ps1) only when that local cache exists and
 normal Cargo is unavailable. You can also invoke the helper explicitly:
 
 ```powershell
-.\scripts\cargo.ps1 run -p fm-app --locked '--' --left "C:\Users" --right "C:\Windows"
+.\scripts\cargo.ps1 run -p midnight-explorer --locked '--' --left "C:\Users" --right "C:\Windows"
 ```
 
 Quote the literal `'--'` separator when forwarding application arguments through
@@ -112,8 +120,8 @@ Build using the POSIX helper or Cargo:
 ./build.sh
 ./build.sh release
 
-cargo build -p fm-app --locked
-cargo build -p fm-app --locked --release
+cargo build -p midnight-explorer --locked
+cargo build -p midnight-explorer --locked --release
 ```
 
 Run in a graphical desktop session with X11 or Wayland and working graphics
@@ -121,16 +129,16 @@ drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/doc
 describes the display/runtime libraries. The normal renderer is FemtoVG-WGPU.
 
 ```sh
-./_build/debug/fm-app
-./_build/release/fm-app --left "$HOME" --right /tmp
-cargo run -p fm-app --locked -- --left "$HOME" --right /tmp
-cargo run -p fm-app --locked --release
+./_build/debug/midnight-explorer
+./_build/release/midnight-explorer --left "$HOME" --right /tmp
+cargo run -p midnight-explorer --locked -- --left "$HOME" --right /tmp
+cargo run -p midnight-explorer --locked --release
 ```
 
 The filesystem smoke check does not require a display:
 
 ```sh
-./_build/debug/fm-app --smoke-test --left "$HOME" --right /tmp
+./_build/debug/midnight-explorer --smoke-test --left "$HOME" --right /tmp
 ```
 
 Linux discovers already-mounted filesystems through `/proc/self/mountinfo`;
@@ -151,7 +159,7 @@ software renderer is a developer diagnostic option; it is not a qualified
 full-Unicode production fallback:
 
 ```sh
-cargo run -p fm-app --locked -- --software
+cargo run -p midnight-explorer --locked -- --software
 ```
 
 `SLINT_BACKEND` is respected when `--software` is not supplied. GUI smoke checks
@@ -172,8 +180,9 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+T / Ctrl+W: add / close a folder tab in the focused pane.
 - Ctrl+Tab: focus the command editor; press again to return to the active pane.
   Ctrl+Shift+Tab selects the previous folder tab. Captions follow the folder name;
-  full paths are in tooltips. Tabs are session-only and shrink uniformly before
-  revealing scroll arrows at their minimum width.
+  full paths are in tooltips. Tabs restore their order, paths and active position
+  after restart; explicit `--left`/`--right` arguments override that pane. Middle-click
+  also closes a tab. Tabs shrink uniformly before revealing scroll arrows.
 - Ctrl+U: swap the complete panels while keeping their operations and active content.
   Drag the divider for unequal widths; double-click it to center the panels.
 - Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.
@@ -238,18 +247,41 @@ editor scope and shortcuts reserved for later stages.
 - `.` in the drive dropdown, or click **. As Other Panel**: open the opposite
   panel's current folder. Enter in files opens the focused folder or file.
 - Shift+drive letter: switch the focused file pane on Windows.
-- F1–F10: commander bottom bar; unavailable file-writing/view/edit actions are
-  disabled until their implementation stage.
+- F2: rename the focused item; F7: create a folder or nested relative path.
+- Shift+F4 or the panel's **New empty file** button: enter a filename and press
+  Enter to create a zero-byte file. Escape cancels; existing entries are never
+  overwritten. The new file is focused when creation finishes.
+- Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
+  explicitly confirm permanent deletion. A Trash failure never permanently deletes.
+- F11/F12: Windows system dialogs for connecting/disconnecting network drives.
+  Options follows F12; Jobs shows the operation queue, progress and cancellation.
+- Click the blank area after the top breadcrumb to enter a custom path; Enter
+  navigates and Escape cancels. Breadcrumb navigation/copy gestures remain available.
+- Panel view picker: independent Brief, Detailed and large-icon Thumbnails modes.
+  Brief fills columns downward; Left/Right changes columns. Thumbnails uses
+  Left/Right between cells and Up/Down between grid rows. Page Up/Down moves a
+  visible page. Active prefix search retains its existing match navigation.
+  Actual image/video preview decoding is planned in the
+  [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
 - Click column headers: change sorting. Cursor and selection remain attached to
   the original raw filesystem paths when the listing order changes.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are
   retained and sorted on the backend; Refresh invalidates these live estimates.
 
-Options, bookmarks and enabled command history are stored as version 5 UTF-8 JSON in the native
-`%LOCALAPPDATA%\FM\preferences.json` on Windows, or
-`$XDG_CONFIG_HOME/fm/preferences.json` / `~/.config/fm/preferences.json` on Linux.
+Options, tabs, bookmarks and enabled command history are stored as version 6 UTF-8 JSON in the native
+`%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
+`$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
+`~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
+the former `FM` (Windows) / `fm` (Linux) location is read safely; saves use only the
+new location and preserve the old file.
 Storage and font/icon discovery run on backend workers. See the
 [navigation and appearance design](docs/superpowers/specs/2026-11-04-navigation-and-appearance-design.md).
+Exact byte sizes and date/time use system regional settings captured on the backend;
+restart after changing the OS locale. Missing native formats use invariant/UTC
+fallbacks. The current [operation design](docs/superpowers/specs/2026-11-05-rename-delete-scroll-design.md)
+documents confirmations, cancellation and native limitations: Linux mutations need
+Linux5.6+ and same-device home Trash; Windows Shell Trash can refuse long paths
+that native rename/create/permanent operations support.
 The [panel navigation and details extension](docs/superpowers/specs/2026-11-05-panel-navigation-details-design.md)
 defines current controls. A separate [Network filesystem plugin](docs/superpowers/specs/2026-11-05-network-filesystem-design.md)
 will discover available devices/shares; discovery is designed, not implemented yet.
@@ -334,20 +366,20 @@ Cargo.lock is committed for reproducible application dependency resolution.
 
 | Crate | Responsibility |
 | --- | --- |
-| `fm-core` | Domain data, commands/events, provider contract and sorting |
-| `fm-platform` | Target-selected facade; implementation lives in separate OS crates |
-| `fm-platform-common` | Portable safe Rust filesystem helpers |
-| `fm-platform-windows` | Windows-only service implementation and Win32 integration |
-| `fm-platform-linux` | Linux-only service implementation and mount discovery |
-| `fm-engine` | Tokio orchestration, cancellation, bounded workers and batches |
-| `fm-ui` | Slint components, virtualized lazy row model and presenter |
-| `fm-app` | Runtime, bounded channels, coalesced UI wakeup and lifecycle |
+| `midnight-core` | Domain data, commands/events, provider contract and sorting |
+| `midnight-platform` | Target-selected facade; implementation lives in separate OS crates |
+| `midnight-platform-common` | Portable safe Rust filesystem helpers |
+| `midnight-platform-windows` | Windows-only service implementation and Win32 integration |
+| `midnight-platform-linux` | Linux-only service implementation and mount discovery |
+| `midnight-engine` | Tokio orchestration, cancellation, bounded workers and batches |
+| `midnight-ui` | Slint components, virtualized lazy row model and presenter |
+| `midnight-explorer` | Runtime, bounded channels, coalesced UI wakeup and lifecycle |
 
-No filesystem operations or engine implementation are reachable from `fm-ui`.
+No filesystem operations or engine implementation are reachable from `midnight-ui`.
 Full-list sorting and identity-index construction run off the UI thread. UI
 delivery is batched with a short work budget and one outstanding wakeup.
 
-The `fm-platform` facade only selects the target adapter. `DirectoryService`,
+The `midnight-platform` facade only selects the target adapter. `DirectoryService`,
 `VolumeService` and `StorageService` are defined in core; their `FileSystem`
 aggregate is the engine contract. Each platform implements these interfaces in
 its own crate and runs the common conformance tests. Windows/Linux implementation
@@ -363,9 +395,9 @@ independent budgets.
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build -p fm-app --locked
-cargo run -p fm-app -- --smoke-test
-cargo run -p fm-app -- --ui-smoke-test --software
+cargo build -p midnight-explorer --locked
+cargo run -p midnight-explorer -- --smoke-test
+cargo run -p midnight-explorer -- --ui-smoke-test --software
 ```
 
 The application also supports `--snapshot FILE.png` for a native-window smoke
@@ -403,8 +435,10 @@ Missing packages remove their features after restart, including native browsing
 when the platform's native provider is absent. Plugins use a versioned C ABI;
 Slint rendering and Tokio orchestration stay in the host. Native plugins are
 trusted application code, not sandboxed extensions. Initial archives are read-only.
-Each plugin is developed in its own repository with its own build, dependencies,
-tests and CI, sharing only the published API/SDK. Plugins cannot depend on private
+Plugins share this Git repository but have independent Cargo workspaces under
+`plugins/`, with their own builds, dependencies, tests and CI. They share only the
+public API/SDK and must build from an exported plugin directory without host
+sources. Plugins cannot depend on private
 application crates or modify the main application's sources; API extensions are
 separate host-owned changes. Distribution packaging consumes plugin artifacts.
 These are designs, not enabled viewer/VFS/session-reuse implementations. Each OS

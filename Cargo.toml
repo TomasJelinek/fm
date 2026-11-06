@@ -9,22 +9,29 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
-fm-core = { path = "crates/fm-core" }
-fm-platform = { path = "crates/fm-platform" }
-fm-platform-common = { path = "crates/fm-platform-common" }
-fm-platform-windows = { path = "crates/fm-platform-windows" }
-fm-platform-linux = { path = "crates/fm-platform-linux" }
-fm-engine = { path = "crates/fm-engine" }
-fm-ui = { path = "crates/fm-ui" }
+midnight-core = { path = "crates/midnight-core" }
+midnight-platform = { path = "crates/midnight-platform" }
+midnight-platform-common = { path = "crates/midnight-platform-common" }
+midnight-platform-windows = { path = "crates/midnight-platform-windows" }
+midnight-platform-linux = { path = "crates/midnight-platform-linux" }
+midnight-engine = { path = "crates/midnight-engine" }
+midnight-ui = { path = "crates/midnight-ui" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg-wgpu", "renderer-software", "compat-1-2"] }
 slint-build = "=1.18.1"
 tempfile = "3"
 
 [profile.release]
-lto = "thin"
+opt-level = 3
+lto = "fat"
 codegen-units = 1
-strip = "debuginfo"
+incremental = false
+debug = false
+strip = "symbols"
+debug-assertions = false
+# Integrity checks and worker panic recovery also apply to optimized builds.
+overflow-checks = true
+panic = "unwind"
 
 # Keep backend debugging intact while avoiding unoptimized per-frame UI/renderer
 # work. Native resize measurements are documented in docs/verification.
@@ -43,7 +50,12 @@ opt-level = 2
 [profile.dev.package.wgpu-hal]
 opt-level = 2
 
-[profile.dev.package.fm-ui]
+# Fractional scrolling can materialize a WGPU pipeline after idle frames evict
+# it. Keep shader translation inside the frame budget in development builds.
+[profile.dev.package.naga]
+opt-level = 2
+
+[profile.dev.package.midnight-ui]
 opt-level = 1
 
 # Text shaping and font lookup are part of every resized text layout too.

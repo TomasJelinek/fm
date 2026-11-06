@@ -7,7 +7,7 @@ This extends the existing commander interface.
 Behavioral references were checked in local Salamander sources:
 `src/fileswn0.cpp:1057` (Space selects, optionally measures, then advances),
 `:1119`/`:1376` (Insert and ending search), and `src/fileswn1.cpp:2191` (Hot Paths).
-These guide behavior only; FM keeps its own Unicode and asynchronous implementation.
+These guide behavior only; Midnight Explorer keeps its own Unicode and asynchronous implementation.
 The requested numbered tab shortcuts take precedence over Salamander assignments.
 
 ## Requested behavior

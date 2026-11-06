@@ -3,7 +3,7 @@
 This increment implements the user's requests for drive tooltips, host icons
 where suitable, identical drive/special-location availability in the quick strip
 and dropdown, and the complete active command directory without elision.
-The verified starting point is commit `d4ef58a` (FM 0.1).
+The verified starting point is commit `d4ef58a` (Midnight Explorer 0.1).
 
 ## Navigation choices
 
@@ -28,7 +28,7 @@ not be presented as zero. Expanded drive labels retain label and free space.
 
 Extend the existing platform-neutral icon key with semantic action and location
 roles. Reuse the bounded asynchronous icon worker and cache; no discovery,
-Shell query, file read or raster decoding runs in `fm-ui`. Prefetch the finite
+Shell query, file read or raster decoding runs in `midnight-ui`. Prefetch the finite
 action palette and discovered location kinds. Keep per-drive native identities.
 
 The named action palette covers navigation, bookmarks, tabs, terminal, options,
@@ -95,7 +95,7 @@ reject ambiguous CMD literals rather than changing their target identity.
 Behavior reference checked in Open Salamander: `src/editwnd.cpp:1734`
 (`SetDirectory`), `:1752` (`GetNeededHeight`), `:1757` (`ResizeChilds`) and `:337`
 (`InsertText`). Its prompt and editor share one text row, with separate prompt
-and command content. FM keeps that compact arrangement while preserving full
+and command content. Midnight Explorer keeps that compact arrangement while preserving full
 Unicode/native identities and horizontally accessible long paths. The C++/ANSI
 implementation is a behavior reference only; no source is copied.
 

@@ -1,0 +1,127 @@
+//! Small presentation strings are copied through a bounded backend clipboard command.
+use super::*;
+
+pub(crate) struct PanelDetail {
+    pub(crate) identity: String,
+    pub(crate) label: &'static str,
+    pub(crate) value: String,
+}
+
+impl Presenter {
+    pub(crate) fn panel_details(&self, pane: PaneId) -> Vec<PanelDetail> {
+        let p = &self.panes[pane.index()];
+        if !p.selected.is_empty()
+            || !p.selection_preview.is_empty()
+            || p.selection_deferred
+            || p.selection_pending_bulk
+            || p.selection_rebase_pending
+        {
+            let files = p.selected.file_count();
+            let folders = p.selected.folder_count();
+            let pending = !p.selection_preview.is_empty()
+                || p.selection_deferred
+                || p.selection_rebase_pending;
+            let value = format!(
+                "{files} {}, {folders} {}{}",
+                if files == 1 { "file" } else { "files" },
+                if folders == 1 { "folder" } else { "folders" },
+                if pending { " (updating)" } else { "" }
+            );
+            return vec![PanelDetail {
+                identity: format!(
+                    "detail:{}:selection:{}:{}:{value}",
+                    p.generation, p.selection_applied.0, p.selection_revision.0
+                ),
+                label: "Selected",
+                value,
+            }];
+        }
+        if p.parent_cursor {
+            return [("Name", ".."), ("Bytes", "—")]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (label, value))| PanelDetail {
+                    identity: format!("detail:{}:parent:{index}:{value}", p.generation),
+                    label,
+                    value: value.into(),
+                })
+                .collect();
+        }
+        let Some(entry) = p.cursor.and_then(|id| p.entry_by_id(id)) else {
+            return Vec::new();
+        };
+        if !p.search_allows_activation() {
+            return Vec::new();
+        }
+        let metadata = p
+            .metadata
+            .get(&entry.id)
+            .filter(|_| p.showing_stream())
+            .unwrap_or(&entry.metadata);
+        let size = match entry.kind {
+            EntryKind::Directory => p.folder_sizes.get(&entry.path).map(|size| {
+                if size.finished && size.errors == 0 {
+                    self.number_locale.format_u64(size.bytes)
+                } else {
+                    format!("≈ {}", self.number_locale.format_u64(size.bytes))
+                }
+            }),
+            EntryKind::File => metadata
+                .size
+                .map(|size| self.number_locale.format_u64(size)),
+            _ => None,
+        };
+        let date_time = crate::time_presentation::modified(metadata);
+        let mut fields = vec![
+            ("Name", entry.display_name.clone()),
+            ("Bytes", size.unwrap_or_else(|| "—".into())),
+            (
+                "Date",
+                date_time
+                    .as_ref()
+                    .map_or("—", |value| value.date.as_str())
+                    .to_owned(),
+            ),
+            (
+                "Time",
+                date_time
+                    .as_ref()
+                    .map_or("—", |value| value.time.as_str())
+                    .to_owned(),
+            ),
+        ];
+        fields.extend(crate::detail_attributes::fields(metadata));
+        fields
+            .into_iter()
+            .enumerate()
+            .map(|(index, (label, value))| PanelDetail {
+                // Including the field value rejects a held click across a metadata update too.
+                identity: format!(
+                    "detail:{}:{}:{}:{}:{index}:{value}",
+                    p.generation,
+                    p.displayed_generation().0,
+                    p.search.view_revision,
+                    entry.id.0
+                ),
+                label,
+                value,
+            })
+            .collect()
+    }
+
+    pub(crate) fn copy_panel_detail(
+        &mut self,
+        pane: PaneId,
+        token: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Some(field) = self
+            .panel_details(pane)
+            .into_iter()
+            .find(|field| field.identity == token)
+        else {
+            return false;
+        };
+        self.queue_clipboard_text(field.value, send)
+    }
+}

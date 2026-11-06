@@ -17,7 +17,7 @@ Současný `TerminalService::launch_terminal` vrací pokaždé nový vlastněný
 Linuxová implementace otevírá externí terminál a pro `Elevated` přidává
 `/usr/bin/sudo --`. Její wrapper po příkazu provede `exec /bin/sh -i`; ve zvýšeném
 režimu tím zůstává v tomto okně interaktivní root shell. Uživatel v něm může
-pracovat ručně. **Další Enter v editoru FM však založí nové okno/TTY a do
+pracovat ručně. **Další Enter v editoru Midnight Explorer však založí nové okno/TTY a do
 předchozího okna se neposílá. Automatické opětovné použití ještě implementované
 není.**
 
@@ -25,11 +25,11 @@ Konkrétní místa pro navazující změnu:
 
 | Soubor / rozhraní | Dnešní chování |
 | --- | --- |
-| `fm-core/src/desktop.rs`: `TerminalRequest` | Zachycuje příkaz, raw cwd, shell a Standard/Elevated |
-| `fm-core/src/desktop.rs`: `TerminalService` | Vrací nový TerminalProcess, neumí vrátit existující relaci |
-| `fm-platform-linux/src/desktop.rs`: `COMMAND_WRAPPER`, `terminal_command` | Nový terminál a sudo pro každý požadavek; wrapper ponechá interaktivní shell |
-| `fm-engine/src/desktop.rs`: `Desktop::launch`, `TrackedChild` | Jedna kapacita spuštění, osm sledovaných procesů, samostatný reaper |
-| `fm-ui/src/presenter/desktop.rs`: `submit_command` | Zmrazí obsah editoru/cwd/shell/mode, hlídá duplicitu během spuštění |
+| `midnight-core/src/desktop.rs`: `TerminalRequest` | Zachycuje příkaz, raw cwd, shell a Standard/Elevated |
+| `midnight-core/src/desktop.rs`: `TerminalService` | Vrací nový TerminalProcess, neumí vrátit existující relaci |
+| `midnight-platform-linux/src/desktop.rs`: `COMMAND_WRAPPER`, `terminal_command` | Nový terminál a sudo pro každý požadavek; wrapper ponechá interaktivní shell |
+| `midnight-engine/src/desktop.rs`: `Desktop::launch`, `TrackedChild` | Jedna kapacita spuštění, osm sledovaných procesů, samostatný reaper |
+| `midnight-ui/src/presenter/desktop.rs`: `submit_command` | Zmrazí obsah editoru/cwd/shell/mode, hlídá duplicitu během spuštění |
 
 Tato implementace nesmí být v UI nebo dokumentaci označená jako sdílená sudo
 relace. Nový návrh při aktivaci reusable režimu nahradí root interaktivní wrapper
@@ -46,24 +46,24 @@ reference se do nového návrhu nepřenášejí.
 Sudoers spravuje vlastní dočasné záznamy ověření. Rozsah může být terminál,
 rodičovský proces nebo globální uživatelský záznam; nový terminál proto nemusí
 sdílet předchozí ověření. Přesnou dobu i požadavek na nové ověření určuje místní
-politika, ne FM. Stejný broker/TTY zachovává identitu, ke které se záznam může
+politika, ne Midnight Explorer. Stejný broker/TTY zachovává identitu, ke které se záznam může
 vázat. [Ubuntu 24.04: sudoers](https://manpages.ubuntu.com/manpages/noble/man5/sudoers.5.html)
 
 `sudo -v` může ověření obnovit bez provedení příkazu; `-n` zakáže interaktivní
 dotaz. `sudo -k` bez příkazu zneplatňuje příslušný záznam podle politiky, kdežto
-`-K` maže všechny uživatelovy záznamy. FM nebude automaticky používat obnovovací
+`-K` maže všechny uživatelovy záznamy. Midnight Explorer nebude automaticky používat obnovovací
 smyčku ani globální odstranění. [Ubuntu 24.04: sudo](https://manpages.ubuntu.com/manpages/noble/man8/sudo.8.html)
 
 Z toho plyne omezený slib: během platnosti systémového ověření může další příkaz
 v téže podporované relaci proběhnout bez hesla. Po vypršení, změně politiky nebo
-jejím požadavku na ověření každého příkazu se systém znovu zeptá. FM tento
+jejím požadavku na ověření každého příkazu se systém znovu zeptá. Midnight Explorer tento
 požadavek neobchází a nezobrazuje vlastní odhad „ověřeno do 12:30“.
 
 ## 3. Zvažované přístupy
 
 | Přístup | Přínos | Náklad / rozhodnutí |
 | --- | --- | --- |
-| Heslo v paměti, keyringu nebo konfiguraci FM | Mohlo by se znovu dodat procesu | Odmítnuto; FM se nemá stát správcem sudo hesla, nepoužije `-S` ani askpass |
+| Heslo v paměti, keyringu nebo konfiguraci Midnight Explorer | Mohlo by se znovu dodat procesu | Odmítnuto; Midnight Explorer se nemá stát správcem sudo hesla, nepoužije `-S` ani askpass |
 | Nové okno a periodické `sudo -v` někde na pozadí | Malá změna launcheru | Neřeší oddělené TTY a může bez práce prodlužovat oprávnění; odmítnuto |
 | Trvale otevřený root shell / root IPC server | Příkazy už nepotřebují nové ověření | Obchází přirozené znovuověření pro další příkazy a zvětšuje privilegovanou část; nedoporučeno |
 | Neprivilegovaný broker, stejná TTY, sudo na každý příkaz | Reuse systémové cache bez držení hesla či root serveru | Doporučený návrh; vyžaduje explicitní session API a ověřený lokální transport |
@@ -84,14 +84,14 @@ stateDiagram-v2
     Starting --> Closed: chyba / zavření okna
     Idle --> Running: přijmout jediný explicitní příkaz
     Running --> Idle: sudo a příkaz skončily
-    Running --> Closing: FM končí / uživatel zavře relaci
+    Running --> Closing: Midnight Explorer končí / uživatel zavře relaci
     Idle --> Closing: zavření / idle limit / EOF
     Closing --> Closed: konec vlastněných prostředků
 ```
 
 První Enter otevře jeden systémový terminál s brokerem a zachytí nejvýše jeden
 počáteční příkaz. Broker v něm spustí sudo. Heslo či jiné ověření zadává uživatel
-přímo systémovému sudo v tomto okně. Broker ani FM nečtou data terminálového
+přímo systémovému sudo v tomto okně. Broker ani Midnight Explorer nečtou data terminálového
 vstupu; stdin/stdout/stderr dítěte zůstávají připojené k terminálu.
 
 Další Enter při `Idle` odešle do stejného brokeru nový explicitní příkaz. Při
@@ -120,23 +120,23 @@ session ID ani spojení se neobnovují z nastavení.
 ## 5. IPC a důvěryhodná identita procesu
 
 Socket s oprávněními 0600 nebo náhodný token sám nestačí k tvrzení, že příkaz
-odeslala správná instance FM. Uživatel může mít jiné procesy se stejným UID;
+odeslala správná instance Midnight Explorer. Uživatel může mít jiné procesy se stejným UID;
 otevřené ověřené TTY se nesmí stát obecně dostupným sudo command endpointem.
 
 Linux adaptér použije privátní unixové IPC, kernelová peer credentials a přesnou
-identitu původní instance FM. `SO_PEERCRED` poskytuje PID/UID/GID peeru;
+identitu původní instance Midnight Explorer. `SO_PEERCRED` poskytuje PID/UID/GID peeru;
 credentials nejsou náhrada za kontrolu jeho životního cyklu.
 [Linux man-pages: unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html)
 
 Procesní identita obsahuje UID, PID a kernelově ověřenou identitu životnosti.
-Broker povolí pouze původní proces FM; nepřevezme nového klienta stejného UID.
+Broker povolí pouze původní proces Midnight Explorer; nepřevezme nového klienta stejného UID.
 PID se samostatně nepovažuje za identitu, protože může být znovu použit. Linux
 adaptér má preferovat kernelově svázaný peer process handle; při použití pidfd
 musí prokázat, že skutečně odkazuje na peer daného spojení. Pouhé pozdější
 `pidfd_open(numeric_pid)` bez této vazby závod neřeší.
 [Linux man-pages: pidfd_open(2)](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
 
-Vzájemné ověření platí i opačně: FM ověří, že připojený broker patří právě
+Vzájemné ověření platí i opačně: Midnight Explorer ověří, že připojený broker patří právě
 spuštěné terminálové relaci a očekávanému executable. Cizí proces nesmí vyhrát
 závod o první spojení tím, že uvede stejné session ID.
 
@@ -221,7 +221,7 @@ UI rozlišuje `Opening`, `Ready`, `Busy`, `Closing`, `Closed` a chybu. Neoznaču
 draft, cwd, shell a mode právě jednou; změna pickeru nic neodešle a obsah
 editoru neztratí. Zvýšený režim zůstává viditelný a má akci Close session.
 
-Broker může být zvláštní CLI režim téhož `fm-app` executable, obsloužený před
+Broker může být zvláštní CLI režim téhož `midnight-explorer` executable, obsloužený před
 inicializací Slintu a GUI runtime. Linux kód patří do Linux platformních souborů;
 Windows/macOS těla nesmějí být v témže implementačním souboru. Samostatný helper
 binary je alternativa pouze s vyřešeným balením a ověřením identity executable.
@@ -230,13 +230,13 @@ binary je alternativa pouze s vyřešeným balením a ověřením identity execu
 
 Zavření nečinné relace nebo IPC EOF broker ukončí. Při běžícím explicitním
 příkazu označí relaci jako Closing a další příkazy odmítne. Výchozí chování je
-dokončit již spuštěný příkaz a pak skončit; nezabíjet při zavření FM plošně
+dokončit již spuštěný příkaz a pak skončit; nezabíjet při zavření Midnight Explorer plošně
 potomky podle nalezeného jména/PID. Zastavení aktivního programu je samostatná
 výslovná akce nad ověřeným vlastněným procesem, ne automatický rollback.
 
 Broker neběží jako root ani nenechává po skončení unmanaged root shell.
 Příkaz, který uživatel sám výslovně zvolil jako interaktivní root shell, může
-samozřejmě zůstat aktivní až do svého ukončení; FM do jeho stdin další Run
+samozřejmě zůstat aktivní až do svého ukončení; Midnight Explorer do jeho stdin další Run
 požadavky nepíše. Zamítnutí, zrušení autentizace či zavření okna nepřehraje
 původní zdroj pod jinými oprávněními.
 
@@ -287,7 +287,7 @@ výchozí návrh, nikoli zásah do sudo cache timeoutu.
   sekvence nic neodemkne. Není žádná terminálová injekce do password promptu.
 - Jedna rezervace procesu při otevření a žádná nová při reuse; plná kapacita a
   pomalá relace neblokují navigaci ani obyčejný nový terminál.
-- Idle close, okno zavřené uživatelem, FM crash/EOF, aktivní příkaz při ukončení,
+- Idle close, okno zavřené uživatelem, Midnight Explorer crash/EOF, aktivní příkaz při ukončení,
   ztracené potvrzení, reaper a opakované Close nemají duplicitní provedení.
 - Nastavení/logy/crash diagnostika neobsahují heslo, session transport ani obsah
   terminálového vstupu. Zvýšený výběr se neobnoví po restartu.

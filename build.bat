@@ -13,11 +13,11 @@ if /i "%~1"=="release" goto release
 goto usage
 
 :debug
-set "FM_BUILD_PROFILE="
+set "MIDNIGHT_BUILD_PROFILE="
 goto build
 
 :release
-set "FM_BUILD_PROFILE=--release"
+set "MIDNIGHT_BUILD_PROFILE=--release"
 
 :build
 pushd "%~dp0" || exit /b 1
@@ -27,28 +27,28 @@ set "TEMP=%CD%\_build\tmp"
 set "TMP=%TEMP%"
 where cargo >nul 2>nul
 if errorlevel 1 goto local_cargo
-call cargo build -p fm-app --locked %FM_BUILD_PROFILE%
-set "FM_BUILD_EXIT=%errorlevel%"
+call cargo build -p midnight-explorer --locked %MIDNIGHT_BUILD_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
 :local_cargo
 if not exist ".tools\cargo\bin\cargo.exe" goto missing_cargo
-powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p fm-app --locked %FM_BUILD_PROFILE%
-set "FM_BUILD_EXIT=%errorlevel%"
+powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer --locked %MIDNIGHT_BUILD_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
 :missing_cargo
 >&2 echo Rust Cargo was not found. Install Rust with rustup and reopen your terminal.
-set "FM_BUILD_EXIT=127"
+set "MIDNIGHT_BUILD_EXIT=127"
 goto done
 
 :temporary_failure
 >&2 echo Could not create the build temporary directory under _build.
-set "FM_BUILD_EXIT=1"
+set "MIDNIGHT_BUILD_EXIT=1"
 
 :done
 popd
-exit /b %FM_BUILD_EXIT%
+exit /b %MIDNIGHT_BUILD_EXIT%
 
 :usage
 >&2 echo Usage: build.bat [debug^|release]

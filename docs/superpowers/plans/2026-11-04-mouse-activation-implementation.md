@@ -13,5 +13,5 @@ No Git repository exists; retain evidence under `.superpowers/sdd/mouse-activati
 Final evidence: Windows 215 passed (two subprocess-only fixtures ignored directly
 but covered by passing parents); Linux 207 passed. Both strict Clippy/build/smoke
 and 89-file size guards passed. Windows native UI smoke screenshot inspected;
-updated FM launched visibly as the desktop user. See
+updated Midnight Explorer launched visibly as the desktop user. See
 `docs/verification/mouse-activation.md` for test boundaries and results.

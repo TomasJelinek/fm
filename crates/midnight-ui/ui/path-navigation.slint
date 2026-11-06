@@ -1,0 +1,121 @@
+import { ScrollView } from "std-widgets.slint";
+import { HintedLineEdit } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+import { PathPartRow } from "navigation-models.slint";
+
+// Paths are parsed by the backend. Each token contains a whole component,
+// preserving its Unicode shaping; the UI never reconstructs an operation path.
+export component PathNavigation inherits Rectangle {
+    in property <string> path;
+    in property <[PathPartRow]> parts;
+    in property <string> hint;
+    in-out property <string> text <=> editor.text;
+    out property <bool> has-focus: editor.has-focus;
+    out property <bool> editing: root.edit-mode;
+    out property <string> highlighted-prefix: root.hovered-index >= 0 && root.hovered-index < root.parts.length
+        ? root.parts[root.hovered-index].prefix : "";
+    private property <bool> edit-mode;
+    private property <int> hovered-index: -1;
+    private property <int> revision;
+    callback navigate(string);
+    callback selected-part(string);
+    callback copy-part(string);
+    callback cancelled();
+    callback editing-started();
+    border-width: 1px; border-radius: 3px;
+    border-color: root.has-focus ? Theme.active-frame : Theme.frame;
+    background: Theme.surface;
+    changed path => { editor.text = root.path; root.hovered-index = -1; trail.content-x = 0px; }
+    changed parts => { root.revision += 1; root.hovered-index = -1; }
+    init => { editor.text = root.path; }
+    public function focus-editor() {
+        root.editing-started();
+        root.edit-mode = true; editor.text = root.path; editor.focus();
+    }
+    public function finish-edit() {
+        root.edit-mode = false; editor.text = root.path;
+    }
+    trail := ScrollView {
+        visible: !root.edit-mode;
+        x: 3px; y: 1px; width: parent.width - 6px; height: parent.height - 2px;
+        horizontal-scrollbar-policy: always-off;
+        vertical-scrollbar-policy: always-off;
+        mouse-drag-pan-enabled: true;
+        HorizontalLayout {
+            spacing: 0px; alignment: start;
+            if root.parts.length == 0 : Text {
+                text: root.path; color: Theme.text; font-size: Theme.font-size;
+                vertical-alignment: center;
+            }
+            for part[index] in root.parts : Rectangle {
+                width: caption.preferred-width;
+                height: trail.visible-height;
+                background: root.hovered-index >= index ? Theme.hover : transparent;
+                border-radius: 2px;
+                accessible-role: button;
+                accessible-label: "Open " + part.prefix;
+                accessible-action-default => { root.selected-part(part.identity); }
+                caption := Text {
+                    x: 0px; width: parent.width; height: parent.height;
+                    text: part.label; color: root.hovered-index >= index ? Theme.accent : Theme.text;
+                    font-size: Theme.font-size; vertical-alignment: center;
+                }
+                TouchArea {
+                    private property <string> pressed-id;
+                    private property <int> pressed-revision;
+                    private property <bool> right-pressed;
+                    changed has-hover => {
+                        if self.has-hover { root.hovered-index = index; }
+                        else if root.hovered-index == index { root.hovered-index = -1; }
+                    }
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down {
+                            self.pressed-id = part.identity;
+                            self.pressed-revision = root.revision;
+                            self.right-pressed = event.button == PointerEventButton.right;
+                        } else if event.kind == PointerEventKind.up
+                            && event.button == PointerEventButton.right && self.right-pressed {
+                            if self.pressed-id == part.identity
+                                && self.pressed-revision == root.revision && self.has-hover {
+                                root.copy-part(self.pressed-id);
+                            }
+                            self.right-pressed = false;
+                        } else if event.kind == PointerEventKind.cancel {
+                            self.pressed-id = ""; self.right-pressed = false;
+                        }
+                    }
+                    clicked => {
+                        if self.pressed-id == part.identity && self.pressed-revision == root.revision {
+                            root.selected-part(self.pressed-id);
+                        }
+                    }
+                }
+                Tooltip { TipBody { text: "Open " + part.prefix + "\nRight-click copies this path."; } }
+            }
+            Rectangle {
+                min-width: 32px; horizontal-stretch: 1;
+                height: trail.visible-height;
+                accessible-role: button; accessible-label: "Edit folder path";
+                accessible-action-default => { root.focus-editor(); }
+                TouchArea { clicked => { root.focus-editor(); } }
+                Tooltip { TipBody { text: "Enter a folder path (Ctrl+G). Enter opens it; Escape cancels."; } }
+            }
+        }
+    }
+    FocusScope {
+        visible: root.edit-mode;
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        forward-focus: editor;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.finish-edit(); root.cancelled(); return accept; }
+            reject
+        }
+        editor := HintedLineEdit {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            accessible-label: "Folder path";
+            hint: root.hint;
+            accepted => { root.navigate(self.text); }
+        }
+    }
+}

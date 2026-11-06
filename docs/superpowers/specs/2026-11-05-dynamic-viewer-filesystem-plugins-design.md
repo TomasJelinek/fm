@@ -67,16 +67,16 @@ Tím se do každého pluginu negeneruje další kopie Slint komponent.
 
 | Budoucí crate / vrstva | Odpovědnost |
 | --- | --- |
-| `fm-core` | Bezpečné interní typy VFS, vieweru, capabilities a chyb; žádné FFI |
-| `fm-plugin-api` | C layout, číselné tagy, verze, specifikace zpráv a generovaný C header; bez Slintu/Tokia |
-| `fm-plugin-sdk` | Veřejná součást API distribuce: úzké auditované FFI wrappery, vlastnictví bufferů, dispatch, bezpečné Rust rozhraní pro autory pluginů; žádná interní implementace hostitele |
-| `fm-plugin-host` | Discovery, validace, ABI adaptér, knihovní lifetime; platformní loadery v oddělených souborech/crates |
-| `fm-engine` | Tokio orchestrace, registry, mount/session/lease, rušení, rozpočty, cache, budoucí copy engine |
-| `fm-viewer-text` | `cdylib`: dekódování, index, hledání a volitelné syntax spany |
-| `fm-fs-native-windows`, `fm-fs-native-linux` | Samostatné `cdylib` implementace společného VFS; později `fm-fs-native-macos` |
-| `fm-fs-zip`, `fm-fs-gzip`, `fm-fs-tar`, `fm-fs-7z` | Nezávislé archivační `cdylib` projekty; vlastní implementace, závislosti a testy |
-| `fm-fs-network` | Budoucí samostatný discovery/filesystem plugin; vlastní projekt/testy, API-only závislosti a oddělené OS adaptery |
-| `fm-platform-*` | Vestavěné hostitelské služby: start aplikace, nastavení, loader, terminál, clipboard, ikony a fonty |
+| `midnight-core` | Bezpečné interní typy VFS, vieweru, capabilities a chyb; žádné FFI |
+| `midnight-plugin-api` | C layout, číselné tagy, verze, specifikace zpráv a generovaný C header; bez Slintu/Tokia |
+| `midnight-plugin-sdk` | Veřejná součást API distribuce: úzké auditované FFI wrappery, vlastnictví bufferů, dispatch, bezpečné Rust rozhraní pro autory pluginů; žádná interní implementace hostitele |
+| `midnight-plugin-host` | Discovery, validace, ABI adaptér, knihovní lifetime; platformní loadery v oddělených souborech/crates |
+| `midnight-engine` | Tokio orchestrace, registry, mount/session/lease, rušení, rozpočty, cache, budoucí copy engine |
+| `midnight-viewer-text` | `cdylib`: dekódování, index, hledání a volitelné syntax spany |
+| `midnight-fs-native-windows`, `midnight-fs-native-linux` | Samostatné `cdylib` implementace společného VFS; později `midnight-fs-native-macos` |
+| `midnight-fs-zip`, `midnight-fs-gzip`, `midnight-fs-tar`, `midnight-fs-7z` | Nezávislé archivační `cdylib` projekty; vlastní implementace, závislosti a testy |
+| `midnight-fs-network` | Budoucí samostatný discovery/filesystem plugin; vlastní projekt/testy, API-only závislosti a oddělené OS adaptery |
+| `midnight-platform-*` | Vestavěné hostitelské služby: start aplikace, nastavení, loader, terminál, clipboard, ikony a fonty |
 
 Obecné platformní služby nejsou další skrytá implementace VFS. Host musí umět
 načíst konfiguraci a pluginy i bez nativního VFS. Procházení uživatelských souborů
@@ -86,21 +86,23 @@ Nové auditované FFI výjimky zůstanou ve vyhrazených crates; core/engine/app
 
 ### Samostatný vývoj a vlastnictví testů
 
-Každý dodávaný plugin je samostatný repozitář a Cargo projekt/workspace, s vlastní
+Podle volby uživatele z 6. listopadu 2026 zůstává jeden Git repozitář. Každý
+dodávaný plugin je samostatný Cargo projekt/workspace pod `plugins/`, s vlastní
 release verzí, `Cargo.lock`, závislostmi, buildem a CI. Názvy crates v tabulce
 neznamenají, že pluginy patří mezi workspace members hlavní aplikace. To platí
 i pro nativní Windows/Linux/macOS filesystemy a první text viewer; nejsou výjimkou.
+Sdílený Git neznamená sdílený Cargo workspace ani závislost na interních app crates.
 
 Jedinou sdílenou projektovou závislostí je vydaný veřejný API balíček: ABI/schema,
 header, čistý SDK adaptér a případný obecný conformance harness. SDK je součást
-veřejného kontraktu, nikoli způsob importu `fm-core`, `fm-engine`, `fm-ui`,
-`fm-platform-*` či `fm-plugin-host`. Ani transitivně nesmí plugin záviset na
+veřejného kontraktu, nikoli způsob importu `midnight-core`, `midnight-engine`, `midnight-ui`,
+`midnight-platform-*` či `midnight-plugin-host`. Ani transitivně nesmí plugin záviset na
 interních crates aplikace, jiném pluginu, privátních helper knihovnách projektu
 nebo zdrojových souborech hostitele. Běžné nezávislé knihovny třetích stran jsou
 povolené; dva pluginy mohou použít stejný veřejný decoder crate bez sdílení své
 implementace. API nepřibaluje konkrétní parser, renderer nebo native provider.
 
-Plugin musí jít sestavit a otestovat z čistého checkoutu pouze s publikovaným
+Plugin musí jít sestavit a otestovat z exportu jeho vlastní složky pouze s vydaným
 API/SDK a svými deklarovanými závislostmi. Není potřeba checkout hlavní aplikace.
 Zakázané jsou cesty do jejího workspace, `include!` jejích zdrojů, lokální patche
 jejích crates, build-script generování do jejích adresářů i úpravy aplikace kvůli
@@ -108,11 +110,12 @@ konkrétnímu pluginu. Instalace přidává jen vlastní package do `viewers/` n
 `filesystems/`; nemění EXE, zdrojáky hostitele ani ostatní balíčky.
 
 Unit, integration, parser/format fixtures, fuzzing, benchmarks a platformní testy
-konkrétního pluginu žijí v jeho repozitáři a běží v jeho CI. Obecnou conformance
+konkrétního pluginu žijí v jeho projektu a běží v jeho samostatném CI jobu. Obecnou conformance
 sadu veřejného API spouští také plugin CI. Test s reálným hostitelem použije
 vydanou binárku/test harness a vlastní dočasnou instalační sestavu; nesmí vyžadovat
 editaci host source tree ani instalovaných uživatelských pluginů. CI pluginu
-nemá zápisový přístup do repozitáře hlavní aplikace.
+nemá zápisový přístup do zdrojů hlavní aplikace: používá export pluginu a vydané
+API/SDK, případně hlavní zdroje připojené pouze pro čtení. Monorepo tento zákaz neruší.
 
 Hostitel vlastní jen svoje obecné loader/broker/UI testy a integrační testy přes
 veřejnou hranici, například absence pluginu, ABI mismatch a fake blocked provider.
@@ -133,28 +136,28 @@ popsaná v oddílu 9.
 Příklad Windows distribuce; Linux mění knihovny na `.so`, později macOS na `.dylib`:
 
 ```text
-FM/
-  fm-app.exe
+Midnight Explorer/
+  midnight-explorer.exe
   viewers/
     text/
       plugin.toml
-      fm_viewer_text.dll
+      midnight_viewer_text.dll
   filesystems/
     native-windows/
       plugin.toml
-      fm_fs_native_windows.dll
+      midnight_fs_native_windows.dll
     zip/
       plugin.toml
-      fm_fs_zip.dll
+      midnight_fs_zip.dll
     gzip/
       plugin.toml
-      fm_fs_gzip.dll
+      midnight_fs_gzip.dll
     tar/
       plugin.toml
-      fm_fs_tar.dll
+      midnight_fs_tar.dll
     sevenzip/
       plugin.toml
-      fm_fs_7z.dll
+      midnight_fs_7z.dll
 ```
 
 Základ je skutečná instalační lokace spustitelného souboru, nikdy current working
@@ -163,7 +166,7 @@ přímý podadresář jednoho z těchto dvou kořenů, s manifestem a jednou ent
 Nevyhledávají se rekurzivně náhodné DLL/SO. macOS později mapuje stejná dvě
 logická umístění na podepsaný app bundle; nevyžaduje zápis vedle běžící aplikace.
 
-Manifest má `schema_version`, stabilní `id` (např. `fm.viewer.text`), `kind`
+Manifest má `schema_version`, stabilní `id` (např. `midnight.viewer.text`), `kind`
 (`viewer` nebo `filesystem`), `version`, `entry_library`, `target`, `abi_major`,
 `minimum_host_minor`, seznam `required_host_services`, podporované modely/formáty
 a popis. `entry_library` je jediné jméno souboru v package, nikoli libovolná cesta.
@@ -171,10 +174,10 @@ Verze produktu 0.1 a verze pluginu jsou nezávislé na ABI 1.0. Příklad:
 
 ```toml
 schema_version = 1
-id = "fm.viewer.text"
+id = "midnight.viewer.text"
 kind = "viewer"
 version = "0.1.0"
-entry_library = "fm_viewer_text.dll"
+entry_library = "midnight_viewer_text.dll"
 target = "x86_64-pc-windows-msvc"
 abi_major = 1
 minimum_host_minor = 0
@@ -213,11 +216,11 @@ uživatel dostane vysvětlení při vyvolání již uložené virtuální lokace
 
 ## 4. Binární kontrakt ABI 1
 
-Každá knihovna exportuje jediný entry point `fm_plugin_entry_v1`, přes `extern "C"`.
+Každá knihovna exportuje jediný entry point `midnight_plugin_entry_v1`, přes `extern "C"`.
 Vrací status a vyplní hostitelem předaný descriptor `PluginApiV1`. Hlavička
 obsahuje `struct_size`, `abi_major`, `abi_minor`, `kind` a tabulku funkcí.
 Nejde o export běžného Rust traitu. C header a přesný wire-schema katalog se
-stanou verzovanou součástí `fm-plugin-api` před první implementací pluginu.
+stanou verzovanou součástí `midnight-plugin-api` před první implementací pluginu.
 
 | Funkce společné tabulky | Kontrakt |
 | --- | --- |
@@ -593,7 +596,7 @@ nedůvěryhodnými účty nejsou bezpečný plugin root a loader je odmítne.
 
 ## 10. Migrace a implementační pořadí
 
-1. Verzovat `fm-plugin-api`, header a SDK ownership/queue protokol; vytvořit
+1. Verzovat `midnight-plugin-api`, header a SDK ownership/queue protokol; vytvořit
    fake viewer a fake filesystem jako skutečné sdílené knihovny. Nejdřív testovat
    ABI kompatibilitu, dynamické načtení, nepřítomnost a rušení přes reálnou hranici.
 2. Přidat oddělené Windows/Linux loadery, manifest discovery, plugin status
@@ -626,7 +629,7 @@ VFS/vieweru: test odebraného pluginu je podmínkou dokončení migrace.
 
 | Oblast | Povinné scénáře |
 | --- | --- |
-| Nezávislý vývoj | Čistý plugin checkout se sestaví a otestuje pouze s veřejným API/SDK, bez app sources; žádné přímé/transitivní interní nebo cross-plugin dependencies; vlastní CI/fixtures/fuzzing; build/test/install nemění host sources ani EXE; integrace přes vydanou binárku v temp sestavě |
+| Nezávislý vývoj | Export jedné plugin složky z monorepa se sestaví a otestuje pouze s veřejným API/SDK, bez app sources; žádné přímé/transitivní interní nebo cross-plugin dependencies; vlastní CI/fixtures/fuzzing; build/test/install nemění host sources ani EXE; integrace přes vydanou binárku v temp sestavě |
 | Discovery / skutečná DLL/SO | Prázdné složky; přidání/odebrání každého pluginu a restart; jiný cwd; Unicode/dlouhá instalační cesta; duplicate ID; wrong bitness/target; chybějící dependency; poškozený manifest; mismatch descriptor; symlink/reparse escape |
 | ABI | Samostatně kompilované host/plugin fixtures; minimum/minor prefix a nekompatibilní major; unknown required vs optional; short struct; allocator ownership; queue Full vs accepted; malformed message/span/length; stale/cross-instance handles |
 | Lifetime / async | Pozdní callback po cancel, instance shutdown s leases/workery/buffery, exactly-once terminal/drop, notification race, backpressure, nesting při jediném worker permitu bez deadlocku, thread affinity, backend cleanup |

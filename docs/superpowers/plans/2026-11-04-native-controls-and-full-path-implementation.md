@@ -9,7 +9,7 @@ above verified commit `d4ef58a`, preserving the backend/UI boundary.
 
 - Backend worker: core icon roles/keys, engine icon scheduling/cache, separated
   Windows/Linux icon adapters and meaningful backend/platform tests.
-- UI worker: all `fm-ui` choices/presenter/model/callbacks, named icon palette,
+- UI worker: all `midnight-ui` choices/presenter/model/callbacks, named icon palette,
   Slint controls/path layout and interaction regressions.
 - Root: documentation, integration review, complete verification, native QA
   and the follow-up source-only Git commit. No overlapping source ownership.

@@ -5,7 +5,33 @@ optional fast/slow modes. UI code handles input and presentation only. Filesyste
 access, large sorts/indexes, checksum work, large-object reclamation and diagnostic
 file encoding/writes execute in backend workers.
 
-## Current read-only milestone
+## Current browsing and explicit-operation milestone
+
+Rename/F2, create-directory/F7 and deletion are explicit, confirmed operations.
+Preparation pins native identity before showing the confirmation; navigation never
+retargets a queued job. The backend permits at most 32 preparing/prepared/queued/
+running jobs, two preparation workers and one active mutation. Native handles
+scale with the selected root count and traversal depth; resource failure is an
+error, never permission to substitute a target. Duplicate operation IDs cannot
+execute twice. Rename never overwrites. F7 accepts a relative nested path and
+does not follow links; partial intermediate creation is retained on failure.
+
+Delete/F8 uses only system Trash; Shift+Delete/Shift+F8 explicitly requests
+permanent deletion after a distinct confirmation. Unavailable Trash never triggers
+permanent deletion. Windows uses the dedicated Shell recycle method, which can
+reject paths beyond its own limit even though rename/create/permanent operations
+support long paths. Linux initially supports same-device home Trash only and
+requires Linux 5.6+ openat2. Destructive traversal never intentionally follows
+symlinks/junctions/mount boundaries. These are live operations, not atomic snapshots;
+cancellation retains completed changes. Normal window close requests cancellation
+and waits responsively for terminal job events before exiting.
+
+The Windows Shell recycle API remains path-based inside its native call; a
+concurrent namespace substitution there cannot be excluded. Linux private staging
+narrows pathname races but is not a boundary against the same UID, root or previously
+opened descendant handles. See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
+and the Linux mutation module's safety comments. No claim of universal race freedom
+is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.
 
 - Browsing does not copy, rename, delete, execute files, invoke a shell, request
   elevation or interpret filenames as code. Explicit navigation into a symbolic
@@ -55,7 +81,7 @@ file encoding/writes execute in backend workers.
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Version5 includes bookmarks, fonts, size display and command history, with v1–4 migration.
+  Version6 includes tabs, panel modes, bookmarks, fonts and command history, with v1–5 migration.
   Its 4MiB aggregate bound is a settings resource limit, not a path-length limit.
   Native path encodings are lossless and platform-specific; malformed/foreign
   encodings, duplicate IDs/slots and NUL paths are rejected. Late initial loads
@@ -65,7 +91,7 @@ file encoding/writes execute in backend workers.
   atomic publication preserve existing settings on failure. File sync is used;
   no power-loss durability of the parent directory entry is claimed.
 - Command history intentionally persists exact user-submitted text only after a
-  successful terminal launch, never command output or passwords collected by FM.
+  successful terminal launch, never command output or passwords collected by Midnight Explorer.
   Commands can contain secrets; the user authorized persistence and can disable
   it or clear history in Options. Keep at most100 distinct strings and1MiB of
   aggregate text without truncation; this is a retention budget, not an execution
@@ -229,8 +255,10 @@ a removable library under the installation's `viewers/` or `filesystems/` root.
   before loading code, checks platform/ABI/identity, and never searches the active
   panel, working directory, PATH or an archive for executable extensions. Native
   dependency lookup is constrained by separate platform loader implementations.
-- Plugin projects share only the published API/SDK. Their own repositories/CI
-  contain their tests and have no write access to the application's repository.
+- Plugin projects share one Git repository but only depend on the public API/SDK.
+  Their independent Cargo workspaces and CI jobs
+  contain their tests and have no write access to the host application's sources.
+  Exported-plugin CI runs without host sources, using the released public SDK.
   Building, testing or installing a plugin must never patch host sources or the
   executable. Integration tests consume a released host binary in a temporary
   distribution; extending host API requires a separate host-owned change.

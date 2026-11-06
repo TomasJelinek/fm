@@ -4,7 +4,7 @@
 
 **Goal:** A runnable Rust/Slint application with two independent, responsive filesystem panes and switching between mounted volumes.
 
-**Architecture:** One process, five crates. `fm-core` defines messages and synchronous platform-provider boundaries; `fm-engine` runs provider calls on bounded background workers under Tokio. `fm-ui` owns Slint and the presenter; `fm-app` connects them with a bounded queue and a coalesced UI wakeup.
+**Architecture:** One process, five crates. `midnight-core` defines messages and synchronous platform-provider boundaries; `midnight-engine` runs provider calls on bounded background workers under Tokio. `midnight-ui` owns Slint and the presenter; `midnight-explorer` connects them with a bounded queue and a coalesced UI wakeup.
 
 **Tech Stack:** Rust 1.99.1, Slint 1.18.1, Tokio 1, Windows MSVC; Linux build configuration included.
 
@@ -14,8 +14,8 @@
 
 - Rust, UI ve Slintu, Tokio pro asynchronní orchestrace.
 - Jeden proces, oddělené crates, komunikace přes zprávy.
-- `fm-core`, `fm-engine` a `fm-platform` neznají Slint.
-- `fm-ui` nevolá filesystem ani konkrétní engine.
+- `midnight-core`, `midnight-engine` a `midnight-platform` neznají Slint.
+- `midnight-ui` nevolá filesystem ani konkrétní engine.
 - UI must never wait for I/O, a full command queue, a worker, or a long-held lock.
 - Windows x64 and Linux Ubuntu/Mint; macOS later.
 - Navigation results carry a pane and generation; stale results never replace a newer location.
@@ -36,11 +36,11 @@ This directory has no Git repository. Work in the explicitly supplied project di
 ## File map
 
 - Root `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `.cargo/config.toml` and `scripts/cargo.ps1`: reproducible build and local toolchain helper.
-- `crates/fm-core/src/{lib,entry,protocol,provider}.rs`: domain contracts and sorting.
-- `crates/fm-platform/src/{lib,volumes}.rs`: local filesystem and OS volume adapters.
-- `crates/fm-engine/src/lib.rs`: async command loop, generations, bounded workers and streaming listings.
-- `crates/fm-ui/ui/{app,pane}.slint`, `crates/fm-ui/src/{lib,presenter,model}.rs`: visual shell, pure presenter, lazy virtualized row model.
-- `crates/fm-app/src/main.rs`: runtime, bounded inbox and UI lifecycle.
+- `crates/midnight-core/src/{lib,entry,protocol,provider}.rs`: domain contracts and sorting.
+- `crates/midnight-platform/src/{lib,volumes}.rs`: local filesystem and OS volume adapters.
+- `crates/midnight-engine/src/lib.rs`: async command loop, generations, bounded workers and streaming listings.
+- `crates/midnight-ui/ui/{app,pane}.slint`, `crates/midnight-ui/src/{lib,presenter,model}.rs`: visual shell, pure presenter, lazy virtualized row model.
+- `crates/midnight-explorer/src/main.rs`: runtime, bounded inbox and UI lifecycle.
 - `.github/workflows/ci.yml`, `README.md`: Windows/Linux checks and run instructions.
 
 ### Task 1: Core contracts and build foundation
@@ -52,7 +52,7 @@ This directory has no Git repository. Work in the explicitly supplied project di
 - [x] Write ordering tests: folders stay first in both directions; unknown sizes remain last; ties are deterministic.
 - [x] Run tests against unimplemented sorting and observe assertion failures.
 - [x] Implement the domain contracts and `sort_entries(&mut [Entry], SortSpec)` with cached name keys.
-- [x] Run `scripts/cargo.ps1 test -p fm-core` and retain the result.
+- [x] Run `scripts/cargo.ps1 test -p midnight-core` and retain the result.
 
 ### Task 2: Local filesystem and volumes
 
@@ -62,7 +62,7 @@ This directory has no Git repository. Work in the explicitly supplied project di
 - [x] Observe failure before implementing the provider.
 - [x] Enumerate names/types first without statting every file; expose metadata separately. Never follow special files during metadata or listing.
 - [x] Windows roots use Win32 logical-drive enumeration; Linux mounts parse escaped `/proc/self/mountinfo` fields, filter internal filesystems and include `/` plus Home. Test parsing on any host.
-- [x] Run `scripts/cargo.ps1 test -p fm-platform`.
+- [x] Run `scripts/cargo.ps1 test -p midnight-platform`.
 
 ### Task 3: Async navigation engine
 
@@ -72,7 +72,7 @@ This directory has no Git repository. Work in the explicitly supplied project di
 - [x] Observe failures, then implement a bounded worker budget, cooperative cancellation and per-pane generation ownership.
 - [x] Emit `ListingStarted`, bounded `EntriesBatch`, bounded `MetadataBatch`, final sorted `ListingFinished` with a shared immutable entry snapshot, or `ListingFailed`. UI must consume snapshots lazily.
 - [x] Discover volumes independently; retrieve free-space information independently from directory completion, with generation checks. Stop queued work when superseded or shutting down.
-- [x] Run `scripts/cargo.ps1 test -p fm-engine`.
+- [x] Run `scripts/cargo.ps1 test -p midnight-engine`.
 
 ### Task 4: Slint panels and presenter
 
@@ -82,11 +82,11 @@ This directory has no Git repository. Work in the explicitly supplied project di
 - [x] Observe failures and implement the pure presenter without filesystem access. Explicit navigation errors preserve the last usable listing/history; successful navigation commits history.
 - [x] Build two dense panels with independent volume selector/path entry, virtualized rows, name/size/date/type headers, loading/error state and status. Keep all model reads in memory.
 - [x] Wire Tab, Enter, Backspace, arrows, Page Up/Down, Home/End, Space/Insert, refresh and history navigation. Sorting is a new engine request; old results are ignored.
-- [x] Run presenter/model tests and compile `.slint` via `cargo check -p fm-ui`.
+- [x] Run presenter/model tests and compile `.slint` via `cargo check -p midnight-ui`.
 
 ### Task 5: Composition, smoke checks and delivery
 
-**Consumes:** Tasks 2–4. **Produces:** runnable `fm-app`, README and Windows/Linux CI.
+**Consumes:** Tasks 2–4. **Produces:** runnable `midnight-explorer`, README and Windows/Linux CI.
 
 - [x] Test bounded/coalesced wakeup behavior before implementing the bridge: multiple events produce at most one outstanding wake; draining cannot lose a wake during a producer race.
 - [x] Wire an explicit multi-thread Tokio runtime; bounded command/result channels; UI work budget; cancellation and bounded shutdown. No unbounded callback forwarding.
@@ -103,7 +103,7 @@ Copy/move/delete, checksum implementation, reparse-point traversal, thumbnails, 
 
 User-requested architecture refinement, specified in design section 15.
 
-**Files:** core provider traits; new `fm-platform-common`, `fm-platform-windows`, `fm-platform-linux` crates; existing `fm-platform` becomes facade; provider integration tests split by OS.
+**Files:** core provider traits; new `midnight-platform-common`, `midnight-platform-windows`, `midnight-platform-linux` crates; existing `midnight-platform` becomes facade; provider integration tests split by OS.
 
 **Interfaces:** `DirectoryService` has existing `read_directory`/`entry_metadata` signatures; `VolumeService` has `list_volumes`; `StorageService` has `space_info`. `FileSystem` is their object-safe aggregate with a blanket implementation. OS adapters implement all three; `LocalFileSystem::new(Option<PathBuf>)` remains the facade API. `home_directory()` comes from the selected OS adapter, removing mixed OS environment logic from the application.
 

@@ -22,7 +22,7 @@ provides immediate selection feedback while backend commands complete.
 ## Task 1 — Selection semantics, immediate feedback and benchmark
 
 Owned files: core/engine selection, presenter selection/input/state/tests,
-`fm-ui/src/lib.rs` row-model and row-click wiring, panel details selection summary.
+`midnight-ui/src/lib.rs` row-model and row-click wiring, panel details selection summary.
 
 - [x] Capture selection and resize baseline measurements before product edits.
 - [x] Add delayed-ack, queue refusal, range-anchor and selected-count regressions.

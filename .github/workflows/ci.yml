@@ -35,7 +35,7 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build
-        run: cargo build -p fm-app --locked
-      - name: Filesystem smoke test
-        run: cargo run -p fm-app --locked -- --smoke-test
+      - name: Optimized release build
+        run: cargo build -p midnight-explorer --release --locked
+      - name: Release filesystem smoke test
+        run: cargo run -p midnight-explorer --release --locked -- --smoke-test

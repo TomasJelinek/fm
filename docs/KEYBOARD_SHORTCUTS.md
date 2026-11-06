@@ -1,4 +1,4 @@
-# Keyboard shortcuts — FM 0.1
+# Keyboard shortcuts — Midnight Explorer 0.1
 
 These actions are implemented. File navigation, tab and bookmark shortcuts apply
 in the focused file list, preserving typing in the path/command/options editors.
@@ -9,6 +9,8 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | --- | --- |
 | Tab / Shift+Tab in files | Switch the active pane |
 | ↑ / ↓, PageUp / PageDown, Home / End | Move the focused row |
+| ← / → in Brief | Move to the previous / next file column |
+| ← / → and ↑ / ↓ in Thumbnails | Move between cells and grid rows |
 | Plain typing in files | Start Unicode case-insensitive filename-prefix search |
 | ↑ / ↓ during search | Visit previous / next matching name without wrapping |
 | Escape during search | Leave search and restore the complete listing |
@@ -47,6 +49,12 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | Enter in command editor | Explicitly submit the command to the selected system terminal |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |
 | F1 | Help |
+| F2 | Rename the focused file/folder; Enter confirms, Escape cancels |
+| Shift+F4 in files | New empty file in the captured panel folder; Enter confirms the name, Escape cancels; existing entries are never overwritten |
+| F7 | Create a folder or nested relative path in the active pane |
+| Delete / F8 | Confirm moving the selection (or focused entry) to the system Trash |
+| Shift+Delete / Shift+F8 | Explicitly confirm permanent deletion |
+| F11 / F12 | Connect / disconnect network drive through Windows system dialogs |
 | F9 | User menu; no custom command execution is configured in this milestone |
 | F10 | Main menu, including Options |
 | Alt+F4 | Exit |
@@ -69,7 +77,10 @@ dropdown. Its `. As Other Panel` item also works by mouse and uses the current
 opposite folder after Ctrl+U swaps the panels. Back/Forward arrows have history
 dropdowns. Tabs sit below the drive
 toolbar. Hovering a path segment highlights its prefix; clicking opens that raw
-ancestor; right-click copies that prefix without navigating. Drag the central
+ancestor; right-click copies that prefix without navigating. Click blank space
+after the path to edit it; Enter navigates and Escape cancels. Middle-click a tab
+to close it (the last tab remains). Tabs and their active position survive restart.
+Explicit `--left` / `--right` locations override restoration for that pane. Drag the central
 splitter to resize the panels, or double-click it to center. Tabs shrink uniformly
 and then expose scroll arrows at their minimum width. The details strip below each
 panel copies a field's displayed value
@@ -94,8 +105,11 @@ bookmarks are suspended during search/composition. Queries are independent per
 pane, survive sorting/refresh and clear on folder/tab navigation. Pending or
 empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 
-The bottom F2 Rename, F3 View, F4 Edit, F5 Copy, F6 Move, F7 New folder and
-F8 Delete actions are reserved for later stages and are currently disabled.
+F3 View, F4 Edit, F5 Copy and F6 Move remain reserved for later stages.
+Options follows F12 on the bottom bar; Jobs shows queued/running operations and
+allows cancellation. Cancellation retains changes already completed. No Trash
+failure ever falls back to permanent deletion. F7 does not follow links inside
+the entered relative path and leaves already-created intermediate folders on error.
 Viewer design: F3 routes by extension to an applicable installed viewer; Alt+F3
 forces the basic plain-text viewer, preserving Unicode and disabling highlighting
 and markup rendering. Both remain unavailable until the viewer plugin is implemented.

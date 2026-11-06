@@ -1,0 +1,18 @@
+[package]
+name = "midnight-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-core.workspace = true
+tokio.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+unicase = "=2.10.0"
+unicode-segmentation = "=1.13.3"
+
+[dev-dependencies]
+midnight-platform.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

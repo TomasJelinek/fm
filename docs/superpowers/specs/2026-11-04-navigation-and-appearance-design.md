@@ -5,7 +5,7 @@ request authorizes these changes. File-writing operations retain their separate
 milestone; copy concurrency is specified in the [copy design](2026-11-04-copy-concurrency-design.md).
 
 The product version is0.1, stored centrally as Cargo SemVer0.1.0. The application
-derives the native title `FM 0.1 — File Manager` from that version and supplies
+derives the native title `Midnight Explorer 0.1 — File Manager` from that version and supplies
 it to Slint as presentation data; no extra in-content header is added.
 
 ## Native bookmarks and pane tabs
@@ -136,8 +136,8 @@ on every refresh. A missing font falls back through the renderer's font support.
 
 Storage is asynchronous and atomic through the existing native settings service:
 
-- Windows: the native LocalAppData folder, normally `%LOCALAPPDATA%\FM\preferences.json`.
-- Linux: `$XDG_CONFIG_HOME/fm/preferences.json`, otherwise `~/.config/fm/preferences.json`.
+- Windows: the native LocalAppData folder, normally `%LOCALAPPDATA%\Midnight Explorer\preferences.json`.
+- Linux: `$XDG_CONFIG_HOME/midnight-explorer/preferences.json`, otherwise `~/.config/midnight-explorer/preferences.json`.
 
 The same document stores theme, density, shell preference, family, both sizes
 and bookmarks, plus the live prefix-search filter choice. It never stores commands, credentials, sudo passwords or elevated

@@ -25,7 +25,7 @@ The external command line is an explicit user-controlled shell action.
   Late loaded defaults cannot reinterpret it; cross-grammar selection is rejected
   with clear-line guidance. POSIX Standard/Elevated changes keep the same grammar
   but still require explicit submission. Native Windows consoles must have their
-  own keyboard/screen buffers, even when FM diagnostic output is redirected.
+  own keyboard/screen buffers, even when Midnight Explorer diagnostic output is redirected.
 - `..` is a synthetic first row outside real file IDs, sort snapshots, selection
   and counts. It is omitted at a root; Enter/double-click goes up; Space never
   selects it; Insert can advance. Rollback/refresh preserve parent cursor state.
@@ -160,7 +160,7 @@ user code such as eval/sh -c can reinterpret arguments, as in an ordinary shell.
 
 ## Appearance and preferences
 
-- Remove the entire top FM/About branding row. About stays in F10 Menu. Options
+- Remove the entire top Midnight Explorer/About branding row. About stays in F10 Menu. Options
   lives beside Run and in the menu; no replacement full-width header is added.
 - Themes: Blue(default), neutral Dark, Light. One Slint Theme global owns semantic
   surfaces/text/focus/selection/error/disabled colors and the std-widget scheme.

@@ -45,8 +45,8 @@ README build paths. Keep installed toolchains and legacy evidence intact.
 
 ## Task 2 — Backend metadata, clipboard, preferences and history
 
-Owner: backend agent. Files: `fm-core`, `fm-engine`, platform crates/tests;
-`fm-ui/src/presenter/{preferences,terminal,desktop}.rs` and their tests.
+Owner: backend agent. Files: `midnight-core`, `midnight-engine`, platform crates/tests;
+`midnight-ui/src/presenter/{preferences,terminal,desktop}.rs` and their tests.
 
 Interfaces: `SizeDisplay::{Readable,Bytes}`, `UserPreferences.size_display`,
 `remember_command_history`, `command_history`; `CommandHistoryEntry {command,shell}`;
@@ -74,8 +74,8 @@ root owns presenter scan scopes and cursor actions.
 
 ## Task 4 — Presenter navigation models and details
 
-Owner: root. Files: new `fm-ui/src/presenter/panel_navigation.rs`,
-`panel_details.rs`, `fm-ui/src/panel_models.rs`, `navigation_models.rs`,
+Owner: root. Files: new `midnight-ui/src/presenter/panel_navigation.rs`,
+`panel_details.rs`, `midnight-ui/src/panel_models.rs`, `navigation_models.rs`,
 `presenter/choices.rs`, `native_shortcuts.rs`, integration in `lib.rs`/app.
 
 Interfaces with Slint: `PathPartRow {identity,label,prefix}`, `DetailRow
@@ -94,7 +94,7 @@ command-history models, size/history options.
 
 ## Task 5 — Shared Slint controls and Options topics
 
-Owner: UI agent. Files: `fm-ui/ui` and UI integration tests.
+Owner: UI agent. Files: `midnight-ui/ui` and UI integration tests.
 
 - [x] Add behavior/render regression tests for prompt, Options topics, dropdown
   fill-without-submit, breadcrumb click, details copy and tab/drive placement.

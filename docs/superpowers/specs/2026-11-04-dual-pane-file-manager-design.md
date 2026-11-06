@@ -1,8 +1,14 @@
-# Dvoupanelový souborový manažer v Rustu
+# Midnight Explorer — dvoupanelový souborový manažer v Rustu
 
 Datum: 4. listopadu 2026; doplněno 5. listopadu 2026
 
-Stav: průběžně aktualizovaný návrh zahrnující všechny dosud přidané požadavky. Read-only základ, commander ovládání, automatická obnova, témata/fonty/nastavení, karty a uložené cesty, systémové ikony disků, pixelové rolování a plánování velikostí podle úložiště jsou implementované a otestované. Aktuální verze je0.1; zmenšený Touch profil má40px základní cíle. Viewer/VFS a opakované sudo relace mají samostatný návrh; kopírování/přesun/mazání s frontou a konflikty patří do dalších etap. Stav jednotlivých částí je v oddílu 18.
+Stav: průběžný návrh produktu Midnight Explorer 0.1. Aktuální rozšíření operací,
+ovládání a pluginů níže mají přednost před historickými etapami tohoto dokumentu.
+Pořadí přijatých navazujících implementací zachycuje
+[plán etap](../plans/2026-11-05-follow-up-stages.md); samotný návrh neznamená hotovou funkci.
+
+[Nový prázdný soubor](2026-11-05-empty-file-design.md): tlačítko v panelu a Shift+F4,
+dialog názvu, výhradní vytvoření na backendu bez přepsání existujícího souboru.
 
 ## 1. Záměr a potvrzená rozhodnutí
 
@@ -26,7 +32,7 @@ Požadavky uživatele:
 - Dodatečně potvrzeno: multiselekce, dávkové kopírování vybraného seznamu s průběhem a společná fronta kopírování/přesunu/mazání. Další operaci lze neblokujícím způsobem zadat během běhu jiné úlohy; zpracování nesmí zmrazit UI.
 - Dodatečně potvrzeno: úplná spodní lišta F1–F10, příkazový editor se spouštěním výslovně zadaných příkazů v systémovém terminálu, Ctrl+[ / Ctrl+] vloží cestu levého/pravého panelu, Alt+Enter zobrazí vlastnosti, řádek `..`, systémové ikony a samostatná lišta disků/speciálních umístění nad každým panelem. Windows podporuje Shift+písmeno disku pouze při zaměření seznamu souborů.
 - Dodatečně potvrzeno: Ctrl+Shift+S počítá velikosti všech složek aktivního panelu na pozadí; druhý stisk výpočet ruší. Aktivní panel je vizuálně zvýrazněný. Průběžné/neúplné velikosti se odlišují od dokončených výsledků. Odkazy se při výpočtu nepřecházejí; výsledek je živý součet logických délek, nikoli atomický snapshot.
-- Uživatel pro tuto etapu zvolil lištu a ovládání nad read-only základem; kopírování/přesun/mazání a jejich fronta zůstávají další etapou. Podrobnosti nového ovládání a rozhraní desktopových služeb jsou v [doplňujícím návrhu](2026-11-04-commander-controls-design.md).
+- Aktuální etapu rozšiřuje [návrh operací a ovládání](2026-11-05-rename-delete-scroll-design.md): rename/delete/F7, fronta, F11/F12, editace cesty, trvalé karty, locale a režimy panelů/náhledy. Má přednost před staršími read-only omezeními níže.
 - Dodatečně potvrzeno: oba viditelné panely sledují změny souborového systému přes samostatné platformní rozhraní. Události se sloučí: obnova po 1 sekundě klidu, nejpozději po 3 sekundách souvislého proudu změn. Periodická kontrola po 15 sekundách zachytí chybějící notifikace, zejména síťových disků. Registrace watcherů, porovnání i obnova dat běží na backendu; výběr, kurzor, scroll a rozepsaný příkaz se zachovají.
 - Dodatečně potvrzeno: odstranit horní řádek s názvem aplikace/About, aby neubíral místo panelům. Přidat uživatelské nastavení s výběrem původního modrého, neutrálního tmavého a světlého tématu. Nabídnout kompaktní rozestupy pro desktop/myš a větší rozestupy a dotykové cíle pro touchscreen. Odkaz About zůstane v menu; Options bude u příkazového řádku a v menu.
 - Dodatečně potvrzeno: velká složka nemá zdržovat výsledky menších složek. Povolit omezené dávky souběžného počítání na prokazatelně lokálním SSD; na HDD, síťových discích a neznámém/nejistém úložišti pouze jednu aktivní I/O úlohu. Souběh musí být omezený a rozpočet sdílený mezi panely. Síťové úložiště se nepovažuje za SSD podle rychlého připojení nebo cache.
@@ -71,16 +77,16 @@ Cargo workspace rozděluje pět logických vrstev do následujících crates; pl
 
 | Crate | Odpovědnost | Závislosti uvnitř workspace |
 | --- | --- | --- |
-| `fm-core` | Doménové typy, identifikátory, příkazy/události, chyby, rozhraní providerů a jejich schopnosti | Žádné |
-| `fm-engine` | Navigace, načítání adresářů, plánování, kopírování, ověřování a stav úloh; Tokio | `fm-core` |
-| `fm-platform` | Malá továrna/reexport podle targetu | `fm-core` a zvolený platformní crate |
-| `fm-platform-common` | Přenositelné bezpečné Rust operace a společné pomocné struktury | `fm-core` |
-| `fm-platform-windows` | Windows implementace služeb, Win32, svazky a Windows specifika | `fm-core`, `fm-platform-common` |
-| `fm-platform-linux` | Linux implementace služeb, mountinfo a Linux specifika | `fm-core`, `fm-platform-common` |
-| `fm-ui` | `.slint` soubory, klávesové ovládání, presenter, modely a převod dat pro zobrazení | `fm-core` |
-| `fm-app` | Spuštění, konfigurace, vytvoření runtime, propojení zpráv, injektování providerů a ukončení | Ostatní crates |
+| `midnight-core` | Doménové typy, identifikátory, příkazy/události, chyby, rozhraní providerů a jejich schopnosti | Žádné |
+| `midnight-engine` | Navigace, načítání adresářů, plánování, kopírování, ověřování a stav úloh; Tokio | `midnight-core` |
+| `midnight-platform` | Malá továrna/reexport podle targetu | `midnight-core` a zvolený platformní crate |
+| `midnight-platform-common` | Přenositelné bezpečné Rust operace a společné pomocné struktury | `midnight-core` |
+| `midnight-platform-windows` | Windows implementace služeb, Win32, svazky a Windows specifika | `midnight-core`, `midnight-platform-common` |
+| `midnight-platform-linux` | Linux implementace služeb, mountinfo a Linux specifika | `midnight-core`, `midnight-platform-common` |
+| `midnight-ui` | `.slint` soubory, klávesové ovládání, presenter, modely a převod dat pro zobrazení | `midnight-core` |
+| `midnight-explorer` | Spuštění, konfigurace, vytvoření runtime, propojení zpráv, injektování providerů a ukončení | Ostatní crates |
 
-`fm-core`, `fm-engine` a `fm-platform` neznají Slint. `fm-ui` nevolá filesystem ani konkrétní engine a není závislé na jeho implementaci. `fm-app` dodá presenteru neblokující vstupní rozhraní a propojí výstupní události s UI. Rozhraní providerů budou odpovídat potřebám aktuálních etap; nevznikne předem rozsáhlá abstrakce všech souborových systémů.
+`midnight-core`, `midnight-engine` a `midnight-platform` neznají Slint. `midnight-ui` nevolá filesystem ani konkrétní engine a není závislé na jeho implementaci. `midnight-explorer` dodá presenteru neblokující vstupní rozhraní a propojí výstupní události s UI. Rozhraní providerů budou odpovídat potřebám aktuálních etap; nevznikne předem rozsáhlá abstrakce všech souborových systémů.
 
 Pro lokální cesty se používá dynamický `PathBuf`/`OsString`, nikoli cesta rekonstruovaná z textu v UI nebo buffer o velikosti `MAX_PATH`. `PathBuf` je lokální reprezentace, nikoli univerzální formát pro FTP či jiné providery. Zobrazený název a identita položky jsou oddělené. Rust cesty nemusejí být platné UTF-8. [Rust: Path](https://doc.rust-lang.org/rust-by-example/std_misc/path.html)
 
@@ -366,9 +372,9 @@ Schopnosti dočasného cíle, přejmenování/publikování, přepisování a tr
 
 ### Hranice kódu
 
-Platformní vrstva se skládá z malé továrny/fasády `fm-platform`, přenositelného
-`fm-platform-common` a samostatných `fm-platform-windows`, `fm-platform-linux`,
-později `fm-platform-macos`. Továrna pouze vybere/reexportuje implementaci pro
+Platformní vrstva se skládá z malé továrny/fasády `midnight-platform`, přenositelného
+`midnight-platform-common` a samostatných `midnight-platform-windows`, `midnight-platform-linux`,
+později `midnight-platform-macos`. Továrna pouze vybere/reexportuje implementaci pro
 daný target; neobsahuje implementace filesystemu. Windows Win32 API a Linux
 mountinfo/native logika se nikdy nesdílejí v jednom implementačním souboru.
 
@@ -381,7 +387,7 @@ crate nebo `cfg` větve s OS logikou.
 
 ### Povinné služby první etapy
 
-Ve `fm-core` jsou objektově použitelná rozhraní:
+Ve `midnight-core` jsou objektově použitelná rozhraní:
 
 | Rozhraní | Smlouva |
 | --- | --- |
@@ -399,7 +405,7 @@ Ve `fm-core` jsou objektově použitelná rozhraní:
 | `SettingsService` | Načtení/verzované atomické uložení typovaných preferencí pouze na backendu |
 
 Každá OS implementace musí dodat tyto služby; může delegovat přenositelné části
-na `fm-platform-common`. Podpisy zachovávají bezeztrátové cesty, strukturované
+na `midnight-platform-common`. Podpisy zachovávají bezeztrátové cesty, strukturované
 chyby a kooperativní rušení. Synchronní lokální provider API smí engine volat
 pouze na pracovních vláknech. Budoucí síťové providery mohou používat nativně
 asynchronní I/O; lokální blokující bridge nesmí určovat jejich protokol ani nutit
@@ -683,7 +689,7 @@ ukončuje na backendu a plná výstupní fronta nesmí bránit shutdownu.
 
 ## 21. Témata, hustota ovládání a uživatelské nastavení
 
-Horní branding řádek FM/About se odstraní. Tlačítko **Options** bude u příkazového
+Horní branding řádek Midnight Explorer/About se odstraní. Tlačítko **Options** bude u příkazového
 řádku a dostupné také v menu. Okno nastavení obsahuje nezávislé výběry:
 
 | Volba | Varianty |
@@ -783,7 +789,8 @@ Plný kontrakt, balení, životnost, bezpečnost a přejímací matice jsou v
 [novém návrhu dynamických pluginů](2026-11-05-dynamic-viewer-filesystem-plugins-design.md).
 Nativní DLL/SO jsou důvěryhodný kód s právy aplikace, nikoli sandbox. Knihovny
 zůstanou načtené do ukončení procesu, instalace/odebrání se uplatní po restartu.
-Každý plugin má samostatný repozitář, build a vlastní testy/CI. Sdílí pouze veřejné
+Pluginy jsou v jednom Git repozitáři, ale mají samostatné Cargo projekty,
+buildy a vlastní testy/CI. Sdílí pouze veřejné
 API/SDK, ne interní app crates. Vývoj, build, test ani instalace pluginu nesmějí
 upravovat zdrojáky hlavní aplikace; rozšíření API je samostatná změna hostitele.
 
@@ -938,7 +945,7 @@ postup se nepřebírá. Podrobný návrh je v
 ## 27. Karty, uložené cesty a další upřesnění ovládání
 
 Aktuální produktová verze je **0.1** (`0.1.0` v Cargo SemVer). Titulek nativního
-okna je `FM 0.1 — File Manager`; hodnota se odvozuje z verze balíčku.
+okna je `Midnight Explorer 0.1 — File Manager`; hodnota se odvozuje z verze balíčku.
 
 Každý panel má samostatné karty cest. Výchozí jméno karty vždy odpovídá názvu
 aktuální složky a při navigaci se změní; kořen zobrazí svou cestu. Celá cesta je
@@ -1113,34 +1120,24 @@ komponent ani tvrzení o optimu. Měření a další možnosti jsou v
 
 ## 32. Detailní navigace, historie a síťový provider
 
-Karty jsou pod diskovou lištou. Hot Paths má vlastní nabídku a všechny záložky
-jsou také v nabídce disků. Back/Forward nabízí jednotlivé záznamy historie.
-Horní cesta sleduje aktuální adresář; hover zvýrazní prefix a klik otevře jeho
-nezměněnou nativní cestu. Speciální složka v nabídce ukáže svůj svazek, síťová
-cesta Network se systémovou síťovou ikonou. Chyba navigace obnoví původní cestu.
-Ikony disků a souborů jsou o10% větší při stejné výšce řádků. Breadcrumb nemá
-umělé mezery; historie tvoří zarovnané dvojité tlačítko s vycentrovanou šipkou.
-
-Space/Insert přepnou výběr a postoupí o řádek; Space také spočítá skutečnou
-složku. Skeny sdílejí omezený backendový rozpočet, přežijí řazení/refresh;
-nový explicitní celopanelový sken je nahradí. Options má témata Panel,
-Appearance a Command, přepíná čitelné velikosti/přesné bajty. Detailní lišta
-každého panelu ukazuje jméno, přesné bajty, datum, čas a nativní atributy/práva;
-klik kopíruje hodnotu přes backend. Zvýraznění výběru je viditelné ve všech tématech.
-
-Jednořádková příkazová cesta končí `>`. Historie uchová posledních100 unikátních
-přesných textů, nejnovější první, do1MiB součtu; příkazy se nezkracují.
-Výběr pouze obnoví draft a kompatibilní shell bez elevated režimu, nic nespustí.
-Zápis následuje po úspěšném spuštění terminálu; Options umožní vymazání/vypnutí.
-Nastavení verze5 migruje v1–4. Buildy, dočasné soubory helperů a nové QA výstupy
-patří pod `_build` přímo bez junctionu; sdílený WSL používá `_build/linux`.
-Historické/toolchain výjimky popisuje README.
-
-Podrobné kontrakty, omezení a testy jsou v
+Kontrakty cest, historie posledních 100 unikátních příkazů, detailních lišt,
+Space/Insert, Hot Paths, Options a výstupů pod `_build` jsou soustředěné v
 [rozšíření panelů](2026-11-05-panel-navigation-details-design.md).
+Novější [trvalé karty a nastavení v6](2026-11-05-tab-session-extension.md) přidávají
+obnovu karet, režimů panelů a bezpečnou migraci nastavení při přejmenování produktu.
 [Síťový filesystem](2026-11-05-network-filesystem-design.md) bude samostatný
 API-only plugin pro dostupná zařízení/služby/sdílení. Zjišťování celé sítě zatím
 není implementované; dostupnost nelze zaručit pro zařízení blokující discovery.
 
 [Nové ovládání a layout](2026-11-05-panel-interaction-layout-design.md) definuje
 Ctrl+Tab/Ctrl+U, splitter, karty, výběr, terminál, atributy, Light a F3/Alt+F3.
+
+## 33. Nový název a navazující implementace
+
+Produkt se jmenuje **Midnight Explorer**; release používá optimalizaci 3, fat LTO
+a jednu codegen jednotku, s kontrolami přetečení a obnovou chyb workerů.
+Podrobnosti jsou v [release konfiguraci](../../RELEASE_BUILD.md).
+[Viewer rozšíření](2026-11-05-viewer-implementation-extension.md) nyní požaduje
+tři samostatné pluginy, Escape/Space, velikost okna podle aplikace a externí editor F4.
+Následuje ověřené dávkové copy/move, změna atributů/časů a nemodální hledání podle
+[přijatého pořadí etap](../plans/2026-11-05-follow-up-stages.md).

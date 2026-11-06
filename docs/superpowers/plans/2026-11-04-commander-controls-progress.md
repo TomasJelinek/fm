@@ -11,7 +11,7 @@
 - Ruling: retain Slint's own wheel/touch inertia; custom content-y animations would
   conflict with its native handling and virtualization.
 - File ownership: root core contracts/engine/app/docs; native worker platform
-  desktop modules; UI worker fm-ui only. FileSystem contracts remain unchanged.
+  desktop modules; UI worker midnight-ui only. FileSystem contracts remain unchanged.
 - Added user-requested Ctrl+Shift+S cancellable active-panel folder-size scan and
   active-pane accent/frame to this scope; reference `advwork_calcsize.htm` audited.
 - Core RED3→GREEN3 for Unicode literal quoting and bounded RGBA. Engine desktop
@@ -42,7 +42,7 @@
   weighted budget permits4 SSD reads or1 HDD/network/unknown stream across panes.
   Parent-linked cancellation fixed three cancellation-observation regressions.
 - Windows terminal creation now uses owned native processes/new console standard
-  handles, preventing command output from leaking to redirected FM diagnostics.
+  handles, preventing command output from leaking to redirected Midnight Explorer diagnostics.
   App/test manifests declare asInvoker/longPathAware; Windows can still reject
   long process cwd explicitly, with no truncation/fallback. Basic FS long paths pass.
 - Viewer/VFS and safe reusable-sudo sessions are design-only follow-ups, explicitly
@@ -51,6 +51,6 @@
 - Final Windows/Linux workspace verification is running after these final changes.
 - Final verification completed: Windows189 / Linux183 passed; strict workspace
   Clippy, app builds, formatting, source-size85 files and executable smokes pass.
-  Native Windows screenshot inspected and real-user FM window is visible/responding
+  Native Windows screenshot inspected and real-user Midnight Explorer window is visible/responding
   (PID73472); foreground policy denied stealing focus. Audit0 known matches,
   5 unmaintained transitive warnings. No further code/test work remains in this scope.
