@@ -14,4 +14,4 @@ continues; final verification must compile the final source again.
   Unicode/raw-byte codecs and cancellation/cleanup. Retain internal fallback.
 - [x] Add meaningful regressions, perform native protocol and verified-copy checks,
   review changes, update design/shortcuts/security, then finish release validation.
-- [ ] Commit and push all reviewed, authorized source changes; exclude build output.
+- [x] Commit and push all reviewed, authorized source changes; exclude build output.

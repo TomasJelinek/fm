@@ -42,6 +42,6 @@ and a shared Unicode case mapper outside the dependency-free domain core.
   effective-binding dispatch and mouse/focus state handling, then rerun them.
 - [x] Integrate the merged metadata dialog with explicit Keep states, preview
   revisions, capabilities and existing background jobs. Test stale/conflict paths.
-- [ ] Review every new shared/native integration, run relevant Windows/Linux tests
+- [x] Review every new shared/native integration, run relevant Windows/Linux tests
   and release integrity checks, render dialogs/themes, update all design/hotkeys
   documents, build the final executable, commit and push the authorized work.

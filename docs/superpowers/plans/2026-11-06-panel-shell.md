@@ -49,5 +49,5 @@ bookmarks, sorting, locale and volume state rather than parallel implementations
   Options, bookmark, operation and conflict windows in all themes/densities.
 - [x] Run relevant Windows/Linux tests, strict Clippy, optimized builds, native
   interaction smoke and source-size guard. Document limitations honestly.
-- [ ] Independently review the whole change set, fix material findings with tests,
+- [x] Independently review the whole change set, fix material findings with tests,
   update architecture/hotkeys/build evidence, commit and push authorized work.

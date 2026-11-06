@@ -38,4 +38,4 @@ Command controls reuse the compact footer geometry without changing actions.
   Preserve existing palette values and append the five documented choices.
 - [x] Review changes, update README/main design, run focused checks on Windows and
   Linux, inspect native renders, then rebuild the Windows release and smoke test it.
-- [ ] Commit and push the reviewed batch under the existing user authorization.
+- [x] Commit and push the reviewed batch under the existing user authorization.
