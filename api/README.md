@@ -4,8 +4,9 @@ This is an independent Cargo workspace with its own dependency lock. It shares
 no application crates. Concrete plugins belong in independent workspaces under
 `plugins/`, each with its own tests/lock/build. A plugin may depend on released
 `midnight-plugin-api` and `midnight-plugin-sdk`, never on application internals,
-another plugin, or a source-tree patch. The SDK, loader and concrete plugins are
-still being implemented; this draft is not a compatibility promise yet.
+another plugin, or a source-tree patch. The SDK's ownership/runtime adapters are
+implemented and unit tested; the loader, independent DLL/SO conformance fixture
+and concrete plugins remain in progress. This is not a compatibility promise yet.
 
 From the repository root with Rust available:
 
@@ -84,8 +85,10 @@ models are also defined: binary pages refer to separate bounded raw buffers;
 document pages contain at most 512 semantic blocks with shared text/style/anchor
 budgets and bounded link metadata. The host never treats a link target as an
 automatic action. Viewer Open/Viewport/Search and ReadAt/ReadReply/CloseReader
-schemas preserve explicit revisions, optional lengths, EOF and errors. The SDK
-lifecycle adapters, content broker and actual plugins remain pending.
+schemas preserve explicit revisions, optional lengths, EOF and errors. The
+[SDK contract](midnight-plugin-sdk/README.md) describes owned requests, content
+leases, host-scheduled continuations, output backpressure and quiescent shutdown.
+The content broker and actual viewer plugins remain pending.
 
 The API/SDK packages will be staged as versioned `.crate` artifacts with an actual
 local dependency-source workflow. Exported-plugin CI must prove it can build/test
