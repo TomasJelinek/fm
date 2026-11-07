@@ -26,7 +26,14 @@ impl Drop for Controller {
 }
 
 pub(crate) fn install(window: &MainWindow, presenter: Rc<RefCell<Presenter>>) -> Controller {
-    let service = Rc::new(Service::installed());
+    install_service(window, presenter, Rc::new(Service::installed()))
+}
+
+fn install_service(
+    window: &MainWindow,
+    presenter: Rc<RefCell<Presenter>>,
+    service: Rc<Service>,
+) -> Controller {
     let control = service.clone();
     let epoch = Rc::new(Cell::new(1u64));
     let clear_epoch = epoch.clone();
@@ -140,8 +147,11 @@ pub(crate) fn install(window: &MainWindow, presenter: Rc<RefCell<Presenter>>) ->
             if tick.is_multiple_of(2) {
                 changed |= state.advance_thumbnail_animation();
             }
+            // Slint can synchronously read presenter-backed models while refreshing.
+            // Finish all mutations before it borrows the presenter again.
+            drop(state);
             if changed {
-                midnight_ui::refresh(&window, &state);
+                midnight_ui::refresh(&window, &presenter.borrow());
             }
         },
     );
@@ -150,3 +160,7 @@ pub(crate) fn install(window: &MainWindow, presenter: Rc<RefCell<Presenter>>) ->
         service: control,
     }
 }
+
+#[cfg(test)]
+#[path = "thumbnails_tests.rs"]
+mod tests;

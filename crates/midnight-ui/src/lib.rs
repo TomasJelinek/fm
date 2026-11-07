@@ -264,6 +264,7 @@ fn column_index(column: SortColumn) -> i32 {
 }
 
 /// Refresh visible properties and lazy model notifications from current presenter state.
+/// Release mutable presenter borrows first: Slint can synchronously read its row models.
 pub fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
     window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
