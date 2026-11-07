@@ -228,12 +228,27 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
         let mut request =
             ChecksumRequest::new(ChecksumJobId(id), ChecksumGeneration(1), vec![path.clone()]);
         request.limits.max_retained_bytes = 1;
-        controller.start(request).unwrap();
+        // This test fills this actor's channel, independently of process-wide
+        // quota used concurrently by other tests. Global quota has its own tests.
+        controller
+            .admit(
+                Capture::Paths(request),
+                (ChecksumJobId(id), ChecksumGeneration(1)),
+                ChecksumRetention::new(()),
+            )
+            .unwrap();
     }
     let mut request = ChecksumRequest::new(ChecksumJobId(1), ChecksumGeneration(2), vec![path]);
     request.limits.max_retained_bytes = 1;
     assert_eq!(
-        controller.start(request).unwrap_err().kind,
+        controller
+            .admit(
+                Capture::Paths(request),
+                (ChecksumJobId(1), ChecksumGeneration(2)),
+                ChecksumRetention::new(()),
+            )
+            .unwrap_err()
+            .kind,
         io::ErrorKind::WouldBlock
     );
     let state = controller.state.lock().unwrap();

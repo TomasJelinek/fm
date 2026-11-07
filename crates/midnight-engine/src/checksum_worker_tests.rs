@@ -1,6 +1,10 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+// These two controller tests exercise the same process-wide reservation pool.
+// Serializing their fixtures leaves production quotas and concurrent workers intact.
+static CONTROLLER_QUOTA_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct ReadBarrier {
     entered: tokio::sync::Notify,
     released: std::sync::Mutex<bool>,
@@ -328,6 +332,7 @@ fn empty_stream_has_all_four_standard_digests() {
 
 #[tokio::test]
 async fn controller_cancellation_and_retained_job_quota_are_bounded() {
+    let _quota_fixture = CONTROLLER_QUOTA_TEST.lock().await;
     let provider = Arc::new(Provider::new(b"abc"));
     let mut controller = super::super::Controller::new(provider);
     assert!(controller.try_next().is_none());
@@ -374,6 +379,7 @@ async fn controller_cancellation_and_retained_job_quota_are_bounded() {
 
 #[tokio::test]
 async fn cancellation_and_shutdown_retain_an_inflight_read_and_its_io_permit() {
+    let _quota_fixture = CONTROLLER_QUOTA_TEST.lock().await;
     let barrier = ReadBarrier::new();
     let _release = ReleaseOnDrop(barrier.clone());
     let mut provider = Provider::new(b"abc");
