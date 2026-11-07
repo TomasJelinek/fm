@@ -51,7 +51,7 @@ fn command_editor_and_controls_match_the_footer_across_themes_and_font_sizes() {
     configure(&mut test, &path);
     for width in [1340, 1040] {
         test.resize(width, 820);
-        for scheme in 0..8 {
+        for scheme in 0..9 {
             for density in 0..2 {
                 for font in [8, 11, 15, 32] {
                     test.window.invoke_apply_fonts("".into(), font, font);

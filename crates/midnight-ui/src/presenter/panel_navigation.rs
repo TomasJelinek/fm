@@ -65,27 +65,28 @@ impl Presenter {
     pub(crate) fn path_parts(&self, pane: PaneId) -> Vec<PathPart> {
         let p = &self.panes[pane.index()];
         if let Some(a) = &p.archive {
-            let mut prefix = a.origin.to_string_lossy().into_owned();
+            let mut previous = String::new();
             return a
                 .location
                 .trail
                 .iter()
                 .enumerate()
-                .map(|(index, (node, name))| {
-                    prefix.push_str(" / ");
-                    prefix.push_str(name);
+                .map(|(index, (node, _))| {
                     let mut location = a.location.clone();
                     location.directory = *node;
                     location.trail.truncate(index + 1);
                     location.address.components.truncate(index);
+                    let prefix = location.display_text();
+                    let label = prefix.strip_prefix(&previous).unwrap_or(&prefix).to_owned();
+                    previous = prefix.clone();
                     PathPart {
                         identity: format!(
                             "archive:{}:{}:{node}",
                             p.generation,
                             a.location.mount_id().unwrap_or(0)
                         ),
-                        label: name.clone(),
-                        prefix: prefix.clone(),
+                        label,
+                        prefix,
                         path: PathBuf::new(),
                         archive: Some(location),
                     }
@@ -157,14 +158,7 @@ impl Presenter {
                         a.location.mount_id().unwrap_or(0)
                     ),
                     path: a.origin.clone(),
-                    display: Some(
-                        a.history[index]
-                            .trail
-                            .iter()
-                            .map(|(_, label)| label.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" / "),
-                    ),
+                    display: Some(a.history[index].display_text()),
                     archive: true,
                     index,
                 })

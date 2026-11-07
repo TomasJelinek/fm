@@ -576,6 +576,7 @@ fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
         width: 24,
         height: 24,
         rgba: rgba.into(),
+        generic: kind == IconKind::File,
     })
 }
 
@@ -611,6 +612,7 @@ fn link_fallback(folder: bool) -> IconPixels {
         width: EDGE as u32,
         height: EDGE as u32,
         rgba: rgba.into(),
+        generic: false,
     }
 }
 
@@ -780,6 +782,7 @@ mod tests {
                     width: 65,
                     height: 1,
                     rgba: vec![255; 260].into(),
+                    generic: false,
                 }),
                 _ => None,
             })

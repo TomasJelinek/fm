@@ -134,6 +134,20 @@ impl ViewerWindows {
                                     .unwrap_or(0) as i32,
                             );
                             open.frame.set(frame.revision);
+                            let image_mode = frame.image.is_some();
+                            if image_mode != window.get_image_mode() {
+                                window.set_search_visible(false);
+                                window.invoke_focus_content();
+                            }
+                            window.set_image_mode(image_mode);
+                            window.set_zoom_percent(
+                                frame
+                                    .image
+                                    .as_ref()
+                                    .map_or(100.0, |image| (image.zoom * 100.0) as f32),
+                            );
+                            window.set_wrap_enabled(frame.wrap_enabled);
+                            window.set_wrap_available(frame.wrap_available);
                             open.raster_size.set((frame.width, frame.height));
                             let pixels =
                                 slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
@@ -172,6 +186,13 @@ impl ViewerWindows {
 }
 
 fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
+    bind_image(open);
+    let weak = Rc::downgrade(open);
+    open.window.on_change_wrap(move |wrap| {
+        if let Some(open) = weak.upgrade() {
+            open.session.send(ViewerInput::Wrap(wrap));
+        }
+    });
     let weak = Rc::downgrade(open);
     open.window.on_change_mode(move |index| {
         if let Some(open) = weak.upgrade()
@@ -236,10 +257,35 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             return true;
         }
         "viewer.find" => {
+            if open.window.get_image_mode() {
+                return false;
+            }
             open.window.invoke_focus_search();
             return true;
         }
         "viewer.next-file" => ViewerInput::NextFile,
+        "viewer.wrap" => ViewerInput::Wrap(!open.window.get_wrap_enabled()),
+        "viewer.zoom-in" | "viewer.zoom-out" | "viewer.fit" | "viewer.actual-pixels" => {
+            if !open.window.get_image_mode() {
+                return false;
+            }
+            let input = match action {
+                "viewer.fit" => ViewerImageInput::Fit,
+                "viewer.actual-pixels" => ViewerImageInput::ActualPixels,
+                _ => ViewerImageInput::Zoom {
+                    factor: if action == "viewer.zoom-in" {
+                        1.25
+                    } else {
+                        0.8
+                    },
+                    anchor: None,
+                },
+            };
+            ViewerInput::Image {
+                frame: open.frame.get(),
+                input,
+            }
+        }
         "viewer.copy" => ViewerInput::Copy {
             frame: open.frame.get(),
         },
@@ -247,6 +293,9 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             frame: open.frame.get(),
         },
         "viewer.find-next" | "viewer.find-previous" => {
+            if open.window.get_image_mode() {
+                return false;
+            }
             if open.window.get_query().is_empty() {
                 open.window.invoke_focus_search();
                 return true;
@@ -308,6 +357,51 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     });
 }
 
+fn bind_image(open: &Rc<OpenWindow>) {
+    let weak = Rc::downgrade(open);
+    open.window.on_image_command(move |command| {
+        if let Some(open) = weak.upgrade() {
+            let action = match command {
+                0 => "viewer.fit",
+                1 => "viewer.actual-pixels",
+                2 => "viewer.zoom-in",
+                3 => "viewer.zoom-out",
+                _ => return,
+            };
+            dispatch_key(&open, action);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_image_zoom(move |delta, x, y| {
+        if let Some(open) = weak.upgrade()
+            && delta.is_finite()
+            && delta != 0.0
+        {
+            let scale = open.window.window().scale_factor();
+            open.session.send(ViewerInput::Image {
+                frame: open.frame.get(),
+                input: ViewerImageInput::Zoom {
+                    factor: if delta > 0.0 { 1.25 } else { 0.8 },
+                    anchor: Some([x * scale, y * scale]),
+                },
+            });
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_image_drag(move |x, y| {
+        if let Some(open) = weak.upgrade() {
+            let scale = open.window.window().scale_factor();
+            open.session.send(ViewerInput::Image {
+                frame: open.frame.get(),
+                input: ViewerImageInput::Drag {
+                    x: x * scale,
+                    y: y * scale,
+                },
+            });
+        }
+    });
+}
+
 fn close(open: &OpenWindow) {
     if !open.closed.replace(true) {
         open.session.close();
@@ -322,8 +416,9 @@ fn mode_label(mode: u16) -> &'static str {
     match mode {
         1 => "Text",
         2 => "Source",
-        3 => "Hex",
+        3 => "Binary",
         4 => "Markdown",
+        VIEWER_MODE_IMAGE => "Image",
         _ => "Unknown",
     }
 }

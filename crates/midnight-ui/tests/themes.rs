@@ -95,7 +95,7 @@ fn readable(theme: &Theme<'_>, name: &str) {
 }
 
 #[test]
-fn eight_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
+fn nine_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
     let mut test = ui::TestUi::new();
     let choices = [
         "Blue",
@@ -106,6 +106,7 @@ fn eight_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
         "Gruvbox Dark",
         "Catppuccin Mocha",
         "Solarized Light",
+        "Carbon Green",
     ];
     let accepted = Rc::new(Cell::new(0));
     let changed = accepted.clone();

@@ -48,3 +48,4 @@ for name in basic source markdown; do
     fi
     bash "$plugin_root/scripts/build.sh" "$sdk_config" "$plugin_build" "$app_directory/viewers/midnight-viewer-$name"
 done
+bash "$project_root/scripts/build-image-viewer.sh" "$profile" "${MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG:-}" "$app_directory"

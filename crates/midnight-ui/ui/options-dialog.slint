@@ -9,6 +9,7 @@ import { EditorOptions } from "editor-options.slint";
 import { PluginOptions } from "plugin-options.slint";
 import { ThumbnailOptions } from "thumbnail-options.slint";
 import { ArchiveOptions } from "archive-options.slint";
+import { ColorOptions } from "color-options.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -81,6 +82,7 @@ export component OptionsBody inherits Rectangle {
                 horizontal-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
             if root.topic-index == 7 : ArchiveOptions { }
+            if root.topic-index == 8 : ColorOptions { }
             if root.topic-index == 6 : ThumbnailOptions {
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
@@ -114,7 +116,7 @@ export component OptionsBody inherits Rectangle {
                 spacing: 10px; alignment: start;
                 theme := OptionPicker {
                     label: "Theme"; model: ThemePalettes.names; current-index: root.theme-index;
-                    hint: "Choose one of eight color themes. Changes apply immediately.";
+                    hint: "Choose one of nine color themes. Changes apply immediately.";
                     selected(index) => { root.preferences-changed(index, root.density-index, 0); }
                 }
                 density := OptionPicker {

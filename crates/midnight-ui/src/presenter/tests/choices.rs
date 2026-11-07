@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn one_drive_accounts_remain_in_menu_without_repeated_toolbar_buttons() {
+    let root = test_root();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    p.apply(Event::DesktopContext {
+        shell: ShellFlavor::Posix,
+        locations: vec![
+            location("home", LocationKind::Home, root.clone()),
+            location("personal", LocationKind::OneDrive, root.join("Personal")),
+            location("business", LocationKind::OneDrive, root.join("Business")),
+            location("temp", LocationKind::Temporary, root.join("Temp")),
+        ],
+    });
+    let menu = crate::navigation_models::choices(&p);
+    let toolbar = crate::navigation_models::toolbar_choices(&p, &menu);
+    assert_eq!(menu.len(), 4);
+    assert_eq!(toolbar.len(), 3);
+    assert!(toolbar.iter().any(|row| row.identity == menu[1].identity));
+    assert!(!toolbar.iter().any(|row| row.identity == menu[2].identity));
+    assert!(menu[1].label.contains("personal") && menu[2].label.contains("business"));
+    let selected = crate::navigation_models::locations(&toolbar, Some(&menu[3].identity));
+    assert!(
+        selected[2].selected,
+        "filtering toolbar entries must not shift selection"
+    );
+}
+
 fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
     NavigationLocation {
         id: id.into(),

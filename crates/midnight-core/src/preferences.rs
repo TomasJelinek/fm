@@ -3,6 +3,7 @@ use crate::{CommandHistoryEntry, FsError, ShortcutBinding, ShortcutMap, validate
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 /// Stable callback identity; names and displayed paths are never identifiers.
@@ -97,11 +98,12 @@ pub enum PreferenceTheme {
     GruvboxDark = 5,
     CatppuccinMocha = 6,
     SolarizedLight = 7,
+    CarbonGreen = 8,
 }
 
 impl PreferenceTheme {
     /// Stable picker order. Existing indices and persisted names must not change.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Blue,
         Self::Dark,
         Self::Light,
@@ -110,6 +112,7 @@ impl PreferenceTheme {
         Self::GruvboxDark,
         Self::CatppuccinMocha,
         Self::SolarizedLight,
+        Self::CarbonGreen,
     ];
 
     pub const fn index(self) -> i32 {
@@ -132,6 +135,7 @@ impl PreferenceTheme {
             Self::GruvboxDark => "gruvbox-dark",
             Self::CatppuccinMocha => "catppuccin-mocha",
             Self::SolarizedLight => "solarized-light",
+            Self::CarbonGreen => "carbon-green",
         }
     }
 
@@ -201,6 +205,8 @@ pub struct UserPreferences {
     /// Only deviations from the application shortcut catalog are persisted.
     pub shortcuts: Vec<ShortcutBinding>,
     pub panel_filters: [crate::PanelFilter; 2],
+    /// Accepted edits replace this bounded shared collection atomically.
+    pub filename_colors: Arc<Vec<crate::FilenameColorRule>>,
 }
 
 pub const FONT_SIZE_MIN: u16 = 8;
@@ -230,6 +236,7 @@ impl Default for UserPreferences {
             thumbnails_network: false,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),
+            filename_colors: Default::default(),
         }
     }
 }
@@ -307,6 +314,9 @@ impl UserPreferences {
             if let Err(error) = filter.validate_bounds() {
                 message = Some(error);
             }
+        }
+        if let Err(error) = crate::validate_filename_colors(&self.filename_colors) {
+            message = Some(error);
         }
         for tabs in &self.tabs {
             if let Err(error) = tabs.validate() {

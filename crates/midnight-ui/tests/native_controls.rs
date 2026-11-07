@@ -326,14 +326,14 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     assert_eq!(latest_path(&commands), downloads);
     draw(&mut pixels, 1340);
     assert_eq!(window.get_left_navigation_index(), 0);
-    let caption = ui::text_values(ui::root_item(
+    let caption = ui::visible_text_values(ui::root_item(
         &window,
         "Drive or volume",
         AccessibleRole::Combobox,
     ));
     assert!(
-        caption.iter().any(|text| text == "Disk") && caption.iter().all(|text| text != "Home"),
-        "a folder below Home must show its containing drive in the closed picker: {caption:?}"
+        caption.iter().all(|text| text != "Disk" && text != "Home"),
+        "the menu trigger must not repeat drive captions; selection remains in the menu: {caption:?}"
     );
 
     // The second panel uses the same semantic choices and row tooltips. A real

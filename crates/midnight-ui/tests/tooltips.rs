@@ -470,7 +470,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             center(&theme),
-            "Choose one of eight color themes. Changes apply immediately.",
+            "Choose one of nine color themes. Changes apply immediately.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
         let panel = find(popup_root(&window), "Panel", AccessibleRole::Button).remove(0);

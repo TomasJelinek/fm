@@ -278,6 +278,8 @@ pub struct IconPixels {
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<[u8]>,
+    /// A generic unassociated document icon, rather than artwork for this type.
+    pub generic: bool,
 }
 
 impl IconPixels {
@@ -293,6 +295,7 @@ impl IconPixels {
             width,
             height,
             rgba: rgba.into(),
+            generic: false,
         })
     }
 }

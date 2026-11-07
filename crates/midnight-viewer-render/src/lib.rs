@@ -2,7 +2,8 @@
 #![forbid(unsafe_code)]
 
 use parley::{
-    FontContext, FontFamily, FontStyle, FontWeight, Layout, LayoutContext, StyleProperty,
+    FontContext, FontFamily, FontStyle, FontWeight, Layout, LayoutContext, OverflowWrap,
+    StyleProperty,
 };
 use std::{borrow::Cow, ops::Range};
 
@@ -86,6 +87,12 @@ impl TextRenderer {
         styles: &[StyleSpan],
     ) -> Result<TextPage, LayoutError> {
         validate_input(text, options.size, options.scale, spans)?;
+        if options
+            .wrap_width
+            .is_some_and(|width| !width.is_finite() || width <= 0.0)
+        {
+            return Err(LayoutError::InvalidGeometry);
+        }
         if styles.len() > MAX_SPANS {
             return Err(LayoutError::LimitExceeded);
         }
@@ -124,6 +131,10 @@ impl TextRenderer {
             FontStyle::Normal
         }));
         builder.push_default(StyleProperty::Brush(options.foreground));
+        // Prefer word boundaries; an oversized word must still fit the viewport.
+        if options.wrap_width.is_some() {
+            builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
+        }
         for style in styles {
             let range =
                 source_map.to_layout(style.range.start)..source_map.to_layout(style.range.end);
@@ -150,7 +161,7 @@ impl TextRenderer {
             }
         }
         let mut layout = builder.build(&shaped);
-        layout.break_all_lines(None);
+        layout.break_all_lines(options.wrap_width);
         Ok(TextPage {
             text: text.into(),
             layout,

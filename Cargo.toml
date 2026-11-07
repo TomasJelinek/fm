@@ -33,6 +33,11 @@ debug-assertions = false
 overflow-checks = true
 panic = "unwind"
 
+# Reduce generated control code while retaining level 3 for runtime services and renderers.
+# Same-source Windows size/resize comparison: docs/verification/2026-11-07-release-optimization.md.
+[profile.release.package.midnight-ui-bindings]
+opt-level = "s"
+
 # Keep backend debugging intact while avoiding unoptimized per-frame UI/renderer
 # work. Native resize measurements are documented in docs/verification.
 [profile.dev.package.i-slint-core]

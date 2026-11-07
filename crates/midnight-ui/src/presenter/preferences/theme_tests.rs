@@ -2,7 +2,7 @@ use super::*;
 use std::cell::RefCell;
 
 #[test]
-fn all_eight_theme_choices_map_to_the_saved_choice_and_back() {
+fn all_theme_choices_map_to_the_saved_choice_and_back() {
     for theme in PreferenceTheme::ALL {
         let mut presenter = Presenter::new("left".into(), "right".into());
         presenter.preferences_loaded(Ok(UserPreferences::default()));
@@ -59,7 +59,7 @@ fn every_early_theme_preview_survives_delayed_load_without_losing_other_settings
 
 #[test]
 fn invalid_theme_callback_indices_retain_the_existing_blue_fallback() {
-    for index in [-1, 8, i32::MAX] {
+    for index in [-1, 9, i32::MAX] {
         let mut presenter = Presenter::new("left".into(), "right".into());
         presenter.preferences_loaded(Ok(UserPreferences {
             theme: PreferenceTheme::Nord,

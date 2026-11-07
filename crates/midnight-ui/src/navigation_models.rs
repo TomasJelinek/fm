@@ -90,11 +90,36 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
         .collect()
 }
 
-pub(super) fn locations(choices: &[NavigationChoiceRow], selected: i32) -> Vec<LocationRow> {
+/// Keep every account in the menu, with only the primary OneDrive shortcut on
+/// the compact toolbar. A second identical cloud icon has no readable identity.
+pub(super) fn toolbar_choices(
+    presenter: &Presenter,
+    choices: &[NavigationChoiceRow],
+) -> Vec<NavigationChoiceRow> {
+    let mut cloud_seen = false;
+    presenter
+        .navigation_choices()
+        .iter()
+        .zip(choices)
+        .filter_map(|(native, row)| {
+            if native.location.kind == LocationKind::OneDrive {
+                if cloud_seen {
+                    return None;
+                }
+                cloud_seen = true;
+            }
+            Some(row.clone())
+        })
+        .collect()
+}
+
+pub(super) fn locations(
+    choices: &[NavigationChoiceRow],
+    selected: Option<&str>,
+) -> Vec<LocationRow> {
     choices
         .iter()
-        .enumerate()
-        .map(|(index, choice)| LocationRow {
+        .map(|choice| LocationRow {
             identity: choice.identity.clone(),
             kind: choice.kind,
             label: choice.label.clone(),
@@ -103,7 +128,7 @@ pub(super) fn locations(choices: &[NavigationChoiceRow], selected: i32) -> Vec<L
             path: "".into(),
             tooltip: choice.tooltip.clone(),
             icon: choice.icon.clone(),
-            selected: index as i32 == selected,
+            selected: selected == Some(choice.identity.as_str()),
         })
         .collect()
 }

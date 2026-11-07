@@ -1,0 +1,7 @@
+// Associated host artwork and decoded thumbnails win over the archive fallback.
+export component FileIcon inherits Image {
+    in property <image> native-icon;
+    in property <bool> browsable-archive;
+    source: root.native-icon.width > 0 || !root.browsable-archive
+        ? root.native-icon : @image-url("icons/archive.svg");
+}

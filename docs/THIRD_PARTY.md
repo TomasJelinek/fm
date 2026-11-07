@@ -10,8 +10,8 @@ Cargo selections for Windows x64 and Linux x86-64:
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The twelve workspaces cover the application, public viewer/filesystem/thumbnail
-APIs and worker SDK, three independent viewer plugins, archive/image/video plugins,
+The fourteen workspaces cover the application, public viewer/filesystem/thumbnail/image
+APIs and worker SDK, four independent viewer plugins, archive/image/video plugins,
 and the independent viewer ABI conformance project. Project-owned crates
 are excluded. The negative descriptor fixture has no third-party dependencies.
 Both target graphs include normal, build and test dependencies; this is broader
@@ -34,7 +34,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Data/settings/manifest serialization | MIT OR Apache-2.0 |
 | sha2 0.10.9 | SHA-256 copy/readback verification | MIT OR Apache-2.0 |
 | notify 8.2.1 | Filesystem event watching | CC0-1.0 |
-| image 0.25.10 / png 0.18.1 | Icons and isolated image thumbnail decoding | MIT OR Apache-2.0 |
+| image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |
 | sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z decoding | Apache-2.0 |
 | tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
@@ -130,6 +130,8 @@ Capture JSON and tree text for each scope below, using Windows for
 | filesystem-api | `filesystem-api/Cargo.toml` |
 | worker-api | `worker-api/Cargo.toml` |
 | thumbnail-api | `thumbnail-api/Cargo.toml` |
+| image-viewer-api | `image-viewer-api/Cargo.toml` |
+| image-viewer | `plugins/midnight-viewer-image/Cargo.toml` |
 | archive | `plugins/midnight-fs-archive/Cargo.toml` |
 | thumbnail-image | `plugins/midnight-thumbnail-image/Cargo.toml` |
 | thumbnail-video | `plugins/midnight-thumbnail-video/Cargo.toml` |
@@ -161,7 +163,7 @@ PowerShell's `Set-Content`; use `python3` where Python is installed under that n
 `cargo metadata`/`tree` do not compile native code. Capture each target on its
 native host: build dependencies/procedural macros follow the host, so a Windows
 cross-target query is not equivalent to the native Linux graph.
-The generator reads the twenty-four captures, excludes project-owned API/SDK crates,
+The generator reads the twenty-eight captures, excludes project-owned API/SDK crates,
 and writes deterministic Markdown/CSV. Recapture after every dependency or feature
 change. `--check` verifies tables against the supplied captures; it does not prove
 those captures are current. Current source hashes are deliberately not labelled

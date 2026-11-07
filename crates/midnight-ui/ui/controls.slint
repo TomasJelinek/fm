@@ -50,6 +50,7 @@ export component CompactPicker inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> framed: true;
     in property <bool> popup-above;
+    in property <bool> fill-available-height;
     in property <length> minimum-control-width: 40px;
     in property <length> popup-width: 360px;
     out property <length> compact-width: caption-metrics.preferred-width + 29px
@@ -92,6 +93,18 @@ export component CompactPicker inherits Rectangle {
         return root.choices.length > 0 ? root.choices[index].label : root.model[index];
     }
     public function activate-shortcut() { root.commit(root.shortcut-index); }
+    // Return only an identity captured when this popup opened, then close it
+    // before the host dispatches the shortcut to either panel.
+    public function take-choice(index: int) -> string {
+        let key = root.row-key(index);
+        if !root.expanded || key == "" || root.opened-revision != root.model-revision
+            || index < 0 || index >= root.opened-choices.length
+            || root.opened-choices[index].identity != key {
+            return "";
+        }
+        root.cancel();
+        return key;
+    }
     pure function row-key(index: int) -> string {
         return index >= 0 && index < root.choices.length ? root.choices[index].identity : "";
     }
@@ -226,11 +239,16 @@ export component CompactPicker inherits Rectangle {
     }
     Tooltip { TipBody { text: root.hint; } }
     popup := PopupWindow {
+        private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
+        private property <length> above: max(1px, root.absolute-position.y - 8px);
+        private property <bool> opens-above: root.popup-above
+            || (root.fill-available-height && self.below < root.item-count * Theme.control-height + 10px && self.above > self.below);
         x: clamp(root.absolute-position.x + (root.popup-align-right ? root.width - self.width : 0px),
             8px, max(8px, TooltipPlacement.surface-width - self.width - 8px)) - root.absolute-position.x;
-        y: root.popup-above ? -self.height : root.height;
+        y: self.opens-above ? -self.height : root.height;
         width: min(max(root.popup-width, root.width), max(1px, TooltipPlacement.surface-width - 16px));
-        height: min(360px, root.item-count * Theme.control-height + 10px);
+        height: min(root.fill-available-height ? (self.opens-above ? self.above : self.below) : 360px,
+            root.item-count * Theme.control-height + 10px);
         close-policy: close-on-click-outside;
         forward-focus: popup-focus;
         popup-focus := FocusScope {

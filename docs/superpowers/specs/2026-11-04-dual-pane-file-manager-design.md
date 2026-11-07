@@ -1401,3 +1401,30 @@ Podrobnosti: [náhledy](2026-11-05-panel-views-thumbnails-design.md) a
 Seznam všech knihoven a skutečně připnutých licencí je v
 [licenčním přehledu](../../THIRD_PARTY.md). Distribuce přikládá příslušné copyright
 a licenční texty; volitelný FFmpeg také odpovídající zdroj a konfiguraci sestavení.
+
+## 2026-11-07: prohlížeče, barvy a navigace
+
+[Aktuální rozšíření](2026-11-07-viewer-images-file-colors-design.md) doplňuje
+zalamování Text/Source pomocí Ctrl+W, ověřené automatické binární zobrazení se
+sloupci offset/hex/znaky a hledáním a samostatný obrazový plugin. Obrazy používají
+stejné knihovny `image 0.25.10` a `moxcms 0.8.1` jako náhledy. Izolovaný proces
+drží dekódovaný originál; host zprostředkuje čtení a dostává pouze omezený výřez.
+Fit, 1:1, přiblížení kolem kurzoru a tažení fungují bez I/O na UI vlákně.
+Public API/SDK, testy a plugin zůstávají samostatnými Cargo projekty; viz
+[API obrazového vieweru](../../developer/IMAGE_VIEWER_API.md).
+
+Options → Colors obsahuje pořadí pravidel masek/regexu, jednu základní barvu
+písma a volitelné pozadí. Stav focus/selection se odvozuje automaticky s kontrolou
+kontrastu; čtyři stavy jsou vidět v náhledu. Vyhodnocení probíhá na backendu proti
+neměnnému snapshotu. Ctrl+F12 již umí masky i regex; obecný jazyk výrazů nad
+metadaty souborů zůstává budoucím rozšířením. Carbon Green je deváté téma,
+přidané bez změny identit předchozích témat.
+
+Nabídka disků má neutrální tlačítko, využívá dostupnou výšku okna a zachovává
+označení aktuálního disku v nabídce i mezi tlačítky. Oblíbené cesty jsou pouze
+v nabídkách s čísly 1–0. OneDrive má jeden primární zástupce na liště, zatímco
+různé účty mají rozlišené položky v nabídce; stejné fyzické cíle se neduplikují.
+Ikony zvláštních složek jsou větší v nezměněných tlačítkách. Archivní cesty mají
+nativní oddělovače bez vložených mezer. Generickou ikonu listu u podporovaného
+archivu nahrazuje vlastní SVG; konkrétní systémové ikony mají přednost.
+[Původ prostředků](../../ASSET_PROVENANCE.md) je zdokumentovaný samostatně.

@@ -135,6 +135,31 @@ fn build() -> Vec<ShortcutDefinition> {
         &["Space"],
     );
     add("viewer.find", "Find in viewed file", ViewerAny, &["Ctrl+F"]);
+    add("viewer.wrap", "Wrap viewer text", ViewerAny, &["Ctrl+W"]);
+    add(
+        "viewer.zoom-in",
+        "Zoom viewed image in",
+        ViewerContent,
+        &["Ctrl+Plus", "Ctrl+Equal"],
+    );
+    add(
+        "viewer.zoom-out",
+        "Zoom viewed image out",
+        ViewerContent,
+        &["Ctrl+Minus"],
+    );
+    add(
+        "viewer.fit",
+        "Fit viewed image to window",
+        ViewerContent,
+        &["Ctrl+Digit0"],
+    );
+    add(
+        "viewer.actual-pixels",
+        "View actual image pixels",
+        ViewerContent,
+        &["Ctrl+Digit1"],
+    );
     add(
         "viewer.find-next",
         "Next match in viewed file",

@@ -66,14 +66,27 @@ fn installed_navigation_bridge_uses_ids_and_focuses_requested_panel() {
     window.invoke_bookmark_add(0, "Same path again".into(), 0);
     assert_eq!(window.get_bookmarks().row_count(), 1);
     window.invoke_bookmark_assign(bookmark.identity.clone(), 10);
+    for toolbar in [window.get_left_locations(), window.get_right_locations()] {
+        assert!(
+            toolbar
+                .iter()
+                .all(|row| row.kind != midnight_ui::LocationRole::HotPath),
+            "saved paths appear in menus, not as individual toolbar buttons"
+        );
+    }
     let hot_path = window
-        .get_left_locations()
+        .get_hot_path_choices()
         .iter()
         .find(|row| row.kind == midnight_ui::LocationRole::HotPath)
         .unwrap();
     assert_eq!(hot_path.compact_label, "0");
-    assert_eq!(hot_path.label.as_str(), left.to_string_lossy());
+    assert_eq!(hot_path.label.as_str(), format!("0  {}", left.display()));
     assert!(!hot_path.tooltip.contains("$(literal)"));
+    assert!(window.get_navigation_choices().iter().any(|row| {
+        row.kind == midnight_ui::LocationRole::HotPath
+            && row.identity == hot_path.identity
+            && row.label == hot_path.label
+    }));
     commands.borrow_mut().clear();
     window.invoke_bookmark_open(1, bookmark.identity.clone());
     assert!(commands.borrow().iter().any(|command| matches!(command,

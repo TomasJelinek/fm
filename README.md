@@ -73,7 +73,7 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They also build the three independent viewer packages using the public
+exit status. They also build the four independent viewer packages using the public
 SDK and install their artifacts under the executable's `viewers/` directory. They do
 not install system packages or launch the application. Direct `cargo build` builds
 the host only; run `scripts/build-viewers.ps1` or `scripts/build-viewers.sh` to add viewers.
@@ -288,12 +288,13 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+U: swap the complete panels while keeping their operations and active content.
   Drag the divider for unequal widths; double-click it to center the panels.
 - Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.
-- Hot Paths store unique native paths, shown without redundant names. The drive bar
-  shows assigned numbers **1–9, 0**; pressing a digit in a focused panel opens its
+- Hot Paths store unique native paths, shown without redundant names. Their menus
+  show assigned numbers **1–9, 0**; pressing a digit in a focused panel opens its
   path. Editors/search keep normal digit input. Ctrl+number and Shift+number remain
   aliases (Alt targets the other pane); Ctrl+Shift+0 assigns slot 10. The manager
   keeps a clicked path selected while its shortcut is edited. Saved paths also
-  appear in the full drive dropdown. See [identity and assignment rules](docs/superpowers/specs/2026-11-06-unique-numbered-hot-paths.md).
+  appear in the full drive dropdown, without extra buttons on the drive toolbar.
+  See [identity and assignment rules](docs/superpowers/specs/2026-11-06-unique-numbered-hot-paths.md).
 - Left click: focus the row and its pane; Ctrl+click toggles selection, Shift+click
   selects an inclusive range, Ctrl+Shift+click adds that range. Accepted gestures
   appear immediately while backend confirmations arrive. Panel status shows
@@ -328,14 +329,20 @@ editor scope and shortcuts reserved for later stages.
 - The compact terminal icon and navigation controls explain themselves through
   tooltips. Drive tooltips show free space and Windows volume names; expanded
   drive choices include those details. Quick buttons and their dropdown share
-  all discovered drives and special locations, with full-path tooltips.
+  discovered drives and special locations, with full-path tooltips. The neutral
+  location-menu button avoids repeating the current drive letter. Its dropdown
+  uses the available window height; named OneDrive accounts remain in the menu
+  while the toolbar shows one primary OneDrive shortcut.
   Suitable host icons load on the backend; missing native action icons retain
   semantic application vectors and native colors remain intact.
 - Options after F12 has Panel, Appearance, Command and Keyboard tabs. It offers readable
   or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Dracula, Nord,
-  Gruvbox Dark, Catppuccin Mocha, Solarized Light, Desktop/Touch spacing, an installed
+  Gruvbox Dark, Catppuccin Mocha, Solarized Light, Carbon Green, Desktop/Touch spacing, an installed
   font family and independent Desktop/Touch base sizes (8–32px). Preview
   is immediate; typed preferences are saved asynchronously by the backend.
+  Colors offers ordered wildcard/regex filename rules. Set a base text color and
+  optional background; focused/selected variants are derived automatically and
+  previewed together. Matching runs on backend workers in every panel view.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
   appears in full beside the command input in the same single row, without
   elision or a fixed path-width cap. Extreme paths remain fully accessible in a
@@ -575,6 +582,8 @@ Salamander sources supplied separately are behavioral reference only; this
 implementation does not copy its source, assets or resource strings. The About
 dialog includes Slint attribution. A project distribution license has not yet
 been selected. macOS adapters and distribution are later work.
+The [asset provenance record](docs/ASSET_PROVENANCE.md) distinguishes project-created
+artwork from icons supplied at runtime by Windows or installed desktop themes.
 
 Further designs cover [the viewer and virtual filesystems](docs/superpowers/specs/2026-11-04-viewer-vfs-design.md)
 and [reusable sudo terminal sessions](docs/superpowers/specs/2026-11-04-terminal-sessions-design.md).
@@ -583,9 +592,10 @@ designed but not yet implemented; Ctrl+F7 retains filename case conversion.
 The [finalized dynamic plugin interface](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
 specifies separately loadable text/source viewers and native, ZIP, GZIP, TAR/TAR.GZ
 and 7z filesystem providers under executable-adjacent `viewers/` and `filesystems/`.
-The three viewer packages use a versioned C ABI and run as trusted native code.
-Read-only archive packages use a separate versioned executable-worker protocol,
-with restricted processes for untrusted parsing. Slint rendering and Tokio
+The three text/source/Markdown viewer packages use a versioned C ABI and run as
+trusted native code. Image viewers and read-only archive packages use separate
+versioned executable-worker protocols, with restricted processes for untrusted
+parsing. Slint rendering and Tokio
 orchestration stay in the host. Missing packages remove the corresponding plugin
 features after restart; native browsing currently remains built into the host.
 Plugins share this Git repository but have independent Cargo workspaces under
@@ -613,7 +623,8 @@ comparison and explicit overwrite policy before publication.
 
 ### Internal viewers
 
-F3 opens Markdown for `.md`/`.markdown`, source highlighting for the package's
+F3 opens the independent image viewer for PNG, JPEG, GIF, WebP, BMP, ICO and TIFF,
+Markdown for `.md`/`.markdown`, source highlighting for the package's
 [supported language catalogue](plugins/midnight-viewer-source/README.md), and the basic
 text/hex viewer for other files. Alt+F3 always requests the basic plugin's Text mode,
 including for binary input. The mode selector changes between modes supported by
@@ -625,9 +636,18 @@ wrapping after the last regular file. Ctrl+F opens search; F3/Shift+F3 find the 
 previous match. Scrollbars, the wheel, arrows, Page Up/Down and Ctrl+Home/End navigate
 without loading the complete file. Drag selects text; Ctrl+A selects the loaded page
 and Ctrl+C copies the selection. These shortcuts are configurable in Options → Keyboard.
+Text and source modes support word wrap using the Wrap control or Ctrl+W. Binary
+files open with byte offsets, hexadecimal bytes and a printable character column;
+their columns remain fixed when wrapping is enabled for text.
+
+Images use the same `image` and `moxcms` libraries as image thumbnails, with original
+pixels decoded once in a restricted worker. Use Fit, 1:1, +/−, Ctrl+mouse wheel,
+Ctrl+Plus/Equal, Ctrl+Minus, Ctrl+0 and Ctrl+1 to zoom. Drag to pan. Animated formats
+initially show the first frame. This viewer does not require or enlarge a thumbnail.
 
 Plugins are independent Cargo projects in `plugins/`, with their own tests and locks.
-Only built packages under `viewers/<package>/plugin.toml` beside the executable are
+Only built packages under `viewers/<package>/plugin.toml` (text/source/Markdown) or
+`viewers/<package>/image-viewer.json` (isolated image worker) beside the executable are
 discovered. Options → Plugins lists available/refused packages and lets you disable
 or enable them for the next startup. Missing or disabled plugins remove their
 capability; the host has no built-in parser fallback. At most four viewer windows
@@ -640,7 +660,8 @@ and `viewers/` together into a private user-owned or administrator-owned install
 do not relax the check or install DLLs from the directory being browsed. On Linux,
 directories should normally be `0755` and package files `0644`, with no group/world
 write access. On Windows, keep modification rights restricted to your account,
-Administrators and SYSTEM. See [verification and limits](docs/verification/viewer-implementation.md).
+Administrators and SYSTEM. See the [original viewer verification](docs/verification/viewer-implementation.md)
+and [text, binary and image controls verification and limits](docs/verification/2026-11-07-viewer-controls.md).
 
 For a Windows checkout on a shared/writable drive, deploy a private runnable copy:
 

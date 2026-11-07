@@ -20,7 +20,7 @@ pub(crate) struct DesktopState {
     pub(crate) draft_shell: Option<ShellFlavor>,
     pub(crate) command_history_cursor: Option<String>,
     pub(crate) terminal_guidance: Option<&'static str>,
-    images: HashMap<IconKey, Image>,
+    images: HashMap<IconKey, (Image, bool)>,
     image_order: VecDeque<IconKey>,
     pub(super) requests: HashSet<DesktopRequestId>,
     open_requests: HashMap<DesktopRequestId, (PaneId, NavigationId, PathBuf)>,
@@ -43,6 +43,9 @@ impl DesktopState {
         self.notice_error = false;
     }
     pub(crate) fn image(&self, key: &IconKey) -> Image {
+        self.entry_image(key, false)
+    }
+    pub(crate) fn entry_image(&self, key: &IconKey, archive: bool) -> Image {
         self.images
             .get(key)
             .or_else(|| {
@@ -57,7 +60,8 @@ impl DesktopState {
                     size: key.size,
                 })
             })
-            .cloned()
+            .filter(|(_, generic)| !archive || !*generic)
+            .map(|(image, _)| image.clone())
             .unwrap_or_default()
     }
     fn receive_image(&mut self, key: IconKey, pixels: &IconPixels) {
@@ -88,7 +92,7 @@ impl DesktopState {
             pixels.height,
         ));
         self.image_order.push_back(key.clone());
-        self.images.insert(key, image);
+        self.images.insert(key, (image, pixels.generic));
     }
 }
 
@@ -441,6 +445,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn archive_art_replaces_only_generic_document_icons() {
+        let mut state = DesktopState::default();
+        let mut generic = IconPixels::new(1, 1, vec![30, 60, 90, 255]).unwrap();
+        generic.generic = true;
+        state.receive_image(IconKey::file(), &generic);
+        let mut archive_key = IconKey::file();
+        archive_key.extension = Some("whl".into());
+        assert_eq!(state.entry_image(&archive_key, true).size().width, 0);
+        assert_eq!(state.entry_image(&archive_key, false).size().width, 1);
+        let artwork = IconPixels::new(2, 2, vec![200; 16]).unwrap();
+        state.receive_image(archive_key.clone(), &artwork);
+        assert_eq!(state.entry_image(&archive_key, true).size().width, 2);
+        assert_eq!(state.image(&IconKey::file()).size().width, 1);
+    }
+
+    #[test]
     fn image_cache_remains_bounded_and_preserves_generic_fallbacks() {
         let mut state = DesktopState::default();
         let pixels = IconPixels::new(1, 1, vec![30, 60, 90, 255]).unwrap();
@@ -474,6 +494,7 @@ mod tests {
                 width: 65,
                 height: 1,
                 rgba: Arc::from(vec![0; 260]),
+                generic: false,
             },
         );
         assert_eq!(state.images.len(), before);

@@ -10,6 +10,7 @@ mod controls;
 pub(super) mod copy_dialog;
 mod drag_drop;
 mod file_actions;
+mod filename_colors;
 mod font_preferences;
 mod keyboard;
 mod metadata;

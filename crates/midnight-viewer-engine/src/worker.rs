@@ -15,8 +15,17 @@ use std::{
     time::Duration,
 };
 
+#[path = "worker_image.rs"]
+mod image;
+#[cfg(test)]
+#[path = "worker_tests.rs"]
+mod tests;
+
 struct Worker {
     runtime: Arc<Runtime>,
+    images: Arc<[midnight_image_viewer_host::Provider]>,
+    image: Option<crate::image_view::ImageView>,
+    closing_image: Option<crate::image_worker::ImageWorker>,
     files: Vec<(PathBuf, Option<crate::capture::Captured>)>,
     current: usize,
     basic: bool,
@@ -37,11 +46,13 @@ struct Worker {
     shaped: Option<TextPage>,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
+    image_size: [u32; 2],
     origin: [f32; 2],
     selection: Option<(usize, usize)>,
     length: u64,
     anchor: u64,
     binary: bool,
+    wrap: bool,
     land_at_bottom: bool,
     caption: String,
     status: String,
@@ -50,7 +61,7 @@ struct Worker {
 }
 
 pub(crate) fn run(
-    runtime: Arc<Runtime>,
+    plugins: (Arc<Runtime>, Arc<[midnight_image_viewer_host::Provider]>),
     launch: ViewerLaunch,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
@@ -58,14 +69,27 @@ pub(crate) fn run(
     output: &Mailbox,
     closed: &Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let (runtime, images) = plugins;
     output.put(ViewerOutput::Status("Preparing file identities…".into()));
     let prepared = crate::capture::prepare(&launch, closed)?;
+    let mut disabled_plugins = launch.disabled_plugins.to_vec();
+    // Ambiguous identities are disabled on both transports before any code loads.
+    disabled_plugins.extend(
+        runtime
+            .catalog()
+            .iter()
+            .filter(|native| images.iter().any(|image| image.id == native.id))
+            .map(|native| native.id.clone()),
+    );
     let mut worker = Worker {
         runtime,
+        images,
+        image: None,
+        closing_image: None,
         files: prepared.files,
         current: prepared.current,
         basic: launch.basic,
-        disabled_plugins: launch.disabled_plugins.clone(),
+        disabled_plugins: disabled_plugins.into(),
         selected_mode: None,
         modes: Vec::new(),
         mode: viewer::MODE_TEXT,
@@ -82,11 +106,13 @@ pub(crate) fn run(
         shaped: None,
         appearance,
         geometry: bounded_geometry(geometry),
+        image_size: [geometry.width.max(1), geometry.height.max(1)],
         origin: [0.0; 2],
         selection: None,
         length: 0,
         anchor: 0,
         binary: false,
+        wrap: false,
         land_at_bottom: false,
         caption: String::new(),
         status: String::new(),
@@ -128,6 +154,10 @@ pub(crate) fn run(
         if worker.pending_open
             && worker.files[worker.current].1.is_some()
             && worker.closing.as_ref().is_none_or(Session::is_closed)
+            && worker
+                .closing_image
+                .as_ref()
+                .is_none_or(crate::image_worker::ImageWorker::finished)
         {
             worker.closing = None;
             worker.open(output);
@@ -140,6 +170,7 @@ pub(crate) fn run(
                 }
             }
         }
+        worker.poll_image(output);
         if worker.dirty {
             worker.dirty = false;
             if let Err(error) = worker.paint(output) {
@@ -179,6 +210,21 @@ impl Worker {
     }
 
     fn open(&mut self, output: &Mailbox) {
+        self.frames.invalidate();
+        if let Some(image) = self.image.take() {
+            image.worker.cancel();
+            self.closing_image = Some(image.worker);
+        }
+        if self
+            .closing_image
+            .as_ref()
+            .is_some_and(|image| !image.finished())
+        {
+            self.pending_open = true;
+            self.error("Closing previous image…".into(), output);
+            return;
+        }
+        self.closing_image = None;
         if let Some(session) = self.session.take() {
             session.close();
             self.closing = Some(session);
@@ -219,6 +265,25 @@ impl Worker {
                 .as_ref()
                 .map_err(Clone::clone)?
                 .clone();
+            if !self.basic
+                && let Some(provider) = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .and_then(|extension| {
+                        self.images.iter().find(|provider| {
+                            provider.supports_extension(extension)
+                                && !self.disabled_plugins.contains(&provider.id)
+                        })
+                    })
+            {
+                self.image = Some(crate::image_view::ImageView::new(
+                    crate::image_worker::ImageWorker::open(provider.clone(), Arc::new(file))?,
+                ));
+                self.mode = VIEWER_MODE_IMAGE;
+                self.modes = vec![VIEWER_MODE_IMAGE];
+                self.binary = false;
+                return Ok(None);
+            }
             let (plugin, mut mode) = self
                 .runtime
                 .choose_enabled(path, self.basic, &self.disabled_plugins)
@@ -241,11 +306,12 @@ impl Worker {
             self.length = file.length();
             self.runtime
                 .open(&plugin.id, file, self.generation, mode)
+                .map(Some)
                 .map_err(|e| e.to_string())
         })();
         match result {
             Ok(session) => {
-                self.session = Some(session);
+                self.session = session;
                 self.error("Opening…".into(), output);
             }
             Err(error) => self.error(error, output),
@@ -275,14 +341,19 @@ impl Worker {
     }
 
     fn input(&mut self, input: ViewerInput, output: &Mailbox) {
+        if self.image.is_some() && self.image_input(&input) {
+            return;
+        }
         match input {
             ViewerInput::Resize(geometry) => {
                 self.frames.invalidate();
+                self.image_size = [geometry.width.max(1), geometry.height.max(1)];
                 let geometry = bounded_geometry(geometry);
                 let scale_changed = geometry.scale != self.geometry.scale;
+                let width_changed = geometry.width != self.geometry.width;
                 self.geometry = geometry;
-                if scale_changed && let Some(page) = &self.page {
-                    self.set_page(page.clone(), output);
+                if scale_changed || (width_changed && self.wrap && self.wrap_available()) {
+                    self.reflow(output);
                 }
                 self.clamp_origin();
                 self.dirty = true;
@@ -329,6 +400,10 @@ impl Worker {
             ViewerInput::Mode(mode) if self.modes.contains(&mode) && mode != self.mode => {
                 self.selected_mode = Some(mode);
                 self.open(output);
+            }
+            ViewerInput::Wrap(wrap) if self.wrap_available() && self.wrap != wrap => {
+                self.wrap = wrap;
+                self.reflow(output);
             }
             ViewerInput::Search {
                 query,
@@ -439,9 +514,14 @@ impl Worker {
         }
     }
 
-    fn set_page(&mut self, page: Page, output: &Mailbox) {
-        self.frames.invalidate();
-        self.anchor = page.start;
+    fn wrap_available(&self) -> bool {
+        matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
+    }
+
+    fn layout_page(
+        &mut self,
+        page: &Page,
+    ) -> Result<TextPage, midnight_viewer_render::LayoutError> {
         let options = TextOptions {
             family: if self.binary || self.appearance.family.is_empty() {
                 "monospace"
@@ -451,12 +531,46 @@ impl Worker {
             size: self.appearance.font_size,
             scale: self.geometry.scale,
             foreground: self.appearance.foreground,
+            wrap_width: (self.wrap && self.wrap_available()).then_some(self.geometry.width as f32),
             ..TextOptions::default()
         };
-        match self
-            .renderer
+        self.renderer
             .layout_with_styles(&page.text, &options, &page.spans, &page.styles)
-        {
+    }
+
+    fn reflow(&mut self, output: &Mailbox) {
+        let Some(page) = self.page.take() else {
+            return;
+        };
+        let anchor = self.shaped.as_ref().and_then(|shaped| {
+            let index = shaped.hit_test(self.origin[0], self.origin[1] + 0.5).ok()?;
+            let caret = shaped.caret_geometry(index).ok()?;
+            Some((index, (self.origin[1] - caret.y0 as f32).max(0.0)))
+        });
+        match self.layout_page(&page) {
+            Ok(shaped) => {
+                if let Some((index, offset)) = anchor
+                    && let Ok(caret) = shaped.caret_geometry(index)
+                {
+                    self.origin[1] = caret.y0 as f32 + offset;
+                }
+                if self.wrap && self.wrap_available() {
+                    self.origin[0] = 0.0;
+                }
+                self.shaped = Some(shaped);
+                self.frames.invalidate();
+                self.clamp_origin();
+                self.dirty = true;
+            }
+            Err(error) => self.error(format!("Cannot lay out this page: {error:?}"), output),
+        }
+        self.page = Some(page);
+    }
+
+    fn set_page(&mut self, page: Page, output: &Mailbox) {
+        self.frames.invalidate();
+        self.anchor = page.start;
+        match self.layout_page(&page) {
             Ok(shaped) => {
                 self.origin = [
                     0.0,
@@ -487,6 +601,10 @@ impl Worker {
     }
 
     fn paint(&mut self, output: &Mailbox) -> Result<(), String> {
+        if let Some(image) = &mut self.image {
+            image.request();
+            return Ok(());
+        }
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
             return Ok(());
         };
@@ -524,6 +642,9 @@ impl Worker {
             revision,
             mode: self.mode,
             modes: self.modes.clone(),
+            wrap_enabled: self.wrap && self.wrap_available(),
+            wrap_available: self.wrap_available(),
+            image: None,
             width: raster.width,
             height: raster.height,
             pixels: raster.rgba.into(),

@@ -411,18 +411,7 @@ impl Pane {
     pub(crate) fn display_location_text(&self) -> String {
         self.archive.as_ref().map_or_else(
             || self.display_path().to_string_lossy().into_owned(),
-            |a| {
-                format!(
-                    "{} / {}",
-                    a.origin.display(),
-                    a.location
-                        .trail
-                        .iter()
-                        .map(|(_, s)| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" / ")
-                )
-            },
+            |a| a.location.display_text(),
         )
     }
     pub(crate) fn selected_count(&self) -> usize {

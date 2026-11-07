@@ -30,6 +30,10 @@ import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
 export { ViewerPluginsView, ViewerPluginRow }
 import { ArchiveOptionsView, ArchiveAssociationRow } from "archive-options.slint";
 export { ArchiveOptionsView, ArchiveAssociationRow }
+import { ColorOptionsView, FilenameColorDraft } from "color-options.slint";
+export { ColorOptionsView, FilenameColorDraft }
+import { FilenameColorPresentation } from "filename-colors.slint";
+export { FilenameColorPresentation }
 import { OperationDialog } from "operation-controls.slint";
 import { OperationsBody, OperationRow, JobsView } from "jobs-dialog.slint";
 export { JobsView }
@@ -157,7 +161,8 @@ component FilePane inherits Rectangle {
     in property <length> row-height: root.view-mode == 2 ? 102px + Theme.font-size * 3 : Theme.row-height;
     private property <string> previous-click-identity;
     out property <bool> list-focused: search.has-focus;
-    out property <bool> volume-popup-open: volume-picker.popup-open;
+    out property <bool> volume-popup-open: volume-picker.popup-open || hot-path-picker.popup-open;
+    out property <bool> hot-path-popup-open: hot-path-picker.popup-open;
     out property <length> list-visible-height: list.visible-height;
     out property <length> list-left: list.absolute-position.x;
     out property <length> list-top: list.absolute-position.y;
@@ -227,7 +232,13 @@ component FilePane inherits Rectangle {
     public function focus-list() { path-input.finish-edit(); search.focus-input(); }
     public function reset-search-context() { search.reset-context(); }
     public function open-volumes() { root.activate(); root.focus-list(); volume-picker.open(); }
-    public function commit-volume-shortcut() { volume-picker.activate-shortcut(); }
+    public function commit-volume-shortcut() {
+        if volume-picker.popup-open { volume-picker.activate-shortcut(); }
+    }
+    public function take-location-choice(index: int) -> string {
+        return hot-path-picker.popup-open ? hot-path-picker.take-choice(index)
+            : volume-picker.take-choice(index);
+    }
     public function open-bookmarks() { bookmarks-menu.open(); }
     changed row-height => { root.reveal-cursor(); }
     changed view-columns => {
@@ -320,13 +331,14 @@ component FilePane inherits Rectangle {
                             hint: "Add current path to Hot Paths";
                             clicked => { root.activate(); root.bookmark-add(root.bookmark-name, 0); root.focus-list(); }
                         }
-                        CompactPicker {
+                        hot-path-picker := CompactPicker {
                             width: root.toolbar-arrow-width; minimum-control-width: 0px;
                             framed: false; arrow-trigger-only: true;
                             choices: root.hot-path-choices; model-revision: root.choice-revision;
                             separator-before-key: "add-hot-path";
                             accessible-name: "Hot Paths"; hint: "Choose a saved folder, add the current path or manage numbered Hot Paths. Configure their keys in Options → Keyboard.";
                             popup-width: 500px; popup-align-right: true;
+                            shortcut-event(event) => { return root.volume-key(event); }
                             selected-key(identity) => {
                                 root.activate();
                                 if identity == "manage-hot-paths" { bookmarks-menu.open(); }
@@ -394,8 +406,12 @@ component FilePane inherits Rectangle {
                 cross-axis-alignment: center;
                 volume-picker := CompactPicker {
                     group-separators: true;
-                    width: clamp(self.compact-width, 56px, 190px);
+                    width: Theme.touch ? 52px : 48px;
+                    icon-only: true;
+                    icon: FallbackIcons.menu;
+                    native-icon: root.action-icons.menu;
                     popup-width: 540px;
+                    fill-available-height: true;
                     model: root.volumes; choices: root.choices;
                     current-index: root.choices.length > 0 ? root.choice-index : root.volume-index;
                     icons: root.volume-icons;
@@ -404,11 +420,11 @@ component FilePane inherits Rectangle {
                         ? root.choices[root.choice-index].compact-label
                         : root.volume-index >= 0 ? root.volume-short-labels[root.volume-index]
                         : "—";
-                    hint: root.choice-index >= 0 && root.choice-index < root.choices.length
-                        ? root.choices[root.choice-index].tooltip
+                    hint: "Drives, locations and Hot Paths\n" + (root.choice-index >= 0 && root.choice-index < root.choices.length
+                        ? "Current: " + root.choices[root.choice-index].tooltip
                         : root.volume-index >= 0
                         ? root.volume-tooltips[root.volume-index] + "\nChoose a drive or volume."
-                        : "Choose a drive or volume.";
+                        : "Choose a drive or volume.");
                     accessible-name: "Drive or volume";
                     shortcut-event(event) => { return root.volume-key(event); }
                     shortcut-index: root.choices.length - 1;
@@ -615,6 +631,7 @@ export component MainWindow inherits Window {
     in property <bool> native-alt-gr;
     in property <bool> native-digit-event;
     out property <int> volume-popup-pane: left.volume-popup-open ? 0 : right.volume-popup-open ? 1 : -1;
+    out property <int> hot-path-popup-pane: left.hot-path-popup-open ? 0 : right.hot-path-popup-open ? 1 : -1;
     in property <string> file-menu-token;
     in property <length> file-menu-x;
     in property <length> file-menu-y;
@@ -1017,6 +1034,9 @@ export component MainWindow inherits Window {
     }
     public function commit-volume-shortcut(pane: int) {
         if pane == 0 { left.commit-volume-shortcut(); } else { right.commit-volume-shortcut(); }
+    }
+    public function take-location-choice(pane: int, index: int) -> string {
+        return pane == 0 ? left.take-location-choice(index) : right.take-location-choice(index);
     }
     public function apply-file-input-action(pane: int, action: int) {
         if pane == 0 { left.apply-input-action(action); } else { right.apply-input-action(action); }

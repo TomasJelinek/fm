@@ -14,7 +14,8 @@ import tomllib
 import zipfile
 from pathlib import Path
 
-REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown")
+REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
+                    "midnight.viewer.image")
 
 
 def portable_component(name):
@@ -92,6 +93,11 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
         raise ValueError("Expected 1..256 independently built viewer packages")
     for package in entries:
         files = plain_tree(package)
+        if package / "image-viewer.json" in files:
+            manifest = image_viewer_manifest(package, files, target)
+            worker_identity(manifest, identities)
+            packages.append((package, manifest, files, manifest["executable"]))
+            continue
         manifest_path = package / "plugin.toml"
         with plain_file(manifest_path) as stream:
             source = stream.read(65537)
@@ -127,12 +133,12 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
         for required in ("plugin.toml", library, "LICENSE", "THIRD-PARTY.md"):
             if package / required not in files:
                 raise ValueError(f"Viewer package missing required file {required}: {package}")
-        packages.append((package, manifest, files))
+        packages.append((package, manifest, files, None))
     missing = set(required_ids) - identities
     if missing:
         raise ValueError("Missing required viewer packages: " + ", ".join(sorted(missing)))
     inventory = []
-    for package, manifest, files in packages:
+    for package, manifest, files, worker in packages:
         copied = []
         for source in files:
             relative = Path("viewers") / package.name / source.relative_to(package)
@@ -140,15 +146,42 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
             destination.parent.mkdir(parents=True, exist_ok=True)
             with plain_file(source) as original, destination.open("xb") as output:
                 shutil.copyfileobj(original, output)
-            destination.chmod(0o644)
+            executable = worker is not None and source == package / worker
+            destination.chmod(0o755 if executable else 0o644)
             copied.append({"path": relative.as_posix(), "bytes": destination.stat().st_size,
-                           "sha256": sha256_file(destination)})
+                           "sha256": sha256_file(destination), "executable": executable})
         fingerprint = hashlib.sha256(json.dumps(copied, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        inventory.append({"id": manifest["id"], "version": manifest["version"],
-                          "target": target, "abi_major": manifest["abi_major"],
-                          "entry_library": manifest["entry_library"], "models": manifest["models"],
-                          "package_sha256": fingerprint, "files": copied})
+        item = {"id": manifest["id"], "version": manifest["version"], "target": target,
+                "package_sha256": fingerprint, "files": copied}
+        if worker:
+            item.update(kind="image-viewer-worker", protocol=manifest["protocol"],
+                        entry_executable=worker, extensions=manifest["extensions"])
+        else:
+            item.update(abi_major=manifest["abi_major"], entry_library=manifest["entry_library"],
+                        models=manifest["models"])
+        inventory.append(item)
     return inventory
+
+
+def image_viewer_manifest(package, files, target):
+    if package / "plugin.toml" in files:
+        raise ValueError("A viewer package cannot contain both native and process entry manifests")
+    manifest = read_worker_manifest(package / "image-viewer.json", json.loads)
+    fields = {"schema", "protocol", "id", "name", "version", "target", "executable", "extensions"}
+    extensions = manifest.get("extensions")
+    if (set(manifest) != fields or type(manifest.get("schema")) is not int
+            or manifest["schema"] != 1 or type(manifest.get("protocol")) is not int
+            or manifest["protocol"] != 1 or manifest.get("target") != target
+            or not isinstance(manifest.get("name"), str) or not 1 <= len(manifest["name"]) <= 128
+            or not isinstance(extensions, list) or not 1 <= len(extensions) <= 64
+            or any(not isinstance(value, str) or not re.fullmatch(r"[a-z0-9]{1,32}", value)
+                   for value in extensions) or len(set(extensions)) != len(extensions)):
+        raise ValueError("Incompatible image viewer manifest")
+    executable = worker_executable(manifest.get("executable"), target)
+    for required in ("image-viewer.json", executable, "LICENSE", "THIRD-PARTY.md"):
+        if package / required not in files:
+            raise ValueError(f"Image viewer package missing required file {required}: {package}")
+    return manifest
 
 
 def worker_input(stage, source):
@@ -434,7 +467,7 @@ def main():
     shutil.copyfile(root / "Cargo.lock", stage / "Cargo.lock")
     shutil.copyfile(root / "assets/branding/midnight-explorer.png", stage / "midnight-explorer.png")
     for relative in ("SECURITY.md", "docs/SYSTEM_REQUIREMENTS.md", "docs/KEYBOARD_SHORTCUTS.md",
-                     "docs/FEATURE_STATUS.md"):
+                     "docs/FEATURE_STATUS.md", "docs/ASSET_PROVENANCE.md"):
         shutil.copyfile(root / relative, stage / Path(relative).name)
     if args.desktop_entry:
         shutil.copyfile(args.desktop_entry, stage / args.desktop_entry.name)
@@ -463,8 +496,10 @@ def main():
     archive = output / f"{name}.{args.format}"
     if archive.exists():
         raise FileExistsError(archive)
+    viewer_executables = [file["path"] for plugin in plugins for file in plugin["files"]
+                          if file.get("executable")]
     write_archive(stage, archive, binary.name, args.format,
-                  [file["path"] for file in worker_files if file["executable"]])
+                  [file["path"] for file in worker_files if file["executable"]] + viewer_executables)
     print(archive)
 
 

@@ -91,20 +91,41 @@ impl LocationService for WindowsFileSystem {
             );
         }
         for (account, display_name, path) in crate::onedrive_locations::accounts() {
-            if !locations
-                .iter()
-                .any(|location| location.kind == LocationKind::OneDrive && location.path == path)
-            {
-                append(
-                    &mut locations,
-                    format!("onedrive:{account}"),
-                    format!("OneDrive — {display_name}"),
-                    LocationKind::OneDrive,
-                    path,
-                );
-            }
+            append_onedrive_account(&mut locations, &account, &display_name, path);
         }
         Ok(locations)
+    }
+}
+
+fn append_onedrive_account(
+    locations: &mut Vec<NavigationLocation>,
+    account: &str,
+    display_name: &str,
+    path: PathBuf,
+) {
+    // Shell and account registrations can differ in casing, path prefix or
+    // junction spelling. Compare directory identities without rewriting paths.
+    let identity = |path: &std::path::Path| {
+        crate::mutation::native::open_parent(path)
+            .and_then(|file| crate::mutation::native::identity(&file))
+            .ok()
+    };
+    let target = identity(&path);
+    let label = format!("OneDrive — {display_name}");
+    if let Some(existing) = locations.iter_mut().find(|location| {
+        location.kind == LocationKind::OneDrive
+            && (location.path == path
+                || target.is_some_and(|id| identity(&location.path) == Some(id)))
+    }) {
+        existing.label = label;
+    } else {
+        append(
+            locations,
+            format!("onedrive:{account}"),
+            label,
+            LocationKind::OneDrive,
+            path,
+        );
     }
 }
 
@@ -122,4 +143,36 @@ fn append(
         path,
         drive_letter: None,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_registrations_merge_same_directory_but_keep_distinct_accounts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let personal = temporary.path().join("Cloud 文档");
+        let business = temporary.path().join("Business");
+        std::fs::create_dir(&personal).unwrap();
+        std::fs::create_dir(&business).unwrap();
+        let mut locations = Vec::new();
+        append(
+            &mut locations,
+            "onedrive".into(),
+            "OneDrive".into(),
+            LocationKind::OneDrive,
+            personal.clone(),
+        );
+        let alias = temporary.path().join("CLOUD 文档");
+        append_onedrive_account(&mut locations, "Personal", "Personal", alias);
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].id, "onedrive");
+        assert_eq!(locations[0].path, personal);
+        assert_eq!(locations[0].label, "OneDrive — Personal");
+        append_onedrive_account(&mut locations, "Business1", "Work", business.clone());
+        append_onedrive_account(&mut locations, "Business2", "Work", business.clone());
+        assert_eq!(locations.len(), 2);
+        assert_eq!(locations[1].path, business);
+    }
 }

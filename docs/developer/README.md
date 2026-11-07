@@ -17,9 +17,10 @@ status is described here. The [public C header](../../api/midnight-plugin-api/in
 and [Rust API source](../../api/midnight-plugin-api/src/lib.rs) define the actual
 symbols; illustrative future types in design documents are not public exports.
 
-Executable filesystem and thumbnail plugins use separate public protocols and
+Executable filesystem, image-viewer and thumbnail plugins use separate public protocols and
 restricted processes. See the [filesystem API](FILESYSTEM_API.md) and
-[worker/thumbnail SDK](WORKER_SDK.md); they do not change the released viewer ABI.
+[worker/thumbnail SDK](WORKER_SDK.md) and [image viewer API](IMAGE_VIEWER_API.md);
+they do not change the released viewer ABI.
 
 ## Architecture and ownership
 

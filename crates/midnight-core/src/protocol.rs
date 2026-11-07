@@ -86,6 +86,12 @@ pub enum Command {
     CompareDirectories(crate::CompareRequest),
     CancelComparison(crate::CompareId),
     ValidatePanelFilter(crate::FilterValidationRequest),
+    ValidateFilenameColors(crate::FilenameColorsValidation),
+    MatchFilenameColors(crate::FilenameColorsRequest),
+    ClearFilenameColors {
+        pane: PaneId,
+        id: u64,
+    },
     EnqueueCopy(crate::CopyRequest),
     EnqueueSelectedCopy(crate::SelectedCopyRequest),
     DecideCopy(crate::CopyDecision),
@@ -248,6 +254,14 @@ pub enum Event {
     PanelFilterValidated {
         request: crate::FilterValidationRequest,
         result: Result<(), FsError>,
+    },
+    FilenameColorsValidated {
+        request: crate::FilenameColorsValidation,
+        result: Result<(), String>,
+    },
+    FilenameColorsReady {
+        request: crate::FilenameColorsRequest,
+        result: Result<Arc<crate::FilenameColorsResult>, String>,
     },
     Copy(crate::CopyEvent),
     DragDrop(crate::DragDropEvent),

@@ -1,4 +1,6 @@
 use super::*;
+#[path = "image_integration_tests.rs"]
+mod images;
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, ViewerFrame};
 use std::{
     path::Path,
@@ -32,6 +34,7 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
     }
 }
 
+#[track_caller]
 fn frame(session: &WindowSession, predicate: impl Fn(&ViewerFrame) -> bool) -> ViewerFrame {
     let deadline = Instant::now() + Duration::from_secs(45);
     let mut messages = Vec::new();
@@ -149,6 +152,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     let service = Service {
         handle: executor.handle().clone(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
+        images: Arc::new(Mutex::new(Some(Arc::from([])))),
         windows: Arc::new(AtomicUsize::new(0)),
     };
     let files = tempfile::tempdir().unwrap();
@@ -314,7 +318,42 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         f.mode == midnight_plugin_host::api::viewer::MODE_BINARY
     });
     assert!(hex.accessible_text.contains("00 01 02 FF 41"));
+    assert!(hex.accessible_text.contains("│ ····A"));
+    assert!(!hex.wrap_available);
     basic.close();
+
+    for (name, bytes) in [
+        ("utf16-le.txt", vec![255, 254, 65, 0, 61, 216, 0, 222]),
+        ("utf16-be.txt", vec![254, 255, 0, 65, 216, 61, 222, 0]),
+        ("utf8.txt", "A😀 Žluťoučký 世界".as_bytes().to_vec()),
+    ] {
+        std::fs::write(files.path().join(name), bytes).unwrap();
+    }
+    let automatic = service
+        .open(
+            launch(
+                files.path(),
+                &["binary.bin", "utf16-le.txt", "utf16-be.txt", "utf8.txt"],
+                false,
+            ),
+            appearance(),
+            ViewerGeometry {
+                width: 600,
+                height: 300,
+                scale: 1.0,
+            },
+        )
+        .unwrap();
+    let binary = frame(&automatic, |_| true);
+    assert_eq!(binary.mode, midnight_plugin_host::api::viewer::MODE_BINARY);
+    assert!(binary.accessible_text.contains("00 01 02 FF 41"));
+    for name in ["utf16-le.txt", "utf16-be.txt", "utf8.txt"] {
+        automatic.send(ViewerInput::NextFile);
+        let unicode = frame(&automatic, |f| f.caption.contains(name));
+        assert_eq!(unicode.mode, midnight_plugin_host::api::viewer::MODE_TEXT);
+        assert!(unicode.accessible_text.starts_with("A😀"));
+    }
+    automatic.close();
 
     std::fs::write(files.path().join("empty.md"), [0xef, 0xbb, 0xbf]).unwrap();
     let empty = service

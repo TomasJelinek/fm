@@ -44,13 +44,17 @@ fn main() -> Result<()> {
         ("thumbnail-api", "midnight-thumbnail-api"),
         ("thumbnail-api", "midnight-thumbnail-sdk"),
         ("filesystem-api", "midnight-filesystem-api"),
+        ("image-viewer-api", "midnight-image-viewer-api"),
+        ("image-viewer-api", "midnight-image-viewer-sdk"),
     ];
     let mut artifacts = Vec::new();
     let mut workspaces = Vec::<PathBuf>::new();
     for (workspace, name) in packages {
         let manifest = root.join(workspace).join(name).join("Cargo.toml");
         if !manifest.is_file() {
-            if workspace == "filesystem-api" {
+            if workspace == "filesystem-api"
+                || (workspace == "image-viewer-api" && !root.join(workspace).exists())
+            {
                 continue;
             }
             return Err(format!("Missing public package {name}").into());

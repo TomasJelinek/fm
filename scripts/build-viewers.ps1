@@ -1,6 +1,7 @@
 param(
     [ValidateSet('debug', 'release')][string]$Profile = 'debug',
     [string]$SdkConfig,
+    [string]$WorkerSdkConfig,
     [string]$AppDirectory,
     [switch]$Test,
     [switch]$Offline
@@ -82,6 +83,9 @@ try {
             -OutputDirectory (Join-Path $AppDirectory "viewers/$package")
         if ($LASTEXITCODE -ne 0) { throw "$package build failed" }
     }
+    & (Join-Path $PSScriptRoot 'build-image-viewer.ps1') -Profile $Profile -WorkerSdkConfig $WorkerSdkConfig `
+        -AppDirectory $AppDirectory -Test:$Test -Offline:$Offline
+    if ($LASTEXITCODE -ne 0) { throw 'Image viewer build failed' }
 } finally {
     Pop-Location
     foreach ($variable in $savedEnvironment.Keys) {

@@ -88,7 +88,7 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     let received = seen.clone();
     let bindings = ShortcutMap::new(&[ShortcutBinding {
         action: "viewer.find".into(),
-        keys: vec!["Ctrl+Digit1".into()],
+        keys: vec!["Ctrl+Digit9".into()],
     }])
     .unwrap();
     // Input routing does not depend on the asynchronous content-open result.
@@ -136,7 +136,7 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     window.window().dispatch_event(WindowEvent::KeyPressed {
         text: Key::Control.into(),
     });
-    key(&window, "1");
+    key(&window, "9");
     window.window().dispatch_event(WindowEvent::KeyReleased {
         text: Key::Control.into(),
     });
@@ -147,7 +147,7 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     assert!(
         seen.borrow()
             .iter()
-            .any(|entry| entry == &("Ctrl+Digit1".into(), false))
+            .any(|entry| entry == &("Ctrl+Digit9".into(), false))
     );
     key(&window, " ");
     assert_eq!(window.get_query(), " ", "search keeps ordinary space input");

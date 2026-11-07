@@ -1,5 +1,6 @@
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { FilenameColorPresentation } from "filename-colors.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 
@@ -42,7 +43,7 @@ export component PrefixName inherits Rectangle {
         changed font-size => { root.update-highlight(); }
         changed width => { root.update-highlight(); }
         color: root.text-color;
-        selection-foreground-color: Theme.search-match;
+        selection-foreground-color: FilenameColorPresentation.readable(Theme.search-match, root.row-background);
         selection-background-color: transparent;
         single-line: !root.wrapped;
         wrap: root.wrapped ? char-wrap : no-wrap;

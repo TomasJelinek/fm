@@ -216,6 +216,10 @@ fn topic_arrow_navigation_moves_focus_with_selection() {
 
 impl Harness {
     fn new(bindings: &[(&str, &[&str])]) -> Self {
+        Self::with_bookmarks(bindings, Vec::new())
+    }
+
+    fn with_bookmarks(bindings: &[(&str, &[&str])], bookmarks: Vec<Bookmark>) -> Self {
         let ui = ui::TestUi::new();
         let base = std::env::temp_dir().join("shortcut UI 文档");
         let presenter = Rc::new(RefCell::new(Presenter::new(
@@ -257,6 +261,7 @@ impl Harness {
             entries,
         });
         let values = UserPreferences {
+            bookmarks,
             shortcuts: bindings
                 .iter()
                 .map(|(action, keys)| ShortcutBinding {
@@ -338,6 +343,116 @@ impl Harness {
         ui::chord(&self.ui.window, &modifiers, chord.key.as_str());
         self.draw();
     }
+}
+
+#[test]
+fn numbered_hot_paths_activate_from_both_popups_and_keep_the_origin_pane() {
+    let destination = std::env::temp_dir().join("numbered saved path 文档");
+    let mut h = Harness::with_bookmarks(
+        &[],
+        vec![Bookmark {
+            id: BookmarkId(1),
+            name: "Saved".into(),
+            path: destination.clone(),
+            slot: Some(10),
+        }],
+    );
+    h.ui.window.invoke_open_volume_menu(1);
+    h.draw();
+    assert_eq!(h.ui.window.get_volume_popup_pane(), 1);
+    assert!(
+        h.ui.window
+            .invoke_physical_shortcut("Digit0".into(), false, false, false, false,)
+    );
+    assert!(!ui::has_popup(&h.ui.window));
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Right, path, .. } if path == &destination)));
+    h.commands.borrow_mut().clear();
+    h.draw();
+    ui::click_root(&h.ui.window, "Hot Paths", AccessibleRole::Combobox);
+    h.draw();
+    ui::key(&h.ui.window, "0");
+    assert!(!ui::has_popup(&h.ui.window));
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Left, path, .. } if path == &destination)));
+}
+
+#[test]
+fn popup_hot_paths_honor_remapping_other_panel_and_unassigned_slots() {
+    let destination = std::env::temp_dir().join("mapped saved path");
+    let mut h = Harness::with_bookmarks(
+        &[("bookmark.open.1", &["Ctrl+Alt+Y"])],
+        vec![Bookmark {
+            id: BookmarkId(1),
+            name: "Saved".into(),
+            path: destination.clone(),
+            slot: Some(1),
+        }],
+    );
+    ui::click_root(&h.ui.window, "Hot Paths", AccessibleRole::Combobox);
+    h.draw();
+    for digit in ["1", "2"] {
+        ui::key(&h.ui.window, digit);
+        assert!(h.commands.borrow().is_empty());
+        assert!(ui::has_popup(&h.ui.window));
+    }
+    h.ui.window.set_native_alt_gr(true);
+    assert!(
+        !h.ui
+            .window
+            .invoke_physical_shortcut("Digit1".into(), true, true, false, false)
+    );
+    h.ui.window.set_native_alt_gr(false);
+    ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "y");
+    assert!(!ui::has_popup(&h.ui.window));
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Left, path, .. } if path == &destination)));
+    h.commands.borrow_mut().clear();
+    h.ui.window.invoke_open_volume_menu(0);
+    h.draw();
+    assert!(
+        h.ui.window
+            .invoke_physical_shortcut("Digit1".into(), true, true, false, false)
+    );
+    assert!(!ui::has_popup(&h.ui.window));
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Right, path, .. } if path == &destination)));
+}
+
+#[test]
+fn popup_hot_paths_reject_replaced_choices_and_preserve_volume_binding_priority() {
+    let destination = std::env::temp_dir().join("captured saved path");
+    let mut h = Harness::with_bookmarks(
+        &[("panel.as-other", &["Digit1"])],
+        vec![Bookmark {
+            id: BookmarkId(1),
+            name: "Saved".into(),
+            path: destination.clone(),
+            slot: Some(1),
+        }],
+    );
+    h.ui.window.invoke_open_volume_menu(0);
+    h.draw();
+    assert!(
+        h.ui.window
+            .invoke_physical_shortcut("Digit1".into(), false, false, false, false)
+    );
+    assert!(!ui::has_popup(&h.ui.window));
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::Navigate { pane: PaneId::Left, path, .. } if path != &destination)));
+    h.commands.borrow_mut().clear();
+    ui::click_root(&h.ui.window, "Hot Paths", AccessibleRole::Combobox);
+    h.draw();
+    // A settings update can replace identities while the popup stays open.
+    h.presenter
+        .borrow_mut()
+        .rename_bookmark(BookmarkId(1), "Changed".into(), &|_| true);
+    h.draw();
+    ui::chord(&h.ui.window, &[Key::Control], "1");
+    assert!(
+        h.commands.borrow().is_empty(),
+        "old menu cannot target the replacement row"
+    );
 }
 
 #[test]

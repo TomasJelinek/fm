@@ -147,8 +147,9 @@ folder. Native-menu Copy/Paste uses the same verified copy service as Ctrl+C/V.
 The top action toolbar includes a sort chooser beside View, available in every mode.
 The Hot Paths star adds the current folder; its arrow lists saved paths, then
 Add path and Manage below a separator. Saved paths also appear in their own group
-in the drive dropdown after drives and special locations. The drive bar shows
-numbered Hot Paths as 1–9/0. Adding an existing path keeps its saved identity;
+in the drive dropdown after drives and special locations. Both menus show
+numbered Hot Paths as 1–9/0; saved paths have no direct drive-toolbar buttons.
+Adding an existing path keeps its saved identity;
 new paths take the first free number, and paths beyond ten remain in the menus.
 Manage shows full folder paths without custom names. Selecting a row keeps the
 manager open; choose a number and Apply shortcut to update that saved path.
@@ -224,6 +225,17 @@ Viewer windows have their own configurable shortcut context:
 | Ctrl+C in content | Copy selected displayed text |
 | Arrows / PageUp / PageDown | Scroll content |
 | Ctrl+Home / Ctrl+End | First / last page |
+| Ctrl+W | Toggle word wrap in Text or Source mode |
+| Ctrl+Plus / Ctrl+Equal | Zoom image in |
+| Ctrl+Minus | Zoom image out |
+| Ctrl+0 | Fit image without upscaling |
+| Ctrl+1 | Actual image pixels (1:1) |
+
+In image mode, Ctrl+wheel zooms around the pointer and dragging pans the image.
+Text search/wrap controls are hidden for images. The same Escape/Space window
+actions apply. Images exceeding the host's four-megapixel display surface are
+resampled to that bounded surface; 1:1 retains the physical size, with reduced
+display detail on larger canvases.
 
 Search retains ordinary text editing, clipboard keys and spaces. Main-window actions
 do not dispatch inside viewer windows. Viewer mode is selected using the bottom

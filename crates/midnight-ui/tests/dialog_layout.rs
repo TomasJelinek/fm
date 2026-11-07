@@ -125,7 +125,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
         "F2".into(),
     ])));
     editor.set_scope("File list and filename search".into());
-    for scheme in 0..8 {
+    for scheme in 0..9 {
         for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
             test.window.invoke_apply_preferences(scheme, density);
             test.window.invoke_apply_fonts("".into(), font, font);

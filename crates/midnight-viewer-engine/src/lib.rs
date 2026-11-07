@@ -3,6 +3,11 @@
 
 mod capture;
 mod capture_archive;
+mod image_geometry;
+mod image_input;
+mod image_pixels;
+mod image_view;
+mod image_worker;
 mod interaction;
 mod navigation;
 mod page;
@@ -52,6 +57,7 @@ impl Mailbox {
 pub struct Service {
     handle: tokio::runtime::Handle,
     runtime: Arc<Mutex<Option<Arc<Runtime>>>>,
+    images: Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>,
     windows: Arc<AtomicUsize>,
 }
 
@@ -90,6 +96,7 @@ impl Service {
         Self {
             handle,
             runtime: Arc::new(Mutex::new(None)),
+            images: Arc::new(Mutex::new(None)),
             windows: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -129,8 +136,31 @@ impl Service {
                     }
                     loaded.as_ref().unwrap().clone()
                 };
+                let images = {
+                    let mut loaded = service
+                        .images
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    if loaded.is_none() {
+                        let executable =
+                            std::env::current_exe().map_err(|error| error.to_string())?;
+                        // Invalid process packages expose no feature. Options reports discovery diagnostics.
+                        *loaded = Some(
+                            midnight_image_viewer_host::discover(&executable)
+                                .unwrap_or_default()
+                                .into(),
+                        );
+                    }
+                    loaded.as_ref().unwrap().clone()
+                };
                 worker::run(
-                    runtime, launch, appearance, geometry, receiver, &output, &stop,
+                    (runtime, images),
+                    launch,
+                    appearance,
+                    geometry,
+                    receiver,
+                    &output,
+                    &stop,
                 )
             }))
             .unwrap_or_else(|_| Err("Viewer backend stopped after an internal error.".into()));

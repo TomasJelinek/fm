@@ -46,6 +46,28 @@ fn absent_viewers_directory_is_an_empty_catalog() {
     assert!(Runtime::discover(root.path()).is_ok());
 }
 
+#[test]
+fn image_worker_packages_are_left_to_the_process_viewer_host() {
+    let root = fixture_root();
+    let package = root.path().join("viewers/image");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("image-viewer.json"), "{}").unwrap();
+    let runtime = Runtime::discover(root.path()).unwrap();
+    assert!(runtime.catalog().is_empty());
+    assert!(runtime.diagnostics().is_empty());
+}
+
+#[test]
+fn packages_with_native_and_image_worker_entries_are_ambiguous() {
+    let root = fixture_root();
+    let package = package(root.path(), "ambiguous", "viewer.ambiguous", "");
+    std::fs::write(package.join("image-viewer.json"), "{}").unwrap();
+    let runtime = Runtime::discover(root.path()).unwrap();
+    assert!(runtime.catalog().is_empty());
+    assert_eq!(runtime.diagnostics().len(), 1);
+    assert!(runtime.diagnostics()[0].message.contains("both"));
+}
+
 fn package(root: &std::path::Path, name: &str, id: &str, extra: &str) -> std::path::PathBuf {
     let package = root.join("viewers").join(name);
     std::fs::create_dir_all(&package).unwrap();

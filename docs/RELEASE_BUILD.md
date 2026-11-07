@@ -11,8 +11,16 @@ with an older OS, glibc or graphics driver.
 The workspace release profile enables Rust's highest standard optimization level
 (`opt-level = 3`), whole-program **fat LTO**, a single code-generation unit and no
 incremental compilation. Release artifacts omit debug information and strip
-symbols. Development-only assertions are disabled. These settings apply to the
-whole dependency graph; build-time host tools retain Cargo's normal build overrides.
+symbols. Development-only assertions are disabled. The generated main-window
+bindings (`midnight-ui-bindings`) alone use `opt-level = "s"`; runtime services,
+renderers, font/text engines and other application crates retain level 3.
+Build-time host tools retain Cargo's normal build overrides.
+
+The [same-source Windows comparison](verification/2026-11-07-release-optimization.md)
+reduced `me.exe` from 42,425,856 to 37,096,448 bytes (12.56%) with overlapping
+native resize/redraw timing ranges across six alternating runs per profile.
+This is a scoped Windows measurement, not proof of unchanged performance for
+every workload or a physical Linux desktop.
 
 Integer overflow checks remain enabled, and `panic = "unwind"` preserves the
 backend's worker-panic reporting. File integrity, bounds checks, native identity
@@ -32,8 +40,10 @@ tails, operation throughput and memory, rather than assuming that every addition
 optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
-executable. These helpers also build the three independent viewer packages against
-the released public API/SDK and stage them under `viewers/` beside the executable.
+executable. These helpers also build four independent viewer packages against
+the released public APIs/SDKs and stage them under `viewers/` beside the executable.
+Text/binary, source and Markdown use the native C ABI; the image viewer uses the
+restricted process protocol and its separate worker SDK release.
 Direct Cargo builds compile only the host; use `scripts/build-viewers.ps1` or
 `scripts/build-viewers.sh` to build its viewer packages separately. Each plugin has
 its own lockfile, tests, release profile and third-party notices.
@@ -92,12 +102,14 @@ build directories separate when sharing one checkout.
 
 Archives include run instructions, feature/shortcut/security requirements,
 `BUILD-INFO.json` with the source revision and executable SHA-256, the lockfile,
-dependency inventory and original license texts. The packager requires all three
+dependency inventory and original license texts. The packager requires all four
 viewer packages under `viewers/` (or `--viewers-root`), validates their platform,
-ABI, entry library and package paths, and records their manifests, file sizes and
-SHA-256 values in `BUILD-INFO.json`. Plugin-owned notices remain inside each package.
+native ABI or image-worker protocol, code entry and package paths, and records
+their manifests, file sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned
+notices remain inside each package.
 It rejects symlinks, escaped paths and missing notices. Package hashes establish
-integrity, not publisher authenticity or a native-code sandbox.
+integrity, not publisher authenticity. Native C ABI viewers retain application
+authority; image decoding additionally runs in the required restricted worker.
 If a crate omits license files
 from its published source, supply them in a `NAME-VERSION/` subdirectory of the
 directory passed to `--license-overrides`,

@@ -3,6 +3,23 @@ use parley::{Affinity, Cursor, Selection};
 use std::ops::Range;
 
 impl TextPage {
+    /// Downstream caret geometry at an original UTF-8 boundary, including EOF.
+    pub fn caret_geometry(&self, index: usize) -> Result<Rect, LayoutError> {
+        self.selected_text(0..index)?;
+        let cursor = Cursor::from_byte_index(
+            &self.layout,
+            self.source_map.to_layout(index),
+            Affinity::Downstream,
+        );
+        let rect = cursor.geometry(&self.layout, 1.0);
+        Ok(Rect {
+            x0: rect.x0,
+            y0: rect.y0,
+            x1: rect.x1,
+            y1: rect.y1,
+        })
+    }
+
     /// Hit testing uses physical coordinates in the exact layout used for drawing.
     pub fn hit_test(&self, x: f32, y: f32) -> Result<usize, LayoutError> {
         if !x.is_finite() || !y.is_finite() {

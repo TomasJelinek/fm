@@ -2,7 +2,7 @@ use midnight_core::{UiDensity, UserPreferences};
 use midnight_platform_common::settings::{decode_preferences, encode_preferences};
 use std::{fs, io, path::Path};
 
-const THEME_NAMES: [&str; 8] = [
+const THEME_NAMES: [&str; 9] = [
     "blue",
     "dark",
     "light",
@@ -11,10 +11,11 @@ const THEME_NAMES: [&str; 8] = [
     "gruvbox-dark",
     "catppuccin-mocha",
     "solarized-light",
+    "carbon-green",
 ];
 
 #[test]
-fn all_eight_theme_names_roundtrip_without_changing_the_schema_or_other_preferences() {
+fn all_theme_names_roundtrip_without_changing_the_schema_or_other_preferences() {
     for name in THEME_NAMES {
         let preferences = UserPreferences {
             density: UiDensity::Touch,

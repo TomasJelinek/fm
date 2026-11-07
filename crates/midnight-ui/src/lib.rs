@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 mod action_icons;
 mod archive_options;
+mod color_options;
 mod command_line;
 mod commander_presentation;
 mod copy_presentation;
@@ -11,6 +12,7 @@ mod drag_lifecycle;
 mod error_presentation;
 mod file_key_bridge;
 mod file_keys;
+mod filename_colors;
 mod font_model;
 mod job_presentation;
 mod metadata_input;
@@ -137,6 +139,7 @@ impl Model for Rows {
                 directory: true,
                 selected: false,
                 cursor: pane.parent_cursor,
+                ..Default::default()
             });
         }
         let index = index.checked_sub(pane.parent_offset())?;
@@ -191,6 +194,7 @@ impl Model for Rows {
                 .map(|ext| ext.to_string_lossy().to_uppercase())
                 .unwrap_or_else(|| "File".into()),
         };
+        let filename_style = state.filename_style(self.pane, entry);
         Some(FileRow {
             // Include intent and committed generations: a pending refresh may keep
             // the old rows visible, and a provider may recycle IDs at its commit.
@@ -211,12 +215,27 @@ impl Model for Rows {
             size_hint: size_hint.into(),
             modified: modified.into(),
             kind: kind.into(),
-            icon: state
-                .thumbnail_image(self.pane, entry)
-                .unwrap_or_else(|| state.desktop.image(&IconKey::for_entry(entry))),
+            icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
+                state
+                    .desktop
+                    .entry_image(&IconKey::for_entry(entry), state.can_browse_archive(entry))
+            }),
             directory,
             selected: pane.selection_visible(entry),
             cursor: pane.cursor == Some(entry.id),
+            color_rule: filename_style.is_some(),
+            custom_foreground: filename_style.is_some_and(|style| style.foreground.is_some()),
+            foreground: color_options::color(
+                filename_style
+                    .and_then(|style| style.foreground)
+                    .unwrap_or_default(),
+            ),
+            custom_background: filename_style.is_some_and(|style| style.background.is_some()),
+            background: color_options::color(
+                filename_style
+                    .and_then(|style| style.background)
+                    .unwrap_or_default(),
+            ),
         })
     }
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -276,6 +295,7 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
     archive_options::refresh(window, presenter);
+    color_options::refresh(window, presenter);
     plugin_options::refresh(window, presenter);
     drag_bridge::refresh(window, presenter);
     commander_presentation::refresh(window, presenter);
@@ -285,8 +305,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     operation_presentation::refresh(window, presenter);
     window.set_action_icons(action_icons::palette(presenter));
     panel_models::refresh(window, presenter);
-    let mut locations = navigation_models::choices(presenter);
-    let mut choices = locations.clone();
+    let mut choices = navigation_models::choices(presenter);
+    let locations = navigation_models::toolbar_choices(presenter, &choices);
     let mut left_choice = presenter.navigation_choice_index(PaneId::Left);
     let mut right_choice = presenter.navigation_choice_index(PaneId::Right);
     if presenter
@@ -314,13 +334,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     let hot_paths = panel_models::bookmark_choices(presenter);
     choices.extend(hot_paths.iter().cloned());
-    // Numbered Hot Paths are direct drive-bar buttons. Overflow paths remain
-    // available in both menus without taking space from native drive controls.
-    locations.extend(
-        hot_paths
-            .into_iter()
-            .filter(|choice| !choice.compact_label.is_empty()),
-    );
+    // Hot Paths live in menus; the compact toolbar contains only native targets.
     let as_other_key = presenter.shortcut_key("panel.as-other");
     choices.push(NavigationChoiceRow {
         identity: "other-panel".into(),
@@ -601,13 +615,25 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     navigation_models::update(
         window.get_left_locations(),
-        navigation_models::locations(&locations, presenter.navigation_choice_index(PaneId::Left)),
+        navigation_models::locations(
+            &locations,
+            usize::try_from(left_choice)
+                .ok()
+                .and_then(|index| choices.get(index))
+                .map(|row| row.identity.as_str()),
+        ),
         |location| location.identity.clone(),
         |model| window.set_left_locations(model),
     );
     navigation_models::update(
         window.get_right_locations(),
-        navigation_models::locations(&locations, presenter.navigation_choice_index(PaneId::Right)),
+        navigation_models::locations(
+            &locations,
+            usize::try_from(right_choice)
+                .ok()
+                .and_then(|index| choices.get(index))
+                .map(|row| row.identity.as_str()),
+        ),
         |location| location.identity.clone(),
         |model| window.set_right_locations(model),
     );
@@ -740,6 +766,7 @@ fn update_model<T: Clone + PartialEq + 'static>(
 /// [`install`] includes this initializer. UI-only hosts that attach individual
 /// callbacks can use it without a presenter or backend; native editors retain focus.
 pub fn install_file_keys(window: &MainWindow) {
+    filename_colors::install(window);
     job_presentation::install(window);
     shortcut_bridge::install_default(window);
 }
@@ -754,6 +781,7 @@ pub fn install(
     job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
     archive_options::install(window, presenter.clone(), send.clone());
+    color_options::install(window, presenter.clone(), send.clone());
     commander_presentation::bind(window, &presenter, &send);
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");

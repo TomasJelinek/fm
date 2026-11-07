@@ -199,6 +199,73 @@ fn binary_viewport_respects_row_budget() {
 }
 
 #[test]
+fn huge_unbroken_unicode_line_has_contiguous_bounded_forward_and_backward_pages() {
+    let text = "é😀".repeat(50_000);
+    let mut h = Host::new(text.as_bytes().to_vec());
+    h.open(viewer::MODE_TEXT);
+    h.submit(2, 1, 1, abi::REQUEST_VIEWPORT, &viewport(0));
+    h.pump();
+    let first: viewer::TextPage = codec::decode(&h.event(2, abi::EVENT_TEXT_PAGE).payload).unwrap();
+    assert!(first.has_after && first.partial_line);
+    assert!(first.text.len() <= 8192);
+    let end = first.source.offset + first.source.length;
+    h.submit(3, 1, 1, abi::REQUEST_VIEWPORT, &viewport(end));
+    h.pump();
+    let second: viewer::TextPage =
+        codec::decode(&h.event(3, abi::EVENT_TEXT_PAGE).payload).unwrap();
+    assert_eq!(second.source.offset, end);
+    assert_eq!(
+        format!("{}{}", first.text, second.text),
+        &text[..(end + second.source.length) as usize]
+    );
+    let mut backwards = viewport(end);
+    backwards.backwards = true;
+    h.submit(4, 1, 1, abi::REQUEST_VIEWPORT, &backwards);
+    h.pump();
+    let previous: viewer::TextPage =
+        codec::decode(&h.event(4, abi::EVENT_TEXT_PAGE).payload).unwrap();
+    assert_eq!(previous.source.offset + previous.source.length, end);
+    assert_eq!(previous.text, first.text);
+}
+
+#[test]
+fn binary_search_returns_raw_offsets_across_reads_and_in_reverse() {
+    let mut bytes = vec![0xff; 8189];
+    bytes.extend_from_slice(b"needle\x00\xffneedle");
+    let mut h = Host::new(bytes);
+    h.open(viewer::MODE_BINARY);
+    for (request, source_anchor, backwards, expected) in [
+        (2, 0, false, 8189),
+        (3, 8190, false, 8197),
+        (4, 8203, true, 8197),
+        (5, 8197, true, 8189),
+    ] {
+        h.submit(
+            request,
+            1,
+            1,
+            abi::REQUEST_SEARCH,
+            &messages::Search {
+                query: "needle".into(),
+                source_anchor,
+                backwards,
+                case_sensitive: true,
+            },
+        );
+        h.pump();
+        let found: messages::SearchMatch =
+            codec::decode(&h.event(request, abi::EVENT_SEARCH_MATCH).payload).unwrap();
+        assert_eq!(
+            found.source,
+            viewer::SourceRange {
+                offset: expected,
+                length: 6
+            }
+        );
+    }
+}
+
+#[test]
 fn forwards_search_aligns_utf16_without_reporting_matches_before_anchor() {
     let mut h = Host::new(vec![255, 254, 65, 0, 66, 0, 65, 0]);
     h.open(viewer::MODE_TEXT);

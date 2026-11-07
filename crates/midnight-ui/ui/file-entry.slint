@@ -1,8 +1,10 @@
 import { Theme } from "theme.slint";
+import { FilenameColorPresentation } from "filename-colors.slint";
 import { PrefixName } from "panel-search.slint";
 import { FileRow } from "file-models.slint";
 import { ErrorGlyph } from "error-notice.slint";
 import { ArchiveBadge } from "archive-badge.slint";
+import { FileIcon } from "file-icon.slint";
 
 // Each cell keeps pointer identity across virtualized rebinding and refreshes.
 export component FileEntry inherits Rectangle {
@@ -24,27 +26,22 @@ export component FileEntry inherits Rectangle {
     callback hover-changed(string, bool);
     private property <string> hover-identity: pointer.has-hover && root.visible ? item.identity : "";
     changed hover-identity => { root.hover-changed(item.identity, root.hover-identity != ""); }
-    private property <color> text-color: item.selected ? Theme.selected-text
+    private property <color> name-background: FilenameColorPresentation.background(item.color-rule && item.custom-background, item.background, item.cursor, root.active, item.selected, mod(root.source-index, 2) != 0);
+    private property <color> text-color: item.color-rule ? FilenameColorPresentation.foreground(item.custom-foreground, item.foreground, root.name-background, item.selected, item.directory)
+        : item.selected ? Theme.selected-text
         : item.directory ? Theme.directory-text : Theme.text;
     clip: true;
     private property <color> row-color: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
         : item.selected ? Theme.selected-background
         : (mod(root.source-index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
+    // A custom background is restricted to the filename cell: size/progress/error
+    // and other metadata keep their established theme colors and contrast.
     background: root.row-color;
     accessible-role: list-item;
     accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
         + (item.compressed ? " · Filesystem compressed" : "")
         + (item.browsable-archive ? " · Archive: open as folder" : "")
         + (item.size-state == 3 ? " · Folder size error" : "");
-    Rectangle {
-        x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
-        background: item.selected ? Theme.selected-edge
-            : item.cursor && root.active ? Theme.cursor-edge : transparent;
-    }
-    if item.selected && item.cursor : Rectangle {
-        x: 4px; y: 0px; width: parent.width - 4px; height: 1px;
-        background: Theme.selected-edge;
-    }
     if root.view-mode != 2 : HorizontalLayout {
         padding-left: 12px; padding-right: 12px; spacing: 8px;
         HorizontalLayout {
@@ -52,8 +49,8 @@ export component FileEntry inherits Rectangle {
             horizontal-stretch: 1; min-width: root.view-mode == 0 ? 120px : 0px;
             Rectangle {
                 width: Theme.file-icon-size;
-                Image {
-                    source: item.icon;
+                FileIcon {
+                    native-icon: item.icon; browsable-archive: item.browsable-archive;
                     width: Theme.file-icon-size; height: Theme.file-icon-size;
                     y: (parent.height - self.height) / 2;
                     image-fit: contain;
@@ -81,14 +78,19 @@ export component FileEntry inherits Rectangle {
                     accessible-label: "Folder size error";
                 }
             }
-            if item.prefix-end > 0 : PrefixName {
-                text: item.name; prefix-end: item.prefix-end;
-                text-color: root.text-color; row-background: root.row-color;
-            }
-            if item.prefix-end <= 0 : Text {
-                text: item.name; color: root.text-color;
-                font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
-                overflow: elide; vertical-alignment: center; horizontal-stretch: 1;
+            Rectangle {
+                horizontal-stretch: 1; min-width: 0px; background: root.name-background;
+                if item.prefix-end > 0 : PrefixName {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    text: item.name; prefix-end: item.prefix-end;
+                    text-color: root.text-color; row-background: root.name-background;
+                }
+                if item.prefix-end <= 0 : Text {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    text: item.name; color: root.text-color;
+                    font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
+                    overflow: elide; vertical-alignment: center; horizontal-alignment: left;
+                }
             }
         }
         if root.view-mode == 0 : HorizontalLayout {
@@ -110,8 +112,9 @@ export component FileEntry inherits Rectangle {
         }
     }
     if root.view-mode == 2 : Rectangle {
-        Image {
-            source: item.icon; width: 72px; height: 72px;
+        FileIcon {
+            native-icon: item.icon; browsable-archive: item.browsable-archive;
+            width: 72px; height: 72px;
             x: (parent.width - self.width) / 2; y: 12px; image-fit: contain;
         }
         if item.compressed : Text {
@@ -126,17 +129,30 @@ export component FileEntry inherits Rectangle {
             x: parent.width / 2 + 22px; y: 12px; width: 16px; height: 16px;
             accessible-label: "Folder size error";
         }
-        if item.prefix-end > 0 : PrefixName {
+        Rectangle {
             x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
-            text: item.name; prefix-end: item.prefix-end; wrapped: true;
-            text-color: root.text-color; row-background: root.row-color;
+            background: root.name-background;
+            if item.prefix-end > 0 : PrefixName {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: item.name; prefix-end: item.prefix-end; wrapped: true;
+                text-color: root.text-color; row-background: root.name-background;
+            }
+            if item.prefix-end <= 0 : Text {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: item.name; color: root.text-color; font-size: Theme.font-size;
+                font-weight: item.selected ? 600 : 400; wrap: char-wrap; overflow: elide;
+                horizontal-alignment: center; vertical-alignment: top;
+            }
         }
-        if item.prefix-end <= 0 : Text {
-            x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
-            text: item.name; color: root.text-color; font-size: Theme.font-size;
-            font-weight: item.selected ? 600 : 400; wrap: char-wrap; overflow: elide;
-            horizontal-alignment: center; vertical-alignment: top;
-        }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
+        background: item.selected ? Theme.selected-edge
+            : item.cursor && root.active ? Theme.cursor-edge : transparent;
+    }
+    if item.selected && item.cursor : Rectangle {
+        x: 4px; y: 0px; width: parent.width - 4px; height: 1px;
+        background: Theme.selected-edge;
     }
     pointer := TouchArea {
         private property <string> pressed-identity;

@@ -137,17 +137,30 @@ pub fn root_item(window: &MainWindow, label: &str, role: AccessibleRole) -> Item
 
 /// Inspect actual text items: a control's accessible value may differ from its caption.
 pub fn text_values(item: ItemRc) -> Vec<SharedString> {
+    collect_text(item, false)
+}
+
+/// Ignore hidden caption metrics and bindings when asserting rendered text.
+pub fn visible_text_values(item: ItemRc) -> Vec<SharedString> {
+    collect_text(item, true)
+}
+
+fn collect_text(item: ItemRc, visible_only: bool) -> Vec<SharedString> {
     let mut values = Vec::new();
-    if let Some(text) = item.downcast::<SimpleText>() {
+    if let Some(text) = item.downcast::<SimpleText>()
+        && (!visible_only || item.is_visible())
+    {
         values.push(text.as_pin_ref().text());
     }
-    if let Some(text) = item.downcast::<ComplexText>() {
+    if let Some(text) = item.downcast::<ComplexText>()
+        && (!visible_only || item.is_visible())
+    {
         values.push(text.as_pin_ref().text());
     }
     let mut child = item.first_child();
     while let Some(item) = child {
         child = item.next_sibling();
-        values.extend(text_values(item));
+        values.extend(collect_text(item, visible_only));
     }
     values
 }

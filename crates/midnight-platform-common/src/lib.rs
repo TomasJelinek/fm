@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! Portable, blocking local directory and capacity services shared by native adapters.
+pub mod filename_colors;
 pub mod filter;
 pub mod fonts;
 pub mod metadata;

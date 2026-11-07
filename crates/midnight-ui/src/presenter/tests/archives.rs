@@ -65,6 +65,45 @@ fn archive_pane() -> Presenter {
 }
 
 #[test]
+fn archive_paths_and_breadcrumbs_use_native_separators_without_added_spaces() {
+    let mut p = archive_pane();
+    let expected_root = test_root().join("sample.zip");
+    assert_eq!(
+        p.panes[0].display_location_text(),
+        expected_root.to_string_lossy()
+    );
+    let archive = p.panes[0].archive.as_mut().unwrap();
+    archive.origin = test_root().join("different return folder");
+    archive.location.trail.push((2, "inside 文档".into()));
+    archive.location.trail.push((3, "deeper".into()));
+    archive.location.address.components = vec![b"inside".to_vec(), b"deeper".to_vec()];
+    archive.location.directory = 3;
+    let expected = expected_root.join("inside 文档").join("deeper");
+    assert_eq!(
+        p.panes[0].display_location_text(),
+        expected.to_string_lossy()
+    );
+    let parts = p.path_parts(PaneId::Left);
+    assert_eq!(
+        parts
+            .iter()
+            .map(|part| part.label.as_str())
+            .collect::<String>(),
+        expected.to_string_lossy()
+    );
+    assert_eq!(parts.last().unwrap().prefix, expected.to_string_lossy());
+    let first = parts[0].identity.clone();
+    let command = RefCell::new(None);
+    assert!(p.navigate_path_part(PaneId::Left, &first, &|value| {
+        *command.borrow_mut() = Some(value);
+        true
+    }));
+    assert!(matches!(&*command.borrow(), Some(Command::ArchiveNavigate {
+        action: ArchiveAction::List(location), ..
+    }) if location.directory == 1 && location.address.components.is_empty()));
+}
+
+#[test]
 fn archive_selection_and_viewer_use_opaque_identity_for_duplicate_names() {
     let mut p = archive_pane();
     assert!(p.panes[0].index.by_path.is_empty());

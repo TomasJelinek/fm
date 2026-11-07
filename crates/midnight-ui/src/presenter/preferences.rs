@@ -43,6 +43,7 @@ pub(super) struct EditedFields {
     pub(super) thumbnails_network: bool,
     pub(super) panel_filters: [bool; 2],
     pub(super) shortcuts: bool,
+    pub(super) filename_colors: bool,
     bookmarks: bool,
 }
 
@@ -165,6 +166,9 @@ impl Presenter {
                 }
                 if edited.shortcuts {
                     loaded.shortcuts = local.shortcuts.clone();
+                }
+                if edited.filename_colors {
+                    loaded.filename_colors = local.filename_colors.clone();
                 }
                 if edited.thumbnails_enabled {
                     loaded.thumbnails_enabled = local.thumbnails_enabled;
@@ -427,6 +431,7 @@ impl Presenter {
         edited.command_history |= preferences.command_history != previous.command_history;
         edited.bookmarks |= preferences.bookmarks != previous.bookmarks;
         edited.shortcuts |= preferences.shortcuts != previous.shortcuts;
+        edited.filename_colors |= preferences.filename_colors != previous.filename_colors;
         edited.thumbnails_enabled |= preferences.thumbnails_enabled != previous.thumbnails_enabled;
         edited.thumbnails_network |= preferences.thumbnails_network != previous.thumbnails_network;
         for slot in 0..2 {

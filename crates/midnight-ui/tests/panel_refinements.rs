@@ -55,14 +55,23 @@ fn breadcrumbs_details_and_command_history_never_reinterpret_display_text() {
         1,
     ));
     ui.window
-        .set_left_locations(ModelRc::new(VecModel::from(vec![LocationRow {
-            identity: "drive".into(),
-            compact_label: "C:".into(),
-            is_drive: true,
-            tooltip: "Test drive".into(),
-            icon: icon.clone(),
-            ..Default::default()
-        }])));
+        .set_left_locations(ModelRc::new(VecModel::from(vec![
+            LocationRow {
+                identity: "drive".into(),
+                compact_label: "C:".into(),
+                is_drive: true,
+                tooltip: "Test drive".into(),
+                icon: icon.clone(),
+                ..Default::default()
+            },
+            LocationRow {
+                identity: "documents".into(),
+                kind: midnight_ui::LocationRole::Documents,
+                tooltip: "Test documents".into(),
+                icon: icon.clone(),
+                ..Default::default()
+            },
+        ])));
     ui.window
         .set_navigation_choices(ModelRc::new(VecModel::from(vec![NavigationChoiceRow {
             identity: "drive".into(),
@@ -311,7 +320,12 @@ fn assert_compact_geometry(ui: &mut TestUi) {
         for (label, role, expected) in [
             ("selected.rs", AccessibleRole::ListItem, original_icon * 1.1),
             ("Test drive", AccessibleRole::Button, original_icon * 1.1),
-            ("Drive or volume", AccessibleRole::Combobox, 19.8),
+            (
+                "Test documents",
+                AccessibleRole::Button,
+                original_icon * 1.1,
+            ),
+            ("Drive or volume", AccessibleRole::Combobox, 18.0),
         ] {
             let parent = ui::root_item(&ui.window, label, role);
             let image = image_items(parent.clone())
@@ -325,7 +339,7 @@ fn assert_compact_geometry(ui: &mut TestUi) {
             let (parent_x, parent_y, parent_width, parent_height) = bounds(&parent);
             assert!(
                 (width - expected).abs() < 0.05 && (height - expected).abs() < 0.05,
-                "{label}: artwork grows ten percent without enlarging its control"
+                "{label}: artwork uses its expected size without enlarging its control"
             );
             assert!(x >= parent_x && x + width <= parent_x + parent_width);
             assert!(

@@ -59,7 +59,8 @@ impl IconService for LinuxFileSystem {
                             return Ok(None);
                         }
                         let path = theme_root.join(directory).join(format!("{name}.png"));
-                        if let Some(icon) = load_png(&path, key.size) {
+                        if let Some(mut icon) = load_png(&path, key.size) {
+                            icon.generic = *name == "text-x-generic";
                             return Ok(Some(icon));
                         }
                     }
@@ -67,10 +68,11 @@ impl IconService for LinuxFileSystem {
             }
         }
         for name in names {
-            if let Some(icon) = load_png(
+            if let Some(mut icon) = load_png(
                 &Path::new("/usr/share/pixmaps").join(format!("{name}.png")),
                 key.size,
             ) {
+                icon.generic = name == "text-x-generic";
                 return Ok(Some(icon));
             }
         }

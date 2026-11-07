@@ -1,0 +1,134 @@
+import { Theme } from "theme.slint";
+import { FilenameColorPresentation } from "filename-colors.slint";
+import { HintedCheckBox, HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { Button } from "std-widgets.slint";
+
+export struct FilenameColorDraft {
+    enabled: bool,
+    mode: int,
+    expression: string,
+    case-sensitive: bool,
+    target: int,
+    foreground: string,
+    background: string,
+}
+
+export global ColorOptionsView {
+    in property <[string]> labels;
+    in property <int> selected: -1;
+    in-out property <FilenameColorDraft> draft;
+    in property <bool> busy;
+    in property <string> error;
+    in property <bool> preview-foreground-set;
+    in property <color> preview-foreground;
+    in property <bool> preview-background-set;
+    in property <color> preview-background;
+    callback select(int);
+    callback edit(FilenameColorDraft);
+    callback action(int);
+}
+
+component ColorPreview inherits Rectangle {
+    in property <int> state;
+    private property <bool> cursor: state == 1 || state == 3;
+    private property <bool> selected: state >= 2;
+    background: FilenameColorPresentation.background(ColorOptionsView.preview-background-set, ColorOptionsView.preview-background, cursor, true, selected, false);
+    border-color: Theme.frame; border-width: 1px;
+    height: max(44px, Theme.font-size * 3.4); horizontal-stretch: 1;
+    Rectangle {
+        x: 0px; y: 0px; width: root.selected ? 4px : 3px; height: parent.height;
+        background: root.selected ? Theme.selected-edge : root.cursor ? Theme.cursor-edge : transparent;
+    }
+    if root.selected && root.cursor : Rectangle {
+        x: 4px; y: 0px; height: 1px; width: parent.width - 4px; background: Theme.selected-edge;
+    }
+    Text {
+        x: 8px; width: parent.width - 16px; vertical-alignment: center; horizontal-alignment: center;
+        text: ["Normal", "Focused", "Selected", "Focused + selected"][root.state] + "\nExample.txt";
+        font-size: Theme.font-size; font-weight: root.selected ? 600 : 400; wrap: word-wrap;
+        color: FilenameColorPresentation.foreground(ColorOptionsView.preview-foreground-set, ColorOptionsView.preview-foreground, root.background, root.selected, ColorOptionsView.draft.target == 1);
+    }
+}
+
+export component ColorOptions inherits VerticalLayout {
+    spacing: 10px; alignment: start;
+    Text { text: "Filename colors · first matching enabled rule wins"; color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap; }
+    HintedComboBox {
+        model: ColorOptionsView.labels; current-index: ColorOptionsView.selected;
+        enabled: !ColorOptionsView.busy && ColorOptionsView.labels.length > 0;
+        accessible-label: "Filename color rules"; hint: "Rules are evaluated from top to bottom.";
+        selected(value) => { ColorOptionsView.select(self.current-index); }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        for label[index] in ["Add rule", "Remove rule", "Move up", "Move down"] : Button {
+            text: label; accessible-label: label;
+            enabled: !ColorOptionsView.busy && (index == 0 ? ColorOptionsView.labels.length < 32 : index == 2 ? ColorOptionsView.selected > 0 : index == 3 ? ColorOptionsView.selected >= 0 && ColorOptionsView.selected < ColorOptionsView.labels.length - 1 : ColorOptionsView.selected >= 0);
+            clicked => { ColorOptionsView.action(index); }
+        }
+    }
+    if ColorOptionsView.selected >= 0 : VerticalLayout {
+        spacing: 8px; alignment: start;
+        HorizontalLayout {
+            spacing: 10px;
+            HintedCheckBox {
+                text: "Enable rule"; checked: ColorOptionsView.draft.enabled; enabled: !ColorOptionsView.busy;
+                hint: "Disabled rules stay in the list but do not color filenames.";
+                toggled => { ColorOptionsView.draft.enabled = self.checked; ColorOptionsView.edit(ColorOptionsView.draft); }
+            }
+            HintedCheckBox {
+                text: "Case sensitive"; checked: ColorOptionsView.draft.case-sensitive; enabled: !ColorOptionsView.busy;
+                hint: "Use the same case option as the panel filename filter.";
+                toggled => { ColorOptionsView.draft.case-sensitive = self.checked; ColorOptionsView.edit(ColorOptionsView.draft); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            HintedComboBox {
+                model: ["Masks", "Regex"]; current-index: ColorOptionsView.draft.mode; enabled: !ColorOptionsView.busy;
+                accessible-label: "Color rule syntax"; hint: "Masks use * and ?, ; separates alternatives and | starts exclusions. Regex uses bounded Rust regular expressions.";
+                selected(value) => { ColorOptionsView.draft.mode = self.current-index; ColorOptionsView.edit(ColorOptionsView.draft); }
+            }
+            HintedComboBox {
+                model: ["Files", "Folders", "Files and folders"]; current-index: ColorOptionsView.draft.target; enabled: !ColorOptionsView.busy;
+                accessible-label: "Color rule targets"; hint: "Choose which filename kinds this rule can match.";
+                selected(value) => { ColorOptionsView.draft.target = self.current-index; ColorOptionsView.edit(ColorOptionsView.draft); }
+            }
+        }
+        HintedLineEdit {
+            text: ColorOptionsView.draft.expression; enabled: !ColorOptionsView.busy;
+            accessible-label: "Color rule expression"; hint: "Examples: *.rs;*.toml|test* or regex \\.rs$. At most 4096 UTF-8 bytes.";
+            edited => { ColorOptionsView.draft.expression = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Foreground · #RRGGBB"; color: Theme.text; font-size: Theme.font-size; horizontal-stretch: 1; }
+            Text { text: "Background · optional"; color: Theme.text; font-size: Theme.font-size; horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            HintedLineEdit {
+                text: ColorOptionsView.draft.foreground; placeholder-text: "Theme foreground"; enabled: !ColorOptionsView.busy;
+                accessible-label: "Filename foreground"; hint: "Base text color in #RRGGBB format, or empty for the theme default. Lightness is adjusted for readable contrast.";
+                edited => { ColorOptionsView.draft.foreground = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
+            }
+            HintedLineEdit {
+                text: ColorOptionsView.draft.background; placeholder-text: "Theme background"; enabled: !ColorOptionsView.busy;
+                accessible-label: "Filename background"; hint: "Optional #RRGGBB filename background. Focus and selection keep their theme backgrounds.";
+                edited => { ColorOptionsView.draft.background = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
+            }
+        }
+        HorizontalLayout { spacing: 5px; for state in 4 : ColorPreview { state: state; } }
+    }
+    Text { text: ColorOptionsView.error; visible: self.text != ""; color: Theme.error-text; font-size: Theme.font-size; wrap: word-wrap; }
+    HorizontalLayout {
+        spacing: 8px;
+        HintedActionButton {
+            text: ColorOptionsView.busy ? "Checking…" : "Apply colors"; accessible-label: "Apply colors";
+            enabled: !ColorOptionsView.busy;
+            hint: "Empty rules preserve folder and file theme colors. Color rules never hide files. Changes apply after validation.";
+            clicked => { ColorOptionsView.action(4); }
+        }
+        Button { text: "Discard changes"; enabled: !ColorOptionsView.busy; clicked => { ColorOptionsView.action(5); } }
+    }
+}

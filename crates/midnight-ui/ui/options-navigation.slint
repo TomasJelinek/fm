@@ -21,7 +21,7 @@ export component OptionsNavigation inherits Rectangle {
         changed visible-height => { root.reveal-selected(); }
     VerticalLayout {
         padding: 6px; spacing: 4px; alignment: start;
-        for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews", "Archives"] : Rectangle {
+        for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews", "Archives", "Colors"] : Rectangle {
             private property <bool> focus-requested: root.focus-request == index;
             changed focus-requested => { if self.focus-requested { tab-focus.focus(); } }
             height: root.row-height;
@@ -45,7 +45,7 @@ export component OptionsNavigation inherits Rectangle {
                     if event.text == Key.DownArrow || event.text == Key.RightArrow
                         || event.text == Key.UpArrow || event.text == Key.LeftArrow {
                         root.selected = clamp(root.selected
-                            + (event.text == Key.DownArrow || event.text == Key.RightArrow ? 1 : -1), 0, 7);
+                            + (event.text == Key.DownArrow || event.text == Key.RightArrow ? 1 : -1), 0, 8);
                         root.focus-request = root.selected;
                         return accept;
                     }

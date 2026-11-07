@@ -10,6 +10,7 @@ pub(crate) mod drag_drop;
 mod editor;
 mod entry_sizes;
 mod file_actions;
+mod filename_colors;
 mod filter;
 mod fonts;
 pub(crate) mod keyboard;
@@ -151,6 +152,7 @@ pub struct Presenter {
     pub(crate) metadata: metadata::MetadataState,
     pub(crate) comparison: comparison::ComparisonState,
     pub(crate) filter_dialog: filter::FilterDialogState,
+    pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
     pub(crate) number_locale: NumberLocale,
     tabs: tabs::TabsState,
@@ -192,6 +194,7 @@ impl Presenter {
             metadata: metadata::MetadataState::default(),
             comparison: comparison::ComparisonState::default(),
             filter_dialog: filter::FilterDialogState::default(),
+            colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
             number_locale: NumberLocale::default(),
             retired: vec![],
@@ -477,6 +480,7 @@ impl Presenter {
             self.panes[pane.index()].selection_rebase_pending = true;
         }
         self.flush_filters(send);
+        self.flush_filename_colors(send);
         self.flush_search(send);
         self.flush_selection(send);
         self.flush_drag_commands(send);
@@ -516,6 +520,9 @@ impl Presenter {
             return;
         }
         let Some(event) = self.apply_comparison_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_colors_event(event) else {
             return;
         };
         let Some(event) = self.apply_filter_event(event) else {

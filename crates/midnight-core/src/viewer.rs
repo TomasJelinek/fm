@@ -68,6 +68,31 @@ pub struct ViewerGeometry {
     pub scale: f32,
 }
 
+/// Host-owned process image mode; independent from the native plugin ABI modes.
+pub const VIEWER_MODE_IMAGE: u16 = 5;
+
+#[derive(Clone, Debug)]
+pub enum ViewerImageInput {
+    Fit,
+    ActualPixels,
+    Zoom {
+        factor: f64,
+        anchor: Option<[f32; 2]>,
+    },
+    Drag {
+        x: f32,
+        y: f32,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewerImageInfo {
+    pub width: u32,
+    pub height: u32,
+    pub zoom: f64,
+    pub fitted: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum ViewerInput {
     Resize(ViewerGeometry),
@@ -80,6 +105,12 @@ pub enum ViewerInput {
     Pan(f64),
     NextFile,
     Mode(u16),
+    /// Reflow Text/Source within the viewport; ignored by fixed-column modes.
+    Wrap(bool),
+    Image {
+        frame: u64,
+        input: ViewerImageInput,
+    },
     Search {
         query: String,
         backwards: bool,
@@ -105,9 +136,12 @@ pub struct ViewerFrame {
     pub revision: u64,
     pub mode: u16,
     pub modes: Vec<u16>,
+    pub wrap_enabled: bool,
+    pub wrap_available: bool,
+    pub image: Option<ViewerImageInfo>,
     pub width: u32,
     pub height: u32,
-    /// Premultiplied RGBA, rasterized by the shared backend text renderer.
+    /// Bounded premultiplied RGBA prepared by backend text or image workers.
     pub pixels: Arc<[u8]>,
     pub accessible_text: Arc<str>,
     pub position: f64,

@@ -35,7 +35,7 @@ export struct ThemeColors {
 export global ThemePalettes {
     out property <[string]> names: [
         "Blue", "Dark", "Light", "Dracula", "Nord", "Gruvbox Dark",
-        "Catppuccin Mocha", "Solarized Light"
+        "Catppuccin Mocha", "Solarized Light", "Carbon Green"
     ];
     pure public function colors(index: int) -> ThemeColors {
         // Dark
@@ -281,6 +281,41 @@ export global ThemePalettes {
                 error-text: #9d2828,
                 selection-background: #28666d,
                 selection-text: #fdf6e3,
+            };
+        }
+        // Carbon Green: charcoal surfaces and bright green accents.
+        if index == 8 {
+            return {
+                light: false,
+                window-background: #11140f,
+                pane-background: #171b16,
+                alternate-row: #1c211a,
+                surface: #292f25,
+                secondary-surface: #1c211a,
+                header: #30392a,
+                active-header: #354826,
+                frame: #798771,
+                active-frame: #98d846,
+                hover: #394b2b,
+                text: #e8efdf,
+                strong-text: #f8fff1,
+                secondary-text: #d1dbc4,
+                muted-text: #a7b39b,
+                pending-size: #ffda8b,
+                accent: #a5e65a,
+                directory-text: #c0ef91,
+                selected-text: #efffda,
+                search-match: #b7f57a,
+                compression-mark: #b8ddff,
+                cursor-background: #344b23,
+                inactive-cursor: #2d3726,
+                selected-background: #3d4824,
+                selected-edge: #b9f36b,
+                cursor-edge: #98d846,
+                error-background: #432c2a,
+                error-text: #ffbdb2,
+                selection-background: #426127,
+                selection-text: #f5ffe9,
             };
         }
         // Blue

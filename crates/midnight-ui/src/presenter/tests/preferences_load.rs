@@ -88,6 +88,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         thumbnails_network: false,
         shortcuts: vec![],
         panel_filters: Default::default(),
+        filename_colors: Default::default(),
     };
     let mut expected = saved.clone();
     expected.theme = PreferenceTheme::Dark;

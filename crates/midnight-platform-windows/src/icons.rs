@@ -64,7 +64,24 @@ impl IconService for WindowsFileSystem {
         if !pixels.iter().any(|pixel| pixel[3] != 0) || opaque_black_placeholder(key.kind, pixels) {
             return Ok(None);
         }
-        Ok(IconPixels::new(u32::from(key.size), u32::from(key.size), rgba).ok())
+        let generic = key.kind == IconKind::File
+            && stock_icon(SIID_DOCNOASSOC).is_some_and(|stock| {
+                let Some(black) = surface.draw(stock.0, 0) else {
+                    return false;
+                };
+                let Some(white) = surface.draw(stock.0, 255) else {
+                    return false;
+                };
+                straight_rgba(&black, &white) == rgba
+            });
+        Ok(
+            IconPixels::new(u32::from(key.size), u32::from(key.size), rgba)
+                .ok()
+                .map(|mut pixels| {
+                    pixels.generic = generic;
+                    pixels
+                }),
+        )
     }
 }
 
@@ -474,6 +491,18 @@ fn straight_rgba(black: &[u8], white: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unassociated_document_art_is_identified_for_semantic_fallbacks() {
+        let mut key = IconKey::file();
+        key.extension = Some("midnight-unassociated-icon-fixture-7cb49".into());
+        if let Some(pixels) = WindowsFileSystem::new(None).load_icon(&key).unwrap() {
+            assert!(
+                pixels.generic,
+                "the Shell's default document is not associated artwork"
+            );
+        }
+    }
     use midnight_core::IconKind;
     use std::ffi::OsString;
     use std::path::Path;

@@ -77,7 +77,7 @@ so late results cannot resurrect cleared entries.
 ## Independent builds and deployment
 
 The `worker-packages` binary in `api/tools/package` produces a separate registry
-bundle containing worker, thumbnail and optional filesystem APIs. Its
+bundle containing worker, thumbnail, image-viewer and optional filesystem APIs. Its
 `.cargo/registry.toml` declares the registry without redirecting third-party
 dependencies. Independent plugins pin registry versions and have no host path
 dependencies. Existing viewer registry artifacts remain unchanged.

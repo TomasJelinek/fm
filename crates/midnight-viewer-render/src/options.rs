@@ -7,6 +7,8 @@ pub struct TextOptions<'a> {
     pub italic: bool,
     pub tab_width: u8,
     pub foreground: [u8; 4],
+    /// Optional physical width for word wrapping. Source text remains unchanged.
+    pub wrap_width: Option<f32>,
 }
 
 impl Default for TextOptions<'_> {
@@ -19,6 +21,7 @@ impl Default for TextOptions<'_> {
             italic: false,
             tab_width: 4,
             foreground: [220, 220, 220, 255],
+            wrap_width: None,
         }
     }
 }

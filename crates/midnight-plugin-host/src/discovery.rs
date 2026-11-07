@@ -105,8 +105,9 @@ pub(crate) fn discover(
         if !path.is_dir() {
             continue;
         }
-        match package(&path) {
-            Ok(info) => catalog.push(info),
+        match native_package(&path) {
+            Ok(Some(info)) => catalog.push(info),
+            Ok(None) => {}
             Err(error) => diagnostics.push(Diagnostic {
                 package: path,
                 message: error.0,
@@ -137,6 +138,18 @@ fn require(valid: bool, message: &str) -> Result<(), Error> {
     } else {
         Err(Error(message.into()))
     }
+}
+
+fn native_package(path: &Path) -> Result<Option<PluginInfo>, Error> {
+    if path.join("image-viewer.json").try_exists()? {
+        require(
+            !path.join("plugin.toml").try_exists()?,
+            "A package cannot contain both native and image-worker viewer manifests",
+        )?;
+        // Its manifest, code and dependencies are validated by the process viewer host.
+        return Ok(None);
+    }
+    package(path).map(Some)
 }
 
 fn package(path: &Path) -> Result<PluginInfo, Error> {

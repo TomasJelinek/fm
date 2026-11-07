@@ -9,6 +9,7 @@ mod desktop;
 mod drag_drop;
 mod entry_sizes;
 mod file_targets;
+mod filename_colors;
 mod filters;
 mod folder_size_totals;
 mod folder_sizes;
@@ -288,6 +289,7 @@ impl Engine {
         let comparison =
             comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
+        let filename_colors = filename_colors::Controller::new(self.outbox.clone(), &mut tasks);
         let mutation_gate = Arc::new(Semaphore::new(1));
         let copies = copy_operations::Controller::new(
             self.transfers,
@@ -434,6 +436,9 @@ impl Engine {
                         Some(Command::CompareDirectories(request)) => comparison.compare(request),
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
+                        Some(Command::ValidateFilenameColors(request)) => filename_colors.validate(request),
+                        Some(Command::MatchFilenameColors(request)) => filename_colors.matches(request),
+                        Some(Command::ClearFilenameColors { pane, id }) => filename_colors.clear(pane, id),
                         Some(Command::EnqueueCopy(request)) => copies.enqueue(request).await,
                         Some(Command::EnqueueSelectedCopy(request)) => copies.enqueue_selected(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,

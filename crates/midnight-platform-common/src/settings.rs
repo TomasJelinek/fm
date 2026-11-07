@@ -12,7 +12,9 @@ use std::{
 };
 
 mod archive_associations;
+mod filename_colors;
 use archive_associations::StoredArchiveAssociations;
+use filename_colors::StoredFilenameColor;
 mod native_path;
 use native_path::NativePath;
 #[cfg(test)]
@@ -29,6 +31,12 @@ pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    filename_colors: Option<Vec<StoredFilenameColor>>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -200,7 +208,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         return Err(invalid("preferences exceed 4 MiB"));
     }
     let stored: StoredPreferences = serde_json::from_slice(bytes).map_err(invalid)?;
-    if !(1..=13).contains(&stored.version) {
+    if !(1..=14).contains(&stored.version) {
         return Err(invalid("unsupported preferences version"));
     }
     if stored.version < 11
@@ -213,7 +221,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     }
     let (thumbnails_enabled, thumbnails_network) = match (stored.version, stored.previews) {
         (1..=11, None) => (true, false),
-        (12..=13, Some(previews)) => (previews.enabled, previews.network),
+        (12..=14, Some(previews)) => (previews.enabled, previews.network),
         _ => return Err(invalid("missing or unexpected preview preferences")),
     };
     let theme = PreferenceTheme::from_storage_name(&stored.theme)
@@ -240,7 +248,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 defaults.touch_font_size,
             )
         }
-        2..=13 => (
+        2..=14 => (
             stored
                 .font_family
                 .ok_or_else(|| invalid("missing font family"))?,
@@ -255,7 +263,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let bookmarks = match (stored.version, stored.bookmarks) {
         (1 | 2, None) => Vec::new(),
-        (3..=13, Some(bookmarks)) => bookmarks
+        (3..=14, Some(bookmarks)) => bookmarks
             .into_iter()
             .map(|bookmark| {
                 Ok(Bookmark {
@@ -266,7 +274,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 })
             })
             .collect::<io::Result<Vec<_>>>()?,
-        (3..=13, None) => return Err(invalid("missing bookmarks")),
+        (3..=14, None) => return Err(invalid("missing bookmarks")),
         _ => return Err(invalid("bookmarks require preferences version 3")),
     };
     // Validate legacy records before merging duplicate paths so migration cannot
@@ -281,8 +289,8 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     }
     let quick_search_filter = match (stored.version, stored.quick_search_filter) {
         (1..=3, None) => false,
-        (4..=13, Some(enabled)) => enabled,
-        (4..=13, None) => return Err(invalid("missing quick search filter preference")),
+        (4..=14, Some(enabled)) => enabled,
+        (4..=14, None) => return Err(invalid("missing quick search filter preference")),
         _ => {
             return Err(invalid(
                 "quick search filter requires preferences version 4",
@@ -296,7 +304,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         stored.command_history,
     ) {
         (1..=4, None, None, None) => (SizeDisplay::Readable, true, Vec::new()),
-        (5..=13, Some(size), Some(remember), Some(history)) => {
+        (5..=14, Some(size), Some(remember), Some(history)) => {
             let size = match size.as_str() {
                 "readable" => SizeDisplay::Readable,
                 "bytes" => SizeDisplay::Bytes,
@@ -319,7 +327,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 .collect::<io::Result<Vec<_>>>()?;
             (size, remember, history)
         }
-        (5..=13, _, _, _) => return Err(invalid("missing panel or command history preferences")),
+        (5..=14, _, _, _) => return Err(invalid("missing panel or command history preferences")),
         _ => {
             return Err(invalid(
                 "panel and command history preferences require version 5",
@@ -328,7 +336,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let tabs = match (stored.version, stored.tabs) {
         (1..=5, None) => Default::default(),
-        (6..=13, Some(tabs)) => {
+        (6..=14, Some(tabs)) => {
             let convert = |tabs: StoredPaneTabs| -> io::Result<PaneTabPreferences> {
                 Ok(PaneTabPreferences {
                     archives: tabs
@@ -347,12 +355,12 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
             let [left, right] = tabs;
             [convert(left)?, convert(right)?]
         }
-        (6..=13, None) => return Err(invalid("missing tab sessions")),
+        (6..=14, None) => return Err(invalid("missing tab sessions")),
         _ => return Err(invalid("tab sessions require preferences version 6")),
     };
     let panel_view_modes = match (stored.version, stored.panel_view_modes) {
         (1..=5, None) => Default::default(),
-        (6..=13, Some(modes)) => {
+        (6..=14, Some(modes)) => {
             let parse = |mode: String| match mode.as_str() {
                 "detailed" => Ok(PanelViewMode::Detailed),
                 "brief" => Ok(PanelViewMode::Brief),
@@ -362,41 +370,54 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
             let [left, right] = modes;
             [parse(left)?, parse(right)?]
         }
-        (6..=13, None) => return Err(invalid("missing panel view modes")),
+        (6..=14, None) => return Err(invalid("missing panel view modes")),
         _ => return Err(invalid("panel view modes require preferences version 6")),
     };
     let shortcuts = match (stored.version, stored.shortcuts) {
         (1..=6, None) => Vec::new(),
-        (7..=13, Some(bindings)) => bindings
+        (7..=14, Some(bindings)) => bindings
             .into_iter()
             .map(|binding| ShortcutBinding {
                 action: binding.action,
                 keys: binding.keys,
             })
             .collect(),
-        (7..=13, None) => return Err(invalid("missing shortcut overrides")),
+        (7..=14, None) => return Err(invalid("missing shortcut overrides")),
         _ => return Err(invalid("shortcut overrides require preferences version 7")),
     };
     let panel_filters = match (stored.version, stored.panel_filters) {
         (1..=7, None) => Default::default(),
-        (8..=13, Some([left, right])) => [left.into_filter()?, right.into_filter()?],
-        (8..=13, None) => return Err(invalid("missing panel filters")),
+        (8..=14, Some([left, right])) => [left.into_filter()?, right.into_filter()?],
+        (8..=14, None) => return Err(invalid("missing panel filters")),
         _ => return Err(invalid("panel filters require preferences version 8")),
     };
     let editor = match (stored.version, stored.editor) {
         (1..=8, None) => Default::default(),
-        (9..=13, Some(editor)) => midnight_core::EditorPreferences {
+        (9..=14, Some(editor)) => midnight_core::EditorPreferences {
             executable: editor.executable.map(NativePath::into_path).transpose()?,
             arguments: editor.arguments,
         },
-        (9..=13, None) => return Err(invalid("missing editor preferences")),
+        (9..=14, None) => return Err(invalid("missing editor preferences")),
         _ => return Err(invalid("editor preferences require version 9")),
     };
     let mut preferences = UserPreferences {
+        filename_colors: match (stored.version, stored.filename_colors) {
+            (1..=13, None) => Vec::new(),
+            (14, Some(rules)) if rules.len() <= midnight_core::MAX_FILENAME_COLOR_RULES => rules
+                .into_iter()
+                .map(StoredFilenameColor::into_rule)
+                .collect::<io::Result<Vec<_>>>()?,
+            _ => {
+                return Err(invalid(
+                    "missing, unexpected or excessive filename color rules",
+                ));
+            }
+        }
+        .into(),
         archive_association_overrides: match (stored.version, stored.archive_association_overrides)
         {
             (1..=12, None) => Default::default(),
-            (13, Some(associations)) => associations.0,
+            (13..=14, Some(associations)) => associations.0,
             _ => {
                 return Err(invalid(
                     "missing or unexpected archive association preferences",
@@ -405,7 +426,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         },
         disabled_viewer_plugins: match (stored.version, stored.disabled_viewer_plugins) {
             (1..=9, None) => Vec::new(),
-            (10..=13, Some(ids)) => ids,
+            (10..=14, Some(ids)) => ids,
             _ => return Err(invalid("missing or unexpected viewer plugin preferences")),
         },
         editor,
@@ -434,17 +455,30 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
 
 pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     preferences.validate().map_err(invalid)?;
+    crate::filename_colors::CompiledFilenameColors::new(&preferences.filename_colors)
+        .map_err(invalid)?;
     for filter in &preferences.panel_filters {
         crate::filter::CompiledFilter::new(filter).map_err(invalid)?;
     }
-    let archive_choices = !preferences.archive_association_overrides.is_empty();
+    let color_choices = !preferences.filename_colors.is_empty();
+    let archive_choices = color_choices || !preferences.archive_association_overrides.is_empty();
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
+        filename_colors: color_choices.then(|| {
+            preferences
+                .filename_colors
+                .iter()
+                .cloned()
+                .map(StoredFilenameColor::from_rule)
+                .collect()
+        }),
         archive_association_overrides: archive_choices.then_some(StoredArchiveAssociations(
             preferences.archive_association_overrides,
         )),
-        version: if archive_choices {
+        version: if color_choices {
+            14
+        } else if archive_choices {
             13
         } else if store_previews {
             12

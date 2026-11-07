@@ -57,8 +57,46 @@ fn resolve(
     context: ShortcutContext,
 ) -> Option<file_keys::FileKey> {
     let snapshot = bindings.borrow().clone();
-    let action = snapshot.map.resolve(chord, context)?;
+    let action = snapshot.map.resolve(chord, context).or_else(|| {
+        // Popups retain their own navigation/global bindings. Only saved-path
+        // actions may fall back to the user's configured file-list bindings.
+        (context == ShortcutContext::Volume)
+            .then(|| snapshot.map.resolve(chord, ShortcutContext::Files))
+            .flatten()
+            .filter(|action| {
+                action.id.starts_with("bookmark.open.") || action.id.starts_with("bookmark.other.")
+            })
+    })?;
     file_keys::semantic(&action.id, context == ShortcutContext::Search)
+}
+
+fn dispatch_window(
+    window: &MainWindow,
+    pane: i32,
+    context: ShortcutContext,
+    action: file_keys::WindowAction,
+) {
+    if context == ShortcutContext::Volume
+        && let file_keys::WindowAction::BookmarkOpen(slot, other) = action
+    {
+        let choices = if window.get_hot_path_popup_pane() == pane {
+            window.get_hot_path_choices()
+        } else {
+            window.get_navigation_choices()
+        };
+        let label = (slot % 10).to_string();
+        let index = choices.iter().position(|row| {
+            row.kind == crate::LocationRole::HotPath && row.compact_label == label.as_str()
+        });
+        if let Some(index) = index {
+            let identity = window.invoke_take_location_choice(pane, index as i32);
+            if !identity.is_empty() {
+                window.invoke_bookmark_open(if other { 1 - pane } else { pane }, identity);
+            }
+        }
+        return;
+    }
+    file_key_bridge::dispatch_window(window, pane, action);
 }
 
 fn logical_digit_is_native(window: &MainWindow, chord: &ShortcutChord) -> bool {
@@ -130,7 +168,7 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         let Some(file_keys::FileKey::Window(action)) = resolve(&state, &chord, context) else {
             return false;
         };
-        file_key_bridge::dispatch_window(&window, pane, action);
+        dispatch_window(&window, pane, context, action);
         true
     });
     let weak = window.as_weak();
@@ -177,9 +215,13 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
             return 0;
         }
         match resolve(&state, &chord, ShortcutContext::Volume) {
-            Some(file_keys::FileKey::Window(file_keys::WindowAction::OtherPanel)) => 1,
             Some(file_keys::FileKey::Window(action)) => {
-                file_key_bridge::dispatch_window(&window, window.get_active_pane(), action);
+                dispatch_window(
+                    &window,
+                    window.get_volume_popup_pane(),
+                    ShortcutContext::Volume,
+                    action,
+                );
                 2
             }
             _ => 0,
@@ -210,6 +252,10 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
         let Some(action) = resolve(&bindings, &chord, context) else {
             return false;
         };
+        if let file_keys::FileKey::Window(action) = action {
+            dispatch_window(&window, pane, context, action);
+            return true;
+        }
         let result = file_key_bridge::dispatch(&window, pane, action);
         if result >= 2 {
             window.invoke_apply_file_input_action(pane, result);

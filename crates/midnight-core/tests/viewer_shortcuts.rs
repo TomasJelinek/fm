@@ -1,6 +1,45 @@
 use midnight_core::{ShortcutBinding, ShortcutChord, ShortcutContext, ShortcutMap};
 
 #[test]
+fn image_zoom_and_fit_have_distinct_configurable_viewer_actions() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    for (key, action) in [
+        ("Ctrl+Plus", "viewer.zoom-in"),
+        ("Ctrl+Equal", "viewer.zoom-in"),
+        ("Ctrl+Minus", "viewer.zoom-out"),
+        ("Ctrl+Digit0", "viewer.fit"),
+        ("Ctrl+Digit1", "viewer.actual-pixels"),
+    ] {
+        assert_eq!(
+            map.resolve(&ShortcutChord::parse(key).unwrap(), ShortcutContext::Viewer)
+                .map(|action| action.id.as_str()),
+            Some(action)
+        );
+    }
+}
+
+#[test]
+fn wrap_shortcut_is_configurable_and_scoped_to_the_viewer() {
+    let chord = ShortcutChord::parse("Ctrl+W").unwrap();
+    let map = ShortcutMap::new(&[]).unwrap();
+    assert_eq!(
+        map.resolve(&chord, ShortcutContext::Viewer)
+            .map(|action| action.id.as_str()),
+        Some("viewer.wrap")
+    );
+    let customized = ShortcutMap::new(&[ShortcutBinding {
+        action: "viewer.wrap".into(),
+        keys: vec!["Ctrl+Shift+W".into()],
+    }])
+    .unwrap();
+    assert!(
+        customized
+            .resolve(&chord, ShortcutContext::Viewer)
+            .is_none()
+    );
+}
+
+#[test]
 fn viewer_space_does_not_capture_search_field_text() {
     let map = ShortcutMap::new(&[]).unwrap();
     let space = ShortcutChord::parse("Space").unwrap();

@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn hot_path_menu_labels_include_slots_one_through_zero_and_actual_keys() {
+    let left = test_root().join("Projects 文档");
+    let right = test_root().join("Archive");
+    let mut p = ready(left, right);
+    assert!(p.assign_bookmark_slot(PaneId::Left, 1, &|_| true));
+    assert!(p.assign_bookmark_slot(PaneId::Right, 10, &|_| true));
+    let rows = crate::panel_models::bookmark_choices(&p);
+    assert!(rows[0].label.starts_with("1  "));
+    assert!(rows[1].label.starts_with("0  "));
+    assert!(rows[0].label.contains("Projects 文档"));
+    assert!(rows.iter().all(|row| row.tooltip.contains("Hot Path")));
+}
+
 fn ready(left: PathBuf, right: PathBuf) -> Presenter {
     let mut p = Presenter::new(left, right);
     p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));

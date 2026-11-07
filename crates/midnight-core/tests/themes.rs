@@ -1,7 +1,14 @@
 use midnight_core::PreferenceTheme;
 
 #[test]
-fn theme_catalog_keeps_original_ids_and_appends_five_stable_names() {
+fn carbon_green_is_an_appended_stable_theme() {
+    let theme = PreferenceTheme::from_storage_name("carbon-green")
+        .expect("Carbon Green must be offered as a saved theme");
+    assert_eq!(theme.index(), 8);
+}
+
+#[test]
+fn theme_catalog_keeps_original_ids_and_appends_stable_names() {
     let expected = [
         (PreferenceTheme::Blue, "blue"),
         (PreferenceTheme::Dark, "dark"),
@@ -11,6 +18,7 @@ fn theme_catalog_keeps_original_ids_and_appends_five_stable_names() {
         (PreferenceTheme::GruvboxDark, "gruvbox-dark"),
         (PreferenceTheme::CatppuccinMocha, "catppuccin-mocha"),
         (PreferenceTheme::SolarizedLight, "solarized-light"),
+        (PreferenceTheme::CarbonGreen, "carbon-green"),
     ];
     assert_eq!(PreferenceTheme::default(), PreferenceTheme::Blue);
     assert_eq!(PreferenceTheme::ALL.len(), expected.len());
@@ -25,7 +33,7 @@ fn theme_catalog_keeps_original_ids_and_appends_five_stable_names() {
 
 #[test]
 fn unknown_theme_ids_and_names_are_never_silently_coerced() {
-    for index in [i32::MIN, -1, 8, 99, i32::MAX] {
+    for index in [i32::MIN, -1, 9, 99, i32::MAX] {
         assert_eq!(PreferenceTheme::from_index(index), None);
     }
     for name in ["", "future-theme", "Nord", "gruvbox_dark", "dracula "] {

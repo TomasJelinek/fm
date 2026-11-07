@@ -471,6 +471,7 @@ fn run_window(
             }
             state.flush_selection(&|command| sync_commands.try_send(command).is_ok());
             state.flush_filters(&|command| sync_commands.try_send(command).is_ok());
+            state.flush_filename_colors(&|command| sync_commands.try_send(command).is_ok());
             state.flush_search(&|command| sync_commands.try_send(command).is_ok());
             state.flush_comparison(&|command| sync_commands.try_send(command).is_ok());
             sync_visible(&state, &sync_commands, &visible_sync);

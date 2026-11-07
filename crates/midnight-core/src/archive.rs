@@ -86,6 +86,20 @@ pub struct ArchiveLocation {
     pub trail: Vec<(u64, String)>,
 }
 impl ArchiveLocation {
+    /// Presentation only: provider members retain their opaque identities and
+    /// must never be passed to native filesystem APIs using this string.
+    pub fn display_text(&self) -> String {
+        let native: std::path::PathBuf = self.address.container.components().collect();
+        let mut text = native.to_string_lossy().into_owned();
+        for (_, name) in self.trail.iter().skip(1) {
+            if !text.ends_with(std::path::MAIN_SEPARATOR) {
+                text.push(std::path::MAIN_SEPARATOR);
+            }
+            text.push_str(name);
+        }
+        text
+    }
+
     pub fn unavailable(address: ArchiveAddress) -> Self {
         let mut trail = vec![(
             0,
