@@ -29,6 +29,17 @@ impl ArchivePane {
 }
 
 impl Presenter {
+    pub(crate) fn can_browse_archive(&self, entry: &Entry) -> bool {
+        entry.virtual_node.is_none()
+            && entry.kind == EntryKind::File
+            && entry.archive_association.is_some_and(|association| {
+                self.archive_formats.contains(&association.format)
+                    && self
+                        .preferences
+                        .values
+                        .archive_association_enabled(association.extension)
+            })
+    }
     pub(super) fn archive_navigate(
         &mut self,
         pane: PaneId,
@@ -92,7 +103,7 @@ impl Presenter {
                     self.retired.push(Box::new(selected));
                 }
             }
-            Event::ArchiveAvailability(available) => self.archives_available = available,
+            Event::ArchiveAvailability(formats) => self.archive_formats = formats,
             Event::ArchiveListed {
                 pane,
                 navigation,
@@ -419,12 +430,4 @@ impl Pane {
             .as_ref()
             .map_or_else(|| self.selected.len(), |a| a.selected.len())
     }
-}
-
-pub(super) fn archive_extension(path: &Path) -> bool {
-    path.extension().and_then(|v| v.to_str()).is_some_and(|s| {
-        ["zip", "jar", "gz", "gzip", "tgz", "tar", "7z"]
-            .iter()
-            .any(|ext| s.eq_ignore_ascii_case(ext))
-    })
 }

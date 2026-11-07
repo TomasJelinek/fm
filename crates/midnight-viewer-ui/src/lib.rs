@@ -1,8 +1,11 @@
 //! Thin UI adapters. Reading, parsing, search, layout and selection run on the backend.
 #![deny(unsafe_code)]
 
+mod scrolling;
+
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
+use slint::winit_030::{EventResult, WinitWindowAccessor};
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::{
     cell::{Cell, RefCell},
@@ -16,7 +19,7 @@ mod generated {
 }
 pub use generated::ViewerWindow;
 
-pub type KeyResolver = Rc<dyn Fn(&i_slint_core::input::KeyEvent, bool) -> Option<String>>;
+pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
 
 pub struct ViewerWindows {
     service: Service,
@@ -178,59 +181,97 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
             open.session.send(ViewerInput::Mode(*mode));
         }
     });
+    let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));
+    let weak = Rc::downgrade(open);
+    let native_state = native.clone();
+    let native_keys = keys.clone();
+    open.window.window().on_winit_window_event(move |_, event| {
+        let Some(open) = weak.upgrade() else {
+            return EventResult::Propagate;
+        };
+        let consumed = native_state.borrow_mut().handle(event, |chord| {
+            native_keys(&chord, !open.window.get_content_focused())
+                .is_some_and(|action| dispatch_key(&open, &action))
+        });
+        if consumed {
+            EventResult::PreventDefault
+        } else {
+            EventResult::Propagate
+        }
+    });
     let weak = Rc::downgrade(open);
     open.window.on_input_key(move |event, search| {
         let Some(open) = weak.upgrade() else {
             return false;
         };
-        let Some(action) = keys(&event, search) else {
+        let Some(chord) = native.borrow().logical_chord(&event) else {
             return false;
         };
-        let input = match action.as_str() {
-            "viewer.close" => {
-                close(&open);
-                return true;
-            }
-            "viewer.find" => {
+        keys(&chord, search).is_some_and(|action| dispatch_key(&open, &action))
+    });
+    bind_pointer(open);
+    let weak = Rc::downgrade(open);
+    open.window.on_search(move |backwards| {
+        if let Some(open) = weak.upgrade() {
+            open.session.send(ViewerInput::Search {
+                query: open.window.get_query().to_string(),
+                backwards,
+                case_sensitive: open.window.get_case_sensitive(),
+            });
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.window().on_close_requested(move || {
+        if let Some(open) = weak.upgrade() {
+            close(&open);
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+}
+
+fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
+    let input = match action {
+        "viewer.close" => {
+            close(open);
+            return true;
+        }
+        "viewer.find" => {
+            open.window.invoke_focus_search();
+            return true;
+        }
+        "viewer.next-file" => ViewerInput::NextFile,
+        "viewer.copy" => ViewerInput::Copy {
+            frame: open.frame.get(),
+        },
+        "viewer.select-page" => ViewerInput::SelectPage {
+            frame: open.frame.get(),
+        },
+        "viewer.find-next" | "viewer.find-previous" => {
+            if open.window.get_query().is_empty() {
                 open.window.invoke_focus_search();
                 return true;
             }
-            "viewer.next-file" => ViewerInput::NextFile,
-            "viewer.copy" => ViewerInput::Copy {
-                frame: open.frame.get(),
-            },
-            "viewer.select-page" => ViewerInput::SelectPage {
-                frame: open.frame.get(),
-            },
-            "viewer.find-next" | "viewer.find-previous" => {
-                if open.window.get_query().is_empty() {
-                    open.window.invoke_focus_search();
-                    return true;
-                }
-                ViewerInput::Search {
-                    query: open.window.get_query().to_string(),
-                    backwards: action == "viewer.find-previous",
-                    case_sensitive: open.window.get_case_sensitive(),
-                }
+            ViewerInput::Search {
+                query: open.window.get_query().to_string(),
+                backwards: action == "viewer.find-previous",
+                case_sensitive: open.window.get_case_sensitive(),
             }
-            "viewer.first" => ViewerInput::Seek(0.0),
-            "viewer.last" => ViewerInput::Seek(1.0),
-            "viewer.up" => ViewerInput::Scroll { x: 0.0, y: -28.0 },
-            "viewer.down" => ViewerInput::Scroll { x: 0.0, y: 28.0 },
-            "viewer.left" => ViewerInput::Scroll { x: -40.0, y: 0.0 },
-            "viewer.right" => ViewerInput::Scroll { x: 40.0, y: 0.0 },
-            "viewer.page-up" => ViewerInput::Scroll {
-                x: 0.0,
-                y: -open.window.get_content_height(),
-            },
-            "viewer.page-down" => ViewerInput::Scroll {
-                x: 0.0,
-                y: open.window.get_content_height(),
-            },
-            _ => return false,
-        };
-        open.session.send(input)
-    });
+        }
+        "viewer.first" => ViewerInput::Seek(0.0),
+        "viewer.last" => ViewerInput::Seek(1.0),
+        action => match scrolling::keyboard(
+            action,
+            open.window.get_content_height(),
+            open.window.window().scale_factor(),
+        ) {
+            Some(input) => input,
+            None => return false,
+        },
+    };
+    open.session.send(input)
+}
+
+fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_scroll(move |x, y| {
         if let Some(open) = weak.upgrade() {
@@ -264,23 +305,6 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
                 extend,
             });
         }
-    });
-    let weak = Rc::downgrade(open);
-    open.window.on_search(move |backwards| {
-        if let Some(open) = weak.upgrade() {
-            open.session.send(ViewerInput::Search {
-                query: open.window.get_query().to_string(),
-                backwards,
-                case_sensitive: open.window.get_case_sensitive(),
-            });
-        }
-    });
-    let weak = Rc::downgrade(open);
-    open.window.window().on_close_requested(move || {
-        if let Some(open) = weak.upgrade() {
-            close(&open);
-        }
-        slint::CloseRequestResponse::HideWindow
     });
 }
 

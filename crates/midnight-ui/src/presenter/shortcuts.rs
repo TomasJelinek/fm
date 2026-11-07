@@ -46,12 +46,7 @@ impl Presenter {
         self.queue_clipboard_text(text, send);
     }
 
-    pub fn viewer_key(
-        &self,
-        event: &i_slint_core::input::KeyEvent,
-        search: bool,
-    ) -> Option<String> {
-        let chord = crate::shortcut_input::chord(event)?;
+    pub fn viewer_key(&self, chord: &ShortcutChord, search: bool) -> Option<String> {
         let context = if search {
             ShortcutContext::ViewerSearch
         } else {
@@ -61,7 +56,7 @@ impl Presenter {
             .bindings
             .borrow()
             .map
-            .resolve(&chord, context)
+            .resolve(chord, context)
             .map(|action| action.id.clone())
     }
 

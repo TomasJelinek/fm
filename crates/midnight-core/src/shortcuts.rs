@@ -163,6 +163,16 @@ pub enum ShortcutContext {
     ViewerSearch,
 }
 
+const CONTEXTS: [ShortcutContext; 7] = [
+    ShortcutContext::Files,
+    ShortcutContext::Search,
+    ShortcutContext::Command,
+    ShortcutContext::Other,
+    ShortcutContext::Volume,
+    ShortcutContext::Viewer,
+    ShortcutContext::ViewerSearch,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShortcutScope {
     FilesIdle,
@@ -359,7 +369,7 @@ impl ShortcutMap {
         }
         let definitions = shortcut_catalog();
         let mut replacements = HashMap::new();
-        let mut explicit_file_keys = HashSet::new();
+        let mut explicit_keys: HashMap<ShortcutChord, [bool; 7]> = HashMap::new();
         for binding in overrides {
             if binding.action.len() > MAX_SHORTCUT_ACTION_BYTES {
                 return Err("A shortcut action identity exceeds 96 bytes.".into());
@@ -384,11 +394,10 @@ impl ShortcutMap {
             }
             for text in &binding.keys {
                 let chord = ShortcutChord::parse(text)?;
-                if definition
-                    .scope_for(&chord)
-                    .includes(ShortcutContext::Files)
-                {
-                    explicit_file_keys.insert(chord);
+                let scope = definition.scope_for(&chord);
+                let assigned = explicit_keys.entry(chord).or_default();
+                for (position, context) in CONTEXTS.into_iter().enumerate() {
+                    assigned[position] |= scope.includes(context);
                 }
             }
         }
@@ -406,17 +415,24 @@ impl ShortcutMap {
             for text in keys {
                 let chord = ShortcutChord::parse(text)?;
                 definition.validate_key(&chord)?;
-                // Bare Hot Path digits were added after configurable shortcuts.
-                // Keep existing explicit file bindings, including their hints,
+                let scope = definition.scope_for(&chord);
+                // These defaults were added after configurable shortcuts. Keep
+                // previously saved assignments valid, including their hints,
                 // without weakening conflicts between other defaults or overrides.
+                let added_default = definition.id == "files.copy-to"
+                    || (definition.id.starts_with("bookmark.open.")
+                        && !chord.control
+                        && !chord.alt
+                        && !chord.shift
+                        && !chord.meta
+                        && chord.key.starts_with("Digit"));
                 if !replacements.contains_key(definition.id.as_str())
-                    && definition.id.starts_with("bookmark.open.")
-                    && !chord.control
-                    && !chord.alt
-                    && !chord.shift
-                    && !chord.meta
-                    && chord.key.starts_with("Digit")
-                    && explicit_file_keys.contains(&chord)
+                    && added_default
+                    && explicit_keys.get(&chord).is_some_and(|assigned| {
+                        CONTEXTS.iter().enumerate().any(|(position, context)| {
+                            assigned[position] && scope.includes(*context)
+                        })
+                    })
                 {
                     continue;
                 }
@@ -427,19 +443,7 @@ impl ShortcutMap {
                         definition.label
                     ));
                 }
-                let scope = definition.scope_for(&chord);
-                for (position, context) in [
-                    ShortcutContext::Files,
-                    ShortcutContext::Search,
-                    ShortcutContext::Command,
-                    ShortcutContext::Other,
-                    ShortcutContext::Volume,
-                    ShortcutContext::Viewer,
-                    ShortcutContext::ViewerSearch,
-                ]
-                .into_iter()
-                .enumerate()
-                {
+                for (position, context) in CONTEXTS.into_iter().enumerate() {
                     if !scope.includes(context) {
                         continue;
                     }

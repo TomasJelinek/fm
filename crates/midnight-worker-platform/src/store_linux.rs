@@ -95,6 +95,27 @@ impl Root {
             Mode::empty(),
         )?))
     }
+    pub fn lock_file(&self) -> io::Result<(File, bool)> {
+        let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        match fs::openat(
+            &self.directory,
+            "store.lock",
+            flags | OFlags::CREATE | OFlags::EXCL,
+            Mode::RUSR | Mode::WUSR,
+        ) {
+            Ok(file) => Ok((regular(File::from(file))?, true)),
+            Err(rustix::io::Errno::EXIST) => Ok((
+                regular(File::from(fs::openat(
+                    &self.directory,
+                    "store.lock",
+                    flags,
+                    Mode::empty(),
+                )?))?,
+                false,
+            )),
+            Err(error) => Err(error.into()),
+        }
+    }
     pub fn temporary(&self) -> io::Result<Temporary> {
         for _ in 0..16 {
             let name = format!(
@@ -140,7 +161,10 @@ impl Root {
     }
     pub fn records(&self) -> io::Result<Vec<Record>> {
         let mut records = Vec::new();
-        for item in Dir::read_from(&self.directory)?.take(100_000) {
+        for (index, item) in Dir::read_from(&self.directory)?.enumerate() {
+            if index >= 100_000 {
+                return Err(io::Error::other("Cache directory entry limit exceeded"));
+            }
             let item = item?;
             let name = std::ffi::OsStr::from_bytes(item.file_name().to_bytes());
             let Some(name) = name.to_str().filter(|name| valid_name(name)) else {

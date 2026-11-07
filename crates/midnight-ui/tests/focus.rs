@@ -390,11 +390,19 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         Command::ShowSelectionProperties { .. }
     ));
     commands.borrow_mut().clear();
+    // F5 now captures a copy draft and deliberately contains file shortcuts.
+    key(&window, Key::F5);
+    assert!(!window.get_copy_draft_token().is_empty());
+    assert_eq!(window.get_focused_pane(), -1);
+    assert!(
+        commands.borrow().is_empty(),
+        "opening a copy draft does not queue a copy"
+    );
+    key(&window, Key::Escape);
+    assert!(window.get_copy_draft_token().is_empty());
+    assert_eq!(window.get_focused_pane(), 0);
     // Rename/create/delete and viewer/editor behavior have dedicated tests.
-    // The full transfer dialogs remain unavailable in this stage.
-    for shortcut in [Key::F5, Key::F6] {
-        key(&window, shortcut);
-    }
+    key(&window, Key::F6);
     assert!(
         commands.borrow().is_empty(),
         "disabled file operations must not dispatch"

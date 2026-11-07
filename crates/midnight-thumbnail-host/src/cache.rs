@@ -95,6 +95,7 @@ pub struct Cache {
     disk: HashMap<String, Record>,
     disk_bytes: u64,
     disk_limit: u64,
+    disk_generation: Option<u64>,
     memory: HashMap<Key, MemoryRecord>,
     memory_bytes: usize,
     memory_limit: usize,
@@ -103,6 +104,7 @@ pub struct Cache {
 impl Cache {
     pub fn open(root: &Path, disk_limit: u64, memory_limit: usize) -> io::Result<Self> {
         let store = PrivateStore::open(root)?;
+        let mut transaction = store.transaction()?;
         let records = store.records()?;
         let disk_bytes = records.iter().map(|record| record.bytes).sum();
         let mut cache = Self {
@@ -113,16 +115,32 @@ impl Cache {
                 .collect(),
             disk_bytes,
             disk_limit,
+            disk_generation: None,
             memory: HashMap::new(),
             memory_bytes: 0,
             memory_limit,
             tick: 0,
         };
+        transaction.advance()?;
         cache.evict_disk(0, 0)?;
+        cache.disk_generation = transaction.generation();
         Ok(cache)
     }
     pub fn get(&mut self, key: &Key, source: &dyn Source) -> io::Result<Option<Arc<Frame>>> {
         key.validate(source)?;
+        let mut transaction = self.store.transaction()?;
+        let synchronized =
+            transaction.generation().is_some() && transaction.generation() == self.disk_generation;
+        transaction.advance()?;
+        let result = self.get_locked(key);
+        if synchronized && result.is_ok() {
+            self.disk_generation = transaction.generation();
+        }
+        drop(transaction);
+        key.validate(source)?;
+        result
+    }
+    fn get_locked(&mut self, key: &Key) -> io::Result<Option<Arc<Frame>>> {
         self.tick = self.tick.wrapping_add(1);
         let name = key.filename();
         if let Some(record) = self.memory.get_mut(key) {
@@ -164,21 +182,36 @@ impl Cache {
                 return Ok(None);
             }
         };
-        key.validate(source)?;
-        if let Some(record) = self.disk.get_mut(&name) {
-            record.modified = SystemTime::now();
-        }
+        self.forget_disk(&name);
+        self.disk_bytes += bytes.len() as u64;
+        self.disk.insert(
+            name.clone(),
+            Record {
+                name,
+                bytes: bytes.len() as u64,
+                modified: SystemTime::now(),
+            },
+        );
         let frame = Arc::new(frame);
         self.remember(key.clone(), frame.clone());
         Ok(Some(frame))
     }
-    pub fn put(
-        &mut self,
-        key: &Key,
-        source: &dyn Source,
-        mut frame: Frame,
-    ) -> io::Result<Arc<Frame>> {
+    pub fn put(&mut self, key: &Key, source: &dyn Source, frame: Frame) -> io::Result<Arc<Frame>> {
         key.validate(source)?;
+        let mut transaction = self.store.transaction()?;
+        if transaction.generation().is_none() || transaction.generation() != self.disk_generation {
+            self.refresh_disk()?;
+        }
+        transaction.advance()?;
+        let result = self.put_locked(key, frame);
+        if result.is_ok() {
+            self.disk_generation = transaction.generation();
+        }
+        drop(transaction);
+        key.validate(source)?;
+        result
+    }
+    fn put_locked(&mut self, key: &Key, mut frame: Frame) -> io::Result<Arc<Frame>> {
         key.validate_frame(&frame)?;
         // Request identifiers belong to one view generation and must not enter reusable cache data.
         frame.id = 0;
@@ -193,7 +226,6 @@ impl Cache {
         }
         let name = key.filename();
         self.evict_disk(bytes.len() as u64, 1)?;
-        key.validate(source)?;
         self.store.write(&name, &bytes)?;
         self.forget_disk(&name);
         self.disk_bytes += bytes.len() as u64;
@@ -205,7 +237,6 @@ impl Cache {
                 modified: SystemTime::now(),
             },
         );
-        key.validate(source)?;
         let frame = Arc::new(frame);
         self.remember(key.clone(), frame.clone());
         Ok(frame)
@@ -214,6 +245,9 @@ impl Cache {
         self.memory_bytes
     }
     pub fn clear(&mut self) -> io::Result<()> {
+        let mut transaction = self.store.transaction()?;
+        self.refresh_disk()?;
+        transaction.advance()?;
         self.memory.clear();
         self.memory_bytes = 0;
         let names: Vec<_> = self.disk.keys().cloned().collect();
@@ -221,6 +255,19 @@ impl Cache {
             self.remove_record(&name)?;
             self.forget_disk(&name);
         }
+        self.disk_generation = transaction.generation();
+        Ok(())
+    }
+    fn refresh_disk(&mut self) -> io::Result<()> {
+        let records = self.store.records()?;
+        self.disk_bytes = records.iter().map(|record| record.bytes).sum();
+        self.disk = records
+            .into_iter()
+            .map(|record| (record.name.clone(), record))
+            .collect();
+        self.memory
+            .retain(|key, _| self.disk.contains_key(&key.filename()));
+        self.memory_bytes = self.memory.values().map(|record| record.bytes).sum();
         Ok(())
     }
     fn remove_record(&self, name: &str) -> io::Result<()> {

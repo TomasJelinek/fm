@@ -1,9 +1,9 @@
 //! OS-owned private artifact storage. Only validated hexadecimal cache basenames are accepted.
 use std::{
-    fs::FileTimes,
-    io::{self, Read, Write},
+    fs::{File, FileTimes, TryLockError},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(windows)]
@@ -20,9 +20,75 @@ pub struct Record {
 }
 
 pub struct PrivateStore(native::Root);
+/// An exclusive transaction across independent cache instances and processes.
+pub struct Transaction {
+    file: File,
+    generation: Option<u64>,
+}
+impl Transaction {
+    /// Invalid or interrupted generation writes require a fresh directory snapshot.
+    pub fn generation(&self) -> Option<u64> {
+        self.generation
+    }
+    /// Call before any mutation. A failed transaction must not publish its index generation.
+    pub fn advance(&mut self) -> io::Result<()> {
+        let Some(generation) = self.generation else {
+            return Ok(());
+        };
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Cache generation exhausted"))?;
+        self.write_generation(next)
+    }
+    fn write_generation(&mut self, value: u64) -> io::Result<()> {
+        self.generation = None;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&value.to_le_bytes())?;
+        self.file.write_all(&(!value).to_le_bytes())?;
+        self.file.set_len(16)?;
+        self.generation = Some(value);
+        Ok(())
+    }
+}
 impl PrivateStore {
     pub fn open(path: &Path) -> io::Result<Self> {
         native::Root::open(path).map(Self)
+    }
+    /// Backend only. The persistent lock inode is never renamed or removed.
+    pub fn transaction(&self) -> io::Result<Transaction> {
+        let (mut file, created) = self.0.lock_file()?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match file.try_lock() {
+                Ok(()) => {
+                    let mut bytes = [0; 16];
+                    let generation = if file.metadata()?.len() == 16
+                        && file.read_exact(&mut bytes).is_ok()
+                    {
+                        let value = u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes"));
+                        let check = u64::from_le_bytes(bytes[8..].try_into().expect("eight bytes"));
+                        (value == !check).then_some(value)
+                    } else {
+                        None
+                    };
+                    let mut transaction = Transaction { file, generation };
+                    if created {
+                        transaction.write_generation(0)?;
+                    }
+                    return Ok(transaction);
+                }
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "Preview cache is busy",
+                    ));
+                }
+                Err(TryLockError::Error(error)) => return Err(error),
+            }
+        }
     }
     pub fn read(&self, name: &str, limit: usize) -> io::Result<Option<Vec<u8>>> {
         check_name(name)?;

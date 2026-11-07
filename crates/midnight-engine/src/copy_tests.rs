@@ -6,6 +6,9 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
+#[path = "copy_queue_tests.rs"]
+mod queue;
+
 #[tokio::test]
 async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
     let mut harness = Harness::new(None);
@@ -20,7 +23,7 @@ async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
         .await;
     let full = harness.terminal(1).await;
     assert_eq!(full.errors[0].kind, std::io::ErrorKind::WouldBlock);
-    let permit = reservations.pop().unwrap();
+    let permit = reservations.remove(0);
     harness
         .controller
         .enqueue_reserved(request(2, &[root.join("source")], &root), permit)

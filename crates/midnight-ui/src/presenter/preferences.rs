@@ -1,6 +1,10 @@
 //! Input choices and revision ordering; settings storage stays on the backend.
 use super::*;
+mod archive_associations;
 
+#[cfg(test)]
+#[path = "preferences/archive_associations_tests.rs"]
+mod archive_associations_tests;
 #[cfg(test)]
 #[path = "preferences/theme_tests.rs"]
 mod theme_tests;
@@ -20,6 +24,7 @@ pub(crate) struct PreferencesState {
 
 #[derive(Default)]
 pub(super) struct EditedFields {
+    archive_associations: HashSet<String>,
     pub(super) disabled_viewer_plugins: bool,
     pub(super) editor: bool,
     pub(super) theme: bool,
@@ -116,6 +121,15 @@ impl Presenter {
                 self.prepare_loaded_tab_sessions(&mut loaded);
                 let local = &mut self.preferences.values;
                 let edited = &self.preferences.edited;
+                for extension in &edited.archive_associations {
+                    if let Some(enabled) = local.archive_association_overrides.get(extension) {
+                        loaded
+                            .archive_association_overrides
+                            .insert(extension.clone(), *enabled);
+                    } else {
+                        loaded.archive_association_overrides.remove(extension);
+                    }
+                }
                 if edited.disabled_viewer_plugins {
                     loaded.disabled_viewer_plugins = local.disabled_viewer_plugins.clone();
                 }
@@ -381,6 +395,19 @@ impl Presenter {
         }
         let previous = &self.preferences.values;
         let edited = &mut self.preferences.edited;
+        for association in ARCHIVE_ASSOCIATIONS {
+            if preferences
+                .archive_association_overrides
+                .get(association.extension)
+                != previous
+                    .archive_association_overrides
+                    .get(association.extension)
+            {
+                edited
+                    .archive_associations
+                    .insert(association.extension.to_owned());
+            }
+        }
         edited.disabled_viewer_plugins |=
             preferences.disabled_viewer_plugins != previous.disabled_viewer_plugins;
         edited.editor |= preferences.editor != previous.editor;

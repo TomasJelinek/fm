@@ -5,6 +5,11 @@ use std::{
     os::unix::{ffi::OsStringExt, fs::symlink},
 };
 
+pub(super) fn make_shared(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666)).unwrap();
+}
+
 #[test]
 fn raw_byte_names_are_lossless_and_final_symlinks_are_refused() {
     let root = tempfile::tempdir().unwrap();

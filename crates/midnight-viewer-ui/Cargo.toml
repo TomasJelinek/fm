@@ -8,7 +8,8 @@ publish.workspace = true
 [dependencies]
 midnight-core.workspace = true
 midnight-viewer-engine = { path = "../midnight-viewer-engine" }
-slint.workspace = true
+midnight-ui-input = { path = "../midnight-ui-input" }
+slint = { workspace = true, features = ["unstable-winit-030"] }
 i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"] }
 
 [build-dependencies]

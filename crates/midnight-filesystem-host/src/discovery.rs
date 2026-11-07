@@ -1,3 +1,4 @@
+use midnight_core::{ArchiveFormat, archive_format};
 use midnight_filesystem_api::Format;
 use midnight_plugin_host::{CapturedFile, validate_plugin_path};
 use serde::Deserialize;
@@ -78,22 +79,34 @@ impl Catalog {
     pub fn choose(&self, path: &Path) -> Option<(&Package, Format)> {
         self.choose_provider(path, None)
     }
+    /// Only formats advertised by trusted, compatible installed workers.
+    pub fn available_formats(&self) -> Vec<ArchiveFormat> {
+        let mut formats = Vec::new();
+        for format in self.packages.iter().flat_map(|package| &package.formats) {
+            let format = match format {
+                Format::Zip => ArchiveFormat::Zip,
+                Format::Tar => ArchiveFormat::Tar,
+                Format::Gzip => ArchiveFormat::Gzip,
+                Format::TarGzip => ArchiveFormat::TarGzip,
+                Format::SevenZip => ArchiveFormat::SevenZip,
+            };
+            if !formats.contains(&format) {
+                formats.push(format);
+            }
+        }
+        formats
+    }
     pub fn choose_provider(
         &self,
         path: &Path,
         provider: Option<&str>,
     ) -> Option<(&Package, Format)> {
-        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
-        let format = if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-            Format::TarGzip
-        } else {
-            match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-                "zip" | "jar" => Format::Zip,
-                "tar" => Format::Tar,
-                "gz" | "gzip" => Format::Gzip,
-                "7z" => Format::SevenZip,
-                _ => return None,
-            }
+        let format = match archive_format(path)? {
+            ArchiveFormat::Zip => Format::Zip,
+            ArchiveFormat::Tar => Format::Tar,
+            ArchiveFormat::Gzip => Format::Gzip,
+            ArchiveFormat::TarGzip => Format::TarGzip,
+            ArchiveFormat::SevenZip => Format::SevenZip,
         };
         self.packages
             .iter()
@@ -152,4 +165,80 @@ fn package(path: &Path) -> io::Result<Package> {
         executable,
         formats,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zip_containers_route_to_installed_zip_provider() {
+        let catalog = catalog();
+        for extension in [
+            "zip", "whl", "egg", "war", "ear", "aab", "aar", "nupkg", "snupkg", "jar", "pyz",
+            "pyzw", "apk", "vsix", "xpi", "epub", "cbz", "kmz", "kra", "ora", "docx", "docm",
+            "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "xlam", "xlsb", "pptx", "pptm", "potx",
+            "potm", "ppsx", "ppsm", "ppam", "sldx", "sldm", "odt", "ott", "odm", "otm", "ods",
+            "ots", "odg", "otg", "odp", "otp", "odf", "odb",
+        ] {
+            for extension in [extension.to_owned(), extension.to_ascii_uppercase()] {
+                let path = PathBuf::from(format!("文档/žluťoučký.{extension}"));
+                let (_, format) = catalog
+                    .choose(&path)
+                    .unwrap_or_else(|| panic!("{extension}"));
+                assert_eq!(format, Format::Zip, "{extension}");
+                assert!(Catalog::default().choose(&path).is_none());
+                assert!(
+                    catalog
+                        .choose_provider(&path, Some("other-provider"))
+                        .is_none()
+                );
+            }
+        }
+        // Filename routing is separate from the user's per-extension activation policy.
+        for name in [
+            "not.whl.exe",
+            "file.doc",
+            "file.xls",
+            "file.ppt",
+            "file.rar",
+            "file.crx",
+        ] {
+            assert!(catalog.choose(Path::new(name)).is_none(), "{name}");
+        }
+        assert_eq!(
+            catalog.choose(Path::new("package.TAR.GZ")).unwrap().1,
+            Format::TarGzip
+        );
+    }
+
+    #[test]
+    fn availability_and_routing_require_the_specific_installed_format() {
+        let mut catalog = catalog();
+        catalog.packages[0].formats = vec![Format::Tar, Format::Tar];
+        assert_eq!(catalog.available_formats(), [ArchiveFormat::Tar]);
+        assert!(catalog.choose(Path::new("package.whl")).is_none());
+        assert_eq!(
+            catalog.choose(Path::new("package.tar")).unwrap().1,
+            Format::Tar
+        );
+    }
+
+    pub(super) fn catalog() -> Catalog {
+        Catalog {
+            packages: vec![Package {
+                id: "fixture".into(),
+                executable: PathBuf::new(),
+                formats: vec![Format::Zip, Format::Tar, Format::TarGzip, Format::Gzip],
+            }],
+            diagnostics: vec![],
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[path = "tests_linux.rs"]
+    mod linux;
+    #[cfg(windows)]
+    #[path = "tests_windows.rs"]
+    mod windows;
 }

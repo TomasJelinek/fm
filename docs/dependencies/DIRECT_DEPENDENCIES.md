@@ -19,7 +19,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [fs2](https://crates.io/crates/fs2/0.4.3) | 0.4.3 | MIT/Apache-2.0 | midnight-platform-common |
 | [getrandom](https://crates.io/crates/getrandom/0.3.4) | 0.3.4 | MIT OR Apache-2.0 | midnight-platform-windows |
 | [i-slint-compiler](https://crates.io/crates/i-slint-compiler/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui-bindings |
-| [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui, midnight-viewer-ui |
+| [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui, midnight-ui-input, midnight-viewer-ui |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-linux, midnight-thumbnail-image |
@@ -37,7 +37,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [serde_json](https://crates.io/crates/serde_json/1.0.154) | 1.0.154 | MIT OR Apache-2.0 | midnight-api-package, midnight-platform-common, midnight-thumbnail-host, midnight-ui |
 | [sevenz-rust2](https://crates.io/crates/sevenz-rust2/0.23.0) | 0.23.0 | Apache-2.0 | midnight-fs-archive |
 | [sha2](https://crates.io/crates/sha2/0.10.9) | 0.10.9 | MIT OR Apache-2.0 | midnight-api-package, midnight-platform-common |
-| [slint](https://crates.io/crates/slint/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-explorer, midnight-ui, midnight-ui-bindings, midnight-viewer-ui |
+| [slint](https://crates.io/crates/slint/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-explorer, midnight-ui, midnight-ui-bindings, midnight-ui-input, midnight-viewer-ui |
 | [slint-build](https://crates.io/crates/slint-build/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui-bindings, midnight-viewer-ui |
 | [spin_on](https://crates.io/crates/spin_on/0.1.1) | 0.1.1 | Apache-2.0 OR MIT | midnight-ui-bindings |
 | [swash](https://crates.io/crates/swash/0.2.10) | 0.2.10 | Apache-2.0 OR MIT | midnight-viewer-render |

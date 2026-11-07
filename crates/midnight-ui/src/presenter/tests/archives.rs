@@ -192,12 +192,88 @@ fn missing_plugin_preserves_normal_native_activation() {
             EntryKind::File,
         )],
     );
-    p.apply(Event::ArchiveAvailability(false));
+    p.apply(Event::ArchiveAvailability(vec![]));
     assert!(
         p.open(PaneId::Left, p.panes[0].parent_offset(), &|c| matches!(
             c,
             Command::OpenEntry { .. }
         ))
+    );
+}
+
+#[test]
+fn archive_badges_and_activation_honor_format_availability_and_user_associations() {
+    use slint::Model;
+    use std::rc::Rc;
+
+    let mut p = Presenter::new(test_root(), test_root());
+    let directory = p.panes[0].path.to_string_lossy().into_owned();
+    let navigation = begin(&mut p, PaneId::Left, &directory);
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![
+            Entry::new(EntryId(1), test_root().join("package.whl"), EntryKind::File),
+            Entry::new(EntryId(2), test_root().join("report.docx"), EntryKind::File),
+            Entry::new(
+                EntryId(3),
+                test_root().join("folder.zip"),
+                EntryKind::Directory,
+            ),
+            Entry::new(EntryId(4), test_root().join("archive.7z"), EntryKind::File),
+            node(5, "nested.zip", EntryKind::File),
+        ],
+    );
+    let p = Rc::new(RefCell::new(p));
+    let rows = crate::Rows::new(p.clone(), PaneId::Left);
+    let badge = |name: &str| {
+        (0..rows.row_count())
+            .filter_map(|row| rows.row_data(row))
+            .find(|row| row.name == name)
+            .unwrap()
+            .browsable_archive
+    };
+    assert!(!badge("package.whl"), "missing provider");
+    p.borrow_mut()
+        .apply(Event::ArchiveAvailability(vec![ArchiveFormat::Zip]));
+    assert!(
+        badge("package.whl"),
+        "late discovery updates existing entries"
+    );
+    for name in ["report.docx", "folder.zip", "archive.7z", "nested.zip"] {
+        assert!(!badge(name), "{name}");
+    }
+    let doc_row = {
+        let p = p.borrow();
+        (0..p.panes[0].display_len())
+            .find(|row| {
+                p.panes[0]
+                    .display_entry(*row)
+                    .is_some_and(|entry| entry.id == EntryId(2))
+            })
+            .unwrap()
+            + p.panes[0].parent_offset()
+    };
+    assert!(p.borrow_mut().open(PaneId::Left, doc_row, &|command| {
+        matches!(command, Command::OpenEntry { .. })
+    }));
+    p.borrow_mut()
+        .preferences
+        .values
+        .archive_association_overrides
+        .insert("docx".into(), true);
+    assert!(badge("report.docx"));
+    p.borrow_mut()
+        .preferences
+        .values
+        .archive_association_overrides
+        .insert("whl".into(), false);
+    assert!(!badge("package.whl"));
+    p.borrow_mut().apply(Event::ArchiveAvailability(vec![]));
+    assert!(
+        !badge("report.docx"),
+        "enabling a checkbox cannot install a provider"
     );
 }
 
@@ -209,6 +285,8 @@ fn installed_provider_claims_native_archive_activation_and_disables_mutations_wh
         "sample.gz",
         "sample.tar",
         "sample.tar.gz",
+        "sample.whl",
+        "sample.NUPKG",
     ] {
         let mut p = Presenter::new(test_root(), test_root());
         let directory = p.panes[0].path.to_string_lossy().into_owned();
@@ -220,7 +298,13 @@ fn installed_provider_claims_native_archive_activation_and_disables_mutations_wh
             nav,
             vec![Entry::new(EntryId(7), source.clone(), EntryKind::File)],
         );
-        p.apply(Event::ArchiveAvailability(true));
+        p.apply(Event::ArchiveAvailability(vec![
+            ArchiveFormat::Zip,
+            ArchiveFormat::Tar,
+            ArchiveFormat::Gzip,
+            ArchiveFormat::TarGzip,
+            ArchiveFormat::SevenZip,
+        ]));
         assert!(
             p.open(PaneId::Left, p.panes[0].parent_offset(), &|command| {
                 matches!(command, Command::ArchiveNavigate {

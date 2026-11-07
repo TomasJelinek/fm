@@ -19,10 +19,13 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "copy_admission.rs"]
+mod admission;
 #[path = "copy_input.rs"]
 mod input;
 #[path = "copy_worker.rs"]
 mod worker;
+pub(crate) use admission::{Admission, Reservation};
 use input::CopyInput;
 type Status = Arc<Mutex<CopyProgress>>;
 type Registry = Arc<Mutex<HashMap<OperationId, Registered>>>;
@@ -34,7 +37,12 @@ struct Registered {
     waiting: Arc<AtomicU64>,
 }
 struct Request {
+    receipt: crate::copy_fence::Receipt,
+    input: Input,
+    // Rejected/aborted requests resolve and release payloads before returning capacity.
     _capacity: OwnedSemaphorePermit,
+}
+struct Input {
     command: CopyInput,
     cancel: Cancellation,
     status: Status,
@@ -43,12 +51,11 @@ struct Request {
 }
 
 pub(crate) struct Controller {
-    sender: mpsc::Sender<Request>,
+    admission: Admission,
     outbox: Outbox,
     registry: Registry,
     cancel: Cancellation,
     highest: AtomicU64,
-    capacity: Arc<Semaphore>,
 }
 impl Controller {
     pub(crate) fn new(
@@ -58,11 +65,11 @@ impl Controller {
         io_budget: Arc<Semaphore>,
         tasks: &mut JoinSet<()>,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel(MAX_JOBS);
+        let admission = Admission::default();
         let registry = Registry::default();
         let cancel = Cancellation::default();
         tasks.spawn(run(
-            receiver,
+            admission.consumer(),
             service,
             outbox.clone(),
             registry.clone(),
@@ -71,25 +78,22 @@ impl Controller {
             io_budget,
         ));
         Self {
-            sender,
+            admission,
             outbox,
             registry,
             cancel,
             highest: AtomicU64::new(0),
-            capacity: Arc::new(Semaphore::new(MAX_JOBS)),
         }
     }
+    #[cfg(test)]
     pub(crate) fn capacity(&self) -> Arc<Semaphore> {
-        self.capacity.clone()
+        self.admission.capacity()
     }
-    pub(crate) fn reserve(&self) -> Result<OwnedSemaphorePermit, FsError> {
-        self.capacity.clone().try_acquire_owned().map_err(|_| {
-            error(
-                Path::new(""),
-                io::ErrorKind::WouldBlock,
-                "The copy queue is full or closing (32 jobs).",
-            )
-        })
+    pub(crate) fn admission(&self) -> Admission {
+        self.admission.clone()
+    }
+    pub(crate) fn reserve(&self) -> Result<Reservation, FsError> {
+        self.admission.reserve()
     }
     pub(crate) async fn enqueue(&self, request: CopyRequest) {
         self.enqueue_input(request.into()).await;
@@ -110,14 +114,10 @@ impl Controller {
         };
         self.enqueue_input_reserved(request, permit).await;
     }
-    pub(crate) async fn enqueue_reserved(
-        &self,
-        request: CopyRequest,
-        capacity: OwnedSemaphorePermit,
-    ) {
+    pub(crate) async fn enqueue_reserved(&self, request: CopyRequest, capacity: Reservation) {
         self.enqueue_input_reserved(request.into(), capacity).await;
     }
-    async fn enqueue_input_reserved(&self, request: CopyInput, capacity: OwnedSemaphorePermit) {
+    async fn enqueue_input_reserved(&self, request: CopyInput, capacity: Reservation) {
         if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
             return;
         }
@@ -180,10 +180,8 @@ impl Controller {
             return;
         }
         publish(&self.outbox, progress.clone()).await;
-        if self
-            .sender
-            .try_send(Request {
-                _capacity: capacity,
+        if capacity
+            .send(Input {
                 command: request,
                 cancel,
                 status,
@@ -237,7 +235,7 @@ impl Controller {
     }
     pub(crate) fn shutdown(&self) {
         self.cancel.cancel();
-        self.capacity.close();
+        self.admission.capacity().close();
     }
 }
 impl Drop for Controller {
@@ -247,7 +245,7 @@ impl Drop for Controller {
 }
 
 async fn run(
-    mut requests: mpsc::Receiver<Request>,
+    consumer: admission::Consumer,
     service: Option<Arc<dyn TransferService>>,
     outbox: Outbox,
     registry: Registry,
@@ -255,21 +253,9 @@ async fn run(
     mutation_gate: Arc<Semaphore>,
     io_budget: Arc<Semaphore>,
 ) {
-    let mut idle = tokio::time::interval(Duration::from_millis(25));
-    loop {
-        if cancel.is_cancelled()
-            && registry
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty()
-        {
-            break;
-        }
-        let request = tokio::select! {
-            request = requests.recv() => match request { Some(request) => request, None => break },
-            _ = idle.tick() => continue,
-        };
-        let id = request.command.id;
+    let requests = consumer.admission();
+    while let Some(request) = requests.next(&cancel).await {
+        let id = request.input.command.id;
         let progress = run_job(
             request,
             service.clone(),
@@ -303,15 +289,33 @@ async fn acquire(budget: &Arc<Semaphore>, cancel: &Cancellation) -> Option<Owned
 }
 
 async fn run_job(
-    mut request: Request,
+    request: Request,
     service: Option<Arc<dyn TransferService>>,
     outbox: &Outbox,
     mutation_gate: &Arc<Semaphore>,
     io_budget: &Arc<Semaphore>,
 ) -> CopyProgress {
-    let Some(_mutation) = acquire(mutation_gate, &request.cancel).await else {
-        return cancelled(&request.status);
+    let Request {
+        _capacity,
+        receipt,
+        input,
+    } = request;
+    let Some(_mutation) = acquire(mutation_gate, &input.cancel).await else {
+        let progress = cancelled(&input.status);
+        receipt.finish(&progress);
+        return progress;
     };
+    let progress = run_input(input, service, outbox, io_budget).await;
+    receipt.finish(&progress);
+    progress
+}
+
+async fn run_input(
+    mut request: Input,
+    service: Option<Arc<dyn TransferService>>,
+    outbox: &Outbox,
+    io_budget: &Arc<Semaphore>,
+) -> CopyProgress {
     let Some(service) = service else {
         let failure = error(
             &request.command.destination,

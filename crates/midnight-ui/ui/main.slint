@@ -28,6 +28,8 @@ import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
 export { KeyboardEditorView, ShortcutCommandRow }
 import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
 export { ViewerPluginsView, ViewerPluginRow }
+import { ArchiveOptionsView, ArchiveAssociationRow } from "archive-options.slint";
+export { ArchiveOptionsView, ArchiveAssociationRow }
 import { OperationDialog } from "operation-controls.slint";
 import { OperationsBody, OperationRow, JobsView } from "jobs-dialog.slint";
 export { JobsView }
@@ -909,8 +911,8 @@ export component MainWindow inherits Window {
     out property <length> command-history-height: command-history-picker.height;
     out property <length> options-left: (root.width - root.options-width) / 2;
     out property <length> options-top: (root.height - root.options-height) / 2;
-    out property <length> options-width: min(root.width - 24px, max(600px, Theme.font-size * 26));
-    out property <length> options-height: min(root.height - 24px, Theme.touch ? 510px : 420px);
+    out property <length> options-width: min(root.width - 24px, max(900px, Theme.font-size * 38));
+    out property <length> options-height: min(root.height - 24px, max(720px, Theme.font-size * 30));
     out property <bool> command-focused: command-input.has-focus;
     // Slint 1.18.1 exposes these internal UTF-8 offsets; keep the pinned SDK and
     // the actual-key Unicode selection tests together when upgrading Slint.
@@ -1481,9 +1483,8 @@ export component MainWindow inherits Window {
     }
     options := PopupWindow {
         close-policy: close-on-click-outside;
-        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
-        width: min(root.width - 24px, max(900px, Theme.font-size * 38));
-        height: min(root.height - 24px, max(720px, Theme.font-size * 30));
+        x: root.options-left; y: root.options-top;
+        width: root.options-width; height: root.options-height;
         options-body := OptionsBody {
             editor-default-label: root.editor-default-label; editor-executable: root.editor-executable;
             editor-arguments: root.editor-arguments; editor-revision: root.editor-revision; editor-error: root.editor-error;

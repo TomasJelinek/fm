@@ -11,8 +11,11 @@ Rename/F2, create-directory/F7 and deletion are explicit, confirmed operations.
 Preparation pins native identity before showing the confirmation; navigation never
 retargets a queued job. The backend permits at most 32 preparing/prepared/queued/
 running mutation jobs and 32 copy jobs, two mutation preparation workers and one
-active mutating job across both queues. Each queue is FIFO; cross-queue ordering
-is acquisition order at the shared mutation gate. Native handles
+active mutating job across both queues. Copy admission is FIFO, including native
+drop reservations awaiting UI handoff. Existing-entry mutation confirmations wait
+for all copies still outstanding at confirmation before acquiring the shared gate;
+an incomplete predecessor rejects the mutation for explicit review. Later copies
+and creation jobs are independent. Native handles
 scale with the selected root count and traversal depth; resource failure is an
 error, never permission to substitute a target. Duplicate operation IDs cannot
 execute twice. Rename never overwrites. F7 accepts explicit absolute or panel-relative
@@ -241,7 +244,11 @@ Multi-file Copy/Delete requests share the engine's mutation exclusion. Capture
 selection and destination paths when accepting a request; later navigation
 must not retarget it. Enqueueing stays nonblocking while another job runs.
 Serialize conflicting paths/aliases and prevent a queued destructive dependency
-from deleting a source after its preceding copy failed. Per-job cancellation,
+from deleting a source after its preceding copy failed. Confirmation captures
+bounded completion receipts for all currently admitted copies, including native
+reservations. Only fully completed, verified predecessors permit the mutation;
+failed, cancelled or skipped work requires review and a new confirmation. No
+blocking wait runs on the UI or holds the I/O gate. Per-job cancellation,
 phase progress and partial results must stay truthful; a completed write is not
 a completed verified copy.
 

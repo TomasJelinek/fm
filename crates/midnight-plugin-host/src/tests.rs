@@ -76,6 +76,55 @@ fn discovery_rejects_both_duplicate_ids_and_keeps_independent_packages() {
 }
 
 #[test]
+fn discovery_rejects_shared_writable_sibling_libraries() {
+    for name in [
+        "helper.dll",
+        "HELPER.DlL",
+        "libhelper.so",
+        "libhelper.so.1",
+        "lib/helper.bin",
+    ] {
+        let root = fixture_root();
+        let directory = package(root.path(), "basic", "viewer.basic", "");
+        let helper = directory.join(name);
+        std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        std::fs::write(&helper, b"dependency fixture").unwrap();
+        assert_eq!(Runtime::discover(root.path()).unwrap().catalog().len(), 1);
+        make_shared(&helper);
+        let runtime = Runtime::discover(root.path()).unwrap();
+        assert!(
+            runtime.catalog().is_empty(),
+            "accepted untrusted dependency {name}"
+        );
+        assert_eq!(runtime.diagnostics().len(), 1);
+    }
+}
+
+#[test]
+fn first_load_rechecks_dependency_permissions_after_discovery() {
+    let root = fixture_root();
+    let directory = package(root.path(), "basic", "viewer.basic", "");
+    let helper = directory.join("helper.dll");
+    std::fs::write(&helper, b"dependency fixture").unwrap();
+    let runtime = Runtime::discover(root.path()).unwrap();
+    assert_eq!(runtime.catalog().len(), 1);
+    make_shared(&helper);
+    let error = match crate::loaded::Loaded::open(&runtime.catalog()[0]) {
+        Ok(_) => panic!("loaded untrusted dependency"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("writable"),
+        "loader ran before dependency trust validation: {error}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+use super::tests_linux::make_shared;
+#[cfg(windows)]
+use super::tests_windows::make_shared;
+
+#[test]
 fn discovery_rejects_escape_abi_target_and_required_service() {
     for (from, to) in [
         ("fixture.dll", "../fixture.dll"),

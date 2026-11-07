@@ -2,6 +2,7 @@ import { Theme } from "theme.slint";
 import { PrefixName } from "panel-search.slint";
 import { FileRow } from "file-models.slint";
 import { ErrorGlyph } from "error-notice.slint";
+import { ArchiveBadge } from "archive-badge.slint";
 
 // Each cell keeps pointer identity across virtualized rebinding and refreshes.
 export component FileEntry inherits Rectangle {
@@ -33,6 +34,7 @@ export component FileEntry inherits Rectangle {
     accessible-role: list-item;
     accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
         + (item.compressed ? " · Filesystem compressed" : "")
+        + (item.browsable-archive ? " · Archive: open as folder" : "")
         + (item.size-state == 3 ? " · Folder size error" : "");
     Rectangle {
         x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
@@ -67,6 +69,11 @@ export component FileEntry inherits Rectangle {
                         horizontal-alignment: center; vertical-alignment: center;
                         accessible-role: none;
                     }
+                }
+                if item.browsable-archive : ArchiveBadge {
+                    x: parent.width - self.width;
+                    y: (parent.height - Theme.file-icon-size) / 2;
+                    width: 11px; height: 11px;
                 }
                 if root.view-mode == 1 && item.size-state == 3 : ErrorGlyph {
                     width: 12px; height: 12px; x: parent.width - self.width;
@@ -111,6 +118,9 @@ export component FileEntry inherits Rectangle {
             x: parent.width / 2 + 25px; y: 65px; width: 15px; height: 19px;
             text: "C"; color: Theme.compression-mark; font-size: 12px; font-weight: 700;
             accessible-role: none;
+        }
+        if item.browsable-archive : ArchiveBadge {
+            x: parent.width / 2 + 20px; y: 12px; width: 16px; height: 16px;
         }
         if item.size-state == 3 : ErrorGlyph {
             x: parent.width / 2 + 22px; y: 12px; width: 16px; height: 16px;

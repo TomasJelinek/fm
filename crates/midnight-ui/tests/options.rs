@@ -133,9 +133,8 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     assert_eq!(ui.pixel(interior.0, interior.1), expected);
     click_popup(&ui.window, "Done", AccessibleRole::Button);
     ui.draw();
-    assert_ne!(
-        ui.pixel(interior.0, interior.1),
-        expected,
+    assert!(
+        !ui::has_popup(&ui.window),
         "Done closes Options after changing topics and density"
     );
     ui.window.hide().unwrap();

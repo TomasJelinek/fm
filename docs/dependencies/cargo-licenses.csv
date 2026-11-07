@@ -142,7 +142,7 @@ i-slint-backend-selector,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.
 i-slint-backend-winit,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 i-slint-common,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 i-slint-compiler,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-ui-bindings
-i-slint-core,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-ui; midnight-viewer-ui
+i-slint-core,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-ui; midnight-ui-input; midnight-viewer-ui
 i-slint-core-macros,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 i-slint-renderer-femtovg,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 i-slint-renderer-software,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
@@ -295,7 +295,7 @@ simplecss,0.2.2,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.i
 siphasher,1.0.4,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 skrifa,0.44.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 slab,0.4.12,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
-slint,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-explorer; midnight-ui; midnight-ui-bindings; midnight-viewer-ui
+slint,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-explorer; midnight-ui; midnight-ui-bindings; midnight-ui-input; midnight-viewer-ui
 slint-build,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-ui-bindings; midnight-viewer-ui
 slint-macros,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 slotmap,1.1.1,Zlib,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,

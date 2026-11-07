@@ -47,10 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         basic: false,
         disabled_plugins: Arc::from([]),
     };
-    let keys = Rc::new(|event: &i_slint_core::input::KeyEvent, search: bool| {
-        if event.text == slint::SharedString::from(Key::Escape) {
+    let keys = Rc::new(|chord: &ShortcutChord, search: bool| {
+        if chord.key == "Escape" {
             Some("viewer.close".into())
-        } else if !search && event.text == " " {
+        } else if !search && chord.key == "Space" {
             Some("viewer.next-file".into())
         } else {
             None

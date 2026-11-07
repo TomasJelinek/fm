@@ -1,5 +1,6 @@
 use super::*;
 use crate::{CommittedSnapshot, SnapshotState};
+use tokio::sync::Semaphore;
 
 struct Harness {
     sink: Sink,
@@ -49,7 +50,7 @@ impl Harness {
                 })),
                 snapshots,
                 pending: Arc::default(),
-                capacity: Arc::new(Semaphore::new(32)),
+                capacity: copy_operations::Admission::default(),
                 events,
                 next: Arc::new(AtomicU64::new(0)),
                 hover: Arc::default(),
@@ -74,7 +75,7 @@ fn native_ack_requires_actual_capacity_and_delivery_admission() {
     for _ in 0..32 {
         h.sink.try_accept(h.request.clone()).unwrap();
     }
-    assert_eq!(h.sink.capacity.available_permits(), 0);
+    assert_eq!(h.sink.capacity.capacity().available_permits(), 0);
     assert_eq!(h.sink.pending.lock().unwrap().len(), 32);
     assert_eq!(
         h.sink.try_accept(h.request.clone()).unwrap_err().kind,
@@ -94,12 +95,12 @@ fn native_ack_requires_actual_capacity_and_delivery_admission() {
     let captured = h.sink.pending.lock().unwrap().remove(&token).unwrap();
     assert_eq!(captured.request.files.paths, h.request.files.paths);
     drop(captured);
-    assert_eq!(h.sink.capacity.available_permits(), 1);
+    assert_eq!(h.sink.capacity.capacity().available_permits(), 1);
 
     let h = Harness::new();
     drop(h.events);
     assert!(h.sink.try_accept(h.request).is_err());
-    assert_eq!(h.sink.capacity.available_permits(), 32);
+    assert_eq!(h.sink.capacity.capacity().available_permits(), 32);
     assert!(h.sink.pending.lock().unwrap().is_empty());
 }
 
@@ -132,11 +133,12 @@ fn shutdown_winning_the_admission_lock_cannot_be_followed_by_native_copy_ack() {
     let request = fixture.request;
     let worker = std::thread::spawn(move || worker_sink.try_accept(request));
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while sink.capacity.available_permits() == 32 && std::time::Instant::now() < deadline {
+    while sink.capacity.capacity().available_permits() == 32 && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(
-        sink.capacity.available_permits(),
+        sink.capacity.capacity().available_permits(),
         31,
         "native callback reached the admission boundary"
     );
@@ -148,7 +150,7 @@ fn shutdown_winning_the_admission_lock_cannot_be_followed_by_native_copy_ack() {
         "shutdown must win before native Copy acknowledgement"
     );
     assert!(pending.lock().unwrap().is_empty());
-    assert_eq!(sink.capacity.available_permits(), 32);
+    assert_eq!(sink.capacity.capacity().available_permits(), 32);
 }
 
 #[test]
@@ -233,7 +235,7 @@ async fn native_runtime_failure_revokes_ready_before_another_gesture() {
     let mut controller = Controller::new(
         Some(Arc::new(FailsWhilePumping)),
         fixture.sink.snapshots.clone(),
-        Arc::new(Semaphore::new(32)),
+        copy_operations::Admission::default(),
         Outbox {
             sender,
             wakeup: Arc::new(|| {}),
@@ -344,7 +346,7 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
     let mut controller = Controller::new(
         None,
         snapshots.clone(),
-        copies.capacity(),
+        copies.admission(),
         outbox,
         &mut tasks,
     );
@@ -471,9 +473,9 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
         .sink
         .clone();
     sink.try_accept(fixture.request).unwrap();
-    assert_eq!(fixture.sink.capacity.available_permits(), 31);
+    assert_eq!(fixture.sink.capacity.capacity().available_permits(), 31);
     controller.shutdown();
-    assert_eq!(fixture.sink.capacity.available_permits(), 32);
+    assert_eq!(fixture.sink.capacity.capacity().available_permits(), 32);
     assert!(controller.pending.lock().unwrap().is_empty());
     while tasks.join_next().await.is_some() {}
 }

@@ -443,6 +443,37 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         AccessibleRole::Button,
     );
     assert_eq!(events.borrow().last().unwrap(), "new:0");
+    // The blank part of either tab strip duplicates its own active location.
+    for (pane, label) in [(0, "A\nD:\\文档\\A"), (1, "D\nD:\\文档\\D")] {
+        let tab_position = ui::root_position(&window, label, AccessibleRole::Button);
+        let blank = slint::LogicalPosition::new(tab_position.x + 180.0, tab_position.y);
+        let before = events.borrow().len();
+        pointer_click(&window, blank, PointerEventButton::Left);
+        assert_eq!(events.borrow().len(), before, "single blank click");
+        pointer_click(&window, blank, PointerEventButton::Left);
+        assert_eq!(
+            events.borrow().len(),
+            before + 1,
+            "double blank click in pane {pane}"
+        );
+        assert_eq!(events.borrow().last().unwrap(), &format!("new:{pane}"));
+        for button in [PointerEventButton::Middle, PointerEventButton::Right] {
+            pointer_click(&window, blank, button);
+            pointer_click(&window, blank, button);
+        }
+        assert_eq!(
+            events.borrow().len(),
+            before + 1,
+            "only a left double click creates a tab"
+        );
+        pointer_click(&window, tab_position, PointerEventButton::Left);
+        pointer_click(&window, tab_position, PointerEventButton::Left);
+        assert_eq!(
+            events.borrow().len(),
+            before + 1,
+            "tab bodies do not create tabs"
+        );
+    }
     window.set_left_tabs(ModelRc::new(VecModel::from(
         (0..32)
             .map(|index| {

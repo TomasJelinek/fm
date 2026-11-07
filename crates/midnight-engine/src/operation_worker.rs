@@ -15,6 +15,7 @@ pub(super) struct Job {
     preview: OperationPreview,
     pub(super) metadata: Option<super::metadata::Edit>,
     pub(super) metadata_budget: Arc<Semaphore>,
+    pub(super) predecessors: Arc<crate::copy_fence::Predecessors>,
     // Declared after targets so native resources close before permits are returned.
     metadata_permits: Vec<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -84,6 +85,7 @@ pub(super) fn prepare(
         name: None,
         metadata: None,
         metadata_budget,
+        predecessors: Default::default(),
         metadata_permits: vec![],
         preview: OperationPreview {
             id: request.id,

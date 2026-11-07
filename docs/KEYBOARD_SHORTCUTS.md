@@ -160,7 +160,9 @@ dropdowns. Tabs sit below the drive
 toolbar. Hovering a path segment highlights its prefix; clicking opens that raw
 ancestor; right-click copies that prefix without navigating. Click blank space
 after the path to edit it; Enter navigates and Escape cancels. Middle-click a tab
-to close it (the last tab remains). Tabs and their active position survive restart.
+to close it (the last tab remains). Double-click the empty space after the tabs to
+create a new tab at that panel's current location; tab bodies and the + button keep
+their own actions. Tabs and their active position survive restart.
 Explicit `--left` / `--right` locations override restoration for that pane. Drag the central
 splitter to resize the panels, or double-click it to center. Tabs shrink uniformly
 and then expose scroll arrows at their minimum width. The details strip below each

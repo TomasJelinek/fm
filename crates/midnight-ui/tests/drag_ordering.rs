@@ -137,7 +137,12 @@ fn cancelling_an_admitted_drop_rejects_its_token_before_the_copy_is_registered()
         !cancelled.cancellable,
         "pending admission cancellation is terminal immediately"
     );
-    assert!(cancelled.title.contains("Cancelled"));
+    assert_eq!(cancelled.title, "Copy");
+    assert_eq!(cancelled.state, "Cancelled");
+    assert!(
+        !cancelled.active,
+        "cancelled admission must leave the active jobs"
+    );
     h.recover();
     let commands = h.commands.borrow();
     assert!(

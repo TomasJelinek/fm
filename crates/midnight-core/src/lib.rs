@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod archive;
+mod archive_format;
 mod command_history;
 mod compare;
 mod copy_operation;
@@ -30,6 +31,7 @@ mod viewer;
 mod watch;
 
 pub use archive::*;
+pub use archive_format::*;
 pub use command_history::*;
 pub use compare::*;
 pub use copy_operation::*;

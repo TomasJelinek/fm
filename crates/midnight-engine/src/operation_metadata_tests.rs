@@ -67,6 +67,7 @@ impl Harness {
                 wakeup: Arc::new(|| {}),
             },
             Arc::new(Semaphore::new(1)),
+            CopyFence::default(),
             &mut tasks,
         );
         let mut bits = vec![u64::MAX; names.len().div_ceil(64)];

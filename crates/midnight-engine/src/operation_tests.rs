@@ -185,6 +185,7 @@ impl Harness {
                 wakeup: Arc::new(|| {}),
             },
             Arc::new(Semaphore::new(1)),
+            CopyFence::default(),
             &mut tasks,
         );
         Self {
@@ -275,6 +276,27 @@ async fn cancelled_confirmation_never_mutates_and_stale_snapshot_is_rejected() {
     h.controller.prepare(h.request.clone()).await;
     assert_eq!(h.finished().await.state, OperationState::Failed);
     assert!(h.calls.deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cancelled_confirmation_delivery_can_be_retried_without_losing_the_request() {
+    let mut h = Harness::new(MutationKind::Delete(DeleteMode::Permanent));
+    h.controller.prepare(h.request.clone()).await;
+    h.preview().await;
+    let sender = h.controller.sender.clone();
+    let capacity: Vec<_> = sender.reserve_many(64).await.unwrap().collect();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            h.controller.confirm(h.request.id, None)
+        )
+        .await
+        .is_err()
+    );
+    drop(capacity);
+    h.controller.confirm(h.request.id, None).await;
+    assert_eq!(h.finished().await.state, OperationState::Completed);
+    assert_eq!(h.calls.deleted.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

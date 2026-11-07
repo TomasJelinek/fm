@@ -120,3 +120,33 @@ fn raw_non_unicode_zip_names_remain_provider_identity_bytes() {
     assert_eq!(node.name, b"\xffaw.txt");
     assert_eq!(archive.read(node.id, 0, 5).unwrap().0, b"hello");
 }
+
+#[test]
+fn cp437_implicit_directory_preserves_decoded_display_and_raw_identity() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "cafe/file.txt",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer.write_all(b"hello").unwrap();
+    let mut source = writer.finish().unwrap().into_inner();
+    let offsets: Vec<_> = source
+        .windows(13)
+        .enumerate()
+        .filter_map(|(index, name)| (name == b"cafe/file.txt").then_some(index))
+        .collect();
+    for offset in offsets {
+        source[offset + 3] = 0x82;
+    }
+    let archive = Archive::open(Format::Zip, source, Limits::default()).unwrap();
+    let directory = archive.list(1, 0).unwrap().remove(0);
+    assert_eq!(directory.name, b"caf\x82");
+    assert_eq!(directory.display, "café");
+    assert_eq!(
+        archive.list(directory.id, 0).unwrap()[0].display,
+        "file.txt"
+    );
+}

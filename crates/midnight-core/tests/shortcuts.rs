@@ -127,6 +127,50 @@ fn action(map: &ShortcutMap, keys: &str, context: ShortcutContext) -> Option<Str
 }
 
 #[test]
+fn introducing_f5_copy_keeps_previously_saved_f5_assignments_valid() {
+    for (id, context) in [
+        ("files.rename", ShortcutContext::Files),
+        ("search.clear", ShortcutContext::Search),
+        ("app.help", ShortcutContext::Other),
+    ] {
+        let binding = ShortcutBinding {
+            action: id.into(),
+            keys: vec!["F5".into()],
+        };
+        let map = ShortcutMap::new(std::slice::from_ref(&binding)).unwrap();
+        assert_eq!(action(&map, "F5", context).as_deref(), Some(id));
+        assert!(
+            map.bindings("files.copy-to").unwrap().is_empty(),
+            "do not advertise a shadowed F5 default"
+        );
+        assert!(
+            ShortcutMap::new(&[
+                binding,
+                ShortcutBinding {
+                    action: "files.copy-to".into(),
+                    keys: vec!["F5".into()]
+                },
+            ])
+            .is_err(),
+            "explicit assignments must still report conflicts"
+        );
+    }
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "viewer.next-file".into(),
+        keys: vec!["F5".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&map, "F5", ShortcutContext::Viewer).as_deref(),
+        Some("viewer.next-file")
+    );
+    assert_eq!(
+        action(&map, "F5", ShortcutContext::Files).as_deref(),
+        Some("files.copy-to")
+    );
+}
+
+#[test]
 fn all_default_actions_are_named_unique_and_resolve_without_context_collisions() {
     let map = ShortcutMap::new(&[]).unwrap();
     let mut names = std::collections::HashSet::new();

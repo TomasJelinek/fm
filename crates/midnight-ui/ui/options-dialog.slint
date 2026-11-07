@@ -8,6 +8,7 @@ import { OptionsNavigation } from "options-navigation.slint";
 import { EditorOptions } from "editor-options.slint";
 import { PluginOptions } from "plugin-options.slint";
 import { ThumbnailOptions } from "thumbnail-options.slint";
+import { ArchiveOptions } from "archive-options.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -79,6 +80,7 @@ export component OptionsBody inherits Rectangle {
             content := ScrollView {
                 horizontal-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
+            if root.topic-index == 7 : ArchiveOptions { }
             if root.topic-index == 6 : ThumbnailOptions {
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;

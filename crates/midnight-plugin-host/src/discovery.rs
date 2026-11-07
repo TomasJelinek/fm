@@ -269,6 +269,7 @@ fn package(path: &Path) -> Result<PluginInfo, Error> {
         library.canonicalize()? == library && library.is_file(),
         "Library path is redirected or not a regular file",
     )?;
+    crate::package_trust::check(path)?;
     Ok(PluginInfo {
         id: manifest.id,
         version: manifest.version,

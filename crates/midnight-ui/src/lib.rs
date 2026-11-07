@@ -1,6 +1,7 @@
 //! In-memory presentation and a virtualized Slint shell. All I/O lives behind commands.
 #![deny(unsafe_code)]
 mod action_icons;
+mod archive_options;
 mod command_line;
 mod commander_presentation;
 mod copy_presentation;
@@ -126,6 +127,7 @@ impl Model for Rows {
                 name: "..".into(),
                 prefix_end: 0,
                 compressed: false,
+                browsable_archive: false,
                 size: "".into(),
                 size_state: 0,
                 size_hint: "Parent folder".into(),
@@ -203,6 +205,7 @@ impl Model for Rows {
             name: entry.display_name.clone().into(),
             prefix_end: i32::try_from(pane.search_prefix_end(index)).unwrap_or(0),
             compressed: metadata.compression == CompressionStatus::Compressed,
+            browsable_archive: state.can_browse_archive(entry),
             size: size.into(),
             size_state,
             size_hint: size_hint.into(),
@@ -272,6 +275,7 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    archive_options::refresh(window, presenter);
     plugin_options::refresh(window, presenter);
     drag_bridge::refresh(window, presenter);
     commander_presentation::refresh(window, presenter);
@@ -749,6 +753,7 @@ pub fn install(
     shortcut_bridge::install(window, presenter.clone(), send.clone());
     job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
+    archive_options::install(window, presenter.clone(), send.clone());
     commander_presentation::bind(window, &presenter, &send);
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");

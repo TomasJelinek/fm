@@ -173,6 +173,8 @@ pub enum PanelViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
+    /// Per-extension archive browsing choices; absent keys use the catalog default.
+    pub archive_association_overrides: BTreeMap<String, bool>,
     pub disabled_viewer_plugins: Vec<String>,
     pub editor: crate::EditorPreferences,
     pub theme: PreferenceTheme,
@@ -208,6 +210,7 @@ pub const MAX_FONT_FAMILY_BYTES: usize = 512;
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            archive_association_overrides: BTreeMap::new(),
             disabled_viewer_plugins: Vec::new(),
             editor: crate::EditorPreferences::default(),
             theme: PreferenceTheme::default(),
@@ -232,6 +235,19 @@ impl Default for UserPreferences {
 }
 
 impl UserPreferences {
+    /// Whether a known canonical extension opens inside the file manager.
+    pub fn archive_association_enabled(&self, extension: &str) -> bool {
+        crate::ARCHIVE_ASSOCIATIONS
+            .iter()
+            .find(|association| association.extension == extension)
+            .is_some_and(|association| {
+                self.archive_association_overrides
+                    .get(extension)
+                    .copied()
+                    .unwrap_or(association.enabled_by_default)
+            })
+    }
+
     /// Merge legacy duplicate native paths in saved order without filesystem IO.
     /// Keep the first raw path, identity and name, recovering a later slot only
     /// when the retained entry has none. Path equality never folds case or text.
@@ -272,6 +288,15 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if self.archive_association_overrides.keys().any(|extension| {
+            !crate::ARCHIVE_ASSOCIATIONS
+                .iter()
+                .any(|association| association.extension == extension)
+        }) {
+            message = Some(
+                "Archive associations must use known lowercase extensions without a leading dot.",
+            );
+        }
         if let Err(error) = crate::validate_disabled_viewers(&self.disabled_viewer_plugins) {
             message = Some(error);
         }

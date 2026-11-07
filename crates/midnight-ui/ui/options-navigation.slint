@@ -1,15 +1,30 @@
 import { Theme } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export component OptionsNavigation inherits Rectangle {
     in-out property <int> selected;
     private property <int> focus-request: -1;
+    private property <length> row-height: max(Theme.control-height, Theme.font-size * 1.5 + 10px);
     background: Theme.secondary-surface; border-radius: 4px;
+    changed selected => { root.reveal-selected(); }
+    changed row-height => { root.reveal-selected(); }
+    function reveal-selected() {
+        let top = 6px + root.selected * (root.row-height + 4px);
+        if top < -topics.content-y { topics.content-y = -top; }
+        else if top + root.row-height + 6px > -topics.content-y + topics.visible-height {
+            topics.content-y = min(0px, topics.visible-height - top - root.row-height - 6px);
+        }
+    }
+    topics := ScrollView {
+        min-height: 0px;
+        horizontal-scrollbar-policy: always-off;
+        changed visible-height => { root.reveal-selected(); }
     VerticalLayout {
         padding: 6px; spacing: 4px; alignment: start;
-        for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews"] : Rectangle {
+        for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews", "Archives"] : Rectangle {
             private property <bool> focus-requested: root.focus-request == index;
             changed focus-requested => { if self.focus-requested { tab-focus.focus(); } }
-            height: max(Theme.control-height, Theme.font-size * 1.5 + 10px);
+            height: root.row-height;
             background: root.selected == index ? Theme.selected-background
                 : area.has-hover ? Theme.hover : transparent;
             border-radius: 3px;
@@ -27,8 +42,10 @@ export component OptionsNavigation inherits Rectangle {
             tab-focus := FocusScope {
                 key-pressed(event) => {
                     if event.text == Key.Return || event.text == Key.Space { root.selected = index; return accept; }
-                    if event.text == Key.DownArrow || event.text == Key.UpArrow {
-                        root.selected = clamp(root.selected + (event.text == Key.DownArrow ? 1 : -1), 0, 6);
+                    if event.text == Key.DownArrow || event.text == Key.RightArrow
+                        || event.text == Key.UpArrow || event.text == Key.LeftArrow {
+                        root.selected = clamp(root.selected
+                            + (event.text == Key.DownArrow || event.text == Key.RightArrow ? 1 : -1), 0, 7);
                         root.focus-request = root.selected;
                         return accept;
                     }
@@ -37,5 +54,6 @@ export component OptionsNavigation inherits Rectangle {
                 area := TouchArea { clicked => { tab-focus.focus(); root.focus-request = index; root.selected = index; } }
             }
         }
+    }
     }
 }

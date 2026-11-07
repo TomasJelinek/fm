@@ -217,6 +217,24 @@ impl Root {
         no_reparse(&file, false)?;
         Ok(file)
     }
+    pub fn lock_file(&self) -> io::Result<(File, bool)> {
+        let open = |create| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(create)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.path.join("store.lock"))
+        };
+        let (file, created) = match open(true) {
+            Ok(file) => (file, true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (open(false)?, false),
+            Err(error) => return Err(error),
+        };
+        no_reparse(&file, false)?;
+        Ok((file, created))
+    }
     pub fn temporary(&self) -> io::Result<Temporary> {
         for _ in 0..16 {
             let name = format!(
@@ -283,7 +301,10 @@ impl Root {
     }
     pub fn records(&self) -> io::Result<Vec<Record>> {
         let mut records = Vec::new();
-        for item in fs::read_dir(&self.path)?.take(100_000) {
+        for (index, item) in fs::read_dir(&self.path)?.enumerate() {
+            if index >= 100_000 {
+                return Err(io::Error::other("Cache directory entry limit exceeded"));
+            }
             let item = item?;
             let Some(name) = item
                 .file_name()

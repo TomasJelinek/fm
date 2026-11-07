@@ -38,6 +38,13 @@ Conditional/object ACL forms are conservatively refused rather than misinterpret
 These checks do not prevent trusted owners/administrators or native plugin code
 itself from changing their own process or files.
 
+Discovery and first load validate every local package object, including dependency
+libraries in subdirectories, under a 4096-entry budget. Redirected paths and
+nonregular objects are refused. Checking only the entry library would allow an
+otherwise private package to load a shared-writable companion library. Native
+plugins still retain application authority and must select trusted dependencies
+outside their own package.
+
 Validated libraries are cached by canonical entry path for the process lifetime
 (maximum 256). They never unload when a viewer closes; installation/removal or
 replacement is applied at the next startup. A manifest identity/version change for

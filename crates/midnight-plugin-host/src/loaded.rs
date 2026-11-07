@@ -47,6 +47,7 @@ impl Loaded {
         if info.entry_library.canonicalize()? != info.entry_library {
             return Err(Error("Library changed to redirected path".into()));
         }
+        crate::package_trust::check(&info.package_dir)?;
         let library = Library::open(&info.entry_library)?;
         let entry = library.entry()?;
         // SAFETY: integer/pointer/optional-function table has an all-zero valid initial value.

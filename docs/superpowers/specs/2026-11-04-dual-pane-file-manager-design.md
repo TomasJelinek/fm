@@ -986,8 +986,12 @@ okna je `Midnight Explorer 0.1 — File Manager`; hodnota se odvozuje z verze ba
 Každý panel má samostatné karty cest. Výchozí jméno karty vždy odpovídá názvu
 aktuální složky a při navigaci se změní; kořen zobrazí svou cestu. Celá cesta je
 v tooltipu. Ctrl+T přidá kartu, Ctrl+W zavře aktuální, Ctrl+Shift+Tab volí předchozí,
-Ctrl+Shift+1…9 konkrétní kartu. Ctrl+Tab fokusuje příkazový řádek. Poslední karta zůstává otevřená; limit je32 na panel. V této etapě
-jsou karty pouze pro aktuální běh, s vlastní historií, řazením a kurzorem.
+Ctrl+Shift+1…9 konkrétní kartu. Ctrl+Tab fokusuje příkazový řádek. Poslední karta
+zůstává otevřená; limit je 32 na panel. Karty a aktivní pozice se ukládají mezi běhy.
+Levý dvojklik do volného místa za kartami přidá kartu se stejným aktuálním umístěním
+daného panelu. Dvojklik na existující kartu, pravé a prostřední tlačítko další kartu
+nevytvářejí; prostřední tlačítko zachovává zavření karty.
+Každá karta má vlastní historii, řazení a kurzor pro aktuální běh.
 Neaktivní karty nedrží velké výpisy ani skeny; přepnutí načte čerstvý obsah.
 Opožděné backendové výsledky nesmějí přepsat jinou kartu.
 
@@ -1353,6 +1357,30 @@ rozpočty 64 MiB pro archiv/člena a 128 MiB pro dekódovaný součet. Neprovád
 extrakci, vnořené mounty, dešifrování ani spuštění archivního člena externí aplikací.
 Tyto rozpočty neomezují délku nativních cest. Přesné smlouvy a další limity uvádí
 [filesystem API](../../developer/FILESYSTEM_API.md).
+
+### Rozpoznávání a volitelné asociace archivů
+
+Hostitel sdílí jednu tabulku 57 přípon (51 ZIP kontejnerů a šest přípon ostatních
+dekodérů). Seznam a zdroje jsou v [archivních asociacích](../../ARCHIVE_FORMATS.md).
+Options → Archives nabízí každou příponu se zaškrtávátkem a ukládá jednotlivé
+uživatelské odchylky od výchozího stavu. ZIP a vývojářské balíčky WHL, EGG, WAR,
+EAR, AAR, AAB, NUPKG a SNUPKG jsou zapnuté. Dokumenty Office/OpenDocument, knihy,
+komiksy, mapy, obrazové projekty, spustitelné JAR/PYZ/PYZW a APK/VSIX/XPI zůstávají
+v seznamu vypnuté, aby Enter běžně otevřel systémovou aplikaci. Uživatel je může
+jednotlivě zapnout. Nejde o změnu asociací operačního systému.
+
+Backend při výpisu připraví kandidátní typ bez čtení obsahu. Značka vstupní šipky
+u systémové ikony se vykreslí ve všech třech režimech pouze pro nativní soubor se
+zapnutou asociací a skutečně dostupným providerem daného formátu. Přítomnost
+provideru jiného formátu nestačí. Pozdní dokončení discovery či změna nastavení
+aktualizuje značky; metadata komprese filesystemu a systémové link overlay zůstávají
+samostatné. Ikona znamená dostupný handler, nikoli předem ověřený obsah souboru.
+Plugin validuje obsah až při otevření na backendu. Vnořené archivy ani adresáře
+s archivní příponou nedostávají značku nepodporovaného vstupu.
+
+Současný provider umí F3 čtení, ale F5 extrakce ani zápis/přesun v archivech zatím
+nejsou implementované. Jejich další etapa musí použít stávající frontu, bezpečnou
+přípravu cíle, konfliktní dialog, průběh a kontrolní součty před zveřejněním cíle.
 
 Obrazové a video náhledy vznikají v omezených pomocných procesech, na Windows
 v AppContaineru s Job Objectem a na Linuxu se seccomp a limity prostředků.

@@ -603,6 +603,10 @@ external editing, extraction, passwords, nested archives and RAR are unavailable
 The initial bounded mount permits 64 MiB source/per-member data and 128 MiB total
 decoded data; large or high-expansion archives fail explicitly. Full limits and
 supported codecs are in the [archive API reference](docs/developer/FILESYSTEM_API.md).
+[Archive associations](docs/ARCHIVE_FORMATS.md) include Python wheels and other ZIP
+packages. Options → Archives keeps document/media/application containers unchecked
+by default; each extension can be enabled explicitly. The entrance-arrow icon marks
+enabled native archives only when their provider is installed.
 Native-provider migration, network providers and reusable terminal sessions remain
 planned. Each OS will have its own native provider. Copy/move conflicts require a source/destination metadata
 comparison and explicit overwrite policy before publication.

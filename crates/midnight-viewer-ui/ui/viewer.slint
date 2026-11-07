@@ -58,6 +58,7 @@ export component ViewerWindow inherits Window {
     in-out property <bool> case-sensitive;
     out property <length> content-width: canvas.width;
     out property <length> content-height: canvas.height;
+    out property <bool> content-focused: content-focus.has-focus;
     callback input-key(KeyEvent, bool) -> bool;
     callback scroll(float, float);
     callback seek(float);

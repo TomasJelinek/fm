@@ -16,6 +16,7 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         if clipboard.intent == FileClipboardIntent::Move {
+            self.retired.push(Box::new(clipboard));
             self.desktop.report(
                 "Move unavailable",
                 "Cut items remain at their source. Use Copy to duplicate them safely.".into(),
@@ -38,20 +39,14 @@ impl Presenter {
         );
     }
 
-    pub(super) fn submit_copy(
-        &mut self,
-        destination: PathBuf,
-        requested_roots: u64,
-        command: impl FnOnce(OperationId) -> Command,
-        send: &dyn Fn(Command) -> bool,
-    ) -> bool {
+    fn next_copy_id(&mut self, send: &dyn Fn(Command) -> bool) -> Option<OperationId> {
         if self.operations.closing {
-            return false;
+            return None;
         }
         if !self.flush_admitted_drops_before_copy(send) {
             self.desktop
                 .report("Copy queue busy", "Try copying again.".into());
-            return false;
+            return None;
         }
         if self
             .copies
@@ -65,18 +60,30 @@ impl Presenter {
                 "Copy queue full",
                 "Wait for a copy to finish or cancel a queued job.".into(),
             );
-            return false;
+            return None;
         }
-        let Some(next) = self.operations.next_id.checked_add(1) else {
+        self.operations.next_id.checked_add(1).map(OperationId)
+    }
+
+    pub(super) fn submit_copy(
+        &mut self,
+        destination: PathBuf,
+        requested_roots: u64,
+        command: impl FnOnce(OperationId) -> Command + Send + 'static,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Some(id) = self.next_copy_id(send) else {
+            // The builder owns captured clipboard paths or selection snapshots.
+            // Destroy potentially large allocations on the reclamation worker.
+            self.retired.push(Box::new(command));
             return false;
         };
-        let id = OperationId(next);
         if !send(command(id)) {
             self.desktop
                 .report("Copy queue busy", "Try copying again.".into());
             return false;
         }
-        self.operations.next_id = next;
+        self.operations.next_id = id.0;
         self.copies.progress.push(Arc::new(CopyProgress {
             id,
             state: CopyOperationState::Queued,
@@ -330,6 +337,36 @@ mod tests {
         assert!(!p.has_live_operations());
         p.start_copy(clipboard(), std::env::temp_dir(), &|_| false);
         assert!(!p.has_live_operations());
+    }
+    #[test]
+    fn rejected_copy_payload_is_reclaimed_by_the_backend_not_the_ui_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Payload(Arc<AtomicBool>);
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let payload = Payload(dropped.clone());
+        let mut p = Presenter::new("left".into(), "right".into());
+        p.operations.closing = true;
+        assert!(!p.submit_copy(
+            std::env::temp_dir(),
+            1,
+            move |_| {
+                drop(payload);
+                panic!("a rejected copy must not build a command")
+            },
+            &|_| panic!("no admission")
+        ));
+        assert!(
+            !dropped.load(Ordering::Acquire),
+            "payload destruction must leave the UI thread"
+        );
+        let retired = p.take_retired();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+        assert!(dropped.load(Ordering::Acquire));
     }
     #[test]
     fn conflict_decisions_require_the_exact_job_version_and_cannot_replay() {

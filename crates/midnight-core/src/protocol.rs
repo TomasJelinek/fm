@@ -239,7 +239,7 @@ pub enum Event {
         navigation: NavigationId,
         result: Result<crate::ArchiveListing, FsError>,
     },
-    ArchiveAvailability(bool),
+    ArchiveAvailability(Vec<crate::ArchiveFormat>),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
     DirectoriesCompared {
         id: crate::CompareId,

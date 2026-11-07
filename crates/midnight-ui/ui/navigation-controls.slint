@@ -136,6 +136,7 @@ export component TabStrip inherits Rectangle {
     private property <length> tab-room: max(0px, root.full-room - (root.overflowing ? 2 * (root.button-width + 2px) : 0px));
     private property <length> tab-width: clamp((root.tab-room - max(0, root.model.length - 1) * 2px)
         / max(1, root.model.length), root.minimum-tab-width, Theme.tab-width);
+    private property <length> tabs-width: max(0px, root.model.length * (root.tab-width + 2px) - 2px);
     callback selected(string);
     callback close-tab(string);
     callback new-tab();
@@ -164,9 +165,11 @@ export component TabStrip inherits Rectangle {
     HorizontalLayout {
         spacing: 2px;
         tabs-scroll := ScrollView {
+            min-height: 0px;
+            content-height: Theme.control-height;
             vertical-scrollbar-policy: always-off;
             horizontal-scrollbar-policy: always-off;
-            content-width: max(0px, root.model.length * (root.tab-width + 2px) - 2px);
+            content-width: max(root.tabs-width, self.visible-width);
             changed visible-width => { root.reveal-active(); }
             HorizontalLayout {
                 spacing: 2px; alignment: start;
@@ -237,6 +240,22 @@ export component TabStrip inherits Rectangle {
                         middle-clicked => { root.close-tab(tab.identity); }
                     }
                 }
+            }
+            // Only the unused tail accepts this gesture: tab bodies, close and + retain theirs.
+            TouchArea {
+                x: root.tabs-width + 2px;
+                width: max(0px, tabs-scroll.visible-width - self.x);
+                height: Theme.control-height;
+                enabled: root.model.length < 32 && !root.overflowing;
+                private property <bool> left-pressed;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        self.left-pressed = event.button == PointerEventButton.left;
+                    } else if event.kind == PointerEventKind.cancel {
+                        self.left-pressed = false;
+                    }
+                }
+                double-clicked => { if self.left-pressed { root.new-tab(); } }
             }
         }
         if root.overflowing : NavigationButton {

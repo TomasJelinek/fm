@@ -48,7 +48,7 @@ pub(crate) fn install(
             accent: rgba(theme.get_accent()),
         };
         let key_state = presenter.clone();
-        let keys = Rc::new(move |event: &_, search| key_state.borrow().viewer_key(event, search));
+        let keys = Rc::new(move |chord: &_, search| key_state.borrow().viewer_key(chord, search));
         let copy_state = presenter.clone();
         let sender = commands.clone();
         let copy = Rc::new(move |text| {

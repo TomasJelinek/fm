@@ -39,3 +39,74 @@ fn long_unicode_cache_paths_are_not_truncated() {
     store.write(&name, b"long path").unwrap();
     assert_eq!(store.read(&name, 32).unwrap().unwrap(), b"long path");
 }
+
+#[test]
+fn independent_store_transactions_wait_for_the_current_owner() {
+    let root = directory();
+    let path = root.path().join("cache");
+    let first = PrivateStore::open(&path).unwrap();
+    let second = PrivateStore::open(&path).unwrap();
+    let transaction = first.transaction().unwrap();
+    let (started, ready) = std::sync::mpsc::channel();
+    let (done, completed) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let _transaction = second.transaction().unwrap();
+        done.send(()).unwrap();
+    });
+    ready.recv().unwrap();
+    assert!(
+        completed
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err()
+    );
+    drop(transaction);
+    completed
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
+fn store_transaction_excludes_another_process_and_releases_on_drop() {
+    if std::env::var_os("MIDNIGHT_STORE_LOCK_TEST").is_some() {
+        store_transaction_child();
+        return;
+    }
+    let root = directory();
+    let path = root.path().join("cache");
+    let store = PrivateStore::open(&path).unwrap();
+    let transaction = store.transaction().unwrap();
+    let child = |busy: bool| {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "store_transaction_excludes_another_process_and_releases_on_drop",
+            ])
+            .env("MIDNIGHT_STORE_LOCK_TEST", &path)
+            .env("MIDNIGHT_STORE_LOCK_BUSY", if busy { "1" } else { "0" })
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    };
+    child(true);
+    drop(transaction);
+    child(false);
+}
+
+fn store_transaction_child() {
+    let path = std::env::var_os("MIDNIGHT_STORE_LOCK_TEST").unwrap();
+    let store = PrivateStore::open(std::path::Path::new(&path)).unwrap();
+    if std::env::var("MIDNIGHT_STORE_LOCK_BUSY").unwrap() == "1" {
+        assert_eq!(
+            store.transaction().err().unwrap().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    } else {
+        assert!(store.transaction().is_ok());
+    }
+}

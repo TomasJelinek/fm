@@ -1,0 +1,14 @@
+import { Theme } from "theme.slint";
+
+// A small entrance arrow, separate from filesystem compression and link overlays.
+export component ArchiveBadge inherits Rectangle {
+    background: Theme.pane-background;
+    border-radius: 2px;
+    accessible-role: none;
+    Path {
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        viewbox-width: 12; viewbox-height: 12;
+        commands: "M 7 1 L 11 1 L 11 11 L 7 11 M 1 6 L 8 6 M 5 3 L 8 6 L 5 9";
+        stroke: Theme.text; stroke-width: 1.5px;
+    }
+}

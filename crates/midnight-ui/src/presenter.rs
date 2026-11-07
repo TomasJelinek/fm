@@ -133,7 +133,7 @@ pub(crate) struct Pane {
 
 /// In-memory state for two independent panes and their current navigation generations.
 pub struct Presenter {
-    archives_available: bool,
+    archive_formats: Vec<ArchiveFormat>,
     pub(crate) panes: [Pane; 2],
     pub(crate) volumes: Vec<Volume>,
     pub(crate) volumes_revision: i32,
@@ -167,7 +167,7 @@ impl Presenter {
     /// Create initial pane locations without sending commands or performing filesystem work.
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
         Self {
-            archives_available: false,
+            archive_formats: Vec::new(),
             tabs: tabs::TabsState::new(),
             choices: choices::ChoicesState::default(),
             selection_actions: [None, None],
@@ -891,20 +891,24 @@ impl Presenter {
         let Some(row) = row.checked_sub(self.panes[pane.index()].parent_offset()) else {
             return false;
         };
-        let entry = self.panes[pane.index()]
-            .display_entry(row)
-            .map(|entry| (entry.kind, entry.path.clone()));
+        let entry = self.panes[pane.index()].display_entry(row).map(|entry| {
+            (
+                entry.kind,
+                entry.path.clone(),
+                self.can_browse_archive(entry),
+            )
+        });
         match entry {
-            Some((EntryKind::Directory | EntryKind::DirectoryLink, path)) => {
+            Some((EntryKind::Directory | EntryKind::DirectoryLink, path, _)) => {
                 self.navigate(pane, path, None, send)
             }
-            Some((EntryKind::File | EntryKind::Symlink, path)) => {
-                if self.archives_available && archives::archive_extension(&path) {
+            Some((EntryKind::File | EntryKind::Symlink, path, archive)) => {
+                if archive {
                     return self.archive_navigate(pane, ArchiveAction::Open { path }, send);
                 }
                 self.open_native_entry(pane, path, send)
             }
-            Some((EntryKind::Other, _)) => {
+            Some((EntryKind::Other, _, _)) => {
                 self.desktop.report(
                     "Cannot open this entry",
                     "Only folders, regular files and links to them can be opened.".into(),

@@ -42,7 +42,7 @@ impl Controller {
             .ok()
             .and_then(Result::ok)
             .unwrap_or_default();
-            let available = !discovered.packages.is_empty();
+            let available = discovered.available_formats();
             let _ = catalog.set(discovered);
             ready.notify_waiters();
             outbox.send(Event::ArchiveAvailability(available)).await;

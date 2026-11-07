@@ -44,5 +44,5 @@ the worker expands paths and uses the same verified copy engine as paste/drop.
 
 - [x] Update design, feature status and hotkeys without claiming F6/replacement.
 - [x] Run relevant tests, formatting, Clippy, source-size checks and independent review.
-- [ ] Build release, verify launch, commit and push this completed increment.
+- [x] Build release, verify launch, commit and push this completed increment (`1440275`).
 - [ ] Continue the accepted stage with native replacement/merge and verified Move.

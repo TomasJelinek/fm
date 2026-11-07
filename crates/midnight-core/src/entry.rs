@@ -43,6 +43,8 @@ pub struct Entry {
     /// Virtual identities never use `path`; it is empty for these entries.
     /// Native services must require `native_path()` rather than interpreting display names.
     pub virtual_node: Option<crate::ArchiveNode>,
+    /// Backend filename hint; usable only while a provider advertises this format.
+    pub archive_association: Option<&'static crate::ArchiveAssociation>,
     pub kind: EntryKind,
     pub metadata: EntryMetadata,
     pub display_name: String,
@@ -108,11 +110,15 @@ impl Entry {
     pub fn new(id: EntryId, path: PathBuf, kind: EntryKind) -> Self {
         let name = path.file_name().unwrap_or(path.as_os_str()).to_os_string();
         let display_name = name.to_string_lossy().into_owned();
+        let archive_association = (kind == EntryKind::File)
+            .then(|| crate::archive_association(&path))
+            .flatten();
         Self {
             id,
             name,
             path,
             virtual_node: None,
+            archive_association,
             kind,
             metadata: EntryMetadata::default(),
             display_name,

@@ -39,6 +39,7 @@ mod native;
 #[cfg(not(any(windows, target_os = "linux")))]
 #[path = "native_unsupported.rs"]
 mod native;
+mod package_trust;
 mod replies;
 #[cfg(windows)]
 #[path = "trust_windows.rs"]

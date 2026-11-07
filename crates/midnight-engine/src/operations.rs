@@ -1,4 +1,5 @@
 //! Backend-owned confirmation and FIFO mutation jobs, independent of pane navigation.
+use crate::copy_fence::{CopyFence, Predecessors};
 use crate::{Outbox, Snapshots};
 use midnight_core::*;
 use std::{
@@ -19,7 +20,24 @@ mod metadata;
 #[path = "operation_worker.rs"]
 mod worker;
 type Status = Arc<Mutex<OperationProgress>>;
-type Registry = Arc<Mutex<HashMap<OperationId, (Cancellation, Status)>>>;
+type Registry = Arc<Mutex<HashMap<OperationId, Registered>>>;
+struct Registered {
+    cancel: Cancellation,
+    status: Status,
+    confirmation: Option<Arc<Predecessors>>,
+}
+struct ConfirmationDelivery {
+    registry: Registry,
+    id: OperationId,
+    queued: bool,
+}
+impl Drop for ConfirmationDelivery {
+    fn drop(&mut self) {
+        if !self.queued {
+            release_confirmation(&self.registry, self.id);
+        }
+    }
+}
 type Running = (
     Status,
     Result<OperationProgress, tokio::task::JoinError>,
@@ -29,9 +47,9 @@ const MAX_JOBS: usize = 32;
 
 enum Message {
     Prepare(PrepareOperation, Cancellation, Status),
-    Confirm(OperationId, Option<String>),
+    Confirm(OperationId, Option<String>, Arc<Predecessors>),
     PreviewMetadata(OperationId, u64, MetadataPatch),
-    ConfirmMetadata(OperationId, u64, MetadataConflictPolicy),
+    ConfirmMetadata(OperationId, u64, MetadataConflictPolicy, Arc<Predecessors>),
     ResolveMetadataConflict(OperationId, u64, MetadataConflictPolicy),
     Wake,
 }
@@ -43,6 +61,7 @@ pub(crate) struct Controller {
     cancel: Cancellation,
     snapshots: Snapshots,
     outbox: Outbox,
+    copies: CopyFence,
 }
 
 impl Controller {
@@ -51,6 +70,7 @@ impl Controller {
         snapshots: Snapshots,
         outbox: Outbox,
         mutation_gate: Arc<Semaphore>,
+        copies: CopyFence,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(64);
@@ -71,6 +91,7 @@ impl Controller {
             cancel,
             snapshots,
             outbox,
+            copies,
         }
     }
 
@@ -115,7 +136,14 @@ impl Controller {
         self.registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(request.id, (cancel.clone(), status.clone()));
+            .insert(
+                request.id,
+                Registered {
+                    cancel: cancel.clone(),
+                    status: status.clone(),
+                    confirmation: None,
+                },
+            );
         publish(&self.outbox, &progress).await;
         if self
             .sender
@@ -133,7 +161,41 @@ impl Controller {
     }
 
     pub(crate) async fn confirm(&self, id: OperationId, name: Option<String>) {
-        let _ = self.sender.send(Message::Confirm(id, name)).await;
+        if let Some(predecessors) = self.capture_confirmation(id) {
+            self.send_confirmation(id, Message::Confirm(id, name, predecessors))
+                .await;
+        }
+    }
+
+    async fn send_confirmation(&self, id: OperationId, message: Message) {
+        // A cancelled send must allow retry without retaining a phantom confirmation.
+        let mut delivery = ConfirmationDelivery {
+            registry: self.registry.clone(),
+            id,
+            queued: false,
+        };
+        delivery.queued = self.sender.send(message).await.is_ok();
+    }
+
+    fn capture_confirmation(&self, id: OperationId) -> Option<Arc<Predecessors>> {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let job = registry.get_mut(&id)?;
+        let status = job.status.lock().unwrap_or_else(|e| e.into_inner());
+        if job.confirmation.is_some() || status.state != OperationState::AwaitingConfirmation {
+            return None;
+        }
+        let predecessors = Arc::new(
+            if matches!(
+                status.kind,
+                MutationKind::CreateDirectory | MutationKind::CreateFile
+            ) {
+                Predecessors::default()
+            } else {
+                self.copies.snapshot()
+            },
+        );
+        job.confirmation = Some(predecessors.clone());
+        Some(predecessors)
     }
     pub(crate) async fn preview_metadata(
         &self,
@@ -152,10 +214,13 @@ impl Controller {
         revision: u64,
         conflicts: MetadataConflictPolicy,
     ) {
-        let _ = self
-            .sender
-            .send(Message::ConfirmMetadata(id, revision, conflicts))
+        if let Some(predecessors) = self.capture_confirmation(id) {
+            self.send_confirmation(
+                id,
+                Message::ConfirmMetadata(id, revision, conflicts, predecessors),
+            )
             .await;
+        }
     }
     pub(crate) async fn resolve_metadata_conflict(
         &self,
@@ -169,13 +234,13 @@ impl Controller {
             .await;
     }
     pub(crate) fn cancel(&self, id: OperationId) {
-        if let Some((cancel, _)) = self
+        if let Some(job) = self
             .registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
         {
-            cancel.cancel();
+            job.cancel.cancel();
         }
         let _ = self.sender.try_send(Message::Wake);
     }
@@ -195,6 +260,15 @@ async fn publish(outbox: &Outbox, progress: &OperationProgress) {
             progress.clone(),
         ))))
         .await;
+}
+fn release_confirmation(registry: &Registry, id: OperationId) {
+    if let Some(job) = registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(&id)
+    {
+        job.confirmation = None;
+    }
 }
 async fn finish(registry: &Registry, outbox: &Outbox, progress: OperationProgress) {
     registry
@@ -240,21 +314,24 @@ async fn run(
                         (original, result)
                     });
                 }
-                Some(Message::Confirm(id, name)) => {
+                Some(Message::Confirm(id, name, predecessors)) => {
                     if let Some(mut job) = prepared.remove(&id) {
                         if let Err(error) = job.confirm(name) {
                             disposing.spawn(job.failure(error));
                         } else {
+                            if !matches!(job.progress().kind, MutationKind::CreateDirectory | MutationKind::CreateFile) {
+                                job.predecessors = predecessors;
+                            }
                             job.set_state(OperationState::Queued);
                             publish(&outbox, &job.progress()).await;
                             queued.push_back(job);
                         }
-                    }
+                    } else { release_confirmation(&registry, id); }
                 }
                 Some(Message::PreviewMetadata(id, revision, patch)) => {
                     let awaiting = registry.lock().unwrap_or_else(|e| e.into_inner()).get(&id)
-                        .is_some_and(|(_, status)| {
-                            let progress = status.lock().unwrap_or_else(|e| e.into_inner());
+                        .is_some_and(|job| {
+                            let progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
                             progress.kind == MutationKind::EditMetadata && matches!(progress.state, OperationState::Preparing | OperationState::AwaitingConfirmation)
                         });
                     if awaiting && revision > 0 && drafts.get(&id).is_none_or(|(latest, _)| revision > *latest) {
@@ -265,7 +342,7 @@ async fn run(
                         } else { drafts.insert(id, (revision, patch)); }
                     }
                 }
-                Some(Message::ConfirmMetadata(id, revision, conflicts)) => {
+                Some(Message::ConfirmMetadata(id, revision, conflicts, predecessors)) => {
                     let valid = !drafts.contains_key(&id) && prepared.get(&id).is_some_and(|job|
                         job.metadata.as_ref().is_some_and(|edit| edit.preview.revision == revision && !edit.preview.patch.is_empty()
                             && edit.preview.unsupported == 0));
@@ -275,10 +352,11 @@ async fn run(
                             continue;
                         }
                         job.metadata.as_mut().expect("validated metadata job").conflicts = conflicts;
+                        job.predecessors = predecessors;
                         job.set_state(OperationState::Queued);
                         publish(&outbox, &job.progress()).await;
                         queued.push_back(job);
-                    }
+                    } else { release_confirmation(&registry, id); }
                 }
                 Some(Message::ResolveMetadataConflict(id, token, choice)) => {
                     if let Some(state) = conflict_states.get(&id) { state.resolve(token, choice); }
@@ -356,9 +434,9 @@ async fn run(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .filter_map(|(cancel, status)| {
-                let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
-                if cancel.is_cancelled() && progress.state == OperationState::Running {
+            .filter_map(|job| {
+                let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
+                if job.cancel.is_cancelled() && progress.state == OperationState::Running {
                     progress.state = OperationState::CancelRequested;
                     Some(progress.clone())
                 } else {
@@ -390,6 +468,13 @@ async fn run(
             let output = outbox.clone();
             let gate = mutation_gate.clone();
             running.spawn(async move {
+                if let Err(error) = job
+                    .predecessors
+                    .wait(&job.cancel, &job.progress().source_directory)
+                    .await
+                {
+                    return (status, Ok(job.failure(error).await), None);
+                }
                 let acquire = gate.acquire_owned();
                 tokio::pin!(acquire);
                 let permit = loop {

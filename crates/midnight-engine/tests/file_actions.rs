@@ -65,7 +65,10 @@ async fn receive(events: &mut mpsc::Receiver<Event>) -> Event {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event = events.recv().await.unwrap();
-            if !matches!(event, Event::IconLoaded { .. }) {
+            if !matches!(
+                event,
+                Event::IconLoaded { .. } | Event::ArchiveAvailability(_)
+            ) {
                 return event;
             }
         }

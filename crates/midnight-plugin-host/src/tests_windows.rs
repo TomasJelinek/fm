@@ -1,6 +1,10 @@
 //! Windows-specific native identity coverage.
 use crate::CapturedFile;
 
+pub(super) fn make_shared(path: &std::path::Path) {
+    crate::trust::fixture_acl(path, "D:P(A;;FA;;;WD)").unwrap();
+}
+
 #[test]
 fn replacement_with_same_size_and_timestamp_is_still_a_different_file() {
     let root = tempfile::tempdir().unwrap();

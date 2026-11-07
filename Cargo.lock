@@ -2762,6 +2762,7 @@ dependencies = [
  "i-slint-core",
  "midnight-core",
  "midnight-ui-bindings",
+ "midnight-ui-input",
  "serde_json",
  "slint",
  "unicode-segmentation",
@@ -2779,6 +2780,15 @@ dependencies = [
  "slint-build",
  "spin_on",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "midnight-ui-input"
+version = "0.1.0"
+dependencies = [
+ "i-slint-core",
+ "midnight-core",
+ "slint",
 ]
 
 [[package]]
@@ -2808,6 +2818,7 @@ version = "0.1.0"
 dependencies = [
  "i-slint-core",
  "midnight-core",
+ "midnight-ui-input",
  "midnight-viewer-engine",
  "png",
  "slint",

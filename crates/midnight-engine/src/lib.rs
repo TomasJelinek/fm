@@ -3,6 +3,7 @@
 mod archives;
 mod clipboard;
 mod comparison;
+mod copy_fence;
 mod copy_operations;
 mod desktop;
 mod drag_drop;
@@ -288,24 +289,25 @@ impl Engine {
             comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
         let mutation_gate = Arc::new(Semaphore::new(1));
+        let copies = copy_operations::Controller::new(
+            self.transfers,
+            self.outbox.clone(),
+            mutation_gate.clone(),
+            Arc::new(Semaphore::new(1)),
+            &mut tasks,
+        );
         let operations = operations::Controller::new(
             self.mutations,
             snapshots.clone(),
             self.outbox.clone(),
-            mutation_gate.clone(),
-            &mut tasks,
-        );
-        let copies = copy_operations::Controller::new(
-            self.transfers,
-            self.outbox.clone(),
             mutation_gate,
-            Arc::new(Semaphore::new(1)),
+            copies.admission().fence(),
             &mut tasks,
         );
         let mut drag_drop = drag_drop::Controller::new(
             self.drag_drop,
             snapshots.clone(),
-            copies.capacity(),
+            copies.admission(),
             self.outbox.clone(),
             &mut tasks,
         );

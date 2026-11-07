@@ -11,16 +11,13 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
-    task::JoinSet,
-};
+use tokio::{sync::mpsc, task::JoinSet};
 
 type Pending = Arc<Mutex<HashMap<DropToken, Accepted>>>;
 type Hover = Arc<Mutex<Option<(u64, Option<PaneId>)>>>;
 struct Accepted {
     request: FileDropRequest,
-    permit: OwnedSemaphorePermit,
+    permit: copy_operations::Reservation,
 }
 
 struct Sink {
@@ -28,7 +25,7 @@ struct Sink {
     targets: SharedDropTargets,
     snapshots: Snapshots,
     pending: Pending,
-    capacity: Arc<Semaphore>,
+    capacity: copy_operations::Admission,
     events: mpsc::Sender<DragDropEvent>,
     next: Arc<AtomicU64>,
     hover: Hover,
@@ -75,12 +72,7 @@ impl FileDropSink for Sink {
                 ));
             }
         }
-        let permit = self.capacity.clone().try_acquire_owned().map_err(|_| {
-            error(
-                io::ErrorKind::WouldBlock,
-                "The copy queue is full or closing (32 jobs).",
-            )
-        })?;
+        let permit = self.capacity.reserve()?;
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         // Shutdown clears this same registry. Recheck under its lock so a callback that
         // waited for admission cannot insert a new acknowledged request after cleanup.
@@ -250,7 +242,7 @@ pub(crate) struct Controller {
     state: SharedState,
     snapshots: Snapshots,
     pending: Pending,
-    capacity: Arc<Semaphore>,
+    capacity: copy_operations::Admission,
     next: Arc<AtomicU64>,
     hover: Hover,
     cancel: Cancellation,
@@ -264,7 +256,7 @@ impl Controller {
     pub(crate) fn new(
         service: Option<Arc<dyn FileDragDropService>>,
         snapshots: Snapshots,
-        capacity: Arc<Semaphore>,
+        capacity: copy_operations::Admission,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {

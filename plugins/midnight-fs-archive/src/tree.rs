@@ -35,8 +35,11 @@ impl Archive {
         let safe = safe_name(raw);
         let mut parent = 1;
         let mut parts = raw.split(|b| *b == b'/').peekable();
+        let mut labels = display.trim_end_matches('/').split('/');
+        let matching_components = parts.clone().count() == labels.clone().count();
         if safe {
             while let Some(part) = parts.next() {
+                let label = matching_components.then(|| labels.next()).flatten();
                 if parts.peek().is_none() {
                     break;
                 }
@@ -47,7 +50,9 @@ impl Archive {
                     parent = self.push(
                         parent,
                         part,
-                        &String::from_utf8_lossy(part),
+                        &label
+                            .map(std::borrow::Cow::Borrowed)
+                            .unwrap_or_else(|| String::from_utf8_lossy(part)),
                         Kind::Directory,
                         None,
                         false,

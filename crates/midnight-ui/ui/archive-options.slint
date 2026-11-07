@@ -1,0 +1,48 @@
+import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+export struct ArchiveAssociationRow {
+    extension: string,
+    label: string,
+    enabled: bool,
+}
+
+export global ArchiveOptionsView {
+    in property <[ArchiveAssociationRow]> rows;
+    in property <string> filter;
+    callback search(string);
+    callback toggle(string, bool);
+}
+
+export component ArchiveOptions inherits VerticalLayout {
+    spacing: 10px; alignment: start;
+    Text {
+        text: "Open these file types as folders";
+        color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    HintedLineEdit {
+        text: ArchiveOptionsView.filter; accessible-label: "Search archive associations";
+        placeholder-text: "Extension or description";
+        hint: "Filter archive file types by extension or description. Matching ignores letter case.";
+        edited => { ArchiveOptionsView.search(self.text); }
+    }
+    for association in ArchiveOptionsView.rows : HorizontalLayout {
+        spacing: 10px; cross-axis-alignment: center;
+        HintedCheckBox {
+            text: "." + association.extension;
+            accessible-label: "." + association.extension + " · " + association.label;
+            checked: association.enabled; min-height: Theme.control-height;
+            width: max(90px, Theme.font-size * 6);
+            font-size: Theme.font-size;
+            hint: "Open ." + association.extension + " files as folders with an installed archive provider. Changes apply immediately. Unchecked files open in their usual application.";
+            toggled => { ArchiveOptionsView.toggle(association.extension, self.checked); }
+        }
+        Text {
+            text: association.label; color: Theme.text; font-size: Theme.font-size;
+            wrap: word-wrap; horizontal-stretch: 1;
+        }
+    }
+    if ArchiveOptionsView.rows.length == 0 : Text {
+        text: "No matching file types"; color: Theme.secondary-text; font-size: Theme.font-size;
+    }
+}
