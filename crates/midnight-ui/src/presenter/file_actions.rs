@@ -39,6 +39,16 @@ impl Presenter {
     pub(crate) fn copy_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
         self.request_selection_action(pane, selection_actions::SelectionIntent::Copy, send);
     }
+    pub(crate) fn cut_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if !self.panes[pane.index()].native_capabilities() {
+            self.desktop.report(
+                "Cut unavailable",
+                "Archive and virtual members cannot be cut. Use Copy to extract them.".into(),
+            );
+            return;
+        }
+        self.request_selection_action(pane, selection_actions::SelectionIntent::Cut, send);
+    }
 
     pub(crate) fn paste_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
         if !self.native_action_allowed(pane) {
@@ -290,11 +300,13 @@ impl Presenter {
                 }
                 EntryKind::Other => {}
             },
-            1 | 5 => {
+            1 | 5 | 6 => {
                 let request = self.desktop.request();
                 let files = menu.files.clone();
                 let command = if action == 1 {
                     Command::CopyFiles { request, files }
+                } else if action == 6 {
+                    Command::CutFiles { request, files }
                 } else {
                     Command::ShowSelectionProperties {
                         request,
@@ -336,10 +348,6 @@ impl Presenter {
                     send,
                 );
             }
-            6 => self.desktop.report(
-                "Cut unavailable",
-                "Cut is not supported yet. Copy leaves the source files in place.".into(),
-            ),
             _ => {}
         }
     }

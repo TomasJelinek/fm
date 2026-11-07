@@ -218,6 +218,7 @@ lyon_geom,1.0.20,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.
 lyon_path,1.0.19,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 lzma-rust2,0.21.0,Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,midnight-fs-archive
 matchers,0.2.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
+md-5,0.10.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-engine
 memchr,2.8.3,Unlicense OR MIT,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; markdown; pdf-viewer; source; thumbnail-video,Linux; Windows,
 memmap2,0.9.12,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 memoffset,0.9.1,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
@@ -318,7 +319,8 @@ serde_json,1.0.154,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crate
 serde_repr,0.1.21,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 serde_spanned,1.1.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,
 sevenz-rust2,0.23.0,Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,midnight-fs-archive
-sha2,0.10.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,midnight-api-package; midnight-platform-common; midnight-plugin-host
+sha1,0.10.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-engine
+sha2,0.10.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,midnight-api-package; midnight-engine; midnight-platform-common; midnight-plugin-host
 sha2,0.11.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,
 sharded-slab,0.1.7,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 shlex,2.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; thumbnail-video,Linux; Windows,

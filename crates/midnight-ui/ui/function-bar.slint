@@ -19,14 +19,14 @@ export component FunctionBar inherits Rectangle {
     callback action(string, int);
     callback options();
     callback jobs();
-    private property <[string]> normal-actions: ["app.help", "files.rename", "files.view", "files.edit", "files.copy-to", "", "files.create-directory", "files.trash", "app.user-menu", "app.main-menu", "network.connect", "network.disconnect"];
+    private property <[string]> normal-actions: ["app.help", "files.rename", "files.view", "files.edit", "files.copy-to", "files.move-to", "files.create-directory", "files.trash", "app.user-menu", "app.main-menu", "network.connect", "network.disconnect"];
     private property <[string]> pressed-actions;
     private property <int> pressed-pane;
     private property <bool> pointer-snapshot;
     pure function enabled-action(action: string) -> bool {
         return action != "" && (!action.starts-with("network.") || root.network-available)
             && ((action == "files.rename" || action == "files.view" || action == "files.view-basic" || action == "files.edit") ? root.can-target-cursor : true)
-            && ((action == "files.copy-to" || action == "files.copy" || action == "files.trash" || action == "files.delete" || action == "files.attributes" || action == "files.case") ? root.can-target-selection : true)
+            && ((action == "files.copy-to" || action == "files.move-to" || action == "files.copy" || action == "files.cut" || action == "files.trash" || action == "files.delete" || action == "files.attributes" || action == "files.case") ? root.can-target-selection : true)
             && (root.native-filesystem || !action.starts-with("files.") || action == "files.view" || action == "files.view-basic" || action == "files.copy-to");
     }
     pure function capture-action(index: int) -> string {
@@ -92,7 +92,7 @@ export component FunctionBar inherits Rectangle {
                     : ShortcutHints.key(self.normal-action) == "" ? label : ShortcutHints.key(self.normal-action);
                 enabled: root.enabled-action(self.action-id);
                 hint: root.control-layer ? (self.control.action == "" ? "Ctrl+F" + (index + 1) + " is unassigned. Configure it in Options → Keyboard." : self.control.hint)
-                    : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 4 ? " · copy selection with checksum verification in the background" : index == 6 ? " · create a folder or nested relative path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : index >= 10 ? " · system network drive dialog" : " · not implemented yet");
+                    : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 4 ? " · copy selection with checksum verification in the background" : index == 5 ? " · move up to 64 files after verification; originals remain in recovery" : index == 6 ? " · create a folder or nested relative path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : " · system network drive dialog");
                 activated(action, pane) => { root.action(action, pane); }
             }
         }

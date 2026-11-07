@@ -177,6 +177,9 @@ pub enum PanelViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
+    pub user_commands: Arc<Vec<crate::UserCommand>>,
+    /// Algorithm choices for new checksum windows; recursion is deliberately not persisted.
+    pub checksum_algorithms: crate::ChecksumAlgorithms,
     pub window_geometry: Option<crate::WindowGeometry>,
     /// Per-extension archive browsing choices; absent keys use the catalog default.
     pub archive_association_overrides: BTreeMap<String, bool>,
@@ -217,6 +220,8 @@ pub const MAX_FONT_FAMILY_BYTES: usize = 512;
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            user_commands: Arc::new(Vec::new()),
+            checksum_algorithms: crate::ChecksumAlgorithms::default(),
             window_geometry: None,
             archive_association_overrides: BTreeMap::new(),
             disabled_viewer_plugins: Vec::new(),
@@ -278,13 +283,15 @@ impl UserPreferences {
     }
 
     pub fn validate(&self) -> Result<(), FsError> {
-        ShortcutMap::new(&self.shortcuts).map_err(|message| {
-            FsError::from_io(
-                "validate preferences",
-                std::path::Path::new(""),
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
-            )
-        })?;
+        ShortcutMap::with_user_commands(&self.shortcuts, &self.user_commands).map_err(
+            |message| {
+                FsError::from_io(
+                    "validate preferences",
+                    std::path::Path::new(""),
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+                )
+            },
+        )?;
         let message = if self.font_family.len() > MAX_FONT_FAMILY_BYTES {
             Some("Font family exceeds 512 UTF-8 bytes.")
         } else if self.font_family.chars().any(char::is_control) {

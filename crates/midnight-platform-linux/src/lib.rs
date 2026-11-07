@@ -14,8 +14,10 @@ mod desktop;
 mod editor;
 mod file_clipboard;
 mod file_drag_drop;
+mod user_commands;
 pub use clipboard::NativeClipboard;
 pub use file_drag_drop::NativeFileDragDrop;
+mod find;
 mod fonts;
 mod icons;
 #[allow(unsafe_code)]

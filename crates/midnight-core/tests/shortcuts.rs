@@ -386,6 +386,35 @@ fn shortcut_resource_limits_and_duplicate_override_actions_are_rejected() {
 }
 
 #[test]
+fn move_and_cut_defaults_preserve_existing_explicit_clipboard_assignments() {
+    let defaults = ShortcutMap::new(&[]).unwrap();
+    assert_eq!(
+        action(&defaults, "F6", ShortcutContext::Files),
+        Some("files.move-to".into())
+    );
+    assert_eq!(
+        action(&defaults, "Ctrl+X", ShortcutContext::Files),
+        Some("files.cut".into())
+    );
+    assert_eq!(action(&defaults, "Ctrl+X", ShortcutContext::Search), None);
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "files.copy".into(),
+        keys: vec!["F6".into(), "Ctrl+X".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&map, "F6", ShortcutContext::Files),
+        Some("files.copy".into())
+    );
+    assert_eq!(
+        action(&map, "Ctrl+X", ShortcutContext::Files),
+        Some("files.copy".into())
+    );
+    assert!(map.bindings("files.move-to").unwrap().is_empty());
+    assert!(map.bindings("files.cut").unwrap().is_empty());
+}
+
+#[test]
 fn native_editing_and_ime_keys_cannot_be_stolen_by_application_shortcuts() {
     for reserved in [
         "Ctrl+Space",

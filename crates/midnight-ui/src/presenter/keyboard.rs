@@ -1,4 +1,4 @@
-//! Immutable bindings and display strings are rebuilt only when overrides change.
+//! Immutable bindings and display strings track overrides and command configuration.
 use super::*;
 use slint::SharedString;
 use std::{cell::RefCell, rc::Rc};
@@ -12,6 +12,7 @@ pub(crate) struct KeyboardBindings {
     pub(crate) revision_text: SharedString,
     pub(crate) help: SharedString,
     overrides: Vec<ShortcutBinding>,
+    commands: std::sync::Weak<Vec<UserCommand>>,
     hints: HashMap<String, (SharedString, SharedString)>,
     editor_text: HashMap<String, String>,
     scopes: HashMap<String, String>,
@@ -20,13 +21,17 @@ pub(crate) struct KeyboardBindings {
 }
 
 impl KeyboardBindings {
-    fn new(overrides: &[ShortcutBinding], revision: u64) -> Result<Self, String> {
-        let map = ShortcutMap::new(overrides)?;
+    fn new(
+        overrides: &[ShortcutBinding],
+        commands: &Arc<Vec<UserCommand>>,
+        revision: u64,
+    ) -> Result<Self, String> {
+        let map = ShortcutMap::with_user_commands(overrides, commands)?;
         let mut hints = HashMap::new();
         let mut editor_text = HashMap::new();
         let mut scopes = HashMap::new();
         let mut help = String::new();
-        for action in shortcut_catalog() {
+        for action in map.definitions() {
             let keys = map.bindings(&action.id).expect("catalog action");
             let primary = keys
                 .iter()
@@ -84,6 +89,7 @@ impl KeyboardBindings {
             help: help.into(),
             revision_text: revision.to_string().into(),
             overrides: overrides.to_vec(),
+            commands: Arc::downgrade(commands),
             hints,
             editor_text,
             scopes,
@@ -155,8 +161,9 @@ pub(crate) struct KeyboardState {
 
 impl Default for KeyboardState {
     fn default() -> Self {
-        let snapshot =
-            Arc::new(KeyboardBindings::new(&[], 0).expect("validated default shortcuts"));
+        let snapshot = Arc::new(
+            KeyboardBindings::new(&[], &Arc::default(), 0).expect("validated default shortcuts"),
+        );
         Self {
             bindings: Rc::new(RefCell::new(snapshot.clone())),
             snapshot,
@@ -170,14 +177,32 @@ impl Default for KeyboardState {
 }
 
 impl KeyboardState {
-    pub(super) fn sync(&mut self, overrides: &[ShortcutBinding]) -> Result<(), String> {
-        if overrides == self.snapshot.overrides {
+    pub(super) fn sync(
+        &mut self,
+        overrides: &[ShortcutBinding],
+        commands: &Arc<Vec<UserCommand>>,
+    ) -> Result<(), String> {
+        let same_commands = self.snapshot.commands.ptr_eq(&Arc::downgrade(commands))
+            || (commands.is_empty()
+                && self.snapshot.map.definitions().len() == shortcut_catalog().len());
+        if overrides == self.snapshot.overrides && same_commands {
             return Ok(());
         }
+        let selected_id = self.snapshot.map.definitions()[self.selected].id.clone();
         let snapshot = Arc::new(KeyboardBindings::new(
             overrides,
+            commands,
             self.snapshot.revision.saturating_add(1),
         )?);
+        self.selected = snapshot
+            .map
+            .definitions()
+            .iter()
+            .position(|action| action.id == selected_id)
+            .unwrap_or_else(|| {
+                self.editor.candidate = None;
+                0
+            });
         self.snapshot = snapshot.clone();
         *self.bindings.borrow_mut() = snapshot;
         self.reset_editor();
@@ -203,7 +228,7 @@ impl Presenter {
         let Ok(index) = usize::try_from(index) else {
             return;
         };
-        if index < shortcut_catalog().len() {
+        if index < self.keyboard.snapshot.map.definitions().len() {
             self.keyboard.selected = index;
             self.keyboard.error.clear();
         }
@@ -215,7 +240,11 @@ impl Presenter {
         keys: Vec<String>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if !shortcut_catalog()
+        if !self
+            .keyboard
+            .snapshot
+            .map
+            .definitions()
             .iter()
             .any(|definition| definition.id == action)
         {
@@ -232,7 +261,11 @@ impl Presenter {
         action: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if !shortcut_catalog()
+        if !self
+            .keyboard
+            .snapshot
+            .map
+            .definitions()
             .iter()
             .any(|definition| definition.id == action)
         {
@@ -256,7 +289,7 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         let previous_revision = self.keyboard.editor_revision;
-        if let Err(error) = self.keyboard.sync(&values.shortcuts) {
+        if let Err(error) = self.keyboard.sync(&values.shortcuts, &values.user_commands) {
             self.keyboard.error = error;
             return false;
         }

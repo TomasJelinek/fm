@@ -16,11 +16,7 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         if clipboard.intent == FileClipboardIntent::Move {
-            self.retired.push(Box::new(clipboard));
-            self.desktop.report(
-                "Move unavailable",
-                "Cut items remain at their source. Use Copy to duplicate them safely.".into(),
-            );
+            self.open_clipboard_move(clipboard, destination);
             return;
         }
         let requested_roots = clipboard.paths.len() as u64;
@@ -45,7 +41,7 @@ impl Presenter {
         }
         if !self.flush_admitted_drops_before_copy(send) {
             self.desktop
-                .report("Copy queue busy", "Try copying again.".into());
+                .report("Copy/Move queue busy", "Try the transfer again.".into());
             return None;
         }
         if self
@@ -57,8 +53,8 @@ impl Presenter {
             >= 32
         {
             self.desktop.report(
-                "Copy queue full",
-                "Wait for a copy to finish or cancel a queued job.".into(),
+                "Copy/Move queue full",
+                "Wait for a transfer to finish or cancel a queued job.".into(),
             );
             return None;
         }
@@ -72,6 +68,22 @@ impl Presenter {
         command: impl FnOnce(OperationId) -> Command + Send + 'static,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        self.submit_transfer(
+            destination,
+            requested_roots,
+            TransferIntent::Copy,
+            command,
+            send,
+        )
+    }
+    pub(super) fn submit_transfer(
+        &mut self,
+        destination: PathBuf,
+        requested_roots: u64,
+        intent: TransferIntent,
+        command: impl FnOnce(OperationId) -> Command + Send + 'static,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
         let Some(id) = self.next_copy_id(send) else {
             // The builder owns captured clipboard paths or selection snapshots.
             // Destroy potentially large allocations on the reclamation worker.
@@ -80,26 +92,16 @@ impl Presenter {
         };
         if !send(command(id)) {
             self.desktop
-                .report("Copy queue busy", "Try copying again.".into());
+                .report("Copy/Move queue busy", "Try the transfer again.".into());
             return false;
         }
         self.operations.next_id = id.0;
-        self.copies.progress.push(Arc::new(CopyProgress {
+        self.copies.progress.push(Arc::new(CopyProgress::queued(
             id,
-            state: CopyOperationState::Queued,
-            phase: CopyOperationPhase::Planning,
+            destination,
             requested_roots,
-            files_completed: 0,
-            directories_created: 0,
-            skipped: 0,
-            failed: 0,
-            copied_bytes: 0,
-            verified_bytes: 0,
-            current_path: None,
-            destination_directory: destination,
-            message: String::new(),
-            errors: vec![],
-        }));
+            intent,
+        )));
         true
     }
 
@@ -130,6 +132,10 @@ impl Presenter {
                     .map_or_else(|| name.into(), |native| native.to_owned()),
             ),
             3 => CopyChoice::Cancel,
+            4 if conflict.can_replace => CopyChoice::ReplaceRecoverable { all: false },
+            5 if conflict.can_replace => CopyChoice::ReplaceRecoverable { all: true },
+            6 if conflict.can_merge => CopyChoice::Merge { all: false },
+            7 if conflict.can_merge => CopyChoice::Merge { all: true },
             _ => return,
         };
         if send(Command::DecideCopy(CopyDecision {
@@ -202,7 +208,13 @@ impl Presenter {
                 if progress.state.is_terminal() {
                     self.copies.conflicts.retain(|c| c.id != progress.id);
                     for pane in [PaneId::Left, PaneId::Right] {
-                        if self.panes[pane.index()].display_path() == progress.destination_directory
+                        if self.panes[pane.index()].native_capabilities()
+                            && (self.panes[pane.index()].display_path()
+                                == progress.destination_directory
+                                || progress
+                                    .source_directories
+                                    .iter()
+                                    .any(|path| path == self.panes[pane.index()].display_path()))
                             && !self
                                 .operations
                                 .refresh
@@ -211,14 +223,18 @@ impl Presenter {
                         {
                             self.operations.refresh.push((
                                 pane,
-                                progress.destination_directory.clone(),
+                                self.panes[pane.index()].display_path().to_owned(),
                                 None,
                             ));
                         }
                     }
                     if !progress.errors.is_empty() {
                         self.desktop.report(
-                            "Copy failed",
+                            if progress.intent == TransferIntent::Copy {
+                                "Copy failed"
+                            } else {
+                                "Move needs attention"
+                            },
                             crate::error_presentation::issues(
                                 &progress.errors,
                                 progress.files_completed > 0,
@@ -229,9 +245,23 @@ impl Presenter {
                             progress.state,
                             CopyOperationState::Failed | CopyOperationState::CompletedWithErrors
                         ) {
-                            self.desktop.report("Copy failed", progress.message.clone());
+                            self.desktop.report(
+                                if progress.intent == TransferIntent::Copy {
+                                    "Copy failed"
+                                } else {
+                                    "Move needs attention"
+                                },
+                                progress.message.clone(),
+                            );
                         } else {
-                            self.desktop.inform("Copy", progress.message.clone());
+                            self.desktop.inform(
+                                if progress.intent == TransferIntent::Copy {
+                                    "Copy"
+                                } else {
+                                    "Recoverable Move"
+                                },
+                                progress.message.clone(),
+                            );
                         }
                     }
                 }
@@ -273,6 +303,61 @@ mod tests {
             intent: FileClipboardIntent::Copy,
         }
     }
+    #[test]
+    fn replacement_and_merge_choices_require_advertised_capability() {
+        for (choice, can_replace, can_merge, accepted) in [
+            (4, true, false, true),
+            (5, true, false, true),
+            (6, false, true, true),
+            (7, false, true, true),
+            (4, false, true, false),
+            (5, false, false, false),
+            (6, true, false, false),
+            (7, false, false, false),
+        ] {
+            let mut p = Presenter::new("left".into(), "right".into());
+            p.start_copy(clipboard(), std::env::temp_dir(), &|_| true);
+            let id = p.copies.progress[0].id;
+            let item = MutationItem {
+                path: std::env::temp_dir().join("existing"),
+                kind: EntryKind::File,
+                metadata: EntryMetadata::default(),
+            };
+            p.apply(Event::Copy(CopyEvent::Conflict(Arc::new(CopyConflict {
+                id,
+                version: 2,
+                source: item.clone(),
+                target: item.clone(),
+                destination: item.path,
+                can_replace,
+                can_merge,
+            }))));
+            let commands = RefCell::new(Vec::new());
+            p.decide_copy(
+                &format!("copy:{}:2", id.0),
+                choice,
+                String::new(),
+                &|command| {
+                    commands.borrow_mut().push(command);
+                    true
+                },
+            );
+            assert_eq!(commands.borrow().len(), usize::from(accepted));
+            if accepted {
+                let commands = commands.borrow();
+                let Command::DecideCopy(decision) = &commands[0] else {
+                    panic!("expected decision");
+                };
+                assert_eq!(decision.version, 2);
+                assert_eq!(decision.id, id);
+                assert!(match (&decision.choice, choice) {
+                    (CopyChoice::ReplaceRecoverable { all }, 4 | 5) => *all == (choice == 5),
+                    (CopyChoice::Merge { all }, 6 | 7) => *all == (choice == 7),
+                    _ => false,
+                });
+            }
+        }
+    }
     pub(super) fn assert_unchanged_display_preserves_native_name(name: std::ffi::OsString) {
         let mut p = Presenter::new("left".into(), "right".into());
         p.start_copy(clipboard(), std::env::temp_dir(), &|_| true);
@@ -289,6 +374,8 @@ mod tests {
             source: item.clone(),
             target: item,
             destination,
+            can_replace: false,
+            can_merge: false,
         }))));
         let called = std::cell::Cell::new(false);
         p.decide_copy(&format!("copy:{}:1", id.0), 2, name.to_string_lossy().into_owned(), &|command| {
@@ -332,7 +419,7 @@ mod tests {
         let mut files = clipboard();
         files.intent = FileClipboardIntent::Move;
         p.start_copy(files, std::env::temp_dir(), &|_| {
-            panic!("Move is unsupported")
+            panic!("Move requires confirmation")
         });
         assert!(!p.has_live_operations());
         p.start_copy(clipboard(), std::env::temp_dir(), &|_| false);
@@ -384,6 +471,8 @@ mod tests {
             source: item.clone(),
             target: item,
             destination: std::env::temp_dir().join("existing.txt"),
+            can_replace: false,
+            can_merge: false,
         }))));
         let commands = RefCell::new(Vec::new());
         let send = |command| {

@@ -1,5 +1,13 @@
 use std::path::PathBuf;
 
+#[test]
+fn copy_and_move_refuse_ambiguous_edits_below_a_raw_unix_destination() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    super::copy_dialog::assert_ambiguous_destination_is_refused(OsString::from_vec(
+        b"raw-\xff".to_vec(),
+    ));
+}
+
 pub(super) fn test_root() -> PathBuf {
     PathBuf::from("/")
 }

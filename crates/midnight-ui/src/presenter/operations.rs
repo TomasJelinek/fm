@@ -191,7 +191,8 @@ impl Presenter {
         }
     }
     pub fn has_live_operations(&self) -> bool {
-        self.copies.progress.iter().any(|p| !p.state.is_terminal())
+        self.command_launches.jobs.iter().any(|job| !job.finished)
+            || self.copies.progress.iter().any(|p| !p.state.is_terminal())
             || self
                 .operations
                 .progress
@@ -199,6 +200,7 @@ impl Presenter {
                 .any(|p| !p.state.is_terminal())
     }
     pub fn request_operation_shutdown(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.command_toolbar.invalidate_preview();
         self.retire_copy_draft();
         self.shutdown_drag_drop(send);
         self.retire_metadata();
@@ -207,6 +209,11 @@ impl Presenter {
         self.operations.preview = None;
         self.copies.conflicts.clear();
         self.operations.metadata_conflicts.clear();
+        for job in &self.command_launches.jobs {
+            if !job.finished {
+                let _ = send(Command::CancelUserCommand(job.id));
+            }
+        }
         for progress in &self.copies.progress {
             if !progress.state.is_terminal() {
                 let _ = send(Command::CancelCopy(progress.id));

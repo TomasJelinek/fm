@@ -8,6 +8,9 @@ use midnight_ui::{KeyboardEditorView, MainWindow, Presenter};
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
+#[path = "native_keyboard_search/external_input.rs"]
+mod external_input;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     slint::BackendSelector::new()
         .backend_name("winit".into())
@@ -30,6 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window
         .window()
         .set_size(slint::LogicalSize::new(1340., 820.));
+    if std::env::args().any(|argument| argument == "--external-input") {
+        return external_input::run(window);
+    }
     let weak = window.as_weak();
     let timer = slint::Timer::default();
     let mut step = 0;

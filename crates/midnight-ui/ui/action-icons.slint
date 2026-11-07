@@ -21,6 +21,7 @@ export struct ActionIcons {
     help: image,
     rename: image,
     view: image,
+    find: image,
     edit: image,
     copy: image,
     move-item: image,
@@ -42,6 +43,7 @@ export struct ActionIcons {
 
 // Embedded, monochrome fallbacks are used only when a semantic host icon is absent.
 export global FallbackIcons {
+    out property <image> find: @image-url("icons/find.svg");
     out property <image> drive: @image-url("icons/drive.svg");
     out property <image> network: @image-url("icons/network.svg");
     out property <image> home: @image-url("icons/home.svg");

@@ -1,10 +1,9 @@
 # Keyboard shortcuts — Midnight Explorer 0.1
 
-Planned addition: **Ctrl+F8 — calculate checksums** for selected files (focused
-file fallback), described in the [checksum design](superpowers/specs/2026-11-06-checksums-design.md).
-This command is not implemented or bound in the current application. Ctrl+F7
-continues to open filename case conversion. Future default registration must
-preserve user-customized bindings.
+**Ctrl+F8 — calculate checksums** uses selected files with focused-file fallback,
+described in the [checksum API](developer/CHECKSUMS.md). Ctrl+F7 continues to open
+filename case conversion. Default registration preserves user-customized bindings.
+These controls describe current source; packaged releases may precede it.
 
 The table lists default bindings. **Options → Keyboard** can change, disable, or
 restore each application action, including navigation, selection, command editing,
@@ -71,12 +70,15 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
 | Ctrl+A / Ctrl+D / Ctrl+I | Select all / clear / invert selection in the focused file pane |
-| Ctrl+C / Ctrl+V in files | Publish the selected/focused files to the native clipboard / queue a verified copy into the captured active folder |
+| Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens the recoverable Move confirmation |
+| Ctrl+X in files | Publish a Cut clipboard for captured native files. Paste requires confirmation and supports at most 64 regular files; directory/link/archive moves are unavailable |
 | F5 | Copy the captured selection or focused item; edit the destination folder, initially the other panel. Enter queues the copy; Escape cancels the dialog |
+| F6 | Recoverable Move of captured regular files to an editable destination, initially the other panel; all destinations are verified before originals enter recovery folders. Retained originals continue using disk space |
+| Alt+F7 | Open a separate Find window for the active native folder: masks, multiple roots, subfolders and optional UTF-8 content text. Up/Down selects results; Enter or Go to file validates the result and locates it in its originating panel; Escape closes that Find window |
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort by name / type-extension / modified time / size |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
-| Ctrl+F8 | Unassigned by default; may be configured |
+| Ctrl+F8 | Open a modeless checksum window for the captured native selection; SHA-256 default, optional SHA-512/MD5/SHA-1, explicit recursion, Stop, copy and manifest export |
 | Ctrl+F10 | Compare the two displayed directories by size and/or modified time; select differences |
 | Ctrl+Shift+C | Compare two selected files in the active panel, or one selected/focused file per panel; image pairs support Side-by-Side, Swipe and Onion Skin |
 | Ctrl+F11 | Maximize the active panel; press again to restore the previous split |
@@ -197,7 +199,11 @@ empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 F5 Copy opens the destination dialog without changing the clipboard. The selection
 and other-panel destination are captured at the gesture; later panel changes do
 not retarget it. Edited destinations must be absolute paths to existing folders.
-F6 Move remains reserved for the next transfer increment.
+F6 opens the same captured-destination workflow for recoverable moves of at most
+64 ordinary native files. Ctrl+X publishes a Cut clipboard; Ctrl+V then opens the
+Move confirmation. Unsupported mixed, directory or virtual batches are rejected
+before transfer. All destinations must be copied and independently verified before
+original names move into recovery folders; originals remain there and occupy disk space.
 Options follows F12 on the bottom bar; Jobs shows queued/running operations and
 allows cancellation. Cancellation retains changes already completed. No Trash
 failure ever falls back to permanent deletion. F7 accepts paths outside the active
@@ -207,11 +213,23 @@ F3 routes by extension to an applicable installed viewer; Alt+F3 forces the basi
 plain-text viewer, preserving Unicode and disabling highlighting and markup rendering.
 Both require a compatible, enabled package in the installation's `viewers/` directory.
 Clipboard copy has a background queue and mandatory SHA-256 destination readback.
-Existing names offer Skip, Skip all, Copy as, Cancel job and Decide later; Jobs can
-reopen deferred conflicts while browsing continues. Sources are retained. Replacing
-existing files, directory merging and Move/Cut remain unavailable in this stage.
+Existing names offer Skip, Skip all, a different name, recoverable Replace/Replace
+all or explicit directory Merge/Merge all, Cancel job and Decide later. Jobs can
+reopen deferred conflicts while browsing continues. Copy retains its sources;
+replacement retains displaced originals. See [transfer limits](developer/TRANSFERS.md).
 Other unlisted Salamander/Total Commander
 shortcuts, such as Shift+F9 for a bookmark menu, are not implemented.
+
+Custom Commands can be reordered by dragging rows in Options → Custom Commands,
+or with its Up/Down buttons. Escape cancels an active drag before closing Options.
+Reordering preserves command identities and assigned shortcuts.
+
+Custom Commands appear in the keyboard editor as `user-command.<id>` actions,
+with their configured names and no default chord. They apply to the focused file
+panel outside filename-search editing. Renaming or reordering preserves bindings;
+deleting a command removes only that command's overrides. Adding a command updates
+the catalogue without restarting the application. Opening settings or Preview
+never executes it.
 
 Viewer windows have their own configurable shortcut context:
 

@@ -27,6 +27,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-linux, midnight-thumbnail-image, midnight-viewer-image |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
 | [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
+| [md-5](https://crates.io/crates/md-5/0.10.6) | 0.10.6 | MIT OR Apache-2.0 | midnight-engine |
 | [minicbor](https://crates.io/crates/minicbor/2.3.0) | 2.3.0 | BlueOak-1.0.0 | midnight-plugin-api |
 | [moxcms](https://crates.io/crates/moxcms/0.8.1) | 0.8.1 | BSD-3-Clause OR Apache-2.0 | midnight-thumbnail-image, midnight-viewer-image |
 | [notify](https://crates.io/crates/notify/8.2.1) | 8.2.1 | CC0-1.0 | midnight-platform-linux, midnight-platform-windows |
@@ -40,7 +41,8 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [serde](https://crates.io/crates/serde/1.0.229) | 1.0.229 | MIT OR Apache-2.0 | midnight-filesystem-host, midnight-image-viewer-host, midnight-platform-common, midnight-plugin-host, midnight-thumbnail-host |
 | [serde_json](https://crates.io/crates/serde_json/1.0.154) | 1.0.154 | MIT OR Apache-2.0 | midnight-api-package, midnight-image-viewer-host, midnight-platform-common, midnight-thumbnail-host, midnight-ui |
 | [sevenz-rust2](https://crates.io/crates/sevenz-rust2/0.23.0) | 0.23.0 | Apache-2.0 | midnight-fs-archive |
-| [sha2](https://crates.io/crates/sha2/0.10.9) | 0.10.9 | MIT OR Apache-2.0 | midnight-api-package, midnight-platform-common, midnight-plugin-host |
+| [sha1](https://crates.io/crates/sha1/0.10.6) | 0.10.6 | MIT OR Apache-2.0 | midnight-engine |
+| [sha2](https://crates.io/crates/sha2/0.10.9) | 0.10.9 | MIT OR Apache-2.0 | midnight-api-package, midnight-engine, midnight-platform-common, midnight-plugin-host |
 | [similar](https://crates.io/crates/similar/2.7.0) | 2.7.0 | Apache-2.0 | midnight-compare-engine |
 | [slint](https://crates.io/crates/slint/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-explorer, midnight-ui, midnight-ui-bindings, midnight-ui-input, midnight-viewer-ui |
 | [slint-build](https://crates.io/crates/slint-build/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui-bindings, midnight-viewer-ui |

@@ -81,7 +81,7 @@ fn prepare(
     Ok(command)
 }
 
-fn validate_program(executable: &Path) -> Result<(), FsError> {
+pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
     let extension = executable
         .extension()
         .and_then(|value| value.to_str())

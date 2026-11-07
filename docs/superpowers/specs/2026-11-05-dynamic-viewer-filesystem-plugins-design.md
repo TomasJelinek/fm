@@ -1,7 +1,10 @@
 # Dynamické pluginy pro prohlížeče a souborové systémy
 
-Datum: 5. listopadu 2026. Stav: dokončený návrh rozhraní pro následující
-implementaci; dynamický loader, F3 viewer ani archivy zatím nejsou implementované.
+Datum návrhu: 5. listopadu 2026. Stav k 7. listopadu: loader, F3 pro text/binary,
+source, Markdown, obrázky a PDF, procházení archivů a ověřené vykopírování jsou
+implementované. Nativní Windows/Linux filesystémy dosud tvoří interní crates;
+jejich převod na nezávislé pluginy a obecné providerové identity ještě zbývá.
+Aktuální rozsah a důkazy sleduje [implementační přehled](../../IMPLEMENTATION_BACKLOG.md).
 Navazuje na [hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md)
 a [původní viewer/VFS návrh](2026-11-04-viewer-vfs-design.md).
 Tento dokument má přednost pro registraci, binární hranici, balení a pořadí etap.
@@ -18,10 +21,11 @@ jejich testy jsou součástí pluginu. Plugin ani jeho build/test nesmí upravov
 zdrojové kódy hlavní aplikace.
 
 Zůstává jedna aplikace s oddělenými Rust crates, Slint UI a Tokio backendem.
-První archivní etapa je procházení a čtení, včetně otevření člena ve vieweru.
-Kopírování/extrakce na disk, změny archivů a další mutace následují se společným
-ověřeným copy/publish enginem; pouhá instalace archivačního pluginu je nezapne.
-Markdown preview, Registry, síťové providery a editor jsou další implementace.
+Archivní plugin podporuje procházení a čtení, včetně otevření člena ve vieweru
+a vykopírování přes společný ověřený copy/publish engine. Změny archivů a další
+providerové mutace zůstávají samostatnou etapou; instalace pluginu je nezapne.
+Markdown preview a externí editor již fungují; Registry a obecné síťové providery
+zůstávají dalšími implementacemi.
 Budoucí [Network filesystem](2026-11-05-network-filesystem-design.md) nabídne
 objevená i ručně zadaná lokální síťová zařízení/služby. Jeho nepřítomnost odebere
 discovery; známé síťové cesty mohou dál obsloužit nativní providery. Metadata
@@ -33,7 +37,7 @@ neimplementuje.
 | --- | --- |
 | Rust `dylib` se sdílenými traity a Tokio/Slint typy | Odmítnuto: Rust ABI nemá záruku stability; plugin by závisel na interních detailech konkrétního buildu |
 | Rust `cdylib`, malé verzované C ABI, bezpečný Rust SDK adaptér | Zvolený návrh: samostatné balíčky, jedna aplikace, žádné UI v knihovně a jasné vlastnictví |
-| Plugin v pomocném procesu s IPC | Budoucí alternativa pro izolaci nedůvěryhodného kódu/tvrdé ukončení parseru; není součást nynějšího jednoprocesového rozhodnutí |
+| Plugin v pomocném procesu s IPC | Implementováno pro archivy, obrazové/PDF a thumbnail dekodéry přes samostatné veřejné protokoly a omezené workery; hlavní UI/backend zůstává jednou aplikací |
 
 Volba C ABI, rozložení balíčku a read-only pořadí jsou realizační rozhodnutí
 tohoto návrhu. Požadavek na pluginy sám o sobě neznamená hot reload, podporu

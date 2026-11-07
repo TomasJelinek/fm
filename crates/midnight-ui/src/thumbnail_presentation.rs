@@ -34,21 +34,24 @@ impl Presenter {
     }
     pub fn clear_thumbnail_images(&mut self) {
         self.thumbnails.images.clear();
+        self.command_toolbar
+            .image_revision
+            .set(self.command_toolbar.image_revision.get().wrapping_add(1));
     }
     pub fn thumbnail_targets(
         &mut self,
         ranges: [(usize, usize); 2],
         hovered: [&str; 2],
     ) -> Vec<ThumbnailTarget> {
-        let mut targets = Vec::new();
-        if !self.preferences.values.thumbnails_enabled {
-            self.thumbnails.images.clear();
-            self.thumbnails.visible.clear();
-            return targets;
-        }
+        // Explicitly configured command artwork uses the same isolated decoder
+        // and disk cache, independently of the panel-thumbnail display option.
+        let mut targets = self.command_icon_targets();
+        let panel_quota = (256 - targets.len()) / 2;
         for side in [PaneId::Left, PaneId::Right] {
             let slot = side.index();
-            if self.preferences.values.panel_view_modes[slot] != PanelViewMode::Thumbnails {
+            if !self.preferences.values.thumbnails_enabled
+                || self.preferences.values.panel_view_modes[slot] != PanelViewMode::Thumbnails
+            {
                 continue;
             }
             let pane = &self.panes[slot];
@@ -65,7 +68,7 @@ impl Presenter {
                 continue;
             }
             let (first, end) = ranges[slot];
-            for row in first..end.min(first.saturating_add(128)) {
+            for row in first..end.min(first.saturating_add(panel_quota)) {
                 let Some(index) = row.checked_sub(pane.parent_offset()) else {
                     continue;
                 };
@@ -126,7 +129,21 @@ impl Presenter {
         frames[usize::from(frame)] = Some(Image::from_rgba8(
             SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(rgba, width, height),
         ));
+        if identity.starts_with("command-icon:") {
+            self.command_toolbar
+                .image_revision
+                .set(self.command_toolbar.image_revision.get().wrapping_add(1));
+        }
         true
+    }
+    pub(crate) fn custom_command_icon(&self, revision: &str, id: &str) -> Option<Image> {
+        self.thumbnails
+            .images
+            .get(&crate::user_command_presentation::command_icon_identity(
+                revision, id,
+            ))?
+            .first()?
+            .clone()
     }
     pub fn advance_thumbnail_animation(&mut self) -> bool {
         self.thumbnails.pulse = self.thumbnails.pulse.wrapping_add(1);

@@ -160,6 +160,12 @@ fn clipboard_shortcuts_follow_actual_file_focus_and_leave_text_editors_native() 
         assert_eq!(files.fallback.as_ref(), Some(&h.base.join("a.txt")));
     }
     h.commands.borrow_mut().clear();
+    ui::chord(&h.ui.window, &[Key::Control], "x");
+    assert!(matches!(
+        h.commands.borrow().last(),
+        Some(Command::CutFiles { .. })
+    ));
+    h.commands.borrow_mut().clear();
     ui::chord(&h.ui.window, &[Key::Control], "v");
     assert!(matches!(h.commands.borrow().last(),
         Some(Command::ReadFileClipboard { destination, .. }) if destination == &h.base));
@@ -168,6 +174,7 @@ fn clipboard_shortcuts_follow_actual_file_focus_and_leave_text_editors_native() 
     ui::chord(&h.ui.window, &[Key::Control], "a");
     ui::chord(&h.ui.window, &[Key::Control], "c");
     ui::chord(&h.ui.window, &[Key::Control], "v");
+    ui::chord(&h.ui.window, &[Key::Control], "x");
     assert!(
         h.commands.borrow().is_empty(),
         "command edit owns native clipboard shortcuts"
@@ -181,10 +188,62 @@ fn clipboard_shortcuts_follow_actual_file_focus_and_leave_text_editors_native() 
     assert!(
         h.commands.borrow().iter().all(|command| !matches!(
             command,
-            Command::CopyFiles { .. } | Command::ReadFileClipboard { .. }
+            Command::CopyFiles { .. }
+                | Command::CutFiles { .. }
+                | Command::ReadFileClipboard { .. }
         )),
         "quick search owns its text clipboard while active"
     );
+}
+
+#[test]
+fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
+    let mut h = Harness::new();
+    ui::click(&h.ui.window, h.row(1).x, h.row(1).y);
+    ui::chord(&h.ui.window, &[Key::Control], "x");
+    assert!(matches!(
+        h.commands.borrow().last(),
+        Some(Command::CutFiles { .. })
+    ));
+    h.commands.borrow_mut().clear();
+    ui::chord(&h.ui.window, &[Key::Control], "v");
+    let request = h
+        .commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::ReadFileClipboard { request, .. } => Some(*request),
+            _ => None,
+        })
+        .unwrap();
+    h.commands.borrow_mut().clear();
+    h.apply(Event::ClipboardFilesRead {
+        request,
+        destination: h.base.clone(),
+        result: Ok(FileClipboard {
+            paths: vec![h.base.join("a.txt")],
+            intent: FileClipboardIntent::Move,
+        }),
+    });
+    assert!(h.ui.window.get_copy_draft_move());
+    assert!(!h.ui.window.get_copy_draft_token().is_empty());
+    assert!(h.commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::EnqueueCopy(_) | Command::EnqueueMove(_) | Command::EnqueueClipboardMove(_)
+    )));
+    ui::key(&h.ui.window, Key::Return);
+    h.draw();
+    let commands = h.commands.borrow();
+    let request = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::EnqueueClipboardMove(request) => Some(request),
+            _ => None,
+        })
+        .expect("explicit Enter must admit the captured clipboard Move");
+    assert_eq!(request.clipboard.paths, vec![h.base.join("a.txt")]);
+    assert_eq!(request.destination, h.base);
+    assert!(h.ui.window.get_copy_draft_token().is_empty());
 }
 
 #[test]
@@ -327,6 +386,34 @@ fn copy_conflict_controls_dispatch_versioned_choices_and_escape_defers() {
     assert!(decisions.borrow().is_empty());
     test.window.invoke_focus_files();
     assert_eq!(test.window.get_focused_pane(), 0);
+}
+
+#[test]
+fn copy_conflict_exposes_separate_recovery_and_merge_choices() {
+    let mut test = ui::TestUi::new();
+    let decisions = Rc::new(RefCell::new(Vec::new()));
+    let captured = decisions.clone();
+    test.window.on_decide_copy(move |token, choice, _| {
+        captured.borrow_mut().push((token.to_string(), choice));
+    });
+    test.window.set_copy_token("copy:7:2".into());
+    for (replace, label, expected) in [
+        (true, "Replace · keep original", 4),
+        (true, "Replace all · keep originals", 5),
+        (false, "Merge folders", 6),
+        (false, "Merge all folders", 7),
+    ] {
+        test.window.set_copy_can_replace(replace);
+        test.window.set_copy_can_merge(!replace);
+        test.window.invoke_show_copy_conflict();
+        test.draw();
+        ui::click_popup(&test.window, label, AccessibleRole::Button);
+        assert_eq!(
+            decisions.borrow().last(),
+            Some(&("copy:7:2".into(), expected))
+        );
+        test.window.invoke_close_copy_conflict();
+    }
 }
 
 #[test]

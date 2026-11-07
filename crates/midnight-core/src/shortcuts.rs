@@ -1,5 +1,8 @@
 //! Portable application shortcuts. Native editing and IME handling stay with the UI.
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 mod catalog;
 pub use catalog::shortcut_catalog;
@@ -358,16 +361,33 @@ impl ShortcutDefinition {
 /// Compiled once when preferences change; resolving a chord performs no allocation.
 #[derive(Clone, Debug)]
 pub struct ShortcutMap {
+    definitions: Arc<[ShortcutDefinition]>,
     resolved: HashMap<ShortcutChord, [Option<usize>; 7]>,
     bindings: HashMap<String, Vec<ShortcutChord>>,
 }
 
 impl ShortcutMap {
     pub fn new(overrides: &[ShortcutBinding]) -> Result<Self, String> {
+        Self::with_user_commands(overrides, &[])
+    }
+
+    /// Include only explicitly configured command IDs; arbitrary dynamic actions remain invalid.
+    pub fn with_user_commands(
+        overrides: &[ShortcutBinding],
+        commands: &[crate::UserCommand],
+    ) -> Result<Self, String> {
+        crate::validate_user_commands(commands).map_err(str::to_owned)?;
         if overrides.len() > MAX_SHORTCUT_OVERRIDES {
             return Err("At most 256 shortcut overrides can be saved.".into());
         }
-        let definitions = shortcut_catalog();
+        let mut definitions = shortcut_catalog().to_vec();
+        definitions.extend(commands.iter().map(|command| ShortcutDefinition {
+            id: command.id.action(),
+            label: command.name.clone(),
+            defaults: Vec::new(),
+            scope: ShortcutScope::FilesIdle,
+        }));
+        let definitions: Arc<[ShortcutDefinition]> = definitions.into();
         let mut replacements = HashMap::new();
         let mut explicit_keys: HashMap<ShortcutChord, [bool; 7]> = HashMap::new();
         for binding in overrides {
@@ -402,6 +422,7 @@ impl ShortcutMap {
             }
         }
         let mut result = Self {
+            definitions: definitions.clone(),
             resolved: HashMap::new(),
             bindings: HashMap::new(),
         };
@@ -422,6 +443,10 @@ impl ShortcutMap {
                 let added_default = matches!(
                     definition.id.as_str(),
                     "files.copy-to"
+                        | "files.move-to"
+                        | "files.cut"
+                        | "files.find"
+                        | "files.checksums"
                         | "files.compare"
                         | "viewer.document-next"
                         | "viewer.document-previous"
@@ -487,10 +512,15 @@ impl ShortcutMap {
             ShortcutContext::Viewer => 5,
             ShortcutContext::ViewerSearch => 6,
         };
-        self.resolved.get(chord)?[position].map(|index| &shortcut_catalog()[index])
+        self.resolved.get(chord)?[position].map(|index| &self.definitions[index])
     }
 
     pub fn bindings(&self, action: &str) -> Option<&[ShortcutChord]> {
         self.bindings.get(action).map(Vec::as_slice)
+    }
+
+    /// Exact catalog used by this compiled map, including configured command IDs.
+    pub fn definitions(&self) -> &[ShortcutDefinition] {
+        &self.definitions
     }
 }

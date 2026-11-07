@@ -56,9 +56,16 @@ fn options() -> Result<Option<Options>, String> {
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--help" | "-h") => {
-                println!(
-                    "Midnight Explorer — dual-pane file manager\n\nUsage: me [--left PATH] [--right PATH] [--software]\n       me --smoke-test [--left PATH] [--right PATH]\n       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\nNative browsing, installed viewer plugins, external editing, rename, empty-file and directory creation, confirmed deletion, and verified clipboard copying. Moving files is planned."
-                );
+                println!(concat!(
+                    "Midnight Explorer — dual-pane file manager\n\n",
+                    "Usage: me [--left PATH] [--right PATH] [--software]\n",
+                    "       me --smoke-test [--left PATH] [--right PATH]\n",
+                    "       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\n",
+                    "Native browsing, installed viewers, external editing, rename, ",
+                    "file/directory creation, confirmed deletion, verified copying, ",
+                    "recoverable regular-file moves, Find and checksums. ",
+                    "Recoverable moves retain originals in recovery folders."
+                ));
                 return Ok(None);
             }
             Some("--left" | "--right" | "--snapshot") => {
@@ -263,6 +270,8 @@ fn run_window(
         Engine::with_wakeup(local.clone(), event_sender, notify.clone())
             .with_shell_menu(local.clone())
             .with_transfers(local.clone())
+            .with_find(local.clone())
+            .with_user_commands(local.clone())
             .with_editor(local.clone())
             .with_drag_drop(local)
             .with_locale(midnight_platform::locale_service())
@@ -472,6 +481,8 @@ fn run_window(
                 state.shutdown_drag_drop(&|command| sync_commands.try_send(command).is_ok());
                 sync_viewers.close_all();
                 sync_comparators.close_all();
+                window.invoke_close_find_windows();
+                window.invoke_close_checksum_windows();
                 let _ = window.hide();
             }
             if sync_window
@@ -514,6 +525,8 @@ fn run_window(
     let result = result.and(window.hide().map_err(|error| error.to_string()));
     viewers.close_all();
     comparators.close_all();
+    window.invoke_close_find_windows();
+    window.invoke_close_checksum_windows();
     visible_timer.stop();
     size_timer.stop();
     thumbnail_timer.stop();

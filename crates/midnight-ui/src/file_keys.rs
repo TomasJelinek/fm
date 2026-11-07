@@ -27,7 +27,7 @@ pub(crate) enum WindowAction {
     Network(bool),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FileKey {
     Native,
     Consumed,
@@ -45,6 +45,9 @@ pub(crate) enum FileKey {
     Metadata(bool),
     View(bool),
     CompareFiles,
+    Find,
+    Checksums,
+    UserCommand(midnight_core::UserCommandId),
     Edit,
     Compare,
     Filter,
@@ -87,7 +90,12 @@ pub(crate) fn route_with(
         ShortcutContext::Files
     };
     if let Some(action) = map.resolve(&chord, context) {
-        if composing && matches!(action.id.as_str(), "files.copy" | "files.paste") {
+        if composing
+            && matches!(
+                action.id.as_str(),
+                "files.copy" | "files.paste" | "files.cut"
+            )
+        {
             return FileKey::Native;
         }
         return semantic(&action.id, active).unwrap_or(FileKey::Consumed);
@@ -131,6 +139,8 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "panel.refresh" => FileKey::Action(3),
         "panel.root" => FileKey::Action(4),
         "panel.path" => FileKey::FocusPath,
+        "files.find" => FileKey::Find,
+        "files.checksums" => FileKey::Checksums,
         "panel.folder-sizes" => FileKey::FolderSizes,
         "panel.drive-info" => FileKey::DriveInfo,
         "panel.compare" => FileKey::Compare,
@@ -160,6 +170,8 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "files.copy" => FileKey::Clipboard(0),
         "files.paste" => FileKey::Clipboard(1),
         "files.copy-to" => FileKey::Clipboard(2),
+        "files.move-to" => FileKey::Clipboard(3),
+        "files.cut" => FileKey::Clipboard(4),
         "panel.as-other" => FileKey::Window(W::OtherPanel),
         "panel.swap" => FileKey::Window(W::SwapPanels),
         "tab.new" => FileKey::Window(W::NewTab),
@@ -185,7 +197,9 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "network.connect" => FileKey::Window(W::Network(false)),
         "network.disconnect" => FileKey::Window(W::Network(true)),
         _ => {
-            if let Some(number) = numbered(action, "tab.", 9) {
+            if let Some(id) = action.strip_prefix("user-command.") {
+                FileKey::UserCommand(midnight_core::UserCommandId::new(id).ok()?)
+            } else if let Some(number) = numbered(action, "tab.", 9) {
                 FileKey::Window(W::Tab(number))
             } else if let Some(number) = numbered(action, "bookmark.open.", 10) {
                 FileKey::Window(W::BookmarkOpen(number, false))
@@ -251,7 +265,7 @@ mod tests {
 
     #[test]
     fn clipboard_keys_use_file_actions_only_outside_native_text_editing() {
-        for (text, operation) in [("c", 0), ("v", 1)] {
+        for (text, operation) in [("c", 0), ("v", 1), ("x", 4)] {
             assert_eq!(
                 route(&event(text, true, false, false), false, false),
                 FileKey::Clipboard(operation)
@@ -289,6 +303,7 @@ mod tests {
             (Key::F4.into(), true, false, false, FileKey::Sort(3)),
             (Key::F5.into(), true, false, false, FileKey::Sort(2)),
             (Key::F6.into(), true, false, false, FileKey::Sort(1)),
+            (Key::F7.into(), false, false, true, FileKey::Find),
             ("R".into(), true, false, false, FileKey::Action(3)),
             ("g".into(), true, false, false, FileKey::FocusPath),
             (Key::Space.into(), true, false, false, FileKey::Native),
@@ -318,6 +333,15 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn move_clipboard_actions_use_semantic_file_routes() {
+        assert_eq!(
+            semantic("files.move-to", false),
+            Some(FileKey::Clipboard(3))
+        );
+        assert_eq!(semantic("files.cut", false), Some(FileKey::Clipboard(4)));
     }
 
     #[test]

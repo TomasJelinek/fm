@@ -22,6 +22,19 @@ restricted processes. See the [filesystem API](FILESYSTEM_API.md) and
 [worker/thumbnail SDK](WORKER_SDK.md) and [image viewer API](IMAGE_VIEWER_API.md);
 they do not change the released viewer ABI.
 
+Application contributors working on copy and archive extraction should also read
+the internal [native transfer contract](TRANSFERS.md). Its Rust capabilities are
+not part of the external plugin ABI.
+
+The internal [recursive Find contract](FIND.md) documents bounded sessions,
+native content traversal, modeless UI ownership and safe result navigation.
+The [checksum contract](CHECKSUMS.md) describes captured calculation, results,
+export and cancellation. [Panel selection](SELECTION.md) documents immutable
+selection provenance and rectangle input across native and archive views.
+The [Custom Commands contract](USER_COMMANDS.md) covers native argv/templates,
+captured configuration, previews, process ownership and cancellation. These
+application services remain separate from independently developed plugin APIs.
+
 ## Architecture and ownership
 
 ```mermaid

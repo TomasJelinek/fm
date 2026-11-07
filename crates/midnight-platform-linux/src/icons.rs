@@ -174,6 +174,7 @@ fn action_names(role: ActionIcon) -> &'static [&'static str] {
         ActionIcon::Help => &["help-browser"],
         ActionIcon::Rename => &["edit-rename"],
         ActionIcon::View => &["document-preview"],
+        ActionIcon::Find => &["system-search", "edit-find"],
         ActionIcon::Edit => &["document-edit", "accessories-text-editor"],
         ActionIcon::Copy => &["edit-copy"],
         ActionIcon::Move => &["folder-move"],

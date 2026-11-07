@@ -37,6 +37,7 @@ fn label_icon<'a>(id: &str, label: &'a str) -> (&'a str, i32) {
         "panel.drive-info" => ("Drive info", 12),
         "files.attributes" => ("Attributes", 12),
         "files.case" => ("Case", 1),
+        "files.checksums" => ("Checksums", 12),
         "sort.name" => ("Name", 13),
         "sort.extension" => ("Extension", 13),
         "sort.modified" => ("Modified", 13),
@@ -78,6 +79,7 @@ impl KeyboardBindings {
 mod tests {
     use super::*;
     use midnight_core::ShortcutBinding;
+    use std::sync::Arc;
 
     #[test]
     fn remapping_and_disabling_replace_the_exact_control_cell_and_scope() {
@@ -95,14 +97,15 @@ mod tests {
                 keys: vec![],
             },
         ];
-        let cache = KeyboardBindings::new(&overrides, 1).unwrap();
+        let cache = KeyboardBindings::new(&overrides, &Arc::default(), 1).unwrap();
         let row = cache.control_slot(1, false);
         assert_eq!(row.action, "files.copy");
         assert_eq!(row.label, "Copy");
         assert_eq!(row.key, "Ctrl+F2");
         assert!(row.hint.contains("Ctrl+F2"));
         assert!(cache.control_slot(1, true).action.is_empty());
-        assert!(cache.control_slot(7, false).action.is_empty());
+        assert_eq!(cache.control_slot(7, false).action, "files.checksums");
+        assert_eq!(cache.control_slot(7, false).label, "Checksums");
         assert!(cache.control_slot(10, false).action.is_empty());
         assert!(cache.control_slot(-1, false).action.is_empty());
         assert!(cache.control_slot(12, false).action.is_empty());

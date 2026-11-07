@@ -106,7 +106,7 @@ fn prepare(
     Ok(command)
 }
 
-fn validate_program(executable: &Path) -> Result<(), FsError> {
+pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
     if !executable.is_absolute() || executable.as_os_str().as_encoded_bytes().contains(&0) {
         return Err(error(
             executable,

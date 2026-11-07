@@ -33,10 +33,10 @@ pub(crate) struct Desktop {
     outbox: Outbox,
 }
 
-struct TrackedChild {
-    child: Box<dyn TerminalProcess>,
-    _slot: OwnedSemaphorePermit,
-    completion: Option<(DesktopRequestId, PathBuf)>,
+pub(crate) struct TrackedChild {
+    pub(crate) child: Box<dyn TerminalProcess>,
+    pub(crate) _slot: OwnedSemaphorePermit,
+    pub(crate) completion: Option<(DesktopRequestId, PathBuf)>,
 }
 
 impl Desktop {
@@ -95,6 +95,14 @@ impl Desktop {
 
     pub(crate) fn icon_sender(&self) -> mpsc::Sender<IconKey> {
         self.icons.clone()
+    }
+
+    pub(crate) fn command_runtime(&self) -> crate::user_command_runtime::Runtime {
+        crate::user_command_runtime::Runtime::new(
+            self.launch_budget.clone(),
+            self.terminal_slots.clone(),
+            self.children.clone(),
+        )
     }
 
     pub(crate) fn volume_icon_sender(&self) -> watch::Sender<Vec<IconKey>> {
@@ -340,9 +348,12 @@ impl Desktop {
                 .await;
             return;
         };
-        let Ok(slot) = self.open_slots.clone().try_acquire_owned() else {
-            self.editor_failure(request, "Too many external editor processes are active.")
-                .await;
+        let Ok(slot) = self.terminal_slots.clone().try_acquire_owned() else {
+            self.editor_failure(
+                request,
+                "Eight terminal, editor or Custom Command processes are active.",
+            )
+            .await;
             return;
         };
         let children = self.children.clone();

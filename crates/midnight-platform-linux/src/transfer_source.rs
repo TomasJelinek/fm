@@ -13,6 +13,9 @@ pub(super) struct Source {
     entries: Option<Dir>,
 }
 impl Source {
+    pub(super) fn native_file(&self) -> Arc<File> {
+        self.file.clone()
+    }
     pub(super) fn open(
         parent: Arc<File>,
         parent_path: PathBuf,
@@ -91,6 +94,18 @@ impl Source {
     }
 }
 impl TransferSource for Source {
+    fn rewind_for_validation(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferReadGuard>, FsError> {
+        if self.entry.item.kind != EntryKind::File {
+            return Err(unsupported(
+                &self.entry.item.path,
+                "only regular files support retained validation",
+            ));
+        }
+        super::validation::rewind(&self.file, &self.entry.item.path, cancel)
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }

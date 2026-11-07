@@ -31,15 +31,19 @@ Další implementované úpravy: [F7 pro absolutní i relativní cesty](2026-11-
 [přehlednější atributy a časy](2026-11-06-metadata-dialog-refinement.md)
 a [sjednocené zobrazení chyb](2026-11-06-error-presentation-design.md).
 
-[Kontrolní součty na Ctrl+F8](2026-11-06-checksums-design.md) jsou nově navržená,
-dosud neimplementovaná funkce: MD5/SHA-1 pro kompatibilitu, výchozí SHA-256
-a volitelné SHA-512, výběr souborů, neblokující průběh a export. Ctrl+F7 zůstává
-změně velikosti písmen názvu. Ověřování kopie se nadále provádí SHA-256.
+[Kontrolní součty na Ctrl+F8](2026-11-06-checksums-design.md) mají backend a
+samostatné nemodální okno: MD5/SHA-1 pro kompatibilitu, výchozí SHA-256 a volitelné
+SHA-512, zachycený výběr, neblokující průběh, kopírování hashů a bezpečný export.
+Přesný stav ověření uvádí [záznam testů](../../verification/2026-11-07-checksum-window.md).
+Ctrl+F7 zůstává změně velikosti písmen názvu. Ověřování kopie nadále používá SHA-256.
 
 [Dialog kopírování F5](2026-11-07-copy-dialog-design.md) zachytí výběr a cestu
 druhého panelu, umožní upravit cílovou složku a zařadí úlohu přímo do společné
-ověřované fronty. Nepoužívá systémovou schránku. Přepsání, sloučení složek a F6
-zůstávají samostatným navazujícím rozšířením nativních transferových schopností.
+ověřované fronty. Nepoužívá systémovou schránku. Výslovné Merge/Merge all a
+obnovitelné Replace/Replace all doplňují nativní transferové schopnosti;
+nahrazený originál zůstává v recovery složce. F6 a Cut/Paste sdílejí potvrzovací
+dialog a ověřovanou frontu pro omezený obnovitelný přesun běžných souborů.
+Rozsah, limity a zbývající ověření určuje [transferový kontrakt](../../developer/TRANSFERS.md).
 
 ## 1. Záměr a potvrzená rozhodnutí
 
@@ -913,6 +917,15 @@ schopnosti je silné podmíněné přepsání Unsupported; případná slabší 
 zvolená, nikdy tichý fallback. Test musí změnit cíl i po poslední revalidaci těsně
 před publikováním a prokázat, že nový soubor nepřepsal starý souhlas.
 
+Implementační doplněk k oddílu 25: [nativní transfer kontrakt](../../developer/TRANSFERS.md)
+odděluje výslovné „Replace · keep original“ od silné podmíněné výměny identity.
+Původní objekty zůstávají v soukromém recovery adresáři; částečný commit nikdy
+neopravňuje smazat zdroj. Merge a Replace all mají nezávislý rozsah jediné úlohy.
+Nově vzniklý či změněný cíl vyžaduje nové potvrzení i po Replace all. Dialog
+ukazuje typ, úplnou cestu, bajty a zachycený UTC čas; ve větším okně porovnává
+zdroj a cíl vedle sebe. Jobs poskytuje omezené dočasné podrobnosti obnovy, nikoli
+trvalý katalog. F6 a úplné zachování metadat mají samostatné navazující kontrakty.
+
 ## 26. Kompaktní ovládání a tooltipy
 
 Trvalá vysvětlující nápověda nemá zabírat místo souborům a příkazům. Spodní
@@ -1504,9 +1517,12 @@ Viewery a porovnávač přebírají fyzické rozměry a pozici hlavního okna; E
 vždy zavře i při změně uživatelského mapování. Omezení Waylandu a ověření jsou v
 [dokumentu geometrie oken](../../verification/window-geometry.md).
 
-Výběr obdélníkem zůstává navazující úkol: Brief a Thumbnails vyžadují více
-nesouvislých rozsahů, bezpečné dávkování změn na backend a podporu archivů.
-Přesouvání souborů myší mezi panely a ven z aplikace tím není změněno.
+Výběr obdélníkem začíná v prázdném místě panelu. Details, Brief a Thumbnails
+používají dávky nesouvislých rozsahů vůči zachycené revizi seznamu a výběru;
+podporují Ctrl/Shift, archivy a posun při přiblížení k okraji. Změna řazení,
+filtru nebo složky zneplatní staré gesto. Tažení skutečné položky zachovává
+souborový drag-and-drop. Aktuální implementaci a ověření popisuje
+[výběrový kontrakt](../../developer/SELECTION.md).
 
 ### Spuštění pluginů ze sdíleného Windows buildu
 
@@ -1519,3 +1535,19 @@ pluginů zůstávají aktivní a při startu se žádný plugin automaticky neko
 Soukromé přenosné instalace nadále používají sousední složky. Viz
 [návrh](2026-11-07-trusted-runtime-resolution.md) a
 [vývojářský kontrakt](../../developer/RUNTIME_DISCOVERY.md).
+
+### Samostatné hledání souborů
+
+Alt+F7 nebo lupa v panelu otevře samostatné posuvné okno hledání. Nejvýše čtyři
+okna uchovávají nezávislé kořeny, dotaz a výsledky; panely lze dál používat.
+Masky podporují více vzorů i vyloučení, výchozí `*.*` zahrnuje i názvy bez přípony.
+Rekurze je zapnutá, rozlišování velikosti písmen volitelné. Obsah se hledá jako
+doslovný text v UTF-8, případně s BOM, průběžně na backendu bez načtení celého
+souboru do paměti. Nepodporovaná kódování a omezení jsou viditelná v souhrnu.
+
+Výsledky přicházejí v omezených dávkách; Stop ponechá dosavadní výsledky a Escape
+zavře konkrétní hledání. Enter, dvojklik nebo Go to file požádá backend o kontrolu
+identity a revize výsledku a potom otevře nadřazenou složku v původním panelu.
+Soubor se touto akcí nespouští. Nativní cesty se zachovávají odděleně od textu UI.
+Otevření, editace či mazání z výsledků vyžaduje samostatný bezpečný backendový
+kontrakt. Rozsah a limity: [Find API](../../developer/FIND.md).

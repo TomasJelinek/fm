@@ -1,5 +1,5 @@
-//! Native copy sources and staging handles. Only content is promised; no overwrite
-//! or source removal capability exists. All blocking work belongs on backend workers.
+//! Native sources, staging handles and explicitly recoverable root capture.
+//! Ordinary Copy sources remain read-only. All blocking work belongs on backend workers.
 use crate::mutation::{native, validate_name, validate_path};
 use midnight_core::{
     Cancellation, EntryKind, EntryMetadata, FsError, MutationItem, TransferDirectory,
@@ -10,10 +10,35 @@ use windows_sys::Win32::Storage::FileSystem::*;
 
 #[path = "transfer_destination.rs"]
 mod destination;
+#[path = "transfer_move.rs"]
+mod move_source;
 #[path = "transfer_source.rs"]
 mod source;
+#[path = "transfer_validation.rs"]
+mod validation;
 
 impl TransferService for crate::WindowsFileSystem {
+    fn prepare_move_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        let directory = self.prepare_transfer_destination(path, cancel)?;
+        if !directory.capabilities().recoverable_replacement {
+            return Err(unsupported(
+                path,
+                "Verified Move requires a qualified local destination. Choose Copy to retain the source.",
+            ));
+        }
+        Ok(directory)
+    }
+    fn prepare_move_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMove, FsError> {
+        move_source::prepare(path, cancel)
+    }
     fn prepare_transfer_source(
         &self,
         path: &Path,

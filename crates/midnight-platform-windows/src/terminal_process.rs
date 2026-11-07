@@ -140,7 +140,56 @@ pub(crate) fn spawn(spec: &LaunchSpec) -> io::Result<Box<dyn TerminalProcess>> {
     spawn_inner(spec, false)
 }
 
+pub(crate) fn spawn_with_environment(
+    spec: &LaunchSpec,
+    environment: &[(String, OsString)],
+    cancel: &midnight_core::Cancellation,
+) -> io::Result<Box<dyn TerminalProcess>> {
+    spawn_native(spec, false, Some(environment), Some(cancel))
+}
+pub(crate) fn validate_with_environment(
+    spec: &LaunchSpec,
+    environment: &[(String, OsString)],
+) -> io::Result<()> {
+    validate(spec)?;
+    crate::user_command_environment::snapshot(environment)?;
+    Ok(())
+}
+#[cfg(test)]
+pub(crate) fn spawn_with_environment_for_test(
+    spec: &LaunchSpec,
+    environment: &[(String, OsString)],
+) -> io::Result<Box<dyn TerminalProcess>> {
+    spawn_native(
+        spec,
+        true,
+        Some(environment),
+        Some(&midnight_core::Cancellation::default()),
+    )
+}
+
+pub(crate) fn validate(spec: &LaunchSpec) -> io::Result<()> {
+    if !spec.application.is_absolute() || !spec.working_directory.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native process paths must be absolute.",
+        ));
+    }
+    terminated(spec.application.as_os_str())?;
+    terminated(spec.working_directory.as_os_str())?;
+    spec.command_line()?;
+    Ok(())
+}
+
 fn spawn_inner(spec: &LaunchSpec, hidden: bool) -> io::Result<Box<dyn TerminalProcess>> {
+    spawn_native(spec, hidden, None, None)
+}
+fn spawn_native(
+    spec: &LaunchSpec,
+    hidden: bool,
+    environment: Option<&[(String, OsString)]>,
+    cancel: Option<&midnight_core::Cancellation>,
+) -> io::Result<Box<dyn TerminalProcess>> {
     if !spec.application.is_absolute() || !spec.working_directory.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -150,6 +199,9 @@ fn spawn_inner(spec: &LaunchSpec, hidden: bool) -> io::Result<Box<dyn TerminalPr
     let application = terminated(spec.application.as_os_str())?;
     let directory = terminated(spec.working_directory.as_os_str())?;
     let mut line = spec.command_line()?;
+    let environment = environment
+        .map(crate::user_command_environment::snapshot)
+        .transpose()?;
     let mut startup = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
         ..Default::default()
@@ -161,9 +213,13 @@ fn spawn_inner(spec: &LaunchSpec, hidden: bool) -> io::Result<Box<dyn TerminalPr
         startup.wShowWindow = SW_HIDE as u16;
     }
     let mut information = PROCESS_INFORMATION::default();
+    if cancel.is_some_and(midnight_core::Cancellation::is_cancelled) {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
     // SAFETY: mutable terminated Unicode command line, trusted explicit application,
     // exact native cwd and initialized structures. No handles are inherited; the
-    // parent's Unicode environment is inherited without copying or logging it.
+    // environment pointer is either null (normal inheritance) or an owned double-NUL
+    // Unicode block alive through this call. The parent environment is never mutated.
     let success = unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -172,7 +228,9 @@ fn spawn_inner(spec: &LaunchSpec, hidden: bool) -> io::Result<Box<dyn TerminalPr
             ptr::null(),
             0,
             CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
-            ptr::null(),
+            environment
+                .as_ref()
+                .map_or(ptr::null(), |block| block.as_ptr().cast()),
             directory.as_ptr(),
             &startup,
             &mut information,

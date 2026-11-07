@@ -1,0 +1,26 @@
+import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// Shared native modeless tool-window theme, minimum size and Escape routing.
+export component ToolWindow inherits Window {
+    preferred-width: 860px; preferred-height: 620px;
+    min-width: 320px; min-height: 200px;
+    background: Theme.window-background;
+    default-font-family: Theme.font-family; default-font-size: Theme.font-size;
+    callback request-close();
+    public function focus-content() { scope.focus(); }
+    public function apply-tool-theme(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        Theme.scheme = scheme; Theme.density = density; Theme.font-family = family;
+        Theme.desktop-font-size = desktop; Theme.touch-font-size = touch;
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+    }
+    scope := FocusScope {
+        min-width: 0px; min-height: 0px;
+        preferred-width: 0px; preferred-height: 0px;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.request-close(); return accept; }
+            reject
+        }
+        @children
+    }
+}

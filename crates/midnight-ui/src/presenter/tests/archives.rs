@@ -65,6 +65,62 @@ fn archive_pane() -> Presenter {
 }
 
 #[test]
+fn archive_selection_rejects_obsolete_view_and_independent_revision() {
+    let mut p = archive_pane();
+    let commands = RefCell::new(Vec::new());
+    assert!(
+        p.bulk_selection(PaneId::Left, SelectionOperation::All, &|command| {
+            commands.borrow_mut().push(command);
+            true
+        })
+    );
+    let Command::ArchiveSelect {
+        navigation,
+        revision,
+        view,
+        ..
+    } = commands.borrow_mut().pop().unwrap()
+    else {
+        panic!()
+    };
+    let result = ArchiveSelectionResult {
+        selected: Arc::new(HashSet::from([EntryId(3)])),
+        totals: ArchiveSelectionTotals::default(),
+    };
+    p.apply(Event::ArchiveSelection {
+        pane: PaneId::Left,
+        navigation,
+        revision: SelectionRevision(0),
+        view: view.clone(),
+        result: Ok(result.clone()),
+    });
+    assert!(p.panes[0].archive.as_ref().unwrap().selection_pending);
+    p.panes[0].index = Arc::new(DirectoryIndex::from_entries(&p.panes[0].entries));
+    p.apply(Event::ArchiveSelection {
+        pane: PaneId::Left,
+        navigation,
+        revision,
+        view,
+        result: Ok(result),
+    });
+    let archive = p.panes[0].archive.as_ref().unwrap();
+    assert!(archive.selected.is_empty());
+    assert!(!archive.selection_pending);
+    assert!(p.panes[0].error.contains("view changed"));
+}
+
+#[test]
+fn refused_archive_selection_retains_original_revision_and_marks() {
+    let mut p = archive_pane();
+    assert!(!p.bulk_selection(PaneId::Left, SelectionOperation::All, &|_| false));
+    let archive = p.panes[0].archive.as_ref().unwrap();
+    assert!(archive.selected.is_empty());
+    assert!(!archive.selection_pending);
+    assert_eq!(archive.selection_revision, SelectionRevision(0));
+    assert!(p.panes[0].error.contains("queue is busy"));
+}
+
+#[test]
 fn f5_captures_archive_identity_and_native_destination_without_io() {
     let mut p = archive_pane();
     p.panes[0].parent_cursor = false;
@@ -92,6 +148,20 @@ fn f5_captures_archive_identity_and_native_destination_without_io() {
     assert_eq!(request.destination, destination);
     assert!(Arc::ptr_eq(&request.entries, &original));
     assert!(request.id.0 > 0);
+}
+
+#[test]
+fn f6_and_cut_reject_archive_members_without_native_admission() {
+    let mut p = archive_pane();
+    p.request_move_dialog(PaneId::Left, &|_| {
+        panic!("Archive Move cannot enter native admission")
+    });
+    assert!(p.copies.draft.is_none());
+    p.cut_files(PaneId::Left, &|_| {
+        panic!("Archive Cut cannot publish native paths")
+    });
+    assert!(!p.has_live_operations());
+    assert!(p.desktop.notice.is_some());
 }
 
 #[test]

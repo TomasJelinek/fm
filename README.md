@@ -31,9 +31,13 @@ and explicitly submitted shell commands run with
 the selected user/sudo permissions. F3 opens an installed internal viewer; Alt+F3 forces
 plain text, and F4 opens the configured external editor. Ctrl+C/Ctrl+V copies files and ordinary folders through a
 background queue with independent SHA-256 destination readback. Existing names
-prompt for skip or a different name; overwrite, merge, Cut/Move, links and full
-metadata preservation are not implemented. See the platform capability limits in
-[the copy contract](SECURITY.md#verified-clipboard-copying-and-the-copy-contract).
+prompt for Skip, a different name, explicit folder Merge or recoverable Replace;
+replacement retains the displaced original. F6 and Ctrl+X/Ctrl+V are being qualified
+for recoverable moves of at most 64 ordinary native files: every destination must
+be verified before original names are moved into recovery folders. Originals are
+retained, so this first move implementation does not free their disk space.
+Directory/link moves, link copying and full metadata preservation remain pending.
+See [the transfer capabilities and recovery contract](docs/developer/TRANSFERS.md).
 
 Mouse file dragging uses the same verified copy queue for drops into either panel's
 displayed directory. Dragging a selected row keeps the selected group; dragging
@@ -324,7 +328,7 @@ editor scope and shortcuts reserved for later stages.
 - Space / Insert: toggle selection and advance, clamped at the last row. Space
   also schedules the focused directory's size without following links.
 - Ctrl+R / toolbar Refresh: reload the current directory.
-- Ctrl+Shift+S: calculate all folder sizes in the active pane on the backend;
+- Ctrl+Shift+S: calculate selected folder sizes, or all folders when none are selected;
   press again to cancel. Partial/running values are marked; links are skipped.
 - Ctrl+[ / Ctrl+]: insert the left/right path as a literal shell argument.
   Simple paths remain bare; special characters use escaped double quotes.
@@ -350,7 +354,8 @@ editor scope and shortcuts reserved for later stages.
   while the toolbar shows one primary OneDrive shortcut.
   Suitable host icons load on the backend; missing native action icons retain
   semantic application vectors and native colors remain intact.
-- Options after F12 has Panel, Appearance, Command and Keyboard tabs. It offers readable
+- Options after F12 groups settings by topic, including Panel, Appearance, Command,
+  Keyboard and Custom Commands. It offers readable
   or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Dracula, Nord,
   Gruvbox Dark, Catppuccin Mocha, Solarized Light, Carbon Green, Desktop/Touch spacing, an installed
   font family and independent Desktop/Touch base sizes (8–32px). Preview
@@ -365,8 +370,22 @@ editor scope and shortcuts reserved for later stages.
   The command row uses the same height as the function-button toolbar. Alt+Up
   and Alt+Down rotate stored commands without changing the chosen terminal;
   Enter submits the displayed draft.
-  At large fonts, the window minimum grows to preserve readable controls and
-  a complete file row; ordinary fonts retain the 480 px minimum-height floor.
+  The window minimum stays 320×200 logical pixels at every font/density. Compact
+  layout keeps the active panel and essential controls accessible; wide controls scroll.
+- Custom Commands has a dedicated toolbar above the command editor whenever at
+  least one command is configured. Icons may have optional text; overflow scrolls.
+  Right-click opens the matching settings page and selects that command.
+  Drag rows in Options → Custom Commands to change their order. A marker shows
+  the insertion point; the list scrolls at its edges. Escape cancels the drag.
+  Order is saved without changing command IDs or shortcuts; Up/Down remain available.
+  Program mode passes native arguments separately; terminal mode uses literal
+  user-authored PowerShell/POSIX source with explicitly declared context variables.
+  Preview does not execute. Jobs reports started/not-started processes; Cancel
+  stops future launches without terminating applications already started.
+  Assign `user-command.<id>` shortcuts in Options → Keyboard. The
+  [Custom Commands contract](docs/developer/USER_COMMANDS.md) records platform
+  and workload limits. See the [settings verification](docs/verification/2026-11-07-custom-command-settings.md)
+  for Windows/Linux input, scrolling and persistence checks.
 - Panel scrolling animates discrete wheel input in pixels and gently settles on
   a row after input and inertia stop. Native touch/trackpad physics are preserved.
   Native drive icons precede captions and dropdown choices; special folders show
@@ -611,8 +630,11 @@ artwork from icons supplied at runtime by Windows or installed desktop themes.
 
 Further designs cover [the viewer and virtual filesystems](docs/superpowers/specs/2026-11-04-viewer-vfs-design.md)
 and [reusable sudo terminal sessions](docs/superpowers/specs/2026-11-04-terminal-sessions-design.md).
-[Checksums on Ctrl+F8](docs/superpowers/specs/2026-11-06-checksums-design.md) are
-designed but not yet implemented; Ctrl+F7 retains filename case conversion.
+[Checksums on Ctrl+F8](docs/developer/CHECKSUMS.md) use a separate modeless window
+with SHA-256 by default, optional SHA-512/MD5/SHA-1, background calculation,
+per-algorithm copy and safe manifest export. Ctrl+F7 retains filename case conversion.
+The [verification record](docs/verification/2026-11-07-checksum-window.md) distinguishes
+tested source from release/native-desktop qualification still in progress.
 The [finalized dynamic plugin interface](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
 specifies separately loadable text/source viewers and native, ZIP, GZIP, TAR/TAR.GZ
 and 7z filesystem providers under executable-adjacent `viewers/` and `filesystems/`.

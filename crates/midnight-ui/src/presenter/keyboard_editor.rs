@@ -40,7 +40,11 @@ pub(super) fn replace_aliases(values: &mut UserPreferences, action: &str, keys: 
 
 impl Presenter {
     pub(crate) fn move_shortcut_command(&mut self, step: i32) {
-        let rows = shortcut_catalog()
+        let rows = self
+            .keyboard
+            .snapshot
+            .map
+            .definitions()
             .iter()
             .enumerate()
             .filter(|(_, action)| matches_filter(action, &self.keyboard.editor.filter))
@@ -83,7 +87,7 @@ impl Presenter {
     }
 
     pub(crate) fn inspect_editor_shortcut(&self) -> ShortcutInspection {
-        let action = &shortcut_catalog()[self.keyboard.selected];
+        let action = &self.keyboard.snapshot.map.definitions()[self.keyboard.selected];
         let mut inspection = ShortcutInspection {
             scope: action.scope.label().into(),
             used_by: String::new(),
@@ -147,7 +151,7 @@ impl Presenter {
         keys.push(chord.display());
         let mut values = self.preferences.values.clone();
         replace_aliases(&mut values, &action.id, keys);
-        match ShortcutMap::new(&values.shortcuts) {
+        match ShortcutMap::with_user_commands(&values.shortcuts, &values.user_commands) {
             Ok(_) => inspection.can_assign = true,
             Err(error) => inspection.issue = error,
         }
@@ -160,7 +164,7 @@ impl Presenter {
         candidate: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        let definition = &shortcut_catalog()[self.keyboard.selected];
+        let definition = &self.keyboard.snapshot.map.definitions()[self.keyboard.selected];
         let Some(chord) = &self.keyboard.editor.candidate else {
             return false;
         };
@@ -191,7 +195,7 @@ impl Presenter {
         key: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if action != shortcut_catalog()[self.keyboard.selected].id {
+        if action != self.keyboard.snapshot.map.definitions()[self.keyboard.selected].id {
             return false;
         }
         let aliases = self

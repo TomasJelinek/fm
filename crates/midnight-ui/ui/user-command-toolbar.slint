@@ -1,0 +1,124 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { TipBody } from "controls.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+
+export struct UserCommandRow {
+    identity: string, revision: string, name: string, label: string,
+    hint: string, icon: image, enabled: bool,
+}
+
+component CommandButton inherits Rectangle {
+    in property <UserCommandRow> command;
+    callback execute(string, string);
+    callback settings(string);
+    width: max(Theme.tool-width, picture.width + caption.preferred-width
+        + (root.command.label == "" ? 8px : 16px));
+    height: Theme.control-height;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 3px;
+    border-width: focus.has-focus ? 1px : 0px; border-color: Theme.active-frame;
+    background: pointer.pressed ? Theme.selected-background : pointer.has-hover ? Theme.hover : transparent;
+    accessible-role: button; accessible-label: root.command.name;
+    accessible-enabled: root.command.enabled;
+    accessible-action-default => { if root.command.enabled { root.execute(root.command.identity, root.command.revision); } }
+    picture := NativeActionImage {
+        x: 4px; y: (parent.height - self.height) / 2;
+        width: Theme.icon-size; height: self.width;
+        native-icon: root.command.icon; fallback-icon: FallbackIcons.run;
+        action-enabled: root.command.enabled;
+    }
+    caption := Text {
+        x: picture.x + picture.width + 6px; height: parent.height;
+        text: root.command.label; color: root.command.enabled ? Theme.text : Theme.muted-text;
+        vertical-alignment: center;
+    }
+    context := ContextMenuArea {
+      Menu { MenuItem { title: "Custom Commands settings…"; activated => { root.settings(root.command.identity); } } }
+      focus := FocusScope {
+        enabled: root.command.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.execute(root.command.identity, root.command.revision); return accept;
+            }
+            reject
+        }
+        pointer := TouchArea {
+            private property <string> pressed-id;
+            private property <string> pressed-revision;
+            enabled: root.command.enabled;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down
+                    && (event.button == PointerEventButton.left || event.button == PointerEventButton.right) {
+                    self.pressed-id = root.command.identity;
+                    self.pressed-revision = root.command.revision;
+                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right
+                    && self.pressed-id == root.command.identity && self.pressed-revision == root.command.revision
+                    && self.mouse-x >= 0px && self.mouse-x < self.width
+                    && self.mouse-y >= 0px && self.mouse-y < self.height {
+                    // TouchArea consumes pointer buttons before its parent menu.
+                    context.show({x: self.mouse-x, y: self.mouse-y});
+                } else if event.kind == PointerEventKind.cancel { self.pressed-id = ""; }
+            }
+            clicked => {
+                if self.pressed-id == root.command.identity && self.pressed-revision == root.command.revision {
+                    focus.focus(); root.execute(self.pressed-id, self.pressed-revision);
+                }
+            }
+        }
+      }
+    }
+    Tooltip { TipBody { text: root.command.hint; } }
+}
+
+export component UserCommandToolbar inherits Rectangle {
+    in property <[UserCommandRow]> commands;
+    callback execute(string, string);
+    callback settings(string);
+    callback icon-visible(string, string, bool);
+    height: root.commands.length > 0 ? Theme.control-height : 0px;
+    visible: root.commands.length > 0;
+    background: Theme.secondary-surface;
+    private property <bool> overflowing: items.preferred-width > root.width;
+    ContextMenuArea {
+        Menu { MenuItem { title: "Custom Commands settings…"; activated => { root.settings(""); } } }
+        bar := ScrollView {
+            x: 0px; y: 0px; height: parent.height;
+            width: max(0px, root.width - (root.overflowing ? 2 * Theme.tool-width : 0px));
+            content-width: max(self.visible-width, items.preferred-width);
+            horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
+            mouse-drag-pan-enabled: true;
+            items := HorizontalLayout {
+                spacing: 3px; padding-left: 4px; padding-right: 4px;
+                alignment: start;
+                for command in root.commands: CommandButton {
+                    command: command;
+                    private property <bool> showing-icon: root.visible
+                        && self.absolute-position.x + self.width > bar.absolute-position.x
+                        && self.absolute-position.x < bar.absolute-position.x + bar.visible-width;
+                    // Revision changes must reannounce unchanged visible geometry.
+                    private property <string> visible-token: command.revision + ":" + command.identity;
+                    changed showing-icon => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
+                    changed visible-token => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
+                    execute(id, revision) => { root.execute(id, revision); }
+                    settings(id) => { root.settings(id); }
+                }
+            }
+        }
+        if root.overflowing: HintedActionButton {
+            x: bar.width; y: 0px; width: Theme.tool-width; height: parent.height;
+            min-width: 0px; fallback-icon: FallbackIcons.back; hint: "Scroll commands left";
+            accessible-label: "Scroll commands left";
+            enabled: bar.content-x < 0px;
+            clicked => { bar.content-x = min(0px, bar.content-x + max(40px, bar.visible-width * 0.6)); }
+        }
+        if root.overflowing: HintedActionButton {
+            x: bar.width + Theme.tool-width; y: 0px; width: Theme.tool-width; height: parent.height;
+            min-width: 0px; fallback-icon: FallbackIcons.forward; hint: "Scroll commands right";
+            accessible-label: "Scroll commands right";
+            enabled: bar.content-x > bar.visible-width - bar.content-width;
+            clicked => { bar.content-x = max(bar.visible-width - bar.content-width, bar.content-x - max(40px, bar.visible-width * 0.6)); }
+        }
+    }
+}

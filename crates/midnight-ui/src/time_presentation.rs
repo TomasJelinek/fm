@@ -13,6 +13,24 @@ pub(crate) fn modified(metadata: &EntryMetadata) -> Option<LocalizedDateTime> {
 // Unavailable native formatting still has a deterministic, explicitly labelled fallback.
 // Formatting an existing timestamp never queries the OS timezone or locale on the UI thread.
 pub(crate) fn utc_fallback(time: SystemTime) -> Option<LocalizedDateTime> {
+    let utc = utc_timestamp(time)?;
+    Some(LocalizedDateTime {
+        date: utc.format("%Y-%m-%d").to_string(),
+        time: utc.format("%H:%M:%S UTC").to_string(),
+    })
+}
+
+/// Conflict dialogs retain the captured fractional value and explicitly label UTC.
+/// This does not infer a filesystem's timestamp resolution or query the OS.
+pub(crate) fn utc_precise(time: SystemTime) -> Option<String> {
+    Some(
+        utc_timestamp(time)?
+            .format("%Y-%m-%d %H:%M:%S%.f UTC")
+            .to_string(),
+    )
+}
+
+fn utc_timestamp(time: SystemTime) -> Option<DateTime<chrono::Utc>> {
     let (seconds, nanos) = match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => (i128::from(duration.as_secs()), duration.subsec_nanos()),
         Err(error) => {
@@ -28,10 +46,7 @@ pub(crate) fn utc_fallback(time: SystemTime) -> Option<LocalizedDateTime> {
     if !display_year(utc.year()) {
         return None;
     }
-    Some(LocalizedDateTime {
-        date: utc.format("%Y-%m-%d").to_string(),
-        time: utc.format("%H:%M:%S UTC").to_string(),
-    })
+    Some(utc)
 }
 
 fn display_year(year: i32) -> bool {
@@ -49,6 +64,19 @@ mod tests {
             utc_fallback(UNIX_EPOCH + Duration::from_secs(500_000_000_000)),
             None
         );
+    }
+
+    #[test]
+    fn conflict_utc_keeps_fractional_precision_and_rejects_out_of_calendar_values() {
+        assert_eq!(
+            utc_precise(UNIX_EPOCH + Duration::from_nanos(123_456_700)).as_deref(),
+            Some("1970-01-01 00:00:00.123456700 UTC")
+        );
+        assert_eq!(
+            utc_precise(UNIX_EPOCH - Duration::from_millis(500)).as_deref(),
+            Some("1969-12-31 23:59:59.500 UTC")
+        );
+        assert!(utc_precise(UNIX_EPOCH + Duration::from_secs(500_000_000_000)).is_none());
     }
 
     #[test]

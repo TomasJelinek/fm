@@ -194,3 +194,284 @@ fn owned_sticky_parent_allows_private_copy_directory() {
         0o700
     );
 }
+
+#[test]
+fn explicit_merge_pins_directory_identity_and_retains_existing_children() {
+    let temp = fixture();
+    let directory = temp.path().join("merge");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("existing"), b"keep").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    assert!(parent.capabilities().directory_merge);
+    let expected = parent
+        .prepare_target(OsStr::new("merge"), &cancel)
+        .unwrap()
+        .unwrap();
+    let merged = parent
+        .open_merge_directory(OsStr::new("merge"), expected.entry(), &cancel)
+        .unwrap();
+    assert_eq!(merged.identity(), expected.entry().identity);
+    merged.create_directory(OsStr::new("new"), &cancel).unwrap();
+    assert_eq!(fs::read(directory.join("existing")).unwrap(), b"keep");
+    assert!(directory.join("new").is_dir());
+}
+
+#[test]
+fn recoverable_replacement_retains_the_original_after_stage_drop() {
+    use midnight_core::{TransferPublication, TransferReplacementPolicy};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let temp = fixture();
+    let target = temp.path().join("target 文档");
+    fs::write(&target, b"original").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    assert!(parent.capabilities().recoverable_replacement);
+    assert!(!parent.capabilities().conditional_overwrite);
+    let expected = parent
+        .prepare_target(OsStr::new("target 文档"), &cancel)
+        .unwrap()
+        .unwrap();
+    let original_identity = expected.entry().identity;
+    let mut stage = parent
+        .stage_file_for_target(
+            OsStr::new("target 文档"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"verified replacement").unwrap();
+    stage.sync(&cancel).unwrap();
+    stage.seek(SeekFrom::Start(0)).unwrap();
+    let mut readback = Vec::new();
+    stage.read_to_end(&mut readback).unwrap();
+    assert_eq!(readback, b"verified replacement");
+    let outcome = stage
+        .publish_replace(OsStr::new("target 文档"), &cancel)
+        .unwrap();
+    let recovery = match outcome {
+        TransferPublication::Replaced { path, recovery } => {
+            assert_eq!(path, target);
+            recovery
+        }
+        other => panic!("unexpected replacement outcome: {other:?}"),
+    };
+    drop(stage);
+    assert_eq!(recovery.identity, Some(original_identity));
+    assert_eq!(fs::read(&target).unwrap(), b"verified replacement");
+    assert_eq!(fs::read(&recovery.path).unwrap(), b"original");
+}
+
+#[test]
+fn strict_conditional_replacement_is_explicitly_unsupported() {
+    use midnight_core::TransferReplacementPolicy;
+    let temp = fixture();
+    fs::write(temp.path().join("target"), b"original").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let expected = parent
+        .prepare_target(OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    let error = match parent.stage_file_for_target(
+        OsStr::new("target"),
+        expected,
+        TransferReplacementPolicy::ConditionalIdentity,
+        &cancel,
+    ) {
+        Ok(_) => panic!("provider silently weakened conditional replacement"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+    assert_eq!(fs::read(temp.path().join("target")).unwrap(), b"original");
+}
+
+#[test]
+fn replacement_rejects_changed_target_before_publication() {
+    use midnight_core::TransferReplacementPolicy;
+    use std::io::Write;
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"original").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let expected = parent
+        .prepare_target(OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    let mut stage = parent
+        .stage_file_for_target(
+            OsStr::new("target"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"replacement").unwrap();
+    fs::rename(&target, temp.path().join("original-away")).unwrap();
+    fs::write(&target, b"newcomer").unwrap();
+    assert!(
+        stage
+            .publish_replace(OsStr::new("target"), &cancel)
+            .is_err()
+    );
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"newcomer");
+    assert_eq!(
+        fs::read(temp.path().join("original-away")).unwrap(),
+        b"original"
+    );
+}
+
+#[test]
+fn a_verified_stage_can_bind_a_late_conflict_without_recopying() {
+    use midnight_core::{TransferPublication, TransferReplacementPolicy};
+    use std::io::Write;
+    let temp = fixture();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let mut stage = parent.stage_file(&cancel).unwrap();
+    stage.write_all(b"already verified").unwrap();
+    stage.sync(&cancel).unwrap();
+    fs::write(temp.path().join("late"), b"old").unwrap();
+    assert!(
+        stage
+            .publish_no_replace(OsStr::new("late"), &cancel)
+            .is_err()
+    );
+    let expected = parent
+        .prepare_target(OsStr::new("late"), &cancel)
+        .unwrap()
+        .unwrap();
+    stage
+        .prepare_replacement(
+            OsStr::new("late"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    assert!(matches!(
+        stage.publish_replace(OsStr::new("late"), &cancel).unwrap(),
+        TransferPublication::Replaced { .. }
+    ));
+    drop(stage);
+    assert_eq!(
+        fs::read(temp.path().join("late")).unwrap(),
+        b"already verified"
+    );
+}
+
+#[test]
+fn explicit_no_replace_ignores_an_old_replacement_binding() {
+    use midnight_core::TransferReplacementPolicy;
+    use std::io::Write;
+    let temp = fixture();
+    fs::write(temp.path().join("target"), b"keep").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let expected = parent
+        .prepare_target(OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    let mut stage = parent
+        .stage_file_for_target(
+            OsStr::new("target"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"new bytes").unwrap();
+    stage
+        .publish_no_replace(OsStr::new("other"), &cancel)
+        .unwrap();
+    drop(stage);
+    assert_eq!(fs::read(temp.path().join("target")).unwrap(), b"keep");
+    assert_eq!(fs::read(temp.path().join("other")).unwrap(), b"new bytes");
+}
+
+#[test]
+fn target_revision_change_prevents_old_consent_from_authorizing_replacement() {
+    use midnight_core::TransferReplacementPolicy;
+    use std::io::Write;
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"old bytes").unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let expected = parent
+        .prepare_target(OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    let mut stage = parent
+        .stage_file_for_target(
+            OsStr::new("target"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"replacement").unwrap();
+    fs::write(&target, b"new bytes").unwrap();
+    let modified = fs::metadata(&target).unwrap().modified().unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_modified(modified + std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        stage
+            .publish_replace(OsStr::new("target"), &cancel)
+            .is_err()
+    );
+    drop(stage);
+    assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+}
+
+#[test]
+fn replaced_merge_directory_identity_cannot_be_reused_by_old_consent() {
+    let temp = fixture();
+    let directory = temp.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    let provider = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let parent = provider
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let expected = parent
+        .prepare_target(OsStr::new("directory"), &cancel)
+        .unwrap()
+        .unwrap();
+    fs::rename(&directory, temp.path().join("directory-away")).unwrap();
+    fs::create_dir(&directory).unwrap();
+    assert!(
+        parent
+            .open_merge_directory(OsStr::new("directory"), expected.entry(), &cancel)
+            .is_err()
+    );
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+}

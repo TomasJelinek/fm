@@ -109,6 +109,7 @@ pub enum ActionIcon {
     Help,
     Rename,
     View,
+    Find,
     Edit,
     Copy,
     Move,
@@ -131,7 +132,7 @@ pub enum ActionIcon {
 
 impl ActionIcon {
     /// Bounded prefetch palette. Consumers use named roles rather than numeric indexes.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Back,
         Self::Forward,
         Self::Parent,
@@ -148,6 +149,7 @@ impl ActionIcon {
         Self::Help,
         Self::Rename,
         Self::View,
+        Self::Find,
         Self::Edit,
         Self::Copy,
         Self::Move,
@@ -396,6 +398,34 @@ pub trait TerminalService: Send + Sync + 'static {
         &self,
         request: &TerminalRequest,
     ) -> Result<Box<dyn TerminalProcess>, FsError>;
+
+    /// Explicit backend environment data; defaults preserve existing adapters and never
+    /// interpolate file names into user-authored source. Native implementations override.
+    fn launch_terminal_with_environment(
+        &self,
+        request: &TerminalRequest,
+        environment: &[(String, OsString)],
+        cancel: &crate::Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(FsError::from_io(
+                "Custom Command terminal",
+                &request.working_directory,
+                std::io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        if environment.is_empty() {
+            return self.launch_terminal(request);
+        }
+        Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "This terminal cannot accept native environment data.",
+            ),
+        ))
+    }
 }
 
 /// Backend-owned process tracking for either Rust Child or a native process handle.

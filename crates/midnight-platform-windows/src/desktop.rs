@@ -72,6 +72,77 @@ impl TerminalService for WindowsFileSystem {
             .and_then(|spec| terminal_process::spawn(&spec))
             .map_err(|error| FsError::from_io("launch terminal", &request.working_directory, error))
     }
+
+    fn launch_terminal_with_environment(
+        &self,
+        request: &TerminalRequest,
+        environment: &[(String, OsString)],
+        cancel: &midnight_core::Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        let spec = prepare_user_terminal(request, environment, cancel)?;
+        terminal_process::spawn_with_environment(&spec, environment, cancel).map_err(|cause| {
+            FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+        })
+    }
+}
+
+pub(crate) fn prepare_user_terminal(
+    request: &TerminalRequest,
+    environment: &[(String, OsString)],
+    cancel: &midnight_core::Cancellation,
+) -> Result<LaunchSpec, FsError> {
+    midnight_core::UserCommandProcess {
+        working_directory: request.working_directory.clone(),
+        invocation: midnight_core::UserCommandProcessInvocation::Terminal {
+            shell: request.shell,
+            script: request.command.clone(),
+            environment: environment.to_vec(),
+        },
+    }
+    .check(cancel)?;
+    if request.mode != TerminalMode::Standard {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Custom Commands use normal-user terminals only.",
+            ),
+        ));
+    }
+    if request.shell != ShellFlavor::PowerShell {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This adapter currently supports PowerShell Custom Commands.",
+            ),
+        ));
+    }
+    if !std::fs::metadata(&request.working_directory)
+        .map_err(|cause| FsError::from_io("Custom Command cwd", &request.working_directory, cause))?
+        .is_dir()
+    {
+        return Err(FsError::from_io(
+            "Custom Command cwd",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Command cwd is not a directory.",
+            ),
+        ));
+    }
+    let executable = powershell_path().map_err(|cause| {
+        FsError::from_io("find system shell", &request.working_directory, cause)
+    })?;
+    let spec = terminal_command(&executable, request).map_err(|cause| {
+        FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+    })?;
+    terminal_process::validate_with_environment(&spec, environment).map_err(|cause| {
+        FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+    })?;
+    Ok(spec)
 }
 
 fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<LaunchSpec> {

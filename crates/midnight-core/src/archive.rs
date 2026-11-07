@@ -150,6 +150,16 @@ pub enum ArchiveSelectionAction {
         last: usize,
         additive: bool,
     },
+    Ranges {
+        ranges: crate::SelectionRanges,
+        mode: crate::SelectionMode,
+    },
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ArchiveSelectionResult {
+    pub selected: Arc<std::collections::HashSet<crate::EntryId>>,
+    pub totals: ArchiveSelectionTotals,
 }
 
 /// Cached totals for a provider selection. Bulk updates are prepared on workers;

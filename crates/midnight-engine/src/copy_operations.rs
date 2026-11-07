@@ -103,6 +103,15 @@ impl Controller {
     pub(crate) async fn enqueue_selected(&self, request: SelectedCopyRequest) {
         self.enqueue_input(request.into()).await;
     }
+    pub(crate) async fn enqueue_move(&self, request: CopyRequest) {
+        self.enqueue_input(CopyInput::move_paths(request)).await;
+    }
+    pub(crate) async fn enqueue_selected_move(&self, request: SelectedCopyRequest) {
+        self.enqueue_input(CopyInput::move_selection(request)).await;
+    }
+    pub(crate) async fn enqueue_clipboard_move(&self, request: ClipboardMoveRequest) {
+        self.enqueue_input(CopyInput::move_clipboard(request)).await;
+    }
     pub(crate) async fn enqueue_archive(&self, request: ArchiveCopyRequest) {
         self.enqueue_input(request.into()).await;
     }
@@ -341,6 +350,13 @@ async fn run_input(
         let _permit = permit;
         let command = command.resolve(&job_cancel)?;
         match command {
+            input::Resolved::NativeMove(command) => {
+                status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .requested_roots = command.clipboard.paths.len() as u64;
+                worker::Job::prepare_move(command, &*service, job_cancel, status)
+            }
             input::Resolved::Native(command) => {
                 status
                     .lock()
@@ -489,22 +505,12 @@ fn panicked(status: &Status, message: String, cancel: &Cancellation) -> CopyProg
 }
 
 fn initial(request: &CopyInput) -> CopyProgress {
-    CopyProgress {
-        id: request.id,
-        state: CopyOperationState::Queued,
-        phase: CopyOperationPhase::Planning,
-        requested_roots: request.requested_roots(),
-        files_completed: 0,
-        directories_created: 0,
-        skipped: 0,
-        failed: 0,
-        copied_bytes: 0,
-        verified_bytes: 0,
-        current_path: None,
-        destination_directory: request.destination.clone(),
-        message: String::new(),
-        errors: vec![],
-    }
+    CopyProgress::queued(
+        request.id,
+        request.destination.clone(),
+        request.requested_roots(),
+        request.intent,
+    )
 }
 
 #[cfg(test)]

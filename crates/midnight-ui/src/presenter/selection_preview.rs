@@ -68,15 +68,17 @@ impl Pane {
     }
     /// Constant directory work: a single path lookup and at most 32 tiny intents.
     pub(crate) fn selection_visible(&self, entry: &Entry) -> bool {
-        if let Some(archive) = &self.archive {
-            return archive.selected.contains(&entry.id);
-        }
         // A deferred All/Invert result records explicit exceptions in its basis.
         // Paths absent from that basis use the worker's acknowledged default until
         // the complete-view rebase arrives, including rows appended meanwhile.
-        let mut selected = self.selected.contains_path(&entry.path)
-            || (self.selection_deferred
-                && !self.selected.basis().by_path.contains_key(&entry.path));
+        let mut selected = self.archive.as_ref().map_or_else(
+            || {
+                self.selected.contains_path(&entry.path)
+                    || (self.selection_deferred
+                        && !self.selected.basis().by_path.contains_key(&entry.path))
+            },
+            |archive| archive.selected.contains(&entry.id),
+        );
         for pending in &self.selection_preview {
             if !pending.applies(self) {
                 continue;
@@ -101,11 +103,21 @@ impl Pane {
                         .is_some_and(|(row, (start, end))| (start..=end).contains(row));
                     selected = in_range || (*additive && selected);
                 }
+                SelectionAction::Ranges { ranges, mode } => {
+                    let hit = pane_position(self, entry).is_some_and(|row| ranges.contains(row));
+                    selected = mode.selected(hit, selected);
+                }
                 _ => {}
             }
         }
-        selected
+        self.rectangle_preview
+            .as_ref()
+            .map_or(selected, |preview| preview.visible(self, entry, selected))
     }
+}
+
+fn pane_position(pane: &Pane, entry: &Entry) -> Option<usize> {
+    pane.display_index().by_id.get(&entry.id).copied()
 }
 
 impl Presenter {

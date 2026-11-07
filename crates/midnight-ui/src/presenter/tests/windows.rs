@@ -1,5 +1,13 @@
 use super::*;
 
+#[test]
+fn copy_and_move_refuse_ambiguous_edits_below_a_raw_utf16_destination() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    super::copy_dialog::assert_ambiguous_destination_is_refused(OsString::from_wide(&[
+        0x72, 0xd800,
+    ]));
+}
+
 pub(super) fn test_root() -> PathBuf {
     PathBuf::from("C:\\")
 }

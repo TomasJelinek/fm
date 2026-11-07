@@ -200,7 +200,12 @@ impl Bridge {
 
     fn poll(&self, window: &MainWindow) {
         self.publish(window);
-        let id = self.presenter.borrow().drag_native_ready();
+        let id = {
+            let Ok(presenter) = self.presenter.try_borrow() else {
+                return;
+            };
+            presenter.drag_native_ready()
+        };
         if let Some(id) = id {
             let armed = self.presenter.borrow_mut().arm_native_drag(id);
             if armed {

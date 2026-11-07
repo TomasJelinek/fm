@@ -115,6 +115,13 @@ fn build() -> Vec<ShortcutDefinition> {
     );
     add("panel.zoom", "Zoom active panel", FilesAny, &["Ctrl+F11"]);
     add("files.view", "View focused file", FilesAny, &["F3"]);
+    add("files.find", "Find files and text", FilesAny, &["Alt+F7"]);
+    add(
+        "files.checksums",
+        "Calculate checksums",
+        FilesAny,
+        &["Ctrl+F8"],
+    );
     add(
         "files.compare",
         "Compare two files",
@@ -360,6 +367,18 @@ fn build() -> Vec<ShortcutDefinition> {
         "Copy files to clipboard",
         FilesIdle,
         &["Ctrl+C"],
+    );
+    add(
+        "files.move-to",
+        "Move selected files to folder with recovery",
+        FilesAny,
+        &["F6"],
+    );
+    add(
+        "files.cut",
+        "Cut native files to clipboard",
+        FilesIdle,
+        &["Ctrl+X"],
     );
     add(
         "files.paste",

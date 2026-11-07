@@ -1,10 +1,17 @@
 use super::*;
-use midnight_core::{StagedTransferFile, TransferPublication};
+use midnight_core::{
+    StagedTransferFile, TransferCapabilities, TransferPublication, TransferReplacementPolicy,
+    TransferTarget,
+};
 use rustix::fs::{AtFlags, linkat, mkdirat};
 use std::{
+    ffi::OsString,
     io::{Read, Seek, SeekFrom, Write},
     os::fd::AsRawFd,
 };
+
+#[path = "transfer_recovery.rs"]
+pub(super) mod recovery;
 
 #[derive(Clone)]
 pub(super) struct Directory {
@@ -13,6 +20,20 @@ pub(super) struct Directory {
     identity: TransferIdentity,
 }
 impl Directory {
+    pub(super) fn check_recovery_parent(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        let parent = self.file.metadata().map_err(|e| error(&self.path, e))?;
+        let owner = rustix::process::geteuid().as_raw();
+        if (parent.uid() != owner && parent.uid() != 0)
+            || (parent.mode() & 0o022 != 0 && parent.mode() & 0o1000 == 0)
+        {
+            return Err(unsupported(
+                &self.path,
+                "Private recovery requires an owned or trusted sticky parent. Choose Copy to retain the source; no Move fallback is performed.",
+            ));
+        }
+        Ok(())
+    }
     pub(super) fn from_file(file: File, path: PathBuf) -> Result<Self, FsError> {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
@@ -30,6 +51,39 @@ impl TransferDirectory for Directory {
     }
     fn identity(&self) -> TransferIdentity {
         self.identity
+    }
+    fn capabilities(&self) -> TransferCapabilities {
+        TransferCapabilities {
+            directory_merge: true,
+            conditional_overwrite: false,
+            recoverable_replacement: recovery::supported(self),
+        }
+    }
+    fn prepare_target(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+        recovery::prepare_target(self, name, cancel)
+    }
+    fn open_merge_directory(
+        &self,
+        name: &OsStr,
+        expected: &TransferEntry,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        recovery::open_merge(self, name, expected, cancel)
+    }
+    fn stage_file_for_target(
+        &self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        let mut stage = self.stage_file(cancel)?;
+        stage.prepare_replacement(name, expected, policy, cancel)?;
+        Ok(stage)
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
@@ -100,16 +154,8 @@ impl TransferDirectory for Directory {
         // the new name against a different unprivileged UID replacing it. A sticky
         // directory is safe only when its owner is us or trusted root. Same-UID and
         // privileged namespace mutation remain outside this provider's contract.
-        let parent = self.file.metadata().map_err(|e| error(&self.path, e))?;
+        self.check_recovery_parent(cancel)?;
         let owner = rustix::process::geteuid().as_raw();
-        if (parent.uid() != owner && parent.uid() != 0)
-            || (parent.mode() & 0o022 != 0 && parent.mode() & 0o1000 == 0)
-        {
-            return Err(unsupported(
-                &self.path,
-                "Copy directories require a parent protected against other users renaming the newly created entry (an owned private or trusted sticky directory). File-only copying is still supported.",
-            ));
-        }
         let path = self.path.join(name);
         mkdirat(&*self.file, name, Mode::RWXU).map_err(|e| error(&path, e.into()))?;
         let file = File::from(
@@ -150,6 +196,8 @@ impl TransferDirectory for Directory {
             file: Some(file),
             directory: self.clone(),
             published: false,
+            published_name: None,
+            replacement: None,
         }))
     }
 }
@@ -158,6 +206,8 @@ struct Stage {
     file: Option<File>,
     directory: Directory,
     published: bool,
+    published_name: Option<OsString>,
+    replacement: Option<recovery::Replacement>,
 }
 impl Stage {
     fn file(&self) -> io::Result<&File> {
@@ -190,6 +240,53 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn rewind_for_validation(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferReadGuard>, FsError> {
+        super::validation::rewind(
+            self.file().map_err(|e| error(&self.directory.path, e))?,
+            &self.directory.path,
+            cancel,
+        )
+    }
+    fn revalidate_publication(&self, cancel: &Cancellation) -> Result<TransferIdentity, FsError> {
+        let name = self
+            .published_name
+            .as_ref()
+            .ok_or_else(|| invalid(&self.directory.path, "stage has no successful publication"))?;
+        let own = identity(
+            self.file().map_err(|e| error(&self.directory.path, e))?,
+            &self.directory.path,
+        )?;
+        let visible = self
+            .directory
+            .inspect(name, cancel)?
+            .ok_or_else(|| invalid(&self.directory.path, "published target disappeared"))?;
+        if visible.item.kind != EntryKind::File || visible.identity != own {
+            return Err(invalid(
+                &self.directory.path,
+                "published target name changed",
+            ));
+        }
+        Ok(own)
+    }
+    fn prepare_replacement(
+        &mut self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.bind_replacement(name, expected, policy, cancel)
+    }
+    fn publish_replace(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        self.replace(name, cancel, || {})
+    }
     fn sync(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.directory.path)?;
         self.file()
@@ -227,6 +324,7 @@ impl StagedTransferFile for Stage {
         )
         .map_err(|e| error(&path, e.into()))?;
         self.published = true;
+        self.published_name = Some(name.to_owned());
         match self.directory.file.sync_all() {
             Ok(()) => Ok(TransferPublication::Published(path)),
             Err(failure) => Ok(TransferPublication::PublishedDurabilityUnconfirmed {

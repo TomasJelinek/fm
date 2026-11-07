@@ -3,10 +3,10 @@
 Inventory captured on 7 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **56**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **58**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **486**
-  package/version/source records, **454** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **488**
+  package/version/source records, **456** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
@@ -32,7 +32,8 @@ This table is a guide; the linked inventories above contain every selected crate
 | Slint 1.18.1 | UI, compiler and render integration | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0; royalty-free desktop branch selected |
 | Tokio 1.54.1 | Async backend orchestration | MIT |
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Data/settings/manifest serialization | MIT OR Apache-2.0 |
-| sha2 0.10.9 | SHA-256 copy/readback verification and matching protected Windows plugin runtimes | MIT OR Apache-2.0 |
+| sha2 0.10.9 | SHA-256 copy/readback verification, protected Windows plugin runtimes and standalone SHA-256/SHA-512 checksum backend | MIT OR Apache-2.0 |
+| md-5 0.10.6 / sha1 0.10.6 | MD5/SHA-1 compatibility calculations in the standalone checksum backend; not authentication or copy verification | MIT OR Apache-2.0; MIT branch selected |
 | notify 8.2.1 | Filesystem event watching | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |
@@ -54,6 +55,15 @@ This table is a guide; the linked inventories above contain every selected crate
 | rustix 1.1.6 | Unix native calls | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | arboard 3.7.0 | Native clipboard integration | MIT OR Apache-2.0 |
 | cbindgen 0.29.4 | API C-header generation tool | MPL-2.0 |
+
+The checksum backend pins the digest-0.10-compatible hash releases and enables
+only `std`. Optional assembly, OID, compression and force-soft features are not
+enabled. Exact released source archives and both license texts were inspected;
+MIT copyright/license notices accompany distribution. SHA-1 0.10.7 was also
+inspected: its only patch change disables an optional assembly feature that this
+project does not enable. The Ctrl+F8 window is implemented and has separate
+[UI qualification](verification/2026-11-07-checksum-window.md); native hashing and
+manifest evidence is in [backend verification](verification/2026-11-07-checksum-backend.md).
 
 The archive provider supports bounded ZIP/7z/TAR and GZIP/XZ/BZIP2/Zstandard streams,
 including compressed TAR variants, with read-only browsing and host-verified copy-out;

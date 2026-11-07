@@ -15,6 +15,78 @@ pub enum SelectionOperation {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SelectionRevision(pub u64);
 
+/// A rectangle's modifier behavior against its captured selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionMode {
+    Replace,
+    Add,
+    Toggle,
+}
+impl SelectionMode {
+    pub fn selected(self, in_rectangle: bool, previously_selected: bool) -> bool {
+        match self {
+            Self::Replace => in_rectangle,
+            Self::Add => in_rectangle || previously_selected,
+            Self::Toggle => in_rectangle ^ previously_selected,
+        }
+    }
+}
+
+/// Inclusive positions in a single immutable directory view, excluding its parent row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionSpan {
+    pub first: usize,
+    pub last: usize,
+}
+
+/// Validated, bounded disjoint positions. Construction performs at most 4096 checks.
+/// The source extent travels with the spans to prevent truncation or reinterpretation.
+#[derive(Clone, Debug)]
+pub struct SelectionRanges {
+    len: usize,
+    spans: Arc<[SelectionSpan]>,
+}
+impl SelectionRanges {
+    pub const MAX_SPANS: usize = 4096;
+
+    pub fn new(len: usize, spans: Vec<SelectionSpan>) -> Result<Self, &'static str> {
+        if spans.len() > Self::MAX_SPANS {
+            return Err("Selection rectangle exceeds the range budget");
+        }
+        let mut previous = None;
+        for span in &spans {
+            if span.first > span.last || span.last >= len {
+                return Err("Selection rectangle is outside its captured view");
+            }
+            if previous.is_some_and(|last| span.first <= last) {
+                return Err("Selection rectangle ranges must be sorted and disjoint");
+            }
+            previous = Some(span.last);
+        }
+        Ok(Self {
+            len,
+            spans: spans.into(),
+        })
+    }
+
+    /// Number of entries in the captured source, not the number selected.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+    pub fn spans(&self) -> &[SelectionSpan] {
+        &self.spans
+    }
+    pub fn contains(&self, position: usize) -> bool {
+        let next = self.spans.partition_point(|span| span.last < position);
+        self.spans
+            .get(next)
+            .is_some_and(|span| span.first <= position)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum SelectionAction {
     Bulk(SelectionOperation),
@@ -24,6 +96,11 @@ pub enum SelectionAction {
         anchor: PathBuf,
         target: PathBuf,
         additive: bool,
+    },
+    /// Disjoint rectangle positions resolved only against `SelectionRequest::view`.
+    Ranges {
+        ranges: SelectionRanges,
+        mode: SelectionMode,
     },
     Rebase,
 }

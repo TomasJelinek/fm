@@ -5,6 +5,7 @@ use super::*;
 pub(super) struct CopyContext {
     source: PathBuf,
     destination: PathBuf,
+    pub(super) intent: TransferIntent,
 }
 
 pub(crate) struct CopyDraft {
@@ -14,12 +15,14 @@ pub(crate) struct CopyDraft {
     pub(crate) destination: PathBuf,
     pub(crate) summary: String,
     pub(crate) error: String,
+    pub(crate) intent: TransferIntent,
 }
 
 #[derive(Clone)]
 pub(super) enum CopyDraftInput {
     Native(SelectedFiles),
     Archive(ArchiveCopyRequest),
+    Clipboard(Arc<FileClipboard>),
 }
 
 impl CopyDraftInput {
@@ -33,27 +36,51 @@ impl CopyDraftInput {
                 .selected
                 .len()
                 .max(usize::from(files.fallback.is_some())),
+            Self::Clipboard(files) => files.paths.len(),
         }
     }
 
-    fn command(self, id: OperationId, destination: PathBuf) -> Command {
+    fn command(self, id: OperationId, destination: PathBuf, intent: TransferIntent) -> Command {
         match self {
-            Self::Native(files) => Command::EnqueueSelectedCopy(SelectedCopyRequest {
-                id,
-                files,
-                destination,
-            }),
+            Self::Native(files) => {
+                let request = SelectedCopyRequest {
+                    id,
+                    files,
+                    destination,
+                };
+                if intent == TransferIntent::RecoverableMove {
+                    Command::EnqueueSelectedMove(request)
+                } else {
+                    Command::EnqueueSelectedCopy(request)
+                }
+            }
             Self::Archive(mut request) => {
                 request.id = id;
                 request.destination = destination;
                 Command::EnqueueArchiveCopy(request)
             }
+            Self::Clipboard(clipboard) => Command::EnqueueClipboardMove(ClipboardMoveRequest {
+                id,
+                clipboard,
+                destination,
+            }),
         }
     }
 }
 
 impl Presenter {
     pub(crate) fn request_copy_dialog(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        self.request_transfer_dialog(pane, TransferIntent::Copy, send);
+    }
+    pub(crate) fn request_move_dialog(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        self.request_transfer_dialog(pane, TransferIntent::RecoverableMove, send);
+    }
+    fn request_transfer_dialog(
+        &mut self,
+        pane: PaneId,
+        intent: TransferIntent,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         if self.operations.closing
             || self.copies.draft.is_some()
             || !self.native_action_allowed(pane.other())
@@ -61,12 +88,20 @@ impl Presenter {
             return;
         }
         if self.panes[pane.index()].archive.is_some() {
-            self.request_archive_copy_dialog(pane);
+            if intent == TransferIntent::Copy {
+                self.request_archive_copy_dialog(pane);
+            } else {
+                self.desktop.report(
+                    "Move unavailable",
+                    "Archive members cannot be moved. Use Copy to extract them.".into(),
+                );
+            }
             return;
         }
         let context = CopyContext {
             source: self.panes[pane.index()].display_path().to_owned(),
             destination: self.panes[pane.other().index()].display_path().to_owned(),
+            intent,
         };
         self.request_selection_action(
             pane,
@@ -105,6 +140,7 @@ impl Presenter {
             destination: context.destination,
             summary,
             error: String::new(),
+            intent: context.intent,
         });
     }
 
@@ -126,6 +162,13 @@ impl Presenter {
         let destination = if draft.destination.to_string_lossy() == destination {
             draft.destination.clone()
         } else {
+            if crate::native_path_edit::ambiguous_edit(&draft.destination, destination) {
+                draft.error = concat!(
+                    "The displayed destination folder contains characters this editor cannot represent. ",
+                    "Enter another complete path without replacement characters."
+                ).into();
+                return;
+            }
             PathBuf::from(destination)
         };
         if !destination.is_absolute() || destination.as_os_str().as_encoded_bytes().contains(&0) {
@@ -133,12 +176,19 @@ impl Presenter {
             return;
         }
         let input = draft.input.clone();
+        let intent = draft.intent;
+        if intent == TransferIntent::RecoverableMove && matches!(input, CopyDraftInput::Archive(_))
+        {
+            draft.error = "Archive members cannot be moved. Use Copy to extract them.".into();
+            return;
+        }
         let roots = input.roots() as u64;
         let target = destination.clone();
-        if self.submit_copy(
+        if self.submit_transfer(
             destination,
             roots,
-            move |id| input.command(id, target),
+            intent,
+            move |id| input.command(id, target, intent),
             send,
         ) {
             self.retire_copy_draft();
@@ -193,6 +243,7 @@ impl Presenter {
             destination,
             summary,
             error: String::new(),
+            intent: TransferIntent::Copy,
         });
     }
 
@@ -205,6 +256,24 @@ impl Presenter {
         {
             self.retire_copy_draft();
         }
+    }
+
+    pub(super) fn open_clipboard_move(&mut self, clipboard: FileClipboard, destination: PathBuf) {
+        if self.operations.closing || self.copies.draft.is_some() {
+            self.retired.push(Box::new(clipboard));
+            return;
+        }
+        let request = self.desktop.request();
+        let count = clipboard.paths.len() as u64;
+        self.copies.draft = Some(CopyDraft {
+            token: format!("copy-draft:{}", request.0),
+            input: CopyDraftInput::Clipboard(Arc::new(clipboard)),
+            source: "Files on clipboard".into(),
+            destination,
+            summary: format!("{} clipboard items", self.number_locale.format_u64(count)),
+            error: String::new(),
+            intent: TransferIntent::RecoverableMove,
+        });
     }
 
     pub(super) fn retire_copy_draft(&mut self) {

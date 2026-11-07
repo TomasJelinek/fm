@@ -1,6 +1,9 @@
 use midnight_core::*;
 mod archives;
 mod bookmarks;
+pub(crate) mod checksums;
+#[cfg(test)]
+mod checksums_tests;
 mod choices;
 mod comparison;
 mod copies;
@@ -13,6 +16,13 @@ mod file_actions;
 mod file_compare;
 mod filename_colors;
 mod filter;
+pub(crate) mod find;
+#[cfg(test)]
+mod find_tests;
+#[cfg(all(test, unix))]
+mod find_unix_tests;
+#[cfg(all(test, windows))]
+mod find_windows_tests;
 mod fonts;
 pub(crate) mod keyboard;
 pub(crate) mod keyboard_editor;
@@ -25,10 +35,15 @@ mod search;
 mod selection;
 mod selection_actions;
 mod selection_preview;
+pub(crate) mod selection_rectangle;
 mod selection_sizes;
 mod shortcuts;
 mod tabs;
 mod terminal;
+pub(crate) mod user_command_settings;
+#[cfg(test)]
+mod user_command_settings_tests;
+mod user_commands;
 mod viewer_plugins;
 mod volumes;
 pub(crate) use file_actions::MenuAnchor;
@@ -101,6 +116,7 @@ pub(crate) struct Pane {
     size_scan_generation: u64,
     pub(crate) selected: Arc<SelectionSnapshot>,
     selection_preview: Vec<selection_preview::PendingSelection>,
+    rectangle_preview: Option<selection_rectangle::Preview>,
     selection_anchor: Option<PathBuf>,
     selection_anchor_id: Option<EntryId>,
     selection_context: NavigationId,
@@ -155,6 +171,11 @@ pub struct Presenter {
     pub(crate) filter_dialog: filter::FilterDialogState,
     pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
+    pub(crate) finds: find::FindState,
+    pub(crate) checksums: checksums::ChecksumState,
+    pub(crate) command_launches: user_commands::CommandLaunches,
+    pub(crate) user_command_settings: user_command_settings::State,
+    pub(crate) command_toolbar: crate::user_command_presentation::ToolbarState,
     pub(crate) number_locale: NumberLocale,
     tabs: tabs::TabsState,
     choices: choices::ChoicesState,
@@ -197,6 +218,11 @@ impl Presenter {
             filter_dialog: filter::FilterDialogState::default(),
             colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
+            finds: find::FindState::default(),
+            checksums: checksums::ChecksumState::default(),
+            command_launches: user_commands::CommandLaunches::default(),
+            user_command_settings: user_command_settings::State::default(),
+            command_toolbar: crate::user_command_presentation::ToolbarState::default(),
             number_locale: NumberLocale::default(),
             retired: vec![],
         }
@@ -244,6 +270,12 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.retired
+            .push(Box::new(mem::take(&mut self.command_launches.jobs)));
+        self.retired
+            .push(Box::new(mem::take(&mut self.finds.sessions)));
+        self.retired
+            .push(Box::new(mem::take(&mut self.checksums.sessions)));
         self.retire_copy_draft();
         self.retire_metadata();
         self.retire_drag_drop();
@@ -452,6 +484,10 @@ impl Presenter {
     /// Apply a backend event and dispatch any validated directory-link followup.
     /// The sender must be bounded and nonblocking, like the regular UI callbacks.
     pub fn apply_with_sender(&mut self, event: Event, send: &dyn Fn(Command) -> bool) {
+        if let Event::FindResultValidated(result) = event {
+            self.find_validated(*result, send);
+            return;
+        }
         let Some(event) = self.dispatch_drag_event(event, send) else {
             return;
         };
@@ -492,6 +528,31 @@ impl Presenter {
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        if let Event::Checksum(event) = event {
+            self.apply_checksum(*event);
+            return;
+        }
+        if let Event::ChecksumRejected(event) = event {
+            self.reject_checksum(*event);
+            return;
+        }
+        if let Event::ChecksumManifest(event) = event {
+            self.apply_checksum_manifest(*event);
+            return;
+        }
+        if let Event::Find(event) = event {
+            self.apply_find(*event);
+            return;
+        }
+        if let Event::FindRejected(rejection) = event {
+            self.reject_find(*rejection);
+            return;
+        }
+        if matches!(&event, Event::FindResultValidated(_)) {
+            // A validated navigation needs the sender; retire unhandled payloads.
+            self.retired.push(Box::new(event));
+            return;
+        }
         if matches!(
             event,
             Event::ClipboardFilesRead { .. } | Event::ShellMenuFinished { .. } | Event::DragDrop(_)
@@ -530,6 +591,9 @@ impl Presenter {
             return;
         };
         let Some(event) = self.apply_copy_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_user_command_event(event) else {
             return;
         };
         let Some(event) = self.apply_operation(event) else {
@@ -1065,6 +1129,7 @@ impl Pane {
             selection_sizes: selection_sizes::State::default(),
             selected: Arc::default(),
             selection_preview: Vec::new(),
+            rectangle_preview: None,
             selection_anchor: None,
             selection_anchor_id: None,
             selection_context: NavigationId(0),

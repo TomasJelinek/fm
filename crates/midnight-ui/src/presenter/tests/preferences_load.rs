@@ -62,6 +62,8 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     let tabs = p.tabs(PaneId::Left);
     let generation = p.panes[0].generation;
     let saved = UserPreferences {
+        checksum_algorithms: ChecksumAlgorithms::default(),
+        user_commands: Default::default(),
         window_geometry: Some(midnight_core::WindowGeometry {
             normal: midnight_core::WindowRect {
                 x: -1700,

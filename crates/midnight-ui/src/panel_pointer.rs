@@ -1,9 +1,17 @@
 //! Observe panel ownership after child input dispatch without consuming the event.
-use crate::MainWindow;
+use crate::{MainWindow, SelectionRectangle};
 use i_slint_core::window::{WindowInner, WindowKind};
 use slint::{ComponentHandle, platform::WindowEvent};
 
 pub(crate) fn observe(window: &MainWindow, event: &WindowEvent) {
+    if matches!(
+        event,
+        WindowEvent::WindowActiveChanged(false)
+            | WindowEvent::CloseRequested
+            | WindowEvent::PointerExited
+    ) {
+        window.global::<SelectionRectangle>().invoke_cancel();
+    }
     let WindowEvent::PointerPressed { position, .. } = event else {
         return;
     };

@@ -6,6 +6,8 @@ use std::{
     ffi::OsString,
     path::Component,
 };
+#[path = "move_worker.rs"]
+mod move_job;
 
 pub(super) enum Step {
     Continue,
@@ -21,8 +23,27 @@ struct EntryWork {
     copy: Option<VerifiedFileCopy>,
     destination: Arc<dyn TransferDirectory>,
     name: OsString,
+    target: Option<Arc<dyn TransferTarget>>,
+    consent: Option<Consent>,
+    replacement_prepared: bool,
+    force_prompt: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Consent {
+    Replace,
+    Merge,
 }
 impl EntryWork {
+    fn native_identity(&self) -> Option<TransferIdentity> {
+        self.source.as_ref().map_or_else(
+            || {
+                self.copy
+                    .as_ref()
+                    .and_then(VerifiedFileCopy::source_native_identity)
+            },
+            |source| source.native_identity(),
+        )
+    }
     fn entry(&self) -> &TransferEntry {
         if let Some(source) = &self.source {
             source.entry()
@@ -41,14 +62,26 @@ pub(super) struct Job {
     cancel: Cancellation,
     destination: Arc<dyn TransferDirectory>,
     roots: VecDeque<Box<dyn TransferSource>>,
+    protected_roots: HashSet<TransferIdentity>,
     stack: Vec<Frame>,
     current: Option<EntryWork>,
     conflict: Option<CopyConflict>,
     decision: Option<CopyChoice>,
     version: u64,
     skip_all: bool,
+    replace_all: bool,
+    merge_all: bool,
+    move_work: Option<move_job::MoveWork>,
 }
 impl Job {
+    pub(super) fn prepare_move(
+        request: CopyRequest,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+    ) -> Result<Self, FsError> {
+        move_job::prepare(request, service, cancel, status)
+    }
     pub(super) fn prepare(
         request: CopyRequest,
         service: &dyn TransferService,
@@ -112,18 +145,26 @@ impl Job {
         cancel: Cancellation,
         status: Status,
     ) -> Self {
+        let protected_roots = roots
+            .iter()
+            .filter_map(|source| source.native_identity())
+            .collect();
         Self {
             progress: snapshot(&status),
             status,
             cancel,
             destination,
             roots,
+            protected_roots,
             stack: vec![],
             current: None,
             conflict: None,
             decision: None,
             version: 0,
             skip_all: false,
+            replace_all: false,
+            merge_all: false,
+            move_work: None,
         }
     }
 
@@ -153,7 +194,7 @@ impl Job {
             return Step::Done;
         }
         if let Some(choice) = self.decision.take() {
-            self.conflict = None;
+            let conflict = self.conflict.take();
             match choice {
                 CopyChoice::Cancel => {
                     self.cancel.cancel();
@@ -163,6 +204,44 @@ impl Job {
                     self.skip_all |= matches!(choice, CopyChoice::SkipAll);
                     self.skip_current();
                     return Step::Continue;
+                }
+                CopyChoice::ReplaceRecoverable { all } | CopyChoice::Merge { all } => {
+                    let consent = if matches!(choice, CopyChoice::Merge { .. }) {
+                        Consent::Merge
+                    } else {
+                        Consent::Replace
+                    };
+                    let allowed = conflict.is_some_and(|value| match consent {
+                        Consent::Replace => value.can_replace,
+                        Consent::Merge => value.can_merge,
+                    });
+                    if !allowed {
+                        self.record(error(
+                            &self.progress.destination_directory,
+                            io::ErrorKind::Unsupported,
+                            "This conflict action is unavailable.",
+                        ));
+                        self.drop_current();
+                        return Step::Continue;
+                    }
+                    let Some(mut work) = self.current.take() else {
+                        return Step::Continue;
+                    };
+                    if work
+                        .target
+                        .as_ref()
+                        .is_none_or(|target| target.revalidate(&self.cancel).is_err())
+                    {
+                        return self.refresh_conflict(work);
+                    }
+                    work.consent = Some(consent);
+                    work.replacement_prepared = false;
+                    work.force_prompt = false;
+                    match consent {
+                        Consent::Replace => self.replace_all |= all,
+                        Consent::Merge => self.merge_all |= all,
+                    }
+                    self.current = Some(work);
                 }
                 CopyChoice::Rename(name) => {
                     let valid = !name.is_empty()
@@ -186,6 +265,9 @@ impl Job {
                     }
                     if let Some(work) = self.current.as_mut() {
                         work.name = name;
+                        work.target = None;
+                        work.consent = None;
+                        work.replacement_prepared = false;
                     }
                 }
             }
@@ -195,6 +277,9 @@ impl Job {
         }
         if let Some(work) = self.current.take() {
             return self.process(work);
+        }
+        if self.move_work.is_some() && self.roots.is_empty() && self.stack.is_empty() {
+            return self.advance_move();
         }
         self.progress.phase = CopyOperationPhase::Planning;
         self.progress.current_path = None;
@@ -217,7 +302,7 @@ impl Job {
                 .map(|source| (source, self.destination.clone()))
         };
         let Some((source, destination)) = next else {
-            return Step::Done;
+            return self.advance_move();
         };
         let path = &source.entry().item.path;
         let Some(name) = path.file_name() else {
@@ -234,6 +319,10 @@ impl Job {
             copy: None,
             destination,
             name,
+            target: None,
+            consent: None,
+            replacement_prepared: false,
+            force_prompt: false,
         });
         Step::Continue
     }
@@ -260,8 +349,11 @@ impl Job {
             }
             Ok(Action::Conflict(target)) => self.wait_for_conflict(work, target),
             Err(failure) if failure.kind == io::ErrorKind::AlreadyExists => {
-                // The destination appeared after the last inspect. Never replace it.
-                match work.destination.inspect(&work.name, &self.cancel) {
+                // A late collision needs a new target pin and fresh consent.
+                work.consent = None;
+                work.replacement_prepared = false;
+                work.force_prompt = true;
+                match self.observe_target(&mut work) {
                     Ok(Some(target)) => self.wait_for_conflict(work, target),
                     Ok(None) => {
                         self.current = Some(work);
@@ -283,25 +375,57 @@ impl Job {
     }
 
     fn prepare_entry(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
-        let source = work.source.as_ref().expect("unstarted entry source");
-        source.revalidate(&self.cancel)?;
-        if let Some(target) = work.destination.inspect(&work.name, &self.cancel)? {
+        work.source
+            .as_ref()
+            .expect("unstarted entry source")
+            .revalidate(&self.cancel)?;
+        if work.consent.is_none()
+            && let Some(target) = self.observe_target(work)?
+        {
             return Ok(Action::Conflict(target));
         }
+        let source = work.source.as_ref().expect("unstarted entry source");
         match source.entry().item.kind {
             EntryKind::Directory => {
                 if let Some(identity) = source.native_identity() {
                     work.destination
                         .reject_source_ancestor(identity, &self.cancel)?;
                 }
-                let destination = work
-                    .destination
-                    .create_directory(&work.name, &self.cancel)?;
-                self.progress.directories_created += 1;
+                let destination = if work.consent == Some(Consent::Merge) {
+                    let target = work.target.as_ref().expect("consented target pin");
+                    target.revalidate(&self.cancel)?;
+                    work.destination.open_merge_directory(
+                        &work.name,
+                        target.entry(),
+                        &self.cancel,
+                    )?
+                } else {
+                    let created = work
+                        .destination
+                        .create_directory(&work.name, &self.cancel)?;
+                    self.progress.directories_created += 1;
+                    created
+                };
+                if let Some(identity) = source.native_identity() {
+                    destination.reject_source_ancestor(identity, &self.cancel)?;
+                }
                 Ok(Action::Directory(destination))
             }
             EntryKind::File => {
-                let stage = work.destination.stage_file(&self.cancel)?;
+                let stage = if let Some(move_work) = self.move_work.as_mut() {
+                    move_work
+                        .stages
+                        .remove(&source.entry().identity)
+                        .ok_or_else(|| {
+                            error(
+                                &source.entry().item.path,
+                                io::ErrorKind::InvalidData,
+                                "Prepared Move stage is missing; all sources retained.",
+                            )
+                        })?
+                } else {
+                    work.destination.stage_file(&self.cancel)?
+                };
                 let source = work.source.take().expect("regular source");
                 work.copy = Some(VerifiedFileCopy::new(source, stage)?);
                 self.progress.phase = CopyOperationPhase::Copying;
@@ -316,11 +440,65 @@ impl Job {
     }
 
     fn copy_step(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
+        if work.consent == Some(Consent::Replace)
+            && (!work.replacement_prepared
+                || work
+                    .copy
+                    .as_ref()
+                    .is_some_and(|copy| copy.phase() == CopyPhase::ReadyToPublish))
+        {
+            let target = work.target.as_ref().expect("consented target pin").clone();
+            if target.revalidate(&self.cancel).is_err() {
+                work.consent = None;
+                work.replacement_prepared = false;
+                work.force_prompt = true;
+                if let Some(target) = self.observe_target(work)? {
+                    return Ok(Action::Conflict(target));
+                }
+            } else if !work.replacement_prepared {
+                work.copy
+                    .as_mut()
+                    .expect("started copy")
+                    .prepare_replacement(
+                        &work.name,
+                        target,
+                        TransferReplacementPolicy::RecoverableCurrentEntry,
+                        &self.cancel,
+                    )?;
+                work.replacement_prepared = true;
+            }
+        }
         let copy = work.copy.as_mut().expect("started copy");
         if copy.phase() == CopyPhase::ReadyToPublish {
             self.progress.phase = CopyOperationPhase::Publishing;
-            match copy.publish(&work.name, &self.cancel)? {
+            let publication = if work.consent == Some(Consent::Replace) {
+                copy.publish_replace(&work.name, &self.cancel)?
+            } else {
+                copy.publish(&work.name, &self.cancel)?
+            };
+            let proof_eligible = matches!(
+                &publication,
+                TransferPublication::Published(_) | TransferPublication::Replaced { .. }
+            );
+            match publication {
                 TransferPublication::Published(_) => self.progress.files_completed += 1,
+                TransferPublication::Replaced { recovery, .. } => {
+                    self.progress.files_completed += 1;
+                    self.record_recovery(recovery.path);
+                }
+                TransferPublication::RecoveryRequired {
+                    published,
+                    recovery,
+                    error,
+                } => {
+                    if published.is_some() {
+                        self.progress.files_completed += 1;
+                    }
+                    for item in recovery {
+                        self.record_recovery(item.path);
+                    }
+                    self.record(error);
+                }
                 TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
                     error.message = format!(
                         "Target published at {}; durability is unconfirmed: {}",
@@ -329,6 +507,15 @@ impl Job {
                     );
                     self.record(error);
                 }
+            }
+            if proof_eligible && let Some(move_work) = self.move_work.as_mut() {
+                let proof = work
+                    .copy
+                    .take()
+                    .expect("published copy")
+                    .into_published_proof(&self.cancel)?;
+                self.protected_roots.insert(proof.destination_identity());
+                move_work.proofs.push(proof);
             }
             return Ok(Action::Done);
         }
@@ -362,7 +549,7 @@ impl Job {
             CopyPhase::Syncing => CopyOperationPhase::Syncing,
             CopyPhase::Verifying => CopyOperationPhase::Verifying,
             CopyPhase::ReadyToPublish | CopyPhase::Published => CopyOperationPhase::Publishing,
-            CopyPhase::Failed => {
+            CopyPhase::Failed | CopyPhase::RecoveryRequired => {
                 return Err(error(
                     &self.progress.destination_directory,
                     io::ErrorKind::InvalidData,
@@ -390,21 +577,81 @@ impl Job {
         };
         self.version = version;
         let work = self.current.as_ref().expect("conflicting entry");
+        let capabilities = work.destination.capabilities();
+        let distinct = work.native_identity() != Some(target.identity)
+            && !self.protected_roots.contains(&target.identity);
+        let guarded = work.target.is_some() && distinct;
+        let target_kind = target.item.kind;
         let conflict = CopyConflict {
             id: self.progress.id,
             version,
             source: work.entry().item.clone(),
             target: target.item,
             destination: work.destination.path().join(&work.name),
+            can_replace: guarded
+                && capabilities.recoverable_replacement
+                && work.entry().item.kind == EntryKind::File
+                && target_kind == EntryKind::File,
+            can_merge: guarded
+                && capabilities.directory_merge
+                && work.entry().item.kind == EntryKind::Directory
+                && target_kind == EntryKind::Directory,
         };
+        let automatic = !work.force_prompt;
         self.conflict = Some(conflict.clone());
-        self.progress.message = "The destination exists. Safe replacement is unsupported; choose another name, skip, or cancel.".into();
+        self.progress.message =
+            "The destination exists. Choose how to resolve the conflict.".into();
+        if automatic && self.replace_all && conflict.can_replace {
+            self.decision = Some(CopyChoice::ReplaceRecoverable { all: true });
+            return Step::Continue;
+        }
+        if automatic && self.merge_all && conflict.can_merge {
+            self.decision = Some(CopyChoice::Merge { all: true });
+            return Step::Continue;
+        }
         Step::Conflict(Arc::new(conflict))
+    }
+    fn observe_target(&self, work: &mut EntryWork) -> Result<Option<TransferEntry>, FsError> {
+        work.target = None;
+        match work.destination.prepare_target(&work.name, &self.cancel) {
+            Ok(target) => {
+                let entry = target.as_ref().map(|target| target.entry().clone());
+                work.target = target;
+                Ok(entry)
+            }
+            Err(failure) if failure.kind == io::ErrorKind::Unsupported => {
+                work.destination.inspect(&work.name, &self.cancel)
+            }
+            Err(failure) => Err(failure),
+        }
+    }
+    fn refresh_conflict(&mut self, mut work: EntryWork) -> Step {
+        work.consent = None;
+        work.replacement_prepared = false;
+        work.force_prompt = true;
+        match self.observe_target(&mut work) {
+            Ok(Some(target)) => self.wait_for_conflict(work, target),
+            Ok(None) => {
+                self.current = Some(work);
+                Step::Continue
+            }
+            Err(failure) => {
+                self.cleanup_work(&mut work);
+                self.record(failure);
+                Step::Continue
+            }
+        }
     }
     fn record(&mut self, error: FsError) {
         self.progress.failed += 1;
         if self.progress.errors.len() < 16 {
             self.progress.errors.push(error);
+        }
+    }
+    fn record_recovery(&mut self, path: std::path::PathBuf) {
+        self.progress.recovery_count += 1;
+        if self.progress.recovery_paths.len() < 16 {
+            self.progress.recovery_paths.push(path);
         }
     }
     fn cleanup_work(&mut self, work: &mut EntryWork) {
@@ -427,6 +674,11 @@ impl Job {
     }
     pub(super) fn finish(mut self) -> CopyProgress {
         self.drop_current();
+        if let Some(move_work) = self.move_work.as_mut() {
+            for error in move_work.cleanup() {
+                self.record(error);
+            }
+        }
         self.progress.state = if self.cancel.is_cancelled() {
             CopyOperationState::Cancelled
         } else if self.progress.failed == 0 && self.progress.skipped == 0 {
@@ -457,8 +709,32 @@ impl Job {
                 .message
                 .push_str("\nCopy cancelled; already published files are retained.");
         }
+        if self.progress.recovery_count > 0 {
+            self.progress.message.push_str(&format!(
+                "\n{} recovery files retained. See the recovery locations in job details.",
+                self.progress.recovery_count
+            ));
+        }
+        if self.progress.intent == TransferIntent::RecoverableMove {
+            self.progress.message.push_str(&format!("\n{} source names relocated; {} originals retained in source recovery. Disk space has not been reclaimed. Directory Move is not supported in this increment.", self.progress.source_names_captured, self.progress.source_recovery_count));
+        }
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = self.progress.clone();
         self.progress.clone()
+    }
+    fn advance_move(&mut self) -> Step {
+        let Some(mut work) = self.move_work.take() else {
+            return Step::Done;
+        };
+        let result = work.advance(self);
+        self.move_work = Some(work);
+        match result {
+            Ok(false) => Step::Continue,
+            Ok(true) => Step::Done,
+            Err(error) => {
+                self.record(error);
+                Step::Done
+            }
+        }
     }
 }
 enum Action {

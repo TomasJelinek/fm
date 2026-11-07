@@ -118,6 +118,9 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
     let captured = actions.clone();
     test.window
         .on_mutation(move |pane, action| captured.borrow_mut().push((pane, 100 + action)));
+    let captured = actions.clone();
+    test.window
+        .on_file_clipboard(move |pane, action| captured.borrow_mut().push((pane, 200 + action)));
     for (width, height) in [(1340, 820), (320, 200)] {
         test.resize(width, height);
         for (label, expected) in [
@@ -183,9 +186,10 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
             });
         assert_eq!(actions.borrow().last(), Some(&(0, 100)));
 
-        // Disabled Move cannot turn into the enabled Ctrl+F6 sort during a press.
+        // Move retains its captured action and pane when Ctrl+F6 becomes visible.
+        test.window.set_active_pane(0);
         control(&test, false);
-        let position = reveal_footer(&mut test, "Move — unavailable");
+        let position = reveal_footer(&mut test, "F6 Move");
         let before = actions.borrow().len();
         test.window
             .window()
@@ -194,6 +198,7 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
                 button: PointerEventButton::Left,
             });
         control(&test, true);
+        test.window.set_active_pane(1);
         test.draw();
         test.window
             .window()
@@ -202,10 +207,11 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
                 button: PointerEventButton::Left,
             });
         assert_eq!(
-            actions.borrow().len(),
-            before,
-            "disabled press at {width}px"
+            &actions.borrow()[before..],
+            &[(0, 203)],
+            "captured Move press at {width}px"
         );
+        let before = actions.borrow().len();
 
         // A drag that scrolls the compact footer must not activate its starting cell.
         let position = reveal_footer(&mut test, "Ctrl+F2 Attributes");
@@ -235,7 +241,7 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
             "cancelled press at {width}px"
         );
     }
-    assert_eq!(actions.borrow().len(), 18);
+    assert_eq!(actions.borrow().len(), 20);
 }
 
 fn reveal_footer(test: &mut ui::TestUi, label: &str) -> slint::LogicalPosition {

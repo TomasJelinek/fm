@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod archive_selection;
 mod archives;
+mod checksum;
+mod checksum_actor;
 mod clipboard;
 mod comparison;
 mod copy_fence;
@@ -11,6 +14,8 @@ mod entry_sizes;
 mod file_targets;
 mod filename_colors;
 mod filters;
+mod find;
+mod find_worker;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
@@ -26,6 +31,9 @@ mod selection_sizes;
 mod shell_menu;
 pub mod snapshot;
 mod streaming_selection;
+mod user_command_prepare;
+mod user_command_runtime;
+mod user_commands;
 mod viewer_plugins;
 mod volumes;
 mod watch;
@@ -98,6 +106,8 @@ impl Request {
 }
 
 pub struct Engine {
+    user_commands: Option<Arc<dyn midnight_core::UserCommandService>>,
+    find: Option<Arc<dyn midnight_core::FindService>>,
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
     network: Option<Arc<dyn midnight_core::NetworkService>>,
     mutations: Option<Arc<dyn midnight_core::MutationService>>,
@@ -174,6 +184,8 @@ impl Engine {
         wakeup: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         Self {
+            user_commands: None,
+            find: None,
             locale: None,
             network: None,
             mutations: None,
@@ -231,6 +243,14 @@ impl Engine {
         self
     }
 
+    pub fn with_user_commands(
+        mut self,
+        service: Arc<dyn midnight_core::UserCommandService>,
+    ) -> Self {
+        self.user_commands = Some(service);
+        self
+    }
+
     pub fn with_drag_drop(mut self, service: Arc<dyn midnight_core::FileDragDropService>) -> Self {
         self.drag_drop = Some(service);
         self
@@ -249,6 +269,12 @@ impl Engine {
         self
     }
 
+    /// Optional identity-pinned native recursive search. The Find frontend is independent.
+    pub fn with_find(mut self, service: Arc<dyn midnight_core::FindService>) -> Self {
+        self.find = Some(service);
+        self
+    }
+
     pub async fn run(self, mut commands: mpsc::Receiver<Command>) {
         // Reserve capacity for each pane even when the other pane accumulates
         // uncancellable OS reads on unavailable media.
@@ -258,10 +284,12 @@ impl Engine {
         let mut locale_requested = false;
         let mut requests: [Option<Request>; 2] = [None, None];
         let mut tasks = JoinSet::new();
+        let mut find = find::Controller::new(self.find, self.outbox.clone(), &mut tasks);
         let selection = selection::Controller::new(self.outbox.clone(), &mut tasks);
         let (properties_sender, mut properties_ready) =
             mpsc::channel::<selection::PreparedProperties>(2);
         let properties_budget = Arc::new(Semaphore::new(2));
+        let archive_selection_budget = Arc::new(Semaphore::new(2));
         let fonts = fonts::Controller::new(self.settings.clone(), self.outbox.clone(), &mut tasks);
         let viewer_plugins = viewer_plugins::Controller::new(self.outbox.clone(), &mut tasks);
         let settings = self
@@ -291,6 +319,17 @@ impl Engine {
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
         let filename_colors = filename_colors::Controller::new(self.outbox.clone(), &mut tasks);
         let mutation_gate = Arc::new(Semaphore::new(1));
+        let user_commands = user_commands::Controller::new(
+            self.user_commands,
+            self.transfers.clone(),
+            desktop.command_runtime(),
+            self.outbox.clone(),
+        );
+        let checksums = checksum_actor::Controller::new(
+            self.transfers.clone(),
+            self.outbox.clone(),
+            mutation_gate.clone(),
+        );
         let copies = copy_operations::Controller::new(
             self.transfers,
             self.outbox.clone(),
@@ -352,35 +391,70 @@ impl Engine {
                         _ => None,
                     };
                     match command {
-                        Some(Command::ArchiveSelect { pane, navigation, entries, view, selected, action }) => {
+                        Some(Command::PreviewUserCommand(request)) => {
+                            let (request_id, command) = (request.id, request.command.clone());
+                            if let Err(error) = user_commands.start(*request, true) {
+                                self.outbox.send(Event::UserCommand(Box::new(midnight_core::UserCommandEvent { request: request_id, command, update: midnight_core::UserCommandUpdate::Rejected(error) }))).await;
+                            }
+                        }
+                        Some(Command::ExecuteUserCommand(request)) => {
+                            let (request_id, command) = (request.id, request.command.clone());
+                            if let Err(error) = user_commands.start(*request, false) {
+                                self.outbox.send(Event::UserCommand(Box::new(midnight_core::UserCommandEvent { request: request_id, command, update: midnight_core::UserCommandUpdate::Rejected(error) }))).await;
+                            }
+                        }
+                        Some(Command::CancelUserCommand(id)) => user_commands.cancel(id),
+                        Some(Command::StartChecksums(request)) => {
+                            let (job, generation) = (request.job, request.generation);
+                            if let Err(error) = checksums.start(*request) {
+                                self.outbox.send(Event::ChecksumRejected(Box::new(midnight_core::ChecksumRejected { job, generation, error }))).await;
+                            }
+                        }
+                        Some(Command::StartSelectedChecksums(request)) => {
+                            let (job, generation) = (request.job, request.generation);
+                            if let Err(error) = checksums.start_selected(*request) {
+                                self.outbox.send(Event::ChecksumRejected(Box::new(midnight_core::ChecksumRejected { job, generation, error }))).await;
+                            }
+                        }
+                        Some(Command::CancelChecksums { job, generation }) => checksums.cancel(job, generation),
+                        Some(Command::ReleaseChecksums { job, generation }) => checksums.release(job, generation),
+                        Some(Command::SaveChecksumManifest { save_id, job, generation, request }) => {
+                            if let Err(error) = checksums.save(save_id, (job, generation), *request) {
+                                self.outbox.send(Event::ChecksumManifest(Box::new(midnight_core::ChecksumManifestEvent {
+                                    save_id, job, generation, update: midnight_core::ChecksumManifestUpdate::Rejected(error),
+                                }))).await;
+                            }
+                        }
+                        Some(Command::CancelChecksumManifest { save_id }) => checksums.cancel_save(save_id),
+                        Some(Command::StartFind(request)) => {
+                            let session = request.session;
+                            let generation = request.generation;
+                            if let Err(error) = find.start(*request) {
+                                self.outbox.send(Event::FindRejected(Box::new(midnight_core::FindRejected { session, generation, error }))).await;
+                            }
+                        }
+                        Some(Command::CancelFind { session, generation }) => find.cancel(session, generation),
+                        Some(Command::CloseFind(session)) => find.close(session),
+                        Some(Command::ValidateFindResult(request)) => {
+                            if let Err(error) = find.validate(request) {
+                                self.outbox.send(Event::FindResultValidated(Box::new(midnight_core::FindValidationResult { request, result: Err(error) }))).await;
+                            }
+                        }
+                        Some(Command::ArchiveSelect { pane, navigation, revision, entries, view, selected, action }) => {
+                            let permit = match archive_selection_budget.clone().try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    self.outbox.send(Event::ArchiveSelection { pane, navigation, revision, view, result: Err(archive_selection::error("Selection queue is busy. Try again.")) }).await;
+                                    continue;
+                                }
+                            };
                             let outbox = self.outbox.clone();
                             tasks.spawn(async move {
-                                let selected = tokio::task::spawn_blocking(move || {
-                                    let mut result = selected.as_ref().clone();
-                                    match action {
-                                        midnight_core::ArchiveSelectionAction::Toggle(id) => {
-                                            if view.by_id.contains_key(&id) && !result.remove(&id) { result.insert(id); }
-                                        }
-                                        midnight_core::ArchiveSelectionAction::Bulk(midnight_core::SelectionOperation::Clear) => result.clear(),
-                                        midnight_core::ArchiveSelectionAction::Bulk(operation) => {
-                                            for entry in entries.iter().filter(|e| view.by_id.contains_key(&e.id)) {
-                                                if matches!(operation, midnight_core::SelectionOperation::Invert) && result.contains(&entry.id) { result.remove(&entry.id); }
-                                                else { result.insert(entry.id); }
-                                            }
-                                        }
-                                        midnight_core::ArchiveSelectionAction::Range { first, last, additive } => {
-                                            if !additive { result.clear(); }
-                                            for (id, row) in &view.by_id { if *row >= first && *row <= last { result.insert(*id); } }
-                                        }
-                                    }
-                                    let mut totals = midnight_core::ArchiveSelectionTotals::default();
-                                    for entry in entries.iter().filter(|entry| result.contains(&entry.id)) {
-                                        totals.change(entry.kind, entry.metadata.size, true);
-                                    }
-                                    (Arc::new(result), totals)
-                                }).await.unwrap_or_default();
-                                let (selected, totals) = selected;
-                                outbox.send(Event::ArchiveSelection { pane, navigation, selected, totals }).await;
+                                let _permit = permit;
+                                let source = view.clone();
+                                let result = tokio::task::spawn_blocking(move || archive_selection::apply(&entries, &source, &selected, action))
+                                    .await.unwrap_or_else(|error| Err(archive_selection::error(error.to_string())));
+                                outbox.send(Event::ArchiveSelection { pane, navigation, revision, view, result }).await;
                             });
                         }
                         Some(Command::ArchiveNavigate { pane, navigation, action, sort }) => {
@@ -441,6 +515,9 @@ impl Engine {
                         Some(Command::ClearFilenameColors { pane, id }) => filename_colors.clear(pane, id),
                         Some(Command::EnqueueCopy(request)) => copies.enqueue(request).await,
                         Some(Command::EnqueueSelectedCopy(request)) => copies.enqueue_selected(request).await,
+                        Some(Command::EnqueueMove(request)) => copies.enqueue_move(request).await,
+                        Some(Command::EnqueueSelectedMove(request)) => copies.enqueue_selected_move(request).await,
+                        Some(Command::EnqueueClipboardMove(request)) => copies.enqueue_clipboard_move(request).await,
                         Some(Command::EnqueueArchiveCopy(request)) => copies.enqueue_archive(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
@@ -491,6 +568,7 @@ impl Engine {
                         Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks),
                         Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
                         Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut tasks).await,
+                        Some(Command::CutFiles { request, files }) => clipboard.cut_files(request, files, &mut tasks).await,
                         Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut tasks).await,
                         Some(Command::ShowShellMenu { request, files, owner, position, modifiers, target }) => {
                             shell_menu.show(shell_menu::Input { request, files, owner, position, modifiers, target }, &mut tasks).await;
@@ -686,6 +764,8 @@ impl Engine {
         }
 
         drag_drop.shutdown();
+        user_commands.stop();
+        find.shutdown();
         operations.shutdown();
         copies.shutdown();
         for request in requests.into_iter().flatten() {
@@ -709,6 +789,8 @@ impl Engine {
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(2), settings.finished()).await;
         }
+        checksums.shutdown().await;
+        user_commands.shutdown().await;
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
     }

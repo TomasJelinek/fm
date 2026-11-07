@@ -30,8 +30,8 @@ use windows_sys::Win32::{
             SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_LINKOVERLAY,
             SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetStockIconInfo,
             SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD, SIID_DRIVEFIXED,
-            SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FOLDER,
-            SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_RENAME, SIID_SETTINGS,
+            SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FIND,
+            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_RENAME, SIID_SETTINGS,
         },
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
@@ -178,6 +178,7 @@ fn action_stock_id(role: ActionIcon) -> Option<i32> {
     match role {
         ActionIcon::Options => Some(SIID_SETTINGS),
         ActionIcon::Help => Some(SIID_HELP),
+        ActionIcon::Find => Some(SIID_FIND),
         ActionIcon::Rename => Some(SIID_RENAME),
         ActionIcon::Delete => Some(SIID_DELETE),
         ActionIcon::Properties | ActionIcon::About => Some(SIID_INFO),

@@ -14,6 +14,13 @@ use std::{
 
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
+    destination_editor(Key::F5, false);
+}
+#[test]
+fn f6_move_confirmation_consumes_enter_escape_and_busy_queue_without_using_clipboard() {
+    destination_editor(Key::F6, true);
+}
+fn destination_editor(shortcut: Key, moving: bool) {
     let mut ui = ui::TestUi::new();
     let base = std::env::temp_dir().join("copy dialog 文档");
     let state = Rc::new(RefCell::new(Presenter::new(
@@ -63,17 +70,46 @@ fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard()
     ui.window.invoke_focus_files();
     ui::key(&ui.window, Key::End);
     commands.borrow_mut().clear();
-    ui::key(&ui.window, Key::F5);
+    ui::key(&ui.window, shortcut);
     ui.draw();
     assert!(!ui.window.get_copy_draft_token().is_empty());
+    assert_eq!(ui.window.get_copy_draft_move(), moving);
+    if moving {
+        assert!(
+            ui.window
+                .get_copy_draft_body()
+                .starts_with("Up to 64 regular files")
+        );
+        assert!(
+            ui.window
+                .get_copy_draft_body()
+                .contains("Source disk space is not freed")
+        );
+        assert!(
+            ui.window
+                .get_copy_draft_body()
+                .contains("Up to 64 regular files")
+        );
+    }
     assert!(commands.borrow().is_empty());
-    render::snapshot(&ui, "copy-dialog");
+    render::snapshot(
+        &ui,
+        if moving {
+            "move-recovery-dialog"
+        } else {
+            "copy-dialog"
+        },
+    );
+    if moving {
+        ui.resize(320, 200);
+        render::snapshot(&ui, "move-recovery-dialog-small");
+    }
     ui::key(&ui.window, Key::Escape);
     ui.draw();
     assert!(ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
 
-    ui::key(&ui.window, Key::F5);
+    ui::key(&ui.window, shortcut);
     ui.draw();
     let destination = base.join("another target");
     // Both ends wrap inside the modal form: path -> Cancel -> Copy -> path.
@@ -115,8 +151,10 @@ fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard()
     ui.draw();
     let queued = commands.borrow();
     assert_eq!(queued.len(), 1);
-    let Command::EnqueueSelectedCopy(request) = &queued[0] else {
-        panic!("F5 must enqueue directly")
+    let request = match &queued[0] {
+        Command::EnqueueSelectedCopy(request) if !moving => request,
+        Command::EnqueueSelectedMove(request) if moving => request,
+        _ => panic!("confirmed destination must enqueue the captured selection directly"),
     };
     assert_eq!(request.destination, destination);
     assert_eq!(

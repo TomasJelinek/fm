@@ -5,6 +5,7 @@ import { ErrorNotice } from "error-notice.slint";
 import { TipBody, CompactPicker } from "controls.slint";
 import { CompactLocationButton } from "location-controls.slint";
 import { PanelList } from "panel-list.slint";
+import { SelectionRectangle } from "selection-rectangle.slint";
 import { FileEntry } from "file-entry.slint";
 import { FileRow } from "file-models.slint";
 import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRow } from "navigation-models.slint";
@@ -36,6 +37,8 @@ component Tool inherits Rectangle {
     Tooltip { TipBody { text: root.hint; } }
 }
 export component FilePane inherits Rectangle {
+    in property <int> pane-id;
+    callback find-files();
     in property <bool> minimal;
     in property <bool> native-filesystem: true;
     in property <bool> can-target-selection;
@@ -77,15 +80,17 @@ export component FilePane inherits Rectangle {
     in property <string> view-mode-label;
     in property <string> sort-label;
     private property <bool> narrow-toolbar: !Theme.touch && root.width < 360px;
-    private property <bool> wrapped-toolbar: Theme.touch && root.width < 500px;
+    private property <bool> wrapped-toolbar: root.toolbar-left-width + root.toolbar-right-width + 16px > root.width;
     out property <length> toolbar-extra-height: root.wrapped-toolbar ? Theme.control-height : 0px;
     private property <length> toolbar-tool-width: root.narrow-toolbar ? 20px : root.width < 500px ? min(Theme.tool-width, 28px) : Theme.tool-width;
     private property <length> toolbar-arrow-width: root.narrow-toolbar ? 16px : Theme.touch ? (root.width < 500px ? 24px : 26px) : 22px;
     private property <length> toolbar-spacing: root.width < 500px ? 2px : Theme.touch ? 6px : 4px;
     private property <length> view-picker-width: root.narrow-toolbar ? 32px : root.width < 620px ? 40px : 116px;
     private property <length> sort-picker-width: root.narrow-toolbar ? 32px : root.width < 620px ? 40px : 106px;
+    private property <length> toolbar-left-width: 7 * root.toolbar-tool-width + 2 * root.toolbar-arrow-width + 6 * root.toolbar-spacing;
+    private property <length> toolbar-right-width: root.toolbar-tool-width + root.toolbar-arrow-width + root.view-picker-width + root.sort-picker-width + 3 * root.toolbar-spacing;
     out property <int> view-columns: root.minimal || root.view-mode == 0 ? 1
-        : max(1, floor(list.visible-width / (root.view-mode == 1 ? 180px : 132px)));
+        : max(1, floor(root.list-grid-width / (root.view-mode == 1 ? 180px : 132px)));
     out property <int> view-rows: max(1, floor(list.visible-height / root.row-height));
     private property <int> page-size: root.view-columns * root.view-rows;
     private property <int> page-count: ceil(root.rows.length / root.page-size);
@@ -129,6 +134,11 @@ export component FilePane inherits Rectangle {
     out property <length> list-left: list.absolute-position.x;
     out property <length> list-top: list.absolute-position.y;
     out property <length> list-width: list.width;
+    out property <length> list-content-y: list.content-y;
+    out property <length> list-content-x: list.content-x;
+    // The pinned Fluent scrollbar is 14 logical px. Keep a separate 10px
+    // background gutter available even when Details rows fill the viewport.
+    out property <length> list-grid-width: max(0px, list.visible-width - 14px - 10px);
     out property <length> path-left: path-input.absolute-position.x;
     out property <length> path-top: path-input.absolute-position.y;
     out property <length> path-width: path-input.width;
@@ -192,6 +202,11 @@ export component FilePane inherits Rectangle {
     border-radius: 5px;
 
     public function focus-list() { path-input.finish-edit(); search.focus-input(); }
+    public function scroll-selection(delta: float) {
+        list.cancel-scroll-settle();
+        list.content-y = clamp(list.content-y + delta * 1px,
+            min(0px, list.visible-height - list.content-height), 0px);
+    }
     public function reset-search-context() { search.reset-context(); }
     public function open-volumes() { root.activate(); root.focus-list(); volume-picker.open(); }
     public function commit-volume-shortcut() {
@@ -261,7 +276,7 @@ export component FilePane inherits Rectangle {
                 width: parent.width - 8px; height: parent.height - 2 * self.y;
               HorizontalLayout {
                 x: 0px; y: 0px; height: Theme.control-height;
-                width: 6 * root.toolbar-tool-width + 2 * root.toolbar-arrow-width + 5 * root.toolbar-spacing;
+                width: root.toolbar-left-width;
                 spacing: root.toolbar-spacing;
                 cross-axis-alignment: center;
                 HistoryNavigation {
@@ -284,9 +299,10 @@ export component FilePane inherits Rectangle {
                 Tool { width: root.toolbar-tool-width; native-icon: root.action-icons.refresh; icon: FallbackIcons.refresh; hint: ShortcutHints.hint("Refresh", "panel.refresh"); clicked => { root.activate(); root.action(3); } }
                 Tool { enabled: root.native-filesystem; width: root.toolbar-tool-width; native-icon: root.action-icons.new-file; icon: FallbackIcons.new-file; hint: ShortcutHints.hint("New empty file", "files.create-file"); clicked => { root.activate(); root.mutation(4); root.focus-list(); } }
                 Tool { enabled: root.native-filesystem && root.can-target-selection; width: root.toolbar-tool-width; icon: FallbackIcons.attributes; hint: ShortcutHints.hint("Attributes, times and case", "files.attributes"); clicked => { root.activate(); root.attributes(); } }
+                Tool { enabled: root.native-filesystem; width: root.toolbar-tool-width; native-icon: root.action-icons.find; icon: FallbackIcons.find; hint: ShortcutHints.hint("Find files and text", "files.find"); clicked => { root.activate(); root.find-files(); } }
               }
               HorizontalLayout {
-                width: root.toolbar-tool-width + root.toolbar-arrow-width + root.view-picker-width + root.sort-picker-width + 3 * root.toolbar-spacing;
+                width: root.toolbar-right-width;
                 x: parent.width - self.width; y: root.toolbar-extra-height;
                 height: Theme.control-height; spacing: root.toolbar-spacing;
                 Rectangle {
@@ -513,10 +529,38 @@ export component FilePane inherits Rectangle {
             }
         }
         Rectangle {
+          background-input := TouchArea {
+            width: parent.width; height: parent.height;
+            private property <bool> selecting;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left && !root.touch-contact {
+                    root.activate(); root.focus-list();
+                    self.selecting = SelectionRectangle.input(0, root.pane-id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                        event.modifiers.control, event.modifiers.shift);
+                } else if self.selecting && event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                    self.selecting = false;
+                    SelectionRectangle.input(2, root.pane-id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px, false, false);
+                } else if self.selecting && event.kind == PointerEventKind.cancel {
+                    self.selecting = false;
+                    SelectionRectangle.input(3, root.pane-id, 0, 0, false, false);
+                }
+            }
+            moved => {
+                if self.selecting {
+                    SelectionRectangle.input(1, root.pane-id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px, false, false);
+                }
+            }
             list := PanelList {
                 row-height: root.row-height;
-                interaction-active: root.scroll-interaction-active;
+                interaction-active: root.scroll-interaction-active || SelectionRectangle.pane == root.pane-id;
                 for band in root.repeated-bands : Rectangle {
+                    width: root.list-grid-width;
                     height: root.row-height;
                     for column in root.repeated-columns : FileEntry {
                         private property <int> row-index: root.source-row(band, column);
@@ -551,6 +595,18 @@ export component FilePane inherits Rectangle {
                         drag-released(x, y) => { root.drag-released(x, y); }
                         drag-cancelled => { root.drag-cancelled(); }
                     }
+                }
+            }
+          }
+            Rectangle {
+                width: list.visible-width; height: list.visible-height;
+                clip: true;
+                if SelectionRectangle.active && SelectionRectangle.pane == root.pane-id : Rectangle {
+                    x: SelectionRectangle.left - list.absolute-position.x;
+                    y: SelectionRectangle.top - list.absolute-position.y;
+                    width: SelectionRectangle.width; height: SelectionRectangle.height;
+                    background: Theme.selection-background.transparentize(0.65);
+                    border-color: Theme.active-frame; border-width: 1px;
                 }
             }
             if root.rows.length == 0 : Text {

@@ -369,6 +369,25 @@ impl State {
                         bits[position / 64] |= 1 << (position % 64);
                     }
                 }
+                SelectionAction::Ranges { ranges, mode } => {
+                    if ranges.len() != view.by_id.len() {
+                        return Err("Selection rectangle no longer matches its captured view");
+                    }
+                    if *mode == SelectionMode::Replace {
+                        bits.fill(0);
+                    }
+                    for span in ranges.spans() {
+                        for position in span.first..=span.last {
+                            let bit = 1 << (position % 64);
+                            let word = &mut bits[position / 64];
+                            if *mode == SelectionMode::Toggle {
+                                *word ^= bit;
+                            } else {
+                                *word |= bit;
+                            }
+                        }
+                    }
+                }
                 SelectionAction::Rebase => {}
             }
             self.current = Arc::new(self.current.with_bits(bits)?);
@@ -440,6 +459,9 @@ impl State {
                             }
                         }
                     }
+                }
+                SelectionAction::Ranges { .. } => {
+                    return Err("Selection rectangles require a complete immutable view");
                 }
                 SelectionAction::Rebase => {}
             }
@@ -671,6 +693,68 @@ mod tests {
 
     fn apply(state: &mut State, request: SelectionRequest) -> Arc<SelectionSnapshot> {
         state.apply(&request).unwrap().unwrap().0
+    }
+
+    #[test]
+    fn rectangle_disjoint_ranges_keep_raw_identities_and_modifier_semantics() {
+        let index = view(&["é", "b", "文档", "d", "e", "f"]);
+        let mut state = State::default();
+        apply(
+            &mut state,
+            request(1, Some(index.clone()), SelectionAction::Toggle("e".into())),
+        );
+        let ranges = SelectionRanges::new(
+            6,
+            vec![
+                SelectionSpan { first: 0, last: 0 },
+                SelectionSpan { first: 2, last: 3 },
+            ],
+        )
+        .unwrap();
+        for (revision, mode, expected) in [
+            (2, SelectionMode::Add, 0b011101),
+            (3, SelectionMode::Toggle, 0b010000),
+            (4, SelectionMode::Replace, 0b001101),
+        ] {
+            let result = apply(
+                &mut state,
+                request(
+                    revision,
+                    Some(index.clone()),
+                    SelectionAction::Ranges {
+                        ranges: ranges.clone(),
+                        mode,
+                    },
+                ),
+            );
+            assert_eq!(result.bits(), &[expected]);
+            assert!(Arc::ptr_eq(result.basis(), &index));
+        }
+        let stale = request(
+            3,
+            Some(index),
+            SelectionAction::Bulk(SelectionOperation::Clear),
+        );
+        assert!(state.apply(&stale).unwrap().is_none());
+    }
+
+    #[test]
+    fn rectangle_requires_complete_view_and_exact_source_extent() {
+        let ranges = SelectionRanges::new(1, vec![SelectionSpan { first: 0, last: 0 }]).unwrap();
+        let action = SelectionAction::Ranges {
+            ranges,
+            mode: SelectionMode::Replace,
+        };
+        assert!(
+            State::default()
+                .apply(&request(1, None, action.clone()))
+                .is_err()
+        );
+        assert!(
+            State::default()
+                .apply(&request(1, Some(view(&["a", "b"])), action))
+                .is_err()
+        );
     }
 
     #[test]

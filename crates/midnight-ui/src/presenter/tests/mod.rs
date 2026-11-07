@@ -23,9 +23,11 @@ mod search;
 mod selected_folder_sizes;
 mod selected_size_status;
 mod selection;
+mod selection_rectangle;
 mod shortcuts;
 mod size_continuity;
 mod tabs;
+mod user_commands;
 mod volumes;
 mod watch;
 

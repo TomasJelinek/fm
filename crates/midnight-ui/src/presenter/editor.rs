@@ -52,6 +52,17 @@ impl Presenter {
             // Editing only arguments must not replace a non-Unicode native path with its label.
             previous.clone()
         } else {
+            if previous
+                .as_deref()
+                .and_then(Path::parent)
+                .is_some_and(|parent| crate::native_path_edit::ambiguous_edit(parent, executable))
+            {
+                self.editor.error = concat!(
+                    "The displayed editor folder contains characters this editor cannot represent. ",
+                    "Enter another complete executable path without replacement characters."
+                ).into();
+                return;
+            }
             Some(PathBuf::from(executable))
         };
         let editor = EditorPreferences {
@@ -110,6 +121,13 @@ impl Presenter {
     }
 }
 
+#[cfg(all(test, windows))]
+#[path = "editor_windows_tests.rs"]
+mod native_tests;
+#[cfg(all(test, unix))]
+#[path = "editor_unix_tests.rs"]
+mod native_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +152,29 @@ mod tests {
         panel.cursor = Some(EntryId(2));
         panel.parent_cursor = false;
         presenter
+    }
+
+    pub(super) fn assert_raw_parent_edit_is_refused(parent: PathBuf) {
+        let mut presenter = presenter();
+        presenter.preferences.loaded = true;
+        presenter.preferences.values.editor.executable = Some(parent.join("original-tool"));
+        let before = presenter.preferences.values.editor.clone();
+        let focus = presenter.panes[0].cursor;
+        let path = presenter.panes[0].display_path().to_owned();
+        let edited = parent.join("other-tool").to_string_lossy().into_owned();
+        presenter.change_editor(&edited, "[\"{file}\"]", &|_| {
+            panic!("Ambiguous editor settings were saved")
+        });
+        assert_eq!(presenter.preferences.values.editor, before);
+        assert!(!presenter.editor.error.is_empty());
+        assert_eq!(presenter.panes[0].cursor, focus);
+        assert_eq!(presenter.panes[0].display_path(), path);
+        let explicit = std::env::temp_dir().join("explicit Unicode tool");
+        presenter.change_editor(explicit.to_str().unwrap(), "[\"{file}\"]", &|_| true);
+        assert_eq!(
+            presenter.preferences.values.editor.executable,
+            Some(explicit)
+        );
     }
 
     #[test]

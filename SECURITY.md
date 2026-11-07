@@ -195,15 +195,36 @@ Future parallel Copy/Move is permitted only when **both source and destination
 are positively identified as local SSDs**, with a shared physical-device scheduler.
 HDD, network, unknown or failed classification on either endpoint requires serial
 copying; an SSD at the other endpoint does not override this. SSD-to-SSD copying
-also remains serial today. Move remains unavailable.
+also remains serial today.
 
-Source files remain untouched. Move/Cut intents are explicitly unsupported.
-Files and ordinary directories are supported; links/special files are rejected.
-Existing items are never replaced or merged. Conflicts show source and target
-metadata and accept versioned Skip, Skip all for this job, another name, or Cancel.
+Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
+through the ordinary Copy route is rejected. Explicit Recoverable Move backend
+routes support at most 64 native ordinary file roots and a conservative 4 MiB
+proof-path reservation; directory, link, archive-member, duplicate-source and unsupported
+location batches are rejected whole before publication. F6/Cut presentation is
+separate from this backend capability. Originals are relocated into protected
+sibling recovery directories under their original raw basenames, never unlinked;
+source space is not reclaimed and no permanent deletion is claimed.
+Copy supports files and ordinary directories; links/special files are rejected.
+Conflicts show source and target metadata and accept versioned Skip, Skip all for
+this job, another name, explicit recoverable replacement, directory merge, or
+Cancel when the provider supports that choice. All choices apply to this job;
+directory merge still prompts for conflicting children. Every selected source
+identity is protected against replacement, and Move protects its earlier verified
+outputs too. Conditional identity replacement remains Unsupported: recoverable
+replacement is a separately declared policy, never a silent weakening of CAS.
 Waiting for a decision holds no blocking thread; Jobs can reopen a deferred dialog.
 Already published files/directories remain after cancellation or partial failure.
 The private unfinished file is cleaned by its native handle/descriptor.
+
+Recoverable replacement qualifies local ext filesystems on Linux and local fixed
+NTFS on Windows. Linux exchanges names and inspects the displaced object in a
+private recovery directory; an unexpected object is retained and reported.
+Windows captures the exact guarded original, then publishes without replacement:
+this has an explicitly declared namespace gap. A new winner is never removed;
+original and staged replacement data remain in protected recovery after a partial
+commit. Structured outcomes preserve actual publication, recovery paths and known
+identities even on errors. No recovery object is automatically deleted on Drop.
 
 Linux uses anonymous O_TMPFILE staging and descriptor-based no-replace publication;
 filesystems without that capability return Unsupported. New copy directories are
@@ -215,6 +236,34 @@ Content verification does not promise preservation of ACLs, alternate streams,
 xattrs, sparse allocation, timestamps or links. Windows file sync does not promise
 power-loss durability of the parent entry; Linux separately reports parent-sync
 failure even if publication succeeded.
+
+Recoverable Move preflight obtains source mutation authority separately from Copy,
+retains every actual source reader and empty stage, and verifies native source
+parents are protected before copying the batch. Windows requests DELETE upfront
+only for Move and rejects incompatible sharing or unsafe parent DACLs. Linux
+requires owned/trusted-sticky source parents and effective mutation permissions.
+Shared inherited directories can be unsupported even on a supported filesystem;
+the failure suggests Copy and retains every source rather than weakening rights.
+
+Only complete successful publication with every required durability step yields
+a Move proof; skipped, failed, cancelled, partial and durability-unconfirmed files
+block all source capture. After all initial copies, a single 256 KiB buffer
+independently rehashes every held source and held destination against its original
+SHA-256/length, checks fresh native revisions, and validates exact final target
+name bindings. All capture authorities are revalidated before the first source
+name changes. Capture is resumable one root at a time under the same queue and
+mutation exclusion; every remaining authority and target binding is checked.
+After capture another full proof pass reads the same held originals despite their
+old names disappearing. A late writer mismatch reports partial/recovery status;
+all its bytes remain in the retained original. Cancellation after an earlier
+capture retains that recovery and leaves remaining source names untouched.
+Linux source capture is no-replace rename plus identity inspection/restoration,
+not compare-ID unlink. Neither platform promises an immutable batch snapshot.
+Native revision guards supplement full hashes; same-size edits within a timestamp
+quantum can evade metadata alone. Source/recovery mappings and captured parents
+are reported with bounded display samples and exact counts. No automatic recovery
+catalogue or restoration journal is implemented. Recursive directory Move requires
+a separate complete child-closure proof and is not enabled by root capture alone.
 
 1. Only supported ordinary file types are copied. Opened file identities and
    source/destination alias checks are used; no unchecked traversal of recursive

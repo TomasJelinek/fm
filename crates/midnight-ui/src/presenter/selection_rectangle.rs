@@ -1,0 +1,129 @@
+//! A gesture predicts visible marks without editing selection snapshots.
+use super::*;
+
+#[derive(Clone)]
+pub(crate) struct Capture {
+    generation: u64,
+    search: u64,
+    // A weak owner prevents address reuse without retaining a large old index.
+    view: std::sync::Weak<DirectoryIndex>,
+    len: usize,
+    revision: SelectionRevision,
+    selection: usize,
+    cancel: Cancellation,
+}
+impl Capture {
+    fn revision(pane: &Pane) -> SelectionRevision {
+        pane.archive
+            .as_ref()
+            .map_or(pane.selection_revision, |a| a.selection_revision)
+    }
+    fn selection(pane: &Pane) -> usize {
+        pane.archive.as_ref().map_or_else(
+            || Arc::as_ptr(&pane.selected) as usize,
+            |a| Arc::as_ptr(&a.selected) as usize,
+        )
+    }
+    fn available(pane: &Pane) -> bool {
+        !pane.loading
+            && !pane.showing_stream()
+            && !pane.search_view_waiting()
+            && pane.archive.as_ref().map_or_else(
+                || {
+                    pane.selection_preview.is_empty()
+                        && pane.selection_applied == pane.selection_revision
+                        && !pane.selection_rebase_pending
+                },
+                |a| !a.selection_pending,
+            )
+    }
+    fn matches(&self, pane: &Pane) -> bool {
+        !self.cancel.is_cancelled()
+            && Self::available(pane)
+            && pane.generation == self.generation
+            && pane.search.view_revision == self.search
+            && self.view.as_ptr() == Arc::as_ptr(pane.display_index())
+            && Self::revision(pane) == self.revision
+            && Self::selection(pane) == self.selection
+    }
+    pub(crate) fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
+pub(super) struct Preview {
+    capture: Capture,
+    ranges: SelectionRanges,
+    mode: SelectionMode,
+}
+impl Preview {
+    pub(super) fn visible(&self, pane: &Pane, entry: &Entry, selected: bool) -> bool {
+        if !self.capture.matches(pane) {
+            return selected;
+        }
+        let hit = pane
+            .display_index()
+            .by_id
+            .get(&entry.id)
+            .is_some_and(|row| self.ranges.contains(*row));
+        self.mode.selected(hit, selected)
+    }
+}
+
+impl Presenter {
+    pub(crate) fn capture_rectangle(&self, pane: PaneId) -> Option<Capture> {
+        let p = &self.panes[pane.index()];
+        Capture::available(p).then(|| Capture {
+            generation: p.generation,
+            search: p.search.view_revision,
+            view: Arc::downgrade(p.display_index()),
+            len: p.display_index().by_id.len(),
+            revision: Capture::revision(p),
+            selection: Capture::selection(p),
+            cancel: Cancellation::default(),
+        })
+    }
+    pub(crate) fn rectangle_current(&self, pane: PaneId, capture: &Capture) -> bool {
+        capture.matches(&self.panes[pane.index()])
+    }
+    pub(crate) fn preview_rectangle(
+        &mut self,
+        pane: PaneId,
+        capture: &Capture,
+        ranges: SelectionRanges,
+        mode: SelectionMode,
+    ) -> bool {
+        let p = &mut self.panes[pane.index()];
+        if !capture.matches(p) || ranges.len() != capture.len {
+            p.rectangle_preview = None;
+            return false;
+        }
+        p.rectangle_preview = Some(Preview {
+            capture: capture.clone(),
+            ranges,
+            mode,
+        });
+        true
+    }
+    pub(crate) fn cancel_rectangle(&mut self, pane: PaneId) {
+        self.panes[pane.index()].rectangle_preview = None;
+    }
+    pub(crate) fn commit_rectangle(
+        &mut self,
+        pane: PaneId,
+        capture: &Capture,
+        ranges: SelectionRanges,
+        mode: SelectionMode,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        self.cancel_rectangle(pane);
+        if !capture.matches(&self.panes[pane.index()]) || ranges.len() != capture.len {
+            return false;
+        }
+        if self.panes[pane.index()].archive.is_some() {
+            self.archive_bulk_selection(pane, ArchiveSelectionAction::Ranges { ranges, mode }, send)
+        } else {
+            self.send_selection(pane, SelectionAction::Ranges { ranges, mode }, send)
+        }
+    }
+}

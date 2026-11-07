@@ -5,9 +5,12 @@ use super::*;
 pub(super) enum SelectionIntent {
     Properties,
     Copy,
+    Cut,
     CopyDialog(copy_dialog::CopyContext),
     Metadata { pane: PaneId, case: bool },
     FolderSizes(PaneId),
+    Checksums { pane: PaneId, directory: PathBuf },
+    UserCommand(Box<user_commands::CommandCapture>),
     Menu(file_actions::MenuContext),
     Drag(DragId),
 }
@@ -17,9 +20,18 @@ impl SelectionIntent {
         match self {
             Self::Properties => "Properties",
             Self::Copy => "Copy",
-            Self::CopyDialog(_) => "Copy to folder",
+            Self::Cut => "Cut",
+            Self::CopyDialog(context) => {
+                if context.intent == TransferIntent::RecoverableMove {
+                    "Move to folder"
+                } else {
+                    "Copy to folder"
+                }
+            }
             Self::Metadata { .. } => "editing attributes, times and case",
             Self::FolderSizes(_) => "calculating folder sizes",
+            Self::Checksums { .. } => "calculating checksums",
+            Self::UserCommand(_) => "running a Custom Command",
             Self::Menu(_) => "Context menu",
             Self::Drag(_) => "dragging files",
         }
@@ -81,7 +93,10 @@ impl Presenter {
         if !pending
             && selection.is_empty()
             && fallback.is_none()
-            && !matches!(intent, SelectionIntent::FolderSizes(_))
+            && !matches!(
+                intent,
+                SelectionIntent::FolderSizes(_) | SelectionIntent::UserCommand(_)
+            )
         {
             return;
         }
@@ -126,6 +141,7 @@ impl Presenter {
                 fallback: files.fallback,
             },
             SelectionIntent::Copy => Command::CopyFiles { request, files },
+            SelectionIntent::Cut => Command::CutFiles { request, files },
             SelectionIntent::CopyDialog(context) => {
                 self.desktop.requests.remove(&request);
                 self.open_captured_copy(request, context, files);
@@ -139,6 +155,16 @@ impl Presenter {
             SelectionIntent::FolderSizes(pane) => {
                 self.desktop.requests.remove(&request);
                 self.start_captured_folder_sizes(pane, files.selection, send);
+                return;
+            }
+            SelectionIntent::Checksums { pane, directory } => {
+                self.desktop.requests.remove(&request);
+                self.open_captured_checksums(pane, directory, files, send);
+                return;
+            }
+            SelectionIntent::UserCommand(capture) => {
+                self.desktop.requests.remove(&request);
+                self.submit_user_command(*capture, Some(files), send);
                 return;
             }
             SelectionIntent::Menu(context) => {

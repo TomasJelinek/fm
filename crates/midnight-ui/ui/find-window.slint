@@ -1,0 +1,185 @@
+import { Button, ComboBox, ListView, ScrollView } from "std-widgets.slint";
+import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { ToolWindow } from "tool-window.slint";
+
+export struct FindRow { token: string, name: string, path: string, size: string, modified: string, directory: bool }
+export struct FindDraft { masks: string, recursive: bool, name-case: bool, content-enabled: bool, content: string, content-case: bool }
+
+export component FindWindow inherits ToolWindow {
+    callback close-session();
+    request-close => { root.close-session(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    title: "Find files · Midnight Explorer";
+    in property <[FindRow]> rows;
+    in property <[string]> roots;
+    in property <bool> running;
+    in property <bool> stopping;
+    in property <string> progress;
+    in property <string> error;
+    in property <string> details;
+    in property <bool> attention;
+    in-out property <int> selected-row: -1;
+    in-out property <bool> show-details;
+    // Hiding the query editor must not leave the native window without a key
+    // recipient: Escape remains available while Details replaces that editor.
+    changed show-details => { root.focus-content(); }
+    private property <length> result-height: max(48px, Theme.font-size * 3 + 8px);
+    changed selected-row => {
+        if root.selected-row >= 0 {
+            if root.selected-row * root.result-height < -results.content-y {
+                results.content-y = -root.selected-row * root.result-height;
+            } else if (root.selected-row + 1) * root.result-height > -results.content-y + results.visible-height {
+                results.content-y = results.visible-height - (root.selected-row + 1) * root.result-height;
+            }
+        }
+    }
+    callback search(FindDraft);
+    callback stop();
+    callback add-root(string);
+    callback remove-root(int);
+    callback reveal(string);
+    public function reveal-selected() {
+        if root.selected-row >= 0 && root.selected-row < root.rows.length {
+            root.reveal(root.rows[root.selected-row].token);
+        }
+    }
+    callback copy-details();
+    public function begin() { masks.focus(); }
+    public function submit() {
+        root.search({masks: masks.text, recursive: recursive.checked, name-case: names.checked,
+            content-enabled: content-enabled.checked, content: content.text, content-case: content-case.checked});
+    }
+    Rectangle {
+        min-width: 0px; min-height: 0px;
+        preferred-width: 0px; preferred-height: 0px;
+        VerticalLayout {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            padding: root.height < 360px ? 6px : 12px; spacing: 6px;
+            Rectangle {
+                height: min(root.height * 0.44, 270px);
+              ScrollView {
+                visible: !root.show-details;
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    padding-right: 8px; spacing: 6px; alignment: start;
+                    Text { text: "Search folders"; color: Theme.strong-text; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        roots := ComboBox { model: root.roots; enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
+                            accessible-label: "Search folders"; }
+                        Button { text: "Remove"; enabled: !root.running && root.roots.length > 0;
+                            clicked => { root.remove-root(roots.current-index); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        new-root := HintedLineEdit { enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
+                            accessible-label: "Add absolute search folder";
+                            placeholder-text: "Absolute folder path";
+                            hint: "Add another native folder. Existing roots retain their original native path, including names that cannot be typed here.";
+                            accepted => { root.add-root(self.text); } }
+                        Button { text: "Add"; enabled: !root.running && new-root.text != "";
+                            clicked => { root.add-root(new-root.text); } }
+                    }
+                    Text { text: "File name masks"; color: Theme.text; }
+                    masks := HintedLineEdit { text: "*.*"; enabled: !root.running; accessible-label: "File name masks";
+                        hint: "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
+                        accepted => { root.submit(); } }
+                    HorizontalLayout {
+                        recursive := HintedCheckBox { text: "Subfolders"; checked: true; enabled: !root.running;
+                            hint: "Recurse into ordinary folders. Links, junctions and mount boundaries are excluded and counted."; }
+                        names := HintedCheckBox { text: "Match name case"; enabled: !root.running; }
+                    }
+                    content-enabled := HintedCheckBox { text: "Containing text"; enabled: !root.running;
+                        hint: "Search literal text in UTF-8 files, optionally with a BOM. Unsupported encodings are reported, not silently skipped."; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        content := HintedLineEdit { enabled: !root.running && content-enabled.checked; min-width: 0px; horizontal-stretch: 1;
+                            accessible-label: "Text to find"; hint: "Literal text, read incrementally on a backend worker.";
+                            accepted => { root.submit(); } }
+                        content-case := HintedCheckBox { text: "Match case"; enabled: !root.running && content-enabled.checked; }
+                    }
+                    if root.error != "": ErrorNotice { text: root.error; }
+                }
+              }
+              if root.show-details: ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    padding-right: 8px; spacing: 6px; alignment: start;
+                    if root.error != "": ErrorNotice { text: root.error; }
+                    Text { text: root.details; color: Theme.secondary-text; wrap: word-wrap; }
+                }
+              }
+            }
+            Rectangle {
+                vertical-stretch: 1; min-height: 20px; clip: true;
+                background: Theme.pane-background; border-color: Theme.frame; border-width: 1px;
+                results-focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.DownArrow { root.selected-row = min(root.rows.length - 1, root.selected-row + 1); return accept; }
+                        if event.text == Key.UpArrow { root.selected-row = max(0, root.selected-row - 1); return accept; }
+                        if event.text == Key.Home { root.selected-row = root.rows.length > 0 ? 0 : -1; return accept; }
+                        if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
+                        if event.text == Key.Return { root.reveal-selected(); return accept; }
+                        reject
+                    }
+                    results := ListView {
+                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                        horizontal-scrollbar-policy: always-off;
+                        accessible-label: "Find results";
+                        accessible-item-count: root.rows.length;
+                        for row[index] in root.rows: Rectangle {
+                            width: results.visible-width; height: root.result-height;
+                            background: root.selected-row == index ? Theme.cursor-background : mod(index, 2) == 1 ? Theme.alternate-row : Theme.pane-background;
+                            border-width: root.selected-row == index ? 1px : 0px; border-color: Theme.cursor-edge;
+                            accessible-role: list-item;
+                            accessible-label: row.name + "\n" + row.path + "\n" + row.size + "\n" + row.modified;
+                            accessible-item-selectable: true;
+                            accessible-item-selected: root.selected-row == index;
+                            accessible-item-index: index;
+                            accessible-action-default => { root.selected-row = index; results-focus.focus(); }
+                            VerticalLayout {
+                                padding: 5px; spacing: 2px;
+                                HorizontalLayout {
+                                    Text { text: row.name; color: row.directory ? Theme.directory-text : Theme.text; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+                                    Text { text: row.size; color: Theme.secondary-text; font-size: Theme.small-font; }
+                                }
+                                Text { text: row.path; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+                                if root.width >= 600px: Text { text: row.modified; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+                            }
+                            TouchArea {
+                                clicked => { root.selected-row = index; results-focus.focus(); }
+                                double-clicked => { root.selected-row = index; root.reveal(row.token); }
+                            }
+                        }
+                    }
+                }
+                if root.rows.length == 0: Text { text: root.running ? "Searching…" : "No results"; color: Theme.muted-text;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+            HorizontalLayout {
+                spacing: 4px; height: max(18px, Theme.small-font + 4px);
+                if root.attention: Rectangle {
+                    width: 18px; border-radius: 9px; background: Theme.error-text;
+                    Text { text: "!"; color: Theme.error-background; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Text { text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
+                    font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                Button { text: root.running ? "Stop" : "Find"; enabled: !root.stopping;
+                    clicked => { if root.running { root.stop(); } else { root.submit(); } } }
+                Button { text: root.show-details ? "Copy" : "Go to file"; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
+                    clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
+                Button { text: root.show-details ? "Query" : "Details"; clicked => { root.show-details = !root.show-details; } }
+                if root.width >= 600px: Button { text: "Copy details"; clicked => { root.copy-details(); } }
+                Button { text: "Close"; clicked => { root.close-session(); } }
+            }
+        }
+    }
+}

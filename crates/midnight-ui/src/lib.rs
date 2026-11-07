@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 mod action_icons;
 mod archive_options;
+mod checksum_windows;
 mod color_options;
 mod command_line;
 mod commander_presentation;
@@ -13,10 +14,12 @@ mod error_presentation;
 mod file_key_bridge;
 mod file_keys;
 mod filename_colors;
+mod find_windows;
 mod font_model;
 mod job_presentation;
 mod metadata_input;
 mod metadata_presentation;
+mod native_path_edit;
 mod native_shortcuts;
 mod navigation_models;
 mod operation_detail;
@@ -28,6 +31,8 @@ mod plugin_options;
 mod presenter;
 mod scroll_input;
 mod search_input;
+mod selection_bridge;
+mod selection_rectangle;
 mod shell_bridge;
 mod shortcut_bridge;
 mod shortcut_editor;
@@ -35,7 +40,10 @@ mod shortcut_input;
 mod size_presentation;
 mod thumbnail_presentation;
 mod time_presentation;
+mod tool_window_failure;
 mod tooltip;
+mod user_command_presentation;
+mod user_command_settings_presentation;
 pub use thumbnail_presentation::ThumbnailTarget;
 mod volume_presentation;
 use command_line::{replace_command_selection, safe_path_context};
@@ -288,12 +296,16 @@ fn column_index(column: SortColumn) -> i32 {
 /// Refresh visible properties and lazy model notifications from current presenter state.
 /// Release mutable presenter borrows first: Slint can synchronously read its row models.
 pub fn refresh(window: &MainWindow, presenter: &Presenter) {
+    user_command_presentation::refresh(window, presenter);
     window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
     window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
     refresh_properties(window, presenter, true);
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    user_command_settings_presentation::refresh(window, presenter);
+    window.invoke_refresh_find_windows();
+    window.invoke_refresh_checksum_windows();
     archive_options::refresh(window, presenter);
     color_options::refresh(window, presenter);
     plugin_options::refresh(window, presenter);
@@ -779,6 +791,10 @@ pub fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     shortcut_bridge::install(window, presenter.clone(), send.clone());
+    find_windows::install(window, presenter.clone(), send.clone());
+    checksum_windows::install(window, presenter.clone(), send.clone());
+    user_command_presentation::install(window, presenter.clone(), send.clone());
+    user_command_settings_presentation::install(window, presenter.clone(), send.clone());
     job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
     archive_options::install(window, presenter.clone(), send.clone());
@@ -790,6 +806,7 @@ pub fn install(
     shell_bridge::install(window, presenter.clone(), send.clone());
     copy_presentation::install(window, presenter.clone(), send.clone());
     drag_bridge::install(window, presenter.clone(), send.clone());
+    selection_bridge::install(window, presenter.clone(), send.clone());
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
     window.set_left_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Left)));
     window.set_right_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Right)));
@@ -863,7 +880,9 @@ pub fn install(
         }
     });
     callback!(on_cancel_job, |_w, p, s, token| {
-        if token.starts_with("copy-job:") {
+        if token.starts_with("command-job:") {
+            p.cancel_user_command(token.as_str(), s);
+        } else if token.starts_with("copy-job:") {
             p.cancel_copy(token.as_str(), s);
         } else {
             p.cancel_operation(
@@ -1375,6 +1394,8 @@ pub fn install(
                     refresh(&window, &state.borrow());
                 } else {
                     state.borrow_mut().shutdown_drag_drop(sender.as_ref());
+                    window.invoke_close_find_windows();
+                    window.invoke_close_checksum_windows();
                     let _ = window.hide();
                 }
             }

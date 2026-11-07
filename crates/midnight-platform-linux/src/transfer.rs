@@ -16,8 +16,12 @@ use std::{
 };
 #[path = "transfer_destination.rs"]
 mod destination;
+#[path = "transfer_move.rs"]
+mod move_source;
 #[path = "transfer_source.rs"]
 mod source;
+#[path = "transfer_validation.rs"]
+mod validation;
 const RESOLVE: ResolveFlags = ResolveFlags::BENEATH
     .union(ResolveFlags::NO_SYMLINKS)
     .union(ResolveFlags::NO_XDEV);
@@ -25,6 +29,27 @@ const DIRECTORY: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
 impl TransferService for crate::LinuxFileSystem {
+    fn prepare_move_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        let directory = self.prepare_transfer_destination(path, cancel)?;
+        if !directory.capabilities().recoverable_replacement {
+            return Err(unsupported(
+                path,
+                "Verified Move requires a qualified local destination. Choose Copy to retain the source.",
+            ));
+        }
+        Ok(directory)
+    }
+    fn prepare_move_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMove, FsError> {
+        move_source::prepare(path, cancel)
+    }
     fn prepare_transfer_source(
         &self,
         path: &Path,

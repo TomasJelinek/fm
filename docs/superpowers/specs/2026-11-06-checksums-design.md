@@ -1,9 +1,12 @@
 # Checksums for selected files: Ctrl+F8
 
-Date: 6 November 2026. **Status: design only; not implemented.** This document
-proposes checksum calculation for the captured file selection, following the
-workflow of Salamander's Checksum plugin. It changes no binary, shortcut table,
-public plugin API or dependency lock. The user's corrected shortcut is
+Date: 6 November 2026. **Implementation update, 7 November:** the native backend
+and actor are implemented and verified; modeless UI integration and qualification
+are in progress. See [the current API contract](../../developer/CHECKSUMS.md)
+and [backend evidence](../../verification/2026-11-07-checksum-backend.md).
+The remaining sections preserve the design baseline and proposed follow-ups;
+they are not a claim that every proposal is already released. The workflow follows
+Salamander's Checksum plugin. The user's corrected shortcut is
 **Ctrl+F8**. Ctrl+F7 remains filename case conversion; Ctrl+F2 remains the metadata
 editor. Those existing operations are not reassigned.
 

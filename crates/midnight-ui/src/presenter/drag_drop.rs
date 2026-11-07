@@ -537,22 +537,12 @@ impl Presenter {
                 } else if let Some(next) = next {
                     let id = OperationId(next);
                     self.operations.next_id = id.0;
-                    self.copies.progress.push(Arc::new(CopyProgress {
+                    self.copies.progress.push(Arc::new(CopyProgress::queued(
                         id,
-                        state: CopyOperationState::Queued,
-                        phase: CopyOperationPhase::Planning,
-                        requested_roots: item_count as u64,
-                        files_completed: 0,
-                        directories_created: 0,
-                        skipped: 0,
-                        failed: 0,
-                        copied_bytes: 0,
-                        verified_bytes: 0,
-                        current_path: None,
-                        destination_directory: (*destination).clone(),
-                        message: String::new(),
-                        errors: vec![],
-                    }));
+                        (*destination).clone(),
+                        item_count as u64,
+                        TransferIntent::Copy,
+                    )));
                     self.drag_drop.accepted.push_back((token, id));
                 } else {
                     self.drag_drop.rejected.push_back(token);

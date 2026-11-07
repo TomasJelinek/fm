@@ -42,7 +42,16 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
         return;
     }
     let destination = draft.destination.to_string_lossy();
-    window.set_copy_draft_body(format!("{}\n\nFrom\n{}", draft.summary, draft.source).into());
+    let moving = draft.intent == TransferIntent::RecoverableMove;
+    window.set_copy_draft_move(moving);
+    let policy = if moving {
+        "Up to 64 regular files; folders and links are unsupported. Every file must be copied and checked before originals move into protected recovery folders. Source disk space is not freed.\n\n"
+    } else {
+        ""
+    };
+    window.set_copy_draft_body(
+        format!("{}{}\n\nFrom\n{}", policy, draft.summary, draft.source).into(),
+    );
     window.set_copy_draft_destination(destination.as_ref().into());
     window.set_copy_draft_selection_end(destination.len().min(i32::MAX as usize) as i32);
     window.set_copy_draft_token(draft.token.as_str().into());
@@ -78,19 +87,18 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     if window.get_copy_token() == token {
         return;
     }
-    let describe = |item: &MutationItem| {
-        let size = item.metadata.size.map_or_else(
-            || "Unknown size".into(),
-            |size| format!("{} bytes", presenter.number_locale.format_u64(size)),
-        );
-        let modified = time_presentation::modified(&item.metadata).map_or_else(
-            || "Unknown modified time".into(),
-            |time| format!("{} {}", time.date, time.time),
-        );
-        format!("{}\n{size} · {modified}", item.path.display())
+    let policy = if conflict.can_replace {
+        "Replacement keeps the original in a private recovery folder. Recent Jobs show its location; copy details before closing the app."
+    } else if conflict.can_merge {
+        "Merging keeps existing children. Conflicting files need a separate decision."
+    } else {
+        "Replacement and merging are unavailable for these items. Choose another name or skip."
     };
-    window.set_copy_body(format!("Source\n{}\n\nExisting destination\n{}\n\nChoose another name or skip. Replacement is unavailable.",
-        describe(&conflict.source), describe(&conflict.target)).into());
+    window.set_copy_can_replace(conflict.can_replace);
+    window.set_copy_can_merge(conflict.can_merge);
+    window.set_copy_source_details(describe(&conflict.source, &presenter.number_locale).into());
+    window.set_copy_target_details(describe(&conflict.target, &presenter.number_locale).into());
+    window.set_copy_body(policy.into());
     window.set_copy_name(
         conflict
             .destination
@@ -102,4 +110,74 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     );
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();
+}
+
+fn describe(item: &MutationItem, locale: &NumberLocale) -> String {
+    let size = item
+        .metadata
+        .size
+        .filter(|_| item.kind == EntryKind::File)
+        .map_or_else(
+            || "Unknown size".into(),
+            |size| {
+                format!(
+                    "{} bytes ({})",
+                    locale.format_u64(size),
+                    format_size(size, locale)
+                )
+            },
+        );
+    let modified = time_presentation::modified(&item.metadata).map_or_else(
+        || "Unknown modified time".into(),
+        |time| format!("{} {}", time.date, time.time),
+    );
+    let kind = match item.kind {
+        EntryKind::File => "File",
+        EntryKind::Directory => "Folder",
+        EntryKind::DirectoryLink | EntryKind::Symlink => "Link",
+        EntryKind::Other => "Special item",
+    };
+    let precise = item
+        .metadata
+        .modified
+        .and_then(time_presentation::utc_precise)
+        .map_or_else(String::new, |utc| format!("\n{utc}"));
+    format!(
+        "{}\n\n{kind}\n{size}\nModified: {modified}{precise}",
+        item.path.display()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn conflict_details_distinguish_types_unknowns_and_explicit_precise_utc() {
+        for (kind, label) in [
+            (EntryKind::File, "File"),
+            (EntryKind::Directory, "Folder"),
+            (EntryKind::Symlink, "Link"),
+            (EntryKind::Other, "Special item"),
+        ] {
+            let mut item = MutationItem {
+                path: "資料/source".into(),
+                kind,
+                metadata: EntryMetadata::default(),
+            };
+            let unknown = describe(&item, &NumberLocale::default());
+            assert!(unknown.contains(&format!("\n{label}\nUnknown size\nModified: Unknown")));
+            item.metadata.size = Some(123);
+            item.metadata.modified =
+                Some(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(100));
+            item.metadata.localized_modified = Some(LocalizedDateTime {
+                date: "local date".into(),
+                time: "1 PM".into(),
+            });
+            let detail = describe(&item, &NumberLocale::default());
+            assert!(detail.contains("Modified: local date 1 PM"));
+            assert!(detail.contains("1970-01-01 00:00:00.000000100 UTC"));
+            assert_eq!(detail.contains("123 bytes"), kind == EntryKind::File);
+            assert!(detail.contains("資料"));
+        }
+    }
 }

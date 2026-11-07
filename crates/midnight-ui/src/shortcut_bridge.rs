@@ -4,7 +4,7 @@ use crate::{
     presenter::keyboard::{KeyboardBindings, KeyboardState},
     refresh, shortcut_input,
 };
-use midnight_core::{Command, ShortcutChord, ShortcutContext, shortcut_catalog};
+use midnight_core::{Command, ShortcutChord, ShortcutContext};
 use slint::{ComponentHandle, Model, VecModel};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -116,7 +116,10 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
     if window.get_keyboard_actions().row_count() == 0 {
         window.set_keyboard_actions(
             Rc::new(VecModel::from(
-                shortcut_catalog()
+                bindings
+                    .borrow()
+                    .map
+                    .definitions()
                     .iter()
                     .map(|action| action.label.as_str().into())
                     .collect::<Vec<_>>(),
@@ -349,7 +352,7 @@ pub(crate) fn install(
 pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
     crate::shortcut_editor::refresh(window, presenter);
     let state = &presenter.keyboard;
-    let action = &shortcut_catalog()[state.selected];
+    let action = &state.snapshot.map.definitions()[state.selected];
     if window.get_keyboard_revision() == state.editor_revision_text
         && window.get_keyboard_action_id() == action.id
         && window.get_keyboard_error() == state.error
@@ -363,6 +366,18 @@ pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
     window.set_keyboard_action_id(action.id.as_str().into());
     let hints = window.global::<ShortcutHints>();
     if hints.get_revision() != state.snapshot.revision_text {
+        window.set_keyboard_actions(
+            Rc::new(VecModel::from(
+                state
+                    .snapshot
+                    .map
+                    .definitions()
+                    .iter()
+                    .map(|definition| definition.label.as_str().into())
+                    .collect::<Vec<_>>(),
+            ))
+            .into(),
+        );
         hints.set_revision(state.snapshot.revision_text.clone());
     }
     if window.get_keyboard_revision() != state.editor_revision_text {

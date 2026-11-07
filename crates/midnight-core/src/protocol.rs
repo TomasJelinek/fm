@@ -42,9 +42,39 @@ pub struct SelectedFiles {
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    PreviewUserCommand(Box<crate::UserCommandRequest>),
+    ExecuteUserCommand(Box<crate::UserCommandRequest>),
+    CancelUserCommand(crate::UserCommandRequestId),
+    StartChecksums(Box<crate::ChecksumRequest>),
+    StartSelectedChecksums(Box<crate::SelectedChecksumRequest>),
+    CancelChecksums {
+        job: crate::ChecksumJobId,
+        generation: crate::ChecksumGeneration,
+    },
+    ReleaseChecksums {
+        job: crate::ChecksumJobId,
+        generation: crate::ChecksumGeneration,
+    },
+    SaveChecksumManifest {
+        save_id: crate::ChecksumManifestId,
+        job: crate::ChecksumJobId,
+        generation: crate::ChecksumGeneration,
+        request: Box<crate::ChecksumManifestRequest>,
+    },
+    CancelChecksumManifest {
+        save_id: crate::ChecksumManifestId,
+    },
+    StartFind(Box<crate::FindRequest>),
+    CancelFind {
+        session: crate::FindSessionId,
+        generation: crate::FindGeneration,
+    },
+    CloseFind(crate::FindSessionId),
+    ValidateFindResult(crate::FindValidationRequest),
     ArchiveSelect {
         pane: PaneId,
         navigation: NavigationId,
+        revision: crate::SelectionRevision,
         entries: Arc<[Entry]>,
         view: Arc<DirectoryIndex>,
         selected: Arc<std::collections::HashSet<EntryId>>,
@@ -94,6 +124,9 @@ pub enum Command {
     },
     EnqueueCopy(crate::CopyRequest),
     EnqueueSelectedCopy(crate::SelectedCopyRequest),
+    EnqueueMove(crate::CopyRequest),
+    EnqueueSelectedMove(crate::SelectedCopyRequest),
+    EnqueueClipboardMove(crate::ClipboardMoveRequest),
     EnqueueArchiveCopy(crate::ArchiveCopyRequest),
     DecideCopy(crate::CopyDecision),
     CancelCopy(crate::OperationId),
@@ -153,6 +186,10 @@ pub enum Command {
         text: String,
     },
     CopyFiles {
+        request: DesktopRequestId,
+        files: SelectedFiles,
+    },
+    CutFiles {
         request: DesktopRequestId,
         files: SelectedFiles,
     },
@@ -235,11 +272,19 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    UserCommand(Box<crate::UserCommandEvent>),
+    Checksum(Box<crate::ChecksumEvent>),
+    ChecksumRejected(Box<crate::ChecksumRejected>),
+    ChecksumManifest(Box<crate::ChecksumManifestEvent>),
+    Find(Box<crate::FindEvent>),
+    FindRejected(Box<crate::FindRejected>),
+    FindResultValidated(Box<crate::FindValidationResult>),
     ArchiveSelection {
         pane: PaneId,
         navigation: NavigationId,
-        selected: Arc<std::collections::HashSet<EntryId>>,
-        totals: crate::ArchiveSelectionTotals,
+        revision: crate::SelectionRevision,
+        view: Arc<DirectoryIndex>,
+        result: Result<crate::ArchiveSelectionResult, FsError>,
     },
     ArchiveListed {
         pane: PaneId,

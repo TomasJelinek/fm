@@ -1,4 +1,10 @@
 import { DialogFrame, DialogHeader } from "dialog-frame.slint";
+import { FindWindow, FindRow, FindDraft } from "find-window.slint";
+export { FindWindow, FindRow, FindDraft }
+import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft } from "checksum-window.slint";
+export { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft }
+import { UserCommandToolbar, UserCommandRow } from "user-command-toolbar.slint";
+export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpBody } from "help-dialog.slint";
@@ -17,6 +23,8 @@ import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { PanelSplitter } from "panel-splitter.slint";
 import { TerminalControl } from "terminal-control.slint";
 import { OptionsBody } from "options-dialog.slint";
+import { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm } from "user-command-options.slint";
+export { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm }
 import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
 export { KeyboardEditorView, ShortcutCommandRow }
 import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
@@ -47,6 +55,8 @@ export { TooltipPlacement }
 import { LocationRow } from "navigation-models.slint";
 export { LocationRow }
 import { FilePane } from "file-pane.slint";
+import { SelectionRectangle } from "selection-rectangle.slint";
+export { SelectionRectangle }
 import { FunctionButton } from "function-button.slint";
 import { FunctionBar } from "function-bar.slint";
 export { FunctionSlot } from "function-models.slint";
@@ -90,6 +100,12 @@ export component MainWindow inherits Window {
     callback function-action(string, int);
     callback view-file(int, bool);
     callback compare-files(int);
+    callback find-files(int);
+    callback refresh-find-windows();
+    callback close-find-windows();
+    callback calculate-checksums(int);
+    callback refresh-checksum-windows();
+    callback close-checksum-windows();
     callback edit-file(int);
     in-out property <bool> control-layer;
     callback volume-key(KeyEvent) -> int;
@@ -131,12 +147,17 @@ export component MainWindow inherits Window {
     in property <string> copy-token;
     in property <string> copy-body;
     in property <string> copy-name;
+    in property <bool> copy-can-replace;
+    in property <bool> copy-can-merge;
+    in property <string> copy-source-details;
+    in property <string> copy-target-details;
     in-out property <string> copy-latest;
     callback decide-copy(string, int, string);
     callback resolve-copy(string);
     public function show-copy-conflict() { root.drag-invalidate-targets(); operations-popup.close(); copy-popup.show(); }
     public function close-copy-conflict() { copy-popup.close(); }
     in property <string> copy-draft-token;
+    in property <bool> copy-draft-move;
     in property <string> copy-draft-body;
     in property <string> copy-draft-destination;
     in property <int> copy-draft-selection-end;
@@ -300,6 +321,16 @@ export component MainWindow inherits Window {
     out property <length> right-list-top: right.list-top;
     out property <length> right-list-width: right.list-width;
     out property <length> right-list-height: right.list-visible-height;
+    out property <length> left-list-content-y: left.list-content-y;
+    out property <length> right-list-content-y: right.list-content-y;
+    out property <length> left-list-content-x: left.list-content-x;
+    out property <length> right-list-content-x: right.list-content-x;
+    out property <length> left-list-grid-width: left.list-grid-width;
+    out property <length> right-list-grid-width: right.list-grid-width;
+    public function scroll-selection(pane: int, delta: float) {
+        if pane == 0 { left.scroll-selection(delta); }
+        else { right.scroll-selection(delta); }
+    }
     changed left-list-left => { root.drag-invalidate-targets(); }
     changed left-list-top => { root.drag-invalidate-targets(); }
     changed left-list-width => { root.drag-invalidate-targets(); }
@@ -350,6 +381,15 @@ export component MainWindow inherits Window {
     in-out property <bool> sizes-in-bytes;
     in-out property <bool> remember-command-history: true;
     in-out property <int> options-topic-index;
+    in property <[UserCommandRow]> user-commands;
+    in property <string> command-preview-token;
+    callback execute-user-command(string, string);
+    callback user-command-icon-visible(string, string, bool);
+    changed command-preview-token => {
+        if root.command-preview-token != "" {
+            root.show-operations();
+        }
+    }
     out property <bool> left-search-active: left.search-active;
     out property <bool> right-search-active: right.search-active;
     out property <string> left-search-preedit: left.search-preedit;
@@ -522,6 +562,7 @@ export component MainWindow inherits Window {
       min-width: 0px; min-height: 0px;
       preferred-width: 0px; preferred-height: 0px;
       capture-key-pressed(event) => {
+        if event.text == Key.Escape && SelectionRectangle.cancel() { return accept; }
         if event.text == Key.Escape && root.drag-escape() { return accept; }
         if root.window-key(event) { return accept; }
         reject
@@ -548,6 +589,7 @@ export component MainWindow inherits Window {
                 native-filesystem: root.left-native-filesystem;
                 filter-label: root.left-filter-label;
                 filter => { root.open-panel-filter(0); }
+                find-files => { root.find-files(0); }
                 visible: !root.single-panel || root.active-pane == 0;
                 view-mode: root.left-view-mode; view-mode-label: "Left panel view mode"; sort-label: "Left panel sort";
                 view-mode-selected(mode) => { root.left-view-mode = mode; root.view-mode(0, mode); }
@@ -572,6 +614,7 @@ export component MainWindow inherits Window {
                 bookmark-add(name, slot) => { root.bookmark-add(0, name, slot); } bookmark-open(id) => { root.bookmark-open(0, id); }
                 bookmark-remove(id) => { root.bookmark-remove(id); }
                 bookmark-assign(id, slot) => { root.bookmark-assign(id, slot); }
+                pane-id: 0;
                 scroll-interaction-active: root.scroll-interaction-active;
                 active: root.active-pane == 0; rows: root.left-rows; volumes: root.volumes; volume-index: root.left-volume;
                 locations: root.left-locations;
@@ -611,6 +654,7 @@ export component MainWindow inherits Window {
                 native-filesystem: root.right-native-filesystem;
                 filter-label: root.right-filter-label;
                 filter => { root.open-panel-filter(1); }
+                find-files => { root.find-files(1); }
                 visible: !root.single-panel || root.active-pane == 1;
                 view-mode: root.right-view-mode; view-mode-label: "Right panel view mode"; sort-label: "Right panel sort";
                 view-mode-selected(mode) => { root.right-view-mode = mode; root.view-mode(1, mode); }
@@ -635,6 +679,7 @@ export component MainWindow inherits Window {
                 bookmark-add(name, slot) => { root.bookmark-add(1, name, slot); } bookmark-open(id) => { root.bookmark-open(1, id); }
                 bookmark-remove(id) => { root.bookmark-remove(id); }
                 bookmark-assign(id, slot) => { root.bookmark-assign(id, slot); }
+                pane-id: 1;
                 scroll-interaction-active: root.scroll-interaction-active;
                 active: root.active-pane == 1; rows: root.right-rows; volumes: root.volumes; volume-index: root.right-volume;
                 locations: root.right-locations;
@@ -701,6 +746,15 @@ export component MainWindow inherits Window {
                 }
                 Tooltip { TipBody { text: "Activate other panel\n" + (root.active-pane == 0 ? root.right-path : root.left-path); } }
             }
+        }
+        if root.user-commands.length > 0: UserCommandToolbar {
+            commands: root.user-commands;
+            execute(id, revision) => { root.execute-user-command(id, revision); }
+            settings(id) => {
+                if id != "" { UserCommandSettingsView.select(id); }
+                root.options-topic-index = 9; root.show-options();
+            }
+            icon-visible(id, revision, visible) => { root.user-command-icon-visible(id, revision, visible); }
         }
         command-bar := Rectangle {
             height: root.compact-window ? min(32px, Theme.command-height) : Theme.command-height;
@@ -872,7 +926,8 @@ export component MainWindow inherits Window {
             desired-width: max(820px, Theme.font-size * 32); desired-height: max(620px, Theme.font-size * 25);
             dismiss-on-outside: false;
             dismiss => { operations-popup.close(); root.focus-files(); }
-            OperationsBody {
+            operation-list := OperationsBody {
+                requested-identity: root.command-preview-token;
                 move-dialog(dx, dy) => { operations-popup-frame.move-by(dx, dy); }
                 rows: root.operations;
                 cancel(id) => { root.cancel-job(id); }
@@ -889,9 +944,9 @@ export component MainWindow inherits Window {
         changed visible => { if self.visible { self.reset(); } }
         copy-draft-dialog := OperationDialog {
             move-dialog(dx, dy) => { copy-draft-frame.move-by(dx, dy); }
-            title: "Copy"; body: root.copy-draft-body; has-name: true;
+            title: root.copy-draft-move ? "Move with recovery" : "Copy"; body: root.copy-draft-body; has-name: true;
             initial-name: root.copy-draft-destination; selection-end: root.copy-draft-selection-end;
-            input-label: "Destination folder"; confirm-text: "Copy"; warning: root.copy-draft-error;
+            input-label: "Destination folder"; confirm-text: root.copy-draft-move ? "Move and retain originals" : "Copy"; warning: root.copy-draft-error;
             native-icon: root.action-icons.copy; fallback-icon: FallbackIcons.copy;
             confirm(destination) => { root.confirm-copy-draft(root.copy-draft-token, destination); }
             cancel => { root.cancel-copy-draft(root.copy-draft-token); }
@@ -901,12 +956,14 @@ export component MainWindow inherits Window {
         close-policy: close-on-click-outside;
         x: 0px; y: 0px; width: root.width; height: root.height;
         copy-popup-frame := DialogFrame {
-            desired-width: max(600px, Theme.font-size * 25); desired-height: max(400px, Theme.font-size * 16);
+            desired-width: max(700px, Theme.font-size * 38); desired-height: max(500px, Theme.font-size * 25);
             dismiss-on-outside: true;
             dismiss => { copy-popup.close(); root.focus-files(); }
             copy-dialog := CopyConflictDialog {
                 move-dialog(dx, dy) => { copy-popup-frame.move-by(dx, dy); }
                 body: root.copy-body; initial-name: root.copy-name; token: root.copy-token; native-icon: root.action-icons.copy;
+                can-replace: root.copy-can-replace; can-merge: root.copy-can-merge;
+                source-details: root.copy-source-details; target-details: root.copy-target-details;
                 decide(choice, name) => { root.decide-copy(root.copy-token, choice, name); }
                 later => { copy-popup.close(); root.focus-files(); }
             }
@@ -914,7 +971,7 @@ export component MainWindow inherits Window {
     }
     file-menu := PopupWindow {
         width: min(root.width - 8px, max(230px, Theme.font-size * 12));
-        height: min(root.height - 8px, Theme.control-height * 6 + 12px);
+        height: min(root.height - 8px, Theme.control-height * 7 + 12px);
         x: clamp(root.file-menu-x, 4px, max(4px, root.width - self.width - 4px));
         y: clamp(root.file-menu-y, 4px, max(4px, root.height - self.height - 4px));
         close-policy: close-on-click-outside;
@@ -1066,12 +1123,13 @@ export component MainWindow inherits Window {
         CommandMenuBody {
             dismissed => { user-menu.close(); }
             title: "User menu";
-            item-count: 5;
+            item-count: 6;
             rows: [
                 { native-icon: root.action-icons.terminal, fallback-icon: FallbackIcons.terminal, label: "Command line", hint: ShortcutHints.hint("Toggle command editor focus without running a command", "command.focus") },
                 { native-icon: root.action-icons.bookmarks, fallback-icon: FallbackIcons.bookmarks, label: "Bookmarks and Hot Paths", hint: "Save, open or remove a favorite folder. Hot Paths provide ten numbered shortcuts." },
                 { native-icon: root.action-icons.properties, fallback-icon: FallbackIcons.properties, label: "Properties" + (ShortcutHints.key("files.properties") == "" ? "" : " · " + ShortcutHints.key("files.properties")), hint: ShortcutHints.hint("Show Properties for selected items, or the focused file or folder", "files.properties") },
                 { native-icon: root.action-icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes, label: "Calculate / cancel folder sizes", hint: ShortcutHints.hint("Measure selected folders, or all folders when nothing is selected; choose again to cancel", "panel.folder-sizes") },
+                { native-icon: root.action-icons.properties, fallback-icon: FallbackIcons.properties, label: "Checksums", hint: ShortcutHints.hint("Calculate SHA-256, SHA-512, MD5 or SHA-1 for the captured selection", "files.checksums") },
                 { native-icon: root.action-icons.close, fallback-icon: FallbackIcons.close, label: "Close", hint: "Close this dialog and return to the file manager." },
             ];
             selected(index) => {
@@ -1079,7 +1137,8 @@ export component MainWindow inherits Window {
                 if index == 1 { user-menu.close(); if root.active-pane == 0 { left.open-bookmarks(); } else { right.open-bookmarks(); } }
                 if index == 2 { user-menu.close(); root.properties(root.active-pane); }
                 if index == 3 { user-menu.close(); root.folder-sizes(root.active-pane); }
-                if index == 4 { user-menu.close(); }
+                if index == 4 { user-menu.close(); root.calculate-checksums(root.active-pane); }
+                if index == 5 { user-menu.close(); }
             }
         }
     }

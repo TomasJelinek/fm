@@ -34,6 +34,7 @@ component JobRow inherits Rectangle {
                 : root.job.kind == 2 ? FallbackIcons.rename
                 : root.job.kind == 3 ? FallbackIcons.new-folder
                 : root.job.kind == 4 ? FallbackIcons.new-file
+                : root.job.kind == 6 ? FallbackIcons.run
                 : root.job.kind == 5 ? FallbackIcons.properties : FallbackIcons.copy;
             width: Theme.icon-size; height: Theme.icon-size;
         }
@@ -52,7 +53,10 @@ component JobRow inherits Rectangle {
 
 export component OperationsBody inherits Rectangle {
     in property <[OperationRow]> rows;
+    in property <string> requested-identity;
     private property <string> selected-identity;
+    public function select-job(identity: string) { root.selected-identity = identity; list-focus.focus(); }
+    changed requested-identity => { root.select-job(root.requested-identity); }
     private property <int> selected-index: JobsView.find(root.rows, root.selected-identity);
     private property <OperationRow> selected: root.rows[root.selected-index];
     callback cancel(string);
@@ -63,7 +67,8 @@ export component OperationsBody inherits Rectangle {
     private property <bool> compact: root.height < 350px;
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     init => {
-        if root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
+        if root.requested-identity != "" { root.selected-identity = root.requested-identity; }
+        else if root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
         list-focus.focus();
     }
     changed rows => {

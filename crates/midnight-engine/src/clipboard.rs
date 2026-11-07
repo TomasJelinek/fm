@@ -14,7 +14,7 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 enum Action {
     Text(String),
-    Files(SelectedFiles),
+    Files(SelectedFiles, FileClipboardIntent),
     Read(PathBuf),
 }
 struct Request {
@@ -145,7 +145,7 @@ impl Controller {
         self.submit(
             Request {
                 id,
-                action: Action::Files(files),
+                action: Action::Files(files, FileClipboardIntent::Copy),
             },
             tasks,
         )
@@ -161,6 +161,21 @@ impl Controller {
             Request {
                 id,
                 action: Action::Read(destination),
+            },
+            tasks,
+        )
+        .await;
+    }
+    pub(crate) async fn cut_files(
+        &mut self,
+        id: DesktopRequestId,
+        files: SelectedFiles,
+        tasks: &mut JoinSet<()>,
+    ) {
+        self.submit(
+            Request {
+                id,
+                action: Action::Files(files, FileClipboardIntent::Move),
             },
             tasks,
         )
@@ -212,7 +227,7 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
             }
             Ok(Prepared::Text(text.clone()))
         }
-        Action::Files(files) => {
+        Action::Files(files, intent) => {
             let paths = file_targets::resolve(
                 &files.selection,
                 &files.view,
@@ -221,7 +236,7 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
             )?;
             let files = FileClipboard {
                 paths,
-                intent: FileClipboardIntent::Copy,
+                intent: *intent,
             };
             files.validate()?;
             Ok(Prepared::Files(files))
@@ -268,6 +283,34 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Pump(Arc<AtomicUsize>);
+
+    #[test]
+    fn native_cut_and_copy_keep_captured_raw_paths_and_distinct_intents() {
+        let path = std::env::temp_dir().join("clipboard 文档 $(literal) ' 🦀.txt");
+        let view = Arc::new(midnight_core::DirectoryIndex::from_entries(&[
+            midnight_core::Entry::new(
+                midnight_core::EntryId(1),
+                path.clone(),
+                midnight_core::EntryKind::File,
+            ),
+        ]));
+        let files = SelectedFiles {
+            selection: Arc::default(),
+            view,
+            fallback: Some(path.clone()),
+        };
+        for intent in [FileClipboardIntent::Copy, FileClipboardIntent::Move] {
+            let Prepared::Files(actual) = prepare(
+                &Action::Files(files.clone(), intent),
+                &Cancellation::default(),
+            )
+            .unwrap() else {
+                panic!("native file clipboard");
+            };
+            assert_eq!(actual.paths, vec![path.clone()]);
+            assert_eq!(actual.intent, intent);
+        }
+    }
 
     #[tokio::test]
     async fn saturated_command_and_result_queues_do_not_spawn_rejection_tasks() {

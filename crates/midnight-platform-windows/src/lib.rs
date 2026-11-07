@@ -14,7 +14,12 @@ mod desktop;
 mod editor;
 mod file_clipboard;
 mod file_drag_drop;
+mod user_command_environment;
+#[cfg(test)]
+mod user_command_terminal_tests;
+mod user_commands;
 pub use clipboard::NativeClipboard;
+mod find;
 mod fonts;
 mod icons;
 mod listing;

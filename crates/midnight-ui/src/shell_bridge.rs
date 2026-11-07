@@ -83,6 +83,8 @@ pub(crate) fn install(
                 0 => p.copy_files(pane(id), sender.as_ref()),
                 1 => p.paste_files(pane(id), sender.as_ref()),
                 2 => p.request_copy_dialog(pane(id), sender.as_ref()),
+                3 => p.request_move_dialog(pane(id), sender.as_ref()),
+                4 => p.cut_files(pane(id), sender.as_ref()),
                 _ => return,
             }
         }

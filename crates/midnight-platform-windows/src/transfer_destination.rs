@@ -1,5 +1,8 @@
 use super::*;
-use midnight_core::{StagedTransferFile, TransferPublication};
+use midnight_core::{
+    StagedTransferFile, TransferCapabilities, TransferPublication, TransferReplacementPolicy,
+    TransferTarget,
+};
 use std::{
     ffi::{OsStr, OsString},
     io::{Read, Seek, SeekFrom, Write},
@@ -9,6 +12,9 @@ use std::{
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
+
+#[path = "transfer_recovery.rs"]
+pub(super) mod recovery;
 
 #[derive(Clone)]
 pub(super) struct Directory {
@@ -34,6 +40,39 @@ impl TransferDirectory for Directory {
     }
     fn identity(&self) -> TransferIdentity {
         self.identity
+    }
+    fn capabilities(&self) -> TransferCapabilities {
+        TransferCapabilities {
+            directory_merge: true,
+            conditional_overwrite: false,
+            recoverable_replacement: recovery::supported(self),
+        }
+    }
+    fn prepare_target(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Option<Arc<dyn TransferTarget>>, FsError> {
+        recovery::prepare_target(self, name, cancel)
+    }
+    fn open_merge_directory(
+        &self,
+        name: &OsStr,
+        expected: &TransferEntry,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        recovery::open_merge(self, name, expected, cancel)
+    }
+    fn stage_file_for_target(
+        &self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        let mut stage = self.stage_file(cancel)?;
+        stage.prepare_replacement(name, expected, policy, cancel)?;
+        Ok(stage)
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
@@ -131,8 +170,10 @@ impl TransferDirectory for Directory {
                         file,
                         directory: self.clone(),
                         published: false,
+                        published_name: None,
                         cleaned: false,
                         path,
+                        replacement: None,
                     }));
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -153,8 +194,10 @@ struct Stage {
     file: File,
     directory: Directory,
     published: bool,
+    published_name: Option<OsString>,
     cleaned: bool,
     path: PathBuf,
+    replacement: Option<recovery::Replacement>,
 }
 impl Read for Stage {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -175,6 +218,46 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn rewind_for_validation(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferReadGuard>, FsError> {
+        if self.cleaned {
+            return Err(invalid(&self.path, "stage was cleaned up"));
+        }
+        super::validation::rewind(&self.file, &self.path, cancel)
+    }
+    fn revalidate_publication(&self, cancel: &Cancellation) -> Result<TransferIdentity, FsError> {
+        let name = self
+            .published_name
+            .as_ref()
+            .ok_or_else(|| invalid(&self.path, "stage has no successful publication"))?;
+        let own = identity(&self.file, &self.path)?;
+        let visible = self
+            .directory
+            .inspect(name, cancel)?
+            .ok_or_else(|| invalid(&self.path, "published target disappeared"))?;
+        if visible.item.kind != EntryKind::File || visible.identity != own {
+            return Err(invalid(&self.path, "published target name changed"));
+        }
+        Ok(own)
+    }
+    fn prepare_replacement(
+        &mut self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.bind_replacement(name, expected, policy, cancel)
+    }
+    fn publish_replace(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        self.replace(name, cancel, || {})
+    }
     fn sync(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
         self.file.sync_all().map_err(|e| error(&self.path, e))
@@ -199,6 +282,7 @@ impl StagedTransferFile for Stage {
         checked(cancel, &path)?;
         native::rename(&self.file, name).map_err(|e| error(&path, e))?;
         self.published = true;
+        self.published_name = Some(name.to_owned());
         // Windows has no general directory-entry flush contract for this API. The
         // staged file was synced before verification; no parent power-loss guarantee is made.
         Ok(TransferPublication::Published(path))

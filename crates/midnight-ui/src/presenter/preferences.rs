@@ -47,6 +47,8 @@ pub(super) struct EditedFields {
     pub(super) panel_filters: [bool; 2],
     pub(super) shortcuts: bool,
     pub(super) filename_colors: bool,
+    pub(super) checksum_algorithms: bool,
+    pub(super) user_commands: bool,
     bookmarks: bool,
 }
 
@@ -209,6 +211,17 @@ impl Presenter {
                 if edited.filename_colors {
                     loaded.filename_colors = local.filename_colors.clone();
                 }
+                if edited.checksum_algorithms {
+                    loaded.checksum_algorithms = local.checksum_algorithms;
+                }
+                if edited.user_commands
+                    && let Err(error) = loaded.replace_user_commands(local.user_commands.clone())
+                {
+                    self.desktop.report(
+                        "Could not merge Custom Commands",
+                        crate::error_presentation::describe(&error),
+                    );
+                }
                 if edited.thumbnails_enabled {
                     loaded.thumbnails_enabled = local.thumbnails_enabled;
                 }
@@ -279,7 +292,7 @@ impl Presenter {
                     self.preferences.unsaved = true;
                 }
                 self.preferences.bookmark_generation = generation;
-                if let Err(error) = self.keyboard.sync(&loaded.shortcuts) {
+                if let Err(error) = self.keyboard.sync(&loaded.shortcuts, &loaded.user_commands) {
                     loaded.shortcuts = self.preferences.values.shortcuts.clone();
                     self.desktop.report("Cannot apply keyboard options", error);
                 }
@@ -298,6 +311,7 @@ impl Presenter {
             }
         }
         self.preferences.flush_after_load = self.preferences.unsaved;
+        self.sync_user_command_settings();
         let _ = previous_filter;
         self.search_filter_changed();
     }
@@ -426,14 +440,17 @@ impl Presenter {
         preferences: UserPreferences,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if let Err(error) = self.keyboard.sync(&preferences.shortcuts) {
-            self.keyboard.error = error;
-            return;
-        }
         if preferences == self.preferences.values
             && !self.preferences.unsaved
             && self.preferences.revision.0 != 0
         {
+            return;
+        }
+        if let Err(error) = self
+            .keyboard
+            .sync(&preferences.shortcuts, &preferences.user_commands)
+        {
+            self.keyboard.error = error;
             return;
         }
         let previous = &self.preferences.values;
@@ -472,6 +489,7 @@ impl Presenter {
         edited.bookmarks |= preferences.bookmarks != previous.bookmarks;
         edited.shortcuts |= preferences.shortcuts != previous.shortcuts;
         edited.filename_colors |= preferences.filename_colors != previous.filename_colors;
+        edited.user_commands |= preferences.user_commands != previous.user_commands;
         edited.thumbnails_enabled |= preferences.thumbnails_enabled != previous.thumbnails_enabled;
         edited.thumbnails_network |= preferences.thumbnails_network != previous.thumbnails_network;
         for slot in 0..2 {
@@ -484,6 +502,7 @@ impl Presenter {
             &mut self.preferences.values,
             preferences,
         )));
+        self.sync_user_command_settings();
         self.preferences.unsaved = true;
         self.preferences.revision.0 = self.preferences.revision.0.saturating_add(1);
         if filter_changed {

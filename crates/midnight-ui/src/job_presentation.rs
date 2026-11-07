@@ -29,7 +29,10 @@ pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
         )
         .collect();
     rows.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
-    rows.into_iter().map(|(_, row)| row).collect()
+    crate::user_command_presentation::job_rows(p)
+        .into_iter()
+        .chain(rows.into_iter().map(|(_, row)| row))
+        .collect()
 }
 
 fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
@@ -110,6 +113,12 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
 
 fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
     use CopyOperationState as S;
+    let moving = progress.intent == TransferIntent::RecoverableMove;
+    let title = if moving {
+        "Move (originals retained)"
+    } else {
+        "Copy"
+    };
     let state = match progress.state {
         S::Queued => "Queued",
         S::Preparing => "Preparing",
@@ -119,6 +128,9 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             CopyOperationPhase::Syncing => "Saving",
             CopyOperationPhase::Verifying => "Verifying SHA-256",
             CopyOperationPhase::Publishing => "Finishing",
+            CopyOperationPhase::ValidatingBeforeMove => "Checking before Move",
+            CopyOperationPhase::CapturingSources => "Retaining originals",
+            CopyOperationPhase::ValidatingAfterMove => "Checking retained originals",
         },
         S::WaitingForDecision => "Needs a decision",
         S::CancelRequested => "Cancelling",
@@ -134,11 +146,32 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         p.number_locale.format_u64(progress.failed)
     );
     let mut detail = format!(
-        "Copy\n{state}\n\n{summary}\n{} folders created\n{} bytes copied\n{} bytes verified (SHA-256)",
+        "{title}\n{state}\n\n{summary}\n{} folders created\n{} bytes copied\n{} bytes verified (SHA-256)",
         p.number_locale.format_u64(progress.directories_created),
         p.number_locale.format_u64(progress.copied_bytes),
         p.number_locale.format_u64(progress.verified_bytes)
     );
+    if moving {
+        detail.push_str(&format!("\n{} additional source/target bytes checked\n{} source names relocated\n{} source recovery objects retained\nSource space is not freed.",
+            p.number_locale.format_u64(progress.validation_bytes),
+            p.number_locale.format_u64(progress.source_names_captured),
+            p.number_locale.format_u64(progress.source_recovery_count)));
+        for recovery in &progress.source_recoveries {
+            detail.push_str(&format!(
+                "\n\nOriginal source\n{}\nRecovery\n{}\n{}",
+                recovery.source.display(),
+                recovery.recovery.path.display(),
+                if recovery.matched_source {
+                    "Original identity retained"
+                } else {
+                    "Identity conflict: inspect recovery"
+                }
+            ));
+        }
+        if progress.source_recovery_count > progress.source_recoveries.len() as u64 {
+            detail.push_str("\nAdditional originals remain in their source recovery folders.");
+        }
+    }
     if let Some(path) = &progress.current_path {
         detail.push_str(&format!("\n\nCurrent source\n{}", path.display()));
     }
@@ -150,9 +183,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         detail.push_str(&format!("\n\n{}", progress.message));
     }
     error_presentation::append_issues(&mut detail, &progress.errors);
+    append_recovery(&mut detail, progress, p);
     OperationRow {
         identity: format!("copy-job:{}", progress.id.0).into(),
-        title: "Copy".into(),
+        title: title.into(),
         state: state.into(),
         summary: summary.into(),
         detail: detail.into(),
@@ -169,7 +203,29 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         // Recursive byte totals are unknown. Never present a guessed completion percentage.
         determinate: false,
         progress: 0.0,
-        icon: p.desktop.image(&IconKey::action(ActionIcon::Copy)),
+        icon: p.desktop.image(&IconKey::action(if moving {
+            ActionIcon::Move
+        } else {
+            ActionIcon::Copy
+        })),
         kind: 0,
+    }
+}
+
+fn append_recovery(detail: &mut String, progress: &CopyProgress, p: &Presenter) {
+    if progress.recovery_count == 0 {
+        return;
+    }
+    detail.push_str(&format!(
+        "\n\n{} recovery files retained",
+        p.number_locale.format_u64(progress.recovery_count)
+    ));
+    for path in &progress.recovery_paths {
+        detail.push_str(&format!("\n{}", path.display()));
+    }
+    if progress.recovery_count > progress.recovery_paths.len() as u64 {
+        detail.push_str(
+            "\nAdditional recovery files are retained in the source or destination recovery folders.",
+        );
     }
 }

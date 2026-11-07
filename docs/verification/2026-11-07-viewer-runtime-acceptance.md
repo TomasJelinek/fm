@@ -112,3 +112,20 @@ matching screenshot directory). It is supplemental evidence, not a promotion of
 the software renderer to a qualified production Unicode fallback. No graphics
 settings or drivers were changed. These are viewer-probe results, not claims
 about launching the normal application or preserving its real saved state.
+
+## Transfer/tools checkpoint regression
+
+After the core/engine integration, `native_acceptance` was freshly rebuilt with
+the profile0 Windows toolchain and copied beside the already protected QA plugin
+packages. Its SHA-256 was
+`483719E76B27FB675D3D85F41943EE4C0301ABD49D37950A3D481BC46624C6BC`.
+All thirteen native DX12 stages passed again in7.02 seconds, exit0: text/wrap/search,
+binary, highlighted source, Markdown, image zoom, PDF pages, placement and Escape.
+The current source/PDF screenshots were visually checked. Evidence is under
+`_build/goal/viewers/native-current/`, including the executable path/hash in
+`result.json`, native log and ten captures. Existing stable fixtures were reused
+read-only. The real application preferences hash stayed unchanged.
+
+This is a freshly compiled viewer-host probe with the existing independently
+installed plugins. It is separate from the final main-application release and
+does not qualify subsequent settings drag-order changes.

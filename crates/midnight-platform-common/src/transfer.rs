@@ -1,14 +1,19 @@
 //! Bounded independent SHA-256 readback; native adapters own all filesystem publication.
 use midnight_core::{
-    Cancellation, EntryKind, FsError, StagedTransferFile, TransferEntry, TransferPublication,
-    TransferSource,
+    Cancellation, EntryKind, FsError, StagedTransferFile, TransferEntry, TransferIdentity,
+    TransferPublication, TransferReplacementPolicy, TransferSource, TransferTarget,
 };
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
     io::{self, SeekFrom},
     path::Path,
+    sync::Arc,
 };
+
+#[path = "transfer_proof.rs"]
+mod proof;
+pub use proof::{FileProofPhase, VerifiedFileProof};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyPhase {
@@ -17,6 +22,7 @@ pub enum CopyPhase {
     Verifying,
     ReadyToPublish,
     Published,
+    RecoveryRequired,
     Failed,
 }
 
@@ -29,6 +35,7 @@ pub struct VerifiedFileCopy {
     target_hash: Sha256,
     copied: u64,
     verified: u64,
+    proof_eligible: bool,
 }
 impl VerifiedFileCopy {
     pub fn new(
@@ -52,10 +59,14 @@ impl VerifiedFileCopy {
             target_hash: Sha256::new(),
             copied: 0,
             verified: 0,
+            proof_eligible: false,
         })
     }
     pub fn source_entry(&self) -> &TransferEntry {
         self.source.entry()
+    }
+    pub fn source_native_identity(&self) -> Option<TransferIdentity> {
+        self.source.native_identity()
     }
     pub fn phase(&self) -> CopyPhase {
         self.phase
@@ -69,7 +80,10 @@ impl VerifiedFileCopy {
     /// Explicit worker-side cancellation cleanup lets callers surface native cleanup
     /// errors. Dropping the job also drops the owned staging inode as a final guard.
     pub fn cleanup(&mut self) -> Result<(), FsError> {
-        if self.phase != CopyPhase::Published {
+        if !matches!(
+            self.phase,
+            CopyPhase::Published | CopyPhase::RecoveryRequired
+        ) {
             self.phase = CopyPhase::Failed;
         }
         self.stage.cleanup()
@@ -78,7 +92,7 @@ impl VerifiedFileCopy {
     /// native calls share the process I/O budget; hashing runs after releasing it.
     pub fn step(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
         let result = self.advance(cancel);
-        if result.is_err() {
+        if result.is_err() && self.phase != CopyPhase::RecoveryRequired {
             self.phase = CopyPhase::Failed;
         }
         result
@@ -178,6 +192,12 @@ impl VerifiedFileCopy {
                 }
             }
             CopyPhase::ReadyToPublish | CopyPhase::Published => {}
+            CopyPhase::RecoveryRequired => {
+                return Err(failure(
+                    path,
+                    "copy has committed recovery data and cannot resume",
+                ));
+            }
             CopyPhase::Failed => return Err(failure(path, "failed copy cannot resume")),
         }
         Ok(self.phase)
@@ -188,6 +208,53 @@ impl VerifiedFileCopy {
         &mut self,
         name: &OsStr,
         cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        self.publish_with(name, cancel, false)
+    }
+
+    /// Bind explicit consent to the existing stage, including a late collision
+    /// after readback. This never replays or replaces the consumed source stream.
+    pub fn prepare_replacement(
+        &mut self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let path = &self.source.entry().item.path;
+        check_cancel(cancel, path)?;
+        if matches!(
+            self.phase,
+            CopyPhase::Published | CopyPhase::RecoveryRequired | CopyPhase::Failed
+        ) {
+            return Err(failure(
+                path,
+                "a terminal copy cannot accept replacement consent",
+            ));
+        }
+        let _permit = io_permit(cancel, path)?;
+        if let Err(error) = self.source.revalidate(cancel) {
+            self.phase = CopyPhase::Failed;
+            return Err(error);
+        }
+        self.stage
+            .prepare_replacement(name, expected, policy, cancel)
+    }
+
+    /// Replacement shares the full verification gate with no-replace publication.
+    pub fn publish_replace(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        self.publish_with(name, cancel, true)
+    }
+
+    fn publish_with(
+        &mut self,
+        name: &OsStr,
+        cancel: &Cancellation,
+        replacement: bool,
     ) -> Result<TransferPublication, FsError> {
         let path = &self.source.entry().item.path;
         check_cancel(cancel, path)?;
@@ -202,8 +269,20 @@ impl VerifiedFileCopy {
             self.phase = CopyPhase::Failed;
             return Err(error);
         }
-        let outcome = self.stage.publish_no_replace(name, cancel)?;
-        self.phase = CopyPhase::Published;
+        let outcome = if replacement {
+            self.stage.publish_replace(name, cancel)?
+        } else {
+            self.stage.publish_no_replace(name, cancel)?
+        };
+        self.proof_eligible = matches!(
+            outcome,
+            TransferPublication::Published(_) | TransferPublication::Replaced { .. }
+        );
+        self.phase = if matches!(outcome, TransferPublication::RecoveryRequired { .. }) {
+            CopyPhase::RecoveryRequired
+        } else {
+            CopyPhase::Published
+        };
         Ok(outcome)
     }
 }

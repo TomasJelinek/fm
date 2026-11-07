@@ -81,6 +81,26 @@ fn inside(test: &ui::TestUi, item: ItemRc, label: &str) {
 }
 
 #[test]
+fn recoverable_copy_dialog_keeps_comparison_and_dismissal_accessible() {
+    let mut test = ui::TestUi::new();
+    test.window.set_copy_token("copy:3:7".into());
+    test.window.set_copy_name("資料.txt".into());
+    test.window.set_copy_can_replace(true);
+    test.window.set_copy_source_details("C:\\Users\\Example\\資料.txt\n\nFile\n123 456 bytes (120.6 KiB)\nModified: 07.11.2026 14:22:11\n2026-11-07 13:22:11.123456700 UTC".into());
+    test.window.set_copy_target_details("D:\\Work\\資料.txt\n\nFile\n234 567 bytes (229.1 KiB)\nModified: 06.11.2026 18:10:01\n2026-11-06 17:10:01.500 UTC".into());
+    test.window.set_copy_body("Replacement keeps the original in a private recovery folder. Recent Jobs show its location; copy details before closing the app.".into());
+    for (width, height) in [(1340, 820), (660, 500), (320, 200)] {
+        test.resize(width, height);
+        test.window.invoke_show_copy_conflict();
+        test.draw();
+        inside(&test, popup_button(&test, "Decide later"), "Decide later");
+        snapshot(&test, &format!("recoverable-copy-{width}x{height}"));
+        ui::key(&test.window, slint::platform::Key::Escape);
+        assert!(!ui::has_popup(&test.window));
+    }
+}
+
+#[test]
 fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
     let mut test = ui::TestUi::new();
     // The synthetic dialog fixture represents an actionable file caret.

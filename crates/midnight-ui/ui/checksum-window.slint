@@ -1,0 +1,149 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { HintedCheckBox, HintedLineEdit, HintedComboBox } from "hinted-inputs.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { Theme } from "theme.slint";
+import { ToolWindow } from "tool-window.slint";
+
+import { ChecksumResults, ChecksumDisplayRow } from "checksum-results.slint";
+export { ChecksumDisplayRow }
+export struct ChecksumDraft { md5: bool, sha1: bool, sha256: bool, sha512: bool, recursive: bool }
+
+export component ChecksumWindow inherits ToolWindow {
+    callback close-session();
+    request-close => { root.close-session(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    public function begin() { root.focus-content(); }
+    title: "Checksums · Midnight Explorer";
+    in property <[ChecksumDisplayRow]> rows;
+    in property <bool> running;
+    in property <bool> stopping;
+    in property <bool> saving;
+    in property <bool> save-stopping;
+    in property <bool> has-output;
+    private property <bool> can-save: root.has-output && root.output-available[root.output-algorithm];
+    in property <bool> partial;
+    in property <bool> attention;
+    in property <string> progress;
+    in property <string> error;
+    in property <string> details;
+    in property <string> export-summary;
+    in property <string> generation-token;
+    changed generation-token => { acknowledge.checked = false; }
+    in property <[bool]> output-available: [false, false, false, false];
+    in-out property <string> destination;
+    in-out property <ChecksumDraft> draft;
+    in-out property <int> output-algorithm;
+    in-out property <int> selected-row: -1;
+    in-out property <int> page;
+    changed page => { root.focus-content(); }
+    private property <bool> row-calculated: root.selected-row >= 0 && root.selected-row < root.rows.length && root.rows[root.selected-row].calculated;
+    callback calculate(ChecksumDraft);
+    callback stop();
+    callback copy-result(string, int, bool);
+    callback copy-details();
+    callback save-manifest(string, int, string, bool);
+    callback stop-save();
+    public function copy-current() {
+        if root.row-calculated {
+            root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, copy-row.checked);
+        }
+    }
+    VerticalLayout {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        padding: root.height < 360px ? 6px : 12px; spacing: 6px;
+        ScrollView {
+            height: root.height < 360px ? 32px : min(root.height * 0.3, Theme.control-height * 4 + 12px);
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                spacing: 4px; alignment: start; padding-right: 8px;
+                HorizontalLayout {
+                    HintedCheckBox { text: "SHA-256"; checked <=> root.draft.sha256; enabled: !root.running && !root.saving;
+                        hint: "Default checksum. Copy verification always uses SHA-256 independently of these choices."; }
+                    HintedCheckBox { text: "SHA-512"; checked <=> root.draft.sha512; enabled: !root.running && !root.saving; }
+                }
+                HorizontalLayout {
+                    HintedCheckBox { text: "MD5"; checked <=> root.draft.md5; enabled: !root.running && !root.saving;
+                        hint: "Legacy compatibility. MD5 is not suitable for authenticating files."; }
+                    HintedCheckBox { text: "SHA-1"; checked <=> root.draft.sha1; enabled: !root.running && !root.saving;
+                        hint: "Legacy compatibility. SHA-1 is not suitable for authenticating files."; }
+                }
+                HintedCheckBox { text: "Include subfolders"; checked <=> root.draft.recursive; enabled: !root.running && !root.saving;
+                    hint: "Recalculate the captured selection recursively. Links and other devices are excluded and counted."; }
+                copy-row := HintedCheckBox { text: "Copy full row";
+                    hint: "Copy the filename and all calculated hashes. Otherwise Copy uses the selected algorithm only."; }
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            HintedComboBox { model: ["Results", "Details", "Save manifest"]; current-index <=> root.page; min-width: 0px; horizontal-stretch: 1;
+                accessible-label: "Checksum page"; hint: "Switch between results, full diagnostics and manifest export."; }
+            HintedComboBox { model: ["SHA-256", "SHA-512", "MD5", "SHA-1"]; current-index <=> root.output-algorithm; min-width: 0px; horizontal-stretch: 1;
+                accessible-label: "Output algorithm"; hint: "Algorithm used by Copy hash and Save manifest. Only calculated algorithms are available for output."; }
+        }
+        Rectangle {
+            vertical-stretch: 1; min-height: 18px; clip: true;
+            background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+            ChecksumResults {
+                visible: root.page == 0;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                surface-width: root.width; surface-height: root.height;
+                rows: root.rows; algorithms: root.output-available;
+                generation-token: root.generation-token;
+                selected-row <=> root.selected-row; output-algorithm: root.output-algorithm;
+                copy-full-row: copy-row.checked;
+                copy-result(token, algorithm, whole) => { root.copy-result(token, algorithm, whole); }
+            }
+            if root.page == 0 && root.rows.length == 0: Text {
+                text: root.running ? "Calculating…" : "No calculated files"; color: Theme.muted-text;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            if root.page == 1: ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    padding: 6px; spacing: 6px; alignment: start;
+                    if root.error != "": ErrorNotice { text: root.error; }
+                    Text { text: root.details; color: Theme.text; wrap: word-wrap; }
+                }
+            }
+            // Keep the export draft alive while another page is visible.
+            ScrollView {
+                visible: root.page == 2; horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    padding: 6px; spacing: 6px; alignment: start;
+                    Text { text: "New manifest file"; color: Theme.strong-text; }
+                    HintedLineEdit { text <=> root.destination; enabled: !root.saving; accessible-label: "Manifest output path";
+                        hint: "Enter a filename to keep the captured folder, or an absolute path of a new file. Existing files are never silently replaced. Manifest entries must be representable relative to its folder."; }
+                    Text { text: root.export-summary; color: Theme.secondary-text; wrap: word-wrap; }
+                    acknowledge := HintedCheckBox { visible: root.partial; text: "Save partial results"; enabled: !root.saving;
+                        hint: "Acknowledge the shown excluded files and any undiscovered work. Only fully calculated hashes will be exported."; }
+                    if root.error != "": ErrorNotice { text: root.error; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px; height: max(18px, Theme.small-font + 4px);
+            if root.attention: Rectangle { width: 18px; border-radius: 9px; background: Theme.error-text;
+                Text { text: "!"; color: Theme.error-background; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+            Text { text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
+                font-size: Theme.small-font; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Button { text: root.running ? "Stop" : root.width < 460px ? "Run" : "Calculate";
+                enabled: !root.stopping && !root.saving;
+                clicked => { if root.running { root.stop(); } else { root.calculate(root.draft); } } }
+            Button { text: "Copy";
+                enabled: root.page == 1 || (root.row-calculated && (copy-row.checked || root.output-available[root.output-algorithm]));
+                clicked => { if root.page == 1 { root.copy-details(); } else { root.copy-current(); } } }
+            Button { text: root.saving ? "Stop save" : "Save"; enabled: root.saving ? !root.save-stopping : root.can-save;
+                clicked => {
+                    if root.saving { root.stop-save(); }
+                    else if root.page != 2 { root.page = 2; }
+                    else { root.save-manifest(root.generation-token, root.output-algorithm, root.destination, acknowledge.checked); }
+                } }
+            Button { text: "Close"; clicked => { root.close-session(); } }
+        }
+    }
+}

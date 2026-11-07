@@ -152,11 +152,18 @@ fn archive_status_uses_cached_provider_totals_and_never_requests_native_folder_s
     let mut totals = ArchiveSelectionTotals::default();
     totals.change(EntryKind::File, Some(777), true);
     totals.change(EntryKind::Directory, None, true);
+    let archive = p.panes[0].archive.as_mut().unwrap();
+    archive.selection_pending = true;
+    archive.selection_revision = SelectionRevision(1);
     p.apply(Event::ArchiveSelection {
         pane: PaneId::Left,
         navigation: NavigationId(p.panes[0].generation),
-        selected: Arc::new(HashSet::from([EntryId(1), EntryId(2)])),
-        totals,
+        revision: SelectionRevision(1),
+        view: p.panes[0].display_index().clone(),
+        result: Ok(ArchiveSelectionResult {
+            selected: Arc::new(HashSet::from([EntryId(1), EntryId(2)])),
+            totals,
+        }),
     });
     let fields = p.panel_details(PaneId::Left);
     assert_eq!(fields[0].value, "1 file, 1 folder");

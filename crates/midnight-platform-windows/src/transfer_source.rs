@@ -30,6 +30,26 @@ impl Source {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Self, FsError> {
+        Self::open_with_access(parent, parent_path, name, false, cancel)
+    }
+    pub(super) fn open_for_move(
+        parent: Arc<File>,
+        parent_path: PathBuf,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        Self::open_with_access(parent, parent_path, name, true, cancel)
+    }
+    pub(super) fn native_file(&self) -> Arc<File> {
+        self.file.clone()
+    }
+    fn open_with_access(
+        parent: Arc<File>,
+        parent_path: PathBuf,
+        name: &OsStr,
+        move_root: bool,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
         let path = parent_path.join(name);
         checked(cancel, &path)?;
         validate_name(name).map_err(|e| error(&path, e))?;
@@ -58,6 +78,7 @@ impl Source {
         let access = FILE_READ_DATA
             | FILE_READ_ATTRIBUTES
             | SYNCHRONIZE
+            | if move_root { DELETE } else { 0 }
             | if snapshot.item.kind == EntryKind::Directory {
                 FILE_TRAVERSE
             } else {
@@ -145,6 +166,18 @@ impl Source {
     }
 }
 impl TransferSource for Source {
+    fn rewind_for_validation(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferReadGuard>, FsError> {
+        if self.entry.item.kind != EntryKind::File {
+            return Err(unsupported(
+                &self.entry.item.path,
+                "only regular files support retained validation",
+            ));
+        }
+        super::validation::rewind(&self.file, &self.entry.item.path, cancel)
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }

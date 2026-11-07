@@ -32,6 +32,11 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
         FileKey::Metadata(case) => window.invoke_open_metadata(pane, case),
         FileKey::View(basic) => window.invoke_view_file(pane, basic),
         FileKey::CompareFiles => window.invoke_compare_files(pane),
+        FileKey::Find => window.invoke_find_files(pane),
+        FileKey::Checksums => window.invoke_calculate_checksums(pane),
+        FileKey::UserCommand(id) => {
+            window.invoke_execute_user_command(id.as_str().into(), "".into())
+        }
         FileKey::Edit => window.invoke_edit_file(pane),
         FileKey::Compare => window.invoke_open_comparison(),
         FileKey::Filter => window.invoke_open_panel_filter(pane),

@@ -22,6 +22,7 @@ pub(super) fn palette(presenter: &Presenter) -> ActionIcons {
         help: image(ActionIcon::Help),
         rename: image(ActionIcon::Rename),
         view: image(ActionIcon::View),
+        find: image(ActionIcon::Find),
         edit: image(ActionIcon::Edit),
         copy: image(ActionIcon::Copy),
         move_item: image(ActionIcon::Move),

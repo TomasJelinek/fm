@@ -11,6 +11,13 @@ struct Source {
     changed: Arc<Mutex<bool>>,
 }
 impl TransferSource for Source {
+    fn rewind_for_validation(
+        &mut self,
+        _: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferReadGuard>, FsError> {
+        self.data.set_position(0);
+        Ok(Box::new(ReadGuard(self.changed.clone())))
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }
@@ -28,11 +35,15 @@ impl TransferSource for Source {
         unreachable!()
     }
 }
+#[derive(Default)]
 struct Stage {
     data: Cursor<Vec<u8>>,
     corrupt_on_sync: bool,
     truncate_on_sync: bool,
     fail_sync: bool,
+    replacement: Option<(Arc<std::sync::atomic::AtomicUsize>, TransferPublication)>,
+    preparations: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    changed: Option<Arc<Mutex<bool>>>,
 }
 impl Read for Stage {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -53,6 +64,28 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn rewind_for_validation(
+        &mut self,
+        _: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferReadGuard>, FsError> {
+        self.data.set_position(0);
+        Ok(Box::new(ReadGuard(
+            self.changed.clone().unwrap_or_default(),
+        )))
+    }
+    fn revalidate_publication(&self, _: &Cancellation) -> Result<TransferIdentity, FsError> {
+        if self
+            .changed
+            .as_ref()
+            .is_some_and(|value| *value.lock().unwrap())
+        {
+            return Err(failure(Path::new("stage"), "published name changed"));
+        }
+        Ok(TransferIdentity {
+            device: 1,
+            object: [9; 16],
+        })
+    }
     fn sync(&mut self, _: &Cancellation) -> Result<(), FsError> {
         if self.fail_sync {
             return Err(io_error(
@@ -81,8 +114,88 @@ impl StagedTransferFile for Stage {
     fn cleanup(&mut self) -> Result<(), FsError> {
         Ok(())
     }
+    fn publish_replace(
+        &mut self,
+        _: &OsStr,
+        _: &Cancellation,
+    ) -> Result<TransferPublication, FsError> {
+        let (calls, result) = self.replacement.as_ref().expect("configured replacement");
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(result.clone())
+    }
+    fn prepare_replacement(
+        &mut self,
+        _: &OsStr,
+        _: Arc<dyn TransferTarget>,
+        _: TransferReplacementPolicy,
+        _: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.preparations
+            .as_ref()
+            .expect("configured preparation")
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
 }
-fn copy(data: Vec<u8>, corrupt: bool) -> (VerifiedFileCopy, Arc<Mutex<bool>>) {
+
+struct Target(TransferEntry);
+struct ReadGuard(Arc<Mutex<bool>>);
+impl midnight_core::TransferReadGuard for ReadGuard {
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        if *self.0.lock().unwrap() {
+            Err(failure(Path::new("guard"), "revision changed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl TransferTarget for Target {
+    fn entry(&self) -> &TransferEntry {
+        &self.0
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn replacement_preparation_reuses_verified_stage_and_rejects_changed_source() {
+    let (mut job, changed) = copy(b"verified bytes".to_vec(), false);
+    let preparations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let target = Arc::new(Target(job.source.entry().clone()));
+    job.stage = Box::new(Stage {
+        preparations: Some(preparations.clone()),
+        ..Stage::default()
+    });
+    let cancel = Cancellation::default();
+    while job.phase() != CopyPhase::ReadyToPublish {
+        job.step(&cancel).unwrap();
+    }
+    job.prepare_replacement(
+        OsStr::new("target"),
+        target.clone(),
+        TransferReplacementPolicy::RecoverableCurrentEntry,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(job.phase(), CopyPhase::ReadyToPublish);
+    assert_eq!(job.copied_bytes(), 14);
+    assert_eq!(job.verified_bytes(), 14);
+    assert_eq!(preparations.load(std::sync::atomic::Ordering::SeqCst), 1);
+    *changed.lock().unwrap() = true;
+    assert!(
+        job.prepare_replacement(
+            OsStr::new("target"),
+            target,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel
+        )
+        .is_err()
+    );
+    assert_eq!(job.phase(), CopyPhase::Failed);
+    assert_eq!(preparations.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+pub(super) fn copy(data: Vec<u8>, corrupt: bool) -> (VerifiedFileCopy, Arc<Mutex<bool>>) {
     let changed = Arc::new(Mutex::new(false));
     let entry = TransferEntry {
         item: MutationItem {
@@ -106,15 +219,22 @@ fn copy(data: Vec<u8>, corrupt: bool) -> (VerifiedFileCopy, Arc<Mutex<bool>>) {
                 changed: changed.clone(),
             }),
             Box::new(Stage {
-                data: Cursor::new(Vec::new()),
                 corrupt_on_sync: corrupt,
-                truncate_on_sync: false,
-                fail_sync: false,
+                ..Stage::default()
             }),
         )
         .unwrap(),
         changed,
     )
+}
+
+pub(super) fn copy_with_outcome(outcome: TransferPublication) -> VerifiedFileCopy {
+    let (mut copy, _) = copy(b"bytes".to_vec(), false);
+    copy.stage = Box::new(Stage {
+        replacement: Some((Arc::default(), outcome)),
+        ..Stage::default()
+    });
+    copy
 }
 
 #[test]
@@ -181,10 +301,9 @@ fn sync_failure_or_target_truncation_can_never_reach_publication() {
     for (truncate_on_sync, fail_sync) in [(true, false), (false, true)] {
         let (mut job, _) = copy(b"original bytes".to_vec(), false);
         job.stage = Box::new(Stage {
-            data: Cursor::new(Vec::new()),
-            corrupt_on_sync: false,
             truncate_on_sync,
             fail_sync,
+            ..Stage::default()
         });
         let cancel = Cancellation::default();
         loop {
@@ -195,5 +314,106 @@ fn sync_failure_or_target_truncation_can_never_reach_publication() {
         }
         assert_eq!(job.phase(), CopyPhase::Failed);
         assert!(job.publish(OsStr::new("target"), &cancel).is_err());
+    }
+}
+
+fn replacement_result() -> TransferPublication {
+    TransferPublication::Replaced {
+        path: "target".into(),
+        recovery: midnight_core::TransferRecovery {
+            path: "recovery/original".into(),
+            identity: Some(TransferIdentity {
+                device: 1,
+                object: [2; 16],
+            }),
+        },
+    }
+}
+
+#[test]
+fn replacement_requires_full_independent_readback_and_retains_recovery_receipt() {
+    let (mut job, _) = copy(vec![42; 600_000], false);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    job.stage = Box::new(Stage {
+        replacement: Some((calls.clone(), replacement_result())),
+        ..Stage::default()
+    });
+    let cancel = Cancellation::default();
+    while job.phase() != CopyPhase::ReadyToPublish {
+        assert!(job.publish_replace(OsStr::new("target"), &cancel).is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        job.step(&cancel).unwrap();
+    }
+    assert_eq!(job.verified_bytes(), 600_000);
+    let result = job.publish_replace(OsStr::new("target"), &cancel).unwrap();
+    assert!(
+        matches!(result, TransferPublication::Replaced { recovery, .. }
+        if recovery.path == Path::new("recovery/original"))
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(job.publish_replace(OsStr::new("target"), &cancel).is_err());
+}
+
+#[test]
+fn replacement_is_blocked_by_corruption_cancellation_and_source_change() {
+    for scenario in 0..3 {
+        let (mut job, changed) = copy(b"verified replacement".to_vec(), false);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        job.stage = Box::new(Stage {
+            corrupt_on_sync: scenario == 0,
+            replacement: Some((calls.clone(), replacement_result())),
+            ..Stage::default()
+        });
+        let cancel = Cancellation::default();
+        while job.phase() != CopyPhase::ReadyToPublish {
+            if job.step(&cancel).is_err() {
+                break;
+            }
+        }
+        match scenario {
+            1 => cancel.cancel(),
+            2 => *changed.lock().unwrap() = true,
+            _ => {}
+        }
+        assert!(job.publish_replace(OsStr::new("target"), &cancel).is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn partial_commit_is_terminal_and_preserves_recovery_facts() {
+    for published in [None, Some("target".into())] {
+        let (mut job, _) = copy(b"verified replacement".to_vec(), false);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recovery = midnight_core::TransferRecovery {
+            path: "recovery/unexpected".into(),
+            identity: Some(TransferIdentity {
+                device: 1,
+                object: [3; 16],
+            }),
+        };
+        job.stage = Box::new(Stage {
+            replacement: Some((
+                calls.clone(),
+                TransferPublication::RecoveryRequired {
+                    published: published.clone(),
+                    recovery: vec![recovery],
+                    error: failure(Path::new("target"), "concurrent destination change"),
+                },
+            )),
+            ..Stage::default()
+        });
+        let cancel = Cancellation::default();
+        while job.phase() != CopyPhase::ReadyToPublish {
+            job.step(&cancel).unwrap();
+        }
+        let result = job.publish_replace(OsStr::new("target"), &cancel).unwrap();
+        assert!(matches!(result, TransferPublication::RecoveryRequired {
+            published: actual, recovery, ..
+        } if actual == published && recovery[0].path == Path::new("recovery/unexpected")));
+        assert_eq!(job.phase(), CopyPhase::RecoveryRequired);
+        assert!(job.publish(OsStr::new("another"), &cancel).is_err());
+        assert!(job.publish_replace(OsStr::new("another"), &cancel).is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

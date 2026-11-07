@@ -401,12 +401,18 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     key(&window, Key::Escape);
     assert!(window.get_copy_draft_token().is_empty());
     assert_eq!(window.get_focused_pane(), 0);
-    // Rename/create/delete and viewer/editor behavior have dedicated tests.
+    // F6 similarly waits for explicit recovery confirmation and releases focus on Escape.
     key(&window, Key::F6);
+    assert!(!window.get_copy_draft_token().is_empty());
+    assert!(window.get_copy_draft_move());
+    assert_eq!(window.get_focused_pane(), -1);
     assert!(
         commands.borrow().is_empty(),
-        "disabled file operations must not dispatch"
+        "opening a Move draft does not queue a transfer"
     );
+    key(&window, Key::Escape);
+    assert!(window.get_copy_draft_token().is_empty());
+    assert_eq!(window.get_focused_pane(), 0);
     hold(&window, Key::Control, true);
     hold(&window, Key::Shift, true);
     key(&window, "S");

@@ -10,7 +10,9 @@ import { PluginOptions } from "plugin-options.slint";
 import { ThumbnailOptions } from "thumbnail-options.slint";
 import { ArchiveOptions } from "archive-options.slint";
 import { ColorOptions } from "color-options.slint";
+import { UserCommandOptions, UserCommandSettingsView } from "user-command-options.slint";
 import { DialogHeader } from "dialog-frame.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -70,6 +72,8 @@ export component OptionsBody inherits Rectangle {
     callback move-dialog(length, length);
     private property <bool> compact: root.height < 350px;
     private property <bool> narrow: root.width < 600px;
+    changed topic-index => { UserCommandSettingsView.drag-cancel(); }
+    function close-options() { UserCommandSettingsView.drag-cancel(); root.close(); }
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
     init => { done.focus(); }
@@ -78,7 +82,8 @@ export component OptionsBody inherits Rectangle {
     forward-focus: done;
     capture-key-pressed(event) => {
         if event.text == Key.Escape && !KeyboardEditorView.capturing {
-            root.close(); return accept;
+            if UserCommandSettingsView.drag-active { UserCommandSettingsView.drag-cancel(); return accept; }
+            root.close-options(); return accept;
         }
         reject
     }
@@ -89,7 +94,7 @@ export component OptionsBody inherits Rectangle {
         Rectangle { height: 1px; background: Theme.frame; }
         if root.narrow : HintedComboBox {
             accessible-label: "Options topic";
-            model: ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews", "Archives", "Colors"];
+            model: ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews", "Archives", "Colors", "Custom Commands"];
             current-index: root.topic-index;
             hint: "Choose the Options page.";
             selected(value) => { root.topic-index = self.current-index; }
@@ -107,6 +112,18 @@ export component OptionsBody inherits Rectangle {
                 content-width: max(self.visible-width, root.narrow ? 460px : 0px);
             if root.topic-index == 7 : ArchiveOptions { }
             if root.topic-index == 8 : ColorOptions { }
+            // Flickable derives content extent from direct, non-repeated layouts.
+            // Keep the wrapper unconditional; the page itself remains conditional.
+            VerticalLayout {
+              spacing: 0px;
+              padding-bottom: root.topic-index == 9 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
+              if root.topic-index == 9 : UserCommandOptions {
+                viewport-left: content.absolute-position.x; viewport-top: content.absolute-position.y;
+                viewport-width: max(0px, content.visible-width - (content.content-height > content.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                viewport-height: max(0px, content.visible-height - (root.narrow && content.content-width > content.visible-width ? FluentScrollMetrics.overlay-size : 0px));
+                preview-started => { root.close-options(); }
+              }
+            }
             if root.topic-index == 6 : ThumbnailOptions {
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
@@ -211,7 +228,7 @@ export component OptionsBody inherits Rectangle {
                 native-icon: root.action-icons.done; fallback-icon: FallbackIcons.done;
                 text: "Done"; min-height: Theme.control-height;
                 hint: "Close Options. Changes are applied immediately.";
-                clicked => { root.close(); }
+                clicked => { root.close-options(); }
             }
         }
     }

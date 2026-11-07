@@ -11,6 +11,7 @@ pub(super) struct ArchivePane {
     pub(super) selected: Arc<HashSet<EntryId>>,
     totals: ArchiveSelectionTotals,
     pub(super) selection_pending: bool,
+    pub(super) selection_revision: SelectionRevision,
 }
 impl ArchivePane {
     pub(super) fn unavailable(address: ArchiveAddress, origin: PathBuf) -> Self {
@@ -24,6 +25,7 @@ impl ArchivePane {
             selected: Arc::default(),
             totals: ArchiveSelectionTotals::default(),
             selection_pending: false,
+            selection_revision: SelectionRevision(0),
         }
     }
 }
@@ -88,20 +90,37 @@ impl Presenter {
             Event::ArchiveSelection {
                 pane,
                 navigation,
-                selected,
-                totals,
+                revision,
+                view,
+                result,
             } => {
                 let p = &mut self.panes[pane.index()];
+                let same_view = Arc::ptr_eq(&view, p.display_index());
                 if p.generation == navigation.0
                     && let Some(a) = &mut p.archive
+                    && a.selection_pending
+                    && a.selection_revision == revision
                 {
-                    self.retired
-                        .push(Box::new(mem::replace(&mut a.selected, selected)));
                     a.selection_pending = false;
-                    a.totals = totals;
+                    p.selection_preview
+                        .retain(|pending| pending.revision > revision);
+                    match result {
+                        Ok(result) if same_view => {
+                            self.retired
+                                .push(Box::new(mem::replace(&mut a.selected, result.selected)));
+                            a.totals = result.totals;
+                        }
+                        Ok(result) => {
+                            self.retired.push(Box::new(result));
+                            p.error = "Selection view changed. Try again.".into();
+                        }
+                        Err(error) => p.error = error.to_string(),
+                    }
                 } else {
-                    self.retired.push(Box::new(selected));
+                    self.retired.push(Box::new(result));
                 }
+                // A stale response may be the final strong owner of a large index.
+                self.retired.push(Box::new(view));
             }
             Event::ArchiveAvailability(formats) => self.archive_formats = formats,
             Event::ArchiveListed {
@@ -164,6 +183,7 @@ impl Presenter {
                                 selected: Arc::default(),
                                 totals: ArchiveSelectionTotals::default(),
                                 selection_pending: false,
+                                selection_revision: SelectionRevision(0),
                             });
                         }
                         self.retired
@@ -333,12 +353,18 @@ impl Presenter {
                 && let Some(a) = &mut p.archive
                 && !a.selection_pending
             {
+                let Some(revision) = a.selection_revision.0.checked_add(1).map(SelectionRevision)
+                else {
+                    p.error = "Selection request identities are exhausted.".into();
+                    return;
+                };
                 let selected = Arc::make_mut(&mut a.selected);
                 let removed = selected.remove(&entry);
                 if !removed {
                     selected.insert(entry);
                 }
                 a.totals.change(kind, size, !removed);
+                a.selection_revision = revision;
             }
         }
     }
@@ -355,18 +381,40 @@ impl Presenter {
         if a.selection_pending || p.loading || p.search_view_waiting() {
             return false;
         }
+        let Some(revision) = a.selection_revision.0.checked_add(1).map(SelectionRevision) else {
+            self.panes[pane.index()].error = "Selection request identities are exhausted.".into();
+            return false;
+        };
+        let preview = if let ArchiveSelectionAction::Ranges { ranges, mode } = &action {
+            Some(selection_preview::PendingSelection::new(
+                p,
+                revision,
+                SelectionAction::Ranges {
+                    ranges: ranges.clone(),
+                    mode: *mode,
+                },
+            ))
+        } else {
+            None
+        };
         if !send(Command::ArchiveSelect {
             pane,
             navigation: NavigationId(p.generation),
+            revision,
             entries: p.entries.clone(),
             view: p.display_index().clone(),
             selected: a.selected.clone(),
             action,
         }) {
+            self.panes[pane.index()].error = "Selection queue is busy. Try again.".into();
             return false;
         }
         if let Some(a) = &mut self.panes[pane.index()].archive {
             a.selection_pending = true;
+            a.selection_revision = revision;
+        }
+        if let Some(preview) = preview {
+            self.panes[pane.index()].selection_preview.push(preview);
         }
         true
     }

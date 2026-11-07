@@ -271,8 +271,8 @@ fn unavailable_native_menu_exposes_application_actions_and_old_tokens_are_reject
 }
 
 #[test]
-fn cut_is_reported_without_mutation_or_clipboard_dispatch() {
-    let (mut p, _) = loaded();
+fn cut_publishes_the_captured_native_selection_without_mutation() {
+    let (mut p, base) = loaded();
     let commands = RefCell::new(Vec::new());
     let send = |command| {
         commands.borrow_mut().push(command);
@@ -288,8 +288,12 @@ fn cut_is_reported_without_mutation_or_clipboard_dispatch() {
         },
         &send,
     );
-    assert!(commands.borrow().is_empty());
-    assert!(p.desktop.notice.is_some());
+    let commands = commands.borrow();
+    let [Command::CutFiles { files, .. }] = commands.as_slice() else {
+        panic!("Cut must publish captured native clipboard paths");
+    };
+    assert_eq!(files.fallback, Some(base.join("a.txt")));
+    assert!(!p.has_live_operations());
 }
 
 #[test]

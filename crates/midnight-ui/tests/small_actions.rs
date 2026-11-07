@@ -229,7 +229,8 @@ fn fallback_file_menu_is_capped_scrollable_and_keyboard_reveals_selection() {
     drop(popups);
     let properties = ui::popup_item(&test.window, "Properties", AccessibleRole::Button);
     let viewport = scroll_parent(&properties);
-    for _ in 0..5 {
+    // Open -> Copy -> Cut -> Paste -> Rename -> Trash -> Properties.
+    for _ in 0..6 {
         ui::key(&test.window, Key::DownArrow);
         settle(&mut test);
     }

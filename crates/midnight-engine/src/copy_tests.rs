@@ -8,8 +8,12 @@ use tokio::sync::{Notify, mpsc};
 
 #[path = "archive_copy_tests.rs"]
 mod archive;
+#[path = "move_tests.rs"]
+mod moves;
 #[path = "copy_queue_tests.rs"]
 mod queue;
+#[path = "copy_replacement_tests.rs"]
+mod replacement;
 
 #[tokio::test]
 async fn native_drop_reservations_share_the_actual_copy_job_capacity() {

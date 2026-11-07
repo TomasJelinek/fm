@@ -1,6 +1,6 @@
 //! Global view adapter for the searchable shortcut editor and its capture field.
 use crate::{KeyboardEditorView, MainWindow, Presenter, ShortcutCommandRow, shortcut_input};
-use midnight_core::{Command, ShortcutChord, shortcut_catalog};
+use midnight_core::{Command, ShortcutChord};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc};
 
@@ -61,7 +61,11 @@ pub(crate) fn install(
         p.filter_shortcut_commands(query.to_string());
     });
     bind!(on_select, |_w, p, _send, id| {
-        if let Some(index) = shortcut_catalog()
+        if let Some(index) = p
+            .keyboard
+            .snapshot
+            .map
+            .definitions()
             .iter()
             .position(|action| action.id == id.as_str())
         {
@@ -106,7 +110,7 @@ pub(crate) fn install(
 pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let view = window.global::<KeyboardEditorView>();
     let state = &presenter.keyboard;
-    let action = &shortcut_catalog()[state.selected];
+    let action = &state.snapshot.map.definitions()[state.selected];
     let revision = format!(
         "{}:{}:{}",
         state.editor_revision_text, action.id, state.error
@@ -152,7 +156,10 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         state.snapshot.revision, action.id, state.editor.filter
     );
     if view.get_command_revision() != command_revision {
-        let rows = shortcut_catalog()
+        let rows = state
+            .snapshot
+            .map
+            .definitions()
             .iter()
             .filter(|command| {
                 crate::presenter::keyboard_editor::matches_filter(command, &state.editor.filter)

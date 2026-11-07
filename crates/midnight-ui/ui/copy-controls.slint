@@ -5,12 +5,29 @@ import { FallbackIcons } from "action-icons.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 
+component ConflictItem inherits Rectangle {
+    in property <string> heading;
+    in property <string> details;
+    min-width: 0px;
+    background: Theme.secondary-surface;
+    border-radius: 4px;
+    VerticalLayout {
+        padding: 8px; spacing: 4px;
+        Text { text: root.heading; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
+        DialogText { text: root.details; min-height: 0px; vertical-stretch: 1; }
+    }
+}
+
 export component CopyConflictDialog inherits Rectangle {
     in property <string> body;
     in property <string> initial-name;
     in property <string> token;
     in property <image> native-icon;
     in property <bool> allow-alternate-name: true;
+    in property <bool> can-replace;
+    in property <bool> can-merge;
+    in property <string> source-details;
+    in property <string> target-details;
     callback decide(int, string);
     callback later();
     callback move-dialog(length, length);
@@ -35,10 +52,30 @@ export component CopyConflictDialog inherits Rectangle {
             content := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: as-needed;
-                content-width: max(self.visible-width, Theme.font-size * 16);
+                content-width: max(self.visible-width, Theme.font-size * (root.can-replace ? 34 : 22));
                 VerticalLayout {
                     spacing: root.compact ? 4px : 10px; alignment: start;
-            DialogText { text: root.body; height: max(80px, Theme.font-size * 5); }
+            if root.source-details != "" && root.width >= 560px : HorizontalLayout {
+                spacing: 8px; height: Theme.font-size * 11;
+                ConflictItem { heading: "Source"; details: root.source-details; horizontal-stretch: 1; }
+                ConflictItem { heading: "Existing destination"; details: root.target-details; horizontal-stretch: 1; }
+            }
+            if root.source-details != "" && root.width < 560px : VerticalLayout {
+                spacing: 8px; height: Theme.font-size * 16;
+                ConflictItem { heading: "Source"; details: root.source-details; vertical-stretch: 1; }
+                ConflictItem { heading: "Existing destination"; details: root.target-details; vertical-stretch: 1; }
+            }
+            DialogText { text: root.body; height: max(50px, Theme.font-size * 4); }
+            if root.can-replace : HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Replace · keep original"; hint: "Publish the verified copy and retain the displaced file in a private recovery folder. Recent Jobs show recovery locations."; clicked => { root.decide(4, ""); } }
+                HintedActionButton { text: "Replace all · keep originals"; hint: "Use recoverable replacement for remaining compatible file conflicts in this job. Changed targets require a new decision."; clicked => { root.decide(5, ""); } }
+            }
+            if root.can-merge : HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Merge folders"; hint: "Copy into this existing folder. Existing files require a separate conflict decision."; clicked => { root.decide(6, ""); } }
+                HintedActionButton { text: "Merge all folders"; hint: "Merge remaining compatible folder conflicts in this job. This does not authorize replacing files."; clicked => { root.decide(7, ""); } }
+            }
             name := LineEdit {
                 visible: root.allow-alternate-name;
                 accessible-label: "Copy under a different name";
