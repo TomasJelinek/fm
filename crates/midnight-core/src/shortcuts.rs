@@ -217,15 +217,12 @@ pub struct ShortcutDefinition {
 
 impl ShortcutDefinition {
     /// Text-sensitive aliases retain their narrower context even when reassigned.
-    /// Clipboard keys edit search text; Backspace and Shift+digit also stay native.
+    /// Clipboard keys edit search text; Backspace and plain/Shift digits stay native.
     pub fn scope_for(&self, chord: &ShortcutChord) -> ShortcutScope {
         let plain = !chord.control && !chord.alt && !chord.meta;
         if (self.scope == ShortcutScope::FilesAny && chord.search_clipboard_key())
             || (self.id == "panel.parent" && plain && !chord.shift && chord.key == "Backspace")
-            || (self.id.starts_with("bookmark.open.")
-                && plain
-                && chord.shift
-                && chord.key.starts_with("Digit"))
+            || (self.id.starts_with("bookmark.open.") && plain && chord.key.starts_with("Digit"))
         {
             ShortcutScope::FilesIdle
         } else {
@@ -362,16 +359,17 @@ impl ShortcutMap {
         }
         let definitions = shortcut_catalog();
         let mut replacements = HashMap::new();
+        let mut explicit_file_keys = HashSet::new();
         for binding in overrides {
             if binding.action.len() > MAX_SHORTCUT_ACTION_BYTES {
                 return Err("A shortcut action identity exceeds 96 bytes.".into());
             }
-            if !definitions
+            let Some(definition) = definitions
                 .iter()
-                .any(|definition| definition.id == binding.action)
-            {
+                .find(|definition| definition.id == binding.action)
+            else {
                 return Err(format!("Unknown shortcut action: {}", binding.action));
-            }
+            };
             if binding.keys.len() > MAX_SHORTCUT_KEYS {
                 return Err(format!(
                     "At most four keys can be assigned to {}.",
@@ -383,6 +381,15 @@ impl ShortcutMap {
                 .is_some()
             {
                 return Err(format!("Repeated shortcut action: {}", binding.action));
+            }
+            for text in &binding.keys {
+                let chord = ShortcutChord::parse(text)?;
+                if definition
+                    .scope_for(&chord)
+                    .includes(ShortcutContext::Files)
+                {
+                    explicit_file_keys.insert(chord);
+                }
             }
         }
         let mut result = Self {
@@ -399,6 +406,20 @@ impl ShortcutMap {
             for text in keys {
                 let chord = ShortcutChord::parse(text)?;
                 definition.validate_key(&chord)?;
+                // Bare Hot Path digits were added after configurable shortcuts.
+                // Keep existing explicit file bindings, including their hints,
+                // without weakening conflicts between other defaults or overrides.
+                if !replacements.contains_key(definition.id.as_str())
+                    && definition.id.starts_with("bookmark.open.")
+                    && !chord.control
+                    && !chord.alt
+                    && !chord.shift
+                    && !chord.meta
+                    && chord.key.starts_with("Digit")
+                    && explicit_file_keys.contains(&chord)
+                {
+                    continue;
+                }
                 if !seen.insert(chord.clone()) {
                     return Err(format!(
                         "Repeated shortcut {} for {}.",

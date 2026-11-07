@@ -1,0 +1,15 @@
+[package]
+name = "midnight-thumbnail-video"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace]
+
+[dependencies]
+midnight-thumbnail-sdk = { version = "=0.1.0", registry = "midnight" }
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

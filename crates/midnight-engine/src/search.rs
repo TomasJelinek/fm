@@ -75,6 +75,11 @@ impl Controller {
 fn source_matches(snapshots: &Snapshots, request: &SearchRequest) -> bool {
     let snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
     let state = &snapshots[request.pane.index()];
+    if state.archive.as_ref().is_some_and(|(navigation, entries)| {
+        *navigation == request.navigation && Arc::ptr_eq(entries, &request.source)
+    }) {
+        return true;
+    }
     state.pending.is_none()
         && [&state.visible, &state.committed]
             .into_iter()
@@ -235,7 +240,8 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
         {
             return ambiguous_projection(request);
         }
-        if let Some(id) = filtered_index.by_path.get(&entry.path)
+        if entry.virtual_node.is_none()
+            && let Some(id) = filtered_index.by_path.get(&entry.path)
             && let Some(row) = filtered_index.by_id.get(id)
             && filtered[*row].source_row != source_row
         {
@@ -256,7 +262,8 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
 
 fn append_entry(index: &mut DirectoryIndex, entry: &Entry, row: usize) -> bool {
     if index.by_id.insert(entry.id, row).is_some()
-        || index.by_path.insert(entry.path.clone(), entry.id).is_some()
+        || (entry.virtual_node.is_none()
+            && index.by_path.insert(entry.path.clone(), entry.id).is_some())
     {
         return false;
     }

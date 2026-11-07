@@ -1,0 +1,28 @@
+import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+export component ThumbnailOptions inherits VerticalLayout {
+    in property <bool> thumbnails-enabled;
+    in property <bool> thumbnails-network;
+    callback changed(bool, bool, int);
+    callback clear-cache();
+    spacing: 16px; alignment: start;
+    HintedCheckBox {
+        text: "Show image and video previews";
+        checked: root.thumbnails-enabled; min-height: Theme.control-height;
+        hint: "Use installed thumbnail plugins in Thumbnails view. Decoding runs in background workers and results are cached.";
+        toggled => { root.changed(self.checked, root.thumbnails-network, 0); }
+    }
+    HintedCheckBox {
+        text: "Allow previews on network locations";
+        checked: root.thumbnails-network; enabled: root.thumbnails-enabled;
+        min-height: Theme.control-height;
+        hint: "Allow background reads on network or unclassified storage. These reads remain serial.";
+        toggled => { root.changed(root.thumbnails-enabled, self.checked, 1); }
+    }
+    HintedActionButton {
+        text: "Clear thumbnail cache";
+        hint: "Remove cached image and video previews in the background. Visible previews can be generated again.";
+        clicked => { root.clear-cache(); }
+    }
+}

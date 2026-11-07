@@ -88,7 +88,8 @@ pub trait PreparedMutation: Send + Sync {
 }
 
 /// Blocking native operations are called only on the engine's mutation workers.
-/// Preparation itself performs no rename/deletion and rejects roots and `..`.
+/// Preparation itself performs no mutation. Rename/delete targets reject roots
+/// and `..`; creation preparation pins its base directory, including a root.
 pub trait MutationService: Send + Sync {
     /// Retain the base directory before prompting; preparation never creates anything.
     fn prepare_create(
@@ -110,11 +111,19 @@ pub trait MutationService: Send + Sync {
     ) -> Result<Arc<dyn PreparedMutation>, FsError>;
 }
 
-/// A pinned native base for exclusive creation. Child links are never traversed.
+/// A pinned native base for exclusive creation. Entered links are never traversed.
 pub trait PreparedDirectory: Send + Sync {
-    /// Accept relative normal components, reusing existing intermediate directories.
-    /// The final directory must be new; errors can leave created intermediates.
-    fn create(&self, relative_path: &Path, cancel: &Cancellation) -> Result<PathBuf, FsError>;
+    /// Create an explicit absolute path or a path relative to the captured base,
+    /// including parent steps outside that base. Walk entered components in order,
+    /// reusing ordinary intermediate directories and creating missing ones. Do not
+    /// lexically collapse an untraversed component with `..` or follow entered links.
+    /// Explicit path traversal may cross volumes/mounts, unlike recursive deletion.
+    /// Revalidate the captured base identity even for an absolute target. The final
+    /// directory must be new; errors/cancellation can leave created intermediates.
+    /// Reject empty/root-only/final-dot targets before any creation. Windows resolves
+    /// root-relative and same-drive-relative paths against the captured base; another
+    /// drive's ambiguous relative path requires an explicit absolute path instead.
+    fn create(&self, path: &Path, cancel: &Cancellation) -> Result<PathBuf, FsError>;
 
     /// Create one empty regular file exclusively below this prepared directory.
     /// Accept only a basename; never replace, truncate, or follow an existing entry.

@@ -23,6 +23,7 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
         .map(|(index, name)| Entry::new(EntryId(index as u64), root.join(name), EntryKind::File))
         .collect();
     ViewerLaunch {
+        archive: None,
         focused: entries[0].path.clone(),
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,
@@ -120,6 +121,7 @@ fn enormous_panel_capture_is_rejected_before_native_identity_work() {
         })
         .collect();
     let launch = ViewerLaunch {
+        archive: None,
         focused: entries[0].path.clone(),
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,

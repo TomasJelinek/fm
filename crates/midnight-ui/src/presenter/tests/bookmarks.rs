@@ -55,19 +55,159 @@ fn hot_paths_use_the_origin_pane_and_latest_options_save_keeps_bookmarks() {
 }
 
 #[test]
-fn reassignment_preserves_slot_identity_and_removal_never_reuses_callback_id() {
+fn reassignment_preserves_both_paths_and_removal_never_reuses_callback_id() {
     let base = test_root();
     let mut p = ready(base.clone(), base.join("other"));
     assert!(p.assign_bookmark_slot(PaneId::Left, 1, &|_| true));
     let id = p.bookmarks()[0].id;
     assert!(p.assign_bookmark_slot(PaneId::Right, 1, &|_| true));
-    assert_eq!(p.bookmarks().len(), 1);
+    assert_eq!(p.bookmarks().len(), 2);
     assert_eq!(p.bookmarks()[0].id, id);
-    assert_eq!(p.bookmarks()[0].path, base.join("other"));
+    assert_eq!(p.bookmarks()[0].path, base);
+    assert_eq!(p.bookmarks()[0].slot, None);
+    assert_eq!(p.bookmarks()[1].path, base.join("other"));
+    assert_eq!(p.bookmarks()[1].slot, Some(1));
     assert!(p.remove_bookmark(id, &|_| true));
     assert!(p.add_bookmark(PaneId::Left, "new".into(), None, &|_| true));
     assert_ne!(p.bookmarks()[0].id, id);
     assert!(!p.open_bookmark(PaneId::Left, id, &|_| panic!("stale identity")));
+}
+
+#[test]
+fn adding_the_same_path_twice_keeps_identity_name_and_first_free_slot() {
+    let mut p = ready(test_root(), test_root().join("other"));
+    assert!(p.add_bookmark(PaneId::Left, "Original".into(), None, &|_| true));
+    let first = p.bookmarks()[0].clone();
+    assert!(
+        p.add_bookmark(PaneId::Left, "Duplicate".into(), None, &|_| panic!(
+            "no redundant save"
+        ))
+    );
+    assert_eq!(p.bookmarks(), [first]);
+    assert_eq!(p.bookmarks()[0].slot, Some(1));
+    assert!(p.add_bookmark(PaneId::Right, "Other".into(), None, &|_| true));
+    assert_eq!(p.bookmarks()[1].slot, Some(2));
+}
+
+#[test]
+fn moving_an_existing_hot_path_to_an_occupied_slot_keeps_both_paths() {
+    let mut p = ready(test_root(), test_root().join("other"));
+    assert!(p.assign_bookmark_slot(PaneId::Left, 1, &|_| true));
+    assert!(p.assign_bookmark_slot(PaneId::Right, 2, &|_| true));
+    let first = p.bookmarks()[0].clone();
+    let second = p.bookmarks()[1].clone();
+    assert!(p.assign_bookmark_slot(PaneId::Left, 2, &|_| true));
+    assert_eq!(p.bookmarks().len(), 2);
+    assert_eq!(p.bookmarks()[0].id, first.id);
+    assert_eq!(p.bookmarks()[0].path, first.path);
+    assert_eq!(p.bookmarks()[0].slot, Some(2));
+    assert_eq!(p.bookmarks()[1].id, second.id);
+    assert_eq!(p.bookmarks()[1].path, second.path);
+    assert_eq!(p.bookmarks()[1].slot, Some(1));
+}
+
+#[test]
+fn new_hot_paths_fill_free_slots_and_keep_overflow_accessible() {
+    let mut p = ready(test_root(), test_root());
+    for index in 1..=11 {
+        p.panes[0].path = test_root().join(format!("folder-{index}"));
+        assert!(p.add_bookmark(PaneId::Left, format!("Folder {index}"), None, &|_| true));
+    }
+    assert_eq!(p.bookmarks().len(), 11);
+    assert_eq!(p.bookmarks()[9].slot, Some(10));
+    assert_eq!(p.bookmarks()[10].slot, None);
+    assert!(p.remove_bookmark(p.bookmarks()[3].id, &|_| true));
+    p.panes[0].path = test_root().join("replacement");
+    assert!(p.add_bookmark(PaneId::Left, "Replacement".into(), None, &|_| true));
+    assert_eq!(p.bookmarks().last().unwrap().slot, Some(4));
+}
+
+#[test]
+fn hot_path_identity_does_not_fold_case_or_unicode() {
+    let first = test_root().join("Folder e\u{301}");
+    for second in [
+        test_root().join("folder e\u{301}"),
+        test_root().join("Folder é"),
+    ] {
+        let mut p = ready(first.clone(), second.clone());
+        assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
+        assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
+        assert_eq!(p.bookmarks()[0].path, first);
+        assert_eq!(p.bookmarks()[1].path, second);
+    }
+}
+
+#[test]
+fn component_equivalent_hot_paths_keep_the_first_raw_spelling() {
+    let original = test_root().join("folder");
+    let equivalent = original.join(".").join("");
+    let mut p = ready(original.clone(), equivalent);
+    assert!(p.add_bookmark(PaneId::Left, "Original".into(), None, &|_| true));
+    assert!(
+        p.add_bookmark(PaneId::Right, "Again".into(), None, &|_| panic!(
+            "same path"
+        ))
+    );
+    assert_eq!(p.bookmarks().len(), 1);
+    assert_eq!(p.bookmarks()[0].path.as_os_str(), original.as_os_str());
+}
+
+#[test]
+fn manager_slot_assignment_uses_selected_identity_and_rejects_stale_ids() {
+    let left = test_root().join("left");
+    let right = test_root().join("right");
+    let mut p = ready(left.clone(), right.clone());
+    assert!(p.add_bookmark(PaneId::Left, "Left".into(), None, &|_| true));
+    assert!(p.add_bookmark(PaneId::Right, "Right".into(), None, &|_| true));
+    let selected = p.bookmarks()[1].id;
+    p.active = PaneId::Left;
+    assert!(p.set_bookmark_slot(selected, Some(10), &|command| {
+        let Command::SavePreferences { preferences, .. } = command else {
+            panic!("no navigation")
+        };
+        assert_eq!(preferences.bookmarks[0].path, left);
+        assert_eq!(preferences.bookmarks[0].slot, Some(1));
+        assert_eq!(preferences.bookmarks[1].path, right);
+        assert_eq!(preferences.bookmarks[1].slot, Some(10));
+        true
+    }));
+    assert!(p.set_bookmark_slot(selected, None, &|_| true));
+    assert_eq!(p.bookmarks()[1].slot, None);
+    assert!(p.remove_bookmark(selected, &|_| true));
+    assert!(!p.set_bookmark_slot(selected, Some(3), &|_| panic!("stale identity")));
+}
+
+#[test]
+fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
+    let path = test_root().join("same");
+    let mut p = Presenter::new(path.clone(), test_root());
+    assert!(
+        p.add_bookmark(PaneId::Left, "Local".into(), Some(2), &|_| panic!(
+            "not loaded"
+        ))
+    );
+    let local = p.bookmarks()[0].clone();
+    p.apply_with_sender(
+        Event::PreferencesLoaded(Ok(UserPreferences {
+            theme: PreferenceTheme::Light,
+            bookmarks: vec![Bookmark {
+                id: BookmarkId(40),
+                name: "Stored".into(),
+                path,
+                slot: Some(5),
+            }],
+            ..Default::default()
+        })),
+        &|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!()
+            };
+            assert_eq!(preferences.theme, PreferenceTheme::Light);
+            assert_eq!(preferences.bookmarks, std::slice::from_ref(&local));
+            true
+        },
+    );
+    assert_eq!(p.bookmarks(), [local]);
 }
 
 #[test]

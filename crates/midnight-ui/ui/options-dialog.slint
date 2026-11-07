@@ -3,9 +3,11 @@ import { HintedCheckBox, HintedComboBox, HintedActionButton } from "hinted-input
 import { CompactPicker } from "controls.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
-import { KeyboardOptions } from "keyboard-options.slint";
+import { KeyboardEditor } from "keyboard-editor.slint";
+import { OptionsNavigation } from "options-navigation.slint";
 import { EditorOptions } from "editor-options.slint";
 import { PluginOptions } from "plugin-options.slint";
+import { ThumbnailOptions } from "thumbnail-options.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -51,63 +53,38 @@ export component OptionsBody inherits Rectangle {
     in property <bool> sizes-in-bytes;
     in property <bool> remember-command-history;
     in property <bool> command-history-empty;
-    in property <[string]> keyboard-actions;
-    in property <int> keyboard-selected;
-    in property <string> keyboard-action-id;
-    in property <string> keyboard-bindings;
-    in property <string> keyboard-revision;
-    in property <string> keyboard-scope;
-    in property <string> keyboard-error;
-    callback keyboard-select(int);
-    callback keyboard-apply(string, string);
-    callback keyboard-restore(string);
-    callback keyboard-restore-all();
+    in property <bool> thumbnails-enabled;
+    in property <bool> thumbnails-network;
     callback preferences-changed(int, int, int);
     callback font-options-changed(int, int, int, int);
     callback search-filter-changed(bool);
     callback sizes-format-changed(bool);
     callback remember-command-history-changed(bool);
     callback command-history-clear();
+    callback thumbnail-options-changed(bool, bool, int);
+    callback thumbnail-clear-cache();
     callback close();
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
     VerticalLayout {
-        padding: 18px; spacing: 14px;
+        padding: 18px; spacing: 12px;
         Text { text: "Options"; color: Theme.strong-text; font-size: max(20px, Theme.font-size + 4px); }
-        topics := Rectangle {
-            height: Theme.control-height + 4px;
-            HorizontalLayout {
-                spacing: 0px;
-                for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins"] : Rectangle {
-                    horizontal-stretch: 1;
-                    background: root.topic-index == index ? Theme.active-header
-                        : tab-area.has-hover ? Theme.hover : Theme.secondary-surface;
-                    border-width: 1px; border-color: root.topic-index == index ? Theme.active-frame : Theme.frame;
-                    accessible-role: button; accessible-label: label;
-                    accessible-checkable: true; accessible-checked: root.topic-index == index;
-                    accessible-action-default => { root.topic-index = index; }
-                    forward-focus: tab-focus;
-                    Text {
-                        text: label; color: root.topic-index == index ? Theme.strong-text : Theme.text;
-                        font-size: Theme.font-size; font-weight: root.topic-index == index ? 600 : 400;
-                        horizontal-alignment: center; vertical-alignment: center;
-                    }
-                    tab-focus := FocusScope {
-                        key-pressed(event) => {
-                            if event.text == Key.Return || event.text == Key.Space {
-                                root.topic-index = index; return accept;
-                            }
-                            if event.text == Key.RightArrow { root.topic-index = min(5, root.topic-index + 1); return accept; }
-                            if event.text == Key.LeftArrow { root.topic-index = max(0, root.topic-index - 1); return accept; }
-                            reject
-                        }
-                        tab-area := TouchArea { clicked => { tab-focus.focus(); root.topic-index = index; } }
-                    }
-                }
+        Rectangle { height: 1px; background: Theme.frame; }
+        HorizontalLayout {
+            spacing: 18px;
+            OptionsNavigation {
+                width: max(144px, Theme.font-size * 6 + 28px);
+                selected <=> root.topic-index;
             }
-        }
-        ScrollView {
-            horizontal-scrollbar-policy: always-off;
+            content := ScrollView {
+                horizontal-stretch: 1;
+                horizontal-scrollbar-policy: always-off;
+            if root.topic-index == 6 : ThumbnailOptions {
+                thumbnails-enabled: root.thumbnails-enabled;
+                thumbnails-network: root.thumbnails-network;
+                changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
+                clear-cache => { root.thumbnail-clear-cache(); }
+            }
             if root.topic-index == 5 : PluginOptions { }
             if root.topic-index == 4 : EditorOptions {
                 default-label: root.editor-default-label; executable: root.editor-executable;
@@ -115,15 +92,7 @@ export component OptionsBody inherits Rectangle {
                 apply(executable, arguments) => { root.editor-apply(executable, arguments); }
                 restore => { root.editor-restore(); }
             }
-            if root.topic-index == 3 : KeyboardOptions {
-                actions: root.keyboard-actions; selected: root.keyboard-selected;
-                action-id: root.keyboard-action-id; bindings: root.keyboard-bindings;
-                revision: root.keyboard-revision; scope: root.keyboard-scope; error: root.keyboard-error;
-                select(index) => { root.keyboard-select(index); }
-                apply(action, keys) => { root.keyboard-apply(action, keys); }
-                restore(action) => { root.keyboard-restore(action); }
-                restore-all => { root.keyboard-restore-all(); }
-            }
+            if root.topic-index == 3 : KeyboardEditor { available-height: content.visible-height; }
             if root.topic-index == 0 : VerticalLayout {
                 spacing: 16px; alignment: start;
                 HintedCheckBox {
@@ -193,8 +162,10 @@ export component OptionsBody inherits Rectangle {
                 }
             }
         }
+        }
+        Rectangle { height: 1px; background: Theme.frame; }
         HorizontalLayout {
-            spacing: 10px;
+            spacing: 10px; alignment: end;
             HintedActionButton {
                 native-icon: root.action-icons.save-again; fallback-icon: FallbackIcons.save-again;
                 text: "Save again"; enabled: root.preferences-unsaved; min-height: Theme.control-height;

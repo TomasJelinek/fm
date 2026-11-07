@@ -190,8 +190,23 @@ impl Presenter {
                             ));
                         }
                     }
-                    if !progress.message.is_empty() {
-                        self.desktop.report("Copy", progress.message.clone());
+                    if !progress.errors.is_empty() {
+                        self.desktop.report(
+                            "Copy failed",
+                            crate::error_presentation::issues(
+                                &progress.errors,
+                                progress.files_completed > 0,
+                            ),
+                        );
+                    } else if !progress.message.is_empty() {
+                        if matches!(
+                            progress.state,
+                            CopyOperationState::Failed | CopyOperationState::CompletedWithErrors
+                        ) {
+                            self.desktop.report("Copy failed", progress.message.clone());
+                        } else {
+                            self.desktop.inform("Copy", progress.message.clone());
+                        }
                     }
                 }
                 *old = progress;

@@ -132,7 +132,9 @@ impl SelectionSnapshot {
             .sum();
         let mut file_bytes = Some(0_u64);
         for (word_index, word) in bits.iter().copied().enumerate() {
-            let mut remaining = word;
+            // Folder totals are reported separately. Folder links are skipped
+            // here too; other non-regular entries still make file bytes unknown.
+            let mut remaining = word & !basis.directory_bits[word_index];
             while remaining != 0 {
                 let index = word_index * 64 + remaining.trailing_zeros() as usize;
                 file_bytes = file_bytes
@@ -173,8 +175,9 @@ impl SelectionSnapshot {
     pub fn folder_count(&self) -> usize {
         self.selected_folders
     }
-    /// Exact known sum, computed on the selection worker. None includes unknown
-    /// lengths, selected non-regular entries and totals exceeding u64.
+    /// Exact known sum of selected files, computed on the selection worker.
+    /// Folders and folder links are excluded. None includes unknown lengths,
+    /// other selected non-regular entries and totals exceeding u64.
     pub fn file_bytes(&self) -> Option<u64> {
         self.file_bytes
     }
@@ -278,7 +281,15 @@ mod tests {
             SelectionSnapshot::from_bits(index, vec![3])
                 .unwrap()
                 .file_bytes(),
-            None
+            Some(12)
+        );
+        entries[1].kind = EntryKind::DirectoryLink;
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        assert_eq!(
+            SelectionSnapshot::from_bits(index, vec![3])
+                .unwrap()
+                .file_bytes(),
+            Some(12)
         );
         entries[1].kind = EntryKind::Symlink;
         let index = Arc::new(DirectoryIndex::from_entries(&entries));

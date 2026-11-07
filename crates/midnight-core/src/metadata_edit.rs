@@ -111,6 +111,8 @@ pub struct MetadataPreviewRow {
     pub path: PathBuf,
     pub proposed_name: Option<OsString>,
     pub current: MetadataSnapshot,
+    /// Requested values projected by the backend; this does not imply a completed write.
+    pub proposed: MetadataSnapshot,
     pub issue: Option<FsError>,
 }
 
@@ -125,7 +127,8 @@ pub struct MetadataPreview {
     pub conflicts: u64,
     pub unsupported: u64,
     pub hard_linked: u64,
-    /// At most 32 rows; native names must never be reconstructed from display strings.
+    /// All captured roots, at most MAX_METADATA_TARGETS. Recursive descendants are
+    /// inspected during execution. Native names must never be reconstructed from text.
     pub sample: Vec<MetadataPreviewRow>,
     /// At most 16 preparation issues.
     pub errors: Vec<FsError>,

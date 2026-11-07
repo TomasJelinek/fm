@@ -1,0 +1,41 @@
+import { Theme } from "theme.slint";
+
+export component OptionsNavigation inherits Rectangle {
+    in-out property <int> selected;
+    private property <int> focus-request: -1;
+    background: Theme.secondary-surface; border-radius: 4px;
+    VerticalLayout {
+        padding: 6px; spacing: 4px; alignment: start;
+        for label[index] in ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews"] : Rectangle {
+            private property <bool> focus-requested: root.focus-request == index;
+            changed focus-requested => { if self.focus-requested { tab-focus.focus(); } }
+            height: max(Theme.control-height, Theme.font-size * 1.5 + 10px);
+            background: root.selected == index ? Theme.selected-background
+                : area.has-hover ? Theme.hover : transparent;
+            border-radius: 3px;
+            border-width: tab-focus.has-focus ? 1px : 0px; border-color: Theme.active-frame;
+            accessible-role: button; accessible-label: label;
+            accessible-checkable: true; accessible-checked: root.selected == index;
+            accessible-action-default => { root.selected = index; }
+            forward-focus: tab-focus;
+            Text {
+                x: 10px; width: parent.width - 20px;
+                text: label; font-size: Theme.font-size; overflow: elide;
+                color: root.selected == index ? Theme.selected-text : Theme.text;
+                font-weight: root.selected == index ? 600 : 400; vertical-alignment: center;
+            }
+            tab-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Return || event.text == Key.Space { root.selected = index; return accept; }
+                    if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                        root.selected = clamp(root.selected + (event.text == Key.DownArrow ? 1 : -1), 0, 6);
+                        root.focus-request = root.selected;
+                        return accept;
+                    }
+                    reject
+                }
+                area := TouchArea { clicked => { tab-focus.focus(); root.focus-request = index; root.selected = index; } }
+            }
+        }
+    }
+}

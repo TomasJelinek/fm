@@ -418,6 +418,7 @@ fn build() -> Vec<ShortcutDefinition> {
             &format!("Open Hot Path {slot}"),
             FilesAny,
             &[
+                &format!("Digit{digit}"),
                 &format!("Ctrl+Digit{digit}"),
                 &format!("Shift+Digit{digit}"),
             ],

@@ -23,6 +23,8 @@ impl Harness {
         let snapshots = Arc::new(Mutex::new([
             SnapshotState::default(),
             SnapshotState {
+                archive: None,
+                archive_navigation: None,
                 committed: Some(CommittedSnapshot {
                     navigation: NavigationId(5),
                     path: path.clone(),
@@ -288,6 +290,8 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), file.clone(), EntryKind::File)].into();
     let snapshots = Arc::new(Mutex::new([
         SnapshotState {
+            archive: None,
+            archive_navigation: None,
             committed: Some(CommittedSnapshot {
                 navigation: NavigationId(1),
                 path: source,
@@ -297,6 +301,8 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
             ..Default::default()
         },
         SnapshotState {
+            archive: None,
+            archive_navigation: None,
             committed: Some(CommittedSnapshot {
                 navigation: NavigationId(2),
                 path: destination.clone(),

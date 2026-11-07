@@ -1,6 +1,9 @@
 //! User-visible preferences; native storage belongs to backend platform services.
 use crate::{CommandHistoryEntry, FsError, ShortcutBinding, ShortcutMap, validate_command_history};
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+};
 
 /// Stable callback identity; names and displayed paths are never identifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -11,18 +14,25 @@ pub struct TabId(pub u64);
 
 pub const MAX_TABS_PER_PANE: usize = 32;
 
-/// Only native locations and the active position survive restart. Empty paths
-/// mean no saved session; row snapshots, selection, and tab IDs are never saved.
+/// Native return locations and typed provider addresses survive restart. Provider
+/// members are never encoded as native paths; runtime IDs and rows are not saved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PaneTabPreferences {
     pub paths: Vec<PathBuf>,
     pub active: usize,
+    pub archives: BTreeMap<usize, crate::ArchiveAddress>,
 }
 
 impl PaneTabPreferences {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.paths.len() > MAX_TABS_PER_PANE {
             return Err("At most 32 tabs can be saved in each panel.");
+        }
+        for (index, address) in &self.archives {
+            if *index >= self.paths.len() {
+                return Err("Archive tab address must refer to a saved tab.");
+            }
+            address.validate()?;
         }
         if (self.paths.is_empty() && self.active != 0)
             || (!self.paths.is_empty() && self.active >= self.paths.len())
@@ -182,6 +192,10 @@ pub struct UserPreferences {
     /// Left and right panel locations, in their displayed order.
     pub tabs: [PaneTabPreferences; 2],
     pub panel_view_modes: [PanelViewMode; 2],
+    /// Preview decoding is restricted to installed helper processes; disabling cancels visible work.
+    pub thumbnails_enabled: bool,
+    /// Network sources require an explicit user choice independently of the master enable switch.
+    pub thumbnails_network: bool,
     /// Only deviations from the application shortcut catalog are persisted.
     pub shortcuts: Vec<ShortcutBinding>,
     pub panel_filters: [crate::PanelFilter; 2],
@@ -209,6 +223,8 @@ impl Default for UserPreferences {
             bookmarks: Vec::new(),
             tabs: Default::default(),
             panel_view_modes: Default::default(),
+            thumbnails_enabled: true,
+            thumbnails_network: false,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),
         }
@@ -216,6 +232,26 @@ impl Default for UserPreferences {
 }
 
 impl UserPreferences {
+    /// Merge legacy duplicate native paths in saved order without filesystem IO.
+    /// Keep the first raw path, identity and name, recovering a later slot only
+    /// when the retained entry has none. Path equality never folds case or text.
+    pub fn deduplicate_bookmarks(&mut self) -> bool {
+        let mut unique: Vec<Bookmark> = Vec::with_capacity(self.bookmarks.len());
+        let mut changed = false;
+        for bookmark in self.bookmarks.drain(..) {
+            if let Some(existing) = unique.iter_mut().find(|old| old.path == bookmark.path) {
+                if existing.slot.is_none() {
+                    existing.slot = bookmark.slot;
+                }
+                changed = true;
+            } else {
+                unique.push(bookmark);
+            }
+        }
+        self.bookmarks = unique;
+        changed
+    }
+
     pub fn validate(&self) -> Result<(), FsError> {
         ShortcutMap::new(&self.shortcuts).map_err(|message| {
             FsError::from_io(
@@ -261,6 +297,7 @@ impl UserPreferences {
         }
         let mut ids = HashSet::new();
         let mut slots = HashSet::new();
+        let mut paths = HashSet::new();
         for bookmark in &self.bookmarks {
             if let Err(error) = bookmark.validate() {
                 message = Some(error);
@@ -272,6 +309,10 @@ impl UserPreferences {
             }
             if bookmark.slot.is_some_and(|slot| !slots.insert(slot)) {
                 message = Some("Bookmark hot path slots must be unique.");
+                break;
+            }
+            if !paths.insert(&bookmark.path) {
+                message = Some("Bookmark paths must be unique.");
                 break;
             }
         }

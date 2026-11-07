@@ -12,6 +12,7 @@ pub struct TabSummary {
 }
 
 struct TabLocation {
+    archive: Option<archives::ArchivePane>,
     path: PathBuf,
     history: Vec<PathBuf>,
     history_index: Option<usize>,
@@ -23,8 +24,31 @@ struct TabLocation {
 }
 
 impl TabLocation {
+    fn from_saved(path: PathBuf, archive: Option<ArchiveAddress>, sort: SortSpec) -> Self {
+        let mut location = Self::new(path.clone(), sort);
+        location.archive = archive.map(|address| archives::ArchivePane::unavailable(address, path));
+        location
+    }
+    fn command(&self, pane: PaneId, navigation: NavigationId) -> Command {
+        if let Some(a) = &self.archive {
+            Command::ArchiveNavigate {
+                pane,
+                navigation,
+                action: ArchiveAction::List(a.location.clone()),
+                sort: self.sort,
+            }
+        } else {
+            Command::Navigate {
+                pane,
+                navigation,
+                path: self.path.clone(),
+                sort: self.sort,
+            }
+        }
+    }
     fn new(path: PathBuf, sort: SortSpec) -> Self {
         Self {
+            archive: None,
             parent_cursor: parent_path(&path).is_some(),
             path,
             history: Vec::new(),
@@ -50,6 +74,7 @@ impl TabLocation {
             .or(pane.history_index)
             .filter(|index| pane.history.get(*index) == Some(&path));
         Self {
+            archive: pane.archive.take(),
             path,
             history: mem::take(&mut pane.history),
             history_index: pane.history_index,
@@ -123,11 +148,19 @@ impl Presenter {
                         .path
                         .as_path()
                 };
-                let title = path
+                let native_title = path
                     .file_name()
                     .unwrap_or(path.as_os_str())
                     .to_string_lossy()
-                    .into();
+                    .to_string();
+                let archive = if active {
+                    self.panes[pane.index()].archive.as_ref()
+                } else {
+                    tab.parked.as_ref().and_then(|p| p.archive.as_ref())
+                };
+                let title = archive
+                    .and_then(|a| a.location.trail.last().map(|(_, name)| name.clone()))
+                    .unwrap_or(native_title);
                 TabSummary {
                     id: tab.id,
                     title,
@@ -138,7 +171,7 @@ impl Presenter {
             .collect()
     }
 
-    /// Duplicate the displayed native location and activate it after enqueue succeeds.
+    /// Duplicate the displayed location and activate it after enqueue succeeds.
     pub fn new_tab(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
         let slot = pane.index();
         if self.tabs.panes[slot].tabs.len() == MAX_TABS_PER_PANE {
@@ -152,16 +185,12 @@ impl Presenter {
             return false;
         };
         let p = &self.panes[slot];
-        let location = TabLocation::new(p.display_path().to_owned(), p.sort);
+        let mut location = TabLocation::new(p.display_path().to_owned(), p.sort);
+        location.archive = p.archive.clone();
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             return false;
         };
-        if !send(Command::Navigate {
-            pane,
-            navigation,
-            path: location.path.clone(),
-            sort: location.sort,
-        }) {
+        if !send(location.command(pane, navigation)) {
             self.panes[slot].error = "Navigation queue is busy. Try again.".into();
             return false;
         }
@@ -201,12 +230,7 @@ impl Presenter {
         let Some(navigation) = self.panes[slot].generation.checked_add(1).map(NavigationId) else {
             return false;
         };
-        if !send(Command::Navigate {
-            pane,
-            navigation,
-            path: location.path.clone(),
-            sort: location.sort,
-        }) {
+        if !send(location.command(pane, navigation)) {
             self.panes[slot].error = "Navigation queue is busy. Try again.".into();
             return false;
         }
@@ -228,6 +252,7 @@ impl Presenter {
     ) {
         let slot = pane.index();
         let mut incoming = Pane::new(location.path.clone());
+        incoming.archive = location.archive.take();
         incoming.history = mem::take(&mut location.history);
         incoming.history_index = location.history_index;
         incoming.sort = location.sort;
@@ -236,6 +261,7 @@ impl Presenter {
         incoming.volume_paths = mem::take(&mut location.volume_paths);
         incoming.generation = self.panes[slot].generation;
         incoming.size_scan_generation = self.panes[slot].size_scan_generation;
+        incoming.selection_sizes = mem::take(&mut self.panes[slot].selection_sizes);
         let mut outgoing = mem::replace(&mut self.panes[slot], incoming);
         if let Some(scan) = outgoing.size_scan.take() {
             send(Command::CancelFolderSizes { pane, scan });

@@ -9,7 +9,9 @@ use i_slint_core::{
     items::{AccessibleRole, ComplexText, SimpleText},
     window::{WindowInner, WindowKind},
 };
-use midnight_ui::{BookmarkRow, NavigationChoiceRow, OperationRow};
+use midnight_ui::{
+    BookmarkRow, KeyboardEditorView, NavigationChoiceRow, OperationRow, ShortcutCommandRow,
+};
 use render::snapshot;
 use slint::ComponentHandle;
 
@@ -81,12 +83,12 @@ fn inside(test: &ui::TestUi, item: ItemRc, label: &str) {
 #[test]
 fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
     let mut test = ui::TestUi::new();
-    test.resize(1000, 720);
+    test.resize(1040, 720);
     test.window.set_network_available(true);
     test.window.set_operations(slint::ModelRc::new(slint::VecModel::from(vec![OperationRow {
         identity: "copy-job:1".into(), title: "Copy · 文档 · waiting for a decision".into(),
         detail: "123 456 bytes copied · 123 456 bytes verified with SHA-256\n/very/long/文档/source-file.txt".into(),
-        cancellable: true, attention: true,
+        cancellable: true, attention: true, ..Default::default()
     }])));
     test.window
         .set_left_path("/very/long/文档/👩🏽‍💻/folder".into());
@@ -108,17 +110,21 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
                 ..Default::default()
             },
         ])));
-    test.window.set_keyboard_selected(
-        midnight_core::shortcut_catalog()
-            .iter()
-            .position(|action| action.id == "files.rename")
-            .unwrap() as i32,
-    );
-    test.window.set_keyboard_action_id("files.rename".into());
-    test.window.set_keyboard_bindings("F2".into());
-    test.window.set_keyboard_revision("1".into());
-    test.window
-        .set_keyboard_scope("File list and filename search".into());
+    let editor = test.window.global::<KeyboardEditorView>();
+    editor.set_commands(slint::ModelRc::new(slint::VecModel::from(vec![
+        ShortcutCommandRow {
+            id: "files.rename".into(),
+            label: "Rename focused item".into(),
+            aliases: "F2".into(),
+            selected: true,
+        },
+    ])));
+    editor.set_selected_id("files.rename".into());
+    editor.set_selected_label("Rename focused item".into());
+    editor.set_aliases(slint::ModelRc::new(slint::VecModel::from(vec![
+        "F2".into(),
+    ])));
+    editor.set_scope("File list and filename search".into());
     for scheme in 0..8 {
         for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
             test.window.invoke_apply_preferences(scheme, density);
@@ -239,23 +245,26 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
             }
             ui::click_popup(&test.window, "Close", AccessibleRole::Button);
             test.window.invoke_show_options();
-            for topic in 0..4 {
+            for topic in 0..7 {
                 test.window.set_options_topic_index(topic);
                 test.draw();
                 inside(&test, popup_button(&test, "Done"), "Options Done");
                 if topic == 3 {
                     inside(
                         &test,
-                        popup_button(&test, "Shortcut action"),
-                        "Keyboard action chooser",
+                        ui::popup_item(&test.window, "Search commands", AccessibleRole::TextInput),
+                        "Keyboard search",
                     );
                     if font != 32 {
-                        inside(
-                            &test,
-                            popup_button(&test, "Apply shortcut"),
-                            "Apply shortcut",
-                        );
+                        inside(&test, popup_button(&test, "Assign"), "Assign");
                     }
+                }
+                if topic == 6 {
+                    inside(
+                        &test,
+                        popup_button(&test, "Clear thumbnail cache"),
+                        "Clear cache",
+                    );
                 }
                 if font != 32 || (scheme == 2 && density == 1) {
                     snapshot(&test, &format!("{label}-options-{topic}"));

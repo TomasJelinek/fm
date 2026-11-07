@@ -26,7 +26,13 @@ pub(super) fn folder_size(
                 ),
             );
         }
-        let state = if running && !value.finished { 1 } else { 2 };
+        let state = if value.errors > 0 {
+            3
+        } else if running && !value.finished {
+            1
+        } else {
+            2
+        };
         let reason = if value.errors > 0 {
             format!(
                 "partial result: {} errors; the number is not final.",
@@ -67,6 +73,37 @@ pub(super) fn folder_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_errors_are_distinct_from_unfinished_or_cancelled_estimates() {
+        let locale = NumberLocale::default();
+        for running in [false, true] {
+            let failed = FolderSize {
+                bytes: 4096,
+                errors: 1,
+                finished: !running,
+                ..Default::default()
+            };
+            let (_, state, _) =
+                folder_size(Some(&failed), running, true, SizeDisplay::Bytes, &locale);
+            assert_eq!(
+                state, 3,
+                "an actual filesystem error needs its own indicator"
+            );
+            let unfinished = FolderSize {
+                bytes: 4096,
+                ..Default::default()
+            };
+            let (_, state, _) = folder_size(
+                Some(&unfinished),
+                running,
+                true,
+                SizeDisplay::Bytes,
+                &locale,
+            );
+            assert_ne!(state, 3, "unfinished data alone is not an error");
+        }
+    }
 
     #[test]
     fn byte_mode_is_exact_even_above_floating_point_integer_precision() {

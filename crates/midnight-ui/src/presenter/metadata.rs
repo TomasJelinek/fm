@@ -13,6 +13,15 @@ pub(crate) struct MetadataState {
 }
 
 impl MetadataState {
+    pub(crate) fn preview_current(&self) -> bool {
+        !self.dirty
+            && !self.busy
+            && self.revision > 0
+            && self.preview.as_ref().is_some_and(|preview| {
+                Some(preview.id) == self.id && preview.revision == self.revision
+            })
+    }
+
     pub(crate) fn can_apply(&self) -> bool {
         self.id.is_some()
             && !self.dirty
@@ -36,6 +45,11 @@ impl MetadataState {
 }
 
 impl Presenter {
+    pub(super) fn retire_metadata(&mut self) {
+        self.retired
+            .push(Box::new(std::mem::take(&mut self.metadata)));
+    }
+
     pub(crate) fn open_metadata(
         &mut self,
         pane: PaneId,
@@ -58,6 +72,7 @@ impl Presenter {
         let previous = self.operations.pending;
         self.start_captured_operation(pane, MutationKind::EditMetadata, files, send);
         if self.operations.pending != previous && self.operations.pending.is_some() {
+            self.retire_metadata();
             self.metadata = MetadataState {
                 id: self.operations.pending,
                 start_case: case,
@@ -97,10 +112,6 @@ impl Presenter {
                 return;
             }
         };
-        if patch.is_empty() {
-            self.metadata.error = "Choose at least one change before previewing.".into();
-            return;
-        }
         if !self.metadata.error.is_empty() {
             return;
         }
@@ -144,7 +155,7 @@ impl Presenter {
         }) {
             self.operations.pending = None;
             self.operations.preview = None;
-            self.metadata = MetadataState::default();
+            self.retire_metadata();
         }
     }
     pub(crate) fn cancel_metadata(&mut self, token: &str, send: &dyn Fn(Command) -> bool) {
@@ -153,7 +164,7 @@ impl Presenter {
         }
         self.cancel_operation(token, send);
         if self.operations.pending != self.metadata.id {
-            self.metadata = MetadataState::default();
+            self.retire_metadata();
         }
     }
 
@@ -171,10 +182,12 @@ impl Presenter {
             .errors
             .iter()
             .filter(|error| error.kind != std::io::ErrorKind::AlreadyExists)
-            .map(ToString::to_string)
+            .map(crate::error_presentation::describe)
             .collect::<Vec<_>>()
             .join("\n");
-        self.metadata.preview = Some(preview);
+        if let Some(previous) = self.metadata.preview.replace(preview) {
+            self.retired.push(Box::new(previous));
+        }
     }
 
     pub(super) fn apply_metadata_conflict(&mut self, conflict: Arc<MetadataConflict>) {

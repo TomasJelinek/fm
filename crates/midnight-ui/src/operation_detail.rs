@@ -1,29 +1,24 @@
 //! Bounded operation text; failure samples are independent of successful outcome samples.
 use midnight_core::OperationProgress;
-use std::fmt::Write;
 
 pub(super) fn detail(progress: &OperationProgress, metadata_summary: &str) -> String {
     let mut text = format!(
-        "{} / {} targets · {} errors · {} entries processed\n{}{}",
+        "{} / {} targets · {} errors · {} entries processed\n\nSource folder\n{}",
         progress.completed,
         progress.total,
         progress.failed,
         progress.processed_entries,
-        progress
-            .current_path
-            .as_deref()
-            .unwrap_or(&progress.source_directory)
-            .display(),
-        metadata_summary
+        progress.source_directory.display()
     );
-    if !progress.errors.is_empty() {
-        text.push_str("\n\nReported issues:");
-        // Outcomes and errors have separate backend budgets. A late failure must
-        // remain visible even when the successful-outcome sample is already full.
-        for error in progress.errors.iter().take(16) {
-            let _ = write!(text, "\n{error}");
-        }
+    if let Some(path) = &progress.current_path {
+        text.push_str(&format!("\n\nCurrent item\n{}", path.display()));
     }
+    if !metadata_summary.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(metadata_summary.trim());
+    }
+    // Failure samples remain independent of the successful-outcome sample.
+    crate::error_presentation::append_issues(&mut text, &progress.errors);
     text
 }
 

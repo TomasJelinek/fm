@@ -42,6 +42,20 @@ pub struct SelectedFiles {
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    ArchiveSelect {
+        pane: PaneId,
+        navigation: NavigationId,
+        entries: Arc<[Entry]>,
+        view: Arc<DirectoryIndex>,
+        selected: Arc<std::collections::HashSet<EntryId>>,
+        action: crate::ArchiveSelectionAction,
+    },
+    ArchiveNavigate {
+        pane: PaneId,
+        navigation: NavigationId,
+        action: crate::ArchiveAction,
+        sort: SortSpec,
+    },
     ListViewerPlugins,
     LoadLocale,
     ManageNetworkConnections {
@@ -167,7 +181,12 @@ pub enum Command {
         pane: PaneId,
         navigation: NavigationId,
         scan: FolderSizeScanId,
+        /// None scans all ordinary directories. Some captures an exact selection;
+        /// an empty or files-only snapshot never falls back to all directories.
+        selection: Option<Arc<SelectionSnapshot>>,
     },
+    /// Observe cached and future folder sizes for this immutable selection.
+    SummarizeSelectedFolders(crate::SelectionSizeRequest),
     ComputeEntrySize {
         pane: PaneId,
         navigation: NavigationId,
@@ -208,6 +227,18 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    ArchiveSelection {
+        pane: PaneId,
+        navigation: NavigationId,
+        selected: Arc<std::collections::HashSet<EntryId>>,
+        totals: crate::ArchiveSelectionTotals,
+    },
+    ArchiveListed {
+        pane: PaneId,
+        navigation: NavigationId,
+        result: Result<crate::ArchiveListing, FsError>,
+    },
+    ArchiveAvailability(bool),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
     DirectoriesCompared {
         id: crate::CompareId,
@@ -281,6 +312,15 @@ pub enum Event {
         navigation: NavigationId,
         scan: FolderSizeScanId,
         cancelled: bool,
+    },
+    SelectedFolderSizes {
+        request: crate::SelectionSizeId,
+        pane: PaneId,
+        navigation: NavigationId,
+        selection_revision: SelectionRevision,
+        /// Monotonic backend stamp rejects out-of-order observer delivery.
+        version: u64,
+        summary: crate::SelectedFolderSizes,
     },
     DesktopContext {
         shell: ShellFlavor,

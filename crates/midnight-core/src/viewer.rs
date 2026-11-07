@@ -4,12 +4,21 @@ use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct ViewerLaunch {
+    /// Provider-scoped focus for virtual content; `focused` is unused when present.
+    pub archive: Option<ArchiveViewer>,
     pub entries: Arc<[Entry]>,
     pub view: Arc<DirectoryIndex>,
     pub focused: PathBuf,
     pub basic: bool,
     /// Preferences captured at application startup. Changes take effect after restart.
     pub disabled_plugins: Arc<[String]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArchiveViewer {
+    pub mount: Arc<dyn crate::ArchiveMount>,
+    pub source_version: Vec<u8>,
+    pub focused: crate::VirtualEntryId,
 }
 
 #[derive(Clone, Debug)]

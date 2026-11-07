@@ -25,6 +25,18 @@ pub(crate) struct Snapshot {
     change: i64,
 }
 
+impl Snapshot {
+    pub(crate) fn version_bytes(&self) -> Vec<u8> {
+        let mut bytes = b"windows-file-v1".to_vec();
+        bytes.extend(self.volume.to_le_bytes());
+        bytes.extend(self.id);
+        bytes.extend(self.length.to_le_bytes());
+        bytes.extend(self.write.to_le_bytes());
+        bytes.extend(self.change.to_le_bytes());
+        bytes
+    }
+}
+
 pub(crate) fn open_read(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)

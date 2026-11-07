@@ -1,5 +1,6 @@
 import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
 
 export struct ViewerPluginRow {
     id: string,
@@ -41,9 +42,7 @@ export component PluginOptions inherits VerticalLayout {
         text: "Restart required to apply your plugin choices.";
         color: Theme.accent; font-size: Theme.small-font; wrap: word-wrap;
     }
-    if ViewerPluginsView.error != "" : Text {
-        text: ViewerPluginsView.error; color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap;
-    }
+    if ViewerPluginsView.error != "" : ErrorNotice { text: ViewerPluginsView.error; }
     if !ViewerPluginsView.pending && ViewerPluginsView.error == "" && ViewerPluginsView.rows.length == 0 : Text {
         text: "No viewer plugins are installed beside this application.";
         color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;

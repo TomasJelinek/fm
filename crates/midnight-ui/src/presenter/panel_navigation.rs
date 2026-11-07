@@ -6,11 +6,14 @@ pub(crate) struct PathPart {
     pub(crate) label: String,
     pub(crate) prefix: String,
     path: PathBuf,
+    archive: Option<ArchiveLocation>,
 }
 
 pub(crate) struct HistoryChoice {
     pub(crate) identity: String,
     pub(crate) path: PathBuf,
+    pub(crate) display: Option<String>,
+    archive: bool,
     index: usize,
 }
 
@@ -20,6 +23,9 @@ impl Presenter {
         pane: PaneId,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if let Some(a) = &self.panes[pane.other().index()].archive {
+            return self.archive_navigate(pane, ArchiveAction::List(a.location.clone()), send);
+        }
         let path = self.panes[pane.other().index()].display_path().to_owned();
         self.navigate(pane, path, None, send)
     }
@@ -58,6 +64,34 @@ impl Presenter {
 
     pub(crate) fn path_parts(&self, pane: PaneId) -> Vec<PathPart> {
         let p = &self.panes[pane.index()];
+        if let Some(a) = &p.archive {
+            let mut prefix = a.origin.to_string_lossy().into_owned();
+            return a
+                .location
+                .trail
+                .iter()
+                .enumerate()
+                .map(|(index, (node, name))| {
+                    prefix.push_str(" / ");
+                    prefix.push_str(name);
+                    let mut location = a.location.clone();
+                    location.directory = *node;
+                    location.trail.truncate(index + 1);
+                    location.address.components.truncate(index);
+                    PathPart {
+                        identity: format!(
+                            "archive:{}:{}:{node}",
+                            p.generation,
+                            a.location.mount_id().unwrap_or(0)
+                        ),
+                        label: name.clone(),
+                        prefix: prefix.clone(),
+                        path: PathBuf::new(),
+                        archive: Some(location),
+                    }
+                })
+                .collect();
+        }
         let ancestors: Vec<_> = p
             .display_path()
             .ancestors()
@@ -81,6 +115,7 @@ impl Presenter {
                     label,
                     prefix,
                     path: path.to_owned(),
+                    archive: None,
                 }
             })
             .collect()
@@ -99,11 +134,42 @@ impl Presenter {
         else {
             return false;
         };
+        if let Some(location) = part.archive {
+            return self.archive_navigate(pane, ArchiveAction::List(location), send);
+        }
         self.navigate(pane, part.path, None, send)
     }
 
     pub(crate) fn history_entries(&self, pane: PaneId, forward: bool) -> Vec<HistoryChoice> {
         let p = &self.panes[pane.index()];
+        if let Some(a) = &p.archive {
+            let indexes: Vec<usize> = if forward {
+                (a.history_index + 1..a.history.len()).collect()
+            } else {
+                (0..a.history_index).rev().collect()
+            };
+            return indexes
+                .into_iter()
+                .map(|index| HistoryChoice {
+                    identity: format!(
+                        "archive-history:{}:{}:{index}",
+                        p.generation,
+                        a.location.mount_id().unwrap_or(0)
+                    ),
+                    path: a.origin.clone(),
+                    display: Some(
+                        a.history[index]
+                            .trail
+                            .iter()
+                            .map(|(_, label)| label.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                    ),
+                    archive: true,
+                    index,
+                })
+                .collect();
+        }
         let Some(current) = p.history_index else {
             return Vec::new();
         };
@@ -117,6 +183,8 @@ impl Presenter {
             .map(|index| HistoryChoice {
                 identity: format!("history:{}:{}:{index}", p.generation, u8::from(forward)),
                 path: p.history[index].clone(),
+                display: None,
+                archive: false,
                 index,
             })
             .collect()
@@ -136,6 +204,16 @@ impl Presenter {
         else {
             return false;
         };
+        if choice.archive {
+            let Some(a) = &self.panes[pane.index()].archive else {
+                return false;
+            };
+            return self.archive_history(
+                pane,
+                choice.index as isize - a.history_index as isize,
+                send,
+            );
+        }
         self.navigate(pane, choice.path, Some(choice.index), send)
     }
 

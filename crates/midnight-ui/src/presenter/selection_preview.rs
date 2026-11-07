@@ -68,6 +68,9 @@ impl Pane {
     }
     /// Constant directory work: a single path lookup and at most 32 tiny intents.
     pub(crate) fn selection_visible(&self, entry: &Entry) -> bool {
+        if let Some(archive) = &self.archive {
+            return archive.selected.contains(&entry.id);
+        }
         // A deferred All/Invert result records explicit exceptions in its basis.
         // Paths absent from that basis use the worker's acknowledged default until
         // the complete-view rebase arrives, including rows appended meanwhile.
@@ -115,6 +118,10 @@ impl Presenter {
         shift: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.panes[pane.index()].archive.is_some() {
+            self.archive_select_row(pane, row, control, shift, send);
+            return;
+        }
         let p = &mut self.panes[pane.index()];
         p.preserve_viewport = false;
         if p.has_parent() && row == 0 {

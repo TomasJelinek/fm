@@ -222,7 +222,7 @@ fn start(
 
 fn queued(budget: &IoBudget, count: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
-    while budget.io.state.lock().unwrap().queue.len() < count {
+    while budget.io.snapshot().queued < count {
         assert!(
             Instant::now() < deadline,
             "Waiting I/O request did not enqueue"
@@ -243,7 +243,7 @@ fn a_small_ssd_root_finishes_while_another_root_is_blocked_in_io() {
     files.files("small", 1);
     files.opens.insert("big".into(), block.clone());
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let (finished, results) = mpsc::channel();
     let worker_files = files.clone();
     let worker = thread::spawn(move || {
@@ -288,7 +288,7 @@ fn shared_operations(kind: StorageKind, expected: usize) {
         })
         .collect::<Vec<_>>();
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let first = start(files.clone(), roots[..4].to_vec(), budget.clone());
     let second = start(files.clone(), roots[4..].to_vec(), budget);
     block.wait(expected);
@@ -329,7 +329,7 @@ fn rotational_network_and_unknown_reads_are_serial_across_two_operations() {
 
 #[test]
 fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_request() {
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let held = budget.acquire_io(4, &Cancellation::default()).unwrap();
     let (granted, order) = mpsc::channel();
     let first_budget = budget.clone();
@@ -378,7 +378,7 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_firs
     }));
     files.opens.insert("big".into(), block.clone());
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let (completed, order) = mpsc::channel();
     let big_files = files.clone();
     let big_budget = budget.clone();
@@ -445,7 +445,7 @@ fn nested_mount_hint_errors_use_conservative_io_without_losing_totals() {
     let results = start(
         files.clone(),
         vec![root(1, "left"), root(2, "right")],
-        Arc::new(IoBudget::new()),
+        Arc::new(IoBudget::isolated()),
     )
     .join()
     .unwrap();
@@ -475,7 +475,7 @@ fn rejected_progress_cancels_queued_and_running_workers_without_leaking_io_slots
         })
         .collect::<Vec<_>>();
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     compute_batched(
         files.as_ref(),
         &roots,
@@ -486,10 +486,10 @@ fn rejected_progress_cancels_queued_and_running_workers_without_leaking_io_slots
         },
         &budget,
     );
-    assert_eq!(budget.io.state.lock().unwrap().available, 4);
-    assert!(budget.io.state.lock().unwrap().queue.is_empty());
-    assert_eq!(budget.classification.state.lock().unwrap().available, 1);
-    assert!(budget.classification.state.lock().unwrap().queue.is_empty());
+    assert_eq!(budget.io.snapshot().available, 4);
+    assert_eq!(budget.io.snapshot().queued, 0);
+    assert_eq!(budget.classification.snapshot().available, 1);
+    assert_eq!(budget.classification.snapshot().queued, 0);
 }
 
 #[test]
@@ -534,7 +534,7 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
                 EntryKind::DirectoryLink,
             ),
         ],
-        Arc::new(IoBudget::new()),
+        Arc::new(IoBudget::isolated()),
     )
     .join()
     .unwrap()
@@ -566,7 +566,7 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
 
 #[test]
 fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_elses_io() {
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let held = budget.acquire_io(4, &Cancellation::default()).unwrap();
     let cancel = Cancellation::default();
     let mut files = Files {
@@ -595,8 +595,8 @@ fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_
     completed.recv_timeout(Duration::from_secs(3)).unwrap();
     worker.join().unwrap();
     assert_eq!(files.io.maximum.load(Ordering::SeqCst), 0);
-    assert_eq!(budget.io.state.lock().unwrap().available, 0);
-    assert!(budget.io.state.lock().unwrap().queue.is_empty());
+    assert_eq!(budget.io.snapshot().available, 0);
+    assert_eq!(budget.io.snapshot().queued, 0);
     drop(held);
-    assert_eq!(budget.io.state.lock().unwrap().available, 4);
+    assert_eq!(budget.io.snapshot().available, 4);
 }

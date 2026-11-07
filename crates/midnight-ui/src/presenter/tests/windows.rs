@@ -5,6 +5,26 @@ pub(super) fn test_root() -> PathBuf {
 }
 
 #[test]
+fn unique_bookmarks_compare_native_utf16_without_display_loss() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
+    let second = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd801]));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut p = Presenter::new(first.clone(), second.clone());
+    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
+    assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
+    assert!(
+        p.add_bookmark(PaneId::Left, "Duplicate".into(), None, &|_| panic!(
+            "duplicate"
+        ))
+    );
+    assert_eq!(p.bookmarks().len(), 2);
+    assert_eq!(p.bookmarks()[0].path.as_os_str(), first.as_os_str());
+    assert_eq!(p.bookmarks()[1].path.as_os_str(), second.as_os_str());
+}
+
+#[test]
 fn native_choice_tokens_preserve_unpaired_utf16_and_reject_display_alias_replacement() {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     let first = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));

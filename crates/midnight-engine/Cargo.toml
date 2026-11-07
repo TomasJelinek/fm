@@ -8,7 +8,9 @@ publish.workspace = true
 [dependencies]
 midnight-core.workspace = true
 midnight-platform-common.workspace = true
+midnight-work-budget = { path = "../midnight-work-budget" }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
+midnight-filesystem-host = { path = "../midnight-filesystem-host" }
 tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 unicase = "=2.10.0"

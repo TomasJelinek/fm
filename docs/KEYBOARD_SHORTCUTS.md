@@ -1,10 +1,22 @@
 # Keyboard shortcuts — Midnight Explorer 0.1
 
+Planned addition: **Ctrl+F8 — calculate checksums** for selected files (focused
+file fallback), described in the [checksum design](superpowers/specs/2026-11-06-checksums-design.md).
+This command is not implemented or bound in the current application. Ctrl+F7
+continues to open filename case conversion. Future default registration must
+preserve user-customized bindings.
+
 The table lists default bindings. **Options → Keyboard** can change, disable, or
 restore each application action, including navigation, selection, command editing,
 drive letters, numbered tabs/Hot Paths, and the drive dropdown's As Other Panel action.
-An action accepts up to four alternate single chords. Applying a replacement removes
-its old aliases; conflicts in overlapping contexts are rejected before saving.
+Search commands by name or command ID, select a command, then focus **Press shortcut
+keys** and press a combination. **Assign** adds it while preserving the command's
+other aliases; choose an existing alias and use **Remove** to remove just that one.
+An action accepts up to four alternate single chords. The editor displays the
+effective context and current owners before assignment; overlapping conflicts are
+rejected before saving. **Restore command** restores one action; **Restore all
+defaults** asks before resetting the complete map. Tab or Escape records that key
+and leaves the capture field without running an application command.
 Changes are saved with the other preferences and survive restart. The action catalog
 also supplies the application's displayed shortcut hints and Help.
 
@@ -28,6 +40,10 @@ File navigation, tab and bookmark shortcuts apply
 in the focused file list, preserving typing in the path/command/options editors.
 Native numbered tabs and hot paths use physical digit keys across keyboard layouts
 and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
+Bare digits remain text while a path, command, search or options editor has focus.
+An unassigned Hot Path number is consumed without navigating or starting search.
+Existing custom digit bindings take precedence over the new default Hot Path
+digits; change or disable them in Options → Keyboard to free those numbers.
 
 | Keys | Current action |
 | --- | --- |
@@ -72,9 +88,9 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | Ctrl+U in files | Swap the complete visual panels, preserving their tabs and running work |
 | Ctrl+Shift+1…9 | Switch to that numbered tab in the focused pane; missing tabs do nothing |
 | Ctrl+Shift+0 | Assign current folder to bookmark slot 10; other slots use the Hot Paths manager |
-| Ctrl+1…9/0 or Shift+1…9/0 | Open the numbered bookmark in the focused pane |
+| 1…9/0, Ctrl+1…9/0 or Shift+1…9/0 | Open the numbered Hot Path in the focused pane |
 | Ctrl+Alt+number or Shift+Alt+number | Open the numbered bookmark in the other pane |
-| Ctrl+Shift+Plus | Add the current folder as an unnumbered bookmark |
+| Ctrl+Shift+Plus | Add the current folder once, using the first free numbered slot |
 | Ctrl+Enter in files or command editor | Append the focused basename to the end of the command draft and focus the command editor |
 | Ctrl+P in files or command editor | Insert the active pane path at the command selection |
 | Ctrl+[ / Ctrl+] | Insert the left / right pane path at the command selection |
@@ -85,7 +101,7 @@ and do not intercept RightAlt/AltGr. Number 0 refers to bookmark slot 10.
 | F1 | Help |
 | F2 | Rename the focused file/folder; Enter confirms, Escape cancels |
 | Shift+F4 in files | New empty file in the captured panel folder; Enter confirms the name, Escape cancels; existing entries are never overwritten |
-| F7 | Create a folder or nested relative path in the active pane |
+| F7 | Create an absolute or relative folder path, including `..` and missing intermediate folders |
 | Delete / F8 | Confirm moving the selection (or focused entry) to the system Trash |
 | Shift+Delete / Shift+F8 | Explicitly confirm permanent deletion |
 | F11 / F12 | Connect / disconnect network drive through Windows system dialogs |
@@ -130,7 +146,13 @@ folder. Native-menu Copy/Paste uses the same verified copy service as Ctrl+C/V.
 The top action toolbar includes a sort chooser beside View, available in every mode.
 The Hot Paths star adds the current folder; its arrow lists saved paths, then
 Add path and Manage below a separator. Saved paths also appear in their own group
-in the drive dropdown after drives and special locations. Its As Other Panel item
+in the drive dropdown after drives and special locations. The drive bar shows
+numbered Hot Paths as 1–9/0. Adding an existing path keeps its saved identity;
+new paths take the first free number, and paths beyond ten remain in the menus.
+Manage shows full folder paths without custom names. Selecting a row keeps the
+manager open; choose a number and Apply shortcut to update that saved path.
+Moving between occupied numbers swaps them without removing either folder.
+The drive dropdown's As Other Panel item
 also works by mouse and uses the current
 opposite folder after Ctrl+U swaps the panels. Back/Forward arrows have history
 dropdowns. Tabs sit below the drive
@@ -170,8 +192,9 @@ empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 F5 Copy and F6 Move remain reserved for later stages.
 Options follows F12 on the bottom bar; Jobs shows queued/running operations and
 allows cancellation. Cancellation retains changes already completed. No Trash
-failure ever falls back to permanent deletion. F7 does not follow links inside
-the entered relative path and leaves already-created intermediate folders on error.
+failure ever falls back to permanent deletion. F7 accepts paths outside the active
+pane, refuses intermediate links and leaves already-created intermediate folders
+on error. Relative paths start in the captured panel, never the process directory.
 F3 routes by extension to an applicable installed viewer; Alt+F3 forces the basic
 plain-text viewer, preserving Unicode and disabling highlighting and markup rendering.
 Both require a compatible, enabled package in the installation's `viewers/` directory.

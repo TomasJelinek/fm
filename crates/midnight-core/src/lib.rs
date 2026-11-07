@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod archive;
 mod command_history;
 mod compare;
 mod copy_operation;
@@ -20,6 +21,7 @@ mod protocol;
 mod provider;
 mod search;
 mod selection;
+mod selection_sizes;
 mod shell_menu;
 mod shortcuts;
 mod sorting;
@@ -27,6 +29,7 @@ mod transfer;
 mod viewer;
 mod watch;
 
+pub use archive::*;
 pub use command_history::*;
 pub use compare::*;
 pub use copy_operation::*;
@@ -47,6 +50,7 @@ pub use protocol::*;
 pub use provider::*;
 pub use search::*;
 pub use selection::*;
+pub use selection_sizes::*;
 pub use shell_menu::*;
 pub use shortcuts::*;
 pub use sorting::*;

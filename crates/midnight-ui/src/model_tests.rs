@@ -189,7 +189,7 @@ fn completed_partial_size_is_distinct_from_other_folders_still_queued() {
     let model = Rows::new(presenter, PaneId::Left);
     let finished = model.row_data(0).unwrap();
     assert_eq!(
-        finished.size_state, 2,
+        finished.size_state, 3,
         "one inaccessible folder does not leave the scan running"
     );
     assert_eq!(finished.size.as_str(), "≈ 167.3 MB");
@@ -262,7 +262,7 @@ fn unfinished_directory_sizes_are_marked_until_their_own_clean_completion() {
         .get_mut(&root.join("folder1"))
         .unwrap()
         .errors = 1;
-    assert_eq!(model.row_data(0).unwrap().size_state, 2);
+    assert_eq!(model.row_data(0).unwrap().size_state, 3);
     assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KB");
     assert!(model.row_data(0).unwrap().size_hint.contains("partial"));
     assert!(model.row_data(0).unwrap().size_hint.contains("1 errors"));

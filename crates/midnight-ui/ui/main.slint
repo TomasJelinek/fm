@@ -1,6 +1,8 @@
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
 import { HelpBody } from "help-dialog.slint";
+import { NoticeDialog } from "notice-dialog.slint";
+import { ErrorNotice } from "error-notice.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 import { CommandMenuBody } from "command-menu.slint";
@@ -22,12 +24,16 @@ import { PanelSplitter } from "panel-splitter.slint";
 import { DragFeedback } from "drag-feedback.slint";
 import { TerminalControl } from "terminal-control.slint";
 import { OptionsBody } from "options-dialog.slint";
+import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
+export { KeyboardEditorView, ShortcutCommandRow }
 import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
 export { ViewerPluginsView, ViewerPluginRow }
-import { OperationDialog, OperationsBody, OperationRow } from "operation-controls.slint";
+import { OperationDialog } from "operation-controls.slint";
+import { OperationsBody, OperationRow, JobsView } from "jobs-dialog.slint";
+export { JobsView }
 import { CopyConflictDialog } from "copy-controls.slint";
-import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
-export { MetadataDraft }
+import { MetadataDialog, MetadataDraft, MetadataFileRow } from "metadata-controls.slint";
+export { MetadataDraft, MetadataFileRow }
 import { ComparisonView, CompareDirectoriesDialog } from "comparison-dialog.slint";
 import { PanelFilterView, PanelFilterDialog } from "panel-filter-dialog.slint";
 export { ComparisonView, PanelFilterView }
@@ -46,6 +52,7 @@ export struct LocationRow {
 }
 
 component Tool inherits Rectangle {
+    in property <bool> enabled: true;
     in property <string> label;
     in property <image> icon;
     in property <image> native-icon;
@@ -56,10 +63,12 @@ component Tool inherits Rectangle {
     background: area.has-hover ? Theme.hover : transparent;
     accessible-role: button;
     accessible-label: hint;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    opacity: root.enabled ? 1 : 0.45;
     Text { visible: root.label != ""; text: root.label; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
     NativeActionImage { visible: root.label == ""; native-icon: root.native-icon; fallback-icon: root.icon; width: 18px; height: 18px; x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; }
-    area := TouchArea { clicked => { root.clicked(); } }
+    area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
     Tooltip { TipBody { text: root.hint; } }
 }
 
@@ -68,6 +77,7 @@ import { FunctionBar } from "function-bar.slint";
 export { FunctionSlot } from "function-models.slint";
 
 component FilePane inherits Rectangle {
+    in property <bool> native-filesystem: true;
     in property <bool> touch-contact;
     in property <bool> drop-highlight;
     in property <string> drag-label;
@@ -102,6 +112,7 @@ component FilePane inherits Rectangle {
     in property <int> volume-index;
     in property <[FileRow]> rows;
     in property <int> view-mode;
+    out property <string> hovered-row;
     in property <string> view-mode-label;
     in property <string> sort-label;
     private property <length> toolbar-tool-width: root.width < 500px ? min(Theme.tool-width, 28px) : Theme.tool-width;
@@ -164,6 +175,10 @@ component FilePane inherits Rectangle {
     out property <int> visible-row-start: min(root.rows.length, root.source-row(root.first-band, 0));
     out property <int> visible-row-end: min(root.rows.length,
         root.source-row(max(0, root.end-band - 1), root.view-columns - 1) + 1);
+    out property <int> thumbnail-row-start: min(root.rows.length,
+        root.source-row(max(0, floor(-list.content-y / root.row-height)), 0));
+    out property <int> thumbnail-row-end: min(root.rows.length,
+        root.source-row(max(0, ceil((-list.content-y + list.visible-height) / root.row-height) - 1), root.view-columns - 1) + 1);
     callback view-mode-selected(int);
     callback mutation(int);
     callback action(int);
@@ -201,6 +216,7 @@ component FilePane inherits Rectangle {
     callback bookmark-add(string, int);
     callback bookmark-open(string);
     callback bookmark-remove(string);
+    callback bookmark-assign(string, int);
     background: Theme.pane-background;
     border-color: active ? Theme.active-frame : Theme.frame;
     border-width: 1px;
@@ -288,8 +304,8 @@ component FilePane inherits Rectangle {
                 }
                 Tool { width: root.toolbar-tool-width; native-icon: root.action-icons.parent; icon: FallbackIcons.parent; hint: ShortcutHints.hint("Parent folder", "panel.parent"); clicked => { root.activate(); root.action(2); } }
                 Tool { width: root.toolbar-tool-width; native-icon: root.action-icons.refresh; icon: FallbackIcons.refresh; hint: ShortcutHints.hint("Refresh", "panel.refresh"); clicked => { root.activate(); root.action(3); } }
-                Tool { width: root.toolbar-tool-width; native-icon: root.action-icons.new-file; icon: FallbackIcons.new-file; hint: ShortcutHints.hint("New empty file", "files.create-file"); clicked => { root.activate(); root.mutation(4); root.focus-list(); } }
-                Tool { width: root.toolbar-tool-width; native-icon: root.action-icons.properties; icon: FallbackIcons.properties; hint: ShortcutHints.hint("Attributes and times", "files.attributes"); clicked => { root.activate(); root.attributes(); } }
+                Tool { enabled: root.native-filesystem; width: root.toolbar-tool-width; native-icon: root.action-icons.new-file; icon: FallbackIcons.new-file; hint: ShortcutHints.hint("New empty file", "files.create-file"); clicked => { root.activate(); root.mutation(4); root.focus-list(); } }
+                Tool { enabled: root.native-filesystem; width: root.toolbar-tool-width; native-icon: root.action-icons.properties; icon: FallbackIcons.properties; hint: ShortcutHints.hint("Attributes and times", "files.attributes"); clicked => { root.activate(); root.attributes(); } }
                 Rectangle {
                     width: root.toolbar-tool-width + root.toolbar-arrow-width;
                     height: Theme.control-height;
@@ -327,7 +343,7 @@ component FilePane inherits Rectangle {
                     opening => { root.activate(); root.focus-list(); }
                     dismissed => { root.focus-list(); }
                     add-bookmark(name, slot) => { root.bookmark-add(name, slot); }
-                    open-bookmark(identity) => { root.bookmark-open(identity); root.focus-list(); }
+                    assign-bookmark(identity, slot) => { root.bookmark-assign(identity, slot); }
                     remove-bookmark(identity) => { root.bookmark-remove(identity); }
                 }
                 Rectangle { horizontal-stretch: 1; }
@@ -522,6 +538,10 @@ component FilePane inherits Rectangle {
                         size-column-width: root.size-column-width;
                         previous-click-identity: root.previous-click-identity;
                         remember-click(identity) => { root.previous-click-identity = identity; }
+                        hover-changed(identity, hovered) => {
+                            if hovered { root.hovered-row = identity; }
+                            else if root.hovered-row == identity { root.hovered-row = ""; }
+                        }
                         row-click(control, shift) => {
                             root.activate(); root.focus-list();
                             root.row-click(self.row-index, control, shift);
@@ -548,14 +568,17 @@ component FilePane inherits Rectangle {
             if root.drop-highlight : DragFeedback { label: root.drag-label; }
         }
         details-bar := PanelDetails { model: root.details; free-space: root.free-space; copy-field(identity) => { root.activate(); root.detail-copy(identity); } }
-        if root.error != "" : Rectangle {
-            height: 44px; background: Theme.error-background;
-            Text { x: 10px; width: parent.width - 20px; text: root.error; color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap; vertical-alignment: center; }
-        }
+        if root.error != "" : ErrorNotice { text: root.error; }
     }
 }
 
 export component MainWindow inherits Window {
+    in property <bool> left-native-filesystem: true;
+    in property <bool> right-native-filesystem: true;
+    callback thumbnail-clear-cache();
+    callback thumbnail-options-changed(bool, bool, int);
+    in property <bool> thumbnails-enabled: true;
+    in property <bool> thumbnails-network: false;
     callback row-drag(int, int, string, float, float) -> bool;
     callback drag-moved(float, float);
     callback drag-released(float, float);
@@ -615,6 +638,8 @@ export component MainWindow inherits Window {
     callback mutation(int, int);
     callback confirm-operation(string, string);
     callback cancel-operation(string);
+    callback cancel-job(string);
+    callback copy-job-details(string);
     callback network-connections(bool);
     public function begin-operation() { operation-dialog.begin(); }
     public function show-operations() { root.drag-invalidate-targets(); operations-popup.show(); }
@@ -636,6 +661,9 @@ export component MainWindow inherits Window {
     in property <bool> metadata-start-case;
     in property <string> metadata-summary;
     in property <string> metadata-preview-text;
+    in property <[MetadataFileRow]> metadata-rows;
+    in property <string> metadata-list-status;
+    in property <bool> metadata-preview-current;
     in property <string> metadata-error;
     in property <bool> metadata-ready;
     in property <bool> metadata-busy;
@@ -704,7 +732,7 @@ export component MainWindow inherits Window {
         + Theme.column-height + Theme.row-height + Theme.status-height + 12px
         + (root.left-filter-label != "" || root.right-filter-label != "" ? Theme.hint-font + 8px : 0px);
     out property <length> effective-minimum-height: max(480px,
-        root.fixed-layout-height + 44px
+        root.fixed-layout-height + max(60px, Theme.font-size * 2.5)
         + Theme.hint-font * 1.5 + Theme.gap);
     background: Theme.window-background;
     default-font-family: Theme.font-family != "" ? Theme.font-family : "Segoe UI";
@@ -748,7 +776,22 @@ export component MainWindow inherits Window {
     in-out property <int> touch-font-size <=> Theme.touch-font-size;
     in property <bool> preferences-unsaved;
     out property <int> focused-pane: left.list-focused ? 0 : right.list-focused ? 1 : -1;
+    out property <bool> shell-focused: shortcuts.has-focus;
+    out property <length> left-pane-left: left.absolute-position.x;
+    out property <length> left-pane-top: left.absolute-position.y;
+    out property <length> left-pane-width: left.width;
+    out property <length> left-pane-height: left.height;
+    out property <length> right-pane-left: right.absolute-position.x;
+    out property <length> right-pane-top: right.absolute-position.y;
+    out property <length> right-pane-width: right.width;
+    out property <length> right-pane-height: right.height;
     out property <int> left-visible-row-start: left.visible-row-start;
+    out property <string> left-hovered-row: left.hovered-row;
+    out property <string> right-hovered-row: right.hovered-row;
+    out property <int> left-thumbnail-row-start: left.thumbnail-row-start;
+    out property <int> left-thumbnail-row-end: left.thumbnail-row-end;
+    out property <int> right-thumbnail-row-start: right.thumbnail-row-start;
+    out property <int> right-thumbnail-row-end: right.thumbnail-row-end;
     out property <int> left-visible-row-end: left.visible-row-end;
     out property <int> right-visible-row-start: right.visible-row-start;
     out property <int> right-visible-row-end: right.visible-row-end;
@@ -832,6 +875,8 @@ export component MainWindow inherits Window {
     in property <bool> desktop-feedback-important;
     in property <string> message-title;
     in property <string> message-body;
+    in property <bool> message-error;
+    callback copy-message();
     in property <int> message-generation;
     in-out property <string> command-text <=> command-input.text;
     out property <string> command-directory: root.active-pane == 0 ? root.left-path : root.right-path;
@@ -902,6 +947,7 @@ export component MainWindow inherits Window {
     callback bookmark-add(int, string, int);
     callback bookmark-open(int, string);
     callback bookmark-remove(string);
+    callback bookmark-assign(string, int);
     callback bookmark-slot(int, int);
     callback bookmark-jump(int, int);
     callback drive-info(int);
@@ -990,6 +1036,7 @@ export component MainWindow inherits Window {
                 : clamp(self.usable * root.panel-ratio, self.minimum-pane, self.usable - self.minimum-pane);
             private property <length> right-width: self.usable - self.left-width;
             left := FilePane {
+                native-filesystem: root.left-native-filesystem;
                 filter-label: root.left-filter-label;
                 filter => { root.open-panel-filter(0); }
                 visible: !root.panel-zoomed || root.active-pane == 0;
@@ -1015,6 +1062,7 @@ export component MainWindow inherits Window {
                 tab-new => { root.tab-new(0); } tab-select(id) => { root.tab-select(0, id); } tab-close(id) => { root.tab-close(0, id); }
                 bookmark-add(name, slot) => { root.bookmark-add(0, name, slot); } bookmark-open(id) => { root.bookmark-open(0, id); }
                 bookmark-remove(id) => { root.bookmark-remove(id); }
+                bookmark-assign(id, slot) => { root.bookmark-assign(id, slot); }
                 scroll-interaction-active: root.scroll-interaction-active;
                 active: root.active-pane == 0; rows: root.left-rows; volumes: root.volumes; volume-index: root.left-volume;
                 locations: root.left-locations;
@@ -1034,7 +1082,7 @@ export component MainWindow inherits Window {
                 drag-released(x, y) => { root.drag-released(x, y); }
                 drag-cancelled => { root.drag-cancel(); }
                 drive-context-menu(t, x, y, c, s) => { root.drive-context-menu(0, t, x, y, c, s); }
-                key(k) => { root.key(0, k); } activate => { root.activate(0); }
+                key(k) => { root.key(0, k); } activate => { if root.active-pane != 0 { root.activate(0); } }
                 bulk-selection(operation) => { root.bulk-selection(0, operation); }
                 location(l) => { root.location(0, l); } properties => { root.properties(0); }
                 attributes => { root.open-metadata(0, false); }
@@ -1049,6 +1097,7 @@ export component MainWindow inherits Window {
                 insert-path => { root.insert-path(0); } insert-name => { root.insert-name(); } drive-info => { root.drive-info(0); }
             }
             right := FilePane {
+                native-filesystem: root.right-native-filesystem;
                 filter-label: root.right-filter-label;
                 filter => { root.open-panel-filter(1); }
                 visible: !root.panel-zoomed || root.active-pane == 1;
@@ -1074,6 +1123,7 @@ export component MainWindow inherits Window {
                 tab-new => { root.tab-new(1); } tab-select(id) => { root.tab-select(1, id); } tab-close(id) => { root.tab-close(1, id); }
                 bookmark-add(name, slot) => { root.bookmark-add(1, name, slot); } bookmark-open(id) => { root.bookmark-open(1, id); }
                 bookmark-remove(id) => { root.bookmark-remove(id); }
+                bookmark-assign(id, slot) => { root.bookmark-assign(id, slot); }
                 scroll-interaction-active: root.scroll-interaction-active;
                 active: root.active-pane == 1; rows: root.right-rows; volumes: root.volumes; volume-index: root.right-volume;
                 locations: root.right-locations;
@@ -1093,7 +1143,7 @@ export component MainWindow inherits Window {
                 drag-released(x, y) => { root.drag-released(x, y); }
                 drag-cancelled => { root.drag-cancel(); }
                 drive-context-menu(t, x, y, c, s) => { root.drive-context-menu(1, t, x, y, c, s); }
-                key(k) => { root.key(1, k); } activate => { root.activate(1); }
+                key(k) => { root.key(1, k); } activate => { if root.active-pane != 1 { root.activate(1); } }
                 bulk-selection(operation) => { root.bulk-selection(1, operation); }
                 location(l) => { root.location(1, l); } properties => { root.properties(1); }
                 attributes => { root.open-metadata(1, false); }
@@ -1262,6 +1312,7 @@ export component MainWindow inherits Window {
             }
         }
         FunctionBar {
+            native-filesystem: root.active-pane == 0 ? root.left-native-filesystem : root.right-native-filesystem;
             icons: root.action-icons; pane: root.active-pane;
             control-layer: root.control-layer; network-available: root.network-available;
             searching: root.active-pane == 0 ? root.left-search-active : root.right-search-active;
@@ -1299,12 +1350,15 @@ export component MainWindow inherits Window {
         }
     }
     operations-popup := PopupWindow {
+        close-policy: no-auto-close;
         x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
-        width: min(root.width - 24px, 680px); height: min(root.height - 24px, 440px);
+        width: min(root.width - 24px, max(820px, Theme.font-size * 32));
+        height: min(root.height - 24px, max(620px, Theme.font-size * 25));
         OperationsBody {
             rows: root.operations;
-            cancel(id) => { root.cancel-operation(id); }
+            cancel(id) => { root.cancel-job(id); }
             resolve(id) => { root.resolve-copy(id); }
+            copy-details(id) => { root.copy-job-details(id); }
             close => { operations-popup.close(); root.focus-files(); }
         }
     }
@@ -1355,6 +1409,8 @@ export component MainWindow inherits Window {
         metadata-body := MetadataDialog {
             token: root.metadata-token; revision: root.metadata-revision;
             summary: root.metadata-summary; preview-text: root.metadata-preview-text;
+            rows: root.metadata-rows; list-status: root.metadata-list-status;
+            preview-current: root.metadata-preview-current;
             error: root.metadata-error; ready: root.metadata-ready; busy: root.metadata-busy;
             can-windows: root.metadata-can-windows; windows-mask: root.metadata-windows-mask;
             can-unix: root.metadata-can-unix; can-compress: root.metadata-can-compress;
@@ -1399,21 +1455,13 @@ export component MainWindow inherits Window {
     options := PopupWindow {
         close-policy: close-on-click-outside;
         x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
-        width: min(root.width - 24px, max(600px, Theme.font-size * 26));
-        height: min(root.height - 24px, Theme.touch ? 510px : 420px);
+        width: min(root.width - 24px, max(900px, Theme.font-size * 38));
+        height: min(root.height - 24px, max(720px, Theme.font-size * 30));
         options-body := OptionsBody {
             editor-default-label: root.editor-default-label; editor-executable: root.editor-executable;
             editor-arguments: root.editor-arguments; editor-revision: root.editor-revision; editor-error: root.editor-error;
             editor-apply(executable, arguments) => { root.editor-apply(executable, arguments); }
             editor-restore => { root.editor-restore(); }
-            keyboard-actions: root.keyboard-actions; keyboard-selected: root.keyboard-selected;
-            keyboard-action-id: root.keyboard-action-id; keyboard-bindings: root.keyboard-bindings;
-            keyboard-revision: root.keyboard-revision; keyboard-scope: root.keyboard-scope;
-            keyboard-error: root.keyboard-error;
-            keyboard-select(index) => { root.keyboard-select(index); }
-            keyboard-apply(action, keys) => { root.keyboard-apply(action, keys); }
-            keyboard-restore(action) => { root.keyboard-restore(action); }
-            keyboard-restore-all => { root.keyboard-restore-all(); }
             action-icons: root.action-icons;
             topic-index <=> root.options-topic-index;
             theme-index: root.theme-index; density-index: root.density-index;
@@ -1423,6 +1471,10 @@ export component MainWindow inherits Window {
             quick-search-filter: root.quick-search-filter; sizes-in-bytes: root.sizes-in-bytes;
             remember-command-history: root.remember-command-history;
             command-history-empty: root.command-history.length == 0;
+            thumbnails-enabled: root.thumbnails-enabled;
+            thumbnails-network: root.thumbnails-network;
+            thumbnail-options-changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
+            thumbnail-clear-cache => { root.thumbnail-clear-cache(); }
             preferences-changed(theme, density, field) => { root.preferences-changed(theme, density, field); }
             font-options-changed(family, desktop, touch, field) => { root.font-options-changed(family, desktop, touch, field); }
             search-filter-changed(value) => { root.search-filter-changed(value); }
@@ -1449,7 +1501,7 @@ export component MainWindow inherits Window {
                 { native-icon: root.action-icons.terminal, fallback-icon: FallbackIcons.terminal, label: "Command line", hint: ShortcutHints.hint("Toggle command editor focus without running a command", "command.focus") },
                 { native-icon: root.action-icons.bookmarks, fallback-icon: FallbackIcons.bookmarks, label: "Bookmarks and Hot Paths", hint: "Save, open or remove a favorite folder. Hot Paths provide ten numbered shortcuts." },
                 { native-icon: root.action-icons.properties, fallback-icon: FallbackIcons.properties, label: "Properties" + (ShortcutHints.key("files.properties") == "" ? "" : " · " + ShortcutHints.key("files.properties")), hint: ShortcutHints.hint("Show Properties for selected items, or the focused file or folder", "files.properties") },
-                { native-icon: root.action-icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes, label: "Calculate / cancel folder sizes", hint: ShortcutHints.hint("Measure every folder in the active panel; choose again to cancel", "panel.folder-sizes") },
+                { native-icon: root.action-icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes, label: "Calculate / cancel folder sizes", hint: ShortcutHints.hint("Measure selected folders, or all folders when nothing is selected; choose again to cancel", "panel.folder-sizes") },
                 { native-icon: root.action-icons.close, fallback-icon: FallbackIcons.close, label: "Close", hint: "Close this dialog and return to the file manager." },
             ];
             selected(index) => {
@@ -1485,14 +1537,15 @@ export component MainWindow inherits Window {
         }
     }
     message := PopupWindow {
+        close-policy: no-auto-close;
         x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
-        width: 600px; height: 400px;
-        Rectangle { background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
-            VerticalLayout { padding: 18px; spacing: 12px;
-                Text { text: root.message-title; color: Theme.strong-text; font-size: 18px; wrap: word-wrap; }
-                ScrollView { Text { text: root.message-body; color: Theme.text; wrap: word-wrap; width: parent.width; } }
-                HintedActionButton { native-icon: root.action-icons.close; fallback-icon: FallbackIcons.close; text: "Close"; min-height: Theme.control-height; hint: "Close this dialog and return to the file manager."; clicked => { message.close(); } }
-            }
+        width: min(root.width - 24px, max(600px, Theme.font-size * 45));
+        height: min(root.height - 24px, max(360px, Theme.font-size * 26));
+        message-body := NoticeDialog {
+            title: root.message-title; body: root.message-body; error: root.message-error;
+            generation: root.message-generation;
+            copy-details => { root.copy-message(); }
+            close => { message.close(); }
         }
     }
     about := PopupWindow {

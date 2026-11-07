@@ -4,6 +4,42 @@ use midnight_core::{
 };
 
 #[test]
+fn existing_custom_digit_shortcuts_survive_new_hot_path_defaults() {
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
+    stored["theme"] = serde_json::json!("light");
+    stored["shortcuts"] = serde_json::json!([{ "action": "files.rename", "keys": ["Digit1"] }]);
+    let preferences = decode_preferences(&serde_json::to_vec(&stored).unwrap()).unwrap();
+    assert_eq!(preferences.theme, midnight_core::PreferenceTheme::Light);
+    assert_eq!(preferences.shortcuts[0].keys, ["Digit1"]);
+    let map = ShortcutMap::new(&preferences.shortcuts).unwrap();
+    assert_eq!(
+        map.resolve(&ShortcutChord::parse("1").unwrap(), ShortcutContext::Files)
+            .unwrap()
+            .id,
+        "files.rename"
+    );
+    assert_eq!(
+        map.resolve(&ShortcutChord::parse("2").unwrap(), ShortcutContext::Files)
+            .unwrap()
+            .id,
+        "bookmark.open.2"
+    );
+    assert_eq!(
+        map.bindings("bookmark.open.1")
+            .unwrap()
+            .iter()
+            .map(ShortcutChord::display)
+            .collect::<Vec<_>>(),
+        ["Ctrl+Digit1", "Shift+Digit1"]
+    );
+    assert_eq!(
+        decode_preferences(&encode_preferences(preferences.clone()).unwrap()).unwrap(),
+        preferences
+    );
+}
+
+#[test]
 fn shortcut_overrides_survive_roundtrip_with_disabled_actions_and_unicode_keys() {
     let preferences = UserPreferences {
         shortcuts: vec![

@@ -4,7 +4,9 @@ build, run, replace an installation, or change checkout/ancestor permissions.
 #>
 param(
     [string]$SourceDirectory,
-    [string]$Destination
+    [string]$Destination,
+    [switch]$IncludeFilesystems,
+    [switch]$IncludeThumbnailers
 )
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This deployment helper requires Windows' }
@@ -95,13 +97,30 @@ $files = New-Object 'System.Collections.Generic.List[string]'
 $files.Add($executable)
 $pending = New-Object 'System.Collections.Generic.Stack[string]'
 $pending.Push($viewers)
+foreach ($kind in @('filesystems', 'thumbnailers')) {
+    $include = if ($kind -eq 'filesystems') { $IncludeFilesystems } else { $IncludeThumbnailers }
+    if ($include) {
+        $workerRoot = Join-Path $SourceDirectory $kind
+        if (-not (Test-Path -LiteralPath $workerRoot -PathType Container)) { throw "Missing requested worker directory: $kind" }
+        $pending.Push($workerRoot)
+    }
+}
+$videoLibraries = @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll')
+$videoPresent = $IncludeThumbnailers -and (Test-Path -LiteralPath (Join-Path $SourceDirectory 'thumbnailers/midnight-thumbnail-video.json'))
+if ($videoPresent) {
+    foreach ($name in $videoLibraries) {
+        if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory "thumbnailers/$name") -PathType Leaf)) {
+            throw "Incomplete video runtime: $name"
+        }
+    }
+}
 $entryCount = 0
 while ($pending.Count -gt 0) {
     $directory = $pending.Pop()
     Assert-PlainPath $directory
     foreach ($entry in Get-ChildItem -LiteralPath $directory -Force) {
         $entryCount++
-        if ($entryCount -gt 16384) { throw 'Viewer deployment entry limit exceeded' }
+        if ($entryCount -gt 16384) { throw 'Deployment entry limit exceeded' }
         Assert-PlainPath $entry.FullName
         if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
         else { $files.Add($entry.FullName) }
@@ -140,5 +159,34 @@ foreach ($source in $files) {
     } finally { $sourceStream.Dispose() }
     Assert-PrivatePath $target $true
 }
-Write-Output "Private viewer installation: $Destination"
+if ($videoPresent) {
+    # Grant the fixed worker identity read/execute on these code files only. No inherited ACE,
+    # directory permission, private content access, write permission or network capability.
+    if (-not ('MidnightWorkerDeploymentIdentity' -as [type])) { Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+public static class MidnightWorkerDeploymentIdentity {
+    [DllImport("userenv.dll", CharSet=CharSet.Unicode)] static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);
+    [DllImport("advapi32.dll")] static extern IntPtr FreeSid(IntPtr sid);
+    public static SecurityIdentifier Get() {
+        IntPtr sid;
+        int result=DeriveAppContainerSidFromAppContainerName("MidnightExplorer.RestrictedWorker.v1", out sid);
+        if(result != 0) Marshal.ThrowExceptionForHR(result);
+        try { return new SecurityIdentifier(sid); } finally { FreeSid(sid); }
+    }
+}
+'@
+    }
+    $workerSid=[MidnightWorkerDeploymentIdentity]::Get()
+    foreach ($name in $videoLibraries) {
+        $path=Join-Path $Destination "thumbnailers/$name"
+        $acl=Get-Acl -LiteralPath $path
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($workerSid,
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute,[Security.AccessControl.AccessControlType]::Allow))
+        Set-Acl -LiteralPath $path -AclObject $acl
+        Assert-PrivatePath $path $true
+    }
+}
+Write-Output "Private installation: $Destination"
 Write-Output ('Run: & "' + (Join-Path $Destination 'me.exe') + '"')

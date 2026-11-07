@@ -120,8 +120,28 @@ mod tests {
         let with_link = SelectionSnapshot::from_bits(index.clone(), vec![0b11]).unwrap();
         assert_eq!(
             with_link.file_bytes(),
+            Some(37),
+            "folder-link metadata is excluded from the separate regular-file total"
+        );
+        assert_eq!((with_link.file_count(), with_link.folder_count()), (1, 1));
+        let mut file_link = Entry::new(EntryId(9), "root/file-link".into(), EntryKind::Symlink);
+        file_link.metadata.size = Some(900);
+        streams.append(
+            PaneId::Left,
+            NavigationId(2),
+            Path::new("root"),
+            &[file_link],
+        );
+        let extended = streams.snapshot(&request).unwrap();
+        let with_file_link = SelectionSnapshot::from_bits(extended, vec![0b110]).unwrap();
+        assert_eq!(
+            (with_file_link.file_count(), with_file_link.folder_count()),
+            (2, 0)
+        );
+        assert_eq!(
+            with_file_link.file_bytes(),
             None,
-            "link metadata is not a regular-file byte count"
+            "a file symlink must not contribute its native link metadata as regular-file bytes"
         );
         streams.append(PaneId::Left, NavigationId(3), Path::new("next"), &[]);
         assert!(streams.snapshot(&request).is_err());

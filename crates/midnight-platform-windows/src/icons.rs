@@ -25,7 +25,8 @@ use windows_sys::Win32::{
     UI::{
         Shell::{
             Common::ITEMIDLIST, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
-            FOLDERID_Profile, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
+            FOLDERID_Music, FOLDERID_OneDrive, FOLDERID_Pictures, FOLDERID_Profile,
+            FOLDERID_Videos, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
             SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_LINKOVERLAY,
             SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetStockIconInfo,
             SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD, SIID_DRIVEFIXED,
@@ -201,7 +202,11 @@ fn location_folder_id(kind: LocationKind) -> Option<windows_sys::core::GUID> {
         LocationKind::Desktop => FOLDERID_Desktop,
         LocationKind::Documents => FOLDERID_Documents,
         LocationKind::Downloads => FOLDERID_Downloads,
-        LocationKind::Volume => return None,
+        LocationKind::Pictures => FOLDERID_Pictures,
+        LocationKind::Videos => FOLDERID_Videos,
+        LocationKind::Music => FOLDERID_Music,
+        LocationKind::OneDrive => FOLDERID_OneDrive,
+        LocationKind::Volume | LocationKind::Temporary => return None,
     })
 }
 

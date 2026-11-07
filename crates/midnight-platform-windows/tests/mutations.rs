@@ -353,7 +353,7 @@ fn create_nested_unicode_directories_keeps_existing_intermediates_and_refuses_fi
 }
 
 #[test]
-fn create_rejects_escape_invalid_names_and_cancelled_requests_without_changes() {
+fn create_rejects_invalid_names_and_cancelled_requests_without_changes() {
     let temp = fixture();
     let base = WindowsFileSystem::new(None)
         .prepare_create(temp.path(), &Cancellation::default())
@@ -362,11 +362,10 @@ fn create_rejects_escape_invalid_names_and_cancelled_requests_without_changes() 
         "",
         ".",
         "..",
-        "a/../escape",
-        "one/./two",
-        "C:\\escape",
-        "\\escape",
-        "C:escape",
+        "good/.",
+        "good/..",
+        "\\\\.\\PhysicalDrive0",
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
         "one/NUL.txt",
         "one/stream:ads",
         "one/trailing.",
@@ -392,6 +391,127 @@ fn create_rejects_escape_invalid_names_and_cancelled_requests_without_changes() 
         io::ErrorKind::Interrupted
     );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn create_accepts_absolute_and_parent_relative_paths_outside_the_captured_base() {
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = temp.path().join("absolute/文档 🦀/new");
+    assert_eq!(base.create(&absolute, &cancel).unwrap(), absolute);
+    assert!(absolute.is_dir());
+    let relative = base
+        .create(Path::new("../sibling/文档/new"), &cancel)
+        .unwrap();
+    assert_eq!(
+        fs::canonicalize(relative).unwrap(),
+        fs::canonicalize(temp.path().join("sibling/文档/new")).unwrap()
+    );
+    assert_eq!(fs::read_dir(panel).unwrap().count(), 0);
+}
+
+#[test]
+fn create_walks_parent_components_without_collapsing_missing_directories_or_links() {
+    let temp = fixture();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(temp.path(), &cancel)
+        .unwrap();
+    let created = base
+        .create(Path::new("first/../second/./leaf"), &cancel)
+        .unwrap();
+    assert!(temp.path().join("first").is_dir());
+    assert_eq!(
+        fs::canonicalize(created).unwrap(),
+        fs::canonicalize(temp.path().join("second/leaf")).unwrap()
+    );
+    fs::create_dir(temp.path().join("outside")).unwrap();
+    create_junction(&temp.path().join("link"), &temp.path().join("outside"));
+    assert!(
+        base.create(Path::new("link/../forbidden"), &cancel)
+            .is_err()
+    );
+    assert!(!temp.path().join("forbidden").exists());
+    assert_eq!(
+        fs::read_dir(temp.path().join("outside")).unwrap().count(),
+        0
+    );
+}
+
+#[test]
+fn create_resolves_root_relative_and_same_drive_relative_paths_against_the_panel() {
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = temp.path().join("root-relative/new");
+    let prefix = absolute.components().next().unwrap();
+    let root_relative = absolute
+        .components()
+        .skip(1)
+        .collect::<std::path::PathBuf>();
+    assert_eq!(base.create(&root_relative, &cancel).unwrap(), absolute);
+    let drive_relative = format!("{}same-drive/new", prefix.as_os_str().to_str().unwrap());
+    assert_eq!(
+        base.create(Path::new(&drive_relative), &cancel).unwrap(),
+        panel.join("same-drive/new")
+    );
+    assert!(absolute.is_dir());
+    assert!(panel.join("same-drive/new").is_dir());
+}
+
+#[test]
+fn create_absolute_targets_still_honor_cancellation_and_replaced_base_identity() {
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = temp.path().join("outside/new");
+    cancel.cancel();
+    assert_eq!(
+        base.create(&absolute, &cancel).unwrap_err().kind,
+        io::ErrorKind::Interrupted
+    );
+    assert!(!temp.path().join("outside").exists());
+    fs::rename(&panel, temp.path().join("moved-panel")).unwrap();
+    fs::create_dir(&panel).unwrap();
+    assert!(base.create(&absolute, &Cancellation::default()).is_err());
+    assert!(!temp.path().join("outside").exists());
+}
+
+#[test]
+fn create_absolute_long_path_preserves_native_unicode_without_replacing_final_entries() {
+    use std::os::windows::ffi::OsStringExt;
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let mut target = temp.path().join("outside");
+    for _ in 0..10 {
+        target.push("文档-long-directory-0123456789");
+    }
+    target.push(std::ffi::OsString::from_wide(&[b'r' as u16, 0xd800]));
+    assert_eq!(base.create(&target, &cancel).unwrap(), target);
+    assert!(target.is_dir());
+    assert_eq!(
+        base.create(&target, &cancel).unwrap_err().kind,
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(fs::read_dir(panel).unwrap().count(), 0);
 }
 
 #[test]

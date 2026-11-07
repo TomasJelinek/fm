@@ -1,0 +1,8 @@
+{
+  "protocol": 1,
+  "id": "midnight-image",
+  "version": "image-0.25.10-moxcms-0.8.1-r1",
+  "executable": "midnight-thumbnail-image",
+  "extensions": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff"],
+  "video": false
+}

@@ -21,7 +21,7 @@ impl Presenter {
         self.editor.pending = false;
         self.editor.default_label = match result {
             Ok(command) => command.executable.to_string_lossy().into_owned(),
-            Err(error) => error.to_string(),
+            Err(error) => crate::error_presentation::describe(&error),
         };
     }
 
@@ -79,6 +79,9 @@ impl Presenter {
     }
 
     pub(crate) fn edit_file(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if !self.native_action_allowed(pane) {
+            return;
+        }
         if !self.editor_preferences_ready() {
             self.desktop.report("Cannot open editor", "Saved editor settings are not available. Wait for settings to load, or resolve the settings error before editing.".into());
             return;

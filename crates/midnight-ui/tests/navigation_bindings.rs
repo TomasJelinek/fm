@@ -63,6 +63,17 @@ fn installed_navigation_bridge_uses_ids_and_focuses_requested_panel() {
             if preferences.bookmarks[0].path == left)
     });
     assert!(saved, "bookmark persistence captures the raw path");
+    window.invoke_bookmark_add(0, "Same path again".into(), 0);
+    assert_eq!(window.get_bookmarks().row_count(), 1);
+    window.invoke_bookmark_assign(bookmark.identity.clone(), 10);
+    let hot_path = window
+        .get_left_locations()
+        .iter()
+        .find(|row| row.kind == midnight_ui::LocationRole::HotPath)
+        .unwrap();
+    assert_eq!(hot_path.compact_label, "0");
+    assert_eq!(hot_path.label.as_str(), left.to_string_lossy());
+    assert!(!hot_path.tooltip.contains("$(literal)"));
     commands.borrow_mut().clear();
     window.invoke_bookmark_open(1, bookmark.identity.clone());
     assert!(commands.borrow().iter().any(|command| matches!(command,

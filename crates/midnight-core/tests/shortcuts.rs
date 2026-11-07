@@ -1,6 +1,82 @@
 use midnight_core::*;
 
 #[test]
+fn bare_hot_path_digits_are_configurable_and_never_steal_editor_text() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    for (key, id) in [("1", "bookmark.open.1"), ("0", "bookmark.open.10")] {
+        assert_eq!(
+            action(&map, key, ShortcutContext::Files).as_deref(),
+            Some(id)
+        );
+        for context in [
+            ShortcutContext::Search,
+            ShortcutContext::Command,
+            ShortcutContext::Other,
+        ] {
+            assert_eq!(action(&map, key, context), None);
+        }
+    }
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "bookmark.open.1".into(),
+        keys: vec!["Ctrl+Q".into()],
+    }])
+    .unwrap();
+    assert_eq!(action(&map, "1", ShortcutContext::Files), None);
+    assert_eq!(
+        action(&map, "Ctrl+Q", ShortcutContext::Files).as_deref(),
+        Some("bookmark.open.1")
+    );
+}
+
+#[test]
+fn explicit_digit_bindings_override_only_new_defaults_in_overlapping_contexts() {
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "files.rename".into(),
+        keys: vec!["1".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&map, "1", ShortcutContext::Files).as_deref(),
+        Some("files.rename")
+    );
+    assert_eq!(
+        action(&map, "Ctrl+1", ShortcutContext::Files).as_deref(),
+        Some("bookmark.open.1")
+    );
+    assert_eq!(
+        action(&ShortcutMap::new(&[]).unwrap(), "1", ShortcutContext::Files).as_deref(),
+        Some("bookmark.open.1")
+    );
+    assert!(
+        ShortcutMap::new(&[
+            ShortcutBinding {
+                action: "files.rename".into(),
+                keys: vec!["1".into()]
+            },
+            ShortcutBinding {
+                action: "bookmark.open.1".into(),
+                keys: vec!["1".into()]
+            }
+        ])
+        .is_err(),
+        "two explicit assignments must still conflict"
+    );
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "viewer.next-file".into(),
+        keys: vec!["1".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&map, "1", ShortcutContext::Files).as_deref(),
+        Some("bookmark.open.1")
+    );
+    assert_eq!(
+        action(&map, "1", ShortcutContext::Viewer).as_deref(),
+        Some("viewer.next-file")
+    );
+}
+
+#[test]
 fn commander_tools_and_history_have_configurable_context_bound_defaults() {
     let map = ShortcutMap::new(&[]).unwrap();
     for (key, id) in [

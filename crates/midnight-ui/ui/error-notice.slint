@@ -1,0 +1,30 @@
+import { Theme } from "theme.slint";
+import { DialogText } from "dialog-text.slint";
+
+// Drawn locally: errors remain recognizable without an installed icon font or shell theme.
+export component ErrorGlyph inherits Rectangle {
+    width: 24px; height: 24px;
+    background: Theme.error-text; border-radius: self.width / 2;
+    accessible-role: text; accessible-label: "Error";
+    Text {
+        text: "!"; color: Theme.error-background; font-weight: 800;
+        font-size: root.height * 0.75;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+export component ErrorNotice inherits Rectangle {
+    in property <string> text;
+    min-height: max(60px, Theme.font-size * 2.5);
+    preferred-height: max(100px, Theme.font-size * 4);
+    max-height: max(160px, Theme.font-size * 6);
+    background: Theme.error-background; border-radius: 4px;
+    HorizontalLayout {
+        padding: 10px; spacing: 10px;
+        VerticalLayout {
+            alignment: start; min-width: 24px; max-width: 24px;
+            ErrorGlyph {}
+        }
+        DialogText { text: root.text; foreground: Theme.error-text; horizontal-stretch: 1; }
+    }
+}

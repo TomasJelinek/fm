@@ -1,3 +1,5 @@
+#[path = "support/render.rs"]
+mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -7,7 +9,7 @@ use i_slint_core::{
     window::{WindowInner, WindowKind},
 };
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
+use midnight_ui::{KeyboardEditorView, Presenter, install, refresh};
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -15,6 +17,201 @@ struct Harness {
     ui: ui::TestUi,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
+}
+
+#[test]
+fn preview_options_persist_choices_and_clear_cache_without_closing_settings() {
+    let mut h = Harness::new(&[]);
+    let clears = Rc::new(std::cell::Cell::new(0));
+    let observed = clears.clone();
+    h.ui.window
+        .on_thumbnail_clear_cache(move || observed.set(observed.get() + 1));
+    h.ui.window.invoke_show_options();
+    h.draw();
+    ui::click_popup(&h.ui.window, "Previews", AccessibleRole::Button);
+    h.draw();
+    assert!(h.ui.window.get_thumbnails_enabled());
+    assert!(!h.ui.window.get_thumbnails_network());
+    ui::click_popup(
+        &h.ui.window,
+        "Allow previews on network locations",
+        AccessibleRole::Checkbox,
+    );
+    h.draw();
+    assert!(h.ui.window.get_thumbnails_network());
+    ui::click_popup(
+        &h.ui.window,
+        "Show image and video previews",
+        AccessibleRole::Checkbox,
+    );
+    h.draw();
+    assert!(!h.ui.window.get_thumbnails_enabled());
+    assert!(
+        h.ui.window.get_thumbnails_network(),
+        "disabling previews retains the separate network choice"
+    );
+    ui::click_popup(
+        &h.ui.window,
+        "Clear thumbnail cache",
+        AccessibleRole::Button,
+    );
+    h.draw();
+    assert_eq!(clears.get(), 1);
+    assert!(ui::has_popup(&h.ui.window));
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::SavePreferences { preferences, .. }
+            if !preferences.thumbnails_enabled && preferences.thumbnails_network
+    )));
+}
+
+#[test]
+fn shortcut_editor_filters_commands_and_captures_without_dispatching_actions() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    ui::click_popup(&h.ui.window, "Search commands", AccessibleRole::TextInput);
+    ui::key(&h.ui.window, "files.copy");
+    h.draw();
+    ui::click_popup(
+        &h.ui.window,
+        "Copy files to clipboard",
+        AccessibleRole::ListItem,
+    );
+    ui::click_popup(
+        &h.ui.window,
+        "Press shortcut keys",
+        AccessibleRole::TextInput,
+    );
+    h.commands.borrow_mut().clear();
+    ui::key(&h.ui.window, Key::F8);
+    assert!(
+        h.commands.borrow().is_empty(),
+        "capture must not delete or save"
+    );
+    for key in [Key::F4, Key::Return, Key::F1] {
+        ui::key(&h.ui.window, key);
+        assert!(h.commands.borrow().is_empty());
+        ui::popup_item(
+            &h.ui.window,
+            "Press shortcut keys",
+            AccessibleRole::TextInput,
+        );
+    }
+    ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "y");
+    assert!(h.commands.borrow().is_empty());
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
+    h.draw();
+    let commands = h.commands.borrow();
+    let saved = commands
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::SavePreferences { preferences, .. } => Some(preferences),
+            _ => None,
+        })
+        .expect("Assign saves the validated map asynchronously");
+    let map = ShortcutMap::new(&saved.shortcuts).unwrap();
+    assert_eq!(
+        map.bindings("files.copy")
+            .unwrap()
+            .iter()
+            .map(ShortcutChord::display)
+            .collect::<Vec<_>>(),
+        ["Ctrl+C", "Ctrl+Alt+Y"]
+    );
+}
+
+#[test]
+fn shortcut_capture_keeps_physical_digits_and_tab_escape_exit_without_dispatch() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.select_action("files.copy");
+    ui::click_popup(
+        &h.ui.window,
+        "Press shortcut keys",
+        AccessibleRole::TextInput,
+    );
+    h.commands.borrow_mut().clear();
+    assert!(
+        h.ui.window
+            .invoke_physical_shortcut("Digit7".into(), true, true, false, false)
+    );
+    assert_eq!(
+        h.ui.window.global::<KeyboardEditorView>().get_candidate(),
+        "Ctrl+Alt+Digit7"
+    );
+    h.ui.window.set_native_digit_event(true);
+    ui::key(&h.ui.window, "/");
+    h.ui.window.set_native_digit_event(false);
+    assert_eq!(
+        h.ui.window.global::<KeyboardEditorView>().get_candidate(),
+        "Ctrl+Alt+Digit7"
+    );
+    h.ui.window.set_native_alt_gr(true);
+    ui::key(&h.ui.window, "@");
+    h.ui.window.set_native_alt_gr(false);
+    assert_eq!(
+        h.ui.window.global::<KeyboardEditorView>().get_candidate(),
+        "Ctrl+Alt+Digit7"
+    );
+    for (key, expected) in [(Key::Tab, "Tab"), (Key::Escape, "Escape")] {
+        ui::click_popup(
+            &h.ui.window,
+            "Press shortcut keys",
+            AccessibleRole::TextInput,
+        );
+        ui::key(&h.ui.window, key);
+        h.draw();
+        assert_eq!(
+            h.ui.window.global::<KeyboardEditorView>().get_candidate(),
+            expected
+        );
+        assert!(!h.ui.window.global::<KeyboardEditorView>().get_capturing());
+        assert!(ui::has_popup(&h.ui.window));
+        assert!(h.commands.borrow().is_empty());
+    }
+}
+
+#[test]
+fn settings_navigation_and_footer_fit_both_densities_and_large_fonts() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    h.ui.resize(1040, 720);
+    for (theme, density, font) in [(1, 0, 12), (2, 0, 12), (1, 1, 14), (2, 1, 32)] {
+        h.ui.window.invoke_apply_preferences(theme, density);
+        h.ui.window.invoke_apply_fonts("".into(), font, font);
+        std::thread::sleep(std::time::Duration::from_millis(220));
+        for _ in 0..2 {
+            slint::platform::update_timers_and_animations();
+            h.ui.draw();
+        }
+        for topic in ["Appearance", "Keyboard"] {
+            ui::click_popup(&h.ui.window, topic, AccessibleRole::Button);
+            for _ in 0..2 {
+                slint::platform::update_timers_and_animations();
+                h.ui.draw();
+            }
+            let done = ui::popup_item(&h.ui.window, "Done", AccessibleRole::Button);
+            let rect = done.geometry();
+            let position = done.map_to_native_window(rect.origin);
+            assert!(position.x >= 0.0 && position.y >= 0.0);
+            assert!(position.x + rect.size.width <= h.ui.width as f32);
+            assert!(position.y + rect.size.height <= h.ui.height as f32);
+            render::snapshot(&h.ui, &format!("settings-{topic}-{theme}-{density}-{font}"));
+        }
+    }
+}
+
+#[test]
+fn topic_arrow_navigation_moves_focus_with_selection() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    ui::click_popup(&h.ui.window, "Panel", AccessibleRole::Button);
+    ui::key(&h.ui.window, Key::DownArrow);
+    h.draw();
+    assert_eq!(h.ui.window.get_options_topic_index(), 1);
+    ui::key(&h.ui.window, Key::Return);
+    h.draw();
+    assert_eq!(h.ui.window.get_options_topic_index(), 1);
 }
 
 impl Harness {
@@ -106,27 +303,40 @@ impl Harness {
     }
 
     fn select_action(&mut self, id: &str) {
-        let index = shortcut_catalog()
+        let action = shortcut_catalog()
             .iter()
-            .position(|action| action.id == id)
+            .find(|action| action.id == id)
             .unwrap();
-        ui::click_popup(&self.ui.window, "Shortcut action", AccessibleRole::Combobox);
-        ui::key(&self.ui.window, Key::Home);
-        for _ in 0..index {
-            ui::key(&self.ui.window, Key::DownArrow);
-        }
-        ui::key(&self.ui.window, Key::Return);
+        ui::click_popup(
+            &self.ui.window,
+            "Search commands",
+            AccessibleRole::TextInput,
+        );
+        ui::chord(&self.ui.window, &[Key::Control], "a");
+        ui::key(&self.ui.window, id);
+        self.draw();
+        ui::click_popup(&self.ui.window, &action.label, AccessibleRole::ListItem);
         self.draw();
     }
 
     fn edit(&mut self, value: &str) {
         ui::click_popup(
             &self.ui.window,
-            "Shortcut bindings",
+            "Press shortcut keys",
             AccessibleRole::TextInput,
         );
-        ui::chord(&self.ui.window, &[Key::Control], "a");
-        ui::key(&self.ui.window, value);
+        let chord = ShortcutChord::parse(value).unwrap();
+        let modifiers = [
+            (chord.control, Key::Control),
+            (chord.alt, Key::Alt),
+            (chord.shift, Key::Shift),
+            (chord.meta, Key::Meta),
+        ]
+        .into_iter()
+        .filter_map(|(pressed, key)| pressed.then_some(key))
+        .collect::<Vec<_>>();
+        ui::chord(&self.ui.window, &modifiers, chord.key.as_str());
+        self.draw();
     }
 }
 
@@ -300,7 +510,13 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
     h.select_action("files.copy");
     h.commands.borrow_mut().clear();
     h.edit("Ctrl+V");
-    ui::click_popup(&h.ui.window, "Apply shortcut", AccessibleRole::Button);
+    assert!(!h.ui.window.global::<KeyboardEditorView>().get_can_assign());
+    assert!(
+        h.ui.window
+            .global::<KeyboardEditorView>()
+            .get_used_by()
+            .contains("Paste")
+    );
     assert!(
         h.commands
             .borrow()
@@ -309,7 +525,7 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
         "a conflicting shortcut must not partly save"
     );
     h.edit("Ctrl+Alt+Y");
-    ui::click_popup(&h.ui.window, "Apply shortcut", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
     h.draw();
     {
         let sent = h.commands.borrow();
@@ -320,20 +536,22 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
                 Command::SavePreferences { preferences, .. } => Some(preferences),
                 _ => None,
             })
-            .expect("Apply must use asynchronous preference persistence");
+            .expect("Assign must use asynchronous preference persistence");
         assert_eq!(
             ShortcutMap::new(&saved.shortcuts)
                 .unwrap()
                 .bindings("files.copy")
-                .unwrap()[0]
+                .unwrap()[1]
                 .display(),
             "Ctrl+Alt+Y"
         );
     }
     for label in [
-        "Disable shortcut",
-        "Restore default",
-        "Restore all shortcuts",
+        "Remove",
+        "Remove",
+        "Restore command",
+        "Restore all defaults",
+        "Reset all shortcuts",
     ] {
         ui::click_popup(&h.ui.window, label, AccessibleRole::Button);
         h.draw();
@@ -353,8 +571,10 @@ fn in_session_reassignment_updates_the_bottom_caption_and_rendered_help() {
     let mut h = Harness::new(&[]);
     h.open_keyboard();
     h.select_action("files.rename");
+    ui::click_popup(&h.ui.window, "Remove", AccessibleRole::Button);
+    h.draw();
     h.edit("Ctrl+Alt+R");
-    ui::click_popup(&h.ui.window, "Apply shortcut", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
     h.draw();
     ui::click_popup(&h.ui.window, "Done", AccessibleRole::Button);
     h.draw();
@@ -387,9 +607,15 @@ fn restoring_unchanged_defaults_also_discards_the_unsaved_editor_draft() {
     h.open_keyboard();
     h.select_action("files.copy");
     h.edit("Ctrl+Alt+Y");
-    ui::click_popup(&h.ui.window, "Restore default", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "Restore command", AccessibleRole::Button);
     h.draw();
-    ui::click_popup(&h.ui.window, "Apply shortcut", AccessibleRole::Button);
+    assert!(
+        h.ui.window
+            .global::<KeyboardEditorView>()
+            .get_candidate()
+            .is_empty()
+    );
+    assert!(!h.ui.window.global::<KeyboardEditorView>().get_can_assign());
     let sent = h.commands.borrow();
     let saved = sent
         .iter()
@@ -398,7 +624,7 @@ fn restoring_unchanged_defaults_also_discards_the_unsaved_editor_draft() {
             Command::SavePreferences { preferences, .. } => Some(preferences),
             _ => None,
         })
-        .expect("Apply saves the restored binding");
+        .expect("Restore saves the default binding");
     assert_eq!(
         ShortcutMap::new(&saved.shortcuts)
             .unwrap()

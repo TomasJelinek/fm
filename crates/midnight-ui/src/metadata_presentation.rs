@@ -1,11 +1,17 @@
 //! Bounded metadata forms and conflict presentation; native work is sent to the engine.
 use super::*;
+use std::cell::Cell;
 
 pub(super) fn bind(
     window: &MainWindow,
     state: &Rc<RefCell<Presenter>>,
     send: &Rc<dyn Fn(Command) -> bool>,
 ) {
+    window.set_metadata_rows(ModelRc::new(MetadataRows {
+        presenter: state.clone(),
+        revision: Cell::new(None),
+        notify: ModelNotify::default(),
+    }));
     macro_rules! callback {
         ($name:ident, |$p:ident, $s:ident $(, $arg:ident)*| $body:block) => {{
             let state = state.clone(); let send = send.clone(); let weak = window.as_weak();
@@ -49,6 +55,20 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_metadata_error(state.error.as_str().into());
     window.set_metadata_busy(state.busy);
     window.set_metadata_ready(state.can_apply());
+    window.set_metadata_preview_current(state.preview_current());
+    if let Some(rows) = window
+        .get_metadata_rows()
+        .as_any()
+        .downcast_ref::<MetadataRows>()
+    {
+        let revision = state
+            .preview
+            .as_ref()
+            .map(|preview| (preview.id, preview.revision));
+        if rows.revision.replace(revision) != revision {
+            rows.notify.reset();
+        }
+    }
     let caps = state
         .preview
         .as_ref()
@@ -75,10 +95,24 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             )
             .into(),
         );
-        window.set_metadata_preview_text(preview_text(preview).into());
+        window.set_metadata_preview_text(preview_status(presenter).into());
+        window.set_metadata_list_status(
+            format!(
+                "{} of {} captured roots shown{}",
+                preview.sample.len(),
+                preview.total,
+                if preview.patch.recursive {
+                    " · Descendants are inspected during Apply."
+                } else {
+                    ""
+                }
+            )
+            .into(),
+        );
     } else {
         window.set_metadata_summary("Preparing captured selection…".into());
         window.set_metadata_preview_text("".into());
+        window.set_metadata_list_status("Preparing captured files…".into());
     }
     window.set_metadata_token(
         state
@@ -163,60 +197,143 @@ fn requested(patch: &MetadataPatch) -> String {
 }
 
 fn preview_text(preview: &MetadataPreview) -> String {
-    let mut text = requested(&preview.patch);
-    for row in &preview.sample {
-        text.push_str(&format!("\n\n{}", row.path.display()));
-        if let Some(name) = &row.proposed_name {
-            text.push_str(&format!("\n→ {}", name.to_string_lossy()));
+    if preview.revision == 0 {
+        "Draft not previewed. Refresh or Preview changes to inspect the current draft.".into()
+    } else {
+        requested(&preview.patch)
+    }
+}
+
+fn preview_status(presenter: &Presenter) -> String {
+    let state = &presenter.metadata;
+    if state.busy {
+        "Preparing preview… The previous file list is stale.".into()
+    } else if state.preview_current() {
+        state
+            .preview
+            .as_ref()
+            .map(|preview| preview_text(preview))
+            .unwrap_or_default()
+    } else if state
+        .preview
+        .as_ref()
+        .is_some_and(|preview| preview.revision > 0)
+    {
+        "Draft changed; the preview is stale. Refresh or Preview changes before Apply.".into()
+    } else {
+        "Draft not previewed. Refresh or Preview changes to inspect the current draft.".into()
+    }
+}
+
+struct MetadataRows {
+    presenter: Rc<RefCell<Presenter>>,
+    revision: Cell<Option<(OperationId, u64)>>,
+    notify: ModelNotify,
+}
+
+impl Model for MetadataRows {
+    type Data = MetadataFileRow;
+    fn row_count(&self) -> usize {
+        self.presenter
+            .borrow()
+            .metadata
+            .preview
+            .as_ref()
+            .map_or(0, |preview| preview.sample.len().min(MAX_METADATA_TARGETS))
+    }
+    fn row_data(&self, index: usize) -> Option<Self::Data> {
+        if index >= self.row_count() {
+            return None;
         }
-        let current = &row.current;
-        if let Some(mode) = current.unix_mode {
-            text.push_str(&format!("\nCurrent permissions: {:04o}", mode & 0o7777));
-        }
-        if let Some(attributes) = current.windows_attributes {
-            let flags = [
-                (EDIT_READ_ONLY, "Read-only"),
-                (EDIT_HIDDEN, "Hidden"),
-                (EDIT_SYSTEM, "System"),
-                (EDIT_ARCHIVE, "Archive"),
-            ]
-            .into_iter()
-            .filter_map(|(bit, label)| (attributes & bit != 0).then_some(label))
-            .collect::<Vec<_>>();
-            text.push_str(&format!(
-                "\nCurrent attributes: {}",
-                if flags.is_empty() {
-                    "None".into()
-                } else {
-                    flags.join(", ")
-                }
-            ));
-        }
-        for (label, flag) in [
-            ("Compressed", current.compressed),
-            ("Encrypted", current.encrypted),
-        ] {
-            if let Some(flag) = flag {
-                text.push_str(&format!(" · {label}: {}", if flag { "Yes" } else { "No" }));
-            }
-        }
-        for (label, value) in [
-            ("Created", current.created),
-            ("Modified", current.modified),
-            ("Accessed", current.accessed),
-        ] {
-            if let Some(value) = value {
-                text.push_str(&format!("\n{label}: {}", time(value)));
-            }
-        }
-        if let Some(issue) = &row.issue {
-            text.push_str(&format!("\n{issue}"));
+        let presenter = self.presenter.borrow();
+        let preview = presenter.metadata.preview.as_ref()?;
+        preview
+            .sample
+            .get(index)
+            .map(|row| file_row(row, &preview.patch))
+    }
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn attributes(snapshot: &MetadataSnapshot) -> String {
+    let mut text = Vec::new();
+    if let Some(value) = snapshot.windows_attributes {
+        let flags = [
+            (EDIT_READ_ONLY, "R"),
+            (EDIT_HIDDEN, "H"),
+            (EDIT_SYSTEM, "S"),
+            (EDIT_ARCHIVE, "A"),
+        ]
+        .into_iter()
+        .filter_map(|(flag, label)| (value & flag != 0).then_some(label))
+        .collect::<Vec<_>>();
+        text.push(if flags.is_empty() {
+            "None".into()
+        } else {
+            flags.join(" ")
+        });
+    }
+    if let Some(mode) = snapshot.unix_mode {
+        text.push(format!("{:04o}", mode & 0o7777));
+    }
+    for (label, value) in [
+        ("Compressed", snapshot.compressed),
+        ("Encrypted", snapshot.encrypted),
+    ] {
+        if let Some(value) = value {
+            text.push(format!("{label}: {}", if value { "yes" } else { "no" }));
         }
     }
-    if preview.total > preview.sample.len() as u64 {
-        text.push_str("\n\nPreview shows the first 32 selected roots; the complete captured selection is included.");
+    if text.is_empty() {
+        "Unavailable".into()
+    } else {
+        text.join(" · ")
     }
-    text
+}
+
+fn file_row(row: &MetadataPreviewRow, patch: &MetadataPatch) -> MetadataFileRow {
+    let name = row.path.file_name().unwrap_or_default().to_string_lossy();
+    let proposed = row
+        .proposed_name
+        .as_deref()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| name.clone());
+    let attributes = format!(
+        "Current: {}\nProposed: {}",
+        attributes(&row.current),
+        attributes(&row.proposed)
+    );
+    let times = [
+        ("Modified", row.current.modified, patch.modified),
+        ("Created", row.current.created, patch.created),
+        ("Accessed", row.current.accessed, patch.accessed),
+    ]
+    .into_iter()
+    .map(|(label, before, edit)| {
+        let before = before.map(time).unwrap_or_else(|| "Unavailable".into());
+        match edit {
+            TimeEdit::Set(value) => format!("{label}: {before} → {}", time(value)),
+            TimeEdit::Keep => format!("{label}: {before} (unchanged)"),
+            TimeEdit::Now => format!("{label}: {before} → Now (awaiting preview)"),
+        }
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
+    let issue = row
+        .issue
+        .as_ref()
+        .map(|issue| format!("\n{}", crate::error_presentation::describe(issue)))
+        .unwrap_or_default();
+    MetadataFileRow {
+        current_name: name.as_ref().into(), proposed_name: proposed.as_ref().into(),
+        detail: format!("{}\nProposed name: {proposed}\n{attributes}\n{times}\nR = Read-only · H = Hidden · S = System · A = Archive{issue}", row.path.display()).into(),
+        attributes: attributes.into(), times: times.into(), issue: row.issue.is_some(),
+    }
 }
 
 pub(super) fn result_detail(result: &MetadataResult) -> String {
@@ -251,11 +368,99 @@ pub(super) fn result_detail(result: &MetadataResult) -> String {
             }
         ));
         if let Some(error) = &item.error {
-            text.push_str(&format!("; {error}"));
+            text.push_str(&format!("\n{}", crate::error_presentation::describe(error)));
         }
     }
     if result.processed > result.sample.len() as u64 {
         text.push_str("\nAdditional outcomes are included in the totals.");
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn empty_preview(revision: u64) -> MetadataPreview {
+        MetadataPreview {
+            id: OperationId(1),
+            revision,
+            patch: MetadataPatch::default(),
+            capabilities: MetadataCapabilities::default(),
+            total: 1,
+            conflicts: 0,
+            unsupported: 0,
+            hard_linked: 0,
+            sample: vec![],
+            errors: vec![],
+        }
+    }
+
+    #[test]
+    fn initial_inspection_does_not_claim_the_live_draft_has_no_changes() {
+        let preview = empty_preview(0);
+        let text = preview_text(&preview);
+        assert!(text.contains("Draft not previewed"), "{text}");
+        assert!(!text.contains("No changes requested"), "{text}");
+    }
+
+    #[test]
+    fn stale_or_pending_drafts_do_not_reuse_a_completed_no_change_summary() {
+        let mut presenter = Presenter::new(".".into(), ".".into());
+        presenter.metadata.id = Some(OperationId(1));
+        presenter.metadata.revision = 1;
+        presenter.metadata.preview = Some(Arc::new(empty_preview(1)));
+        assert!(preview_status(&presenter).contains("No changes requested"));
+        presenter.dirty_metadata("1");
+        assert!(preview_status(&presenter).contains("stale"));
+        assert!(!preview_status(&presenter).contains("No changes requested"));
+        presenter.metadata.busy = true;
+        assert!(preview_status(&presenter).contains("Preparing preview"));
+    }
+
+    #[test]
+    fn virtual_rows_preserve_unicode_and_show_requested_metadata_at_the_last_root() {
+        let row = MetadataPreviewRow {
+            path: "ŽLUŤOUČKÝ.TXT".into(),
+            proposed_name: Some("žluťoučký.txt".into()),
+            current: MetadataSnapshot {
+                windows_attributes: Some(EDIT_HIDDEN),
+                modified: Some(UNIX_EPOCH),
+                ..Default::default()
+            },
+            proposed: MetadataSnapshot {
+                windows_attributes: Some(EDIT_READ_ONLY),
+                modified: Some(UNIX_EPOCH + Duration::from_secs(3600)),
+                ..Default::default()
+            },
+            issue: None,
+        };
+        let mut preview = empty_preview(1);
+        preview.patch = MetadataPatch {
+            windows_mask: EDIT_READ_ONLY | EDIT_HIDDEN,
+            windows_value: EDIT_READ_ONLY,
+            modified: TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(3600)),
+            ..Default::default()
+        };
+        preview.sample = vec![row; MAX_METADATA_TARGETS];
+        let mut presenter = Presenter::new(".".into(), ".".into());
+        presenter.metadata.preview = Some(Arc::new(preview));
+        let rows = MetadataRows {
+            presenter: Rc::new(RefCell::new(presenter)),
+            revision: Cell::new(None),
+            notify: ModelNotify::default(),
+        };
+        assert_eq!(rows.row_count(), 256);
+        let last = rows.row_data(255).unwrap();
+        assert_eq!(last.current_name.as_str(), "ŽLUŤOUČKÝ.TXT");
+        assert_eq!(last.proposed_name.as_str(), "žluťoučký.txt");
+        assert_eq!(last.attributes.as_str(), "Current: H\nProposed: R");
+        assert!(
+            last.times
+                .contains("1970-01-01 00:00:00 UTC → 1970-01-01 01:00:00 UTC")
+        );
+        assert!(rows.row_data(256).is_none());
+    }
 }

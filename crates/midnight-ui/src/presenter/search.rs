@@ -314,7 +314,7 @@ impl Presenter {
                 }
                 if p.search.filter || p.search.panel_filter.enabled {
                     p.search.view_revision = p.search.view_revision.saturating_add(1);
-                    p.selection_rebase_pending = true;
+                    p.selection_rebase_pending = p.archive.is_none();
                 }
                 None
             }
@@ -333,7 +333,7 @@ impl Presenter {
                     p.search.pending = false;
                     p.search.needs_request = false;
                     p.search.failed = true;
-                    p.error = error.to_string();
+                    p.error = crate::error_presentation::describe(&error);
                 }
                 None
             }

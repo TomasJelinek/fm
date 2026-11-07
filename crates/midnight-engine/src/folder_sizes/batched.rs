@@ -2,12 +2,12 @@
 
 use super::*;
 use midnight_core::StorageKind;
+use midnight_work_budget::{Gate, IO_SLOTS, Permit};
 use std::{
     cell::Cell,
-    collections::VecDeque,
     io,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
@@ -15,7 +15,6 @@ use std::{
 };
 
 const ROOT_WORKERS: usize = 4;
-const IO_SLOTS: u8 = 4;
 const QUANTUM_ENTRIES: usize = 256;
 const QUANTUM_TIME: Duration = Duration::from_millis(100);
 const WAIT_INTERVAL: Duration = Duration::from_millis(10);
@@ -28,94 +27,30 @@ pub(crate) struct IoBudget {
 }
 
 impl IoBudget {
-    pub(crate) fn new() -> Self {
+    #[cfg(test)]
+    fn isolated() -> Self {
         Self {
             io: Arc::new(Gate::new(IO_SLOTS)),
             classification: Arc::new(Gate::new(1)),
         }
     }
+    pub(crate) fn new() -> Self {
+        Self {
+            io: midnight_work_budget::shared_io(),
+            classification: Arc::new(Gate::new(1)),
+        }
+    }
     fn acquire_io(self: &Arc<Self>, cost: u8, cancel: &Cancellation) -> Option<Permit> {
-        self.io.acquire(cost, cancel)
+        self.io.acquire(cost, || cancel.is_cancelled())
     }
     fn acquire_classification(self: &Arc<Self>, cancel: &Cancellation) -> Option<Permit> {
-        self.classification.acquire(1, cancel)
+        self.classification.acquire(1, || cancel.is_cancelled())
     }
 }
 
 impl Default for IoBudget {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-struct Gate {
-    state: Mutex<GateState>,
-    changed: Condvar,
-}
-
-struct GateState {
-    available: u8,
-    next: u64,
-    queue: VecDeque<(u64, u8)>,
-}
-
-impl Gate {
-    fn new(capacity: u8) -> Self {
-        Self {
-            state: Mutex::new(GateState {
-                available: capacity,
-                next: 0,
-                queue: VecDeque::new(),
-            }),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn acquire(self: &Arc<Self>, cost: u8, cancel: &Cancellation) -> Option<Permit> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let ticket = state.next;
-        state.next = state.next.wrapping_add(1);
-        state.queue.push_back((ticket, cost));
-        loop {
-            if cancel.is_cancelled() {
-                if let Some(index) = state.queue.iter().position(|(id, _)| *id == ticket) {
-                    state.queue.remove(index);
-                }
-                self.changed.notify_all();
-                return None;
-            }
-            if state.queue.front().is_some_and(|(id, _)| *id == ticket) && state.available >= cost {
-                state.queue.pop_front();
-                state.available -= cost;
-                self.changed.notify_all();
-                return Some(Permit {
-                    gate: self.clone(),
-                    cost,
-                });
-            }
-            state = self
-                .changed
-                .wait_timeout(state, WAIT_INTERVAL)
-                .unwrap_or_else(|error| error.into_inner())
-                .0;
-        }
-    }
-}
-
-struct Permit {
-    gate: Arc<Gate>,
-    cost: u8,
-}
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        state.available += self.cost;
-        self.gate.changed.notify_all();
     }
 }
 

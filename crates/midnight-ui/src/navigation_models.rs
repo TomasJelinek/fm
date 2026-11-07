@@ -79,6 +79,11 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
                     LocationKind::Desktop => LocationRole::Desktop,
                     LocationKind::Documents => LocationRole::Documents,
                     LocationKind::Downloads => LocationRole::Downloads,
+                    LocationKind::Pictures
+                    | LocationKind::Videos
+                    | LocationKind::Music
+                    | LocationKind::Temporary
+                    | LocationKind::OneDrive => LocationRole::Folder,
                 },
             }
         })

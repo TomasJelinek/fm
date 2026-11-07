@@ -130,6 +130,27 @@ impl Edit {
         self.preview.sample.clear();
         self.names.clear();
         self.issues.clear();
+        // Re-read the pinned targets for every explicit refresh. Native adapters
+        // revalidate identity; failed reads must not publish cached values as current.
+        let snapshot_errors = targets
+            .iter()
+            .zip(&mut self.snapshots)
+            .map(|(target, snapshot)| {
+                if revision == 0 {
+                    return None;
+                }
+                match target.metadata_snapshot(cancel) {
+                    Ok(current) => {
+                        *snapshot = current;
+                        None
+                    }
+                    Err(error) => {
+                        *snapshot = MetadataSnapshot::default();
+                        Some(error)
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
         let mut caps = self
             .snapshots
             .first()
@@ -147,7 +168,9 @@ impl Edit {
             caps.accessed &= c.accessed;
             caps.rename &= c.rename;
             self.preview.hard_linked += u64::from(snapshot.hard_links > 1);
-            let mut issue = validate_patch(&patch, c, path).err();
+            let mut issue = snapshot_errors[index]
+                .clone()
+                .or_else(|| validate_patch(&patch, c, path).err());
             let mut name = None;
             if cancel.is_cancelled() {
                 issue = Some(error(path, io::ErrorKind::Interrupted, "preview cancelled"));
@@ -189,16 +212,42 @@ impl Edit {
                     self.preview.errors.push(error.clone());
                 }
             }
-            if self.preview.sample.len() < 32 {
+            if self.preview.sample.len() < MAX_METADATA_TARGETS {
                 self.preview.sample.push(MetadataPreviewRow {
                     path: target.item().path.clone(),
                     proposed_name: self.names[index].clone(),
                     current: self.snapshots[index].clone(),
+                    proposed: proposed_metadata(&self.snapshots[index], &patch),
                     issue,
                 });
             }
         }
     }
+}
+
+fn proposed_metadata(current: &MetadataSnapshot, patch: &MetadataPatch) -> MetadataSnapshot {
+    let mut proposed = current.clone();
+    if let Some(value) = proposed.windows_attributes {
+        proposed.windows_attributes =
+            Some((value & !patch.windows_mask) | (patch.windows_value & patch.windows_mask));
+    }
+    if let Some(value) = proposed.unix_mode {
+        proposed.unix_mode =
+            Some((value & !patch.unix_mask) | (patch.unix_value & patch.unix_mask));
+    }
+    if let Some(value) = patch.compressed {
+        proposed.compressed = Some(value);
+    }
+    for (value, edit) in [
+        (&mut proposed.created, patch.created),
+        (&mut proposed.modified, patch.modified),
+        (&mut proposed.accessed, patch.accessed),
+    ] {
+        if let TimeEdit::Set(time) = edit {
+            *value = Some(time);
+        }
+    }
+    proposed
 }
 
 struct Frame {

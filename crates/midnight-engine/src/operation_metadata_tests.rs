@@ -45,6 +45,8 @@ impl Harness {
         };
         let snapshots = Arc::new(Mutex::new([
             SnapshotState {
+                archive: None,
+                archive_navigation: None,
                 visible: Some(CommittedSnapshot {
                     navigation: source.navigation,
                     path: source.path.clone(),
@@ -67,9 +69,11 @@ impl Harness {
             Arc::new(Semaphore::new(1)),
             &mut tasks,
         );
-        let selection = Arc::new(
-            SelectionSnapshot::from_bits(view.clone(), vec![(1u64 << names.len()) - 1]).unwrap(),
-        );
+        let mut bits = vec![u64::MAX; names.len().div_ceil(64)];
+        if !names.len().is_multiple_of(64) {
+            *bits.last_mut().unwrap() = (1u64 << (names.len() % 64)) - 1;
+        }
+        let selection = Arc::new(SelectionSnapshot::from_bits(view.clone(), bits).unwrap());
         let request = PrepareOperation {
             id: OperationId(1),
             kind: MutationKind::EditMetadata,
@@ -148,6 +152,123 @@ impl Drop for Harness {
         self.controller.shutdown();
         self.tasks.abort_all();
     }
+}
+
+#[tokio::test]
+async fn metadata_preview_lists_every_bounded_root_and_refreshes_native_times() {
+    let names = (0..MAX_METADATA_TARGETS)
+        .map(|index| format!("ŽLUŤOUČKÝ-{index:03}.TXT"))
+        .collect::<Vec<_>>();
+    let entries = names
+        .iter()
+        .map(|name| (name.as_str(), false))
+        .collect::<Vec<_>>();
+    let mut h = Harness::new(&entries);
+    h.controller.prepare(h.request.clone()).await;
+    let initial = h.preview(0).await;
+    assert_eq!(initial.total, MAX_METADATA_TARGETS as u64);
+    assert_eq!(
+        initial.sample.len(),
+        MAX_METADATA_TARGETS,
+        "the list must contain all captured roots"
+    );
+    let time = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(h.directory.path().join(&names[0]))
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+    h.controller
+        .preview_metadata(
+            h.request.id,
+            1,
+            MetadataPatch {
+                case: Some(CaseChange::default()),
+                windows_mask: initial.capabilities.windows_attributes & EDIT_READ_ONLY,
+                windows_value: initial.capabilities.windows_attributes & EDIT_READ_ONLY,
+                unix_mask: initial.capabilities.unix_permissions & 0o222,
+                modified: TimeEdit::Set(time + Duration::from_secs(3600)),
+                ..Default::default()
+            },
+        )
+        .await;
+    let refreshed = h.preview(1).await;
+    assert_eq!(
+        refreshed.sample[0].current.modified,
+        Some(time),
+        "refresh reads pinned native metadata again"
+    );
+    assert_eq!(
+        refreshed.sample[0].proposed_name.as_deref(),
+        Some(std::ffi::OsStr::new("žluťoučký-000.txt"))
+    );
+    assert_eq!(refreshed.sample.len(), MAX_METADATA_TARGETS);
+    assert_eq!(
+        refreshed.sample[0].proposed.modified,
+        Some(time + Duration::from_secs(3600))
+    );
+    if let Some(attributes) = refreshed.sample[0].proposed.windows_attributes {
+        assert_eq!(attributes & EDIT_READ_ONLY, EDIT_READ_ONLY);
+    }
+    if let Some(mode) = refreshed.sample[0].proposed.unix_mode {
+        assert_eq!(mode & 0o222, 0);
+    }
+    assert_eq!(
+        fs::metadata(h.directory.path().join(&names[0]))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        time,
+        "proposed metadata is a preview and must not mutate the file"
+    );
+}
+
+#[tokio::test]
+async fn metadata_preview_refreshes_without_requesting_a_mutation() {
+    let mut h = Harness::new(&[("FILE", false)]);
+    h.controller.prepare(h.request.clone()).await;
+    h.preview(0).await;
+    let time = UNIX_EPOCH + Duration::from_secs(1_500_000_000);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(h.directory.path().join("FILE"))
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+    h.controller
+        .preview_metadata(h.request.id, 1, MetadataPatch::default())
+        .await;
+    let refreshed = h.preview(1).await;
+    assert_eq!(refreshed.sample[0].current.modified, Some(time));
+    assert!(refreshed.patch.is_empty());
+}
+
+#[tokio::test]
+async fn metadata_refresh_rejects_replacement_of_the_captured_native_target() {
+    let mut h = Harness::new(&[("SOURCE", false)]);
+    h.controller.prepare(h.request.clone()).await;
+    h.preview(0).await;
+    fs::rename(
+        h.directory.path().join("SOURCE"),
+        h.directory.path().join("HELD"),
+    )
+    .unwrap();
+    fs::write(h.directory.path().join("SOURCE"), b"replacement").unwrap();
+    h.controller
+        .preview_metadata(h.request.id, 1, MetadataPatch::default())
+        .await;
+    let refreshed = h.preview(1).await;
+    assert_eq!(refreshed.unsupported, 1);
+    assert!(refreshed.sample[0].issue.is_some());
+    assert!(
+        refreshed.sample[0].current.modified.is_none(),
+        "failed inspection must not show cached values as current"
+    );
+    assert_eq!(
+        fs::read(h.directory.path().join("SOURCE")).unwrap(),
+        b"replacement"
+    );
 }
 
 #[tokio::test]

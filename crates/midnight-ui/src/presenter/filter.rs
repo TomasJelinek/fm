@@ -89,7 +89,9 @@ impl Presenter {
             self.filter_dialog.busy = false;
             match result {
                 Ok(()) => self.filter_dialog.ready = Some(request),
-                Err(error) => self.filter_dialog.error = error.to_string(),
+                Err(error) => {
+                    self.filter_dialog.error = crate::error_presentation::describe(&error)
+                }
             }
         }
         None

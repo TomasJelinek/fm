@@ -1,6 +1,7 @@
 import { Button, ScrollView } from "std-widgets.slint";
 import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
 
 export struct ComparisonView {
     open: bool, busy: bool, error: string, summary: string,
@@ -59,7 +60,7 @@ export component CompareDirectoriesDialog inherits Rectangle {
                         hint: "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
                     }
                     if root.model.busy: Text { text: "Comparing…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                    if root.model.error != "": Text { text: root.model.error; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    if root.model.error != "": ErrorNotice { text: root.model.error; }
                     if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                 }
             }

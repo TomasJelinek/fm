@@ -67,10 +67,14 @@ fn empty_file_creation_does_not_require_a_focused_entry() {
 }
 
 fn created_file_refresh(p: &mut Presenter, destination: PathBuf) {
+    created_entry_refresh(p, destination, MutationKind::CreateFile);
+}
+
+fn created_entry_refresh(p: &mut Presenter, destination: PathBuf, kind: MutationKind) {
     p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
             id: OperationId(1),
-            kind: MutationKind::CreateFile,
+            kind,
             state: OperationState::Completed,
             total: 1,
             completed: 1,
@@ -84,6 +88,24 @@ fn created_file_refresh(p: &mut Presenter, destination: PathBuf) {
         },
     ))));
     p.refresh_operation_paths(&|_| true);
+}
+
+#[test]
+fn created_external_directory_keeps_panel_path_search_and_caret_during_refresh() {
+    let mut p = ready();
+    p.preferences.values.quick_search_filter = true;
+    p.change_search_query(PaneId::Left, "second", &|_| true);
+    let source = p.panes[0].path.clone();
+    let cursor = p.panes[0].cursor;
+    created_entry_refresh(
+        &mut p,
+        test_root().join("elsewhere/new"),
+        MutationKind::CreateDirectory,
+    );
+    assert_eq!(p.panes[0].path, source);
+    assert_eq!(p.panes[0].search.query, "second");
+    assert_eq!(p.panes[0].cursor, cursor);
+    assert!(p.panes[0].preserve_viewport);
 }
 
 #[test]
@@ -142,6 +164,7 @@ fn stale_confirmation_and_failed_enqueue_do_not_confirm_another_operation() {
             kind: MutationKind::Rename,
             files: 1,
             folders: 0,
+            file_bytes: None,
             sample: vec![MutationItem {
                 path: p.panes[0].entries[0].path.clone(),
                 kind: EntryKind::File,

@@ -5,6 +5,28 @@ pub(super) fn test_root() -> PathBuf {
 }
 
 #[test]
+fn unique_bookmarks_compare_native_bytes_without_display_loss() {
+    use crate::Presenter;
+    use midnight_core::{Event, PaneId, UserPreferences};
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x80".to_vec()));
+    let second = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x81".to_vec()));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut p = Presenter::new(first.clone(), second.clone());
+    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
+    assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
+    assert!(
+        p.add_bookmark(PaneId::Left, "Duplicate".into(), None, &|_| panic!(
+            "duplicate"
+        ))
+    );
+    assert_eq!(p.bookmarks().len(), 2);
+    assert_eq!(p.bookmarks()[0].path.as_os_str(), first.as_os_str());
+    assert_eq!(p.bookmarks()[1].path.as_os_str(), second.as_os_str());
+}
+
+#[test]
 fn native_choice_tokens_preserve_non_utf8_bytes_and_reject_display_alias_replacement() {
     use crate::Presenter;
     use midnight_core::{Command, Event, LocationKind, NavigationLocation, PaneId, ShellFlavor};

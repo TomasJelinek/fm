@@ -1,9 +1,12 @@
 # Public plugin API/SDK verification — 2026-11-06
 
-This stage provides a draft C ABI, bounded message models, owned asynchronous SDK,
-versioned offline release bundles and an independently built conformance plugin.
-It does not yet provide application plugin discovery, an F3 window, a concrete text
-viewer, syntax highlighting, Markdown rendering or filesystem plugins.
+This record covers the initial isolated API/SDK gate: a draft C ABI, bounded
+message models, owned asynchronous SDK, versioned offline release bundles and an
+independently built conformance plugin. Subsequent work implemented application
+discovery, the F3 window and independent Basic, Source and Markdown viewers; see
+[viewer implementation verification](viewer-implementation.md) and the current
+[developer guide](../developer/README.md). Filesystem/provider plugins remain
+design-only. Counts and artifact hashes below are evidence from this earlier gate.
 
 ## Independent build and native boundary
 
@@ -76,8 +79,9 @@ Two independent packaging runs produced identical canonical SHA-256 values:
 | `midnight-plugin-sdk-0.1.0.crate` | `4c576bfd7238e97263ad51eb7e51387774e57b7b149450b1959fb08bf2cb4f9d` |
 
 The same Windows-produced canonical archives passed the copied Linux SO build
-and native C tests. The API remains a draft until the real application loader and
-viewer content broker exercise this contract.
+and native C tests. The application loader and viewer content broker now also
+exercise this contract, as recorded in the later viewer verification. ABI 1.0
+remains a versioned draft without a long-term compatibility commitment.
 
 Local ignored evidence: `_build/qa/viewer-plugins/`, including
 `api-sdk-final-tests.log`, `api-sdk-final-clippy.log`, `linux-api-sdk-final.log`,

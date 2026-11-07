@@ -1,4 +1,6 @@
 //! Real keyboard and pointer routing for tab identities and persistent bookmarks.
+#[path = "support/render.rs"]
+mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -6,7 +8,9 @@ use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
     window::WindowInner,
 };
-use midnight_ui::{BookmarkRow, MainWindow, NavigationChoiceRow, TabRow};
+use midnight_ui::{
+    BookmarkRow, LocationRole, LocationRow, MainWindow, NavigationChoiceRow, TabRow,
+};
 use slint::{
     ComponentHandle, ModelRc, SharedString, VecModel,
     platform::{
@@ -131,6 +135,22 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         slot: 1,
     }])));
     window.set_left_path("D:\\文档".into());
+    window.set_left_locations(ModelRc::new(VecModel::from(vec![
+        LocationRow {
+            identity: "bookmark:0:31".into(),
+            kind: LocationRole::HotPath,
+            compact_label: "1".into(),
+            tooltip: "D:\\文档\\work".into(),
+            ..Default::default()
+        },
+        LocationRow {
+            identity: "bookmark:0:32".into(),
+            kind: LocationRole::HotPath,
+            compact_label: "0".into(),
+            tooltip: "D:\\zero".into(),
+            ..Default::default()
+        },
+    ])));
     window.set_left_bookmark_name("文档".into());
     window.set_hot_path_choices(ModelRc::new(VecModel::from(vec![NavigationChoiceRow {
         identity: "manage-hot-paths".into(),
@@ -179,6 +199,14 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         size: slint::LogicalSize::new(1340.0, 820.0),
     });
     window.invoke_focus_files();
+    chord(&window, &[], "1");
+    assert_eq!(events.borrow().last().map(String::as_str), Some("jump:0:1"));
+    chord(&window, &[], "0");
+    assert_eq!(
+        events.borrow().last().map(String::as_str),
+        Some("jump:0:10")
+    );
+    events.borrow_mut().clear();
     chord(&window, &[Key::Control], "t");
     chord(&window, &[Key::Control], "w");
     chord(&window, &[Key::Control], Key::Tab);
@@ -227,6 +255,10 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     window.set_native_shortcuts_authoritative(false);
     window.invoke_focus_command();
     let count = events.borrow().len();
+    for digit in ["1", "2", "3", "0"] {
+        chord(&window, &[], digit);
+    }
+    assert_eq!(window.get_command_text().as_str(), "1230");
     for (mods, text) in [
         (vec![Key::Control], "t"),
         (vec![Key::Control], "w"),
@@ -243,6 +275,10 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     chord(&window, &[Key::Control], Key::Tab);
     assert_eq!(window.get_focused_pane(), 1);
     chord(&window, &[Key::Control], "g");
+    for digit in ["1", "2", "3", "0"] {
+        chord(&window, &[], digit);
+    }
+    assert_eq!(window.get_right_path_draft().as_str(), "1230");
     chord(&window, &[Key::Control], "t");
     chord(&window, &[Key::Control], "1");
     assert_eq!(
@@ -250,6 +286,17 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         count,
         "navigation shortcuts must not steal path editing"
     );
+    chord(&window, &[], Key::Escape);
+    window.set_right_search_query("".into());
+    chord(&window, &[], "a");
+    chord(&window, &[], "1");
+    assert_eq!(window.get_right_search_query().as_str(), "a1");
+    assert_eq!(
+        events.borrow().len(),
+        count,
+        "digit must edit an active filename search"
+    );
+    chord(&window, &[], Key::Escape);
     let selected = Rc::new(RefCell::new(Vec::new()));
     let captured = selected.clone();
     window.on_tab_select(move |pane, identity| captured.borrow_mut().push((pane, identity)));
@@ -265,6 +312,29 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         });
     };
     draw(&mut pixels);
+    for (path, number) in [("D:\\文档\\work", "1"), ("D:\\zero", "0")] {
+        assert!(
+            ui::text_values(ui::root_item(&window, path, AccessibleRole::Button))
+                .iter()
+                .any(|text| text == number),
+            "drive button must display its Hot Path digit"
+        );
+    }
+    let button_pixels = |path| {
+        let center = ui::root_position(&window, path, AccessibleRole::Button);
+        let mut sample = Vec::new();
+        for y in center.y as usize - 8..center.y as usize + 8 {
+            for x in center.x as usize - 8..center.x as usize + 8 {
+                sample.push(pixels[y * 1340 + x]);
+            }
+        }
+        sample
+    };
+    assert_ne!(
+        button_pixels("D:\\文档\\work"),
+        button_pixels("D:\\zero"),
+        "numbered Hot Paths must render distinct digits, not identical star icons"
+    );
     ui::click_root(&window, "B\nD:\\文档\\B", AccessibleRole::Button);
     assert_eq!(*selected.borrow(), vec![(0, SharedString::from("12"))]);
     assert_eq!(window.get_focused_pane(), 0);
@@ -423,6 +493,12 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             .borrow_mut()
             .push(format!("open:{pane}:{identity}"))
     });
+    let captured = events.clone();
+    window.on_bookmark_assign(move |identity, slot| {
+        captured
+            .borrow_mut()
+            .push(format!("assign:{identity}:{slot}"))
+    });
     draw(&mut pixels);
     ui::click_root(&window, "Hot Paths", AccessibleRole::Combobox);
     chord(&window, &[], Key::Return); // The final dropdown item opens its manager.
@@ -432,17 +508,12 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
         -1,
         "the popup must take real editor focus"
     );
-    chord(&window, &[Key::Control], "a");
-    chord(&window, &[], "Renamed [星] Café");
-    chord(&window, &[], Key::Tab);
-    chord(&window, &[], Key::DownArrow);
-    chord(&window, &[], Key::Tab);
-    chord(&window, &[], Key::Return);
-    assert_eq!(events.borrow().last().unwrap(), "add:0:Renamed [星] Café:1");
+    ui::click_popup(&window, "Add current", AccessibleRole::Button);
+    assert_eq!(events.borrow().last().unwrap(), "add:0:文档:0");
     draw(&mut pixels);
     ui::click_popup(
         &window,
-        "Remove bookmark: 文档 [work]\nD:\\文档\\work\nThe folder is kept.",
+        "Remove Hot Path: D:\\文档\\work\nThe folder is kept.",
         AccessibleRole::Button,
     );
     assert_eq!(events.borrow().last().unwrap(), "remove:31");
@@ -453,14 +524,47 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
     );
     ui::click_popup(
         &window,
-        "文档 [work]\nD:\\文档\\work\nHot Path 1 (Ctrl+1 / Shift+1)",
+        "D:\\文档\\work\nHot Path 1 (1 / Ctrl+1 / Shift+1)",
         AccessibleRole::Button,
     );
-    assert_eq!(events.borrow().last().unwrap(), "open:0:31");
+    assert!(
+        ui::has_popup(&window),
+        "selecting a saved path must keep its manager open"
+    );
     assert_eq!(
         window.get_focused_pane(),
-        0,
-        "opening a bookmark restores its panel focus"
+        -1,
+        "selecting a saved path must retain management focus"
     );
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|event| event.starts_with("open:")),
+        "management selection must not navigate"
+    );
+    draw(&mut pixels);
+    render::snapshot(
+        &ui::TestUi {
+            window: window.as_weak().upgrade().unwrap(),
+            native: native.clone(),
+            pixels: pixels.clone(),
+            width: 1340,
+            height: 820,
+        },
+        "hot-paths-manager",
+    );
+    ui::click_popup(&window, "Hot Path shortcut", AccessibleRole::Combobox);
+    chord(&window, &[], Key::DownArrow);
+    chord(&window, &[], Key::Return);
+    draw(&mut pixels);
+    ui::click_popup(&window, "Apply shortcut", AccessibleRole::Button);
+    assert_eq!(events.borrow().last().unwrap(), "assign:31:2");
+    assert!(
+        ui::has_popup(&window),
+        "applying a shortcut must keep management open"
+    );
+    ui::click_popup(&window, "Close", AccessibleRole::Button);
+    assert_eq!(window.get_focused_pane(), 0);
     window.hide().unwrap();
 }

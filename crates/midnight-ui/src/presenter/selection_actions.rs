@@ -6,6 +6,7 @@ pub(super) enum SelectionIntent {
     Properties,
     Copy,
     Metadata { pane: PaneId, case: bool },
+    FolderSizes(PaneId),
     Menu(file_actions::MenuContext),
     Drag(DragId),
 }
@@ -16,6 +17,7 @@ impl SelectionIntent {
             Self::Properties => "Properties",
             Self::Copy => "Copy",
             Self::Metadata { .. } => "editing attributes, times and case",
+            Self::FolderSizes(_) => "calculating folder sizes",
             Self::Menu(_) => "Context menu",
             Self::Drag(_) => "dragging files",
         }
@@ -38,6 +40,9 @@ impl Presenter {
         intent: SelectionIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.native_action_allowed(pane) {
+            return;
+        }
         if !self.panes[pane.index()].search_allows_activation() {
             return;
         }
@@ -71,7 +76,11 @@ impl Presenter {
         let selection = p.selected.clone();
         let navigation = NavigationId(p.generation);
         let revision = p.selection_revision;
-        if !pending && selection.is_empty() && fallback.is_none() {
+        if !pending
+            && selection.is_empty()
+            && fallback.is_none()
+            && !matches!(intent, SelectionIntent::FolderSizes(_))
+        {
             return;
         }
         let request = self.desktop.request();
@@ -118,6 +127,11 @@ impl Presenter {
             SelectionIntent::Metadata { pane, case } => {
                 self.desktop.requests.remove(&request);
                 self.start_captured_metadata(pane, case, &files, send);
+                return;
+            }
+            SelectionIntent::FolderSizes(pane) => {
+                self.desktop.requests.remove(&request);
+                self.start_captured_folder_sizes(pane, files.selection, send);
                 return;
             }
             SelectionIntent::Menu(context) => {

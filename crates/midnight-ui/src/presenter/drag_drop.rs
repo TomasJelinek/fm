@@ -289,6 +289,7 @@ impl Presenter {
             (!self.operations.closing
                 && !self.drag_drop.closed
                 && !p.loading
+                && p.native_capabilities()
                 && p.path.is_absolute())
             .then_some((pane, navigation, p.path.as_path(), rect))
         });

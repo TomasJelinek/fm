@@ -35,6 +35,12 @@ and their surface, with more distinct header, selection and active-panel colors.
 Selection also uses borders and existing markers, not only a color change.
 Render and inspect the actual file panels and Options at both densities.
 
+Light and Dark also distinguish folder names from regular files with blue text:
+deep blue (`#174d7a`) on Light and pale blue (`#a8d5ff`) on Dark. Their neutral
+surfaces stay unchanged. Folder text retains at least 4.5:1 contrast on every row
+background; selected text and matched search prefixes retain their existing
+priority, and compression continues to use its separate marker.
+
 ## Command geometry
 
 The command bar and its editor share `Theme.bottom-height` with the footer.

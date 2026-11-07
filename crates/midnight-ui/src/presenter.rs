@@ -1,4 +1,5 @@
 use midnight_core::*;
+mod archives;
 mod bookmarks;
 mod choices;
 mod comparison;
@@ -11,6 +12,7 @@ mod file_actions;
 mod filter;
 mod fonts;
 pub(crate) mod keyboard;
+pub(crate) mod keyboard_editor;
 mod metadata;
 mod operations;
 mod panel_details;
@@ -20,6 +22,7 @@ mod search;
 mod selection;
 mod selection_actions;
 mod selection_preview;
+mod selection_sizes;
 mod shortcuts;
 mod tabs;
 mod terminal;
@@ -59,9 +62,27 @@ pub(crate) struct SizeScanScope {
     path: PathBuf,
     entries: Arc<[Entry]>,
     index: Arc<DirectoryIndex>,
+    selection: Option<Arc<SelectionSnapshot>>,
+}
+
+impl SizeScanScope {
+    fn contains(&self, path: &Path) -> bool {
+        self.index
+            .by_path
+            .get(path)
+            .and_then(|id| self.index.by_id.get(id))
+            .and_then(|index| self.entries.get(*index))
+            .is_some_and(|entry| entry.kind == EntryKind::Directory)
+            && self
+                .selection
+                .as_ref()
+                .is_none_or(|selection| selection.contains_path(path))
+    }
 }
 
 pub(crate) struct Pane {
+    archive: Option<archives::ArchivePane>,
+    archive_request: bool,
     /// Last successful location. Provisional rows belong to `display_path()`.
     pub(crate) path: PathBuf,
     pub(crate) entries: Arc<[Entry]>,
@@ -71,6 +92,7 @@ pub(crate) struct Pane {
     pub(crate) size_scan: Option<FolderSizeScanId>,
     pub(crate) size_scan_scope: Option<SizeScanScope>,
     pub(crate) size_scan_attempted: bool,
+    selection_sizes: selection_sizes::State,
     entry_size_scans: Vec<entry_sizes::EntrySizeScope>,
     pub(crate) preserve_viewport: bool,
     size_scan_generation: u64,
@@ -110,6 +132,7 @@ pub(crate) struct Pane {
 
 /// In-memory state for two independent panes and their current navigation generations.
 pub struct Presenter {
+    archives_available: bool,
     pub(crate) panes: [Pane; 2],
     pub(crate) volumes: Vec<Volume>,
     pub(crate) volumes_revision: i32,
@@ -117,6 +140,7 @@ pub struct Presenter {
     pub(crate) volumes_error: String,
     pub(crate) active: PaneId,
     pub(crate) desktop: desktop::DesktopState,
+    pub(crate) thumbnails: crate::thumbnail_presentation::ThumbnailState,
     pub(crate) preferences: preferences::PreferencesState,
     pub(crate) editor: editor::EditorState,
     pub(crate) viewer_plugins: viewer_plugins::ViewerPluginsState,
@@ -142,6 +166,7 @@ impl Presenter {
     /// Create initial pane locations without sending commands or performing filesystem work.
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
         Self {
+            archives_available: false,
             tabs: tabs::TabsState::new(),
             choices: choices::ChoicesState::default(),
             selection_actions: [None, None],
@@ -156,6 +181,7 @@ impl Presenter {
             volumes_error: String::new(),
             active: PaneId::Left,
             desktop: desktop::DesktopState::default(),
+            thumbnails: crate::thumbnail_presentation::ThumbnailState::default(),
             preferences: preferences::PreferencesState::default(),
             editor: editor::EditorState::default(),
             viewer_plugins: viewer_plugins::ViewerPluginsState::default(),
@@ -180,7 +206,7 @@ impl Presenter {
     /// operations. A provisional or still-loading directory is never acknowledged.
     pub fn visible_directory(&self, pane: PaneId) -> Option<VisibleDirectory> {
         let p = &self.panes[pane.index()];
-        if p.loading {
+        if p.loading || p.archive.is_some() {
             return None;
         }
         Some(VisibleDirectory {
@@ -213,6 +239,7 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.retire_metadata();
         self.retire_drag_drop();
         self.retired
             .push(Box::new(mem::take(&mut self.choices.items)));
@@ -299,7 +326,7 @@ impl Presenter {
                 sort: p.sort,
                 source,
             }
-        } else if path == p.path && p.successful_generation.is_some() {
+        } else if p.archive.is_none() && path == p.path && p.successful_generation.is_some() {
             Command::Refresh {
                 pane,
                 navigation,
@@ -321,6 +348,7 @@ impl Presenter {
             p.error = "Navigation queue is busy. Try again.".into();
             return false;
         }
+        p.archive_request = false;
         self.navigation_accepted_impl(pane, navigation, path, history, resort, send);
         self.tab_navigation_accepted(pane, send);
         true
@@ -469,16 +497,19 @@ impl Presenter {
         if let Event::LocaleLoaded(result) = event {
             match result {
                 Ok(locale) => self.number_locale = locale,
-                Err(error) => self
-                    .desktop
-                    .report("Regional format unavailable", error.to_string()),
+                Err(error) => self.desktop.report(
+                    "Regional format unavailable",
+                    crate::error_presentation::describe(&error),
+                ),
             }
             return;
         }
         if let Event::NetworkConnectionsFinished(result) = event {
             if let Err(error) = result {
-                self.desktop
-                    .report("Network connections", error.to_string());
+                self.desktop.report(
+                    "Network connections",
+                    crate::error_presentation::describe(&error),
+                );
             }
             return;
         }
@@ -503,7 +534,13 @@ impl Presenter {
         let Some(event) = self.apply_selection_event(event) else {
             return;
         };
+        let Some(event) = self.apply_selection_sizes(event) else {
+            return;
+        };
         let Some(event) = self.apply_desktop(event) else {
+            return;
+        };
+        let Some(event) = self.apply_archive_event(event) else {
             return;
         };
         let event =
@@ -536,7 +573,7 @@ impl Presenter {
                     return;
                 }
                 Event::VolumesFailed(error) => {
-                    self.volumes_error = error.to_string();
+                    self.volumes_error = crate::error_presentation::describe(&error);
                     return;
                 }
                 Event::VolumeDetailsUpdated {
@@ -623,6 +660,7 @@ impl Presenter {
                 p.metadata.extend(entries);
             }
             Event::ListingFinished { entries, index, .. } => {
+                self.retired.push(Box::new(p.archive.take()));
                 let mut request = p.pending.take().expect("validated pending generation");
                 debug_assert_eq!(request.navigation, navigation);
                 let same_location = p.path == request.path;
@@ -741,7 +779,7 @@ impl Presenter {
                 self.retired.push(Box::new(request));
                 p.retire_stream(&mut self.retired);
                 p.loading = false;
-                p.error = error.to_string();
+                p.error = crate::error_presentation::describe(&error);
             }
             Event::SpaceUpdated { space, .. } => {
                 if let Some(request) = &mut p.pending {
@@ -762,6 +800,9 @@ impl Presenter {
     }
 
     pub(crate) fn up(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
+        if self.panes[pane.index()].archive.is_some() {
+            return self.archive_up(pane, send);
+        }
         let Some(path) = self.panes[pane.index()]
             .display_path()
             .parent()
@@ -778,6 +819,9 @@ impl Presenter {
         delta: isize,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].archive.is_some() {
+            return self.archive_history(pane, delta, send);
+        }
         let p = &self.panes[pane.index()];
         let Some(index) = p
             .history_index
@@ -804,6 +848,17 @@ impl Presenter {
         text: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].archive.is_some() {
+            if text == ".." {
+                return self.archive_up(pane, send);
+            }
+            let path = PathBuf::from(text);
+            if path.is_absolute() {
+                return self.navigate(pane, path, None, send);
+            }
+            self.desktop.report("Archive path", "Navigate archive folders through their rows or parent entry; display text is not a native path.".into());
+            return false;
+        }
         let current = self.panes[pane.index()].display_path();
         if text == current.to_string_lossy() {
             return self.navigate(pane, current.to_owned(), None, send);
@@ -822,6 +877,12 @@ impl Presenter {
         row: usize,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].loading {
+            return false;
+        }
+        if self.panes[pane.index()].archive.is_some() {
+            return self.archive_open(pane, row, send);
+        }
         if self.panes[pane.index()].has_parent() && row == 0 {
             return self.up(pane, send);
         }
@@ -836,6 +897,9 @@ impl Presenter {
                 self.navigate(pane, path, None, send)
             }
             Some((EntryKind::File | EntryKind::Symlink, path)) => {
+                if self.archives_available && archives::archive_extension(&path) {
+                    return self.archive_navigate(pane, ArchiveAction::Open { path }, send);
+                }
                 self.open_native_entry(pane, path, send)
             }
             Some((EntryKind::Other, _)) => {
@@ -858,6 +922,13 @@ impl Presenter {
         self.select_row_modified(pane, row, toggle, false, send);
     }
     pub(crate) fn move_cursor(&mut self, pane: PaneId, key: i32, send: &dyn Fn(Command) -> bool) {
+        if self.panes[pane.index()].archive.is_some() && matches!(key, 8 | 9) {
+            let row = self.panes[pane.index()].cursor_index().unwrap_or(0);
+            self.archive_select_row(pane, row, true, false, send);
+            let last = self.panes[pane.index()].display_len();
+            self.focus_display_row(pane, row.saturating_add(1).min(last));
+            return;
+        }
         let p = &self.panes[pane.index()];
         if matches!(key, 8 | 9) && !p.search_allows_activation() {
             return;
@@ -927,6 +998,14 @@ impl Presenter {
             column,
             descending: p.sort.column == column && !p.sort.descending,
         };
+        if let Some(archive) = &p.archive {
+            let location = archive.location.clone();
+            if self.archive_navigate(pane, ArchiveAction::List(location), send) {
+                return true;
+            }
+            self.panes[pane.index()].sort = old;
+            return false;
+        }
         let path = p.display_path().to_owned();
         if self.navigate_impl(pane, path, None, true, send) {
             true
@@ -956,6 +1035,8 @@ impl Presenter {
 impl Pane {
     fn new(path: PathBuf) -> Self {
         Self {
+            archive: None,
+            archive_request: false,
             parent_cursor: parent_path(&path).is_some(),
             path,
             entries: Arc::from([]),
@@ -967,6 +1048,7 @@ impl Pane {
             entry_size_scans: Vec::new(),
             preserve_viewport: false,
             size_scan_generation: 0,
+            selection_sizes: selection_sizes::State::default(),
             selected: Arc::default(),
             selection_preview: Vec::new(),
             selection_anchor: None,
@@ -1020,7 +1102,7 @@ impl Pane {
         self.rows().get(*index)
     }
     pub(crate) fn has_parent(&self) -> bool {
-        parent_path(self.display_path()).is_some()
+        self.archive.is_some() || parent_path(self.display_path()).is_some()
     }
     pub(crate) fn parent_offset(&self) -> usize {
         usize::from(self.has_parent())

@@ -90,6 +90,7 @@ pub(super) fn prepare(
             kind: request.kind,
             files: 0,
             folders: 0,
+            file_bytes: Some(0),
             sample: vec![],
         },
     };
@@ -163,6 +164,15 @@ pub(super) fn prepare(
                 job.preview.folders += 1;
             } else {
                 job.preview.files += 1;
+                let item = prepared.item();
+                let size = (item.kind == EntryKind::File)
+                    .then_some(item.metadata.size)
+                    .flatten();
+                job.preview.file_bytes = job
+                    .preview
+                    .file_bytes
+                    .zip(size)
+                    .and_then(|(total, size)| total.checked_add(size));
             }
             if job.preview.sample.len() < 32 {
                 job.preview.sample.push(prepared.item().clone());
@@ -230,16 +240,14 @@ impl Job {
                 let components: Vec<_> = path.components().collect();
                 if name.is_empty()
                     || name.contains('\0')
-                    || components.is_empty()
-                    || components
-                        .iter()
-                        .any(|part| !matches!(part, Component::Normal(_)))
                     || (progress.kind != MutationKind::CreateDirectory
-                        && (components.len() != 1 || path.file_name() != Some(path.as_os_str())))
+                        && (components.len() != 1
+                            || !matches!(components[0], Component::Normal(_))
+                            || path.file_name() != Some(path.as_os_str())))
                 {
                     return Err(error(
                         path,
-                        "Enter a relative name without '.' or '..' components.",
+                        "Enter a path for directory creation, or a single name for rename and empty-file creation.",
                     ));
                 }
                 self.name = Some(name.into());

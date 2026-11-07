@@ -1,59 +1,6 @@
 //! Presentation of verified copy counters and versioned name conflicts.
 use super::*;
 
-pub(super) fn rows(presenter: &Presenter) -> Vec<OperationRow> {
-    presenter
-        .copies
-        .progress
-        .iter()
-        .rev()
-        .map(|progress| {
-            use CopyOperationState as S;
-            let state = match progress.state {
-                S::Queued => "Queued",
-                S::Preparing => "Preparing",
-                S::Running => match progress.phase {
-                    CopyOperationPhase::Planning => "Reading folders",
-                    CopyOperationPhase::Copying => "Copying",
-                    CopyOperationPhase::Syncing => "Saving",
-                    CopyOperationPhase::Verifying => "Verifying SHA-256",
-                    CopyOperationPhase::Publishing => "Finishing",
-                },
-                S::WaitingForDecision => "Needs a decision",
-                S::CancelRequested => "Cancelling",
-                S::Cancelled => "Cancelled",
-                S::Completed => "Completed",
-                S::CompletedWithErrors => "Completed with errors",
-                S::Failed => "Failed",
-            };
-            OperationRow {
-                identity: format!("copy-job:{}", progress.id.0).into(),
-                title: format!("Copy — {state}").into(),
-                detail: format!(
-                    "{} files · {} skipped · {} errors\n{} bytes copied · {} bytes verified\n{}",
-                    presenter.number_locale.format_u64(progress.files_completed),
-                    presenter.number_locale.format_u64(progress.skipped),
-                    presenter.number_locale.format_u64(progress.failed),
-                    presenter.number_locale.format_u64(progress.copied_bytes),
-                    presenter.number_locale.format_u64(progress.verified_bytes),
-                    progress
-                        .current_path
-                        .as_deref()
-                        .unwrap_or(&progress.destination_directory)
-                        .display()
-                )
-                .into(),
-                cancellable: !progress.state.is_terminal(),
-                attention: presenter
-                    .copies
-                    .conflicts
-                    .iter()
-                    .any(|c| c.id == progress.id),
-            }
-        })
-        .collect()
-}
-
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     if let Some(progress) = presenter.copies.progress.last() {
         let token: SharedString = progress.id.0.to_string().into();

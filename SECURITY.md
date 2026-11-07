@@ -15,8 +15,13 @@ active mutating job across both queues. Each queue is FIFO; cross-queue ordering
 is acquisition order at the shared mutation gate. Native handles
 scale with the selected root count and traversal depth; resource failure is an
 error, never permission to substitute a target. Duplicate operation IDs cannot
-execute twice. Rename never overwrites. F7 accepts a relative nested path and
-does not follow links; partial intermediate creation is retained on failure.
+execute twice. Rename never overwrites. F7 accepts explicit absolute or panel-relative
+paths, including `..` outside the captured panel. It walks components through native
+handles without following entered links or lexically collapsing an untraversed
+component before `..`. Explicit creation paths may cross drives/mounts; this does
+not relax recursive destructive traversal. The final directory must be new, and
+partial intermediate creation is retained on failure or cancellation. Empty-file
+creation still accepts only one basename. See the [F7 path contract](docs/superpowers/specs/2026-11-06-create-any-path.md).
 
 Delete/F8 uses only system Trash; Shift+Delete/Shift+F8 explicitly requests
 permanent deletion after a distinct confirmation. Unavailable Trash never triggers

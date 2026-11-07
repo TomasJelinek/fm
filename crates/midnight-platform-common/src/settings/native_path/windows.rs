@@ -48,6 +48,7 @@ mod tests {
     fn malformed_unicode_tab_paths_roundtrip_through_preferences() {
         let mut preferences = midnight_core::UserPreferences::default();
         preferences.tabs[0] = midnight_core::PaneTabPreferences {
+            archives: Default::default(),
             paths: vec![PathBuf::from(OsString::from_wide(&[
                 0x43, 0x3a, 0x5c, 0xd800,
             ]))],

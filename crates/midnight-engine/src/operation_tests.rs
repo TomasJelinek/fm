@@ -11,11 +11,15 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+#[path = "operation_summary_tests.rs"]
+mod summary;
+
 #[derive(Default)]
 struct Calls {
     prepared: AtomicUsize,
     renamed: Mutex<Vec<(PathBuf, String)>>,
     created: Mutex<Vec<PathBuf>>,
+    directories: Mutex<Vec<(PathBuf, PathBuf)>>,
     deleted: Mutex<Vec<(PathBuf, DeleteMode)>>,
     blocked: std::sync::atomic::AtomicBool,
     fail_after_progress: std::sync::atomic::AtomicBool,
@@ -66,8 +70,13 @@ struct FakeDirectory {
     calls: Arc<Calls>,
 }
 impl PreparedDirectory for FakeDirectory {
-    fn create(&self, _: &Path, _: &Cancellation) -> Result<PathBuf, FsError> {
-        panic!("an empty-file request must not create a directory")
+    fn create(&self, path: &Path, _: &Cancellation) -> Result<PathBuf, FsError> {
+        self.calls
+            .directories
+            .lock()
+            .unwrap()
+            .push((self.path.clone(), path.to_owned()));
+        Ok(self.path.join(path))
     }
     fn create_file(&self, name: &OsStr, _: &Cancellation) -> Result<PathBuf, FsError> {
         if self.calls.fail_after_progress.load(Ordering::Acquire) {
@@ -153,6 +162,8 @@ impl Harness {
         let view = Arc::new(DirectoryIndex::from_entries(&entries));
         let snapshots = Arc::new(Mutex::new([
             SnapshotState {
+                archive: None,
+                archive_navigation: None,
                 visible: Some(CommittedSnapshot {
                     navigation: source.navigation,
                     path,
@@ -424,6 +435,34 @@ async fn create_file_uses_captured_directory_without_focus_and_confirms_exactly_
     h.controller.cancel(h.request.id);
     assert_eq!(h.finished().await.state, OperationState::Cancelled);
     assert_eq!(h.calls.created.lock().unwrap().as_slice(), &[expected]);
+    assert!(h.calls.directories.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_directory_passes_explicit_paths_to_the_captured_native_base_after_navigation() {
+    for name in [
+        "../sibling/文档",
+        "/absolute/new",
+        "C:\\absolute\\new",
+        "\\\\server\\share\\new",
+    ] {
+        let mut h = Harness::new(MutationKind::CreateDirectory);
+        h.request.focused = None;
+        h.controller.prepare(h.request.clone()).await;
+        h.preview().await;
+        h.controller.snapshots.lock().unwrap()[0].visible = None;
+        h.controller.confirm(h.request.id, Some(name.into())).await;
+        assert_eq!(
+            h.finished().await.state,
+            OperationState::Completed,
+            "{name}"
+        );
+        assert_eq!(
+            h.calls.directories.lock().unwrap().as_slice(),
+            &[(h.request.source.path.clone(), PathBuf::from(name))]
+        );
+        assert!(h.calls.created.lock().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]

@@ -37,6 +37,7 @@ fn scan(pane: PaneId, navigation: u64, generation: u64) -> Command {
         pane,
         navigation: NavigationId(navigation),
         scan: FolderSizeScanId(generation),
+        selection: None,
     }
 }
 

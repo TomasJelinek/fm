@@ -8,6 +8,7 @@ export component FunctionBar inherits HorizontalLayout {
     in property <ActionIcons> icons;
     in property <bool> control-layer;
     in property <bool> network-available;
+    in property <bool> native-filesystem: true;
     in property <bool> searching;
     in property <int> pane;
     callback action(string, int);
@@ -41,7 +42,8 @@ export component FunctionBar inherits HorizontalLayout {
         // The held Ctrl layer supplies the modifier; keep F1…F12 readable in compact cells.
         compact-text: root.control-layer ? (self.control.action == "" ? "" : "F" + (index + 1))
             : ShortcutHints.key(self.normal-action) == "" ? label : ShortcutHints.key(self.normal-action);
-        enabled: self.action-id != "" && (!self.action-id.starts-with("network.") || root.network-available);
+        enabled: self.action-id != "" && (!self.action-id.starts-with("network.") || root.network-available)
+            && (root.native-filesystem || !self.action-id.starts-with("files.") || self.action-id == "files.view" || self.action-id == "files.view-basic");
         opacity: root.control-layer && self.control.action == "" ? 0 : 1;
         hint: root.control-layer ? self.control.hint
             : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 6 ? " · create a folder or nested relative path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : index >= 10 ? " · system network drive dialog" : " · not implemented yet");

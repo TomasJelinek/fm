@@ -1,0 +1,49 @@
+import { Theme } from "theme.slint";
+import { DialogText } from "dialog-text.slint";
+import { ErrorGlyph } from "error-notice.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+
+export component NoticeDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <bool> error;
+    in property <int> generation;
+    callback copy-details();
+    callback close();
+    init => { close-button.focus(); }
+    changed generation => { close-button.focus(); }
+    background: Theme.surface; border-color: Theme.active-frame;
+    border-width: 1px; border-radius: 6px;
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: 20px; spacing: 16px;
+            HorizontalLayout {
+                spacing: 12px; cross-axis-alignment: center;
+                if root.error : ErrorGlyph { width: 32px; height: 32px; }
+                Text {
+                    text: root.title; color: root.error ? Theme.error-text : Theme.strong-text;
+                    font-size: Theme.font-size * 1.25; font-weight: 600; wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+            }
+            Rectangle { height: 1px; background: Theme.frame; }
+            DialogText { text: root.body; vertical-stretch: 1; }
+            HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton {
+                    text: "Copy details"; hint: "Copy the complete message, including paths, to the clipboard.";
+                    clicked => { root.copy-details(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                close-button := HintedActionButton {
+                    text: "Close"; hint: "Close this message (Escape).";
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+}

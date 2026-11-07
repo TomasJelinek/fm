@@ -1,6 +1,7 @@
 import { LineEdit, TextEdit } from "std-widgets.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
 
 export component EditorOptions inherits VerticalLayout {
     in property <string> default-label;
@@ -33,10 +34,7 @@ export component EditorOptions inherits VerticalLayout {
         text: "Example: [\"--\", \"{file}\"]. Each item is passed literally. {file} must be a complete item. F4 edits the focused file.";
         color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
     }
-    if root.error != "" : Text {
-        text: root.error; accessible-label: root.error;
-        color: Theme.error-text; font-size: Theme.small-font; wrap: word-wrap;
-    }
+    if root.error != "" : ErrorNotice { text: root.error; }
     HorizontalLayout {
         spacing: 8px;
         HintedActionButton {

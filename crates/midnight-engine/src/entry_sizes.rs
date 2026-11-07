@@ -40,6 +40,7 @@ pub(crate) struct Controller {
     snapshots: Snapshots,
     budget: Arc<Semaphore>,
     io_budget: Arc<folder_sizes::IoBudget>,
+    size_observer: crate::selection_sizes::Observer,
     pending: [Vec<Request>; 2],
 }
 
@@ -50,6 +51,7 @@ impl Controller {
         snapshots: Snapshots,
         budget: Arc<Semaphore>,
         io_budget: Arc<folder_sizes::IoBudget>,
+        size_observer: crate::selection_sizes::Observer,
     ) -> Self {
         Self {
             filesystem,
@@ -57,6 +59,7 @@ impl Controller {
             snapshots,
             budget,
             io_budget,
+            size_observer,
             pending: Default::default(),
         }
     }
@@ -92,7 +95,7 @@ impl Controller {
                         .as_ref()
                         .filter(|snapshot| snapshot.navigation == navigation)
                 })
-                .filter(|_| state.pending.is_none())
+                .filter(|_| state.pending.is_none() && state.has_native_view())
                 .cloned()
         };
         let duplicate = self.pending[pane.index()]
@@ -113,6 +116,7 @@ impl Controller {
         let snapshots = self.snapshots.clone();
         let budget = self.budget.clone();
         let io_budget = self.io_budget.clone();
+        let size_observer = self.size_observer.clone();
         let path = snapshot.path.clone();
         let task = tasks.spawn(async move {
             let Ok(permit) = budget.acquire_owned().await else {
@@ -148,6 +152,11 @@ impl Controller {
                             size,
                             &worker_cancel,
                         );
+                        if let Some(event) =
+                            size_observer.updated(pane, &snapshot.sizes, &root.path)
+                        {
+                            size_observer.publish(event);
+                        }
                         outbox.blocking_send(
                             Event::FolderSizeUpdated {
                                 pane,

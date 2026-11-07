@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|(i, path)| Entry::new(EntryId(i as u64), path.clone(), EntryKind::File))
         .collect();
     let launch = ViewerLaunch {
+        archive: None,
         focused: paths[0].clone(),
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,

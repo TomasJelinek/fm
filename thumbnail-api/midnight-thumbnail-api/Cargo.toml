@@ -1,0 +1,10 @@
+[package]
+name = "midnight-thumbnail-api"
+description = "Versioned bounded process protocol for Midnight Explorer thumbnail providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

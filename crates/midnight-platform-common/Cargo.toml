@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 midnight-core.workspace = true
+midnight-work-budget = { path = "../midnight-work-budget" }
 fs2 = "0.4"
 icu_casemap = "=2.4.0"
 icu_locale_core = "=2.4.0"

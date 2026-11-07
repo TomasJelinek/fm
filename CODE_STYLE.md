@@ -43,6 +43,10 @@ the formatting authority; strict Clippy checks run in CI.
 - **Tests:** test observable behavior and real boundaries; cover errors, races,
   cancellation, Unicode and long paths. Keep large and OS-specific test groups
   in separate files. Do not copy implementation logic into expected results.
+- **Dependencies:** all third-party libraries must permit the intended use and
+  distribution without mandatory fees; prefer maintained open source. Follow the
+  [dependency policy](docs/DEPENDENCY_POLICY.md) and update the
+  [license inventory](docs/THIRD_PARTY.md) when dependencies/features change.
 
 Checks: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.

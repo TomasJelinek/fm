@@ -24,6 +24,9 @@ pub struct OperationPreview {
     pub kind: MutationKind,
     pub files: u64,
     pub folders: u64,
+    /// Sum of prepared top-level regular-file lengths, excluding folder contents.
+    /// None means a non-directory target has unknown size/kind or the sum overflowed.
+    pub file_bytes: Option<u64>,
     /// At most 32 entries; the complete prepared target list stays on the worker.
     pub sample: Vec<MutationItem>,
 }

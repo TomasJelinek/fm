@@ -292,21 +292,36 @@ fn space_does_not_scan_links_or_restart_an_active_all_folder_scan() {
         true
     };
     p.move_cursor(PaneId::Left, 8, &send);
-    assert!(
-        sent.borrow()
-            .iter()
-            .all(|command| matches!(command, Command::Selection(_)))
-    );
+    assert!(sent.borrow().iter().all(|command| matches!(
+        command,
+        Command::Selection(_) | Command::SummarizeSelectedFolders(_)
+    )));
+    let toggle = sent.borrow_mut().pop();
+    fixture_toggle(&mut p, PaneId::Left, toggle);
+    assert!(p.bulk_selection(PaneId::Left, SelectionOperation::Clear, &send));
+    let Command::Selection(clear) = sent.borrow_mut().pop().unwrap() else {
+        panic!("expected selection clear");
+    };
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation: clear.navigation,
+        revision: clear.revision,
+        selection: Arc::new(SelectionSnapshot::default()),
+        deferred: false,
+    });
     p.folder_sizes(PaneId::Left, &send);
     let active = p.panes[0].size_scan;
+    assert!(
+        active.is_some(),
+        "the empty selection starts the whole-panel scan"
+    );
     sent.borrow_mut().clear();
     p.move_cursor(PaneId::Left, 8, &send);
     assert_eq!(p.panes[0].size_scan, active);
-    assert!(
-        sent.borrow()
-            .iter()
-            .all(|command| matches!(command, Command::Selection(_)))
-    );
+    assert!(sent.borrow().iter().all(|command| matches!(
+        command,
+        Command::Selection(_) | Command::SummarizeSelectedFolders(_)
+    )));
 }
 
 #[test]

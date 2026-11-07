@@ -94,6 +94,11 @@ fn icon_names_with_storage(
                 LocationKind::Desktop => vec!["user-desktop", "folder"],
                 LocationKind::Documents => vec!["folder-documents", "folder"],
                 LocationKind::Downloads => vec!["folder-download", "folder"],
+                LocationKind::Pictures => vec!["folder-pictures", "folder"],
+                LocationKind::Videos => vec!["folder-videos", "folder"],
+                LocationKind::Music => vec!["folder-music", "folder"],
+                LocationKind::Temporary => vec!["folder-temp", "folder"],
+                LocationKind::OneDrive => vec!["folder-remote", "folder"],
                 LocationKind::Volume => vec!["drive-harddisk"],
             };
         }

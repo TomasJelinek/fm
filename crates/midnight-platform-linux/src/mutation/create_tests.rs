@@ -49,24 +49,13 @@ fn final_collision_never_replaces_existing_file_directory_or_symlink() {
 }
 
 #[test]
-fn create_rejects_absolute_dot_parent_and_empty_components_before_any_write() {
+fn create_rejects_empty_targets_and_nul_before_any_write() {
     let fixture = tempfile::tempdir().unwrap();
     let cancel = Cancellation::default();
     let prepared = LinuxFileSystem::new(None)
         .prepare_create(fixture.path(), &cancel)
         .unwrap();
-    for path in [
-        "",
-        ".",
-        "..",
-        "/escape",
-        "../escape",
-        "good/../escape",
-        "good/./escape",
-        "good//escape",
-        "good/",
-        "good/nul\0name",
-    ] {
+    for path in ["", ".", "..", "/", "good/.", "good/..", "good/nul\0name"] {
         assert_eq!(
             prepared.create(Path::new(path), &cancel).unwrap_err().kind,
             ErrorKind::InvalidInput,
@@ -74,6 +63,103 @@ fn create_rejects_absolute_dot_parent_and_empty_components_before_any_write() {
         );
     }
     assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn create_accepts_absolute_and_parent_relative_paths_outside_the_captured_base() {
+    let fixture = tempfile::tempdir().unwrap();
+    let panel = fixture.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = fixture.path().join("absolute/文档 🦀/new");
+    assert_eq!(prepared.create(&absolute, &cancel).unwrap(), absolute);
+    assert!(absolute.is_dir());
+    let created = prepared
+        .create(Path::new("../sibling/文档/new"), &cancel)
+        .unwrap();
+    assert_eq!(
+        fs::canonicalize(created).unwrap(),
+        fs::canonicalize(fixture.path().join("sibling/文档/new")).unwrap()
+    );
+    assert_eq!(fs::read_dir(panel).unwrap().count(), 0);
+}
+
+#[test]
+fn create_walks_parent_components_without_collapsing_missing_directories_or_links() {
+    let fixture = tempfile::tempdir().unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare_create(fixture.path(), &cancel)
+        .unwrap();
+    let created = prepared
+        .create(Path::new("first/../second/./leaf/"), &cancel)
+        .unwrap();
+    assert!(fixture.path().join("first").is_dir());
+    assert_eq!(
+        fs::canonicalize(created).unwrap(),
+        fs::canonicalize(fixture.path().join("second/leaf")).unwrap()
+    );
+    fs::create_dir(fixture.path().join("outside")).unwrap();
+    symlink("outside", fixture.path().join("link")).unwrap();
+    assert!(
+        prepared
+            .create(Path::new("link/../forbidden"), &cancel)
+            .is_err()
+    );
+    assert!(!fixture.path().join("forbidden").exists());
+    assert_eq!(
+        fs::read_dir(fixture.path().join("outside"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn create_absolute_targets_still_honor_cancellation_and_replaced_base_identity() {
+    let fixture = tempfile::tempdir().unwrap();
+    let panel = fixture.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = fixture.path().join("outside/new");
+    cancel.cancel();
+    assert_eq!(
+        prepared.create(&absolute, &cancel).unwrap_err().kind,
+        ErrorKind::Interrupted
+    );
+    assert!(!fixture.path().join("outside").exists());
+    fs::rename(&panel, fixture.path().join("moved-panel")).unwrap();
+    fs::create_dir(&panel).unwrap();
+    assert!(
+        prepared
+            .create(&absolute, &Cancellation::default())
+            .is_err()
+    );
+    assert!(!fixture.path().join("outside").exists());
+}
+
+#[test]
+fn create_absolute_workspace_target_may_cross_mounts_from_the_prepared_base() {
+    // WSL runs native fixtures on ext4 while the workspace is on its mounted
+    // Windows volume. On other hosts this also exercises the absolute-root walk.
+    let base = tempfile::tempdir().unwrap();
+    let workspace_tmp = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
+    fs::create_dir_all(&workspace_tmp).unwrap();
+    let target = tempfile::tempdir_in(fs::canonicalize(workspace_tmp).unwrap()).unwrap();
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare_create(base.path(), &cancel)
+        .unwrap();
+    let absolute = target.path().join("explicit-mount/文档/new");
+    assert_eq!(prepared.create(&absolute, &cancel).unwrap(), absolute);
+    assert!(absolute.is_dir());
+    assert_eq!(fs::read_dir(base.path()).unwrap().count(), 0);
 }
 
 #[test]

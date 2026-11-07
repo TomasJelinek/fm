@@ -2,8 +2,8 @@ use crate::WindowsFileSystem;
 use crate::terminal_process::{self, LaunchSpec};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use midnight_core::{
-    FsError, LocationKind, LocationService, NavigationLocation, PropertyService, ShellFlavor,
-    TerminalMode, TerminalProcess, TerminalRequest, TerminalService,
+    FsError, PropertyService, ShellFlavor, TerminalMode, TerminalProcess, TerminalRequest,
+    TerminalService,
 };
 use std::{
     ffi::OsString,
@@ -22,7 +22,6 @@ use windows_sys::{
             SystemInformation::GetSystemDirectoryW,
         },
         UI::Shell::{
-            FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Profile,
             FOLDERID_ProgramFiles, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath, SHOP_FILEPATH,
             SHObjectProperties,
         },
@@ -269,74 +268,6 @@ pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: SHGetKnownFolderPath allocated this string with COM's allocator.
     unsafe { CoTaskMemFree(raw.cast()) };
     path.filter(|path| path.is_absolute())
-}
-
-impl LocationService for WindowsFileSystem {
-    fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
-        let mut locations: Vec<_> = crate::platform_volumes()?
-            .into_iter()
-            .map(|volume| {
-                let drive_letter = volume
-                    .root
-                    .as_os_str()
-                    .encode_wide()
-                    .next()
-                    .and_then(|ch| char::from_u32(u32::from(ch)))
-                    .filter(char::is_ascii_alphabetic);
-                NavigationLocation {
-                    id: volume.id,
-                    label: volume.label,
-                    path: volume.root,
-                    kind: LocationKind::Volume,
-                    drive_letter,
-                }
-            })
-            .collect();
-        let _com =
-            ComGuard::initialize(windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
-        for (id, label, kind, folder) in [
-            ("home", "Home", LocationKind::Home, FOLDERID_Profile),
-            (
-                "desktop",
-                "Desktop",
-                LocationKind::Desktop,
-                FOLDERID_Desktop,
-            ),
-            (
-                "documents",
-                "Documents",
-                LocationKind::Documents,
-                FOLDERID_Documents,
-            ),
-            (
-                "downloads",
-                "Downloads",
-                LocationKind::Downloads,
-                FOLDERID_Downloads,
-            ),
-        ] {
-            let path = _com
-                .as_ref()
-                .and_then(|_| known_folder(&folder))
-                .or_else(|| {
-                    if kind == LocationKind::Home {
-                        self.home.clone()
-                    } else {
-                        None
-                    }
-                });
-            if let Some(path) = path {
-                locations.push(NavigationLocation {
-                    id: id.into(),
-                    label: label.into(),
-                    path,
-                    kind,
-                    drive_letter: None,
-                });
-            }
-        }
-        Ok(locations)
-    }
 }
 
 #[cfg(test)]

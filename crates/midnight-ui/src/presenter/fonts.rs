@@ -38,7 +38,10 @@ impl Presenter {
             }
             Err(error) => self.desktop.report(
                 "Could not load font families",
-                format!("{error}\nApplication default and the configured font remain available."),
+                format!(
+                    "{}\n\nApplication default and the configured font remain available.",
+                    crate::error_presentation::describe(&error)
+                ),
             ),
         }
     }

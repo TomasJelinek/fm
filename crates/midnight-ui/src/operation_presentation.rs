@@ -1,6 +1,9 @@
 use super::*;
 
-fn title(kind: MutationKind) -> &'static str {
+#[path = "delete_summary.rs"]
+mod delete_summary;
+
+pub(super) fn title(kind: MutationKind) -> &'static str {
     match kind {
         MutationKind::Rename => "Rename",
         MutationKind::EditMetadata => "Attributes, times and case",
@@ -15,49 +18,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     if state.closing && !presenter.has_live_operations() {
         let _ = window.hide();
     }
-    let mut rows: Vec<_> = state
-        .progress
-        .iter()
-        .rev()
-        .map(|progress| {
-            let conflict = state
-                .metadata_conflicts
-                .iter()
-                .any(|conflict| conflict.id == progress.id);
-            let status = match progress.state {
-                OperationState::Preparing => "Preparing",
-                OperationState::AwaitingConfirmation => "Awaiting confirmation",
-                OperationState::Queued => "Queued",
-                OperationState::Running => "Running",
-                OperationState::CancelRequested => "Cancelling",
-                OperationState::Cancelled => "Cancelled",
-                OperationState::Completed => "Completed",
-                OperationState::CompletedWithErrors => "Completed with errors",
-                OperationState::Failed => "Failed",
-            };
-            OperationRow {
-                identity: if progress.kind == MutationKind::EditMetadata {
-                    format!("metadata-job:{}", progress.id.0).into()
-                } else {
-                    progress.id.0.to_string().into()
-                },
-                title: format!("{} — {status}", title(progress.kind)).into(),
-                detail: operation_detail::detail(
-                    progress,
-                    &state
-                        .metadata_results
-                        .iter()
-                        .find(|result| result.id == progress.id)
-                        .map(|result| metadata_presentation::result_detail(result))
-                        .unwrap_or_default(),
-                )
-                .into(),
-                cancellable: !progress.state.is_terminal(),
-                attention: conflict,
-            }
-        })
-        .collect();
-    rows.extend(copy_presentation::rows(presenter));
+    let rows = job_presentation::rows(presenter);
     update_model(window.get_operations(), rows, |model| {
         window.set_operations(model)
     });
@@ -92,10 +53,10 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let select = rename_selection_end(&name, preview.sample.first().map(|item| item.kind));
     let mut body = match kind {
         MutationKind::CreateFile => "Create an empty file without overwriting an existing name.".into(),
-        MutationKind::CreateDirectory => "Enter a folder name or a relative nested path. Existing intermediate folders are reused; links are not followed.".into(),
+        MutationKind::CreateDirectory => "Enter an absolute path or a path relative to this panel, including '..'. Missing folders are created; existing intermediate folders are reused. Links are not followed.".into(),
         MutationKind::Rename => "Rename the focused entry. Existing names are never overwritten.".into(),
         MutationKind::EditMetadata => String::new(),
-        MutationKind::Delete(mode) => format!("{} files and {} folders. {}", preview.files, preview.folders,
+        MutationKind::Delete(mode) => format!("{}\n\n{}", delete_summary::summary(preview, &presenter.number_locale),
             if mode == DeleteMode::Trash { "Move these items to the system Trash? If unavailable, they will remain in place." }
             else { "Permanently delete these items and folder contents? This cannot be undone. Links are removed without deleting their targets." }),
     };
@@ -109,23 +70,29 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             progress.source_directory.display()
         );
     }
-    for item in &preview.sample {
-        let size = item.metadata.size.map_or_else(
-            || "—".into(),
-            |bytes| {
-                size_presentation::file_size(bytes, SizeDisplay::Bytes, &presenter.number_locale)
-            },
-        );
-        let date = time_presentation::modified(&item.metadata)
-            .map(|value| format!("{} {}", value.date, value.time))
-            .unwrap_or_else(|| "—".into());
-        body.push_str(&format!(
-            "\n{} · {size} bytes · {date}",
-            item.path.display()
-        ));
-    }
-    if preview.files + preview.folders > preview.sample.len() as u64 {
-        body.push_str("\n… Additional selected targets included.");
+    if !matches!(kind, MutationKind::Delete(_)) {
+        for item in &preview.sample {
+            let size = item.metadata.size.map_or_else(
+                || "—".into(),
+                |bytes| {
+                    size_presentation::file_size(
+                        bytes,
+                        SizeDisplay::Bytes,
+                        &presenter.number_locale,
+                    )
+                },
+            );
+            let date = time_presentation::modified(&item.metadata)
+                .map(|value| format!("{} {}", value.date, value.time))
+                .unwrap_or_else(|| "—".into());
+            body.push_str(&format!(
+                "\n{} · {size} bytes · {date}",
+                item.path.display()
+            ));
+        }
+        if preview.files + preview.folders > preview.sample.len() as u64 {
+            body.push_str("\n… Additional selected targets included.");
+        }
     }
     window.set_operation_title(title(kind).into());
     let (role, kind_id, warning) = match kind {

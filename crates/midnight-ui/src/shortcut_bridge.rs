@@ -111,6 +111,9 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
             return false;
         };
         update_control_layer(&window, &event, false);
+        if crate::shortcut_editor::capture(&window, &event) {
+            return true;
+        }
         if window.get_native_alt_gr() {
             return false;
         }
@@ -197,6 +200,9 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
             shift,
             meta,
         };
+        if crate::shortcut_editor::capture_physical(&window, &chord) {
+            return true;
+        }
         let (context, pane, composing) = context(&window);
         if composing && !control && !alt && !meta {
             return false;
@@ -244,6 +250,7 @@ pub(crate) fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     install_routing(window, presenter.borrow().keyboard.bindings.clone());
+    crate::shortcut_editor::install(window, presenter.clone(), send.clone());
     let weak = window.as_weak();
     let state = presenter.clone();
     window.on_keyboard_select(move |index| {
@@ -294,6 +301,7 @@ pub(crate) fn install(
 }
 
 pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
+    crate::shortcut_editor::refresh(window, presenter);
     let state = &presenter.keyboard;
     let action = &shortcut_catalog()[state.selected];
     if window.get_keyboard_revision() == state.editor_revision_text

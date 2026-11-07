@@ -40,6 +40,9 @@ pub struct Entry {
     pub id: EntryId,
     pub name: OsString,
     pub path: PathBuf,
+    /// Virtual identities never use `path`; it is empty for these entries.
+    /// Native services must require `native_path()` rather than interpreting display names.
+    pub virtual_node: Option<crate::ArchiveNode>,
     pub kind: EntryKind,
     pub metadata: EntryMetadata,
     pub display_name: String,
@@ -75,6 +78,7 @@ impl DirectoryIndex {
                 .collect(),
             by_path: entries
                 .iter()
+                .filter(|entry| entry.virtual_node.is_none())
                 .map(|entry| (entry.path.clone(), entry.id))
                 .collect(),
             directory_bits,
@@ -108,11 +112,23 @@ impl Entry {
             id,
             name,
             path,
+            virtual_node: None,
             kind,
             metadata: EntryMetadata::default(),
             display_name,
             collation: None,
         }
+    }
+    pub fn from_archive(node: crate::ArchiveNode) -> Self {
+        let mut entry = Self::new(EntryId(node.id.entry), PathBuf::new(), node.kind);
+        entry.name = OsString::from(&node.display_name);
+        entry.display_name = node.display_name.clone();
+        entry.metadata.size = node.size;
+        entry.virtual_node = Some(node);
+        entry
+    }
+    pub fn native_path(&self) -> Option<&std::path::Path> {
+        self.virtual_node.is_none().then_some(self.path.as_path())
     }
 }
 

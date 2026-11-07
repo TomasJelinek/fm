@@ -304,6 +304,11 @@ pub enum LocationKind {
     Desktop,
     Documents,
     Downloads,
+    Pictures,
+    Videos,
+    Music,
+    Temporary,
+    OneDrive,
 }
 
 #[derive(Clone, Debug)]

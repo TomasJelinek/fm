@@ -103,6 +103,51 @@ fn dirty_draft_and_stale_preview_cannot_authorize_an_edit() {
 }
 
 #[test]
+fn refresh_can_inspect_an_unchanged_draft_without_authorizing_apply() {
+    let mut p = ready();
+    p.open_metadata(PaneId::Left, false, &|_| true);
+    p.apply(preview(0, MetadataPatch::default()));
+    let commands = RefCell::new(Vec::new());
+    p.preview_metadata("1", Ok(MetadataPatch::default()), &|command| {
+        commands.borrow_mut().push(command);
+        true
+    });
+    assert!(
+        matches!(commands.borrow().first(), Some(Command::PreviewMetadata { patch, .. }) if patch.is_empty())
+    );
+    let revision = p.metadata.revision;
+    p.apply(preview(revision, MetadataPatch::default()));
+    assert!(p.metadata.error.is_empty());
+    assert!(!p.metadata.can_apply());
+    p.confirm_metadata("1", &revision.to_string(), 0, &|_| {
+        panic!("empty refresh must not mutate")
+    });
+}
+
+#[test]
+fn replacing_and_cancelling_metadata_defers_snapshot_cleanup() {
+    let mut p = ready();
+    p.open_metadata(PaneId::Left, false, &|_| true);
+    p.apply(preview(0, MetadataPatch::default()));
+    let old = Arc::downgrade(p.metadata.preview.as_ref().unwrap());
+    p.apply(preview(0, MetadataPatch::default()));
+    assert!(
+        old.upgrade().is_some(),
+        "old snapshot belongs to deferred cleanup"
+    );
+    drop(p.take_retired());
+    assert!(old.upgrade().is_none());
+    let current = Arc::downgrade(p.metadata.preview.as_ref().unwrap());
+    p.cancel_metadata("1", &|_| true);
+    assert!(
+        current.upgrade().is_some(),
+        "cancel hands the snapshot to backend reclamation"
+    );
+    drop(p.take_retired());
+    assert!(current.upgrade().is_none());
+}
+
+#[test]
 fn invalid_input_and_cancel_preserve_other_prepared_jobs() {
     let mut p = ready();
     p.open_metadata(PaneId::Left, false, &|_| true);

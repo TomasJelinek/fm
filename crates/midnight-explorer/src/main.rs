@@ -4,6 +4,7 @@
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
+mod thumbnails;
 mod viewers;
 mod visible_sync;
 mod wake_gate;
@@ -427,6 +428,7 @@ fn run_window(
         commands.clone(),
         runtime.handle(),
     );
+    let thumbnail_timer = thumbnails::install(&window, presenter.clone());
     // Both panes share a four-Hz size pulse. Interactive/backend events still
     // repaint immediately and include the latest cached totals.
     let size_timer = slint::Timer::default();
@@ -499,6 +501,8 @@ fn run_window(
     viewers.close_all();
     visible_timer.stop();
     size_timer.stop();
+    thumbnail_timer.stop();
+    drop(thumbnail_timer);
     // Detach the receiver from dormant UI callbacks without holding a RefCell
     // borrow across the post-window asynchronous exit grace.
     let (_, empty_events) = mpsc::channel(1);

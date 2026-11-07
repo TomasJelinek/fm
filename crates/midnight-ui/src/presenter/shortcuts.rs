@@ -2,6 +2,13 @@
 use super::*;
 
 impl Presenter {
+    pub fn viewer_unavailable_reason(&self, pane: PaneId) -> Option<String> {
+        let panel = &self.panes[pane.index()];
+        let entry = panel.cursor.and_then(|id| panel.entry_by_id(id))?;
+        entry.virtual_node.as_ref().filter(|node| !node.readable).map(|_| {
+            "This archive member is unreadable: directories, links, unsafe names, encryption and unsupported compression cannot be opened by the read-only provider.".into()
+        })
+    }
     /// Capture the exact displayed ordering without walking or opening any files.
     pub fn viewer_launch(&self, pane: PaneId, basic: bool) -> Option<ViewerLaunch> {
         let disabled_plugins = self.viewer_plugins.startup_disabled.clone()?;
@@ -14,6 +21,15 @@ impl Presenter {
             return None;
         }
         Some(ViewerLaunch {
+            archive: match (&panel.archive, &entry.virtual_node) {
+                (Some(archive), Some(node)) if node.readable => Some(ArchiveViewer {
+                    mount: archive.location.mount.clone()?,
+                    source_version: archive.location.address.source_version.clone(),
+                    focused: node.id,
+                }),
+                (_, Some(_)) => return None,
+                _ => None,
+            },
             entries: panel.entries.clone(),
             view: panel.display_index().clone(),
             focused: entry.path.clone(),
@@ -51,6 +67,13 @@ impl Presenter {
 
     /// Navigate to the displayed path's native absolute anchor without resolving it.
     pub(crate) fn go_root(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
+        if let Some(a) = &self.panes[pane.index()].archive {
+            let mut location = a.location.clone();
+            location.directory = 1;
+            location.trail.truncate(1);
+            location.address.components.clear();
+            return self.archive_navigate(pane, ArchiveAction::List(location), send);
+        }
         let p = &mut self.panes[pane.index()];
         let path = p.display_path();
         if !path.is_absolute() {
@@ -66,6 +89,10 @@ impl Presenter {
 
     /// Explicitly browse a known folder/link or parent; never launch a host file handler.
     pub(crate) fn open_folder(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) -> bool {
+        if self.panes[pane.index()].archive.is_some() {
+            let row = self.panes[pane.index()].cursor_index().unwrap_or(0);
+            return self.archive_open(pane, row, send);
+        }
         let p = &self.panes[pane.index()];
         if p.parent_cursor && p.has_parent() {
             return self.up(pane, send);
@@ -81,6 +108,9 @@ impl Presenter {
     /// Return the focused raw native basename for literal command-line insertion.
     pub(crate) fn focused_name(&self, pane: PaneId) -> Option<PathBuf> {
         let p = &self.panes[pane.index()];
+        if p.archive.is_some() {
+            return None;
+        }
         if p.parent_cursor && p.has_parent() {
             return Some(PathBuf::from(".."));
         }
@@ -105,6 +135,6 @@ impl Presenter {
             },
         );
         let body = format!("Path: {}\n{capacity}", p.display_path().display());
-        self.desktop.report("Drive information", body);
+        self.desktop.inform("Drive information", body);
     }
 }

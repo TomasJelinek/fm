@@ -1,8 +1,10 @@
 import { Theme } from "theme.slint";
 import { HintedActionButton, HintedCheckBox, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { ScrollView } from "std-widgets.slint";
-import { DialogText } from "dialog-text.slint";
+import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
+import { MetadataFileList, MetadataFileRow } from "metadata-list.slint";
+export { MetadataFileRow }
 
 export struct MetadataDraft {
     read-only: int, hidden: int, system: int, archive: int, compressed: int,
@@ -31,25 +33,79 @@ component MetadataChoice inherits HorizontalLayout {
     }
 }
 
-component MetadataTime inherits VerticalLayout {
+component MetadataButton inherits Rectangle {
+    in property <string> label;
+    in property <string> caption;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback choose();
+    min-width: max(64px, Theme.font-size * 4);
+    height: Theme.control-height;
+    horizontal-stretch: 1;
+    background: root.selected ? Theme.active-header : area.has-hover ? Theme.hover : Theme.secondary-surface;
+    border-width: 1px; border-radius: 3px;
+    border-color: root.selected || focus.has-focus ? Theme.active-frame : Theme.frame;
+    accessible-role: button; accessible-label: root.label;
+    accessible-checkable: true; accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.choose(); } }
+    forward-focus: focus;
+    Text {
+        text: root.caption; color: root.enabled ? Theme.text : Theme.muted-text;
+        font-size: Theme.font-size; horizontal-alignment: center; vertical-alignment: center;
+        font-weight: root.selected ? 600 : 400;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return { root.choose(); return accept; }
+            reject
+        }
+        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.choose(); } }
+    }
+}
+
+component MetadataAttribute inherits HorizontalLayout {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <[string]> choices: ["Leave", "Set", "Clear"];
+    in-out property <int> choice;
+    callback edited();
+    spacing: 8px; cross-axis-alignment: center;
+    Text { text: root.label; color: Theme.text; font-size: Theme.font-size; width: max(125px, Theme.font-size * 6); }
+    for caption[index] in root.choices : MetadataButton {
+        label: root.label + ": " + caption; caption: caption;
+        selected: root.choice == index; enabled: root.enabled;
+        choose => { root.choice = index; root.edited(); }
+    }
+}
+
+component MetadataTime inherits HorizontalLayout {
     in property <string> label;
     in property <bool> enabled;
     in-out property <int> mode;
     in-out property <string> value;
     callback edited();
-    spacing: 5px;
-    MetadataChoice {
-        label: root.label; enabled: root.enabled; choice <=> root.mode;
-        choices: ["Leave unchanged", "Set timestamp", "Current time"];
-        hint: "Current time is captured once on the backend for all chosen fields and files. Keep preserves the native value.";
-        edited => { root.edited(); }
+    spacing: 8px; cross-axis-alignment: center;
+    HintedCheckBox {
+        text: root.label; accessible-label: "Change " + root.label;
+        checked: root.mode != 0; enabled: root.enabled;
+        width: max(150px, Theme.font-size * 8);
+        hint: "Enable this field to change its timestamp. Unchecked preserves the native value.";
+        toggled => { root.mode = self.checked ? 1 : 0; root.edited(); }
     }
     HintedLineEdit {
         accessible-label: root.label + " timestamp";
-        enabled: root.enabled && root.mode == 1; text <=> root.value;
-        placeholder-text: "2026-11-06T12:30:00+01:00";
+        enabled: root.enabled && root.mode != 0; text <=> root.value;
+        horizontal-stretch: 1;
+        placeholder-text: root.mode == 2 ? "Now (captured at Preview)" : "2026-11-06T12:30:00+01:00";
         hint: "ISO timestamp with an explicit UTC offset or Z. Ambiguous local times are rejected.";
-        edited => { root.edited(); }
+        edited => { root.mode = 1; root.edited(); }
+    }
+    MetadataButton {
+        label: root.label + ": Now"; caption: "Now"; selected: root.mode == 2;
+        enabled: root.enabled && root.mode != 0; horizontal-stretch: 0;
+        choose => { root.mode = 2; root.value = ""; root.edited(); }
     }
 }
 
@@ -58,6 +114,9 @@ export component MetadataDialog inherits Rectangle {
     in property <string> revision;
     in property <string> summary;
     in property <string> preview-text;
+    in property <[MetadataFileRow]> rows;
+    in property <string> list-status;
+    in property <bool> preview-current;
     in property <string> error;
     in property <bool> ready;
     in property <bool> busy;
@@ -76,7 +135,9 @@ export component MetadataDialog inherits Rectangle {
     private property <MetadataDraft> draft;
     private property <int> topic;
     private property <bool> draft-edited: true;
+    private property <bool> has-reviewed: false;
     changed ready => { if root.ready { root.draft-edited = false; } }
+    changed preview-current => { if root.preview-current { root.draft-edited = false; root.has-reviewed = true; } }
     function edited() { root.draft-edited = true; root.dirty(); }
     public function begin(case-enabled: bool) {
         root.draft = {
@@ -87,6 +148,7 @@ export component MetadataDialog inherits Rectangle {
             case-enabled: case-enabled, case-mode: 0, case-scope: 0, recursive: false,
         };
         root.draft-edited = true;
+        root.has-reviewed = false;
         root.topic = case-enabled ? 2 : 0;
         cancel-button.focus();
     }
@@ -108,17 +170,17 @@ export component MetadataDialog inherits Rectangle {
             DialogTabs { labels: ["Attributes", "Times", "Case", "Preview"]; current-index <=> root.topic; }
             ScrollView {
                 horizontal-scrollbar-policy: always-off;
-                vertical-stretch: 1;
+                vertical-stretch: 1; min-height: 0px;
                 VerticalLayout {
                     spacing: 10px; alignment: start;
                     if root.topic == 0 : VerticalLayout {
                         spacing: 10px; alignment: start;
                         if root.can-windows : VerticalLayout {
                             spacing: 8px;
-                            MetadataChoice { label: "Read-only"; choice <=> root.draft.read-only; hint: "Keep, set or clear Read-only on the captured targets."; edited => { root.edited(); } }
-                            MetadataChoice { label: "Hidden"; choice <=> root.draft.hidden; hint: "Keep, set or clear the native Hidden attribute."; edited => { root.edited(); } }
-                            MetadataChoice { label: "System"; choice <=> root.draft.system; hint: "Keep, set or clear the native System attribute."; edited => { root.edited(); } }
-                            MetadataChoice { label: "Archive"; choice <=> root.draft.archive; hint: "Keep, set or clear the native Archive attribute."; edited => { root.edited(); } }
+                            MetadataAttribute { label: "Read-only"; choice <=> root.draft.read-only; edited => { root.edited(); } }
+                            MetadataAttribute { label: "Hidden"; choice <=> root.draft.hidden; edited => { root.edited(); } }
+                            MetadataAttribute { label: "System"; choice <=> root.draft.system; edited => { root.edited(); } }
+                            MetadataAttribute { label: "Archive"; choice <=> root.draft.archive; edited => { root.edited(); } }
                         }
                         if root.can-unix : VerticalLayout {
                             spacing: 8px;
@@ -134,19 +196,20 @@ export component MetadataDialog inherits Rectangle {
                                 edited => { root.edited(); }
                             }
                         }
-                        MetadataChoice {
+                        MetadataAttribute {
                             label: "Compression"; enabled: root.can-compress;
-                            choices: ["Leave unchanged", "Compress", "Uncompress"];
+                            choices: ["Leave", "Compress", "Uncompress"];
                             choice <=> root.draft.compressed;
-                            hint: "Native filesystem compression, where supported. Encryption state is shown in Preview; encryption is not changed here.";
                             edited => { root.edited(); }
                         }
                     }
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
+                        Text { text: "Enable a field, then enter a date/time with UTC offset or choose Now."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
                         MetadataTime { label: "Modified"; enabled: root.can-modified; mode <=> root.draft.modified-mode; value <=> root.draft.modified-text; edited => { root.edited(); } }
                         MetadataTime { label: "Created"; enabled: root.can-created; mode <=> root.draft.created-mode; value <=> root.draft.created-text; edited => { root.edited(); } }
                         MetadataTime { label: "Accessed"; enabled: root.can-accessed; mode <=> root.draft.accessed-mode; value <=> root.draft.accessed-text; edited => { root.edited(); } }
+                        Text { text: "Now is captured once at Preview for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
                     }
                     if root.topic == 2 : VerticalLayout {
                         spacing: 12px; alignment: start;
@@ -182,13 +245,31 @@ export component MetadataDialog inherits Rectangle {
                 hint: "Descendants are processed before their parent. Links and mount points are not followed. Large batches can exceed the explicit resource budget.";
                 toggled => { root.edited(); }
             }
-            if root.busy : Text { text: "Preparing preview…"; color: Theme.secondary-text; font-size: Theme.small-font; }
-            if root.error != "" : DialogText { text: root.error; max-height: max(42px, Theme.font-size * 3); }
+            Text {
+                text: root.busy ? "Preparing preview…" : root.draft-edited ? (root.has-reviewed ? "Draft changed; preview stale. Refresh to see current changes." : "Draft not previewed. Refresh or Preview changes to inspect it.") : root.list-status;
+                color: root.draft-edited ? Theme.pending-size : Theme.secondary-text;
+                font-size: Theme.small-font; overflow: elide;
+            }
+            MetadataFileList {
+                rows: root.rows; stale: root.draft-edited || !root.preview-current;
+                height: max(80px, min(190px, root.height * 0.28));
+            }
+            if root.error != "" : ErrorNotice {
+                text: root.error;
+                min-height: max(56px, Theme.font-size * 2);
+                preferred-height: max(80px, Theme.font-size * 2.5);
+                max-height: max(100px, Theme.font-size * 3);
+            }
             HorizontalLayout {
                 spacing: 8px; alignment: end;
                 cancel-button := HintedActionButton {
                     text: "Cancel"; hint: "Close the editor without applying the draft (Escape).";
                     clicked => { root.cancel(); }
+                }
+                HintedActionButton {
+                    text: "Refresh"; enabled: !root.busy;
+                    hint: "Read the captured files again and preview the current draft. This does not apply changes.";
+                    clicked => { root.preview(root.draft); }
                 }
                 HintedActionButton {
                     text: "Preview changes"; enabled: !root.busy;

@@ -1,4 +1,4 @@
-//! Persist bounded native locations; restoring a session never revives rows,
+//! Persist native paths and typed provider addresses; restoring never revives rows,
 //! selections, history, scans, or callback identities from an earlier process.
 use super::*;
 
@@ -30,6 +30,19 @@ impl Presenter {
         let slot = pane.index();
         let tabs = &self.tabs.panes[slot];
         PaneTabPreferences {
+            archives: tabs
+                .tabs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tab)| {
+                    let archive = if index == tabs.active {
+                        self.panes[slot].archive.as_ref()
+                    } else {
+                        tab.parked.as_ref().and_then(|p| p.archive.as_ref())
+                    }?;
+                    Some((index, archive.location.address.clone()))
+                })
+                .collect(),
             active: tabs.active,
             paths: tabs
                 .tabs
@@ -155,22 +168,23 @@ impl Presenter {
             return;
         };
         let sort = self.panes[slot].sort;
-        if !send(Command::Navigate {
-            pane,
-            navigation,
-            path: path.clone(),
+        let location = TabLocation::from_saved(
+            path.clone(),
+            saved.archives.get(&saved.active).cloned(),
             sort,
-        }) {
+        );
+        if !send(location.command(pane, navigation)) {
             return;
         }
-        let location = TabLocation::new(path.clone(), sort);
+        let mut archives = saved.archives;
         let tabs = saved
             .paths
             .into_iter()
             .enumerate()
             .map(|(index, path)| Tab {
                 id: TabId(self.tabs.next_id + index as u64),
-                parked: (index != saved.active).then(|| TabLocation::new(path, sort)),
+                parked: (index != saved.active)
+                    .then(|| TabLocation::from_saved(path, archives.remove(&index), sort)),
             })
             .collect();
         let previous_active = self.tabs.panes[slot].active;

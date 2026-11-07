@@ -27,6 +27,11 @@ pub(crate) fn install(
         };
         let launch = presenter.borrow().viewer_launch(pane, basic);
         let Some(launch) = launch else {
+            let reason = presenter.borrow().viewer_unavailable_reason(pane);
+            if let Some(reason) = reason {
+                presenter.borrow_mut().report_viewer_error(reason);
+                midnight_ui::refresh(&window, &presenter.borrow());
+            }
             return;
         };
         let theme = window.global::<Theme>();

@@ -84,6 +84,7 @@ pub(crate) fn install(window: &MainWindow) -> Result<(), PlatformError> {
                 _ => {}
             }
             synchronize(&window);
+            crate::panel_pointer::observe(&window, event);
             crate::drag_bridge::observe(&window, event);
         }
         if let Some(previous) = previous.as_ref() {

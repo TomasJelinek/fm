@@ -1,4 +1,4 @@
-# Midnight Explorer public plugin API — implementation draft
+# Midnight Explorer public plugin API and SDK
 
 This is an independent Cargo workspace with its own dependency lock. It shares
 no application crates. Concrete plugins belong in independent workspaces under
@@ -6,8 +6,21 @@ no application crates. Concrete plugins belong in independent workspaces under
 `midnight-plugin-api` and `midnight-plugin-sdk`, never on application internals,
 another plugin, or a source-tree patch. The SDK's ownership/runtime adapters are
 implemented and tested, including an independently exported DLL/SO conformance
-fixture on Windows and Linux. The application loader and concrete viewers remain
-in progress. This is not a compatibility promise yet.
+fixture on Windows and Linux. The application loader, LiveValidated content
+broker, viewer window and independent Basic, Source and Markdown viewers are now
+implemented and integrated. ABI 1.0 and package version 0.1.0 remain a versioned
+draft, not a long-term compatibility promise. Filesystem/provider plugins are
+still design-only; the reserved filesystem kind is not an implemented provider API.
+
+The [developer guide](../docs/developer/README.md) covers architecture and package
+independence, [build/test/install commands](../docs/developer/QUICK_START.md),
+[ABI ownership and lifecycle](../docs/developer/ABI_AND_LIFECYCLE.md), and the
+[viewer protocol](../docs/developer/VIEWER_PROTOCOL.md). It includes a small Rust
+example checked against the released SDK. Review the project's
+[dependency policy](../docs/DEPENDENCY_POLICY.md) before adding third-party libraries.
+The SDK package README's introductory integration status reflects its earlier
+release milestone; preserving that packaged file keeps consumer checksums stable.
+Use this page and the developer guide for current implementation status.
 
 From the repository root with Rust available:
 
@@ -39,7 +52,7 @@ These compile a C11 consumer and compare every ABI struct size, alignment and
 field offset against Rust. Windows uses MSVC Build Tools; Linux uses `cc`.
 All C executables/objects and comparison output remain under `_build/api-abi`.
 
-## Draft ABI ownership
+## ABI 1.0 ownership
 
 - The sole plugin export is `midnight_plugin_entry_v1`, matching `MidnightEntry`.
   Its output capacity bounds all writes. The 16-byte header is checked before
@@ -89,7 +102,10 @@ automatic action. Viewer Open/Viewport/Search and ReadAt/ReadReply/CloseReader
 schemas preserve explicit revisions, optional lengths, EOF and errors. The
 [SDK contract](midnight-plugin-sdk/README.md) describes owned requests, content
 leases, host-scheduled continuations, output backpressure and quiescent shutdown.
-The content broker and actual viewer plugins remain pending.
+The application content broker and concrete viewers exercise these contracts in
+native integration tests. The broker validates live file identity/metadata before
+and after reads; it does not promise an immutable snapshot. See
+[viewer implementation verification](../docs/verification/viewer-implementation.md).
 
 ## Offline release bundle
 

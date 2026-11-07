@@ -151,7 +151,136 @@ def copy_viewer_packages(stage, viewers, target, required_ids=()):
     return inventory
 
 
-def dependency_packages(metadata, dependency_list):
+def worker_input(stage, source):
+    source = Path(source).absolute()
+    if source.resolve() != source or not stat.S_ISDIR(plain_metadata(source).st_mode):
+        raise ValueError("Worker input must be a real directory")
+    if Path(stage).resolve().is_relative_to(source):
+        raise ValueError("Release staging cannot be inside its worker input")
+    return source
+
+
+def worker_identity(manifest, identities, limit=128):
+    identity, version = manifest.get("id"), manifest.get("version")
+    if (not isinstance(identity, str) or not re.fullmatch(r"[a-zA-Z0-9._-]{1," + str(limit) + "}", identity)
+            or identity in (".", "..") or identity in identities
+            or not isinstance(version, str) or not 1 <= len(version) <= 128):
+        raise ValueError("Invalid or duplicate worker identity/version")
+    identities.add(identity)
+
+
+def worker_executable(value, target):
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        raise ValueError("Worker executable must be a filename")
+    portable_component(value)
+    if target.endswith("windows-msvc") != value.lower().endswith(".exe"):
+        raise ValueError("Worker executable suffix does not match the target")
+    return value
+
+
+def read_worker_manifest(path, decoder):
+    with plain_file(path) as stream:
+        source = stream.read(16 * 1024 + 1)
+    if len(source) > 16 * 1024:
+        raise ValueError("Worker manifest exceeds 16 KiB")
+    result = decoder(source.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("Worker manifest must be a mapping")
+    return result
+
+
+def copy_worker_files(stage, source_root, prefix, files, executables):
+    inventory = []
+    for source in files:
+        relative = Path(prefix) / source.relative_to(source_root)
+        destination = stage / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with plain_file(source) as original, destination.open("xb") as output:
+            shutil.copyfileobj(original, output)
+        executable = source in executables
+        destination.chmod(0o755 if executable else 0o644)
+        inventory.append({"path": relative.as_posix(), "bytes": destination.stat().st_size,
+                          "sha256": sha256_file(destination), "executable": executable})
+    digest = hashlib.sha256(json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return inventory, digest
+
+
+def copy_filesystem_packages(stage, source, target):
+    source = worker_input(stage, source)
+    packages, identities = [], set()
+    entries = sorted(source.iterdir())
+    if not 1 <= len(entries) <= 64:
+        raise ValueError("Expected 1..64 independent filesystem packages")
+    fields = {"schema_version", "id", "kind", "version", "entry_executable", "target", "protocol", "formats"}
+    for package in entries:
+        files = plain_tree(package)
+        manifest = read_worker_manifest(package / "plugin.toml", tomllib.loads)
+        worker_identity(manifest, identities)
+        formats = manifest.get("formats")
+        if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
+                or manifest["schema_version"] != 1 or manifest.get("kind") != "filesystem-worker"
+                or manifest.get("target") != target or type(manifest.get("protocol")) is not int
+                or manifest["protocol"] != 1 or not isinstance(formats, list) or not 1 <= len(formats) <= 16
+                or any(value not in ("zip", "tar", "gzip", "tar-gzip", "7z") for value in formats)):
+            raise ValueError("Incompatible filesystem worker manifest")
+        executable = worker_executable(manifest.get("entry_executable"), target)
+        if (package / executable not in files or package / "THIRD-PARTY.md" not in files
+                or not any(file.is_relative_to(package / "licenses") for file in files)):
+            raise ValueError("Filesystem package is missing its executable or attribution")
+        packages.append((package, manifest, files, executable))
+    inventory = []
+    for package, manifest, files, executable in packages:
+        copied, digest = copy_worker_files(stage, package, Path("filesystems") / package.name,
+                                           files, {package / executable})
+        inventory.append({**manifest, "package_sha256": digest, "files": copied})
+    return inventory
+
+
+def copy_thumbnail_packages(stage, source, target):
+    source = worker_input(stage, source)
+    files = plain_tree(source)
+    manifests = [file for file in files if file.parent == source and file.suffix == ".json"]
+    if not 1 <= len(manifests) <= 128 or len(list(source.iterdir())) > 128:
+        raise ValueError("Thumbnail package must fit the host's discovery limit")
+    providers, identities, executables = [], set(), set()
+    fields = {"protocol", "id", "version", "executable", "extensions", "video"}
+    for path in manifests:
+        manifest = read_worker_manifest(path, json.loads)
+        worker_identity(manifest, identities, limit=64)
+        extensions = manifest.get("extensions")
+        if (set(manifest) != fields or type(manifest.get("protocol")) is not int
+                or manifest["protocol"] != 1 or type(manifest.get("video")) is not bool
+                or not isinstance(extensions, list) or not 1 <= len(extensions) <= 32
+                or any(not isinstance(value, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,16}", value)
+                       for value in extensions)
+                or not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", manifest["version"])):
+            raise ValueError("Incompatible thumbnail worker manifest")
+        if (manifest["version"] in (".", "..")
+                or not isinstance(manifest.get("executable"), str)
+                or not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", manifest["executable"])):
+            raise ValueError("Invalid thumbnail worker version or executable")
+        executable = source / worker_executable(manifest.get("executable"), target)
+        notices = source / "notices" / executable.stem
+        if executable not in files or not any(file.is_relative_to(notices) for file in files):
+            raise ValueError("Thumbnail provider is missing its executable or attribution")
+        executables.add(executable)
+        providers.append(manifest)
+    # The bundled FFmpeg runtime must carry its matching source and licence;
+    # independent thumbnail workers are free to use a different implementation.
+    ffmpeg = ("avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") if target.endswith("windows-msvc") else (
+        "libavcodec.so.63", "libavformat.so.63", "libavutil.so.61", "libswscale.so.10")
+    if any(source / name in files for name in ffmpeg):
+        required = [source / name for name in ffmpeg]
+        required.extend(source / "notices/ffmpeg-9.0.2" / name for name in (
+            "ffmpeg-9.0.2.tar.xz", "COPYING.LGPLv2.1", "configure-options.txt", "config.h", "config.mak"))
+        if any(path not in files for path in required):
+            raise ValueError("Incomplete FFmpeg runtime, corresponding source or build notices")
+    copied, digest = copy_worker_files(stage, source, "thumbnailers", files, executables)
+    return {"providers": providers, "target": target, "package_sha256": digest, "files": copied}
+
+
+def dependency_packages(metadata, dependency_list, *, required_root="midnight-explorer",
+                        include_local=False):
     """Use the application's tree, not metadata's workspace-wide feature union."""
     selected = set()
     for line in dependency_list.splitlines():
@@ -161,8 +290,8 @@ def dependency_packages(metadata, dependency_list):
         if not match:
             raise ValueError(f"Malformed dependency line (use --prefix none): {line!r}")
         selected.add(match.groups())
-    if not any(name == "midnight-explorer" for name, _ in selected):
-        raise ValueError("Dependency list must contain midnight-explorer")
+    if required_root and not any(name == required_root for name, _ in selected):
+        raise ValueError(f"Dependency list must contain {required_root}")
     packages = {}
     for package in metadata["packages"]:
         key = (package["name"], package["version"])
@@ -172,7 +301,8 @@ def dependency_packages(metadata, dependency_list):
             packages[key] = package
     if selected - packages.keys():
         raise ValueError(f"Dependencies missing from metadata: {selected - packages.keys()}")
-    return [package for _, package in sorted(packages.items()) if package["source"]]
+    return [package for _, package in sorted(packages.items())
+            if include_local or package["source"]]
 
 
 def license_files(package):
@@ -225,14 +355,24 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         encoding="utf-8")
 
 
-def write_archive(stage, archive, binary_name, archive_format):
+def write_archive(stage, archive, binary_name, archive_format, executables=()):
     binary_path = f"{stage.name}/{binary_name}"
     files = plain_tree(stage, maximum=65536)
+    executable_paths = {binary_path}
+    for relative in executables:
+        relative = Path(relative)
+        if relative.is_absolute() or not relative.parts:
+            raise ValueError("Worker executable must be stage-relative")
+        for part in relative.parts:
+            portable_component(part)
+        if stage / relative not in files:
+            raise ValueError("Declared worker executable is absent from staging")
+        executable_paths.add(f"{stage.name}/{relative.as_posix()}")
 
     def safe_tar_member(member):
         if not (member.isdir() or member.isfile()):
             raise ValueError(f"Unexpected archive entry type: {member.name}")
-        member.mode = 0o755 if member.isdir() or member.name == binary_path else 0o644
+        member.mode = 0o755 if member.isdir() or member.name in executable_paths else 0o644
         member.uid = member.gid = 0
         member.uname = member.gname = ""
         member.mtime = int(member.mtime)
@@ -244,7 +384,7 @@ def write_archive(stage, archive, binary_name, archive_format):
             for path in files:
                 info = zipfile.ZipInfo.from_file(path, path.relative_to(stage.parent))
                 info.create_system = 3
-                mode = 0o755 if info.filename == binary_path else 0o644
+                mode = 0o755 if info.filename in executable_paths else 0o644
                 info.external_attr = (stat.S_IFREG | mode) << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
                 with plain_file(path) as source, bundle.open(info, "w") as target:
@@ -268,6 +408,10 @@ def main():
     parser.add_argument("--desktop-entry", type=Path)
     parser.add_argument("--viewers-root", type=Path,
                         help="Independent plugin packages; defaults to viewers beside the executable")
+    parser.add_argument("--filesystems-root", type=Path,
+                        help="Optional independent packages; defaults to filesystems beside the executable")
+    parser.add_argument("--thumbnailers-root", type=Path,
+                        help="Optional flat worker installation; defaults to thumbnailers beside the executable")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", args.target):
@@ -296,6 +440,13 @@ def main():
         shutil.copyfile(args.desktop_entry, stage / args.desktop_entry.name)
     plugins = copy_viewer_packages(stage, args.viewers_root or args.binary.parent / "viewers",
                                   args.target, required_ids=REQUIRED_VIEWERS)
+    filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
+    thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
+    filesystems = copy_filesystem_packages(stage, filesystem_root, args.target) if (
+        args.filesystems_root or filesystem_root.exists()) else []
+    thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target) if (
+        args.thumbnailers_root or thumbnail_root.exists()) else {"providers": [], "files": []}
+    worker_files = [file for package in filesystems for file in package["files"]] + thumbnails["files"]
     add_notices(stage, json.loads(args.metadata.read_text(encoding="utf-8-sig")),
                 args.dependency_list.read_text(encoding="utf-8-sig"),
                 args.rust_docs, args.license_overrides)
@@ -306,11 +457,14 @@ def main():
         "profile": "release", "rust": rust, "binary": binary.name,
         "binary_sha256": binary_hash,
         "viewer_plugins": plugins,
+        "filesystem_plugins": filesystems,
+        "thumbnail_workers": thumbnails,
     }, indent=2) + "\n", encoding="utf-8")
     archive = output / f"{name}.{args.format}"
     if archive.exists():
         raise FileExistsError(archive)
-    write_archive(stage, archive, binary.name, args.format)
+    write_archive(stage, archive, binary.name, args.format,
+                  [file["path"] for file in worker_files if file["executable"]])
     print(archive)
 
 

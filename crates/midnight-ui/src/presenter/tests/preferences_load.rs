@@ -83,6 +83,8 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         bookmarks: vec![stored_bookmark(9, Some(1))],
         tabs: Default::default(),
         panel_view_modes: Default::default(),
+        thumbnails_enabled: true,
+        thumbnails_network: false,
         shortcuts: vec![],
         panel_filters: Default::default(),
     };
@@ -90,10 +92,12 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     expected.theme = PreferenceTheme::Dark;
     expected.tabs = [
         PaneTabPreferences {
+            archives: Default::default(),
             paths: vec![test_root(), test_root()],
             active: 1,
         },
         PaneTabPreferences {
+            archives: Default::default(),
             paths: vec![test_root()],
             active: 0,
         },
@@ -150,6 +154,7 @@ fn early_bookmark_rename_removal_and_assignment_survive_reconciliation() {
     assert!(p.add_bookmark(PaneId::Left, "Local".into(), Some(1), &|_| panic!()));
     let local = p.bookmarks()[0].id;
     assert!(p.rename_bookmark(local, "Local renamed".into(), &|_| panic!()));
+    p.panes[0].path = test_root().join("removed-locally");
     assert!(p.add_bookmark(
         PaneId::Left,
         "Removed locally".into(),
@@ -189,6 +194,7 @@ fn early_bookmark_rename_removal_and_assignment_survive_reconciliation() {
 fn startup_reconciliation_over_capacity_preserves_all_bookmarks_and_never_saves_invalid_data() {
     let mut p = Presenter::new(test_root(), test_root());
     for index in 0..MAX_BOOKMARKS {
+        p.panes[0].path = test_root().join(format!("local-{index}"));
         assert!(p.add_bookmark(PaneId::Left, format!("Local {index}"), None, &|_| panic!()));
     }
     let saved = UserPreferences {

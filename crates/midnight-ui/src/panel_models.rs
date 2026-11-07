@@ -2,7 +2,7 @@
 use crate::*;
 
 fn bookmark_tooltip(presenter: &Presenter, bookmark: &midnight_core::Bookmark) -> String {
-    let mut text = format!("{}\n{}", bookmark.name, bookmark.path.display());
+    let mut text = bookmark.path.to_string_lossy().into_owned();
     if let Some(slot) = bookmark.slot {
         let keys = presenter.shortcut_hint(&format!("bookmark.open.{slot}"));
         if !keys.is_empty() {
@@ -14,17 +14,22 @@ fn bookmark_tooltip(presenter: &Presenter, bookmark: &midnight_core::Bookmark) -
 }
 
 pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
-    presenter
-        .bookmarks()
-        .iter()
+    let mut bookmarks = presenter.bookmarks().iter().collect::<Vec<_>>();
+    bookmarks.sort_by_key(|bookmark| bookmark.slot.unwrap_or(11));
+    bookmarks
+        .into_iter()
         .map(|bookmark| NavigationChoiceRow {
             identity: format!(
                 "bookmark:{}:{}",
                 presenter.preferences.revision.0, bookmark.id.0
             )
             .into(),
-            label: format!("{} — {}", bookmark.name, bookmark.path.display()).into(),
-            compact_label: bookmark.name.as_str().into(),
+            label: bookmark.path.to_string_lossy().as_ref().into(),
+            compact_label: bookmark
+                .slot
+                .map(|slot| (slot % 10).to_string())
+                .unwrap_or_default()
+                .into(),
             tooltip: bookmark_tooltip(presenter, bookmark).into(),
             icon: presenter
                 .desktop
@@ -39,7 +44,10 @@ fn history_choices(presenter: &Presenter, pane: PaneId, forward: bool) -> Vec<Na
         .history_entries(pane, forward)
         .into_iter()
         .map(|choice| {
-            let label: SharedString = choice.path.to_string_lossy().as_ref().into();
+            let label: SharedString = choice
+                .display
+                .unwrap_or_else(|| choice.path.to_string_lossy().into_owned())
+                .into();
             NavigationChoiceRow {
                 identity: choice.identity.into(),
                 label: label.clone(),
@@ -72,7 +80,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         identity: "manage-hot-paths".into(),
         label: "Manage Hot Paths…".into(),
         compact_label: "Hot Paths".into(),
-        tooltip: "Add, rename or remove saved locations".into(),
+        tooltip: "Add or remove saved paths and assign numbered shortcuts".into(),
         icon: presenter
             .desktop
             .image(&IconKey::action(ActionIcon::Bookmarks)),

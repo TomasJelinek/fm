@@ -1,0 +1,14 @@
+[package]
+name = "midnight-thumbnail-sdk"
+description = "Broker stream and isolated process runtime for thumbnail providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-thumbnail-api = { path = "../midnight-thumbnail-api", version = "=0.1.0", registry = "midnight" }
+midnight-worker-sdk = { path = "../../worker-api/midnight-worker-sdk", version = "=0.1.0", registry = "midnight" }
+
+[lints.rust]
+unsafe_code = "forbid"

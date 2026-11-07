@@ -148,6 +148,7 @@ pub(crate) struct KeyboardState {
     pub(crate) snapshot: Arc<KeyboardBindings>,
     pub(crate) selected: usize,
     pub(crate) error: String,
+    pub(crate) editor: super::keyboard_editor::ShortcutEditor,
     editor_revision: u64,
     pub(crate) editor_revision_text: SharedString,
 }
@@ -161,6 +162,7 @@ impl Default for KeyboardState {
             snapshot,
             selected: 0,
             error: String::new(),
+            editor: Default::default(),
             editor_revision: 0,
             editor_revision_text: "0".into(),
         }
@@ -182,7 +184,7 @@ impl KeyboardState {
         Ok(())
     }
 
-    fn reset_editor(&mut self) {
+    pub(super) fn reset_editor(&mut self) {
         self.editor_revision = self.editor_revision.saturating_add(1);
         self.editor_revision_text = self.editor_revision.to_string().into();
     }
@@ -221,18 +223,7 @@ impl Presenter {
             return false;
         }
         let mut values = self.preferences.values.clone();
-        if let Some(entry) = values
-            .shortcuts
-            .iter_mut()
-            .find(|entry| entry.action == action)
-        {
-            entry.keys = keys;
-        } else {
-            values.shortcuts.push(ShortcutBinding {
-                action: action.into(),
-                keys,
-            });
-        }
+        super::keyboard_editor::replace_aliases(&mut values, action, keys);
         self.apply_shortcut_values(values, send)
     }
 
@@ -276,6 +267,7 @@ impl Presenter {
         }
         self.preferences.edited.shortcuts = true;
         self.keyboard.error.clear();
+        self.keyboard.editor.candidate = None;
         self.update_preferences(values, send);
         true
     }

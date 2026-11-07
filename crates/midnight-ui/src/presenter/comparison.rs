@@ -20,6 +20,13 @@ pub(crate) struct ComparisonState {
 
 impl Presenter {
     pub(crate) fn open_comparison(&mut self) {
+        if self.panes.iter().any(|p| !p.native_capabilities()) {
+            self.desktop.report(
+                "Archive comparison unavailable",
+                "Directory comparison currently requires two native filesystem panels.".into(),
+            );
+            return;
+        }
         self.comparison.open = true;
         self.comparison.error.clear();
     }
@@ -170,7 +177,7 @@ impl Presenter {
             return None;
         }
         match result {
-            Err(error) => self.comparison.error = error.to_string(),
+            Err(error) => self.comparison.error = crate::error_presentation::describe(&error),
             Ok(result) => {
                 if !self.comparison_current(&result.request)
                     || self

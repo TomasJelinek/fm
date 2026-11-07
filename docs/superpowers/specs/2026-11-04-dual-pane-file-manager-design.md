@@ -10,11 +10,31 @@ Pořadí přijatých navazujících implementací zachycuje
 [Nový prázdný soubor](2026-11-05-empty-file-design.md): tlačítko v panelu a Shift+F4,
 dialog názvu, výhradní vytvoření na backendu bez přepsání existujícího souboru.
 
-Viewer etapa: ověřený [sdílený Unicode renderer](../../verification/viewer-renderer.md)
-a rozpracované [veřejné API](../../../api/README.md) v nezávislém Cargo workspace.
+Viewer etapa: implementované [veřejné API/SDK](../../../api/README.md), bezpečnostní
+kontroly loaderu, sdílený Unicode renderer a samostatné pluginy text/hex, source
+a Markdown. F3 vybírá plugin podle přípony, Alt+F3 žádá základní textový režim.
 Pluginy zůstávají v jednom Git repozitáři, každý ve vlastním projektu/testech.
-SDK lifecycle a nezávislé DLL/SO mají [ověření](../../verification/plugin-api-sdk.md).
-Loader a okna F3 zatím nejsou hotové; API není vydané ani zmrazené.
+Aktuální hranice a testy popisuje [ověření viewerů](../../verification/viewer-implementation.md)
+a [developer dokumentace API](../../developer/README.md). Filesystem pluginy
+a migrace nativního filesystemu zůstávají navazující etapou.
+
+Aktuální drobná rozšíření: [unikátní číslované Hot Paths](2026-11-06-unique-numbered-hot-paths.md)
+se správou zkratek bez zavření dialogu; [souhrn potvrzení mazání](2026-11-06-delete-summary.md)
+s počty a součtem velikostí místo seznamu všech souborů. Light a Dark nyní stejně
+jako ostatní schémata barevně odlišují složky; pravidla kontrastu jsou v
+[návrhu témat](2026-11-06-theme-expansion-design.md). Výběr knihoven pro budoucí
+obrázkový viewer a mediální náhledy upřesňuje
+[návrh thumbnailů](2026-11-05-panel-views-thumbnails-design.md).
+
+Další implementované úpravy: [F7 pro absolutní i relativní cesty](2026-11-06-create-any-path.md),
+[aktivace panelu kliknutím](2026-11-06-panel-activation.md),
+[přehlednější atributy a časy](2026-11-06-metadata-dialog-refinement.md)
+a [sjednocené zobrazení chyb](2026-11-06-error-presentation-design.md).
+
+[Kontrolní součty na Ctrl+F8](2026-11-06-checksums-design.md) jsou nově navržená,
+dosud neimplementovaná funkce: MD5/SHA-1 pro kompatibilitu, výchozí SHA-256
+a volitelné SHA-512, výběr souborů, neblokující průběh a export. Ctrl+F7 zůstává
+změně velikosti písmen názvu. Ověřování kopie se nadále provádí SHA-256.
 
 ## 1. Záměr a potvrzená rozhodnutí
 
@@ -23,6 +43,11 @@ Vznikne svižný desktopový souborový manažer inspirovaný Altap Salamanderem
 Požadavky uživatele:
 
 - Rust, UI ve Slintu, Tokio pro asynchronní orchestrace.
+- Všechny knihovny třetích stran musejí umožnit zamýšlený vývoj, použití a distribuci
+  bez povinných poplatků či royalties; preferujeme open source. Platí i pro
+  transitivní závislosti, API/SDK, pluginy, build a testy. Licence a povinnosti
+  eviduje [licenční politika](../../DEPENDENCY_POLICY.md) a
+  [úplný seznam knihoven](../../THIRD_PARTY.md).
 - Oddělený front-end a back-end. Uživatel zvolil **jednu aplikaci s oddělenými Rust crates a komunikací přes zprávy**.
 - Dva nezávislé panely, zobrazení disků/připojených svazků a přepínání mezi nimi.
 - Kopírování s povinným ověřením kontrolním součtem.
@@ -1269,3 +1294,77 @@ obrázkovou službu ani nástroje pro převod grafiky. Windows resource compiler
 pouze při sestavení a jeho výstup zůstává v Cargo `OUT_DIR` pod `_build`.
 Wayland používá shodný XDG identifikátor aplikace, desktopový soubor a nainstalovanou
 PNG ikonu; samotná vlastnost ikony okna tam nestačí. Postup instalace je v README.
+
+## 41. Přehlednější nastavení, klávesové zkratky a úlohy
+
+Nastavení používá větší okno omezené rozměry hlavního okna, s tématy vlevo,
+posuvným obsahem a pevnou spodní řadou akcí. Rozměry respektují desktop/touch
+profil a zvolené písmo. Kategorie lze přepínat myší i klávesnicí; změna kategorie
+šipkami musí přesunout také fokus.
+
+Editor zkratek vychází z dodané ukázky Visual Studia: vyhledávání podle názvu
+příkazu nebo ID, virtualizovaný seznam příkazů, výběr existující zkratky a záznam
+nové skutečným stiskem kláves. Assign přidává alias, Remove odstraní pouze zvolený
+alias. Před přiřazením se zobrazí kontext a aktuální vlastníci zkratky; konflikt
+v překrývajícím se kontextu neprovede částečnou změnu. Záznam kláves nikdy
+nespouští příkazy aplikace. Tab/Escape zaznamená klávesu a opustí záznamové pole.
+Obnova celého výchozího mapování vyžaduje potvrzení v editoru. Kontext určuje
+příkaz a pravidla pro editaci textu; nabízíme pouze skutečně implementované
+kontexty a mapování. Podrobnosti: [návrh editoru](2026-11-07-keyboard-options-design.md).
+
+Jobs používá virtualizovaný seznam operací a samostatný detail vybrané úlohy.
+Výběr je určen stabilním ID, takže jej nezmění průběžná aktualizace ani nová
+úloha. Zobrazuje ikonu, stav, fázi, úplné cesty a známé počty/bajty. Kopie bez
+známého celkového objemu neukazuje odhadnutá procenta. Skutečná chyba má výraznou
+ikonu; čekání na rozhodnutí není chyba. Cancel, Resolve, Copy details a Close
+jsou ve spodní řadě; kopírování detailu používá backend schránky. Zavření okna
+ponechá úlohy běžet a stisk akce sám okno nezavírá.
+
+Nabídka disků obsahuje navíc Pictures, Videos, Music, uživatelský TEMP a dostupné
+osobní/pracovní účty OneDrive. Windows cesty pocházejí z Known Folders a registrací
+účtů, takže respektují přesměrování. Linux používá XDG user directories a své
+dočasné umístění. Neexistující složky nevytváříme; všechny dotazy a ikony zajišťuje
+backend příslušné platformy. Podrobnosti: [umístění a Jobs](2026-11-07-locations-and-jobs-design.md).
+
+Pokud jsou ve výběru složky s dokončeným bezchybným měřením, stavový řádek ukáže
+i jejich známý součet. Částečné nebo chybějící výsledky musí zůstat rozeznatelné
+od konečné velikosti. Součty zpracovává backend pro zachycený výběr a verzi výpisu;
+UI nesmí procházet velký výběr při každém překreslení.
+
+## 42. Samostatné archivní a mediální pluginy
+
+Ve stejném Git repozitáři zůstávají nezávislé Cargo projekty: veřejné protokoly
+`filesystem-api`, `thumbnail-api` a `worker-api` a samostatné implementace archivů,
+obrázků a videí. Pluginy mají vlastní testy, závisí pouze na verzovaném veřejném
+API a nemění zdrojové soubory hostitele. Nasazují se vedle programu do
+`filesystems/` a `thumbnailers/`; chybějící plugin nezpřístupňuje danou funkci.
+Dosavadní vydané viewer API/SDK 0.1.0 se tím nemění.
+
+Archivní provider nabízí čtení ZIP, 7z, GZIP, TAR a TAR.GZ, navigaci, hledání,
+řazení a F3 nad zachyceným obsahem. Identitu člena netvoří lokální cesta. Záložky
+uchovávají typovaný popis provideru, zdrojového archivu a nezměněné komponenty;
+po změně nebo ztrátě zdroje zůstanou výslovně nedostupné. První implementace má
+rozpočty 64 MiB pro archiv/člena a 128 MiB pro dekódovaný součet. Neprovádí zápis,
+extrakci, vnořené mounty, dešifrování ani spuštění archivního člena externí aplikací.
+Tyto rozpočty neomezují délku nativních cest. Přesné smlouvy a další limity uvádí
+[filesystem API](../../developer/FILESYSTEM_API.md).
+
+Obrazové a video náhledy vznikají v omezených pomocných procesech, na Windows
+v AppContaineru s Job Objectem a na Linuxu se seccomp a limity prostředků.
+Hostitel zprostředkuje pouze čtení zachyceného obsahu; dekodér nemá přístup
+k libovolným souborům ani síti. Nejvýše dvě dekódovací úlohy sdílejí omezenou
+frontu a rozpočet paměti. Přístup ke zdrojovým datům používá společný rozpočet
+s měřením složek a kopírováním: souběh dovolují pouze potvrzená lokální SSD,
+HDD/síť/neznámé úložiště mají sériový přístup po omezených blocích.
+
+Každý úspěšný snímek se nejprve bezpečně uloží do soukromé diskové cache.
+Video normálně ukazuje jeden snímek; všechna viditelná označená videa postupně
+střídají nejvýše šest snímků, s předností souboru pod myší. Verze zdroje, změna
+panelu i vymazání cache musí zneplatnit staré výsledky. Nastavení Previews umožní
+náhledy vypnout, výslovně povolit síťová umístění a asynchronně vymazat cache.
+Podrobnosti: [náhledy](2026-11-05-panel-views-thumbnails-design.md) a
+[worker SDK](../../developer/WORKER_SDK.md).
+
+Seznam všech knihoven a skutečně připnutých licencí je v
+[licenčním přehledu](../../THIRD_PARTY.md). Distribuce přikládá příslušné copyright
+a licenční texty; volitelný FFmpeg také odpovídající zdroj a konfiguraci sestavení.

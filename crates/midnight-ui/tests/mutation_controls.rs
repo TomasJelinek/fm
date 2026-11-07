@@ -78,6 +78,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                 kind: request.kind,
                 files: 1,
                 folders: 0,
+                file_bytes: None,
                 sample: vec![MutationItem {
                     path: entry.path,
                     kind: entry.kind,
@@ -113,6 +114,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                 kind: deletion.kind,
                 files: 1,
                 folders: 0,
+                file_bytes: None,
                 sample: vec![],
             },
         ))));
@@ -167,6 +169,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                     kind: creation.kind,
                     files: 0,
                     folders: 0,
+                    file_bytes: Some(0),
                     sample: vec![],
                 },
             ))));

@@ -14,6 +14,10 @@ describes that particular build.
 
 Lossless Unicode throughout the product, security and backend-only non-UI work
 are explicit requirements. See [security and integrity rules](SECURITY.md).
+Third-party libraries must be free of mandatory license fees, with open source
+preferred. See the [dependency policy](docs/DEPENDENCY_POLICY.md),
+[complete library/license inventory](docs/THIRD_PARTY.md) and
+[developer API documentation](docs/developer/README.md).
 
 Stage 1 provides independent local directory navigation, mounted-volume switching,
 history, sorting, selection, mouse/keyboard navigation, and background metadata/capacity
@@ -73,6 +77,14 @@ exit status. They also build the three independent viewer packages using the pub
 SDK and install their artifacts under the executable's `viewers/` directory. They do
 not install system packages or launch the application. Direct `cargo build` builds
 the host only; run `scripts/build-viewers.ps1` or `scripts/build-viewers.sh` to add viewers.
+Archive and thumbnail workers have separate builds; the root helpers do not install
+them. Use the archive plugin's `scripts/build.ps1` or `scripts/build.sh` with a
+canonical worker SDK configuration, and `scripts/build-thumbnailers.ps1` or
+`scripts/build-thumbnailers.sh` for thumbnails. Stage the results in executable-adjacent
+`filesystems/` and `thumbnailers/` respectively. See the
+[filesystem API and build reference](docs/developer/FILESYSTEM_API.md) and
+[worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging accepts these
+optional package roots and preserves their executable permissions and notices.
 The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
 and `me` on Linux.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
@@ -276,9 +288,12 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+U: swap the complete panels while keeping their operations and active content.
   Drag the divider for unequal widths; double-click it to center the panels.
 - Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.
-- Hot Paths dropdown: open or manage saved paths and numbered assignments;
-  saved paths also appear in the full drive dropdown. Ctrl+number or Shift+number
-  opens a numbered path (Alt targets the other pane); Ctrl+Shift+0 assigns slot 10.
+- Hot Paths store unique native paths, shown without redundant names. The drive bar
+  shows assigned numbers **1–9, 0**; pressing a digit in a focused panel opens its
+  path. Editors/search keep normal digit input. Ctrl+number and Shift+number remain
+  aliases (Alt targets the other pane); Ctrl+Shift+0 assigns slot 10. The manager
+  keeps a clicked path selected while its shortcut is edited. Saved paths also
+  appear in the full drive dropdown. See [identity and assignment rules](docs/superpowers/specs/2026-11-06-unique-numbered-hot-paths.md).
 - Left click: focus the row and its pane; Ctrl+click toggles selection, Shift+click
   selects an inclusive range, Ctrl+Shift+click adds that range. Accepted gestures
   appear immediately while backend confirmations arrive. Panel status shows
@@ -341,12 +356,16 @@ editor scope and shortcuts reserved for later stages.
 - `.` in the drive dropdown, or click **. As Other Panel**: open the opposite
   panel's current folder. Enter in files opens the focused folder or file.
 - Shift+drive letter: switch the focused file pane on Windows.
-- F2: rename the focused item; F7: create a folder or nested relative path.
+- F2: rename the focused item; F7: create an absolute or relative folder path,
+  including `..` and missing intermediate folders. Paths may leave the active panel.
 - Shift+F4 or the panel's **New empty file** button: enter a filename and press
   Enter to create a zero-byte file. Escape cancels; existing entries are never
   overwritten. The new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
   explicitly confirm permanent deletion. A Trash failure never permanently deletes.
+  One file shows its name, exact size and modified date/time. Multiple entries show
+  file count/total file bytes and folder count; folder contents are not recursively
+  counted just to open the confirmation.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
   Options follows F12; Jobs shows the operation queue, progress and cancellation.
 - Hold Ctrl to show the effective Ctrl+F1–F12 captions and actions in the footer.
@@ -559,23 +578,33 @@ been selected. macOS adapters and distribution are later work.
 
 Further designs cover [the viewer and virtual filesystems](docs/superpowers/specs/2026-11-04-viewer-vfs-design.md)
 and [reusable sudo terminal sessions](docs/superpowers/specs/2026-11-04-terminal-sessions-design.md).
+[Checksums on Ctrl+F8](docs/superpowers/specs/2026-11-06-checksums-design.md) are
+designed but not yet implemented; Ctrl+F7 retains filename case conversion.
 The [finalized dynamic plugin interface](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
 specifies separately loadable text/source viewers and native, ZIP, GZIP, TAR/TAR.GZ
 and 7z filesystem providers under executable-adjacent `viewers/` and `filesystems/`.
-Missing packages remove their features after restart, including native browsing
-when the platform's native provider is absent. Plugins use a versioned C ABI;
-Slint rendering and Tokio orchestration stay in the host. Native plugins are
-trusted application code, not sandboxed extensions. Initial archives are read-only.
+The three viewer packages use a versioned C ABI and run as trusted native code.
+Read-only archive packages use a separate versioned executable-worker protocol,
+with restricted processes for untrusted parsing. Slint rendering and Tokio
+orchestration stay in the host. Missing packages remove the corresponding plugin
+features after restart; native browsing currently remains built into the host.
 Plugins share this Git repository but have independent Cargo workspaces under
 `plugins/`, with their own builds, dependencies, tests and CI. They share only the
 public API/SDK and must build from an exported plugin directory without host
 sources. Plugins cannot depend on private
 application crates or modify the main application's sources; API extensions are
 separate host-owned changes. Distribution packaging consumes plugin artifacts.
-The three viewer packages and their generic host are implemented; archive/native-provider
-plugin migration and reusable terminal sessions remain planned. Each OS
-will have its own native provider; archives and typed Registry values use the
-same provider boundary. Copy/move conflicts require a source/destination metadata
+ZIP, 7z, GZIP and TAR/TAR.GZ browsing is implemented with installed archive workers:
+Enter/double-click opens an archive, directories and `..` navigate it, saved tabs
+retain typed provider addresses, and F3 reads member content through the broker.
+Members have opaque identities; duplicate names remain distinct. Missing providers
+or changed sources retain unavailable saved tabs with a diagnostic. Mutations,
+external editing, extraction, passwords, nested archives and RAR are unavailable.
+The initial bounded mount permits 64 MiB source/per-member data and 128 MiB total
+decoded data; large or high-expansion archives fail explicitly. Full limits and
+supported codecs are in the [archive API reference](docs/developer/FILESYSTEM_API.md).
+Native-provider migration, network providers and reusable terminal sessions remain
+planned. Each OS will have its own native provider. Copy/move conflicts require a source/destination metadata
 comparison and explicit overwrite policy before publication.
 
 ### Internal viewers

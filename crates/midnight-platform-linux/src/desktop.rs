@@ -133,6 +133,16 @@ impl LocationService for LinuxFileSystem {
                 drive_letter: None,
             })
             .collect();
+        let temporary = std::env::temp_dir();
+        if temporary.is_absolute() && temporary.is_dir() {
+            locations.push(NavigationLocation {
+                id: "temporary".into(),
+                label: "Temporary files".into(),
+                path: temporary,
+                kind: LocationKind::Temporary,
+                drive_letter: None,
+            });
+        }
         let Some(home) = self.home.as_ref().filter(|home| home.is_absolute()) else {
             return Ok(locations);
         };
@@ -153,6 +163,9 @@ impl LocationService for LinuxFileSystem {
             ("DESKTOP", "Desktop", LocationKind::Desktop),
             ("DOCUMENTS", "Documents", LocationKind::Documents),
             ("DOWNLOAD", "Downloads", LocationKind::Downloads),
+            ("PICTURES", "Pictures", LocationKind::Pictures),
+            ("VIDEOS", "Videos", LocationKind::Videos),
+            ("MUSIC", "Music", LocationKind::Music),
         ] {
             // When configured to $HOME, XDG marks a location disabled. Do not fabricate
             // an English directory in that case. Conventional defaults apply only when

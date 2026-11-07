@@ -1,0 +1,136 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { ErrorGlyph } from "error-notice.slint";
+import { DialogText } from "dialog-text.slint";
+
+export struct OperationRow {
+    identity: string, title: string, detail: string, summary: string, state: string,
+    cancellable: bool, attention: bool, failed: bool, active: bool,
+    determinate: bool, progress: float, icon: image, kind: int
+}
+
+export global JobsView {
+    pure callback find([OperationRow], string) -> int;
+}
+
+component JobRow inherits Rectangle {
+    in property <OperationRow> job;
+    in property <bool> selected;
+    callback select();
+    height: max(Theme.control-height * 1.7, Theme.font-size * 3.5);
+    background: root.selected ? Theme.selected-background : area.has-hover ? Theme.hover : Theme.pane-background;
+    accessible-role: list-item; accessible-label: root.job.title; accessible-value: root.job.identity;
+    accessible-checkable: true; accessible-checked: root.selected;
+    accessible-action-default => { root.select(); }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 10px; cross-axis-alignment: center;
+        if root.job.failed : ErrorGlyph { }
+        if !root.job.failed : NativeActionImage {
+            native-icon: root.job.icon;
+            fallback-icon: root.job.kind == 1 ? FallbackIcons.delete
+                : root.job.kind == 2 ? FallbackIcons.rename
+                : root.job.kind == 3 ? FallbackIcons.new-folder
+                : root.job.kind == 4 ? FallbackIcons.new-file
+                : root.job.kind == 5 ? FallbackIcons.properties : FallbackIcons.copy;
+            width: Theme.icon-size; height: Theme.icon-size;
+        }
+        VerticalLayout {
+            spacing: 3px; alignment: center;
+            HorizontalLayout {
+                spacing: 10px;
+                Text { text: root.job.title; color: root.selected ? Theme.selected-text : Theme.text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                Text { text: root.job.state; color: root.selected ? Theme.selected-text : root.job.failed ? Theme.error-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+            }
+            Text { text: root.job.summary; color: root.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+        }
+    }
+    area := TouchArea { clicked => { root.select(); } }
+}
+
+export component OperationsBody inherits Rectangle {
+    in property <[OperationRow]> rows;
+    private property <string> selected-identity;
+    private property <int> selected-index: JobsView.find(root.rows, root.selected-identity);
+    private property <OperationRow> selected: root.rows[root.selected-index];
+    callback cancel(string);
+    callback resolve(string);
+    callback copy-details(string);
+    callback close();
+    background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+    init => {
+        if root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
+        list-focus.focus();
+    }
+    changed rows => {
+        if root.selected-identity == "" && root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
+    }
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: 16px; spacing: 12px;
+            HorizontalLayout {
+                spacing: 10px; cross-axis-alignment: center;
+                Text { text: "Jobs"; color: Theme.strong-text; font-weight: 600; font-size: Theme.font-size * 1.25; horizontal-stretch: 1; }
+                Text { text: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations"; color: Theme.secondary-text; font-size: Theme.small-font; }
+            }
+            Rectangle { height: 1px; background: Theme.frame; }
+            list-frame := Rectangle {
+                height: min(root.height * 0.36, max(130px, Theme.control-height * 4));
+                background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
+                list-focus := FocusScope {
+                    key-pressed(event) => {
+                        if root.rows.length == 0 { return reject; }
+                        if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                            let next = clamp(root.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, root.rows.length - 1);
+                            root.selected-identity = root.rows[next].identity;
+                            let top = next * max(Theme.control-height * 1.7, Theme.font-size * 3.5);
+                            if top < -jobs.content-y { jobs.content-y = -top; }
+                            else if top + Theme.font-size * 3.5 > -jobs.content-y + jobs.visible-height {
+                                jobs.content-y = min(0px, jobs.visible-height - top - max(Theme.control-height * 1.7, Theme.font-size * 3.5));
+                            }
+                            return accept;
+                        }
+                        reject
+                    }
+                    jobs := ListView {
+                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                        horizontal-scrollbar-policy: always-off;
+                        for job in root.rows : JobRow {
+                            job: job; selected: job.identity == root.selected.identity; width: jobs.visible-width;
+                            select => { list-focus.focus(); root.selected-identity = job.identity; }
+                        }
+                    }
+                }
+                if root.rows.length == 0 : Text {
+                    text: "No background operations"; color: Theme.secondary-text; font-size: Theme.font-size;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px; cross-axis-alignment: center;
+                if root.selected.failed : ErrorGlyph { }
+                Text { text: root.selected.title; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                Text { text: root.selected.state; color: root.selected.failed ? Theme.error-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+            }
+            if root.selected.determinate : Rectangle {
+                height: 6px; border-radius: 3px; background: Theme.secondary-surface;
+                Rectangle { width: parent.width * clamp(root.selected.progress, 0, 1); border-radius: 3px; background: Theme.active-frame; }
+            }
+            DialogText { text: root.selected.detail; vertical-stretch: 1; }
+            Rectangle { height: 1px; background: Theme.frame; }
+            HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Copy details"; enabled: root.selected-index >= 0; hint: "Copy the selected job's full details and retained errors."; clicked => { root.copy-details(root.selected.identity); } }
+                Rectangle { horizontal-stretch: 1; }
+                HintedActionButton { text: "Cancel"; enabled: root.selected.cancellable; hint: "Request cancellation of this job. Completed changes are retained."; clicked => { root.cancel(root.selected.identity); } }
+                if root.selected.attention : HintedActionButton { text: "Resolve"; hint: "Review the decision needed by this job."; clicked => { root.resolve(root.selected.identity); } }
+                HintedActionButton { text: "Close"; hint: "Close Jobs (Escape). Background operations continue."; clicked => { root.close(); } }
+            }
+        }
+    }
+}

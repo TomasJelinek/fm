@@ -1,0 +1,8 @@
+{
+  "protocol": 1,
+  "id": "midnight-video",
+  "version": "ffmpeg-9.0.2-baseline-r1",
+  "executable": "midnight-thumbnail-video",
+  "extensions": ["webm", "mkv", "avi", "ogg", "ogv"],
+  "video": true
+}

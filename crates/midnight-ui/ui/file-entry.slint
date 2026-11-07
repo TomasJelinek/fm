@@ -1,6 +1,7 @@
 import { Theme } from "theme.slint";
 import { PrefixName } from "panel-search.slint";
 import { FileRow } from "file-models.slint";
+import { ErrorGlyph } from "error-notice.slint";
 
 // Each cell keeps pointer identity across virtualized rebinding and refreshes.
 export component FileEntry inherits Rectangle {
@@ -19,6 +20,9 @@ export component FileEntry inherits Rectangle {
     callback drag-moved(float, float);
     callback drag-released(float, float);
     callback drag-cancelled();
+    callback hover-changed(string, bool);
+    private property <string> hover-identity: pointer.has-hover && root.visible ? item.identity : "";
+    changed hover-identity => { root.hover-changed(item.identity, root.hover-identity != ""); }
     private property <color> text-color: item.selected ? Theme.selected-text
         : item.directory ? Theme.directory-text : Theme.text;
     clip: true;
@@ -28,7 +32,8 @@ export component FileEntry inherits Rectangle {
     background: root.row-color;
     accessible-role: list-item;
     accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
-        + (item.compressed ? " · Filesystem compressed" : "");
+        + (item.compressed ? " · Filesystem compressed" : "")
+        + (item.size-state == 3 ? " · Folder size error" : "");
     Rectangle {
         x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
         background: item.selected ? Theme.selected-edge
@@ -63,6 +68,11 @@ export component FileEntry inherits Rectangle {
                         accessible-role: none;
                     }
                 }
+                if root.view-mode == 1 && item.size-state == 3 : ErrorGlyph {
+                    width: 12px; height: 12px; x: parent.width - self.width;
+                    y: (parent.height - Theme.file-icon-size) / 2;
+                    accessible-label: "Folder size error";
+                }
             }
             if item.prefix-end > 0 : PrefixName {
                 text: item.name; prefix-end: item.prefix-end;
@@ -74,11 +84,18 @@ export component FileEntry inherits Rectangle {
                 overflow: elide; vertical-alignment: center; horizontal-stretch: 1;
             }
         }
-        if root.view-mode == 0 : Text {
-            text: item.size; color: item.size-state == 1 ? Theme.pending-size : Theme.secondary-text;
-            font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font;
-            width: root.size-column-width; overflow: elide;
-            horizontal-alignment: right; vertical-alignment: center;
+        if root.view-mode == 0 : HorizontalLayout {
+            width: root.size-column-width; spacing: 4px; cross-axis-alignment: center;
+            if item.size-state == 3 : ErrorGlyph {
+                width: max(12px, min(20px, Theme.small-font)); height: self.width;
+                accessible-label: "Folder size error";
+            }
+            Text {
+                text: item.size; color: item.size-state == 3 ? Theme.error-text : item.size-state == 1 ? Theme.pending-size : Theme.secondary-text;
+                font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font;
+                horizontal-stretch: 1; overflow: elide;
+                horizontal-alignment: right; vertical-alignment: center;
+            }
         }
         if root.view-mode == 0 : Text {
             text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font;
@@ -95,6 +112,10 @@ export component FileEntry inherits Rectangle {
             text: "C"; color: Theme.compression-mark; font-size: 12px; font-weight: 700;
             accessible-role: none;
         }
+        if item.size-state == 3 : ErrorGlyph {
+            x: parent.width / 2 + 22px; y: 12px; width: 16px; height: 16px;
+            accessible-label: "Folder size error";
+        }
         if item.prefix-end > 0 : PrefixName {
             x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
             text: item.name; prefix-end: item.prefix-end; wrapped: true;
@@ -107,7 +128,7 @@ export component FileEntry inherits Rectangle {
             horizontal-alignment: center; vertical-alignment: top;
         }
     }
-    TouchArea {
+    pointer := TouchArea {
         private property <string> pressed-identity;
         private property <bool> control-pressed;
         private property <bool> shift-pressed;

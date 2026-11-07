@@ -17,7 +17,7 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         let p = &mut self.panes[pane.index()];
-        if p.loading || p.size_scan.is_some() {
+        if p.loading || p.size_scan.is_some() || p.archive.is_some() {
             return;
         }
         let Some(navigation) = p.successful_generation else {
@@ -105,6 +105,11 @@ impl Presenter {
 
 impl Pane {
     pub(crate) fn entry_size_running(&self, path: &Path) -> bool {
-        self.size_scan.is_some() || self.entry_size_scans.iter().any(|scope| scope.path == path)
+        (self.size_scan.is_some()
+            && self
+                .size_scan_scope
+                .as_ref()
+                .is_none_or(|scope| scope.contains(path)))
+            || self.entry_size_scans.iter().any(|scope| scope.path == path)
     }
 }

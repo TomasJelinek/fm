@@ -172,6 +172,21 @@ mod tests {
     }
 
     #[test]
+    fn repeated_daylight_saving_hour_is_disambiguated_by_explicit_offset() {
+        let TimeEdit::Set(earlier) = timestamp(1, "2026-10-25T02:30:00+02:00").unwrap() else {
+            panic!("explicit timestamp")
+        };
+        let TimeEdit::Set(later) = timestamp(1, "2026-10-25T02:30:00+01:00").unwrap() else {
+            panic!("explicit timestamp")
+        };
+        assert_eq!(
+            later.duration_since(earlier).unwrap(),
+            Duration::from_secs(3600)
+        );
+        assert!(timestamp(1, "2026-10-25T02:30:00").is_err());
+    }
+
+    #[test]
     fn out_of_range_modes_and_oversized_fields_are_rejected() {
         for draft in [
             MetadataDraft {

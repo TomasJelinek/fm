@@ -12,7 +12,17 @@ pub use midnight_plugin_api as api;
 mod discovery;
 pub use discovery::{Diagnostic, PluginInfo, host_target};
 mod content;
-pub use content::CapturedFile;
+pub use content::{CapturedFile, ContentSource};
+/// Shared installation trust check for host-owned executable plugin discovery.
+pub fn validate_plugin_path(path: &std::path::Path) -> Result<(), Error> {
+    trust::check(path)?;
+    if path.canonicalize()? != path {
+        return Err(Error(
+            "Plugin path redirects outside its installation".into(),
+        ));
+    }
+    Ok(())
+}
 mod events;
 pub use events::{EventKind, HostEvent};
 mod session;

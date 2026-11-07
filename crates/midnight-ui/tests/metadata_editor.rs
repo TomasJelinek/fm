@@ -3,9 +3,12 @@
 mod render;
 #[path = "support/ui.rs"]
 mod ui;
-use i_slint_core::items::AccessibleRole;
-use midnight_ui::MetadataDraft;
-use slint::{ComponentHandle, platform::Key};
+use i_slint_core::{
+    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+    window::WindowInner,
+};
+use midnight_ui::{MetadataDraft, MetadataFileRow};
+use slint::{ComponentHandle, ModelRc, VecModel, platform::Key};
 use std::{cell::RefCell, rc::Rc};
 
 fn settle(test: &mut ui::TestUi) {
@@ -14,6 +17,36 @@ fn settle(test: &mut ui::TestUi) {
         slint::platform::update_timers_and_animations();
         test.draw();
     }
+}
+
+fn assert_choice(test: &ui::TestUi, field: &str, labels: &[&str], chosen: &str) {
+    for label in labels {
+        let item = ui::popup_item(
+            &test.window,
+            &format!("{field}: {label}"),
+            AccessibleRole::Button,
+        );
+        let checked = item
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap();
+        assert_eq!(
+            checked.as_str(),
+            if *label == chosen { "true" } else { "false" }
+        );
+    }
+}
+
+fn rendered_file_rows(item: ItemRc) -> usize {
+    let mut count = usize::from(
+        item.accessible_string_property(AccessibleStringProperty::Label)
+            .is_some_and(|label| label.starts_with("Captured file ")),
+    );
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        count += rendered_file_rows(item);
+    }
+    count
 }
 
 #[test]
@@ -26,6 +59,13 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
     test.window.set_metadata_can_modified(true);
     test.window.set_metadata_can_accessed(true);
     test.window.set_metadata_can_rename(true);
+    test.window.set_metadata_rows(ModelRc::new(VecModel::from((0..256).map(|index| MetadataFileRow {
+        current_name: format!("ŽLUŤOUČKÝ-{index}.TXT").into(),
+        proposed_name: format!("žluťoučký-{index}.txt").into(),
+        attributes: "Current: H\nProposed: R".into(),
+        times: "Modified: 2026-11-06 12:30:00 UTC\nCreated: Unavailable\nAccessed: 2026-11-06 12:30:00 UTC".into(),
+        detail: format!("Captured file {index}").into(), issue: false,
+    }).collect::<Vec<_>>())));
     let drafts = Rc::new(RefCell::new(Vec::<MetadataDraft>::new()));
     let captured = drafts.clone();
     test.window
@@ -45,8 +85,63 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
     test.window.set_metadata_token("1".into());
     slint::platform::update_timers_and_animations();
     test.draw();
+    let inner = WindowInner::from_pub(test.window.window());
+    let popups = inner.active_popups();
+    let visible_rows =
+        rendered_file_rows(ItemRc::new_root(popups.last().unwrap().component.clone()));
+    assert!(
+        visible_rows > 0 && visible_rows < 20,
+        "file list must virtualize 256 rows, rendered {visible_rows}"
+    );
+    drop(popups);
+    let header = ui::popup_item(&test.window, "Current name", AccessibleRole::Text);
+    let first = ui::popup_item(&test.window, "Captured file 0", AccessibleRole::Text);
+    let header_area = header.geometry();
+    let first_area = first.geometry();
+    let header_origin = header.map_to_native_window(header_area.origin);
+    let first_origin = first.map_to_native_window(first_area.origin);
+    assert!(
+        header_origin.y + header_area.height() <= first_origin.y,
+        "column headings must remain above the virtualized rows"
+    );
     ui::click_popup(&test.window, "Apply", AccessibleRole::Button);
     assert!(applies.borrow().is_empty(), "unreviewed draft cannot apply");
+    ui::click_popup(&test.window, "Attributes", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Read-only: Set", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Read-only: Set", AccessibleRole::Button);
+    assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Set");
+    ui::click_popup(&test.window, "Hidden: Clear", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Read-only: Clear", AccessibleRole::Button);
+    assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Clear");
+    ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+    assert_eq!(drafts.borrow().last().unwrap().read_only, 2);
+    assert_eq!(drafts.borrow().last().unwrap().hidden, 2);
+    ui::click_popup(&test.window, "Read-only: Leave", AccessibleRole::Button);
+    assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Leave");
+    ui::click_popup(
+        &test.window,
+        "Compression: Compress",
+        AccessibleRole::Button,
+    );
+    ui::click_popup(
+        &test.window,
+        "Compression: Uncompress",
+        AccessibleRole::Button,
+    );
+    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    assert_eq!(drafts.borrow().last().unwrap().read_only, 0);
+    assert_eq!(drafts.borrow().last().unwrap().hidden, 2);
+    assert_eq!(drafts.borrow().last().unwrap().compressed, 2);
+    ui::click_popup(&test.window, "Times", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
+    ui::click_popup(&test.window, "Modified: Now", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    assert_eq!(drafts.borrow().last().unwrap().modified_mode, 2);
+    assert_eq!(drafts.borrow().last().unwrap().created_mode, 0);
+    ui::click_popup(&test.window, "Times", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
+    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    assert_eq!(drafts.borrow().last().unwrap().modified_mode, 0);
     ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
     assert!(
         drafts
@@ -100,6 +195,37 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
                 1,
                 "resize/font changes preserve the edited draft"
             );
+            test.window.set_metadata_error(
+                format!(
+                    "Access denied\n\nPath\n資料/{}/žluťoučký.txt\n\nOperation: inspect metadata",
+                    "long folder/".repeat(30)
+                )
+                .into(),
+            );
+            settle(&mut test);
+            render::snapshot(&test, &format!("metadata-error-{density}-{font}"));
+            let error = ui::popup_item(
+                &test.window,
+                &format!(
+                    "Access denied\n\nPath\n資料/{}/žluťoučký.txt\n\nOperation: inspect metadata",
+                    "long folder/".repeat(30)
+                ),
+                AccessibleRole::Text,
+            );
+            assert!(
+                error.geometry().width() > 500.0,
+                "error text must use the available card width, got {:?}",
+                error.geometry()
+            );
+            let apply = ui::popup_item(&test.window, "Apply", AccessibleRole::Button);
+            let area = apply.geometry();
+            let origin = apply.map_to_native_window(area.origin);
+            assert!(
+                origin.y >= 0.0 && origin.y + area.size.height <= test.height as f32,
+                "error density={density}, font={font}: origin={origin:?}, bounds={area:?}"
+            );
+            test.window.set_metadata_error("".into());
+            settle(&mut test);
         }
     }
     ui::key(&test.window, Key::Escape);

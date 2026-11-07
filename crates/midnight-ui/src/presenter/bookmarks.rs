@@ -14,6 +14,24 @@ impl Presenter {
         slot: Option<u8>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if !self.native_action_allowed(pane) {
+            return false;
+        }
+        let path = self.panes[pane.index()].display_path().to_owned();
+        if slot.is_some_and(|slot| !(1..=10).contains(&slot)) {
+            return false;
+        }
+        if let Some(existing) = self
+            .bookmarks()
+            .iter()
+            .find(|bookmark| bookmark.path == path)
+        {
+            return if slot.is_some() {
+                self.set_bookmark_slot(existing.id, slot, send)
+            } else {
+                true
+            };
+        }
         if self.bookmarks().len() >= MAX_BOOKMARKS {
             self.desktop.report(
                 "Bookmark limit reached",
@@ -36,15 +54,17 @@ impl Presenter {
         let bookmark = Bookmark {
             id,
             name,
-            path: self.panes[pane.index()].display_path().to_owned(),
-            slot,
+            path,
+            slot: slot.or_else(|| {
+                (1..=10).find(|slot| !self.bookmarks().iter().any(|b| b.slot == Some(*slot)))
+            }),
         };
         if let Err(error) = bookmark.validate() {
             self.desktop.report("Cannot save bookmark", error.into());
             return false;
         }
         let mut preferences = self.preferences.values.clone();
-        if let Some(slot) = slot {
+        if let Some(slot) = bookmark.slot {
             for previous in &mut preferences.bookmarks {
                 if previous.slot == Some(slot) {
                     previous.slot = None;
@@ -106,8 +126,42 @@ impl Presenter {
         true
     }
 
-    /// Assign the current location through bookmark management (or Ctrl+Shift+0
-    /// for slot 10), preserving an existing slot's identity.
+    /// Change a saved path's slot without replacing either native location.
+    /// Two occupied slots swap; an unnumbered path displaces only the slot.
+    pub fn set_bookmark_slot(
+        &mut self,
+        id: BookmarkId,
+        slot: Option<u8>,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if slot.is_some_and(|slot| !(1..=10).contains(&slot)) {
+            return false;
+        }
+        let mut preferences = self.preferences.values.clone();
+        let Some(index) = preferences
+            .bookmarks
+            .iter()
+            .position(|bookmark| bookmark.id == id)
+        else {
+            return false;
+        };
+        let previous_slot = preferences.bookmarks[index].slot;
+        if previous_slot == slot {
+            return true;
+        }
+        if let Some(slot) = slot {
+            for bookmark in &mut preferences.bookmarks {
+                if bookmark.slot == Some(slot) {
+                    bookmark.slot = previous_slot;
+                }
+            }
+        }
+        preferences.bookmarks[index].slot = slot;
+        self.update_preferences(preferences, send);
+        true
+    }
+
+    /// Assign the current location, preserving every existing saved path.
     pub fn assign_bookmark_slot(
         &mut self,
         pane: PaneId,
@@ -131,24 +185,7 @@ impl Presenter {
             // Unicode label bound when malformed bytes need replacement glyphs.
             name = format!("Hot path {}", if slot == 10 { 0 } else { slot });
         }
-        if let Some(index) = self
-            .bookmarks()
-            .iter()
-            .position(|bookmark| bookmark.slot == Some(slot))
-        {
-            let mut preferences = self.preferences.values.clone();
-            let bookmark = &mut preferences.bookmarks[index];
-            bookmark.path = path;
-            bookmark.name = name;
-            if let Err(error) = bookmark.validate() {
-                self.desktop.report("Cannot assign hot path", error.into());
-                return false;
-            }
-            self.update_preferences(preferences, send);
-            true
-        } else {
-            self.add_bookmark(pane, name, Some(slot), send)
-        }
+        self.add_bookmark(pane, name, Some(slot), send)
     }
 
     pub fn jump_bookmark(

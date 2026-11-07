@@ -21,6 +21,18 @@ pub(crate) struct Snapshot {
     ctime: i64,
     ctime_ns: i64,
 }
+impl Snapshot {
+    pub(crate) fn version_bytes(&self) -> Vec<u8> {
+        let mut bytes = b"linux-file-v1".to_vec();
+        for value in [self.device, self.inode, self.length] {
+            bytes.extend(value.to_le_bytes());
+        }
+        for value in [self.mtime, self.mtime_ns, self.ctime, self.ctime_ns] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes
+    }
+}
 pub(crate) fn open_read(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)

@@ -2,6 +2,7 @@ use super::*;
 use std::{cell::RefCell, io};
 
 mod activation;
+mod archives;
 mod bookmarks;
 mod bulk_selection;
 mod choices;
@@ -17,6 +18,8 @@ mod panel_navigation;
 mod preferences_load;
 mod reclamation;
 mod search;
+mod selected_folder_sizes;
+mod selected_size_status;
 mod selection;
 mod shortcuts;
 mod size_continuity;
@@ -124,3 +127,5 @@ fn move_cursor(p: &mut Presenter, pane: PaneId, key: i32) {
     fixture_toggle(p, pane, sent.into_inner());
 }
 mod selection_feedback;
+
+mod thumbnail_policy;

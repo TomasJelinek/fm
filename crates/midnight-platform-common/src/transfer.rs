@@ -74,8 +74,8 @@ impl VerifiedFileCopy {
         }
         self.stage.cleanup()
     }
-    /// At most one 256 KiB source/readback block, or one sync phase. The caller owns
-    /// the storage permit until this synchronous method actually returns.
+    /// At most one 256 KiB source/readback block, or one sync phase. Individual
+    /// native calls share the process I/O budget; hashing runs after releasing it.
     pub fn step(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
         let result = self.advance(cancel);
         if result.is_err() {
@@ -85,12 +85,19 @@ impl VerifiedFileCopy {
     }
     fn advance(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
         check_cancel(cancel, &self.source.entry().item.path)?;
-        let path = &self.source.entry().item.path;
+        let source_path = self.source.entry().item.path.clone();
+        let path = source_path.as_path();
         match self.phase {
             CopyPhase::Copying => {
-                let count = self.source.read_chunk(&mut self.buffer, cancel)?;
+                let count = {
+                    let _permit = io_permit(cancel, path)?;
+                    self.source.read_chunk(&mut self.buffer, cancel)?
+                };
                 if count == 0 {
-                    self.source.revalidate(cancel)?;
+                    {
+                        let _permit = io_permit(cancel, path)?;
+                        self.source.revalidate(cancel)?;
+                    }
                     if Some(self.copied) != self.source.entry().item.metadata.size {
                         return Err(failure(
                             &self.source.entry().item.path,
@@ -114,14 +121,18 @@ impl VerifiedFileCopy {
                     {
                         return Err(failure(path, "source grew during copy"));
                     }
-                    self.stage
-                        .write_all(&self.buffer[..count])
-                        .map_err(|e| io_error(path, e))?;
+                    {
+                        let _permit = io_permit(cancel, path)?;
+                        self.stage
+                            .write_all(&self.buffer[..count])
+                            .map_err(|e| io_error(path, e))?;
+                    }
                     self.source_hash.update(&self.buffer[..count]);
                     self.copied = copied;
                 }
             }
             CopyPhase::Syncing => {
+                let _permit = io_permit(cancel, path)?;
                 self.stage.flush().map_err(|e| io_error(path, e))?;
                 self.stage.sync(cancel)?;
                 self.stage
@@ -130,13 +141,18 @@ impl VerifiedFileCopy {
                 self.phase = CopyPhase::Verifying;
             }
             CopyPhase::Verifying => {
-                let count = self
-                    .stage
-                    .read(&mut self.buffer)
-                    .map_err(|e| io_error(path, e))?;
+                let count = {
+                    let _permit = io_permit(cancel, path)?;
+                    self.stage
+                        .read(&mut self.buffer)
+                        .map_err(|e| io_error(path, e))?
+                };
                 if count == 0 {
                     if self.verified != self.copied
-                        || self.stage.len()? != self.copied
+                        || {
+                            let _permit = io_permit(cancel, path)?;
+                            self.stage.len()?
+                        } != self.copied
                         || self.source_hash.clone().finalize()
                             != self.target_hash.clone().finalize()
                     {
@@ -145,7 +161,10 @@ impl VerifiedFileCopy {
                             "independent target checksum or length verification failed",
                         ));
                     }
-                    self.source.revalidate(cancel)?;
+                    {
+                        let _permit = io_permit(cancel, path)?;
+                        self.source.revalidate(cancel)?;
+                    }
                     self.phase = CopyPhase::ReadyToPublish;
                 } else {
                     self.verified = self
@@ -178,6 +197,7 @@ impl VerifiedFileCopy {
                 "copy must be completely verified before publication",
             ));
         }
+        let _permit = io_permit(cancel, path)?;
         if let Err(error) = self.source.revalidate(cancel) {
             self.phase = CopyPhase::Failed;
             return Err(error);
@@ -186,6 +206,13 @@ impl VerifiedFileCopy {
         self.phase = CopyPhase::Published;
         Ok(outcome)
     }
+}
+fn io_permit(cancel: &Cancellation, path: &Path) -> Result<midnight_work_budget::Permit, FsError> {
+    // Transfer capabilities currently carry no verified storage classification. Conservatively
+    // serialize source and target calls; concurrent copies require both to be confirmed SSDs.
+    midnight_work_budget::shared_io()
+        .acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())
+        .ok_or_else(|| io_error(path, io::ErrorKind::Interrupted.into()))
 }
 fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
     if cancel.is_cancelled() {

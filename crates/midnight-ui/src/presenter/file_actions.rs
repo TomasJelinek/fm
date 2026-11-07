@@ -41,6 +41,9 @@ impl Presenter {
     }
 
     pub(crate) fn paste_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if !self.native_action_allowed(pane) {
+            return;
+        }
         self.read_file_clipboard(self.panes[pane.index()].display_path().to_owned(), send);
     }
 
@@ -81,6 +84,9 @@ impl Presenter {
         anchor: MenuAnchor,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.native_action_allowed(pane) {
+            return;
+        }
         if self.menu_pending() || !self.panes[pane.index()].search_allows_activation() {
             return;
         }
@@ -371,7 +377,10 @@ impl Presenter {
                 }
                 match result {
                     Ok(clipboard) => self.start_copy(clipboard, captured, send),
-                    Err(error) => self.desktop.report("Cannot paste files", error.to_string()),
+                    Err(error) => self.desktop.report(
+                        "Cannot paste files",
+                        crate::error_presentation::describe(&error),
+                    ),
                 }
                 None
             }
@@ -403,9 +412,10 @@ impl Presenter {
                         send,
                     ),
                     Ok(ShellMenuOutcome::Dismissed | ShellMenuOutcome::Invoked) => {}
-                    Err(error) => self
-                        .desktop
-                        .report("Context menu unavailable", error.to_string()),
+                    Err(error) => self.desktop.report(
+                        "Context menu unavailable",
+                        crate::error_presentation::describe(&error),
+                    ),
                 }
                 self.retired.push(Box::new(menu));
                 None

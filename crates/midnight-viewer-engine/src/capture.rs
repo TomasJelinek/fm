@@ -19,6 +19,9 @@ pub(crate) struct Order {
 }
 
 pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result<Order, String> {
+    if launch.archive.is_some() {
+        return crate::capture_archive::prepare(launch, closed);
+    }
     let mut ordered = Vec::new();
     let mut bytes = 0usize;
     for entry in launch.entries.iter() {

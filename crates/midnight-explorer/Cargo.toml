@@ -16,6 +16,7 @@ midnight-platform.workspace = true
 midnight-ui.workspace = true
 midnight-viewer-engine = { path = "../midnight-viewer-engine" }
 midnight-viewer-ui = { path = "../midnight-viewer-ui" }
+midnight-thumbnail-host = { path = "../midnight-thumbnail-host" }
 tokio.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030"] }
 tracing = "0.1"

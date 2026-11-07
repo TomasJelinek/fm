@@ -143,6 +143,8 @@ fn sources(request: &CompareRequest) -> Snapshots {
             sizes: Arc::new(Mutex::new(Default::default())),
         };
         SnapshotState {
+            archive: None,
+            archive_navigation: None,
             committed: Some(snapshot.clone()),
             visible: Some(snapshot),
             pending: None,

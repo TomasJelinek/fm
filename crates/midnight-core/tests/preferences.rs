@@ -60,5 +60,10 @@ fn malformed_id_name_slot_path_and_duplicate_bookmarks_are_rejected() {
         "slot cannot belong to two bookmarks"
     );
     preferences.bookmarks[1].slot = None;
+    assert!(
+        preferences.validate().is_err(),
+        "the same native path cannot be saved twice"
+    );
+    preferences.bookmarks[1].path = std::env::current_dir().unwrap().join("other");
     assert!(preferences.validate().is_ok());
 }

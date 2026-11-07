@@ -7,9 +7,11 @@ mod copy_presentation;
 mod detail_attributes;
 mod drag_bridge;
 mod drag_lifecycle;
+mod error_presentation;
 mod file_key_bridge;
 mod file_keys;
 mod font_model;
+mod job_presentation;
 mod metadata_input;
 mod metadata_presentation;
 mod native_shortcuts;
@@ -17,6 +19,7 @@ mod navigation_models;
 mod operation_detail;
 mod operation_presentation;
 mod panel_models;
+mod panel_pointer;
 mod panel_view_navigation;
 mod plugin_options;
 mod presenter;
@@ -24,10 +27,13 @@ mod scroll_input;
 mod search_input;
 mod shell_bridge;
 mod shortcut_bridge;
+mod shortcut_editor;
 mod shortcut_input;
 mod size_presentation;
+mod thumbnail_presentation;
 mod time_presentation;
 mod tooltip;
+pub use thumbnail_presentation::ThumbnailTarget;
 mod volume_presentation;
 use command_line::{replace_command_selection, safe_path_context};
 use midnight_core::*;
@@ -202,7 +208,9 @@ impl Model for Rows {
             size_hint: size_hint.into(),
             modified: modified.into(),
             kind: kind.into(),
-            icon: state.desktop.image(&IconKey::for_entry(entry)),
+            icon: state
+                .thumbnail_image(self.pane, entry)
+                .unwrap_or_else(|| state.desktop.image(&IconKey::for_entry(entry))),
             directory,
             selected: pane.selection_visible(entry),
             cursor: pane.cursor == Some(entry.id),
@@ -257,6 +265,8 @@ fn column_index(column: SortColumn) -> i32 {
 
 /// Refresh visible properties and lazy model notifications from current presenter state.
 pub fn refresh(window: &MainWindow, presenter: &Presenter) {
+    window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
+    window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
     refresh_properties(window, presenter, true);
 }
 
@@ -270,7 +280,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     operation_presentation::refresh(window, presenter);
     window.set_action_icons(action_icons::palette(presenter));
     panel_models::refresh(window, presenter);
-    let locations = navigation_models::choices(presenter);
+    let mut locations = navigation_models::choices(presenter);
     let mut choices = locations.clone();
     let mut left_choice = presenter.navigation_choice_index(PaneId::Left);
     let mut right_choice = presenter.navigation_choice_index(PaneId::Right);
@@ -297,7 +307,15 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             right_choice = index;
         }
     }
-    choices.extend(panel_models::bookmark_choices(presenter));
+    let hot_paths = panel_models::bookmark_choices(presenter);
+    choices.extend(hot_paths.iter().cloned());
+    // Numbered Hot Paths are direct drive-bar buttons. Overflow paths remain
+    // available in both menus without taking space from native drive controls.
+    locations.extend(
+        hot_paths
+            .into_iter()
+            .filter(|choice| !choice.compact_label.is_empty()),
+    );
     let as_other_key = presenter.shortcut_key("panel.as-other");
     choices.push(NavigationChoiceRow {
         identity: "other-panel".into(),
@@ -390,12 +408,18 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     );
     let bookmark_name = |pane: PaneId| {
         let path = presenter.panes[pane.index()].display_path();
-        SharedString::from(
-            path.file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-                .as_ref(),
-        )
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        if name.len() > midnight_core::MAX_BOOKMARK_NAME_BYTES
+            || name.trim().is_empty()
+            || name.chars().any(char::is_control)
+        {
+            SharedString::from("Hot Path")
+        } else {
+            SharedString::from(name.as_ref())
+        }
     };
     window.set_left_bookmark_name(bookmark_name(PaneId::Left));
     window.set_right_bookmark_name(bookmark_name(PaneId::Right));
@@ -466,6 +490,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     };
     window.set_left_view_mode(mode_index(presenter.preferences.values.panel_view_modes[0]));
     window.set_right_view_mode(mode_index(presenter.preferences.values.panel_view_modes[1]));
+    window.set_thumbnails_enabled(presenter.preferences.values.thumbnails_enabled);
+    window.set_thumbnails_network(presenter.preferences.values.thumbnails_network);
     window.set_quick_search_filter(presenter.preferences.values.quick_search_filter);
     window.set_active_pane(presenter.active.index() as i32);
     window.set_volumes_revision(presenter.volumes_revision);
@@ -509,7 +535,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             };
             rows.refresh(p, first.max(0) as usize, end.max(0) as usize, reset_rows);
         }
-        let location = p.display_path().to_string_lossy().into_owned();
+        let location = p.display_location_text();
         let cursor = p.cursor_index().map_or(-1, |i| i as i32);
         reveal[index] = !p.preserve_viewport
             && if index == 0 {
@@ -524,7 +550,11 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .filter(|(_, v)| p.display_path().starts_with(&v.root))
             .max_by_key(|(_, v)| v.root.components().count())
             .map_or(-1, |(i, _)| i as i32);
-        let mut status = format!("{} items  ·  {} selected", p.rows().len(), p.selected.len());
+        let mut status = format!(
+            "{} items  ·  {} selected",
+            p.rows().len(),
+            p.selected_count()
+        );
         if p.size_scan.is_some() {
             status.push_str("  ·  Measuring folders…");
             let keys = presenter.shortcut_hint("panel.folder-sizes");
@@ -577,7 +607,9 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         |model| window.set_right_locations(model),
     );
     window.set_terminal_ready(
-        presenter.desktop.shell.is_some() && presenter.desktop.terminal_pending.is_none(),
+        presenter.desktop.shell.is_some()
+            && presenter.desktop.terminal_pending.is_none()
+            && presenter.panes[presenter.active.index()].native_capabilities(),
     );
     window.set_terminal_available(presenter.desktop.shell.is_some());
     window.set_windows_shells(matches!(
@@ -617,6 +649,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     if let Some((title, body)) = &presenter.desktop.notice {
         window.set_message_title(title.clone().into());
         window.set_message_body(body.clone().into());
+        window.set_message_error(presenter.desktop.notice_error);
         window.set_message_generation(presenter.desktop.notice_generation);
     }
     let labels: Vec<SharedString> = presenter
@@ -702,6 +735,7 @@ fn update_model<T: Clone + PartialEq + 'static>(
 /// [`install`] includes this initializer. UI-only hosts that attach individual
 /// callbacks can use it without a presenter or backend; native editors retain focus.
 pub fn install_file_keys(window: &MainWindow) {
+    job_presentation::install(window);
     shortcut_bridge::install_default(window);
 }
 
@@ -712,6 +746,7 @@ pub fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     shortcut_bridge::install(window, presenter.clone(), send.clone());
+    job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
     commander_presentation::bind(window, &presenter, &send);
     metadata_presentation::bind(window, &presenter, &send);
@@ -724,13 +759,10 @@ pub fn install(
     window.set_right_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Right)));
 
     macro_rules! callback {
-        ($name:ident, |$w:ident, $p:ident, $s:ident| $body:block) => {
-            callback!($name, true, |$w, $p, $s,| $body);
+        ($name:ident, |$w:ident, $p:ident, $s:ident $(, $arg:ident)*| $body:block) => {
+            callback!($name, true, |$w, $p, $s $(, $arg)*| $body);
         };
-        ($name:ident, |$w:ident, $p:ident, $s:ident, $($arg:ident),*| $body:block) => {
-            callback!($name, true, |$w, $p, $s, $($arg),*| $body);
-        };
-        ($name:ident, $reset:expr, |$w:ident, $p:ident, $s:ident, $($arg:ident),*|
+        ($name:ident, $reset:expr, |$w:ident, $p:ident, $s:ident $(, $arg:ident)*|
             $body:block) => {{
             let weak = window.as_weak(); let state = presenter.clone(); let sender = send.clone();
             window.$name(move |$($arg),*| {
@@ -748,6 +780,11 @@ pub fn install(
     callback!(on_activate, false, |w, p, _s, id| {
         p.active = pane(id);
         let _ = w;
+    });
+    callback!(on_copy_message, false, |_w, p, s| {
+        if let Some((title, body)) = &p.desktop.notice {
+            p.copy_viewer_text(format!("{title}\n\n{body}"), s);
+        }
     });
     callback!(on_mutation, |w, p, s, id, action| {
         let kind = match action {
@@ -787,6 +824,26 @@ pub fn install(
             if p.operations.preview.is_none() {
                 w.invoke_focus_files();
             }
+        }
+    });
+    callback!(on_cancel_job, |_w, p, s, token| {
+        if token.starts_with("copy-job:") {
+            p.cancel_copy(token.as_str(), s);
+        } else {
+            p.cancel_operation(
+                token
+                    .strip_prefix("metadata-job:")
+                    .unwrap_or(token.as_str()),
+                s,
+            );
+        }
+    });
+    callback!(on_copy_job_details, false, |_w, p, s, token| {
+        if let Some(row) = job_presentation::rows(p)
+            .into_iter()
+            .find(|row| row.identity == token)
+        {
+            p.copy_viewer_text(row.detail.to_string(), s);
         }
     });
     callback!(on_decide_copy, |w, p, s, token, choice, name| {
@@ -923,8 +980,7 @@ pub fn install(
                 p.go_root(id, s);
             }
             _ => {
-                let path = p.panes[id.index()].display_path().to_owned();
-                p.navigate(id, path, None, s);
+                p.refresh_location(id, s);
             }
         }
     });
@@ -1117,6 +1173,9 @@ pub fn install(
         p.change_terminal(index, !w.get_command_text().is_empty(), s);
     });
     callback!(on_insert_path, |w, p, _s, id| {
+        if !p.native_action_allowed(pane(id)) {
+            return;
+        }
         let path = p.panes[pane(id).index()].display_path().to_owned();
         insert_literal(&w, p, &path, false);
     });
@@ -1135,6 +1194,13 @@ pub fn install(
         p.request_viewer_plugins(s);
         let _ = w;
     });
+    callback!(
+        on_thumbnail_options_changed,
+        |w, p, s, enabled, network, field| {
+            p.change_thumbnail_options(enabled, network, field, s);
+            let _ = w;
+        }
+    );
     callback!(on_editor_apply, |w, p, s, executable, arguments| {
         p.change_editor(executable.as_str(), arguments.as_str(), s);
         let _ = w;
@@ -1212,6 +1278,12 @@ pub fn install(
     callback!(on_bookmark_slot, |w, p, s, id, slot| {
         if let Ok(slot) = u8::try_from(slot) {
             p.assign_bookmark_slot(pane(id), slot, s);
+        }
+        let _ = w;
+    });
+    callback!(on_bookmark_assign, |w, p, s, token, slot| {
+        if let (Ok(bookmark), Ok(slot)) = (token.parse::<u64>(), u8::try_from(slot)) {
+            p.set_bookmark_slot(BookmarkId(bookmark), (slot != 0).then_some(slot), s);
         }
         let _ = w;
     });

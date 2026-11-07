@@ -8,6 +8,13 @@ impl Presenter {
         operation: SelectionOperation,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].archive.is_some() {
+            return self.archive_bulk_selection(
+                pane,
+                ArchiveSelectionAction::Bulk(operation),
+                send,
+            );
+        }
         if self.panes[pane.index()].search_view_waiting() {
             return false;
         }
@@ -20,6 +27,9 @@ impl Presenter {
         action: SelectionAction,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].archive.is_some() {
+            return false;
+        }
         if !matches!(action, SelectionAction::Rebase)
             && self.panes[pane.index()].search_view_waiting()
         {
@@ -111,6 +121,7 @@ impl Presenter {
                 self.panes[pane.index()].selection_rebase_pending = false;
             }
         }
+        self.flush_selection_sizes(send);
     }
 
     pub(super) fn selection_navigation_accepted(
@@ -188,7 +199,7 @@ impl Presenter {
                     p.selection_preview
                         .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
-                    p.error = error.to_string();
+                    p.error = crate::error_presentation::describe(&error);
                     p.selection_rebase_pending = true;
                 }
                 None

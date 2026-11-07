@@ -12,6 +12,7 @@ pub(crate) struct DesktopState {
     pub(crate) error: String,
     pub(crate) status: String,
     pub(crate) notice: Option<(String, String)>,
+    pub(crate) notice_error: bool,
     pub(crate) notice_generation: i32,
     pub(crate) terminal_pending: Option<DesktopRequestId>,
     pub(crate) terminal_mode: TerminalMode,
@@ -33,8 +34,13 @@ impl DesktopState {
         DesktopRequestId(self.generation)
     }
     pub(crate) fn report(&mut self, title: &str, body: String) {
+        self.notice_error = true;
         self.notice_generation = self.notice_generation.wrapping_add(1);
         self.notice = Some((title.into(), body));
+    }
+    pub(crate) fn inform(&mut self, title: &str, body: String) {
+        self.report(title, body);
+        self.notice_error = false;
     }
     pub(crate) fn image(&self, key: &IconKey) -> Image {
         self.images
@@ -110,7 +116,7 @@ impl Presenter {
                 self.sync_navigation_choices();
             }
             Event::DesktopContextFailed(error) => {
-                self.desktop.error = error.to_string();
+                self.desktop.error = crate::error_presentation::describe(&error);
             }
             Event::IconLoaded { key, pixels } => {
                 self.desktop.receive_image(key, &pixels);
@@ -144,7 +150,7 @@ impl Presenter {
                         self.desktop.status = "Properties opened".into()
                     }
                     Ok(DesktopActionResult::PropertiesInfo { title, body }) => {
-                        self.desktop.report(&title, body)
+                        self.desktop.inform(&title, body)
                     }
                     Ok(DesktopActionResult::FileOpened) => {
                         if opened.is_some() {
@@ -162,9 +168,10 @@ impl Presenter {
                             self.desktop.open_directories[pane.index()] = Some((navigation, path));
                         }
                     }
-                    Err(error) => self
-                        .desktop
-                        .report("Desktop action failed", error.to_string()),
+                    Err(error) => self.desktop.report(
+                        "Desktop action failed",
+                        crate::error_presentation::describe(&error),
+                    ),
                 }
             }
             Event::FolderSizeUpdated {
@@ -186,6 +193,7 @@ impl Presenter {
                         .and_then(|index| scope.entries.get(*index))
                         .map(|entry| &entry.path)
                     && p.index.by_path.contains_key(path)
+                    && scope.contains(path)
                 {
                     p.folder_sizes.insert(path.clone(), size);
                 }
@@ -267,6 +275,9 @@ impl Presenter {
     }
 
     fn launch_terminal(&mut self, text: &str, send: &dyn Fn(Command) -> bool) -> bool {
+        if !self.native_action_allowed(self.active) {
+            return false;
+        }
         if self.desktop.terminal_pending.is_some() {
             return false;
         }
@@ -349,6 +360,9 @@ impl Presenter {
     }
 
     pub(crate) fn folder_sizes(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if !self.native_action_allowed(pane) {
+            return;
+        }
         let p = &mut self.panes[pane.index()];
         if let Some(scan) = p.size_scan {
             if send(Command::CancelFolderSizes { pane, scan }) {
@@ -361,6 +375,28 @@ impl Presenter {
             }
             return;
         }
+        if p.loading || p.successful_generation.is_none() {
+            return;
+        }
+        self.request_selection_action(
+            pane,
+            selection_actions::SelectionIntent::FolderSizes(pane),
+            send,
+        );
+    }
+
+    pub(super) fn start_captured_folder_sizes(
+        &mut self,
+        pane: PaneId,
+        selection: Arc<SelectionSnapshot>,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        if !selection.is_empty() && selection.folder_count() == 0 {
+            self.desktop.status = "No selected directories to measure.".into();
+            return;
+        }
+        let selection = (!selection.is_empty()).then_some(selection);
+        let p = &mut self.panes[pane.index()];
         let Some(navigation) = p.successful_generation.filter(|_| !p.loading) else {
             return;
         };
@@ -377,8 +413,11 @@ impl Presenter {
             pane,
             navigation,
             scan,
+            selection: selection.clone(),
         }) {
-            self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
+            if selection.is_none() {
+                self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
+            }
             self.retired
                 .push(Box::new(mem::take(&mut p.entry_size_scans)));
             p.size_scan = Some(scan);
@@ -387,8 +426,9 @@ impl Presenter {
                 path: p.path.clone(),
                 entries: p.entries.clone(),
                 index: p.index.clone(),
+                selection: selection.clone(),
             });
-            p.size_scan_attempted = true;
+            p.size_scan_attempted |= selection.is_none();
         } else {
             self.desktop
                 .report("Folder size queue busy", "Try scanning again.".into());

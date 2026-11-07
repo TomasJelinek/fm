@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod capture;
+mod capture_archive;
 mod interaction;
 mod navigation;
 mod page;

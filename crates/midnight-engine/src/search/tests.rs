@@ -42,6 +42,32 @@ fn rows(result: &SearchResult) -> Vec<(usize, usize)> {
 }
 
 #[test]
+fn duplicate_archive_names_filter_by_provider_identity_without_native_paths() {
+    let mut request = request("same", &[]);
+    request.source = (2..=3)
+        .map(|id| {
+            Entry::from_archive(midnight_core::ArchiveNode {
+                id: midnight_core::VirtualEntryId {
+                    mount: 9,
+                    entry: id,
+                },
+                parent: 1,
+                raw_name: b"same.txt".as_slice().into(),
+                display_name: "same.txt".into(),
+                kind: EntryKind::File,
+                size: Some(id),
+                readable: true,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into();
+    let result = ready(&request);
+    assert_eq!(result.matches.len(), 2);
+    assert_eq!(result.index.by_id.len(), 2);
+    assert!(result.index.by_path.is_empty());
+}
+
+#[test]
 fn persistent_masks_compose_with_prefix_and_keep_directories() {
     let mut request = request("a", &["alpha.txt", "alpha.bin", "folder", "beta.txt"]);
     request.filter = midnight_core::PanelFilter {
@@ -162,12 +188,19 @@ fn projected_file_sizes_keep_filtered_positions_and_selection_totals_valid() {
     let selected =
         midnight_core::SelectionSnapshot::from_bits(result.index.clone(), vec![1]).unwrap();
     assert_eq!(selected.file_bytes(), Some(37));
-    for unknown in [0b10, 0b100, 0b1000] {
+    for unknown in [0b10, 0b100] {
         let selected =
             midnight_core::SelectionSnapshot::from_bits(result.index.clone(), vec![unknown])
                 .unwrap();
         assert_eq!(selected.file_bytes(), None);
     }
+    let folders =
+        midnight_core::SelectionSnapshot::from_bits(result.index.clone(), vec![0b1000]).unwrap();
+    assert_eq!(folders.file_bytes(), Some(0), "folder totals are separate");
+    assert_eq!(
+        folders.with_bits(vec![0b1001]).unwrap().file_bytes(),
+        Some(37)
+    );
 }
 
 #[test]

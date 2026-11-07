@@ -20,6 +20,9 @@ impl Presenter {
         kind: MutationKind,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.native_action_allowed(pane) {
+            return;
+        }
         if self.operations.closing {
             return;
         }
@@ -170,7 +173,7 @@ impl Presenter {
     }
     pub fn request_operation_shutdown(&mut self, send: &dyn Fn(Command) -> bool) {
         self.shutdown_drag_drop(send);
-        self.metadata = metadata::MetadataState::default();
+        self.retire_metadata();
         self.operations.closing = true;
         self.operations.pending = None;
         self.operations.preview = None;
@@ -224,7 +227,7 @@ impl Presenter {
                         .metadata_conflicts
                         .retain(|conflict| conflict.id != progress.id);
                     if self.metadata.id == Some(progress.id) {
-                        self.metadata = metadata::MetadataState::default();
+                        self.retire_metadata();
                     }
                     if self.operations.pending == Some(progress.id) {
                         self.operations.pending = None;
@@ -234,6 +237,13 @@ impl Presenter {
                         if self.panes[pane.index()].display_path() != progress.source_directory {
                             continue;
                         }
+                        let reveal = progress
+                            .renamed_to
+                            .as_ref()
+                            .filter(|destination| {
+                                destination.parent() == Some(progress.source_directory.as_path())
+                            })
+                            .cloned();
                         if let Some(change) = self
                             .operations
                             .refresh
@@ -241,18 +251,34 @@ impl Presenter {
                             .find(|(target, _, _)| *target == pane)
                         {
                             change.1 = progress.source_directory.clone();
-                            change.2 = progress.renamed_to.clone();
+                            change.2 = reveal;
                         } else {
                             self.operations.refresh.push((
                                 pane,
                                 progress.source_directory.clone(),
-                                progress.renamed_to.clone(),
+                                reveal,
                             ));
                         }
                     }
-                    if !progress.message.is_empty() {
-                        self.desktop
-                            .report("File operation", progress.message.clone());
+                    if !progress.errors.is_empty() {
+                        self.desktop.report(
+                            "File operation failed",
+                            crate::error_presentation::issues(
+                                &progress.errors,
+                                progress.completed > 0 || progress.processed_entries > 0,
+                            ),
+                        );
+                    } else if !progress.message.is_empty() {
+                        if matches!(
+                            progress.state,
+                            OperationState::Failed | OperationState::CompletedWithErrors
+                        ) {
+                            self.desktop
+                                .report("File operation failed", progress.message.clone());
+                        } else {
+                            self.desktop
+                                .inform("File operation", progress.message.clone());
+                        }
                     }
                 }
                 if let Some(old) = self

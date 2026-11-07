@@ -1,0 +1,22 @@
+[package]
+name = "midnight-thumbnail-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-thumbnail-api = { path = "../../thumbnail-api/midnight-thumbnail-api" }
+midnight-worker-sdk = { path = "../../worker-api/midnight-worker-sdk" }
+midnight-worker-platform = { path = "../midnight-worker-platform" }
+midnight-plugin-host = { path = "../midnight-plugin-host" }
+midnight-work-budget = { path = "../midnight-work-budget" }
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

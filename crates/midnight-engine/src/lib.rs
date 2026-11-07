@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod archives;
 mod clipboard;
 mod comparison;
 mod copy_operations;
@@ -8,6 +9,7 @@ mod drag_drop;
 mod entry_sizes;
 mod file_targets;
 mod filters;
+mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
 mod operations;
@@ -18,6 +20,7 @@ pub mod reclaim;
 mod scan_cache;
 mod search;
 mod selection;
+mod selection_sizes;
 mod shell_menu;
 pub mod snapshot;
 mod streaming_selection;
@@ -110,9 +113,17 @@ pub struct Engine {
 
 #[derive(Default)]
 struct SnapshotState {
+    archive: Option<(NavigationId, Arc<[Entry]>)>,
+    archive_navigation: Option<NavigationId>,
     committed: Option<CommittedSnapshot>,
     visible: Option<CommittedSnapshot>,
     pending: Option<NavigationId>,
+}
+
+impl SnapshotState {
+    fn has_native_view(&self) -> bool {
+        self.archive.is_none() && self.archive_navigation.is_none()
+    }
 }
 
 #[derive(Clone)]
@@ -271,6 +282,8 @@ impl Engine {
         let mut clipboard = clipboard::Controller::new(self.clipboard, self.outbox.clone());
         let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
         let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let mut archives =
+            archives::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
         let comparison =
             comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
@@ -297,6 +310,8 @@ impl Engine {
             &mut tasks,
         );
         let search = search::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
+        let selected_sizes =
+            selection_sizes::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
         let size_budget = Arc::new(Semaphore::new(2));
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
         let mut entry_sizes = entry_sizes::Controller::new(
@@ -305,6 +320,7 @@ impl Engine {
             snapshots.clone(),
             size_budget.clone(),
             size_io_budget.clone(),
+            selected_sizes.observer.clone(),
         );
         let mut size_requests: [Option<SizeRequest>; 2] = [None, None];
         let volumes = volumes::Controller::new(
@@ -332,6 +348,46 @@ impl Engine {
                         _ => None,
                     };
                     match command {
+                        Some(Command::ArchiveSelect { pane, navigation, entries, view, selected, action }) => {
+                            let outbox = self.outbox.clone();
+                            tasks.spawn(async move {
+                                let selected = tokio::task::spawn_blocking(move || {
+                                    let mut result = selected.as_ref().clone();
+                                    match action {
+                                        midnight_core::ArchiveSelectionAction::Toggle(id) => {
+                                            if view.by_id.contains_key(&id) && !result.remove(&id) { result.insert(id); }
+                                        }
+                                        midnight_core::ArchiveSelectionAction::Bulk(midnight_core::SelectionOperation::Clear) => result.clear(),
+                                        midnight_core::ArchiveSelectionAction::Bulk(operation) => {
+                                            for entry in entries.iter().filter(|e| view.by_id.contains_key(&e.id)) {
+                                                if matches!(operation, midnight_core::SelectionOperation::Invert) && result.contains(&entry.id) { result.remove(&entry.id); }
+                                                else { result.insert(entry.id); }
+                                            }
+                                        }
+                                        midnight_core::ArchiveSelectionAction::Range { first, last, additive } => {
+                                            if !additive { result.clear(); }
+                                            for (id, row) in &view.by_id { if *row >= first && *row <= last { result.insert(*id); } }
+                                        }
+                                    }
+                                    let mut totals = midnight_core::ArchiveSelectionTotals::default();
+                                    for entry in entries.iter().filter(|entry| result.contains(&entry.id)) {
+                                        totals.change(entry.kind, entry.metadata.size, true);
+                                    }
+                                    (Arc::new(result), totals)
+                                }).await.unwrap_or_default();
+                                let (selected, totals) = selected;
+                                outbox.send(Event::ArchiveSelection { pane, navigation, selected, totals }).await;
+                            });
+                        }
+                        Some(Command::ArchiveNavigate { pane, navigation, action, sort }) => {
+                            if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
+                            if let Some(old) = requests[pane.index()].take() { old.cancel(); }
+                            if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
+                            entry_sizes.cancel_all(pane);
+                            search.invalidate(pane);
+                            comparison.invalidate(pane);
+                            archives.navigate(pane, navigation, action, sort, &mut tasks);
+                        }
                         Some(Command::LoadLocale) if !locale_requested => {
                             locale_requested = true;
                             let service = self.locale.clone();
@@ -436,7 +492,7 @@ impl Engine {
                                 properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks);
                         }
                         Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, &mut tasks),
-                        Some(Command::ComputeFolderSizes { pane, navigation, scan }) => {
+                        Some(Command::ComputeFolderSizes { pane, navigation, scan, selection }) => {
                             // Retrying an accepted command must not falsely finish
                             // the still-running scan with the same identity.
                             if size_requests[pane.index()].as_ref().is_some_and(|request| request.navigation == navigation && request.scan == scan) { continue; }
@@ -445,7 +501,7 @@ impl Engine {
                                 let state = &snapshots[pane.index()];
                                 state.visible.as_ref().filter(|snapshot| snapshot.navigation == navigation)
                                     .or_else(|| state.committed.as_ref().filter(|snapshot| snapshot.navigation == navigation))
-                                    .filter(|_| state.pending.is_none()).cloned()
+                                    .filter(|_| state.pending.is_none() && state.has_native_view()).cloned()
                             };
                             if entries.is_none() || size_requests[pane.index()].as_ref().is_some_and(|request| request.navigation == navigation && scan <= request.scan) {
                                 let outbox = self.outbox.clone();
@@ -454,13 +510,21 @@ impl Engine {
                             }
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             entry_sizes.cancel_all(pane);
-                            let entries = entries.map(|selected| scan_cache::prepare(selected, &snapshots, pane));
+                            let entries = entries.map(|selected| {
+                                let old_sizes = selected.sizes.clone();
+                                let selected = scan_cache::prepare(selected, &snapshots, pane, selection.as_deref());
+                                if let Some(event) = selected_sizes.observer.replaced(pane, &old_sizes, &selected.sizes, &selected.entries) {
+                                    selected_sizes.observer.publish(event);
+                                }
+                                selected
+                            });
                             let cancel = Cancellation::default();
                             let worker_cancel = cancel.clone();
                             let filesystem = self.filesystem.clone();
                             let outbox = self.outbox.clone();
                             let budget = size_budget.clone();
                             let io_budget = size_io_budget.clone();
+                            let size_observer = selected_sizes.observer.clone();
                             let scan_path = entries.as_ref().map(|snapshot| snapshot.path.clone());
                             let scan_sizes = entries.as_ref().map(|snapshot| snapshot.sizes.clone());
                             let task = tasks.spawn(async move {
@@ -474,13 +538,22 @@ impl Engine {
                                 let final_outbox = outbox.clone();
                                 let result = tokio::task::spawn_blocking(move || {
                                     let _permit = permit;
-                                    let paths: HashMap<_, _> = snapshot.entries.iter()
+                                    let roots: std::borrow::Cow<'_, [Entry]> = match &selection {
+                                        None => std::borrow::Cow::Borrowed(&snapshot.entries),
+                                        Some(selection) => std::borrow::Cow::Owned(snapshot.entries.iter()
+                                            .filter(|entry| entry.kind == EntryKind::Directory && selection.contains_path(&entry.path))
+                                            .cloned().collect()),
+                                    };
+                                    let paths: HashMap<_, _> = roots.iter()
                                         .filter(|entry| entry.kind == EntryKind::Directory)
                                         .map(|entry| (entry.id, entry.path.clone())).collect();
-                                    folder_sizes::compute_batched(filesystem.as_ref(), &snapshot.entries, &worker_cancel, &mut |entry, size| {
+                                    folder_sizes::compute_batched(filesystem.as_ref(), &roots, &worker_cancel, &mut |entry, size| {
                                         if worker_cancel.is_cancelled() { return false; }
                                         let Some(path) = paths.get(&entry) else { return false; };
                                         snapshot.sizes.lock().unwrap_or_else(|error| error.into_inner()).insert(path.clone(), size);
+                                        if let Some(event) = size_observer.updated(pane, &snapshot.sizes, path) {
+                                            size_observer.publish(event);
+                                        }
                                         outbox.blocking_send(Event::FolderSizeUpdated { pane, navigation, scan, entry, size }, &worker_cancel)
                                     }, &io_budget);
                                 }).await;
@@ -495,6 +568,7 @@ impl Engine {
                         Some(Command::ComputeEntrySize { pane, navigation, scan, entry }) => {
                             entry_sizes.compute(pane, navigation, scan, entry, &mut tasks);
                         }
+                        Some(Command::SummarizeSelectedFolders(request)) => selected_sizes.submit(request),
                         Some(Command::CancelFolderSizes { pane, scan }) => {
                             entry_sizes.cancel(pane, scan, &mut tasks);
                             if size_requests[pane.index()].as_ref().is_some_and(|request| request.scan == scan)
@@ -512,6 +586,8 @@ impl Engine {
                         | Some(Command::Refresh { pane, navigation, path, sort, .. })
                         | Some(Command::Resort { pane, navigation, path, sort, .. }) => {
                             if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
+                            if snapshots.lock().unwrap_or_else(|e| e.into_inner())[pane.index()].archive_navigation.is_some_and(|old| navigation <= old) { continue; }
+                            archives.cancel(pane);
                             let continued_entry_sizes = (refresh || resort)
                                 .then(|| entry_sizes.continued_sizes(pane, &path, continued_scan)).flatten();
                             entry_sizes.navigate(pane, &path, refresh || resort);
@@ -613,6 +689,7 @@ impl Engine {
             watcher.shutdown();
         }
         drop(selection);
+        drop(selected_sizes);
         entry_sizes.shutdown();
         clipboard.shutdown();
         shell_menu.shutdown();
@@ -851,6 +928,7 @@ fn publish_listing(
         if cancel.is_cancelled() {
             return;
         }
+        cached[pane.index()].archive = None;
         cached[pane.index()].committed = Some(snapshot);
         cached[pane.index()].pending = None;
     }

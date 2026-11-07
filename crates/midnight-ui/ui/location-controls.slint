@@ -16,6 +16,7 @@ export component CompactLocationButton inherits Rectangle {
     in property <string> hint;
     in property <bool> selected;
     in property <bool> is-drive;
+    private property <bool> numbered-hot-path: root.kind == LocationRole.hot-path && root.compact-label != "";
     callback clicked();
     callback context-menu(float, float, bool, bool);
     width: root.is-drive
@@ -37,6 +38,7 @@ export component CompactLocationButton inherits Rectangle {
     accessible-action-default => { root.clicked(); }
 
     LocationImage {
+        visible: !root.numbered-hot-path;
         native-icon: root.icon; kind: root.kind;
         width: root.is-drive ? Theme.file-icon-size : Theme.icon-size;
         height: self.width;
@@ -46,14 +48,15 @@ export component CompactLocationButton inherits Rectangle {
         image-fit: contain;
     }
     caption := Text {
-        visible: root.is-drive;
+        visible: root.is-drive || root.numbered-hot-path;
         text: root.compact-label;
-        x: Theme.touch ? 32px : 22px;
-        width: max(0px, root.width - self.x - (Theme.touch ? 8px : 4px));
+        x: root.numbered-hot-path ? 0px : Theme.touch ? 32px : 22px;
+        width: root.numbered-hot-path ? root.width : max(0px, root.width - self.x - (Theme.touch ? 8px : 4px));
         height: root.height;
         color: Theme.text;
         font-size: Theme.font-size;
         vertical-alignment: center;
+        horizontal-alignment: root.numbered-hot-path ? center : left;
         overflow: elide;
     }
     focus := FocusScope {

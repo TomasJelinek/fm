@@ -5,6 +5,11 @@ use std::{fs::File, io, path::Path};
 pub(crate) struct Snapshot {
     pub length: u64,
 }
+impl Snapshot {
+    pub(crate) fn version_bytes(&self) -> Vec<u8> {
+        Vec::new()
+    }
+}
 pub(crate) fn open_read(_: &Path) -> io::Result<File> {
     Err(io::ErrorKind::Unsupported.into())
 }

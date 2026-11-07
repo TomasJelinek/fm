@@ -1,6 +1,7 @@
 import { Button, ScrollView } from "std-widgets.slint";
 import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
 
 export struct PanelFilterView {
     open: bool, pane: int, enabled: bool, regex: bool,
@@ -50,7 +51,7 @@ export component PanelFilterDialog inherits Rectangle {
                     }
                     Text { text: "Directories remain visible."; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                     if root.model.busy: Text { text: "Validating filter…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                    if root.model.error != "": Text { text: root.model.error; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    if root.model.error != "": ErrorNotice { text: root.model.error; }
                 }
             }
             HorizontalLayout {

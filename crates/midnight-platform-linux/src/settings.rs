@@ -188,6 +188,7 @@ mod tests {
             theme: PreferenceTheme::Dark,
             tabs: [
                 midnight_core::PaneTabPreferences {
+                    archives: Default::default(),
                     paths: vec![temporary.path().join("文档 e\u{301} 🧪")],
                     active: 0,
                 },

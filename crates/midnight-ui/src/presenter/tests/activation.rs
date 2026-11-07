@@ -141,6 +141,13 @@ fn file_success_and_failure_are_reported_once_without_navigation() {
             .1
             .contains("association failed")
     );
+    let body = &presenter.desktop.notice.as_ref().unwrap().1;
+    assert!(body.starts_with("association failed\n"), "{body}");
+    assert!(
+        body.contains(&format!("\nPath\n{}\n", test_root().display())),
+        "{body}"
+    );
+    assert!(body.ends_with("Operation: open"), "{body}");
 }
 
 #[test]

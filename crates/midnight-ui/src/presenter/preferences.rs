@@ -34,6 +34,8 @@ pub(super) struct EditedFields {
     pub(super) command_history: bool,
     pub(super) command_history_cleared: bool,
     pub(super) panel_view_modes: [bool; 2],
+    pub(super) thumbnails_enabled: bool,
+    pub(super) thumbnails_network: bool,
     pub(super) panel_filters: [bool; 2],
     pub(super) shortcuts: bool,
     bookmarks: bool,
@@ -52,6 +54,27 @@ impl PreferencesState {
 }
 
 impl Presenter {
+    pub(crate) fn change_thumbnail_options(
+        &mut self,
+        enabled: bool,
+        network: bool,
+        field: i32,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let mut values = self.preferences.values.clone();
+        match field {
+            0 => {
+                self.preferences.edited.thumbnails_enabled = true;
+                values.thumbnails_enabled = enabled;
+            }
+            1 => {
+                self.preferences.edited.thumbnails_network = true;
+                values.thumbnails_network = network;
+            }
+            _ => return,
+        }
+        self.update_preferences(values, send);
+    }
     pub(super) fn editor_preferences_ready(&self) -> bool {
         self.preferences.loaded && self.preferences.save_blocked.is_none()
     }
@@ -129,6 +152,12 @@ impl Presenter {
                 if edited.shortcuts {
                     loaded.shortcuts = local.shortcuts.clone();
                 }
+                if edited.thumbnails_enabled {
+                    loaded.thumbnails_enabled = local.thumbnails_enabled;
+                }
+                if edited.thumbnails_network {
+                    loaded.thumbnails_network = local.thumbnails_network;
+                }
                 for slot in 0..2 {
                     if edited.panel_filters[slot] {
                         loaded.panel_filters[slot] = local.panel_filters[slot].clone();
@@ -158,6 +187,9 @@ impl Presenter {
                     // No saved bookmark has been shown before this first load.
                     // Preserve local callback IDs, including IDs removed locally.
                     // Explicit local slot assignments take precedence.
+                    loaded
+                        .bookmarks
+                        .retain(|saved| !local.bookmarks.iter().any(|b| b.path == saved.path));
                     let slots: HashSet<_> = local.bookmarks.iter().filter_map(|b| b.slot).collect();
                     let remapped = loaded
                         .bookmarks
@@ -186,6 +218,9 @@ impl Presenter {
                     }
                     loaded.bookmarks.append(&mut local.bookmarks);
                 }
+                if loaded.deduplicate_bookmarks() {
+                    self.preferences.unsaved = true;
+                }
                 self.preferences.bookmark_generation = generation;
                 if let Err(error) = self.keyboard.sync(&loaded.shortcuts) {
                     loaded.shortcuts = self.preferences.values.shortcuts.clone();
@@ -196,8 +231,9 @@ impl Presenter {
             }
             Err(error) => {
                 let message = format!(
-                    "{error}\nSaving is disabled to preserve existing settings. \
-                    Restart after resolving the read error."
+                    "{}\n\nSaving is disabled to preserve existing settings. \
+                    Restart after resolving the read error.",
+                    crate::error_presentation::describe(&error)
                 );
                 self.desktop
                     .report("Could not load options", message.clone());
@@ -234,8 +270,10 @@ impl Presenter {
             }
             Err(error) => {
                 self.desktop.status = "Options apply to this session; saving failed".into();
-                self.desktop
-                    .report("Could not save options", error.to_string());
+                self.desktop.report(
+                    "Could not save options",
+                    crate::error_presentation::describe(&error),
+                );
             }
         }
     }
@@ -362,6 +400,8 @@ impl Presenter {
         edited.command_history |= preferences.command_history != previous.command_history;
         edited.bookmarks |= preferences.bookmarks != previous.bookmarks;
         edited.shortcuts |= preferences.shortcuts != previous.shortcuts;
+        edited.thumbnails_enabled |= preferences.thumbnails_enabled != previous.thumbnails_enabled;
+        edited.thumbnails_network |= preferences.thumbnails_network != previous.thumbnails_network;
         for slot in 0..2 {
             edited.panel_filters[slot] |=
                 preferences.panel_filters[slot] != previous.panel_filters[slot];
@@ -420,6 +460,44 @@ impl Presenter {
 mod tests {
     use super::*;
     use std::{cell::RefCell, io};
+
+    #[test]
+    fn early_preview_enable_edit_preserves_saved_network_choice_and_other_preferences() {
+        let mut presenter = Presenter::new("left".into(), "right".into());
+        presenter
+            .change_thumbnail_options(false, false, 0, &|_| panic!("Must await preferences load"));
+        presenter.preferences_loaded(Ok(UserPreferences {
+            thumbnails_enabled: true,
+            thumbnails_network: true,
+            theme: PreferenceTheme::Nord,
+            ..Default::default()
+        }));
+        assert!(!presenter.preferences.values.thumbnails_enabled);
+        assert!(presenter.preferences.values.thumbnails_network);
+        presenter.flush_loaded_preferences(&|command| {
+            let Command::SavePreferences { preferences, .. } = command else {
+                panic!("Expected merged save");
+            };
+            assert!(!preferences.thumbnails_enabled);
+            assert!(preferences.thumbnails_network);
+            assert_eq!(preferences.theme, PreferenceTheme::Nord);
+            true
+        });
+    }
+
+    #[test]
+    fn explicit_default_network_choice_wins_over_late_opt_in_without_changing_enable() {
+        let mut presenter = Presenter::new("left".into(), "right".into());
+        presenter
+            .change_thumbnail_options(true, false, 1, &|_| panic!("Must await preferences load"));
+        presenter.preferences_loaded(Ok(UserPreferences {
+            thumbnails_enabled: false,
+            thumbnails_network: true,
+            ..Default::default()
+        }));
+        assert!(!presenter.preferences.values.thumbnails_enabled);
+        assert!(!presenter.preferences.values.thumbnails_network);
+    }
 
     #[test]
     fn quick_search_filter_preview_survives_late_load_and_saves_other_loaded_choices() {

@@ -179,6 +179,25 @@ mod tests {
     }
 
     #[test]
+    fn bare_physical_digits_navigate_only_in_file_context() {
+        let map = ShortcutMap::new(&[]).unwrap();
+        for (context, consumed) in [
+            (ShortcutContext::Files, true),
+            (ShortcutContext::Search, false),
+            (ShortcutContext::Command, false),
+            (ShortcutContext::Other, false),
+        ] {
+            for text in ["1", "+"] {
+                let mut state = ShortcutState::default();
+                let decision = state.key(input(KeyCode::Digit1, text), |chord| {
+                    map.resolve(&chord, context).is_some()
+                });
+                assert_eq!(decision.consumed, consumed);
+            }
+        }
+    }
+
+    #[test]
     fn control_footer_tracks_both_control_keys_and_clears_on_native_focus_loss() {
         let mut state = ShortcutState::default();
         state.key(input(KeyCode::ControlLeft, ""), |_| false);
