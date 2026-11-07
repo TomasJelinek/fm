@@ -110,3 +110,21 @@ fn source_revision_change_between_validation_blocks_is_rejected() {
     while proof.validation_step(&mut buffer, &cancel).is_ok() {}
     assert_eq!(proof.phase(), FileProofPhase::Failed);
 }
+
+#[test]
+fn completed_hash_pass_keeps_fresh_guards_for_finalization() {
+    let (copy, changed) = published(b"verified bytes".to_vec());
+    let cancel = Cancellation::default();
+    let mut proof = copy.into_published_proof(&cancel).unwrap();
+    assert!(
+        proof.revalidate_finalization(&cancel).is_err(),
+        "publication alone is not a finalization proof"
+    );
+    validate(&mut proof, &cancel).unwrap();
+    proof.revalidate_finalization(&cancel).unwrap();
+    *changed.lock().unwrap() = true;
+    assert!(
+        proof.revalidate_finalization(&cancel).is_err(),
+        "a late source edit after EOF must block removal"
+    );
+}

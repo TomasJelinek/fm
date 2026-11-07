@@ -23,9 +23,10 @@ The backend preflights source kinds, root count, required capabilities and stagi
 rights before content writes. Exact value/precision support is verified on each
 unpublished destination stage after content verification; unsupported precision
 fails rather than rounding. Earlier completed copies can remain if a later file
-fails. A failure before Move capture prevents the whole batch's source captures,
-leaving the originals at their original names. A later capture/proof failure can
-leave originals retained in protected recovery; Jobs reports those locations.
+fails. Move removes each source only after that file's successful content and
+metadata proof; earlier completed moves remain after a later failure or cancel.
+Failure before that file's capture leaves its original name; a later failure can
+retain it in protected recovery. Jobs reports remaining recovery locations.
 See [native transfer guarantees](TRANSFERS.md).
 
 This exposes the first required-metadata slice. It does not imply that permissions,

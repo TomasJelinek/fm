@@ -53,20 +53,10 @@ impl GlyphPainter {
                     return Err(LayoutError::InvalidFont);
                 }
                 let data = run.font();
-                let mut font = FontRef::from_index(data.data.as_ref(), data.index as usize)
-                    .ok_or(LayoutError::InvalidFont)?;
-                if self.fonts.len() >= 256 {
-                    self.fonts.clear();
-                }
                 let font_id = (data.data.id(), data.index);
-                font.key = *self.fonts.entry(font_id).or_default();
-                let mut scaler = self
-                    .scale
-                    .builder(font)
-                    .size(run.font_size())
-                    .hint(true)
-                    .normalized_coords(run.normalized_coords())
-                    .build();
+                // Most scrolling frames reuse every glyph. Font parsing and scaler
+                // setup belong to the cache-miss path, not to every styled run.
+                let mut scaler = None;
                 let synthesis = run.synthesis();
                 for glyph in glyph_run.positioned_glyphs() {
                     let id = u16::try_from(glyph.id).map_err(|_| LayoutError::InvalidFont)?;
@@ -87,6 +77,22 @@ impl GlyphPainter {
                             paint_image(raster, image, x, y, key.color);
                         }
                         continue;
+                    }
+                    if scaler.is_none() {
+                        let mut font = FontRef::from_index(data.data.as_ref(), data.index as usize)
+                            .ok_or(LayoutError::InvalidFont)?;
+                        if self.fonts.len() >= 256 {
+                            self.fonts.clear();
+                        }
+                        font.key = *self.fonts.entry(font_id).or_default();
+                        scaler = Some(
+                            self.scale
+                                .builder(font)
+                                .size(run.font_size())
+                                .hint(true)
+                                .normalized_coords(run.normalized_coords())
+                                .build(),
+                        );
                     }
                     let mut render = Render::new(&[
                         Source::ColorOutline(0),
@@ -109,7 +115,7 @@ impl GlyphPainter {
                             0.0,
                         )));
                     }
-                    let image = render.render(&mut scaler, id);
+                    let image = render.render(scaler.as_mut().ok_or(LayoutError::InvalidFont)?, id);
                     if let Some(image) = &image {
                         paint_image(raster, image, x, y, key.color);
                     }

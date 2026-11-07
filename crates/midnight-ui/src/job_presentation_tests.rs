@@ -124,10 +124,10 @@ fn recoverable_move_reports_original_locations_and_never_claims_source_space_was
         matched_source: true,
     });
     let row = copy(&p, &progress);
-    assert_eq!(row.title, "Move (originals retained)");
-    assert_eq!(row.state, "Checking retained originals");
-    assert!(row.detail.contains("1 source names relocated"));
-    assert!(row.detail.contains("Source space is not freed."));
+    assert_eq!(row.title, "Move");
+    assert_eq!(row.state, "Checking before source removal");
+    assert!(row.detail.contains("0 source files removed"));
+    assert!(row.detail.contains("1 source recovery objects retained"));
     assert!(row.detail.contains("Original source\nsource/Žluťoučký.txt"));
     assert!(
         row.detail
@@ -135,4 +135,20 @@ fn recoverable_move_reports_original_locations_and_never_claims_source_space_was
     );
     assert!(!row.failed);
     assert!(!row.determinate);
+}
+
+#[test]
+fn move_reports_removed_sources_separately_from_retained_and_pending_storage() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut progress = progress(5);
+    progress.intent = TransferIntent::RecoverableMove;
+    progress.source_files_removed = 3;
+    progress.source_delete_pending = 2;
+    progress.source_removal_durability_unconfirmed = 1;
+    progress.source_recovery_count = 1;
+    let row = copy(&p, &progress);
+    assert!(row.detail.contains("3 source files removed"));
+    assert!(row.detail.contains("1 source recovery objects retained"));
+    assert!(row.detail.contains("2 source removals accepted by Windows"));
+    assert!(row.detail.contains("1 source removals without a confirmed"));
 }

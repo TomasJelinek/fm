@@ -5,6 +5,7 @@ pub(crate) struct PanelDetail {
     pub(crate) identity: String,
     pub(crate) label: &'static str,
     pub(crate) value: String,
+    pub(crate) explanation: String,
 }
 
 impl Presenter {
@@ -43,6 +44,7 @@ impl Presenter {
                 ),
                 label: "Selected",
                 value,
+                explanation: String::new(),
             }];
             if files > 0 {
                 let value = if pending {
@@ -66,6 +68,7 @@ impl Presenter {
                     ),
                     label: "Selected file bytes",
                     value,
+                    explanation: String::new(),
                 });
             }
             if folders > 0 {
@@ -88,6 +91,7 @@ impl Presenter {
                     ),
                     label: "Selected folder bytes",
                     value,
+                    explanation: String::new(),
                 });
             }
             return details;
@@ -100,6 +104,7 @@ impl Presenter {
                     identity: format!("detail:{}:parent:{index}:{value}", p.generation),
                     label,
                     value: value.into(),
+                    explanation: String::new(),
                 })
                 .collect();
         }
@@ -161,6 +166,11 @@ impl Presenter {
                 ),
                 label,
                 value,
+                explanation: if label == "Attributes" {
+                    crate::detail_attributes::explanation(metadata)
+                } else {
+                    String::new()
+                },
             })
             .collect()
     }

@@ -42,7 +42,11 @@ druhého panelu, umožní upravit cílovou složku a zařadí úlohu přímo do 
 ověřované fronty. Nepoužívá systémovou schránku. Výslovné Merge/Merge all a
 obnovitelné Replace/Replace all doplňují nativní transferové schopnosti;
 nahrazený originál zůstává v recovery složce. F6 a Cut/Paste sdílejí potvrzovací
-dialog a ověřovanou frontu pro omezený obnovitelný přesun běžných souborů.
+dialog a ověřovanou frontu. Přesun maže každý zdrojový soubor bezprostředně po
+jeho vlastním úspěšném zápisu, nezávislém SHA-256/readback ověření a nativních
+kontrolách; další soubor se začne kopírovat až potom. První mazací schopnost je
+omezena na běžné soubory na lokálním NTFS ve Windows. Linux přesun nyní odmítá
+před publikováním, protože vyloučení rozpracovaného otevření zdroje není zaručeno.
 Rozsah, limity a zbývající ověření určuje [transferový kontrakt](../../developer/TRANSFERS.md).
 
 ## 1. Záměr a potvrzená rozhodnutí
@@ -212,11 +216,14 @@ Nativní notifikace změn budou optimalizace. Při chybě, ztrátě událostí �
 
 ### Algoritmus a rozsah záruky
 
-Výchozí návrh je **BLAKE3 s 256bitovým výstupem**, průběžně počítaný nad bloky dat. Oficiální Rust implementace nabízí inkrementální hashování a optimalizace pro CPU. SHA-256 lze přidat pro interoperabilitu. Výběr BLAKE3 neznamená tvrzení, že bude na každém stroji rychlejší než hardwarově akcelerované SHA-256. [BLAKE3: Rust API](https://docs.rs/blake3/latest/blake3/)
+Implementované povinné ověřování používá **SHA-256**, průběžně počítaný nad bloky
+dat ze zdrojového handle a porovnaný s úplným nezávislým čtecím průchodem cíle.
+Kopírování i přesun zachovávají jediný aktivní buffer o velikosti 256 KiB;
+změna algoritmu by vyžadovala samostatně ověřený kontrakt.
 
 Úspěšné kopírování běžného souboru znamená:
 
-> Bajtový proud přečtený ze zdrojového handle a samostatný úplný čtecí průchod cílovým souborem mají shodnou délku a BLAKE3 hash. Nebyla zjištěna změna zdroje. Proběhlo požadované dokončení zápisu, synchronizace a publikování cíle.
+> Bajtový proud přečtený ze zdrojového handle a samostatný úplný čtecí průchod cílovým souborem mají shodnou délku a SHA-256 hash. Nebyla zjištěna změna zdroje. Proběhlo požadované dokončení zápisu, synchronizace a publikování cíle.
 
 Hash ověřuje běžný datový obsah. Zachování práv, ACL, NTFS alternate data streams, rozšířených atributů, hardlinků a sparse rozložení představuje samostatné schopnosti a není součástí prvního slibu bezeztrátové kopie. Kopírovací UI musí předem uvádět dostupnou politiku metadat; selhání slíbeného zachování metadat se nesmí vydávat za úplný úspěch.
 
@@ -236,9 +243,11 @@ Backend zachytí čas ze zdrojového handle před čtením dat. Po zdrojovém SH
 synchronizaci a přesný metadata readback. Typy a schopnosti celé dávky se ověřují
 před zápisem dat; konkrétní nepodporované rozlišení cíle se může zjistit až po
 ověření dat, před publikováním daného souboru. Dřívější dokončené cíle zůstanou;
-chyba před záchyty blokuje všechny zdrojové záchyty přesunu. Časové kontroly pouze
+chyba daného souboru zabrání jeho smazání a zastaví další přesun. Časové kontroly pouze
 doplňují úplné hashe a nové nativní revize; publikovaný cíl se nikdy neopravuje,
-aby se skryla změna. Původní data přesunu zůstávají v recovery, místo se neuvolňuje.
+aby se skryla změna. Dřívější dokončené přesuny zůstávají dokončené; chyba po
+záchytu ponechá nedokončený originál v recovery. Otevřené čtecí handly mohou
+odložit fyzické uvolnění místa; přesný počet uvolněných bajtů se neslibuje.
 
 Ostatní časy, atributy, práva, ACL, xattrs, proudy, metadata adresářů a zachování
 odkazů tím nejsou dokončeny. Obecný přesun adresářů zůstává samostatnou etapou.
@@ -1585,3 +1594,21 @@ identity a revize výsledku a potom otevře nadřazenou složku v původním pan
 Soubor se touto akcí nespouští. Nativní cesty se zachovávají odděleně od textu UI.
 Otevření, editace či mazání z výsledků vyžaduje samostatný bezpečný backendový
 kontrakt. Rozsah a limity: [Find API](../../developer/FIND.md).
+
+### Priorita názvu ve stavovém řádku a čitelnost vieweru
+
+Stavový řádek panelu přidělí nejprve prostor názvu souboru nebo souhrnu výběru,
+nejvýše do šířky panelu. Ostatní metadata a volné místo použijí zbývající prostor;
+název nemá pevný limit 220 px. Oříznutí nemění úplnou kopírovanou hodnotu.
+Atributy Windows se zobrazují jednotlivými znaky (`A` archive, `C` compressed,
+`R` read-only atd.), s vysvětlením přítomných příznaků v tooltipu. Neznámý bit je
+`?`, nikoli hexadecimální hodnota. Unixová oprávnění zůstávají symbolická a oktalová.
+
+Viewer rozpozná i tisknutelný UTF-8 text s nulovými oddělovači, například soubory
+argumentů `.nul`; nulová výplň a jiné binární znaky nadále volí binární režim.
+Zvýraznění syntaxe používá syté barvy upravené proti skutečnému pozadí na kontrast
+nejméně 4,5:1, bez plošného míchání s běžným textem. Výpočet kontrastu sdílí
+s panely a paletu počítá jednou na stránku. Při scrollování již cachované glyfy
+nevyžadují opakované vytváření fontového scaleru. Okamžitá odezva při stránkování
+a u extrémně dlouhých řádků zůstává samostatným cílem výkonnostního ověření.
+Viz [testy a měření](../../verification/2026-11-07-status-and-viewer-readability.md).

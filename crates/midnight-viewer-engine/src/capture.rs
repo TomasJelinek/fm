@@ -18,7 +18,25 @@ pub(crate) struct Order {
     pub ready: Receiver<(usize, Captured)>,
 }
 
+pub(crate) fn native() -> crate::NativeCapture {
+    Arc::new(|path, closed| {
+        if closed.load(Ordering::Acquire) {
+            return Err("Viewer closed".into());
+        }
+        CapturedFile::capture(path).map_err(|error| error.to_string())
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result<Order, String> {
+    prepare_with(launch, closed, native())
+}
+
+pub(crate) fn prepare_with(
+    launch: &ViewerLaunch,
+    closed: &Arc<AtomicBool>,
+    capture: crate::NativeCapture,
+) -> Result<Order, String> {
     if launch.archive.is_some() {
         return crate::capture_archive::prepare(launch, closed);
     }
@@ -34,6 +52,9 @@ pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result
         let Some(row) = launch.view.by_id.get(&entry.id) else {
             continue;
         };
+        let path = entry
+            .native_path()
+            .ok_or("The captured native view contains a non-native file.")?;
         // Includes work descriptors, UTF-16/native path copies and captured identities.
         bytes = bytes
             .saturating_add(
@@ -48,18 +69,21 @@ pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result
         if bytes > 8 * 1024 * 1024 {
             return Err("The captured file order exceeds the 8 MiB viewer budget.".into());
         }
-        ordered.push((*row, &entry.path));
+        ordered.push((*row, path));
     }
     ordered.sort_unstable_by_key(|entry| entry.0);
     let mut files: Vec<_> = ordered
         .into_iter()
-        .map(|(_, path)| (path.clone(), None))
+        .map(|(_, path)| (path.to_path_buf(), None))
         .collect();
     let current = files
         .iter()
         .position(|(path, _)| *path == launch.focused)
         .ok_or("The focused regular file is no longer in the captured view.")?;
-    files[current].1 = Some(CapturedFile::capture(&files[current].0).map_err(|e| e.to_string()));
+    files[current].1 = Some(capture(&files[current].0, closed));
+    if closed.load(Ordering::Acquire) {
+        return Err("Viewer closed".into());
+    }
     let paths: Vec<_> = (1..files.len())
         .map(|step| {
             let index = (current + step) % files.len();
@@ -75,7 +99,7 @@ pub(crate) fn prepare(launch: &ViewerLaunch, closed: &Arc<AtomicBool>) -> Result
                 if closed.load(Ordering::Acquire) {
                     break;
                 }
-                let result = CapturedFile::capture(&path).map_err(|e| e.to_string());
+                let result = capture(&path, &closed);
                 let mut event = (index, result);
                 loop {
                     if closed.load(Ordering::Acquire) {

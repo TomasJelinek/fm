@@ -59,6 +59,7 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         .unwrap();
     let service = Service {
         handle: executor.handle().clone(),
+        capture: crate::capture::native(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
         images: Arc::new(Mutex::new(Some(providers.into()))),
         windows: Arc::new(AtomicUsize::new(0)),

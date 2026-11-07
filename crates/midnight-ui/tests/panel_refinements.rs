@@ -86,11 +86,13 @@ fn breadcrumbs_details_and_command_history_never_reinterpret_display_text() {
             identity: "entry-1:name".into(),
             label: "Name".into(),
             value: "文档 $(literal).rs".into(),
+            ..Default::default()
         },
         DetailRow {
             identity: "entry-1:size".into(),
             label: "Size in bytes".into(),
             value: "123456789 bytes".into(),
+            ..Default::default()
         },
     ])));
     ui.window

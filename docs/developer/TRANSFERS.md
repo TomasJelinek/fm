@@ -117,35 +117,52 @@ Optional contracts default to Unsupported:
 | `TransferMoveCapture::capture` | Retain the root under its original raw basename in private sibling recovery. Structured Captured/Restored/RecoveryRequired facts describe actual mutation; no inode is unlinked. |
 
 Only completely successful Published/Replaced copies yield `VerifiedFileProof`.
-The copy buffer is released; each proof retains exact source and stage, immutable
-SHA-256/length and publication identity without retaining a byte buffer. Earlier
-proof targets are protected against replacement by later files in the same job.
-Any skip, failure, cancellation, partial recovery or required-durability failure
-blocks all source capture.
+The user-requested Move order is per file: copy and independently verify one
+file, validate its retained source/destination SHA-256 and required metadata,
+capture that source, establish native writer quiescence, rehash both objects,
+then explicitly remove that source before starting the next copy. Each full
+proof pass uses one shared 256 KiB buffer; source and destination revisions from
+the final reads remain guarded through the removal gate. Earlier destination
+identities stay protected from later replacement, without retaining their files.
 
-After every copy completes, one shared 256 KiB buffer rereads all held sources and
-all held destinations independently against their original digest/length. Fresh
-native revisions and final-name bindings supplement these hashes. All capture
-authorities are revalidated; only this private whole-batch worker barrier permits
-capture, one root per step. Before each capture, remaining authorities and all
-destination bindings are checked. Another complete proof pass then reads the
-same original handles despite their old names disappearing. A late writer's new
-bytes remain in source recovery and a digest mismatch reports partial/recovery
-status; verified destinations are never erased to emulate rollback.
+`TransferMoveCapture::preflight_finalization` refuses unsupported removal before
+publication. `prepare_finalization` requires a matching successful capture and
+returns an opaque `TransferMoveFinalizer`; its `revalidate` checks the retained
+object/recovery binding, and `finalize` reports actual Removed/Retained facts.
+Drop never removes recovery. The first removal scope is Windows local fixed NTFS, single-link native
+regular files. Windows refuses readonly files and any named alternate
+data stream, including empty streams that were not copied and verified.
 
-Cancellation before capture leaves every source name unchanged. Cancellation
-after one capture retains that original and leaves remaining source names in
-place. Progress records actual captured-name and recovery counts, first 16 raw
-source/recovery/identity mappings and at most 64 captured source parents to
-refresh. The `.midnight-recovery-<random>/<original raw basename>` layout preserves
-local source-name context after restart, but no persistent recovery catalogue or
-automatic restoration is implemented. Originals remain on disk; source space is
-not reclaimed and permanent deletion is never claimed.
+Linux source finalization is currently Unsupported before publication, with an
+explicit suggestion to use Copy. A read-lease probe detects existing writable
+handles/mappings, but cannot exclude an old-name open already in progress when
+capture renames the source. Holding a lease does not solve arbitrary pauses past
+its forced-break timeout. Neither advisory locks nor a revision-to-unlink race
+is silently accepted as writer exclusion. Existing Linux Copy, capture and proof
+primitives remain; no reachable source-unlink implementation is enabled.
 
-Native revisions are not snapshots: same-size updates in one timestamp quantum
-can retain both modification/change indicators. Full hashes remain required.
-Linux no-replace capture plus identity inspection/restoration is not compare-ID
-unlink. Same-device Move never shortcuts the full verification barrier.
+On Windows, a Read oplock probe on an asynchronous exact-object `ReOpenFile`
+handle rejects preexisting writable mapped sections. Its pending IO is cancelled
+and drained before buffers disappear; the original source handle continues to
+deny write sharing. Removal uses normal exact-handle disposition with image
+section checks, without POSIX semantics or readonly overrides. All application
+source/proof/finalizer owners close before the next file. External readers can
+delay storage reclamation; parent-entry power-loss durability is not promised.
+
+A skip retains that file. Failure or cancellation stops unfinished Move work;
+earlier successful moves remain completed, and later source names stay in place.
+A failure after capture retains the original in recovery. No destination rollback
+is attempted. Progress reports actual removal/delete-pending/durability counts,
+remaining recovery objects, first16 raw recovery mappings and at most64 source
+parents for refresh. `.midnight-recovery-<random>/<original raw basename>` retains
+local recovery context, without an automatic recovery catalogue or journal.
+Empty recovery directories may remain. Physical freed space is never measured or
+promised: open readers, mappings and filesystem allocation can delay reclamation.
+
+Same-device Move still performs the full content proof instead of a rename-only
+shortcut. Directories, hardlinks, links, virtual providers and broader metadata
+remain separate unfinished scope. No phase promises an atomic snapshot or batch
+rollback under arbitrary concurrent mutation.
 
 ## Required modified time
 
@@ -177,8 +194,8 @@ reuses this same verified stage through existing replacement preparation.
 Preflight establishes kinds and capabilities, not that every source timestamp is
 representable by every destination. Value-specific destination precision failures
 are discovered after data verification on unpublished stages. Earlier completed
-files may remain published; a failure at this stage blocks all Move source captures. There is
-no silent switch to content-only copying.
+files may remain published; a failure at this stage prevents removal of that source
+and stops subsequent Move work. There is no silent switch to content-only copying.
 
 Move proofs retain the metadata pin and expected modified time alongside their
 existing source/stage/digest/length. Full source/destination hashes, fresh native

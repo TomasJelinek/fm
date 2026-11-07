@@ -310,10 +310,18 @@ impl Job {
         if let Some(conflict) = &self.conflict {
             return Step::Conflict(Arc::new(conflict.clone()));
         }
+        if self.move_work.is_some() && self.progress.failed != 0 {
+            return Step::Done;
+        }
         if let Some(work) = self.current.take() {
             return self.process(work);
         }
-        if self.move_work.is_some() && self.roots.is_empty() && self.stack.is_empty() {
+        if self
+            .move_work
+            .as_ref()
+            .is_some_and(move_job::MoveWork::has_pending)
+            || (self.move_work.is_some() && self.roots.is_empty() && self.stack.is_empty())
+        {
             return self.advance_move();
         }
         self.progress.phase = CopyOperationPhase::Planning;
@@ -784,7 +792,7 @@ impl Job {
             ));
         }
         if self.progress.intent == TransferIntent::RecoverableMove {
-            self.progress.message.push_str(&format!("\n{} source names relocated; {} originals retained in source recovery. Disk space has not been reclaimed. Directory Move is not supported in this increment.", self.progress.source_names_captured, self.progress.source_recovery_count));
+            self.progress.message.push_str(&format!("\n{} verified source files removed; {} originals retained in source recovery. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Directory Move is not supported in this increment.", self.progress.source_files_removed, self.progress.source_recovery_count));
         }
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = self.progress.clone();
         self.progress.clone()
@@ -797,7 +805,8 @@ impl Job {
         self.move_work = Some(work);
         match result {
             Ok(false) => Step::Continue,
-            Ok(true) => Step::Done,
+            Ok(true) if self.roots.is_empty() && self.stack.is_empty() => Step::Done,
+            Ok(true) => Step::Continue,
             Err(error) => {
                 self.record(error);
                 Step::Done

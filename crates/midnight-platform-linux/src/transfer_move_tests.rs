@@ -1,5 +1,7 @@
 use super::prepare_native;
-use midnight_core::{Cancellation, TransferMoveCaptureOutcome, TransferService};
+use midnight_core::{
+    Cancellation, TransferMoveCapture, TransferMoveCaptureOutcome, TransferService,
+};
 use std::{fs, path::PathBuf};
 #[test]
 fn retained_validation_survives_source_capture_and_proves_published_binding() {
@@ -310,4 +312,22 @@ fn capture_preserves_a_descendant_link_without_following_its_target() {
     drop(prepared);
     assert_eq!(fs::read_link(recovery.path.join("link")).unwrap(), outside);
     assert_eq!(fs::read(&outside).unwrap(), b"outside bytes");
+}
+
+#[test]
+fn source_finalization_is_unsupported_and_capture_drop_preserves_the_original() {
+    let (_temp, parent) = fixture();
+    let path = parent.join("source 文档");
+    fs::write(&path, b"original").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    assert!(capture.preflight_finalization(&cancel).is_err());
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    assert!(capture.prepare_finalization(&cancel).is_err());
+    drop(capture);
+    drop(source);
+    assert_eq!(fs::read(recovery.path).unwrap(), b"original");
 }

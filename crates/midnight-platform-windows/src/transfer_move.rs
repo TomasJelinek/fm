@@ -1,10 +1,12 @@
-//! Source-root recovery capture; no source inode is ever unlinked.
+//! Source-root recovery capture. Only separate explicit finalization may delete.
 use super::*;
 use midnight_core::{
     PreparedTransferMove, TransferMoveCapture, TransferMoveCaptureOutcome, TransferRecovery,
     TransferTarget,
 };
 use std::{ffi::OsString, fs::OpenOptions, os::windows::fs::OpenOptionsExt, sync::Mutex};
+#[path = "transfer_finalize.rs"]
+mod finalization;
 
 pub(super) fn prepare(path: &Path, cancel: &Cancellation) -> Result<PreparedTransferMove, FsError> {
     let (source, capture) = prepare_native(path, cancel)?;
@@ -81,6 +83,16 @@ struct Capture {
     state: Mutex<State>,
 }
 impl TransferMoveCapture for Capture {
+    fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        checked(cancel, &self.entry.item.path)?;
+        finalization::qualify(&self.file, &self.entry.item.path)
+    }
+    fn prepare_finalization(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferMoveFinalizer>, FsError> {
+        finalization::prepare(self, cancel)
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }

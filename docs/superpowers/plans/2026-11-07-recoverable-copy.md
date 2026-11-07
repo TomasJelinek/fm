@@ -82,3 +82,9 @@ deferred decisions and compact/movable keyboard-accessible dialogs.
 - [ ] Document native guarantees, recovery locations and remaining Move work.
 - [ ] Review, run relevant Windows/Linux checks, build/deploy/register release,
   verify actual UI, and commit/push the working increment before subsequent stages.
+# Move policy update
+
+The later explicit user instruction supersedes this plan's whole-batch Move
+barrier: complete each independently verified file and remove its source before
+copying the next. See the current [native transfer contract](../../developer/TRANSFERS.md)
+for platform qualification, remaining recovery and unsupported Linux finalization.

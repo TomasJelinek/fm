@@ -6,6 +6,7 @@ use std::{
 
 #[tokio::test]
 async fn recursive_links_are_skipped_without_abandoning_regular_siblings() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let directory = temp.path().join("directory");
     fs::create_dir(&directory).unwrap();
@@ -35,6 +36,7 @@ async fn recursive_links_are_skipped_without_abandoning_regular_siblings() {
 
 #[tokio::test]
 async fn native_raw_name_can_be_hashed_but_never_lossily_exported() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let path = temp.path().join(OsString::from_vec(vec![b'x', 0xff]));
     fs::write(&path, b"abc").unwrap();

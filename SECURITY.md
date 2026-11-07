@@ -198,13 +198,15 @@ copying; an SSD at the other endpoint does not override this. SSD-to-SSD copying
 also remains serial today.
 
 Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
-through the ordinary Copy route is rejected. Explicit Recoverable Move backend
-routes support at most 64 native ordinary file roots and a conservative 4 MiB
+through the ordinary Copy route is rejected. Explicit native Move backend
+routes support at most 64 ordinary file roots and a conservative 4 MiB
 proof-path reservation; directory, link, archive-member, duplicate-source and unsupported
 location batches are rejected whole before publication. F6/Cut presentation is
-separate from this backend capability. Originals are relocated into protected
-sibling recovery directories under their original raw basenames, never unlinked;
-source space is not reclaimed and no permanent deletion is claimed.
+separate from this backend capability. Windows removes each source only after
+that file's complete verified copy, capture, writer-quiescence and final proof.
+Linux finalization is Unsupported before publication: a lease probe cannot safely
+exclude an in-flight old-name open, and forced lease breaks prevent an indefinite
+exclusion promise. Copy remains available without silent fallback.
 Copy supports files and ordinary directories; links/special files are rejected.
 Conflicts show source and target metadata and accept versioned Skip, Skip all for
 this job, another name, explicit recoverable replacement, directory merge, or
@@ -243,8 +245,8 @@ handles before data reads and preflights every source pin and owned destination
 stage before content writes. After the full SHA-256/readback gate, the exact stage
 modified time is set, synced and independently read back without rounding
 tolerance. Value-specific precision failures happen on unpublished stages after
-data verification; earlier completed files may remain, but such a failure blocks
-all Move captures. Unsupported directories, links and virtual sources never
+data verification; earlier completed files may remain, but such a failure prevents
+removal of that source and stops subsequent Move work. Unsupported directories, links and virtual sources never
 silently downgrade to ContentOnly. Source write attributes are not requested;
 Windows adds WRITE_ATTRIBUTES only to owned required-metadata stages.
 Source/destination times supplement, never replace, full Move hashes and fresh
@@ -261,24 +263,30 @@ Shared inherited directories can be unsupported even on a supported filesystem;
 the failure suggests Copy and retains every source rather than weakening rights.
 
 Only complete successful publication with every required durability step yields
-a Move proof; skipped, failed, cancelled, partial and durability-unconfirmed files
-block all source capture. After all initial copies, a single 256 KiB buffer
-independently rehashes every held source and held destination against its original
-SHA-256/length, checks fresh native revisions, and validates exact final target
-name bindings. All capture authorities are revalidated before the first source
-name changes. Capture is resumable one root at a time under the same queue and
-mutation exclusion; every remaining authority and target binding is checked.
-After capture another full proof pass reads the same held originals despite their
-old names disappearing. A late writer mismatch reports partial/recovery status;
-all its bytes remain in the retained original. Cancellation after an earlier
-capture retains that recovery and leaves remaining source names untouched.
-Linux source capture is no-replace rename plus identity inspection/restoration,
-not compare-ID unlink. Neither platform promises an immutable batch snapshot.
-Native revision guards supplement full hashes; same-size edits within a timestamp
-quantum can evade metadata alone. Source/recovery mappings and captured parents
-are reported with bounded display samples and exact counts. No automatic recovery
-catalogue or restoration journal is implemented. Recursive directory Move requires
-a separate complete child-closure proof and is not enabled by root capture alone.
+a Move proof. Per the explicit user policy, each file finishes before the next
+copy: a single 256 KiB buffer independently rehashes its held source and destination,
+checks native revisions/required metadata and exact destination binding, then
+captures that source under its original raw basename in protected recovery.
+Windows refuses hardlinks, readonly files and any alternate stream not verified
+by Copy. A read-oplock probe rejects existing writable mappings; the original
+Move handle continues denying write sharing. A second complete source/destination
+hash pass retains fresh read guards through the explicit finalization check.
+Normal exact-handle delete disposition uses image-section checks, no POSIX unlink
+or readonly override. All application source owners close before copying the next
+file. Open external readers may delay storage reclamation; no measured physical
+space or parent-entry power-loss durability is promised.
+
+A skip retains that source. Failure or cancellation retains unfinished originals,
+possibly in recovery after capture; earlier completed moves stay completed and
+published destinations are never rolled back. Drop never finalizes retained data.
+Structured outcomes distinguish actual unlink/delete-pending from retained recovery
+and removal durability uncertainty. Linux capture remains no-replace rename plus
+identity inspection/restoration, not compare-ID unlink; its source finalization
+stays disabled until writer exclusion is enforceable. No platform promises an
+immutable snapshot or batch rollback. Raw recovery mappings and captured parents
+are reported with bounded display samples and exact counts; no automatic recovery
+catalogue or restoration journal exists. Directory/link/provider Move remains
+unfinished and is not enabled by a root capture alone.
 
 1. Only supported ordinary file types are copied. Opened file identities and
    source/destination alias checks are used; no unchecked traversal of recursive

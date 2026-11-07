@@ -3,6 +3,7 @@
 mod archive;
 mod archive_format;
 mod checksum;
+mod color_contrast;
 mod command_history;
 mod compare;
 mod copy_operation;
@@ -46,6 +47,7 @@ mod window_geometry;
 pub use archive::*;
 pub use archive_format::*;
 pub use checksum::*;
+pub use color_contrast::readable_rgb;
 pub use command_history::*;
 pub use compare::*;
 pub use copy_operation::*;

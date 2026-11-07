@@ -219,7 +219,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         assert!(
             ui.window
                 .get_copy_draft_body()
-                .contains("Source disk space is not freed")
+                .contains("before the next file is copied")
         );
         assert!(
             ui.window

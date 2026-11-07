@@ -109,17 +109,10 @@ impl CapturedFile {
     /// Backend only; reads at most 4096 bytes through the same revision validation.
     pub fn preferred_basic_mode(&self) -> Result<u16, Error> {
         let bytes = self.open()?.read_at(0, 4096)?;
-        if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-            return Ok(viewer::MODE_TEXT);
-        }
-        let controls = bytes
-            .iter()
-            .filter(|&&b| b < 32 && !matches!(b, b'\n' | b'\r' | b'\t' | 12))
-            .count();
-        Ok(if bytes.contains(&0) || controls > bytes.len() / 20 {
-            viewer::MODE_BINARY
-        } else {
+        Ok(if crate::text_detection::is_text(&bytes) {
             viewer::MODE_TEXT
+        } else {
+            viewer::MODE_BINARY
         })
     }
     pub(crate) fn open(&self) -> Result<Reader, Error> {

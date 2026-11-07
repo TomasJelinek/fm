@@ -3,6 +3,8 @@
 
 mod capture;
 mod capture_archive;
+#[cfg(test)]
+mod capture_tests;
 mod image_geometry;
 mod image_input;
 mod image_pixels;
@@ -23,6 +25,14 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, SyncSender},
 };
+
+/// Backend-only native source capture. Failure never invokes a fallback opener.
+/// The borrowed cancellation flag remains valid for the duration of this call.
+pub type NativeCapture = Arc<
+    dyn Fn(&std::path::Path, &AtomicBool) -> Result<midnight_plugin_host::CapturedFile, String>
+        + Send
+        + Sync,
+>;
 
 /// Latest-frame mailbox: a slow UI cannot accumulate raster images.
 pub struct Mailbox {
@@ -56,6 +66,7 @@ impl Mailbox {
 #[derive(Clone)]
 pub struct Service {
     handle: tokio::runtime::Handle,
+    capture: NativeCapture,
     runtime: Arc<Mutex<Option<Arc<Runtime>>>>,
     images: Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>,
     windows: Arc<AtomicUsize>,
@@ -93,8 +104,16 @@ impl Drop for WindowSession {
 
 impl Service {
     pub fn new(handle: tokio::runtime::Handle) -> Self {
+        Self::with_native_capture(handle, capture::native())
+    }
+
+    /// Install the filesystem's source authority before opening any viewer.
+    /// Invoked only by viewer workers. The callback must retain its provider for
+    /// the lifetime of every returned content lease.
+    pub fn with_native_capture(handle: tokio::runtime::Handle, capture: NativeCapture) -> Self {
         Self {
             handle,
+            capture,
             runtime: Arc::new(Mutex::new(None)),
             images: Arc::new(Mutex::new(None)),
             windows: Arc::new(AtomicUsize::new(0)),
@@ -155,7 +174,11 @@ impl Service {
                     loaded.as_ref().unwrap().clone()
                 };
                 worker::run(
-                    (runtime, images),
+                    worker::Services {
+                        runtime,
+                        images,
+                        capture: service.capture.clone(),
+                    },
                     launch,
                     appearance,
                     geometry,

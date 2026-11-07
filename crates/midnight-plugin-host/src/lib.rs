@@ -12,6 +12,7 @@ pub use midnight_plugin_api as api;
 mod discovery;
 pub use discovery::{Diagnostic, PluginInfo, host_target};
 mod content;
+mod text_detection;
 pub use content::{CapturedFile, ContentSource};
 #[cfg(windows)]
 #[path = "installation_windows.rs"]

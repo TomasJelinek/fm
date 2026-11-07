@@ -948,7 +948,7 @@ export component MainWindow inherits Window {
             move-dialog(dx, dy) => { copy-draft-frame.move-by(dx, dy); }
             title: root.copy-draft-move ? "Move with recovery" : "Copy"; body: root.copy-draft-body; has-name: true;
             initial-name: root.copy-draft-destination; selection-end: root.copy-draft-selection-end;
-            input-label: "Destination folder"; confirm-text: root.copy-draft-move ? "Move and retain originals" : "Copy"; warning: root.copy-draft-error;
+            input-label: "Destination folder"; confirm-text: root.copy-draft-move ? "Move" : "Copy"; warning: root.copy-draft-error;
             native-icon: root.action-icons.copy; fallback-icon: FallbackIcons.copy;
             option-visible: true; option-enabled: root.copy-draft-metadata-enabled;
             option-checked <=> root.copy-draft-preserve-time;

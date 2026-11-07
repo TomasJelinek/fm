@@ -1,4 +1,4 @@
-//! Source-root recovery capture; no source inode is ever unlinked.
+//! Source-root recovery capture. Only separate explicit finalization may unlink.
 use super::*;
 use midnight_core::{
     PreparedTransferMove, TransferMoveCapture, TransferMoveCaptureOutcome, TransferRecovery,
@@ -96,6 +96,13 @@ struct Capture {
     state: Mutex<State>,
 }
 impl TransferMoveCapture for Capture {
+    fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        checked(cancel, &self.entry.item.path)?;
+        Err(unsupported(
+            &self.entry.item.path,
+            "Verified Move source removal is not supported on Linux: writer exclusion cannot be guaranteed for an in-flight source open. Choose Copy to retain the source; no fallback is performed.",
+        ))
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }

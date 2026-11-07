@@ -3,13 +3,15 @@
 mod ui;
 
 use i_slint_core::items::AccessibleRole;
-use midnight_core::{Event, PreferenceTheme, UserPreferences};
+use midnight_core::Event;
 use midnight_ui::{KeyboardEditorView, MainWindow, Presenter};
 use slint::{ComponentHandle, platform::Key};
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 #[path = "native_keyboard_search/external_input.rs"]
 mod external_input;
+#[path = "native_keyboard_search/fixtures.rs"]
+mod fixtures;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     slint::BackendSelector::new()
@@ -18,23 +20,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select()?;
     let window = MainWindow::new()?;
     let path = std::env::current_dir()?;
+    let (fixture, preferences, compact) = fixtures::load(&path)?;
+    eprintln!(
+        "native-fixture={fixture}; dynamic-commands={}; density={:?}; desktop-font={}; touch-font={}",
+        preferences.user_commands.len(),
+        preferences.density,
+        preferences.desktop_font_size,
+        preferences.touch_font_size
+    );
     let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
     midnight_ui::install(&window, presenter.clone(), Rc::new(|_| true));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            theme: PreferenceTheme::Dracula,
-            font_family: "Segoe UI".into(),
-            desktop_font_size: 13,
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
     midnight_ui::refresh(&window, &presenter.borrow());
     midnight_ui::install_file_keys(&window);
     window
         .window()
         .set_size(slint::LogicalSize::new(1340., 820.));
     if std::env::args().any(|argument| argument == "--external-input") {
-        return external_input::run(window);
+        return external_input::run(window, presenter, compact);
     }
     let weak = window.as_weak();
     let timer = slint::Timer::default();

@@ -72,7 +72,13 @@ fn clearing_waits_for_old_decode_and_only_new_generation_may_repopulate() {
             std::env::var_os("CARGO_TARGET_DIR")
                 .map(|path| PathBuf::from(path).join("private-tests"))
         })
-        .expect("Test output must be configured under _build");
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .expect("thumbnail host belongs to the repository crates directory")
+                .join("_build/private-tests")
+        });
     std::fs::create_dir_all(&parent).unwrap();
     let root = tempfile::tempdir_in(parent).unwrap();
     let cache = Arc::new(Mutex::new(

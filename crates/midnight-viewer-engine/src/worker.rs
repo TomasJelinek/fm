@@ -60,8 +60,14 @@ struct Worker {
     frames: crate::interaction::Frames,
 }
 
+pub(crate) struct Services {
+    pub runtime: Arc<Runtime>,
+    pub images: Arc<[midnight_image_viewer_host::Provider]>,
+    pub capture: crate::NativeCapture,
+}
+
 pub(crate) fn run(
-    plugins: (Arc<Runtime>, Arc<[midnight_image_viewer_host::Provider]>),
+    services: Services,
     launch: ViewerLaunch,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
@@ -69,9 +75,13 @@ pub(crate) fn run(
     output: &Mailbox,
     closed: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let (runtime, images) = plugins;
+    let Services {
+        runtime,
+        images,
+        capture,
+    } = services;
     output.put(ViewerOutput::Status("Preparing file identities…".into()));
-    let prepared = crate::capture::prepare(&launch, closed)?;
+    let prepared = crate::capture::prepare_with(&launch, closed, capture)?;
     let mut disabled_plugins = launch.disabled_plugins.to_vec();
     // Ambiguous identities are disabled on both transports before any code loads.
     disabled_plugins.extend(

@@ -20,6 +20,8 @@ pub struct VerifiedFileProof {
     length: u64,
     phase: FileProofPhase,
     guard: Option<Box<dyn TransferReadGuard>>,
+    source_guard: Option<Box<dyn TransferReadGuard>>,
+    destination_guard: Option<Box<dyn TransferReadGuard>>,
     hash: Sha256,
     read: u64,
     validation_bytes: u64,
@@ -48,6 +50,8 @@ impl VerifiedFileCopy {
             length: self.copied,
             phase: FileProofPhase::Ready,
             guard: None,
+            source_guard: None,
+            destination_guard: None,
             hash: Sha256::new(),
             read: 0,
             validation_bytes: 0,
@@ -57,6 +61,27 @@ impl VerifiedFileCopy {
 }
 
 impl VerifiedFileProof {
+    /// Fresh source and destination revisions from the completed independent hash
+    /// pass, plus exact published binding and required metadata. This is a per-file
+    /// removal gate, not a snapshot or permission to remove another file.
+    pub fn revalidate_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        let path = &self.source.entry().item.path;
+        if self.phase != FileProofPhase::Complete {
+            return Err(failure(
+                path,
+                "source removal requires a completed hash pass",
+            ));
+        }
+        let _permit = io_permit(cancel, path)?;
+        for guard in [&self.source_guard, &self.destination_guard] {
+            guard
+                .as_ref()
+                .ok_or_else(|| failure(path, "final read guard missing"))?
+                .revalidate(cancel)?;
+        }
+        drop(_permit);
+        self.revalidate_publication(cancel)
+    }
     pub fn source_entry(&self) -> &TransferEntry {
         self.source.entry()
     }
@@ -115,6 +140,8 @@ impl VerifiedFileProof {
             return Err(failure(path, "published destination identity changed"));
         }
         self.guard = Some(self.source.rewind_for_validation(cancel)?);
+        self.source_guard = None;
+        self.destination_guard = None;
         self.hash = Sha256::new();
         self.read = 0;
         self.validation_bytes = 0;
@@ -135,6 +162,8 @@ impl VerifiedFileProof {
     fn fail(&mut self) {
         self.phase = FileProofPhase::Failed;
         self.guard = None;
+        self.source_guard = None;
+        self.destination_guard = None;
     }
     fn advance(
         &mut self,
@@ -209,7 +238,11 @@ impl VerifiedFileProof {
                 "retained file checksum or length changed after publication",
             ));
         }
-        self.guard = None;
+        if self.phase == FileProofPhase::Source {
+            self.source_guard = self.guard.take();
+        } else {
+            self.destination_guard = self.guard.take();
+        }
         self.phase = if self.phase == FileProofPhase::Source {
             FileProofPhase::DestinationStart
         } else {

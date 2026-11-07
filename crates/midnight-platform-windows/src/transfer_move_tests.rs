@@ -1,5 +1,7 @@
 use super::prepare_native;
-use midnight_core::{Cancellation, TransferMoveCaptureOutcome, TransferService};
+use midnight_core::{
+    Cancellation, TransferMoveCapture, TransferMoveCaptureOutcome, TransferService,
+};
 use std::{fs, path::PathBuf};
 #[test]
 fn retained_validation_survives_source_capture_and_proves_published_binding() {
@@ -346,4 +348,222 @@ fn unsafe_source_parent_is_refused_before_any_capture_and_copy_still_works() {
     );
     assert_eq!(fs::read(&source).unwrap(), b"original");
     assert_eq!(fs::read_dir(&parent).unwrap().count(), 2); // fixture seed + source
+}
+
+#[test]
+fn explicit_finalization_removes_retained_original_but_never_new_source_winner() {
+    let (_temp, parent) = fixture();
+    let path = parent.join("finalize 文档 🦀");
+    fs::write(&path, b"verified original").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    fs::write(&path, b"new winner").unwrap();
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    finalizer.revalidate(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    assert!(
+        !recovery.path.exists(),
+        "the captured original must actually be removed"
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"new winner");
+}
+
+#[test]
+fn finalization_cancel_and_drop_preserve_original() {
+    for cancelled in [false, true] {
+        let (_temp, parent) = fixture();
+        let path = parent.join("cancel-finalize");
+        fs::write(&path, b"original").unwrap();
+        let cancel = Cancellation::default();
+        let (source, capture) = prepare_native(&path, &cancel).unwrap();
+        let TransferMoveCaptureOutcome::Captured { recovery, .. } =
+            capture.capture(&cancel).unwrap()
+        else {
+            panic!("capture failed")
+        };
+        let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+        if cancelled {
+            cancel.cancel();
+            assert!(matches!(
+                finalizer.finalize(&cancel),
+                midnight_core::TransferMoveFinalizeOutcome::Retained { .. }
+            ));
+        }
+        drop(finalizer);
+        drop(source);
+        drop(capture);
+        assert_eq!(fs::read(recovery.path).unwrap(), b"original");
+    }
+}
+
+#[test]
+fn finalization_preflight_refuses_unverified_hardlink_aliases() {
+    let (_temp, parent) = fixture();
+    let path = parent.join("linked-source");
+    fs::write(&path, b"original").unwrap();
+    fs::hard_link(&path, parent.join("alias")).unwrap();
+    let cancel = Cancellation::default();
+    let (_, capture) = prepare_native(&path, &cancel).unwrap();
+    assert!(capture.preflight_finalization(&cancel).is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"original");
+}
+
+#[test]
+fn finalization_preflight_refuses_named_streams_including_empty_streams() {
+    for content in [b"".as_slice(), b"unverified stream bytes".as_slice()] {
+        let (_temp, parent) = fixture();
+        let path = parent.join("streams 文档");
+        fs::write(&path, b"verified unnamed data").unwrap();
+        let mut named = path.as_os_str().to_owned();
+        named.push(":notes");
+        fs::write(std::path::PathBuf::from(&named), content).unwrap();
+        let (_, capture) = prepare_native(&path, &Cancellation::default()).unwrap();
+        assert!(
+            capture
+                .preflight_finalization(&Cancellation::default())
+                .is_err()
+        );
+        drop(capture);
+        assert_eq!(fs::read(std::path::PathBuf::from(named)).unwrap(), content);
+        assert_eq!(fs::read(path).unwrap(), b"verified unnamed data");
+    }
+}
+
+#[test]
+fn finalization_preflight_refuses_readonly_without_changing_attributes() {
+    let (_temp, parent) = fixture();
+    let path = parent.join("readonly-source");
+    fs::write(&path, b"original").unwrap();
+    let original = fs::metadata(&path).unwrap().permissions();
+    let mut readonly = original.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(&path, readonly).unwrap();
+    let (_, capture) = prepare_native(&path, &Cancellation::default()).unwrap();
+    assert!(
+        capture
+            .preflight_finalization(&Cancellation::default())
+            .is_err()
+    );
+    assert!(fs::metadata(&path).unwrap().permissions().readonly());
+    drop(capture);
+    fs::set_permissions(path, original).unwrap();
+}
+
+#[test]
+fn finalization_refuses_late_retained_metadata_change_and_preserves_original() {
+    use std::{
+        fs::{File, FileTimes},
+        os::windows::fs::OpenOptionsExt,
+        time::Duration,
+    };
+    use windows_sys::Win32::Storage::FileSystem::*;
+    let (_temp, parent) = fixture();
+    let path = parent.join("late-metadata");
+    fs::write(&path, b"verified original").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    let attributes = File::options()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(&recovery.path)
+        .unwrap();
+    let changed = attributes.metadata().unwrap().modified().unwrap() + Duration::from_secs(1);
+    attributes
+        .set_times(FileTimes::new().set_modified(changed))
+        .unwrap();
+    drop(attributes);
+    assert!(finalizer.revalidate(&cancel).is_err());
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Retained { .. }
+    ));
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    assert_eq!(fs::read(recovery.path).unwrap(), b"verified original");
+}
+
+#[test]
+fn normal_disposition_keeps_external_reader_bytes_until_the_reader_closes() {
+    use std::{fs::OpenOptions, io::Read, os::windows::fs::OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::*;
+    let (_temp, parent) = fixture();
+    let path = parent.join("external-reader");
+    fs::write(&path, b"verified original").unwrap();
+    let mut reader = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(&path)
+        .unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed {
+            state: midnight_core::TransferSourceRemoval::DeletePending,
+            durability_confirmed: false,
+            ..
+        }
+    ));
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"verified original");
+    drop(reader);
+    assert!(!recovery.path.exists());
+}
+
+#[test]
+fn late_named_stream_after_capture_blocks_removal_even_with_unchanged_main_bytes() {
+    let (_temp, parent) = fixture();
+    let path = parent.join("late-stream");
+    fs::write(&path, b"verified unnamed data").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    let mut named = recovery.path.as_os_str().to_owned();
+    named.push(":late");
+    let named = std::path::PathBuf::from(named);
+    fs::write(&named, b"unverified bytes").unwrap();
+    assert!(finalizer.revalidate(&cancel).is_err());
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Retained { .. }
+    ));
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    assert_eq!(fs::read(named).unwrap(), b"unverified bytes");
+    assert_eq!(fs::read(recovery.path).unwrap(), b"verified unnamed data");
 }

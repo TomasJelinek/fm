@@ -15,6 +15,7 @@ use native_fixture::fixture;
 
 #[tokio::test]
 async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let path = temp.path().join("č文🦀 abc.txt");
     fs::write(&path, b"abc").unwrap();
@@ -105,6 +106,7 @@ async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified(
 
 #[tokio::test]
 async fn recursion_is_explicit_and_partial_manifests_require_exact_acknowledgement() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let directory = temp.path().join("folder");
     fs::create_dir(&directory).unwrap();
@@ -179,6 +181,7 @@ mod native_unix;
 
 #[tokio::test]
 async fn unknown_recursive_failure_requires_explicit_incomplete_discovery_acknowledgement() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let path = temp.path().join("good.txt");
     fs::write(&path, b"abc").unwrap();
@@ -221,6 +224,7 @@ async fn unknown_recursive_failure_requires_explicit_incomplete_discovery_acknow
 
 #[tokio::test]
 async fn captured_metadata_change_is_not_silently_hashed_as_the_old_selection() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let path = temp.path().join("changed.txt");
     fs::write(&path, b"now much longer").unwrap();
@@ -241,6 +245,7 @@ async fn captured_metadata_change_is_not_silently_hashed_as_the_old_selection() 
 
 #[tokio::test]
 async fn recursive_depth_node_and_memory_limits_report_incomplete_discovery() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let root = temp.path().join("root");
     fs::create_dir_all(root.join("child/deeper")).unwrap();

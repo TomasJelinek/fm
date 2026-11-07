@@ -39,3 +39,9 @@ this dialog uses the currently supported Skip / Skip all / Copy as / Cancel
 conflicts. Their absence is explicit in feature status, not implied implemented
 by adding F5. The broader stage retains the no-source-deletion-before-whole-batch-
 verification rule and the conditional-overwrite constraints in the main design.
+# Move policy update
+
+The later user instruction supersedes whole-batch source retention for Move.
+Each file is independently copied and verified, then its source is removed before
+the next file. Current native capability and safety limits are defined in the
+[transfer contract](../../developer/TRANSFERS.md); Copy remains source-preserving.

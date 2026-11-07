@@ -1,5 +1,6 @@
 //! Blocking, identity-pinned copy capabilities. Call only on backend workers.
-//! Source data is never removed. Replacement requires an explicit provider contract.
+//! Ordinary Copy never removes sources; explicit Move finalization is separate.
+//! Replacement requires an explicit provider contract.
 use crate::{Cancellation, FsError, MutationItem};
 use std::{
     ffi::OsStr,

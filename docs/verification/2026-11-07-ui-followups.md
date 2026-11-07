@@ -28,10 +28,14 @@ and the public plugin protocols are unchanged. Strict Clippy passes for the
 affected crates; 67 focused settings, shutdown and window-placement tests passed,
 including the real native-window restore test.
 
-## Keyboard-search crash: not yet reproduced
+## Keyboard-search investigation: historical nonreproduction (superseded)
 
-The reported first-character crash has not been reproduced and must not be
-marked fixed solely because tests pass. Windows recorded `me.exe` terminating
+This section records the earlier investigation. The later hovered-tooltip
+reproduction, causal fix and native release regression are documented in
+[Keyboard search: causal first-character abort fix](2026-11-07-keyboard-search-crash.md).
+
+At this earlier checkpoint, the reported first-character crash had not been
+reproduced and could not be marked fixed solely because tests passed. Windows recorded `me.exe` terminating
 through `ucrtbase.dll`, exception `0xc0000409` / subcode 7. That is not sufficient
 to identify a Rust panic site or establish memory corruption.
 

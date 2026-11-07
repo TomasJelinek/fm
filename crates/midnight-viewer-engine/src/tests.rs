@@ -151,6 +151,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         .unwrap();
     let service = Service {
         handle: executor.handle().clone(),
+        capture: crate::capture::native(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
         images: Arc::new(Mutex::new(Some(Arc::from([])))),
         windows: Arc::new(AtomicUsize::new(0)),

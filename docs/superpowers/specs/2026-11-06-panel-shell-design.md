@@ -28,8 +28,18 @@ and `me.exe`/`me`. Existing safety, Unicode, native path, worker and plugin boun
 - File-only selection shows its aggregate known byte size, formatted by system
   locale. Unknown metadata or overflow must not be represented as an exact total.
   Aggregation is on backend workers; selection feedback remains immediate.
-- Each panel status bar reserves right-aligned space for available drive capacity
-  in readable units. Queries remain asynchronous and cannot overwrite a newer path.
+- Each panel status bar gives the filename (or selection summary) its natural
+  width first, up to the panel width. Secondary metadata and right-aligned drive
+  capacity use the remaining space; they must not impose a fixed filename cap.
+  Only names wider than the panel are ellipsized, with the complete value still
+  available through the tooltip and click-to-copy. Capacity queries remain
+  asynchronous and cannot overwrite a newer path.
+- Windows status attributes use compact letters, including `R` read-only, `H`
+  hidden, `S` system, `A` archive and `C` compressed. Each present flag is explained
+  in the attribute tooltip; unknown flags show `?`, never an unexplained hex mask.
+  Unix permission presentation keeps its symbolic and octal representation.
+  The flag meanings follow [Windows file attributes](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants)
+  and [attrib](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/attrib).
 - A sort dropdown beside View offers name, size, modified time and extension,
   plus direction, in every panel mode; it uses the existing sort state and rules.
 - Drive choices are grouped with nonselectable separators: drives, special paths,

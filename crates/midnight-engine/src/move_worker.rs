@@ -1,4 +1,4 @@
-//! Bounded ordinary-file Move. Capture only follows the complete batch proof pass.
+//! Bounded ordinary-file Move. Verify and remove each source before copying the next.
 use super::*;
 use midnight_platform_common::transfer::{FileProofPhase, VerifiedFileProof};
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ enum Phase {
     Before,
     Capture,
     After,
-    Complete,
+    Finalize,
     Halted,
 }
 
@@ -21,7 +21,7 @@ pub(super) struct MoveWork {
     pub(super) stages: HashMap<TransferIdentity, Box<dyn StagedTransferFile>>,
     pub(super) proofs: Vec<VerifiedFileProof>,
     phase: Phase,
-    cursor: usize,
+    finalizer: Option<Box<dyn TransferMoveFinalizer>>,
     reading: bool,
     buffer: Vec<u8>,
 }
@@ -119,6 +119,7 @@ pub(super) fn prepare_with_metadata(
             ));
         }
         prepared.capture.revalidate(&cancel)?;
+        prepared.capture.preflight_finalization(&cancel)?;
         prepared
             .source
             .rewind_for_validation(&cancel)?
@@ -143,7 +144,7 @@ pub(super) fn prepare_with_metadata(
         stages,
         proofs: vec![],
         phase: Phase::Copying,
-        cursor: 0,
+        finalizer: None,
         reading: false,
         buffer: vec![],
     });
@@ -151,6 +152,9 @@ pub(super) fn prepare_with_metadata(
 }
 
 impl MoveWork {
+    pub(super) fn has_pending(&self) -> bool {
+        !self.proofs.is_empty()
+    }
     pub(super) fn advance(&mut self, job: &mut Job) -> Result<bool, FsError> {
         let result = self.advance_inner(job);
         if result.is_err() {
@@ -159,34 +163,27 @@ impl MoveWork {
         result
     }
     fn advance_inner(&mut self, job: &mut Job) -> Result<bool, FsError> {
+        if self.proofs.is_empty() {
+            return Ok(true);
+        }
+        if self.proofs.len() != 1 {
+            return Err(unsupported(
+                &job.progress.destination_directory,
+                "Move requires one active verified file at a time.",
+            ));
+        }
         match self.phase {
             Phase::Copying => {
-                if job.progress.failed != 0 || job.progress.skipped != 0 {
-                    self.phase = Phase::Halted;
-                    return Ok(true);
-                }
-                if self.proofs.len() != self.captures.len() {
-                    return Err(unsupported(
-                        &job.progress.destination_directory,
-                        "A selected file has no complete publication proof; every source was retained.",
-                    ));
-                }
-                for (proof, capture) in self.proofs.iter().zip(&self.captures) {
-                    if proof.source_entry().identity != capture.entry().identity {
-                        return Err(unsupported(
-                            &capture.entry().item.path,
-                            "Move source/proof correspondence changed; sources retained.",
-                        ));
-                    }
-                }
                 self.buffer = vec![0; 256 * 1024];
                 self.phase = Phase::Before;
+                self.reading = false;
                 job.progress.phase = CopyOperationPhase::ValidatingBeforeMove;
                 Ok(false)
             }
             Phase::Before | Phase::After => self.validate(job),
             Phase::Capture => self.capture(job),
-            Phase::Complete | Phase::Halted => Ok(true),
+            Phase::Finalize => self.finalize(job),
+            Phase::Halted => Ok(true),
         }
     }
     fn validate(&mut self, job: &mut Job) -> Result<bool, FsError> {
@@ -196,83 +193,55 @@ impl MoveWork {
         } else {
             CopyOperationPhase::ValidatingAfterMove
         };
-        if let Some(proof) = self.proofs.get_mut(self.cursor) {
-            job.progress.current_path = Some(proof.source_entry().item.path.clone());
-            if !self.reading {
-                proof.begin_validation(&job.cancel)?;
-                self.reading = true;
-                return Ok(false);
-            }
-            let bytes = proof.validation_bytes();
-            let result = proof.validation_step(&mut self.buffer, &job.cancel);
-            job.progress.validation_bytes = job
-                .progress
-                .validation_bytes
-                .checked_add(proof.validation_bytes() - bytes)
-                .ok_or_else(|| {
-                    unsupported(
-                        &job.progress.destination_directory,
-                        "Move validation byte count overflow.",
-                    )
-                })?;
-            if result? == FileProofPhase::Complete {
-                self.cursor += 1;
-                self.reading = false;
-            }
+        let proof = &mut self.proofs[0];
+        job.progress.current_path = Some(proof.source_entry().item.path.clone());
+        if !self.reading {
+            proof.begin_validation(&job.cancel)?;
+            self.reading = true;
             return Ok(false);
         }
-        if before {
-            self.check_capture_gate(job)?;
-            self.phase = Phase::Capture;
-            self.cursor = 0;
-            job.progress.phase = CopyOperationPhase::CapturingSources;
-            Ok(false)
-        } else {
-            self.phase = Phase::Complete;
-            Ok(true)
-        }
-    }
-    fn check_capture_gate(&self, job: &Job) -> Result<(), FsError> {
-        let _permit = permit(&job.cancel, &job.progress.destination_directory)?;
-        if job.progress.failed != 0 || job.progress.skipped != 0 {
-            return Err(unsupported(
-                &job.progress.destination_directory,
-                "A failed or skipped file blocks every remaining source capture.",
-            ));
-        }
-        for capture in self
-            .captures
-            .iter()
-            .skip(if matches!(self.phase, Phase::Capture) {
-                self.cursor
+        let bytes = proof.validation_bytes();
+        let result = proof.validation_step(&mut self.buffer, &job.cancel);
+        job.progress.validation_bytes = job
+            .progress
+            .validation_bytes
+            .checked_add(proof.validation_bytes() - bytes)
+            .ok_or_else(|| {
+                unsupported(
+                    &job.progress.destination_directory,
+                    "Move validation byte count overflow.",
+                )
+            })?;
+        if result? == FileProofPhase::Complete {
+            self.reading = false;
+            self.phase = if before {
+                Phase::Capture
             } else {
-                0
-            })
-        {
-            capture.revalidate(&job.cancel)?;
+                Phase::Finalize
+            };
         }
-        drop(_permit);
-        // Full bytes were checked for the entire batch. Recheck exact namespace
-        // bindings before each capture; this is not content isolation or CAS.
-        for proof in &self.proofs {
-            proof.revalidate_publication(&job.cancel)?;
-        }
-        Ok(())
+        Ok(false)
     }
     fn capture(&mut self, job: &mut Job) -> Result<bool, FsError> {
-        if self.cursor == self.captures.len() {
-            self.phase = Phase::After;
-            self.cursor = 0;
-            job.progress.phase = CopyOperationPhase::ValidatingAfterMove;
-            return Ok(false);
-        }
-        self.check_capture_gate(job)?;
-        let capture = &self.captures[self.cursor];
-        let expected = capture.entry().identity;
+        let proof = &self.proofs[0];
+        proof.revalidate_finalization(&job.cancel)?;
+        let expected = proof.source_entry().identity;
+        let capture = self
+            .captures
+            .iter()
+            .find(|capture| capture.entry().identity == expected)
+            .ok_or_else(|| {
+                unsupported(
+                    &proof.source_entry().item.path,
+                    "Move source authority missing.",
+                )
+            })?;
         let path = capture.entry().item.path.clone();
         job.progress.current_path = Some(path.clone());
+        job.progress.phase = CopyOperationPhase::CapturingSources;
         let outcome = {
             let _permit = permit(&job.cancel, &path)?;
+            capture.revalidate(&job.cancel)?;
             capture.capture(&job.cancel)?
         };
         if let Some(parent) = path.parent()
@@ -291,10 +260,12 @@ impl MoveWork {
                 if !matched {
                     return Err(unsupported(
                         &path,
-                        "Source capture returned an unexpected identity. All retained data requires recovery; no further sources will move.",
+                        "Source capture returned an unexpected identity. Captured data was retained; later sources remain untouched.",
                     ));
                 }
-                self.cursor += 1;
+                let _permit = permit(&job.cancel, &path)?;
+                self.finalizer = Some(capture.prepare_finalization(&job.cancel)?);
+                self.phase = Phase::After;
             }
             TransferMoveCaptureOutcome::Restored { error, .. } => return Err(error),
             TransferMoveCaptureOutcome::RecoveryRequired {
@@ -311,6 +282,61 @@ impl MoveWork {
         }
         Ok(false)
     }
+    fn finalize(&mut self, job: &mut Job) -> Result<bool, FsError> {
+        self.proofs[0].revalidate_finalization(&job.cancel)?;
+        let finalizer = self.finalizer.as_mut().ok_or_else(|| {
+            unsupported(
+                &job.progress.destination_directory,
+                "Move finalization authority missing.",
+            )
+        })?;
+        let outcome = {
+            let _permit = permit(&job.cancel, &job.progress.destination_directory)?;
+            finalizer.revalidate(&job.cancel)?;
+            finalizer.finalize(&job.cancel)
+        };
+        match outcome {
+            TransferMoveFinalizeOutcome::Retained { error, .. } => return Err(error),
+            TransferMoveFinalizeOutcome::Removed {
+                source,
+                recovery,
+                state,
+                durability_confirmed,
+            } => {
+                job.progress.source_files_removed += 1;
+                if state == TransferSourceRemoval::DeletePending {
+                    job.progress.source_delete_pending += 1;
+                }
+                if !durability_confirmed {
+                    job.progress.source_removal_durability_unconfirmed += 1;
+                }
+                job.progress.source_recovery_count -= 1;
+                job.progress.recovery_count -= 1;
+                job.progress
+                    .source_recoveries
+                    .retain(|item| item.source != source);
+                job.progress
+                    .recovery_paths
+                    .retain(|path| *path != recovery.path);
+                let identity = self.proofs[0].source_entry().identity;
+                // No further source queries after Windows normal disposition. Close
+                // EVERY application owner before starting the next file's Copy.
+                self.proofs.clear();
+                self.finalizer = None;
+                self.captures
+                    .retain(|capture| capture.entry().identity != identity);
+                self.buffer = Vec::new();
+                self.phase = Phase::Copying;
+                if state == TransferSourceRemoval::Unlinked && !durability_confirmed {
+                    return Err(unsupported(
+                        &source,
+                        "Verified source was removed, but recovery-directory sync failed; removal durability is unconfirmed. Remaining sources retained.",
+                    ));
+                }
+            }
+        }
+        Ok(false)
+    }
     pub(super) fn cleanup(&mut self) -> Vec<FsError> {
         let errors = self
             .stages
@@ -318,10 +344,12 @@ impl MoveWork {
             .filter_map(|stage| stage.cleanup().err())
             .collect();
         self.stages.clear();
+        self.proofs.clear();
+        self.finalizer = None;
+        self.captures.clear();
         errors
     }
 }
-
 fn record_source(
     job: &mut Job,
     source: std::path::PathBuf,

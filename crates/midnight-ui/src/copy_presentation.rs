@@ -58,7 +58,7 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     window.set_copy_draft_metadata_enabled(draft.metadata_available());
     window.set_copy_draft_preserve_time(false);
     let policy = if moving {
-        "Up to 64 regular files; folders and links are unsupported. Every file must be copied and checked before originals move into protected recovery folders. Source disk space is not freed.\n\n"
+        "Up to 64 regular files; folders and links are unsupported. Each source is removed only after its destination is saved and verified with SHA-256, before the next file is copied. Cancel or a later error keeps completed moves. Unsupported locations are refused before copying.\n\n"
     } else {
         ""
     };

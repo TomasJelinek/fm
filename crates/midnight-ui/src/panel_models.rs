@@ -145,6 +145,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 identity: field.identity.into(),
                 label: field.label.into(),
                 value: field.value.into(),
+                explanation: field.explanation.into(),
             })
             .collect();
         let back = history_choices(presenter, pane, false);

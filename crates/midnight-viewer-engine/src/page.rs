@@ -2,6 +2,10 @@ use midnight_core::ViewerAppearance;
 use midnight_plugin_host::api::{document, viewer};
 use midnight_viewer_render::{ColorSpan, StyleSpan};
 
+#[cfg(test)]
+#[path = "page_color_tests.rs"]
+mod color_tests;
+
 #[derive(Clone)]
 pub(crate) struct Page {
     pub text: String,
@@ -15,26 +19,51 @@ pub(crate) struct Page {
 }
 
 fn role_color(role: u16, appearance: &ViewerAppearance) -> [u8; 4] {
-    // Blend with the theme foreground to keep every semantic role readable.
     let tint = match role {
         viewer::STYLE_KEYWORD | viewer::STYLE_HEADING => appearance.accent,
-        viewer::STYLE_STRING => [130, 188, 100, 255],
-        viewer::STYLE_COMMENT => [136, 150, 154, 255],
-        viewer::STYLE_NUMBER => [204, 155, 110, 255],
-        viewer::STYLE_TYPE | viewer::STYLE_FUNCTION | viewer::STYLE_LINK => [116, 180, 200, 255],
-        viewer::STYLE_INVALID => [230, 100, 100, 255],
-        _ => appearance.foreground,
+        viewer::STYLE_STRING => [150, 220, 95, 255],
+        viewer::STYLE_COMMENT => [130, 162, 210, 255],
+        viewer::STYLE_NUMBER => [255, 160, 90, 255],
+        viewer::STYLE_TYPE => [255, 190, 80, 255],
+        viewer::STYLE_FUNCTION | viewer::STYLE_LINK => [90, 190, 255, 255],
+        viewer::STYLE_INVALID => [255, 105, 105, 255],
+        _ => return appearance.foreground,
     };
-    let mut color = tint;
-    for channel in 0..3 {
-        color[channel] =
-            ((u16::from(tint[channel]) + u16::from(appearance.foreground[channel])) / 2) as u8;
+    let color = midnight_core::readable_rgb(
+        [tint[0], tint[1], tint[2]],
+        [
+            appearance.background[0],
+            appearance.background[1],
+            appearance.background[2],
+        ],
+    );
+    [color[0], color[1], color[2], 255]
+}
+
+struct Palette {
+    roles: [[u8; 4]; 12],
+    foreground: [u8; 4],
+}
+
+impl Palette {
+    fn new(appearance: &ViewerAppearance) -> Self {
+        Self {
+            roles: std::array::from_fn(|role| role_color(role as u16, appearance)),
+            foreground: appearance.foreground,
+        }
     }
-    color
+
+    fn color(&self, role: u16) -> [u8; 4] {
+        self.roles
+            .get(usize::from(role))
+            .copied()
+            .unwrap_or(self.foreground)
+    }
 }
 
 impl Page {
     pub fn text(page: viewer::TextPage, appearance: &ViewerAppearance) -> Self {
+        let palette = Palette::new(appearance);
         Self {
             anchors: page.anchors,
             styles: page
@@ -54,7 +83,7 @@ impl Page {
                 .iter()
                 .map(|span| ColorSpan {
                     range: span.start as usize..span.end as usize,
-                    color: role_color(span.role, appearance),
+                    color: palette.color(span.role),
                 })
                 .collect(),
             text: page.text,
@@ -112,6 +141,7 @@ impl Page {
     }
 
     pub fn document(page: document::DocumentPage, appearance: &ViewerAppearance) -> Self {
+        let palette = Palette::new(appearance);
         let mut text = String::new();
         let mut spans = Vec::new();
         let mut styles = Vec::new();
@@ -136,7 +166,7 @@ impl Page {
             if block.kind == document::BLOCK_HEADING && start < text.len() {
                 spans.push(ColorSpan {
                     range: start..text.len(),
-                    color: role_color(viewer::STYLE_HEADING, appearance),
+                    color: palette.color(viewer::STYLE_HEADING),
                 });
                 styles.push(StyleSpan {
                     range: start..text.len(),
@@ -149,7 +179,7 @@ impl Page {
             } else {
                 spans.extend(block.text.spans.iter().map(|span| ColorSpan {
                     range: start + span.start as usize..start + span.end as usize,
-                    color: role_color(span.role, appearance),
+                    color: palette.color(span.role),
                 }));
                 styles.extend(
                     block

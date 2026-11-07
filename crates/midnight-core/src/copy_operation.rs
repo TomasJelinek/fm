@@ -75,7 +75,8 @@ pub enum CopyOperationPhase {
 pub enum TransferIntent {
     #[default]
     Copy,
-    /// Originals are retained in private recovery, never permanently deleted.
+    /// Each native regular-file source is removed only after its verified copy.
+    /// Partial errors retain remaining originals, possibly in private recovery.
     RecoverableMove,
 }
 
@@ -105,6 +106,11 @@ pub struct CopyProgress {
     /// Additional source and target bytes independently read by Move proof passes.
     pub validation_bytes: u64,
     pub source_names_captured: u64,
+    /// Actual source unlink or accepted normal Windows delete disposition.
+    /// This is not a measured physical-space reclamation counter.
+    pub source_files_removed: u64,
+    pub source_delete_pending: u64,
+    pub source_removal_durability_unconfirmed: u64,
     pub source_recovery_count: u64,
     /// First16 exact raw source/recovery mappings; count above remains exact.
     pub source_recoveries: Vec<MoveSourceRecovery>,
@@ -143,6 +149,9 @@ impl CopyProgress {
             verified_bytes: 0,
             validation_bytes: 0,
             source_names_captured: 0,
+            source_files_removed: 0,
+            source_delete_pending: 0,
+            source_removal_durability_unconfirmed: 0,
             source_recovery_count: 0,
             source_recoveries: vec![],
             source_directories: vec![],

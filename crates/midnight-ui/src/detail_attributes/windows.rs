@@ -1,49 +1,69 @@
 use midnight_core::EntryMetadata;
 
+// Conventional attrib letters where available; other flags have distinct letters.
+// The tooltip explains every present flag, including context-dependent Windows bits.
+const FLAGS: &[(u32, char, &str)] = &[
+    (0x1, 'R', "Read-only"),
+    (0x2, 'H', "Hidden"),
+    (0x4, 'S', "System"),
+    (0x10, 'D', "Directory"),
+    (0x20, 'A', "Archive"),
+    (0x40, 'Y', "Device (reserved)"),
+    (0x80, 'N', "Normal"),
+    (0x100, 'T', "Temporary"),
+    (0x200, 'F', "Sparse"),
+    (0x400, 'L', "Reparse point"),
+    (0x800, 'C', "Compressed"),
+    (0x1000, 'O', "Offline"),
+    (0x2000, 'I', "Not content indexed"),
+    (0x4000, 'E', "Encrypted"),
+    (0x8000, 'V', "Integrity stream"),
+    (0x10000, 'Z', "Virtual (reserved)"),
+    (0x20000, 'X', "No scrub data"),
+    (0x40000, 'Q', "Extended attributes / recall on open"),
+    (0x80000, 'P', "Pinned"),
+    (0x100000, 'U', "Unpinned"),
+    (0x400000, 'W', "Recall on data access"),
+];
+
 pub(crate) fn fields(metadata: &EntryMetadata) -> Vec<(&'static str, String)> {
     let Some(attributes) = metadata.native_attributes else {
         return Vec::new();
     };
-    let mut names = Vec::new();
-    let mut known = 0;
-    for (flag, name) in [
-        (0x1, "ReadOnly"),
-        (0x2, "Hidden"),
-        (0x4, "System"),
-        (0x10, "Directory"),
-        (0x20, "Archive"),
-        (0x40, "Device"),
-        (0x80, "Normal"),
-        (0x100, "Temporary"),
-        (0x200, "Sparse"),
-        (0x400, "Reparse"),
-        (0x800, "Compressed"),
-        (0x1000, "Offline"),
-        (0x2000, "NotIndexed"),
-        (0x4000, "Encrypted"),
-        (0x8000, "Integrity"),
-        (0x10000, "Virtual"),
-        (0x20000, "NoScrub"),
-        // Windows assigns these two meanings to the same context-dependent bit.
-        (0x40000, "EA/RecallOnOpen"),
-        (0x80000, "Pinned"),
-        (0x100000, "Unpinned"),
-        (0x400000, "RecallOnDataAccess"),
-    ] {
-        known |= flag;
-        if attributes & flag != 0 {
-            names.push(name);
-        }
+    let mut text: String = FLAGS
+        .iter()
+        .filter(|(flag, _, _)| attributes & flag != 0)
+        .map(|(_, letter, _)| letter)
+        .collect();
+    if has_unknown(attributes) {
+        text.push('?');
     }
-    if attributes & !known != 0 {
-        names.push("Unknown");
+    if text.is_empty() {
+        text.push('—');
     }
-    let text = if names.is_empty() {
-        "None".into()
-    } else {
-        names.join(" ")
-    };
     vec![("Attributes", text)]
+}
+
+pub(crate) fn explanation(metadata: &EntryMetadata) -> String {
+    let Some(attributes) = metadata.native_attributes else {
+        return String::new();
+    };
+    let mut lines: Vec<_> = FLAGS
+        .iter()
+        .filter(|(flag, _, _)| attributes & flag != 0)
+        .map(|(_, letter, name)| format!("{letter} — {name}"))
+        .collect();
+    if has_unknown(attributes) {
+        lines.push("? — Other attributes reported by Windows".into());
+    }
+    if lines.is_empty() {
+        lines.push("No attributes set".into());
+    }
+    lines.join("\n")
+}
+
+fn has_unknown(attributes: u32) -> bool {
+    attributes & !FLAGS.iter().fold(0, |known, (flag, _, _)| known | flag) != 0
 }
 
 #[cfg(test)]
@@ -55,20 +75,18 @@ mod tests {
             native_attributes: Some(0x8000_0821),
             ..Default::default()
         };
-        assert_eq!(
-            fields(&metadata),
-            [("Attributes", "ReadOnly Archive Compressed Unknown".into())]
-        );
+        assert_eq!(fields(&metadata), [("Attributes", "RAC?".into())]);
         assert!(fields(&EntryMetadata::default()).is_empty());
     }
 
     #[test]
     fn displays_extended_attributes_and_zero_without_numeric_masks() {
         for (value, expected) in [
-            (0, "None"),
-            (0x80, "Normal"),
-            (0x0007_8000, "Integrity Virtual NoScrub EA/RecallOnOpen"),
-            (0x0058_0000, "Pinned Unpinned RecallOnDataAccess"),
+            (0, "—"),
+            (0x80, "N"),
+            (0x0007_8000, "VZXQ"),
+            (0x0058_0000, "PUW"),
+            (0x0020_0000, "?"),
         ] {
             assert_eq!(
                 fields(&EntryMetadata {
@@ -78,5 +96,18 @@ mod tests {
                 [("Attributes", expected.into())]
             );
         }
+    }
+
+    #[test]
+    fn tooltip_explains_compact_letters_and_unknown_attributes() {
+        let metadata = EntryMetadata {
+            native_attributes: Some(0x8000_0821),
+            ..Default::default()
+        };
+        assert_eq!(
+            explanation(&metadata),
+            "R — Read-only\nA — Archive\nC — Compressed\n? — Other attributes reported by Windows"
+        );
+        assert!(explanation(&EntryMetadata::default()).is_empty());
     }
 }

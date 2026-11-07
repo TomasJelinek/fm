@@ -320,6 +320,16 @@ fn send_update(
 }
 
 #[cfg(test)]
+pub(crate) async fn test_quota_fixture() -> tokio::sync::MutexGuard<'static, ()> {
+    // This module is also path-included by checksums_backend. Every test using
+    // real reservation admission must hold this guard until its controllers,
+    // retained runs and individual row Arcs are released. Production admission
+    // and its process-wide 32-job/64-MiB quotas remain unchanged.
+    static FIXTURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    FIXTURE.lock().await
+}
+
+#[cfg(test)]
 #[path = "checksum_controller_tests.rs"]
 mod tests;
 

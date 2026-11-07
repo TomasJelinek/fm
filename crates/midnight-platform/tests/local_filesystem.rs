@@ -1,5 +1,5 @@
 use midnight_core::{
-    Cancellation, DirectoryService, Entry, EntryKind, EntryMetadata, StorageService, VolumeService,
+    Cancellation, DirectoryService, Entry, EntryKind, StorageService, VolumeService,
 };
 use midnight_platform::LocalFileSystem;
 use std::{collections::HashSet, fs, io::ErrorKind, path::Path};
@@ -16,7 +16,7 @@ fn list(provider: &LocalFileSystem, path: &Path) -> Vec<Entry> {
 }
 
 #[test]
-fn lists_files_and_directories_with_unknown_initial_metadata() {
+fn lists_files_and_directories_with_optional_cached_metadata() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("file.txt"), b"hello").unwrap();
     fs::create_dir(dir.path().join("folder")).unwrap();
@@ -37,11 +37,7 @@ fn lists_files_and_directories_with_unknown_initial_metadata() {
             .kind,
         EntryKind::Directory
     );
-    assert!(
-        entries
-            .iter()
-            .all(|entry| entry.metadata == EntryMetadata::default())
-    );
+    assert!(file.metadata.size.is_none_or(|size| size == 5));
     assert_eq!(
         entries
             .iter()
@@ -53,16 +49,19 @@ fn lists_files_and_directories_with_unknown_initial_metadata() {
 }
 
 #[test]
-fn enriches_file_metadata_separately() {
+fn queries_current_metadata_without_mutating_the_initial_listing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("payload");
     fs::write(&path, b"hello").unwrap();
     let provider = LocalFileSystem::new(None);
     let initial = list(&provider, dir.path());
+    let snapshot = initial[0].metadata.clone();
+    assert!(snapshot.size.is_none_or(|size| size == 5));
+    fs::write(&path, b"updated contents").unwrap();
     let metadata = provider.entry_metadata(&path).unwrap();
-    assert_eq!(metadata.size, Some(5));
+    assert_eq!(metadata.size, Some(16));
     assert!(metadata.modified.is_some());
-    assert_eq!(initial[0].metadata, EntryMetadata::default());
+    assert_eq!(initial[0].metadata, snapshot);
 }
 
 #[test]

@@ -114,11 +114,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
 fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
     use CopyOperationState as S;
     let moving = progress.intent == TransferIntent::RecoverableMove;
-    let title = if moving {
-        "Move (originals retained)"
-    } else {
-        "Copy"
-    };
+    let title = if moving { "Move" } else { "Copy" };
     let state = match progress.state {
         S::Queued => "Queued",
         S::Preparing => "Preparing",
@@ -129,8 +125,8 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             CopyOperationPhase::Verifying => "Verifying SHA-256",
             CopyOperationPhase::Publishing => "Finishing",
             CopyOperationPhase::ValidatingBeforeMove => "Checking before Move",
-            CopyOperationPhase::CapturingSources => "Retaining originals",
-            CopyOperationPhase::ValidatingAfterMove => "Checking retained originals",
+            CopyOperationPhase::CapturingSources => "Preparing source removal",
+            CopyOperationPhase::ValidatingAfterMove => "Checking before source removal",
         },
         S::WaitingForDecision => "Needs a decision",
         S::CancelRequested => "Cancelling",
@@ -152,10 +148,23 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         p.number_locale.format_u64(progress.verified_bytes)
     );
     if moving {
-        detail.push_str(&format!("\n{} additional source/target bytes checked\n{} source names relocated\n{} source recovery objects retained\nSource space is not freed.",
+        detail.push_str(&format!("\n{} additional source/target bytes checked\n{} source files removed\n{} source recovery objects retained",
             p.number_locale.format_u64(progress.validation_bytes),
-            p.number_locale.format_u64(progress.source_names_captured),
+            p.number_locale.format_u64(progress.source_files_removed),
             p.number_locale.format_u64(progress.source_recovery_count)));
+        if progress.source_delete_pending > 0 {
+            detail.push_str(&format!(
+                "\n{} source removals accepted by Windows; open handles may delay storage release",
+                p.number_locale.format_u64(progress.source_delete_pending)
+            ));
+        }
+        if progress.source_removal_durability_unconfirmed > 0 {
+            detail.push_str(&format!(
+                "\n{} source removals without a confirmed directory durability flush",
+                p.number_locale
+                    .format_u64(progress.source_removal_durability_unconfirmed)
+            ));
+        }
         for recovery in &progress.source_recoveries {
             detail.push_str(&format!(
                 "\n\nOriginal source\n{}\nRecovery\n{}\n{}",

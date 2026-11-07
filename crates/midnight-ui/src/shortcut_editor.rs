@@ -57,9 +57,35 @@ pub(crate) fn install(
             });
         }};
     }
-    bind!(on_search, |_w, p, _send, query| {
-        p.filter_shortcut_commands(query.to_string());
-    });
+    let weak = window.as_weak();
+    let search_state = state.clone();
+    window
+        .global::<KeyboardEditorView>()
+        .on_search(move |query| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            // Slint 1.18 materializes popup repeaters while borrowing its popup list.
+            // A filtered-out command owns its tooltip: retire that popup before the
+            // model changes, so delegate destruction need not close it reentrantly.
+            // Close before borrowing Presenter too: focus/layout callbacks may read models.
+            let inner = i_slint_core::window::WindowInner::from_pub(window.window());
+            let tooltips = inner
+                .active_popups()
+                .iter()
+                .filter(|popup| {
+                    matches!(popup.window_kind, i_slint_core::window::WindowKind::ToolTip)
+                })
+                .map(|popup| popup.popup_id)
+                .collect::<Vec<_>>();
+            for tooltip in tooltips {
+                inner.close_popup(tooltip);
+            }
+            search_state
+                .borrow_mut()
+                .filter_shortcut_commands(query.to_string());
+            crate::refresh(&window, &search_state.borrow());
+        });
     bind!(on_select, |_w, p, _send, id| {
         if let Some(index) = p
             .keyboard

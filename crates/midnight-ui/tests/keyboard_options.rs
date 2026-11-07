@@ -20,6 +20,59 @@ struct Harness {
 }
 
 #[test]
+fn first_search_character_retires_hovered_command_tooltip_before_removing_rows() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<KeyboardEditorView>();
+    view.invoke_move_selection(1_000_000);
+    h.draw();
+    ui::click_popup(&window, "Search commands", AccessibleRole::TextInput);
+    let hovered = {
+        let row = ui::popup_item(
+            &window,
+            view.get_selected_label().as_str(),
+            AccessibleRole::ListItem,
+        );
+        let rect = row.geometry();
+        let origin = row.map_to_native_window(rect.origin);
+        slint::LogicalPosition::new(
+            origin.x + rect.size.width / 2.,
+            origin.y + rect.size.height / 2.,
+        )
+    }; // Release the row handle: the filter must actually destroy its delegate.
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: hovered });
+    std::thread::sleep(std::time::Duration::from_millis(650));
+    slint::platform::update_timers_and_animations();
+    h.draw();
+    let tooltip_count = || {
+        WindowInner::from_pub(window.window())
+            .active_popups()
+            .iter()
+            .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+            .count()
+    };
+    assert!(
+        tooltip_count() > 0,
+        "the command-row tooltip must be visible before typing"
+    );
+    let selected = view.get_selected_id();
+    ui::key(&window, "x");
+    h.draw();
+    assert_eq!(view.get_filter(), "x");
+    assert_eq!(view.get_selected_id(), selected);
+    assert_eq!(view.get_selected_row(), -1);
+    assert_eq!(tooltip_count(), 0);
+    assert!(ui::has_popup(&window), "Options must remain open");
+    ui::key(&window, Key::Backspace);
+    h.draw();
+    assert_eq!(view.get_filter(), "");
+    assert_eq!(view.get_selected_id(), selected);
+}
+
+#[test]
 fn typing_shortcut_search_survives_scrolled_selection_and_empty_results() {
     let mut h = Harness::new(&[]);
     h.open_keyboard();
