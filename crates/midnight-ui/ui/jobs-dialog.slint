@@ -1,9 +1,10 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { ErrorGlyph } from "error-notice.slint";
 import { DialogText } from "dialog-text.slint";
+import { DialogHeader } from "dialog-frame.slint";
 
 export struct OperationRow {
     identity: string, title: string, detail: string, summary: string, state: string,
@@ -58,6 +59,8 @@ export component OperationsBody inherits Rectangle {
     callback resolve(string);
     callback copy-details(string);
     callback close();
+    callback move-dialog(length, length);
+    private property <bool> compact: root.height < 350px;
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     init => {
         if root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
@@ -72,15 +75,15 @@ export component OperationsBody inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: 16px; spacing: 12px;
-            HorizontalLayout {
-                spacing: 10px; cross-axis-alignment: center;
-                Text { text: "Jobs"; color: Theme.strong-text; font-weight: 600; font-size: Theme.font-size * 1.25; horizontal-stretch: 1; }
-                Text { text: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations"; color: Theme.secondary-text; font-size: Theme.small-font; }
+            padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 12px;
+            DialogHeader {
+                title: "Jobs"; compact: root.compact; text-size: Theme.font-size * 1.25;
+                detail: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations";
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             Rectangle { height: 1px; background: Theme.frame; }
             list-frame := Rectangle {
-                height: min(root.height * 0.36, max(130px, Theme.control-height * 4));
+                height: root.compact ? max(24px, root.height * 0.25) : min(root.height * 0.36, max(130px, Theme.control-height * 4));
                 background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
                 list-focus := FocusScope {
                     key-pressed(event) => {
@@ -111,7 +114,7 @@ export component OperationsBody inherits Rectangle {
                     horizontal-alignment: center; vertical-alignment: center;
                 }
             }
-            HorizontalLayout {
+            if !root.compact : HorizontalLayout {
                 spacing: 10px; cross-axis-alignment: center;
                 if root.selected.failed : ErrorGlyph { }
                 Text { text: root.selected.title; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
@@ -121,14 +124,22 @@ export component OperationsBody inherits Rectangle {
                 height: 6px; border-radius: 3px; background: Theme.secondary-surface;
                 Rectangle { width: parent.width * clamp(root.selected.progress, 0, 1); border-radius: 3px; background: Theme.active-frame; }
             }
-            DialogText { text: root.selected.detail; vertical-stretch: 1; }
+            DialogText { text: root.selected.detail; vertical-stretch: 1; min-height: 0px; }
             Rectangle { height: 1px; background: Theme.frame; }
             HorizontalLayout {
                 spacing: 8px;
-                HintedActionButton { text: "Copy details"; enabled: root.selected-index >= 0; hint: "Copy the selected job's full details and retained errors."; clicked => { root.copy-details(root.selected.identity); } }
-                Rectangle { horizontal-stretch: 1; }
+                ScrollView {
+                    horizontal-stretch: 1; min-width: 0px;
+                    height: max(32px, Theme.control-height + (root.width < 500px ? 12px : 0px), copy-details-button.preferred-height);
+                    vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: as-needed;
+                    HorizontalLayout {
+                    spacing: 8px;
+                copy-details-button := HintedActionButton { text: "Copy details"; enabled: root.selected-index >= 0; hint: "Copy the selected job's full details and retained errors."; clicked => { root.copy-details(root.selected.identity); } }
                 HintedActionButton { text: "Cancel"; enabled: root.selected.cancellable; hint: "Request cancellation of this job. Completed changes are retained."; clicked => { root.cancel(root.selected.identity); } }
                 if root.selected.attention : HintedActionButton { text: "Resolve"; hint: "Review the decision needed by this job."; clicked => { root.resolve(root.selected.identity); } }
+                    }
+                }
                 HintedActionButton { text: "Close"; hint: "Close Jobs (Escape). Background operations continue."; clicked => { root.close(); } }
             }
         }

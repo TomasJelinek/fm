@@ -14,6 +14,27 @@ pub(crate) struct OperationsState {
 }
 
 impl Presenter {
+    /// Availability is based on native entry identities, never the rendered row label.
+    pub(crate) fn can_target_cursor(&self, pane: PaneId) -> bool {
+        let p = &self.panes[pane.index()];
+        !p.parent_cursor
+            && !p.search_view_waiting()
+            && p.cursor.and_then(|id| p.entry_by_id(id)).is_some()
+    }
+
+    pub(crate) fn can_target_selection(&self, pane: PaneId) -> bool {
+        let p = &self.panes[pane.index()];
+        !p.search_view_waiting()
+            && !p.selection_pending_bulk
+            && !p.selection_deferred
+            && !p.selection_rebase_pending
+            && p.selection_revision <= p.selection_resolved
+            && p.archive
+                .as_ref()
+                .is_none_or(|archive| !archive.selection_pending)
+            && (p.selected_count() > 0 || self.can_target_cursor(pane))
+    }
+
     pub(crate) fn start_operation(
         &mut self,
         pane: PaneId,
@@ -76,6 +97,12 @@ impl Presenter {
             .and_then(|path| files.view.by_path.get(path))
             .copied();
         if kind == MutationKind::Rename && focused.is_none() {
+            return;
+        }
+        if matches!(kind, MutationKind::Delete(_) | MutationKind::EditMetadata)
+            && files.selection.is_empty()
+            && focused.is_none()
+        {
             return;
         }
         if let Some(id) = self.operations.pending

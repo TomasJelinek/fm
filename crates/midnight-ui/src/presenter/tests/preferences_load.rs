@@ -3,10 +3,7 @@ use super::*;
 #[test]
 fn panel_modes_save_independently_and_preserve_the_other_panel() {
     let mut p = Presenter::new(test_root(), test_root());
-    p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences::default())),
-        &|_| true,
-    );
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|_| true);
     let last = RefCell::new(None);
     let send = |command| {
         if let Command::SavePreferences { preferences, .. } = command {
@@ -33,10 +30,10 @@ fn explicit_default_panel_mode_wins_over_late_loaded_choice() {
         panic!("initial read must precede save")
     });
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             panel_view_modes: [PanelViewMode::Brief, PanelViewMode::Thumbnails],
             ..Default::default()
-        })),
+        }))),
         &|_| true,
     );
     assert_eq!(
@@ -65,6 +62,17 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     let tabs = p.tabs(PaneId::Left);
     let generation = p.panes[0].generation;
     let saved = UserPreferences {
+        window_geometry: Some(midnight_core::WindowGeometry {
+            normal: midnight_core::WindowRect {
+                x: -1700,
+                y: 73,
+                width: 1001,
+                height: 701,
+            },
+            monitor: None,
+            maximized: false,
+            fullscreen: false,
+        }),
         archive_association_overrides: Default::default(),
         disabled_viewer_plugins: Vec::new(),
         editor: EditorPreferences::default(),
@@ -105,7 +113,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         },
     ];
     let sent = RefCell::new(0);
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved)), &|command| {
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|command| {
         let Command::SavePreferences {
             revision,
             preferences,
@@ -114,7 +122,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             panic!()
         };
         assert_eq!(revision, PreferencesRevision(2));
-        assert_eq!(preferences, expected);
+        assert_eq!(*preferences, expected);
         *sent.borrow_mut() += 1;
         true
     });
@@ -140,11 +148,11 @@ fn early_desktop_size_edit_preserves_loaded_family_touch_size_and_bookmarks() {
     };
     let mut expected = saved.clone();
     expected.desktop_font_size = 13;
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved)), &|command| {
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|command| {
         let Command::SavePreferences { preferences, .. } = command else {
             panic!()
         };
-        assert_eq!(preferences, expected);
+        assert_eq!(*preferences, expected);
         true
     });
     assert_eq!(p.preferences.values, expected);
@@ -170,7 +178,7 @@ fn early_bookmark_rename_removal_and_assignment_survive_reconciliation() {
         ..Default::default()
     };
     let sent = RefCell::new(0);
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved)), &|command| {
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|command| {
         let Command::SavePreferences { preferences, .. } = command else {
             panic!()
         };
@@ -205,7 +213,7 @@ fn startup_reconciliation_over_capacity_preserves_all_bookmarks_and_never_saves_
             .collect(),
         ..Default::default()
     };
-    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved)), &|_| {
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(saved.into())), &|_| {
         panic!("128 bookmarks must never escape as a save command")
     });
     assert_eq!(p.bookmarks().len(), 128);
@@ -269,13 +277,13 @@ fn explicit_same_index_default_font_preserves_loaded_sizes_and_other_preferences
         panic!("default-font preview must wait for the read")
     });
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             font_family: "Stored custom".into(),
             desktop_font_size: 19,
             touch_font_size: 25,
             bookmarks: vec![stored_bookmark(1, None)],
             ..Default::default()
-        })),
+        }))),
         &|command| {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
@@ -295,11 +303,11 @@ fn explicit_same_index_default_theme_preserves_loaded_density() {
     let mut p = Presenter::new(test_root(), test_root());
     p.change_preferences(0, 0, 0, &|_| panic!("theme preview must wait for the read"));
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             theme: PreferenceTheme::Dark,
             density: UiDensity::Touch,
             ..Default::default()
-        })),
+        }))),
         &|command| {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()

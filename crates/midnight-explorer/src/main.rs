@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod comparator;
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
@@ -9,6 +10,7 @@ mod viewers;
 mod visible_sync;
 mod wake_gate;
 mod window_backend;
+mod window_state;
 
 use midnight_core::{
     Command, DesktopServices, Event, FileSystem, NavigationId, PaneId, SettingsService, SortSpec,
@@ -429,6 +431,13 @@ fn run_window(
         runtime.handle(),
     );
     let thumbnail_timer = thumbnails::install(&window, presenter.clone());
+    let comparators = comparator::install(&window, presenter.clone(), runtime.handle());
+    let window_state = window_state::WindowState::install(
+        &window,
+        presenter.clone(),
+        commands.clone(),
+        !options.ui_smoke,
+    );
     // Both panes share a four-Hz size pulse. Interactive/backend events still
     // repaint immediately and include the latest cached totals.
     let size_timer = slint::Timer::default();
@@ -451,6 +460,7 @@ fn run_window(
     let sync_commands = commands.clone();
     let sync_window = window.as_weak();
     let sync_viewers = viewers.clone();
+    let sync_comparators = comparators.clone();
     visible_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
@@ -461,6 +471,7 @@ fn run_window(
             {
                 state.shutdown_drag_drop(&|command| sync_commands.try_send(command).is_ok());
                 sync_viewers.close_all();
+                sync_comparators.close_all();
                 let _ = window.hide();
             }
             if sync_window
@@ -468,6 +479,7 @@ fn run_window(
                 .is_none_or(|window| !window.window().is_visible())
             {
                 sync_viewers.close_all();
+                sync_comparators.close_all();
             }
             state.flush_selection(&|command| sync_commands.try_send(command).is_ok());
             state.flush_filters(&|command| sync_commands.try_send(command).is_ok());
@@ -495,11 +507,13 @@ fn run_window(
         .show()
         .and_then(|()| slint::run_event_loop())
         .map_err(|error| error.to_string());
+    window_state.finish(&window, &mut presenter.borrow_mut());
     presenter
         .borrow_mut()
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
     let result = result.and(window.hide().map_err(|error| error.to_string()));
     viewers.close_all();
+    comparators.close_all();
     visible_timer.stop();
     size_timer.stop();
     thumbnail_timer.stop();
@@ -513,6 +527,14 @@ fn run_window(
     runtime.block_on(async {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
         shutdown_preferences::reconcile(
+            &presenter,
+            &mut closing_events,
+            &commands,
+            deadline,
+            &mut retired,
+        )
+        .await;
+        shutdown_preferences::flush_final(
             &presenter,
             &mut closing_events,
             &commands,

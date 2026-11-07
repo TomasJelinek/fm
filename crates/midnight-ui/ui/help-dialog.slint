@@ -3,19 +3,26 @@ import { DialogText } from "dialog-text.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { DialogHeader } from "dialog-frame.slint";
 
 export component HelpBody inherits Rectangle {
     in property <image> close-icon;
     callback close();
+    callback move-dialog(length, length);
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
-    VerticalLayout {
-        padding: 20px; spacing: 13px;
-        Text {
-            text: "Midnight Explorer keyboard help";
-            color: Theme.strong-text; font-size: 20px; wrap: word-wrap;
+    init => { close-button.focus(); }
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            reject
         }
+    VerticalLayout {
+        padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 13px;
+        DialogHeader { title: "Midnight Explorer keyboard help"; compact: root.height < 280px;
+            dragged(dx, dy) => { root.move-dialog(dx, dy); } }
         DialogText {
+            min-height: 0px; vertical-stretch: 1;
             text: "Change application shortcuts in Options → Keyboard. The bindings below are your current settings. Native editor and IME keys retain their usual behavior; operating-system shortcuts may take precedence.\n\n"
                 + ShortcutHints.help()
                 + "\n\nMouse: a plain left double-click opens a file or folder. Ctrl+click toggles selection, Shift+click selects a range, and Ctrl+Shift+click adds a range. Middle-click closes a folder tab. Drag the panel divider to resize; double-click it to center. Right-click files or drives for available system/application actions. Right-click a path prefix to copy it."
@@ -24,11 +31,12 @@ export component HelpBody inherits Rectangle {
                 + "\n\nThe terminal icon opens an interactive terminal. Its arrow selects the shell; command history fills the draft without executing it. Only Run or the configured Execute command shortcut submits it. Sudo authentication remains inside the external terminal."
                 + "\n\nThe Hot Paths star adds the current folder; its arrow opens saved paths and Manage. Tabs, bookmarks and enabled command history are saved. View, Edit and the direct Copy/Move buttons await their next implementation stages.";
         }
-        HintedActionButton {
+        close-button := HintedActionButton {
             native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
             text: "Close"; min-height: Theme.control-height;
             hint: "Close this dialog and return to the file manager.";
             clicked => { root.close(); }
         }
+    }
     }
 }

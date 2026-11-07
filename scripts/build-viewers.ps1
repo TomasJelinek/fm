@@ -83,12 +83,18 @@ try {
             -OutputDirectory (Join-Path $AppDirectory "viewers/$package")
         if ($LASTEXITCODE -ne 0) { throw "$package build failed" }
     }
-    & (Join-Path $PSScriptRoot 'build-image-viewer.ps1') -Profile $Profile -WorkerSdkConfig $WorkerSdkConfig `
-        -AppDirectory $AppDirectory -Test:$Test -Offline:$Offline
-    if ($LASTEXITCODE -ne 0) { throw 'Image viewer build failed' }
+    foreach ($viewer in @('image', 'pdf')) {
+        & (Join-Path $PSScriptRoot 'build-image-viewer.ps1') -Viewer $viewer -Profile $Profile -WorkerSdkConfig $WorkerSdkConfig `
+            -AppDirectory $AppDirectory -Test:$Test -Offline:$Offline
+        if ($LASTEXITCODE -ne 0) { throw "$viewer viewer build failed" }
+    }
 } finally {
     Pop-Location
     foreach ($variable in $savedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable])
+        if ($null -eq $savedEnvironment[$variable]) {
+            Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable])
+        }
     }
 }

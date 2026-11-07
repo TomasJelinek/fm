@@ -1067,8 +1067,15 @@ Aktivní cesta příkazového řádku se zobrazuje celá, bez výpustky a bez pe
 omezení délky textu. Cesta a editor jsou v jediné vodorovné řadě se shellem,
 Options a Run. Cesta má přirozenou šířku, pokud se vejde; u extrémních cest je
 omezen pouze vodorovný posuvný výřez, aby editor zůstal použitelný.
-Při velkém písmu se minimální výška okna odvodí také od čitelného příkazového řádku
-a celého řádku souborů; běžné velikosti zachovají základní minimum 480 px.
+Od revize 2026-11-07 je minimum přesně 320×200 logických pixelů pro obě hustoty
+a všechny podporované velikosti písma; preferovaná velikost zůstává 1340×820.
+Při nedostatku prostoru se zobrazí aktivní panel, lišta pro přepnutí druhého
+panelu, cesta, soubory a příkazový řádek. Pomocné lišty se obnoví po zvětšení.
+Funkční tlačítka lze vodorovně posouvat, zatímco Options a Jobs zůstávají viditelné.
+Popisky všech Ctrl+F1–F12 vycházejí z aktuálního nastavení; nepřiřazená tlačítka
+zobrazí klávesu a jsou zakázaná. Rodičovský řádek `..` není cílem souborových
+operací; skutečný výběr dovoluje Copy/Delete i při zaměření rodiče.
+Podrobnosti malého okna a jeho testů jsou v [ověření](../../verification/small-window.md).
 Podrobnosti a ověřovací scénáře stanoví
 [návrh systémových ovladačů a celé cesty](2026-11-04-native-controls-and-full-path-design.md).
 
@@ -1353,14 +1360,15 @@ Archivní provider nabízí čtení ZIP, 7z, GZIP, TAR a TAR.GZ, navigaci, hled�
 řazení a F3 nad zachyceným obsahem. Identitu člena netvoří lokální cesta. Záložky
 uchovávají typovaný popis provideru, zdrojového archivu a nezměněné komponenty;
 po změně nebo ztrátě zdroje zůstanou výslovně nedostupné. První implementace má
-rozpočty 64 MiB pro archiv/člena a 128 MiB pro dekódovaný součet. Neprovádí zápis,
-extrakci, vnořené mounty, dešifrování ani spuštění archivního člena externí aplikací.
+rozpočty 64 MiB pro archiv/člena a 128 MiB pro dekódovaný součet. Neprovádí zápis
+do archivů, vnořené mounty, dešifrování ani spuštění člena externí aplikací. F5
+vykopírování do nativního cíle doplňuje navazující etapa z 2026-11-07.
 Tyto rozpočty neomezují délku nativních cest. Přesné smlouvy a další limity uvádí
 [filesystem API](../../developer/FILESYSTEM_API.md).
 
 ### Rozpoznávání a volitelné asociace archivů
 
-Hostitel sdílí jednu tabulku 57 přípon (51 ZIP kontejnerů a šest přípon ostatních
+Hostitel sdílí jednu tabulku 67 přípon (51 ZIP kontejnerů a šestnáct přípon ostatních
 dekodérů). Seznam a zdroje jsou v [archivních asociacích](../../ARCHIVE_FORMATS.md).
 Options → Archives nabízí každou příponu se zaškrtávátkem a ukládá jednotlivé
 uživatelské odchylky od výchozího stavu. ZIP a vývojářské balíčky WHL, EGG, WAR,
@@ -1378,9 +1386,9 @@ samostatné. Ikona znamená dostupný handler, nikoli předem ověřený obsah s
 Plugin validuje obsah až při otevření na backendu. Vnořené archivy ani adresáře
 s archivní příponou nedostávají značku nepodporovaného vstupu.
 
-Současný provider umí F3 čtení, ale F5 extrakce ani zápis/přesun v archivech zatím
-nejsou implementované. Jejich další etapa musí použít stávající frontu, bezpečnou
-přípravu cíle, konfliktní dialog, průběh a kontrolní součty před zveřejněním cíle.
+Provider umí F3 čtení a F5 vykopírování do nativního cíle přes stávající frontu,
+bezpečnou přípravu cíle, konfliktní dialog, průběh a SHA-256 kontrolu nezávislým
+čtením cíle před zveřejněním. Zápis/přesun uvnitř archivů zůstává budoucí etapou.
 
 Obrazové a video náhledy vznikají v omezených pomocných procesech, na Windows
 v AppContaineru s Job Objectem a na Linuxu se seccomp a limity prostředků.
@@ -1429,3 +1437,73 @@ Ikony zvláštních složek jsou větší v nezměněných tlačítkách. Archiv
 nativní oddělovače bez vložených mezer. Generickou ikonu listu u podporovaného
 archivu nahrazuje vlastní SVG; konkrétní systémové ikony mají přednost.
 [Původ prostředků](../../ASSET_PROVENANCE.md) je zdokumentovaný samostatně.
+
+## 2026-11-07: rychlejší výpis, extrakce, PDF a porovnávání
+
+[Navazující návrh](2026-11-07-archive-copy-pdf-comparison-design.md) specifikuje
+nové hranice pluginů a kopírování. Windows výpis využívá metadata vrácená již
+enumerací; další dotazy zůstávají pro providery, které metadata nedodaly. Výpis
+nikdy nenahrazuje ověření identity při pozdější operaci. Místní měření je v
+[ověření výkonu](../../verification/2026-11-07-listing-performance.md).
+
+ZIP načítá seznam bez rozbalení všech souborů. Člen se dekóduje a ověří až při
+čtení. Přibyly XZ, Bzip2 a Zstandard a odpovídající TAR varianty; GZIP/TAR/solid
+7z mají nadále omezení sekvenčního zpracování. F5 zachytí provider, položky,
+výběr a cílovou složku. Backend odmítne únik cestou, odkazy, cykly a změněné
+zdroje; nativní cíl vzniká přes dočasný soubor a nezávislou SHA-256 kontrolu.
+Existující cíle se nepřepisují bez implementované bezpečné politiky konfliktů.
+
+Samostatný PDF plugin používá bezplatný open-source Hayro. Veřejné raster API
+0.2 přidává seznam stránek a vykreslení konkrétní stránky při zachování
+obrazového protokolu. Stránky přepínají tlačítka nebo Ctrl+PageUp/Down; zoom,
+posuv, Escape a Space navazují na stávající viewer. PDF nespouští skripty ani
+externí odkazy; nekompatibilní dokument skončí s chybou, nikoli tichým úspěchem.
+
+Ctrl+Shift+C porovná dva vybrané nativní soubory, jinak jeden vybraný/zaměřený
+soubor z každého panelu. Text používá `similar` s limitem vstupu a času; obrázky
+sdílejí izolovaný dekodér se zobrazením Side-by-Side, Swipe a Onion Skin.
+Výpočet i rasterizace běží mimo UI. Nejednoznačný výběr se odmítne. PDF se
+nevydává za jednosnímkový obrázek k porovnání celého dokumentu.
+
+Výchozí barevná pravidla rozlišují zdrojový kód, spustitelné soubory, obrázky,
+videa a dokumenty. Uživatelská pravidla zůstávají zachována a výslovné odstranění
+všech pravidel se ukládá. Ikony na liště disků mají 20 px pro myš a 26 px pro
+dotyk, se stejnou výškou a šířkou tlačítek. [Vlastní příkazy](2026-11-07-user-commands-design.md)
+jsou zatím návrh podle Salamander User Menu: lišta nad příkazovým řádkem,
+uživatelské ikony/popisky, pracovní složka a přímý vstup do příslušného nastavení.
+
+## 2026-11-07: okna, kompaktní rozhraní a ochrana navigačních položek
+
+Minimální velikost hlavního okna je **320 × 200 logických pixelů**, nezávisle na
+hustotě a zvoleném písmu. Při nedostatku místa se zobrazí aktivní panel a úzký
+přepínač druhého panelu; příkazový řádek, Options a Jobs zůstávají dostupné.
+Funkční tlačítka lze vodorovně posouvat. Po zvětšení se vrátí běžné dva panely.
+Nepřiřazené Ctrl+F1–F12 mají viditelný popisek a jsou zakázané. Kliknutí zachytí
+akci i panel při skutečném stisku, ještě před případným odložením události ve
+Slint Flickable; uvolnění Ctrl během kliknutí nesmí změnit význam operace.
+
+Položka `..` slouží pouze navigaci. Kopírování, mazání, přejmenování, editace
+atributů a drag-and-drop ji nikdy nepoužijí jako zdroj. Skutečně označené položky
+lze kopírovat nebo smazat i s kurzorem na `..`; přejmenování a viewer vyžadují
+skutečnou zaměřenou položku. Vytváření souboru/složky a vložení do aktuálního
+umístění zůstávají dostupné. UI používá identity položek a backend vlastní
+validaci; text názvu souboru není bezpečnostní identita.
+
+Dialogy mají tažitelné záhlaví a polohu omezenou rozměry okna. Zmenšení nesmí
+znepřístupnit zavření ani ztratit rozepsané hodnoty. Editor atributů, času a
+velikosti písmen má vlastní SVG ikonu dokumentu s hodinami; nadbytečný spodní
+seznam náhledu souborů byl odstraněn. Validace požadovaných změn a následné
+potvrzení přes připravené identity zůstávají na backendu.
+
+Nastavení v15 ukládá fyzickou pozici vnějšího rámu, fyzickou velikost klientské
+oblasti, normální rozměry před maximalizací a identifikaci monitoru. Změny se
+ukládají asynchronně po 600 ms klidu, nejpozději po 2 s souvislé změny a při
+ukončení. Dokud nejsou načtena uložená nastavení, nové výchozí rozměry je nesmějí
+přepsat. Odpojený monitor znamená přesun do pracovní oblasti primárního monitoru.
+Viewery a porovnávač přebírají fyzické rozměry a pozici hlavního okna; Escape je
+vždy zavře i při změně uživatelského mapování. Omezení Waylandu a ověření jsou v
+[dokumentu geometrie oken](../../verification/window-geometry.md).
+
+Výběr obdélníkem zůstává navazující úkol: Brief a Thumbnails vyžadují více
+nesouvislých rozsahů, bezpečné dávkování změn na backend a podporu archivů.
+Přesouvání souborů myší mezi panely a ven z aplikace tím není změněno.

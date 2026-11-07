@@ -60,3 +60,23 @@ fn only_regular_native_files_receive_backend_archive_hints() {
             .is_some()
     );
 }
+
+#[test]
+fn popular_tar_compression_suffixes_take_precedence_over_raw_streams() {
+    for (name, expected) in [
+        ("archive.TAR.XZ", ArchiveFormat::TarXz),
+        ("archive.txz", ArchiveFormat::TarXz),
+        ("archive.xz", ArchiveFormat::Xz),
+        ("archive.TAR.BZ2", ArchiveFormat::TarBzip2),
+        ("archive.tbz2", ArchiveFormat::TarBzip2),
+        ("archive.bz2", ArchiveFormat::Bzip2),
+        ("archive.TAR.ZST", ArchiveFormat::TarZstd),
+        ("archive.tzst", ArchiveFormat::TarZstd),
+        ("archive.zst", ArchiveFormat::Zstd),
+    ] {
+        let found = archive_association(Path::new(name)).unwrap();
+        assert_eq!(found.format, expected, "{name}");
+        assert!(found.enabled_by_default);
+    }
+    assert!(archive_association(Path::new("archive.tar.xz.exe")).is_none());
+}

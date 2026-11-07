@@ -188,7 +188,7 @@ fn requested(patch: &MetadataPatch) -> String {
         changes.push(format!("Filename case: {:?}, {:?}", case.mode, case.scope));
     }
     if changes.is_empty() {
-        changes.push("No changes requested. Current values are shown below.".into());
+        changes.push("No changes requested.".into());
     }
     if patch.recursive {
         changes.push("Includes descendants; children are processed before their parent.".into());

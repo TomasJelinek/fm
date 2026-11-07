@@ -6,6 +6,9 @@ pub(crate) struct ImageView {
     pub revision: u64,
     pub pending: Option<u64>,
     pub frames: crate::image_input::ImageFrames,
+    pub pages: Vec<midnight_image_viewer_host::Metadata>,
+    pub page: usize,
+    pub document: bool,
 }
 
 impl ImageView {
@@ -16,6 +19,9 @@ impl ImageView {
             revision: 0,
             pending: None,
             frames: Default::default(),
+            pages: Vec::new(),
+            page: 0,
+            document: false,
         }
     }
 
@@ -33,6 +39,7 @@ impl ImageView {
         let (surface, density) = geometry.raster_geometry();
         if self.worker.render(
             self.revision,
+            self.page,
             midnight_image_viewer_host::Viewport {
                 width: surface[0],
                 height: surface[1],

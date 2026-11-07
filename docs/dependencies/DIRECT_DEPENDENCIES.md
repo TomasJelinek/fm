@@ -10,6 +10,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [arboard](https://crates.io/crates/arboard/3.7.0) | 3.7.0 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-platform-windows |
 | [base64](https://crates.io/crates/base64/0.23.1) | 0.23.1 | MIT OR Apache-2.0 | midnight-platform-windows |
 | [blake3](https://crates.io/crates/blake3/1.8.7) | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | midnight-thumbnail-host |
+| [bzip2](https://crates.io/crates/bzip2/0.6.1) | 0.6.1 | MIT OR Apache-2.0 | midnight-fs-archive |
 | [cbindgen](https://crates.io/crates/cbindgen/0.29.4) | 0.29.4 | MPL-2.0 | midnight-api-headergen |
 | [chrono](https://crates.io/crates/chrono/0.4.45) | 0.4.45 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-ui |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | midnight-thumbnail-video |
@@ -18,12 +19,14 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [fontdb](https://crates.io/crates/fontdb/0.24.0) | 0.24.0 | MIT | midnight-platform-linux |
 | [fs2](https://crates.io/crates/fs2/0.4.3) | 0.4.3 | MIT/Apache-2.0 | midnight-platform-common |
 | [getrandom](https://crates.io/crates/getrandom/0.3.4) | 0.3.4 | MIT OR Apache-2.0 | midnight-platform-windows |
+| [hayro](https://crates.io/crates/hayro/0.9.0) | 0.9.0 | Apache-2.0 OR MIT | midnight-viewer-pdf |
 | [i-slint-compiler](https://crates.io/crates/i-slint-compiler/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui-bindings |
 | [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui, midnight-ui-input, midnight-viewer-ui |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-linux, midnight-thumbnail-image, midnight-viewer-image |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
+| [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
 | [minicbor](https://crates.io/crates/minicbor/2.3.0) | 2.3.0 | BlueOak-1.0.0 | midnight-plugin-api |
 | [moxcms](https://crates.io/crates/moxcms/0.8.1) | 0.8.1 | BSD-3-Clause OR Apache-2.0 | midnight-thumbnail-image, midnight-viewer-image |
 | [notify](https://crates.io/crates/notify/8.2.1) | 8.2.1 | CC0-1.0 | midnight-platform-linux, midnight-platform-windows |
@@ -33,18 +36,20 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
 | [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | midnight-platform-linux, midnight-worker-platform |
+| [ruzstd](https://crates.io/crates/ruzstd/0.9.1) | 0.9.1 | MIT | midnight-fs-archive |
 | [serde](https://crates.io/crates/serde/1.0.229) | 1.0.229 | MIT OR Apache-2.0 | midnight-filesystem-host, midnight-image-viewer-host, midnight-platform-common, midnight-plugin-host, midnight-thumbnail-host |
 | [serde_json](https://crates.io/crates/serde_json/1.0.154) | 1.0.154 | MIT OR Apache-2.0 | midnight-api-package, midnight-image-viewer-host, midnight-platform-common, midnight-thumbnail-host, midnight-ui |
 | [sevenz-rust2](https://crates.io/crates/sevenz-rust2/0.23.0) | 0.23.0 | Apache-2.0 | midnight-fs-archive |
 | [sha2](https://crates.io/crates/sha2/0.10.9) | 0.10.9 | MIT OR Apache-2.0 | midnight-api-package, midnight-platform-common |
-| [slint](https://crates.io/crates/slint/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-explorer, midnight-ui, midnight-ui-bindings, midnight-ui-input, midnight-viewer-ui |
-| [slint-build](https://crates.io/crates/slint-build/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui-bindings, midnight-viewer-ui |
+| [similar](https://crates.io/crates/similar/2.7.0) | 2.7.0 | Apache-2.0 | midnight-compare-engine |
+| [slint](https://crates.io/crates/slint/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-explorer, midnight-ui, midnight-ui-bindings, midnight-ui-input, midnight-viewer-ui |
+| [slint-build](https://crates.io/crates/slint-build/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui-bindings, midnight-viewer-ui |
 | [spin_on](https://crates.io/crates/spin_on/0.1.1) | 0.1.1 | Apache-2.0 OR MIT | midnight-ui-bindings |
 | [swash](https://crates.io/crates/swash/0.2.10) | 0.2.10 | Apache-2.0 OR MIT | midnight-viewer-render |
 | [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [tar](https://crates.io/crates/tar/0.4.46) | 0.4.46 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive |
-| [tempfile](https://crates.io/crates/tempfile/3.27.0) | 3.27.0 | MIT OR Apache-2.0 | midnight-engine, midnight-filesystem-host, midnight-platform, midnight-platform-common, midnight-platform-linux, midnight-platform-windows, midnight-plugin-host, midnight-thumbnail-host, midnight-viewer-engine, midnight-worker-platform |
-| [tokio](https://crates.io/crates/tokio/1.54.1) | 1.54.1 | MIT | midnight-engine, midnight-explorer, midnight-viewer-engine, midnight-viewer-ui |
+| [tempfile](https://crates.io/crates/tempfile/3.27.0) | 3.27.0 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-engine, midnight-filesystem-host, midnight-platform, midnight-platform-common, midnight-platform-linux, midnight-platform-windows, midnight-plugin-host, midnight-thumbnail-host, midnight-viewer-engine, midnight-worker-platform |
+| [tokio](https://crates.io/crates/tokio/1.54.1) | 1.54.1 | MIT | midnight-compare-engine, midnight-compare-ui, midnight-engine, midnight-explorer, midnight-viewer-engine, midnight-viewer-ui |
 | [toml](https://crates.io/crates/toml/0.9.12%2Bspec-1.1.0) | 0.9.12+spec-1.1.0 | MIT OR Apache-2.0 | midnight-api-package, midnight-filesystem-host, midnight-plugin-host |
 | [tracing](https://crates.io/crates/tracing/0.1.44) | 0.1.44 | MIT | midnight-explorer |
 | [tracing-subscriber](https://crates.io/crates/tracing-subscriber/0.3.23) | 0.3.23 | MIT | midnight-explorer |

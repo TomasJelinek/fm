@@ -9,20 +9,59 @@ pub(super) struct CopyContext {
 
 pub(crate) struct CopyDraft {
     pub(crate) token: String,
-    pub(crate) files: SelectedFiles,
-    pub(crate) source: PathBuf,
+    pub(super) input: CopyDraftInput,
+    pub(crate) source: String,
     pub(crate) destination: PathBuf,
     pub(crate) summary: String,
     pub(crate) error: String,
+}
+
+#[derive(Clone)]
+pub(super) enum CopyDraftInput {
+    Native(SelectedFiles),
+    Archive(ArchiveCopyRequest),
+}
+
+impl CopyDraftInput {
+    fn roots(&self) -> usize {
+        match self {
+            Self::Native(files) => files
+                .selection
+                .len()
+                .max(usize::from(files.fallback.is_some())),
+            Self::Archive(files) => files
+                .selected
+                .len()
+                .max(usize::from(files.fallback.is_some())),
+        }
+    }
+
+    fn command(self, id: OperationId, destination: PathBuf) -> Command {
+        match self {
+            Self::Native(files) => Command::EnqueueSelectedCopy(SelectedCopyRequest {
+                id,
+                files,
+                destination,
+            }),
+            Self::Archive(mut request) => {
+                request.id = id;
+                request.destination = destination;
+                Command::EnqueueArchiveCopy(request)
+            }
+        }
+    }
 }
 
 impl Presenter {
     pub(crate) fn request_copy_dialog(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
         if self.operations.closing
             || self.copies.draft.is_some()
-            || !self.native_action_allowed(pane)
             || !self.native_action_allowed(pane.other())
         {
+            return;
+        }
+        if self.panes[pane.index()].archive.is_some() {
+            self.request_archive_copy_dialog(pane);
             return;
         }
         let context = CopyContext {
@@ -61,8 +100,8 @@ impl Presenter {
         };
         self.copies.draft = Some(CopyDraft {
             token: format!("copy-draft:{}", request.0),
-            files,
-            source: context.source,
+            input: CopyDraftInput::Native(files),
+            source: context.source.to_string_lossy().into_owned(),
             destination: context.destination,
             summary,
             error: String::new(),
@@ -93,26 +132,68 @@ impl Presenter {
             draft.error = "Enter the full path of an existing destination folder.".into();
             return;
         }
-        let files = draft.files.clone();
-        let roots = files
-            .selection
-            .len()
-            .max(usize::from(files.fallback.is_some())) as u64;
+        let input = draft.input.clone();
+        let roots = input.roots() as u64;
         let target = destination.clone();
         if self.submit_copy(
             destination,
             roots,
-            move |id| {
-                Command::EnqueueSelectedCopy(SelectedCopyRequest {
-                    id,
-                    files,
-                    destination: target,
-                })
-            },
+            move |id| input.command(id, target),
             send,
         ) {
             self.retire_copy_draft();
         }
+    }
+
+    fn request_archive_copy_dialog(&mut self, pane: PaneId) {
+        let p = &self.panes[pane.index()];
+        let Some(archive) = &p.archive else {
+            return;
+        };
+        if p.loading || archive.selection_pending || !p.search_allows_activation() {
+            self.desktop.report(
+                "Selection still loading",
+                "Wait for the archive listing and selection to finish before copying.".into(),
+            );
+            return;
+        }
+        if archive.location.mount.is_none() {
+            return;
+        }
+        let focused = (!p.parent_cursor)
+            .then_some(p.cursor)
+            .flatten()
+            .and_then(|id| p.entry_by_id(id));
+        if archive.selected.is_empty() && focused.is_none() {
+            return;
+        }
+        let summary = if archive.selected.is_empty() {
+            focused
+                .map(|entry| entry.display_name.clone())
+                .unwrap_or_default()
+        } else {
+            "Selected archive items in the current view".into()
+        };
+        let destination = self.panes[pane.other().index()].display_path().to_owned();
+        let source = archive.location.display_text();
+        let input = CopyDraftInput::Archive(ArchiveCopyRequest {
+            id: OperationId(0), // Assigned only after the user submits the captured draft.
+            location: archive.location.clone(),
+            entries: p.entries.clone(),
+            view: p.display_index().clone(),
+            selected: archive.selected.clone(),
+            fallback: focused.map(|entry| entry.id),
+            destination: destination.clone(),
+        });
+        let request = self.desktop.request();
+        self.copies.draft = Some(CopyDraft {
+            token: format!("copy-draft:{}", request.0),
+            input,
+            source,
+            destination,
+            summary,
+            error: String::new(),
+        });
     }
 
     pub(crate) fn cancel_copy_dialog(&mut self, token: &str) {

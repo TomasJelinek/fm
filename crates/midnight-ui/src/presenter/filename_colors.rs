@@ -69,7 +69,11 @@ impl Presenter {
         }
         for pane in [PaneId::Left, PaneId::Right] {
             let panel = &self.panes[pane.index()];
-            if panel.showing_stream() || self.colors.rules.is_empty() {
+            if !self.preferences.loaded
+                || panel.entries.is_empty()
+                || panel.showing_stream()
+                || self.colors.rules.is_empty()
+            {
                 if self.colors.inputs[pane.index()].is_some() {
                     let Some(id) = self.colors.next.checked_add(1) else {
                         continue;

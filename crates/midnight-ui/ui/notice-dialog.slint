@@ -1,7 +1,8 @@
 import { Theme } from "theme.slint";
 import { DialogText } from "dialog-text.slint";
-import { ErrorGlyph } from "error-notice.slint";
+import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export component NoticeDialog inherits Rectangle {
     in property <string> title;
@@ -10,6 +11,7 @@ export component NoticeDialog inherits Rectangle {
     in property <int> generation;
     callback copy-details();
     callback close();
+    callback move-dialog(length, length);
     init => { close-button.focus(); }
     changed generation => { close-button.focus(); }
     background: Theme.surface; border-color: Theme.active-frame;
@@ -20,25 +22,28 @@ export component NoticeDialog inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: 20px; spacing: 16px;
-            HorizontalLayout {
-                spacing: 12px; cross-axis-alignment: center;
-                if root.error : ErrorGlyph { width: 32px; height: 32px; }
-                Text {
-                    text: root.title; color: root.error ? Theme.error-text : Theme.strong-text;
-                    font-size: Theme.font-size * 1.25; font-weight: 600; wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
+            padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 16px;
+            DialogHeader {
+                title: root.title; foreground: root.error ? Theme.error-text : Theme.strong-text;
+                error: root.error;
+                text-size: Theme.font-size * 1.25; compact: root.height < 280px;
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             Rectangle { height: 1px; background: Theme.frame; }
-            DialogText { text: root.body; vertical-stretch: 1; }
+            DialogText { text: root.body; vertical-stretch: 1; min-height: 0px; }
             HorizontalLayout {
                 spacing: 8px;
-                HintedActionButton {
+                ScrollView {
+                    horizontal-stretch: 1; min-width: 0px;
+                    height: max(32px, Theme.control-height, copy-button.preferred-height) + (root.width < 500px ? 14px : 0px);
+                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    HorizontalLayout {
+                copy-button := HintedActionButton {
                     text: "Copy details"; hint: "Copy the complete message, including paths, to the clipboard.";
                     clicked => { root.copy-details(); }
                 }
-                Rectangle { horizontal-stretch: 1; }
+                    }
+                }
                 close-button := HintedActionButton {
                     text: "Close"; hint: "Close this message (Escape).";
                     clicked => { root.close(); }

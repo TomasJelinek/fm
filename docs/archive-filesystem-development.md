@@ -1,8 +1,10 @@
 # Archive filesystem implementation checkpoint
 
-This is work in progress, not release acceptance. The independent archive decoder
-implements ZIP, GZIP, TAR, TAR.GZ and 7z. Host source brokering and an executable
-plugin protocol are new; released viewer ABI/SDK 0.1.0 files are unchanged.
+This is work in progress, not release acceptance. The latest implementation adds
+lazy ZIP indexing, XZ/BZIP2/Zstandard and compressed TAR variants, plus verified
+F5 copy-out. See [the current measurements and security checks](verification/2026-11-07-archive-copy.md).
+The historical checkpoints below describe earlier implementations and test counts.
+The filesystem API is now 0.2.0 with wire protocol 1; the worker SDK remains 0.1.0.
 The current author-facing reference is [Filesystem API](developer/FILESYSTEM_API.md).
 
 Integrated verification on 7 November 2026:
@@ -86,12 +88,14 @@ never persist session IDs or encode members in `PathBuf`. Active tabs restore vi
 backend validation; inactive tabs remain lazy. Missing providers and changed
 sources retain unavailable tabs instead of silently switching to native paths.
 
-The initial decoder holds a verified immutable bounded mount in memory: at most
+The decoder holds an immutable bounded mount in memory, with ZIP contents decoded
+and CRC-checked on demand: at most
 64 MiB source, 64 MiB per member, 128 MiB decoded aggregate, 100,000 entries,
 8 MiB name storage and expansion ratio 200. Host process limits are 512 MiB and
 15 CPU seconds, with a 20-second operation deadline and at most two live mounts.
 Over-budget archives return an explicit error. This is not an unlimited streaming
-implementation. No extraction, archive writing, password handling, RAR codecs or
+implementation. Copy-out uses host-owned verified native destinations. No plugin-side
+extraction, archive writing, password handling, RAR codecs or
 automatic external launch of archive members exists.
 
 Regeneration after deleting build outputs (PowerShell; adjust checkout location

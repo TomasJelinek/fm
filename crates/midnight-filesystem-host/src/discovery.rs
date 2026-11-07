@@ -89,6 +89,12 @@ impl Catalog {
                 Format::Gzip => ArchiveFormat::Gzip,
                 Format::TarGzip => ArchiveFormat::TarGzip,
                 Format::SevenZip => ArchiveFormat::SevenZip,
+                Format::Xz => ArchiveFormat::Xz,
+                Format::TarXz => ArchiveFormat::TarXz,
+                Format::Bzip2 => ArchiveFormat::Bzip2,
+                Format::TarBzip2 => ArchiveFormat::TarBzip2,
+                Format::Zstd => ArchiveFormat::Zstd,
+                Format::TarZstd => ArchiveFormat::TarZstd,
             };
             if !formats.contains(&format) {
                 formats.push(format);
@@ -107,6 +113,12 @@ impl Catalog {
             ArchiveFormat::Gzip => Format::Gzip,
             ArchiveFormat::TarGzip => Format::TarGzip,
             ArchiveFormat::SevenZip => Format::SevenZip,
+            ArchiveFormat::Xz => Format::Xz,
+            ArchiveFormat::TarXz => Format::TarXz,
+            ArchiveFormat::Bzip2 => Format::Bzip2,
+            ArchiveFormat::TarBzip2 => Format::TarBzip2,
+            ArchiveFormat::Zstd => Format::Zstd,
+            ArchiveFormat::TarZstd => Format::TarZstd,
         };
         self.packages
             .iter()
@@ -154,6 +166,12 @@ fn package(path: &Path) -> io::Result<Package> {
             "gzip" => Ok(Format::Gzip),
             "tar-gzip" => Ok(Format::TarGzip),
             "7z" => Ok(Format::SevenZip),
+            "xz" => Ok(Format::Xz),
+            "tar-xz" => Ok(Format::TarXz),
+            "bzip2" => Ok(Format::Bzip2),
+            "tar-bzip2" => Ok(Format::TarBzip2),
+            "zstd" => Ok(Format::Zstd),
+            "tar-zstd" => Ok(Format::TarZstd),
             _ => Err(io::Error::other("Unknown required archive format")),
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -222,6 +240,24 @@ mod tests {
             catalog.choose(Path::new("package.tar")).unwrap().1,
             Format::Tar
         );
+    }
+
+    #[test]
+    fn compression_formats_route_only_to_advertised_worker_capabilities() {
+        let mut catalog = catalog();
+        for (extension, format) in [
+            ("xz", Format::Xz),
+            ("tar.xz", Format::TarXz),
+            ("bz2", Format::Bzip2),
+            ("tar.bz2", Format::TarBzip2),
+            ("zst", Format::Zstd),
+            ("tar.zst", Format::TarZstd),
+        ] {
+            let path = PathBuf::from(format!("archive.{extension}"));
+            assert!(catalog.choose(&path).is_none());
+            catalog.packages[0].formats = vec![format];
+            assert_eq!(catalog.choose(&path).unwrap().1, format);
+        }
     }
 
     pub(super) fn catalog() -> Catalog {

@@ -8,11 +8,15 @@ export component FunctionButton inherits Rectangle {
     in property <image> native-icon;
     in property <image> fallback-icon;
     in property <string> text;
+    in property <string> caption: root.text;
     in property <string> compact-text;
     in property <string> hint;
     in property <bool> enabled: true;
     in property <string> action-id;
     in property <int> pane;
+    in property <bool> pointer-snapshot;
+    in property <string> snapshot-action;
+    in property <int> snapshot-pane;
     private property <bool> pointer-armed;
     private property <string> pressed-action;
     private property <int> pressed-pane;
@@ -23,13 +27,15 @@ export component FunctionButton inherits Rectangle {
     min-width: max(Theme.touch ? 44px : 40px, Theme.icon-size + 12px);
     preferred-width: max(root.min-width, caption-metrics.preferred-width + Theme.icon-size + 12px);
     private property <bool> full-caption: caption-metrics.preferred-width <= root.width - Theme.icon-size - 12px;
+    private property <bool> key-only: !root.full-caption && root.compact-text != "" && root.width < 56px;
+    private property <length> caption-icon-width: root.key-only ? 0px : Theme.icon-size + 4px;
     // Fit compact keys to host font metrics without increasing footer layout minima.
     // Keep normal-density text readable and leave smaller user font choices intact.
     private property <length> compact-font-size: clamp(
-        Theme.font-size * max(0px, root.width - Theme.icon-size - 13px)
+        Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
             / max(1px, compact-metrics.preferred-width),
         min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size);
-    caption-metrics := Text { visible: false; text: root.text; font-size: Theme.font-size; }
+    caption-metrics := Text { visible: false; text: root.caption; font-size: Theme.font-size; }
     compact-metrics := Text { visible: false; text: root.compact-text; font-size: Theme.font-size; }
     horizontal-stretch: 1;
     border-radius: 3px;
@@ -46,6 +52,7 @@ export component FunctionButton inherits Rectangle {
     Rectangle {
         width: parent.width - 8px; height: parent.height; x: 4px;
         NativeActionImage {
+            visible: !root.key-only;
             native-icon: root.native-icon; fallback-icon: root.fallback-icon;
             action-enabled: root.enabled; width: Theme.icon-size; height: Theme.icon-size;
             x: root.full-caption || root.compact-text != "" ? 0px : (parent.width - self.width) / 2;
@@ -53,9 +60,9 @@ export component FunctionButton inherits Rectangle {
         }
         Text {
             visible: root.full-caption || root.compact-text != "";
-            x: Theme.icon-size + 4px; width: max(0px, parent.width - self.x);
+            x: root.caption-icon-width; width: max(0px, parent.width - self.x);
             height: parent.height;
-            text: root.full-caption ? root.text : root.compact-text;
+            text: root.full-caption ? root.caption : root.compact-text;
             font-size: root.full-caption ? Theme.font-size : root.compact-font-size;
             color: root.enabled ? Theme.text : Theme.muted-text;
             horizontal-alignment: center; vertical-alignment: center;
@@ -63,7 +70,7 @@ export component FunctionButton inherits Rectangle {
         }
     }
     focus := FocusScope {
-        enabled: root.enabled || root.pointer-armed;
+        enabled: root.enabled || root.pointer-armed || (root.pointer-snapshot && root.snapshot-action != "");
         key-pressed(event) => {
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
                 && (event.text == Key.Return || event.text == Key.Space) {
@@ -73,14 +80,19 @@ export component FunctionButton inherits Rectangle {
             reject
         }
         area := TouchArea {
-            enabled: root.enabled || root.pointer-armed;
+            enabled: root.enabled || root.pointer-armed || (root.pointer-snapshot && root.snapshot-action != "");
             pointer-event(event) => {
+                // A scrolling parent can deliver pointer-up before clicked.
+                // Keep the pressed action until click, outside release or cancellation.
                 if event.kind == PointerEventKind.down {
-                    root.pointer-armed = root.enabled && event.button == PointerEventButton.left;
-                    root.pressed-action = root.action-id;
-                    root.pressed-pane = root.pane;
+                    root.pointer-armed = (root.pointer-snapshot ? root.snapshot-action != "" : root.enabled)
+                        && event.button == PointerEventButton.left;
+                    root.pressed-action = root.pointer-snapshot ? root.snapshot-action : root.action-id;
+                    root.pressed-pane = root.pointer-snapshot ? root.snapshot-pane : root.pane;
                 } else if event.kind == PointerEventKind.cancel
-                    || (event.kind == PointerEventKind.up && event.button == PointerEventButton.left) {
+                    || (event.kind == PointerEventKind.up && event.button == PointerEventButton.left
+                        && (self.mouse-x < 0px || self.mouse-x >= self.width
+                            || self.mouse-y < 0px || self.mouse-y >= self.height)) {
                     root.pointer-armed = false;
                 }
             }
@@ -88,6 +100,7 @@ export component FunctionButton inherits Rectangle {
                 if root.pointer-armed {
                     focus.focus();
                     root.trigger(root.pressed-action, root.pressed-pane);
+                    root.pointer-armed = false;
                 }
             }
         }

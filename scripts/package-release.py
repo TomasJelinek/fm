@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
-                    "midnight.viewer.image")
+                    "midnight.viewer.image", "midnight.viewer.pdf")
 
 
 def portable_component(name):
@@ -171,7 +171,7 @@ def image_viewer_manifest(package, files, target):
     extensions = manifest.get("extensions")
     if (set(manifest) != fields or type(manifest.get("schema")) is not int
             or manifest["schema"] != 1 or type(manifest.get("protocol")) is not int
-            or manifest["protocol"] != 1 or manifest.get("target") != target
+            or manifest["protocol"] not in (1, 2) or manifest.get("target") != target
             or not isinstance(manifest.get("name"), str) or not 1 <= len(manifest["name"]) <= 128
             or not isinstance(extensions, list) or not 1 <= len(extensions) <= 64
             or any(not isinstance(value, str) or not re.fullmatch(r"[a-z0-9]{1,32}", value)
@@ -254,7 +254,8 @@ def copy_filesystem_packages(stage, source, target):
                 or manifest["schema_version"] != 1 or manifest.get("kind") != "filesystem-worker"
                 or manifest.get("target") != target or type(manifest.get("protocol")) is not int
                 or manifest["protocol"] != 1 or not isinstance(formats, list) or not 1 <= len(formats) <= 16
-                or any(value not in ("zip", "tar", "gzip", "tar-gzip", "7z") for value in formats)):
+                or any(value not in ("zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz",
+                                     "bzip2", "tar-bzip2", "zstd", "tar-zstd") for value in formats)):
             raise ValueError("Incompatible filesystem worker manifest")
         executable = worker_executable(manifest.get("entry_executable"), target)
         if (package / executable not in files or package / "THIRD-PARTY.md" not in files

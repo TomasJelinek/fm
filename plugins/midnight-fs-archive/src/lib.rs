@@ -1,5 +1,6 @@
 //! Read-only archive parsing. This code runs only inside the isolated worker.
 mod formats;
+mod streams;
 mod tree;
 use midnight_filesystem_api::{ErrorCode, Format, Kind, MAX_BATCH, MAX_READ, Node};
 use std::{
@@ -60,12 +61,15 @@ impl From<io::Error> for Error {
     }
 }
 
-/// One bounded, immutable mount. Member bytes are verified before publication.
+/// One bounded, immutable mount. ZIP contents are decoded and CRC-checked on first read.
 /// No extraction, path opening or host association is implemented here.
 pub struct Archive {
     nodes: Vec<Node>,
     contents: HashMap<u64, Vec<u8>>,
     directories: HashMap<(u64, Vec<u8>), u64>,
+    children: HashMap<u64, Vec<usize>>,
+    zip: Option<zip::ZipArchive<std::io::Cursor<Vec<u8>>>>,
+    zip_members: HashMap<u64, usize>,
     limits: Limits,
     names: usize,
     total: u64,
@@ -75,16 +79,20 @@ impl Archive {
         if source.len() as u64 > limits.max_source {
             return Err(Error::limit());
         }
+        let source_length = source.len() as u64;
         let mut result = Self {
             nodes: vec![],
             contents: HashMap::new(),
             directories: HashMap::new(),
+            children: HashMap::new(),
+            zip: None,
+            zip_members: HashMap::new(),
             limits,
             names: 0,
             total: 0,
         };
         match format {
-            Format::Zip => result.zip(&source)?,
+            Format::Zip => result.zip(source)?,
             Format::Tar => result.tar(&source)?,
             Format::Gzip | Format::TarGzip => {
                 let budget = limits
@@ -99,8 +107,24 @@ impl Archive {
                 }
             }
             Format::SevenZip => result.sevenzip(&source)?,
+            Format::Xz
+            | Format::TarXz
+            | Format::Bzip2
+            | Format::TarBzip2
+            | Format::Zstd
+            | Format::TarZstd => {
+                let budget = limits
+                    .max_total
+                    .min(source_length.saturating_mul(limits.max_ratio));
+                let bytes = streams::decode(format, &source, budget, limits.max_entry)?;
+                if matches!(format, Format::TarXz | Format::TarBzip2 | Format::TarZstd) {
+                    result.tar(&bytes)?;
+                } else {
+                    result.add(b"content", "content", Kind::File, Some(bytes), true)?;
+                }
+            }
         }
-        if result.total > (source.len() as u64).saturating_mul(limits.max_ratio) {
+        if result.total > source_length.saturating_mul(limits.max_ratio) {
             return Err(Error::limit());
         }
         Ok(result)
@@ -108,20 +132,21 @@ impl Archive {
 
     pub fn list(&self, directory: u64, after: u64) -> Result<Vec<Node>, Error> {
         if directory != 1
-            && !self
-                .nodes
-                .iter()
-                .any(|n| n.id == directory && n.kind == Kind::Directory)
+            && self
+                .node(directory)
+                .is_none_or(|n| n.kind != Kind::Directory)
         {
             return Err(Error::new(ErrorCode::NotFound, "Unknown archive directory"));
         }
         // IDs are increasing and remain stable after sorting, filtering and pagination.
-        Ok(self
-            .nodes
+        let Some(children) = self.children.get(&directory) else {
+            return Ok(Vec::new());
+        };
+        let start = children.partition_point(|index| self.nodes[*index].id <= after);
+        Ok(children[start..]
             .iter()
-            .filter(|n| n.parent == directory && n.id > after)
             .take(MAX_BATCH)
-            .cloned()
+            .map(|index| self.nodes[*index].clone())
             .collect())
     }
 
@@ -130,15 +155,33 @@ impl Archive {
             return Err(Error::limit());
         }
         let node = self
-            .nodes
-            .iter()
-            .find(|n| n.id == entry)
+            .node(entry)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Unknown archive member"))?;
         if !node.readable {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 "Unsafe, encrypted, linked or unsupported archive member",
             ));
+        }
+        let declared_size = node.size;
+        if !self.contents.contains_key(&entry)
+            && let Some(index) = self.zip_members.get(&entry).copied()
+        {
+            let zip = self
+                .zip
+                .as_mut()
+                .ok_or_else(|| Error::new(ErrorCode::Corrupt, "Missing ZIP source"))?;
+            let data = bounded_read(
+                zip.by_index(index).map_err(formats::zip_error)?,
+                self.limits.max_entry,
+            )?;
+            if Some(data.len() as u64) != declared_size {
+                return Err(Error::new(
+                    ErrorCode::Corrupt,
+                    "ZIP member length differs from its index",
+                ));
+            }
+            self.contents.insert(entry, data);
         }
         let data = self
             .contents
@@ -147,6 +190,10 @@ impl Archive {
         let start = usize::try_from(offset.min(data.len() as u64)).map_err(|_| Error::limit())?;
         let end = start.saturating_add(length as usize).min(data.len());
         Ok((data[start..end].to_vec(), end == data.len()))
+    }
+
+    fn node(&self, id: u64) -> Option<&Node> {
+        self.nodes.get(usize::try_from(id.checked_sub(2)?).ok()?)
     }
 }
 

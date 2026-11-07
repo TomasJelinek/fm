@@ -1,5 +1,5 @@
 //! Killable persistent worker and bounded read-only broker. All entry points run on backend workers.
-use crate::{Frame, Metadata, Provider, Viewport};
+use crate::{DocumentMetadata, Frame, Metadata, Provider, Viewport};
 use midnight_image_viewer_api::{self as api, Message};
 use std::{
     fs::File,
@@ -51,6 +51,7 @@ pub struct ImageSession {
     length: u64,
     version: Vec<u8>,
     metadata: Metadata,
+    document: Option<DocumentMetadata>,
     request_id: u64,
     failed: bool,
 }
@@ -87,6 +88,7 @@ impl ImageSession {
                 height: 1,
             },
             request_id: 0,
+            document: None,
             failed: false,
         };
         let metadata = session.exchange(cancel, timeout, |input, output, source, stopped| {
@@ -139,7 +141,13 @@ impl ImageSession {
                         }
                         api::write_message(input, &Message::Data(bytes))?;
                     }
-                    Message::Metadata(metadata) => return Ok(metadata),
+                    Message::Metadata(metadata) if provider.protocol == 1 => {
+                        return Ok((metadata, None));
+                    }
+                    Message::DocumentMetadata(document) if provider.protocol == 2 => {
+                        document.validate()?;
+                        return Ok((document.pages[0], Some(document)));
+                    }
                     Message::Failure => return Err(rejected()),
                     _ => return Err(io::Error::other("Unexpected image-open response")),
                 }
@@ -148,7 +156,8 @@ impl ImageSession {
                 "Image source request-count budget exhausted",
             ))
         })?;
-        session.metadata = metadata;
+        session.metadata = metadata.0;
+        session.document = metadata.1;
         session.validate_source()?;
         check_cancel(cancel)?;
         Ok(session)
@@ -156,6 +165,24 @@ impl ImageSession {
 
     pub fn metadata(&self) -> Metadata {
         self.metadata
+    }
+
+    /// Bounded document pages; ordinary images have one page.
+    pub fn page_count(&self) -> usize {
+        self.document
+            .as_ref()
+            .map_or(1, |document| document.pages.len())
+    }
+
+    pub fn is_document(&self) -> bool {
+        self.document.is_some()
+    }
+
+    pub fn page_metadata(&self, page: usize) -> Option<Metadata> {
+        self.document.as_ref().map_or_else(
+            || (page == 0).then_some(self.metadata),
+            |document| document.pages.get(page).copied(),
+        )
     }
 
     /// Render retained original pixels into a physical viewport. Any error ends this session;
@@ -166,26 +193,46 @@ impl ImageSession {
         cancel: &AtomicBool,
         timeout: Duration,
     ) -> io::Result<Frame> {
+        self.render_page(0, viewport, cancel, timeout)
+    }
+
+    /// Render one validated document page, or page zero of a single image.
+    pub fn render_page(
+        &mut self,
+        page: usize,
+        viewport: Viewport,
+        cancel: &AtomicBool,
+        timeout: Duration,
+    ) -> io::Result<Frame> {
         if self.failed {
             return Err(io::Error::other("Image session already ended"));
         }
         let result = (|| {
             check_cancel(cancel)?;
             viewport.validate()?;
+            if self.page_metadata(page).is_none() {
+                return Err(io::Error::other("Document page is outside the page range"));
+            }
             self.validate_source()?;
             self.request_id = self
                 .request_id
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("Image session request limit"))?;
             let request_id = self.request_id;
+            let message = if self.document.is_some() {
+                Message::PageViewport {
+                    id: request_id,
+                    page: page as u32,
+                    viewport,
+                }
+            } else {
+                Message::Viewport {
+                    id: request_id,
+                    viewport,
+                }
+            };
             let frame = self.exchange(cancel, timeout, |input, output, _, _| {
-                api::write_message(
-                    input,
-                    &Message::Viewport {
-                        id: request_id,
-                        viewport,
-                    },
-                )?;
+                api::write_message(input, &message)?;
                 match api::read_message(output)? {
                     Message::Rgba { id, frame }
                         if id == request_id

@@ -38,6 +38,11 @@ pub trait TransferService: Send + Sync {
 /// Iteration opens at most one child per call. Retain directory sources on the traversal stack.
 pub trait TransferSource: Send {
     fn entry(&self) -> &TransferEntry;
+    /// Native sources return an OS identity for ancestry checks. Virtual providers
+    /// return `None`; their member identities must never be compared to native inodes.
+    fn native_identity(&self) -> Option<TransferIdentity> {
+        Some(self.entry().identity)
+    }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError>;
     fn next_child(

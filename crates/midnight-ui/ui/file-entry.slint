@@ -14,6 +14,7 @@ export component FileEntry inherits Rectangle {
     in property <bool> active;
     in property <bool> touch-contact;
     in property <length> size-column-width;
+    in property <length> modified-column-width: 132px;
     in property <string> previous-click-identity;
     callback remember-click(string);
     callback row-click(bool, bool);
@@ -46,7 +47,7 @@ export component FileEntry inherits Rectangle {
         padding-left: 12px; padding-right: 12px; spacing: 8px;
         HorizontalLayout {
             spacing: 6px - (Theme.file-icon-size - Theme.icon-size);
-            horizontal-stretch: 1; min-width: root.view-mode == 0 ? 120px : 0px;
+            horizontal-stretch: 1; min-width: 0px;
             Rectangle {
                 width: Theme.file-icon-size;
                 FileIcon {
@@ -108,7 +109,7 @@ export component FileEntry inherits Rectangle {
         }
         if root.view-mode == 0 : Text {
             text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font;
-            width: 132px; overflow: elide; vertical-alignment: center;
+            width: root.modified-column-width; overflow: elide; vertical-alignment: center;
         }
     }
     if root.view-mode == 2 : Rectangle {

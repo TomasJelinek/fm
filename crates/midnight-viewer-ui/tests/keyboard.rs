@@ -37,6 +37,7 @@ fn actual_search_widget_keeps_spaces_and_exposes_escape_to_host() {
         event.text == slint::SharedString::from(Key::Escape) || (!search && event.text == " ")
     });
     window.show().unwrap();
+    window.set_compact(false);
     native.set_size(slint::PhysicalSize::new(900, 600));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(900.0, 600.0),
@@ -45,6 +46,28 @@ fn actual_search_widget_keeps_spaces_and_exposes_escape_to_host() {
         .window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
     let mut pixels = vec![slint::Rgb8Pixel::default(); 900 * 600];
+    window.set_compact(true);
+    native.set_size(slint::PhysicalSize::new(320, 200));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(320.0, 200.0),
+    });
+    window.set_image_mode(true);
+    window.set_document_page(2);
+    window.set_document_pages(4096);
+    let mut compact_pixels = vec![slint::Rgb8Pixel::default(); 320 * 200];
+    native.draw_if_needed(|renderer| {
+        renderer.render(&mut compact_pixels, 320);
+    });
+    assert_eq!(window.window().size(), slint::PhysicalSize::new(320, 200));
+    assert!((270.0..=308.0).contains(&window.get_content_width()));
+    assert!(window.get_content_height() > 100.0);
+    window.set_image_mode(false);
+    window.set_document_page(0);
+    window.set_compact(false);
+    native.set_size(slint::PhysicalSize::new(900, 600));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(900.0, 600.0),
+    });
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 900);
     });
@@ -86,10 +109,16 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let seen = Rc::new(RefCell::new(Vec::new()));
     let received = seen.clone();
-    let bindings = ShortcutMap::new(&[ShortcutBinding {
-        action: "viewer.find".into(),
-        keys: vec!["Ctrl+Digit9".into()],
-    }])
+    let bindings = ShortcutMap::new(&[
+        ShortcutBinding {
+            action: "viewer.find".into(),
+            keys: vec!["Ctrl+Digit9".into()],
+        },
+        ShortcutBinding {
+            action: "viewer.close".into(),
+            keys: vec!["Ctrl+K".into()],
+        },
+    ])
     .unwrap();
     // Input routing does not depend on the asynchronous content-open result.
     let window = manager
@@ -155,7 +184,7 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     key(&window, Key::Escape);
     assert!(
         !window.window().is_visible(),
-        "viewer Escape closes through the actual host adapter"
+        "Escape closes from search even when viewer.close is remapped"
     );
     manager.close_all();
 }

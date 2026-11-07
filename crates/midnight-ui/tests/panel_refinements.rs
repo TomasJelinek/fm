@@ -319,11 +319,15 @@ fn assert_compact_geometry(ui: &mut TestUi) {
         assert_eq!(theme.get_toolbar_height(), toolbar_height);
         for (label, role, expected) in [
             ("selected.rs", AccessibleRole::ListItem, original_icon * 1.1),
-            ("Test drive", AccessibleRole::Button, original_icon * 1.1),
+            (
+                "Test drive",
+                AccessibleRole::Button,
+                if density == 0 { 20.0 } else { 26.0 },
+            ),
             (
                 "Test documents",
                 AccessibleRole::Button,
-                original_icon * 1.1,
+                if density == 0 { 20.0 } else { 26.0 },
             ),
             ("Drive or volume", AccessibleRole::Combobox, 18.0),
         ] {

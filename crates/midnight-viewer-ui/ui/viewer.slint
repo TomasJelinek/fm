@@ -35,7 +35,8 @@ component PositionBar inherits Rectangle {
 
 export component ViewerWindow inherits Window {
     title: root.caption;
-    preferred-width: 1000px; preferred-height: 720px; min-width: 400px; min-height: 240px;
+    preferred-width: 1000px; preferred-height: 720px; min-width: 320px; min-height: 200px;
+    in property <bool> compact;
     in property <string> caption: "Viewer — Midnight Explorer";
     in property <string> status: "Opening…";
     in property <image> surface;
@@ -53,9 +54,11 @@ export component ViewerWindow inherits Window {
     in property <bool> wrap-available;
     in property <bool> image-mode;
     in property <float> zoom-percent: 100;
+    in property <int> document-page;
+    in property <int> document-pages;
     in property <length> ui-font-size: 12px;
     in property <string> ui-font-family;
-    default-font-size: ui-font-size;
+    default-font-size: compact ? min(ui-font-size, 12px) : ui-font-size;
     default-font-family: ui-font-family;
     in-out property <bool> search-visible;
     in-out property <string> query;
@@ -74,6 +77,7 @@ export component ViewerWindow inherits Window {
     callback image-command(int);
     callback image-zoom(float, float, float);
     callback image-drag(float, float);
+    callback document-turn(int);
     callback close-viewer();
     public function focus-search() { root.search-visible = true; search-edit.focus(); }
     public function focus-content() { content-focus.focus(); }
@@ -149,16 +153,31 @@ export component ViewerWindow inherits Window {
                 PositionBar { horizontal: true; position: root.horizontal-position; extent: root.horizontal-extent;
                     accent: root.accent; seek(value) => { root.pan(value); } }
             }
+            if root.compact && root.image-mode: Text {
+                height: 18px; text: root.status; color: root.foreground;
+                font-size: 11px; overflow: elide;
+            }
             HorizontalLayout {
                 height: 28px;
-                Text { text: root.status; color: root.foreground; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                Text { visible: !root.image-mode || !root.compact; min-width: 0px; max-width: root.image-mode && root.compact ? 0px : 1000000px; text: root.status; color: root.foreground; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                 if root.image-mode: HorizontalLayout {
                     spacing: 3px;
-                    Button { text: "Fit"; accessible-label: "Fit image to window"; clicked => { root.image-command(0); content-focus.focus(); } }
-                    Button { text: "1:1"; accessible-label: "Actual image pixels"; clicked => { root.image-command(1); content-focus.focus(); } }
-                    Button { text: "−"; accessible-label: "Zoom image out"; clicked => { root.image-command(3); content-focus.focus(); } }
+                    if root.document-page > 0: HorizontalLayout {
+                        spacing: 3px;
+                        Button { min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "‹"; accessible-label: "Previous document page (Ctrl+PageUp)";
+                            enabled: root.document-page > 1;
+                            clicked => { root.document-turn(-1); content-focus.focus(); } }
+                        Text { text: "\{root.document-page} / \{root.document-pages}";
+                            color: root.foreground; vertical-alignment: center; }
+                        Button { min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "›"; accessible-label: "Next document page (Ctrl+PageDown)";
+                            enabled: root.document-page < root.document-pages;
+                            clicked => { root.document-turn(1); content-focus.focus(); } }
+                    }
+                    Button { min-width: root.compact ? 34px : 0px; max-width: root.compact ? 34px : 1000000px; text: "Fit"; accessible-label: "Fit image to window"; clicked => { root.image-command(0); content-focus.focus(); } }
+                    Button { min-width: root.compact ? 34px : 0px; max-width: root.compact ? 34px : 1000000px; text: "1:1"; accessible-label: "Actual image pixels"; clicked => { root.image-command(1); content-focus.focus(); } }
+                    Button { min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "−"; accessible-label: "Zoom image out"; clicked => { root.image-command(3); content-focus.focus(); } }
                     Text { text: "\{round(root.zoom-percent * 10) / 10}%"; color: root.foreground; vertical-alignment: center; }
-                    Button { text: "+"; accessible-label: "Zoom image in"; clicked => { root.image-command(2); content-focus.focus(); } }
+                    Button { min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "+"; accessible-label: "Zoom image in"; clicked => { root.image-command(2); content-focus.focus(); } }
                 }
                 if !root.image-mode: CheckBox { text: "Wrap"; checked: root.wrap-enabled; enabled: root.wrap-available;
                     accessible-label: "Word wrap";

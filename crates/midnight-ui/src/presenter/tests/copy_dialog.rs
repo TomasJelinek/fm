@@ -58,9 +58,12 @@ fn copy_dialog_captures_selection_and_other_panel_path_before_selection_finishes
         &send,
     );
     let draft = p.copies.draft.as_ref().unwrap();
-    assert!(Arc::ptr_eq(&draft.files.selection, &selection));
+    let crate::presenter::copy_dialog::CopyDraftInput::Native(files) = &draft.input else {
+        panic!("native draft")
+    };
+    assert!(Arc::ptr_eq(&files.selection, &selection));
     assert_eq!(draft.destination, root.join("target"));
-    assert_eq!(draft.files.fallback, Some(root.join("first.txt")));
+    assert_eq!(files.fallback, Some(root.join("first.txt")));
     let token = draft.token.clone();
     let destination = draft.destination.to_string_lossy().into_owned();
     p.navigate(PaneId::Left, root.join("new source"), None, &send);

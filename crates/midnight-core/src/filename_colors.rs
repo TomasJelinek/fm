@@ -4,6 +4,50 @@ use std::{collections::HashMap, sync::Arc};
 
 pub const MAX_FILENAME_COLOR_RULES: usize = 32;
 
+/// Starting presets; presentation derives contrast for each theme and selection state.
+/// Only files match, preserving the theme's distinct directory appearance.
+pub fn default_filename_colors() -> Vec<FilenameColorRule> {
+    [
+        (
+            concat!(
+                "*.rs;*.c;*.h;*.cpp;*.hpp;*.cc;*.cs;*.java;*.kt;*.go;*.py;*.rb;*.js;*.jsx;",
+                "*.ts;*.tsx;*.swift;*.sh;*.ps1;*.sql;*.html;*.css;*.scss;*.vue;*.svelte;*.lua;",
+                "*.pl;*.php;*.slint;*.toml;*.yaml;*.yml;*.json;*.xml;*.cmake;Makefile;Dockerfile"
+            ),
+            RgbColor(70, 155, 215),
+        ),
+        (
+            "*.exe;*.com;*.bat;*.cmd;*.msi;*.appimage;*.run",
+            RgbColor(80, 170, 100),
+        ),
+        (
+            "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
+            RgbColor(185, 120, 210),
+        ),
+        (
+            "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",
+            RgbColor(220, 135, 65),
+        ),
+        (
+            concat!(
+                "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.txt;*.md;*.rst;*.xls;*.xlsx;*.ods;",
+                "*.ppt;*.pptx;*.odp;*.epub;*.csv;*.tsv"
+            ),
+            RgbColor(60, 165, 165),
+        ),
+    ]
+    .into_iter()
+    .map(|(expression, color)| FilenameColorRule {
+        expression: expression.into(),
+        style: FilenameStyle {
+            foreground: Some(color),
+            background: None,
+        },
+        ..Default::default()
+    })
+    .collect()
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RgbColor(pub u8, pub u8, pub u8);
 

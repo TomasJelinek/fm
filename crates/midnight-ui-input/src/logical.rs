@@ -3,6 +3,11 @@ use i_slint_core::input::KeyEvent;
 use midnight_core::ShortcutChord;
 use slint::platform::Key;
 
+/// Escape remains a dedicated close action for auxiliary windows regardless of shortcut overrides.
+pub fn escape_pressed(event: &KeyEvent) -> bool {
+    event.text == slint::SharedString::from(Key::Escape)
+}
+
 pub fn chord(event: &KeyEvent) -> Option<ShortcutChord> {
     let mut chars = event.text.chars();
     let first = chars.next()?;

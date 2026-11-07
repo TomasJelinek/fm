@@ -119,6 +119,10 @@ impl Archive {
             return Err(Error::limit());
         }
         let id = self.nodes.len() as u64 + 2;
+        self.children
+            .entry(parent)
+            .or_default()
+            .push(self.nodes.len());
         self.nodes.push(Node {
             id,
             parent,

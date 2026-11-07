@@ -65,6 +65,36 @@ fn archive_pane() -> Presenter {
 }
 
 #[test]
+fn f5_captures_archive_identity_and_native_destination_without_io() {
+    let mut p = archive_pane();
+    p.panes[0].parent_cursor = false;
+    p.panes[0].cursor = Some(EntryId(4));
+    let original = p.panes[0].entries.clone();
+    p.request_copy_dialog(PaneId::Left, &|_| {
+        panic!("opening draft is presentation only")
+    });
+    let draft = p.copies.draft.as_ref().unwrap();
+    let token = draft.token.clone();
+    let destination = draft.destination.clone();
+    p.panes[0].cursor = Some(EntryId(3));
+    p.panes[1].path = test_root().join("changed");
+    let queued = RefCell::new(Vec::new());
+    p.confirm_copy_dialog(&token, &destination.to_string_lossy(), &|command| {
+        queued.borrow_mut().push(command);
+        true
+    });
+    let queued = queued.borrow();
+    let [Command::EnqueueArchiveCopy(request)] = queued.as_slice() else {
+        panic!("one archive copy")
+    };
+    assert_eq!(request.fallback, Some(EntryId(4)));
+    assert_eq!(request.location.mount_id(), Some(42));
+    assert_eq!(request.destination, destination);
+    assert!(Arc::ptr_eq(&request.entries, &original));
+    assert!(request.id.0 > 0);
+}
+
+#[test]
 fn archive_paths_and_breadcrumbs_use_native_separators_without_added_spaces() {
     let mut p = archive_pane();
     let expected_root = test_root().join("sample.zip");
@@ -376,10 +406,10 @@ fn saved_archive_tabs_restore_lazily_and_keep_addresses_when_provider_is_missing
     let mut p = Presenter::new(test_root(), test_root());
     let sent = RefCell::new(Vec::new());
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             tabs: [saved.clone(), PaneTabPreferences::default()],
             ..Default::default()
-        })),
+        }))),
         &|command| {
             sent.borrow_mut().push(command);
             true

@@ -61,14 +61,22 @@ fn corrupt_archives_and_resource_limits_are_explicit_failures() {
 }
 
 #[test]
-fn zip_crc_failure_rejects_the_mount_before_publishing_member_bytes() {
+fn zip_crc_failure_rejects_first_read_before_publishing_any_member_bytes() {
     let mut source = zip_fixture();
     let at = source
         .windows(5)
         .position(|bytes| bytes == b"hello")
         .unwrap();
     source[at] ^= 1;
-    assert!(Archive::open(Format::Zip, source, Limits::default()).is_err());
+    let mut archive = Archive::open(Format::Zip, source, Limits::default()).unwrap();
+    let folder = archive
+        .list(1, 0)
+        .unwrap()
+        .into_iter()
+        .find(|n| n.kind == Kind::Directory)
+        .unwrap();
+    let file = archive.list(folder.id, 0).unwrap().remove(0);
+    assert!(archive.read(file.id, 0, 1).is_err());
 }
 
 #[test]

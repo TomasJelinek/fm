@@ -73,7 +73,7 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They also build the four independent viewer packages using the public
+exit status. They also build the five independent viewer packages using the public
 SDK and install their artifacts under the executable's `viewers/` directory. They do
 not install system packages or launch the application. Direct `cargo build` builds
 the host only; run `scripts/build-viewers.ps1` or `scripts/build-viewers.sh` to add viewers.
@@ -119,7 +119,21 @@ even in debug, and generated/UI code uses level 1. Backend/application code reta
 normal debug behavior. Release still optimizes the full application. The first build after
 changing these profiles recompiles the affected dependencies under `_build`.
 
-Run either executable directly, or let Cargo build and run it:
+Run either executable directly, or let Cargo build and run it. Plugin-enabled
+Windows builds must reside in a private directory that other accounts cannot
+replace. A shared checkout such as `D:\experiments` can fail this check even if
+its plugin files themselves are read-only. To prepare a private release and a
+desktop shortcut without weakening the plugin checks:
+
+```powershell
+powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -IncludeFilesystems -IncludeThumbnailers -CreateDesktopShortcut
+```
+
+Use the **Midnight Explorer** desktop shortcut or the installation path printed
+by that command. Run it again after rebuilding to update the shortcut to the new
+verified installation. The `-IncludeFilesystems` and `-IncludeThumbnailers`
+switches require those independently built packages; omit a switch when its
+optional package is absent. Direct development launches remain available:
 
 ```powershell
 .\_build\debug\me.exe
@@ -388,6 +402,15 @@ editor scope and shortcuts reserved for later stages.
   regular expression, with explicit case sensitivity. Directories remain visible;
   the filter combines with typing-based filename search. Invalid expressions do
   not replace the active filter.
+- Ctrl+Shift+C compares two selected regular files in the active panel, or one
+  selected/focused file from each panel. Text pairs show line differences; image
+  pairs provide Side-by-Side, Swipe and Onion Skin controls.
+- F3 opens PDFs with the installed independent PDF viewer. Ctrl+PageUp/Down or
+  the page buttons switch pages; Fit, zoom and pan are shared with image viewing.
+- F5 inside an archive copies the captured members to a native destination using
+  the background queue and SHA-256 destination readback. Archive contents stay
+  read-only. XZ, Bzip2 and Zstandard streams and their TAR variants are supported
+  by the archive plugin alongside ZIP, 7z, GZIP and TAR.
 - Ctrl+F2 or the panel's attributes icon opens **Attributes, times and case**.
   Ctrl+F7 opens the same editor with case conversion enabled. Other edits start
   as Leave unchanged. Preview the captured selection, then Apply to queue the

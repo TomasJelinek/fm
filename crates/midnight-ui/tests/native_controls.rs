@@ -588,9 +588,11 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                     window.set_left_error(error.into());
                     draw(&mut pixels, width as usize);
                     assert_eq!(window.get_command_directory().as_str(), long);
+                    let footer = ui::root_item(&window, "Options", AccessibleRole::Button);
                     assert_eq!(
                         window.get_command_bar_height(),
-                        window.global::<Theme>().get_command_height()
+                        footer.geometry().height(),
+                        "the command row must match the rendered footer, including compact mode"
                     );
                     assert!(
                         (window.get_command_path_top() - window.get_command_input_top()).abs()
@@ -635,7 +637,8 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                     );
                     assert!(
                         window.get_command_input_top() + window.get_command_input_height()
-                            < height as f32 - window.global::<Theme>().get_bottom_height()
+                            <= footer.map_to_native_window(footer.geometry().origin).y,
+                        "the command row must remain above the rendered footer"
                     );
                     let long_editor_width = window.get_command_input_width();
                     window.set_active_pane(1);

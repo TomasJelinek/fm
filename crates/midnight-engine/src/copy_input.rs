@@ -5,6 +5,25 @@ use std::path::PathBuf;
 enum Sources {
     Paths(FileClipboard),
     Selection(SelectedFiles),
+    Archive(ArchiveCopyRequest),
+}
+
+impl From<ArchiveCopyRequest> for CopyInput {
+    fn from(request: ArchiveCopyRequest) -> Self {
+        Self {
+            id: request.id,
+            destination: request.destination.clone(),
+            sources: Sources::Archive(request),
+        }
+    }
+}
+
+pub(super) enum Resolved {
+    Native(CopyRequest),
+    Archive {
+        destination: PathBuf,
+        sources: std::collections::VecDeque<Box<dyn TransferSource>>,
+    },
 }
 
 pub(super) struct CopyInput {
@@ -42,6 +61,11 @@ impl CopyInput {
                 .len()
                 .max(usize::from(files.fallback.is_some()))
                 as u64,
+            Sources::Archive(request) => request
+                .selected
+                .len()
+                .max(usize::from(request.fallback.is_some()))
+                as u64,
         }
     }
 
@@ -60,7 +84,7 @@ impl CopyInput {
     }
 
     /// Called only by blocking preparation, inside the existing queue reservation.
-    pub(super) fn resolve(self, cancel: &Cancellation) -> Result<CopyRequest, FsError> {
+    pub(super) fn resolve(self, cancel: &Cancellation) -> Result<Resolved, FsError> {
         let clipboard = match self.sources {
             Sources::Paths(files) => files,
             Sources::Selection(files) => FileClipboard {
@@ -72,12 +96,19 @@ impl CopyInput {
                 )?,
                 intent: FileClipboardIntent::Copy,
             },
+            Sources::Archive(request) => {
+                let sources = super::archive_source::resolve(&request, cancel)?;
+                return Ok(Resolved::Archive {
+                    destination: self.destination,
+                    sources,
+                });
+            }
         };
         clipboard.validate()?;
-        Ok(CopyRequest {
+        Ok(Resolved::Native(CopyRequest {
             id: self.id,
             clipboard,
             destination: self.destination,
-        })
+        }))
     }
 }

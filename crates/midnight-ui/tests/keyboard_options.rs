@@ -20,6 +20,37 @@ struct Harness {
 }
 
 #[test]
+fn typing_shortcut_search_survives_scrolled_selection_and_empty_results() {
+    let mut h = Harness::new(&[]);
+    h.open_keyboard();
+    let window = h.ui.window.clone_strong();
+    for query in [
+        "viewer",
+        "copy",
+        "zzz no command",
+        "",
+        "rename",
+        "žluťoučký",
+        "files",
+    ] {
+        window
+            .global::<KeyboardEditorView>()
+            .invoke_move_selection(1000000);
+        h.draw();
+        ui::click_popup(&window, "Search commands", AccessibleRole::TextInput);
+        ui::chord(&window, &[Key::Control], "a");
+        ui::key(&window, Key::Backspace);
+        h.draw();
+        for character in query.chars() {
+            ui::key(&window, character.to_string());
+            h.draw();
+        }
+        assert_eq!(window.global::<KeyboardEditorView>().get_filter(), query);
+        assert!(ui::has_popup(&window));
+    }
+}
+
+#[test]
 fn preview_options_persist_choices_and_clear_cache_without_closing_settings() {
     let mut h = Harness::new(&[]);
     let clears = Rc::new(std::cell::Cell::new(0));
@@ -273,7 +304,7 @@ impl Harness {
         };
         values.validate().unwrap();
         presenter.borrow_mut().apply_with_sender(
-            Event::PreferencesLoaded(Ok(values)),
+            Event::PreferencesLoaded(Ok(values.into())),
             &|command| {
                 commands.borrow_mut().push(command);
                 true

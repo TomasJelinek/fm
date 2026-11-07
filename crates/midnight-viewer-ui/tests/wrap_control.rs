@@ -36,6 +36,62 @@ fn find_control(item: ItemRc, label: &str) -> Option<ItemRc> {
 }
 
 #[test]
+fn document_pager_disables_endpoints_and_sends_relative_page_requests() {
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    window.set_image_mode(true);
+    window.set_document_page(1);
+    window.set_document_pages(2);
+    let turns = Rc::new(RefCell::new(Vec::new()));
+    let received = turns.clone();
+    window.on_document_turn(move |delta| received.borrow_mut().push(delta));
+    window.show().unwrap();
+    native.set_size(slint::PhysicalSize::new(900, 600));
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(900.0, 600.0),
+    });
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let mut pixels = vec![slint::Rgb8Pixel::default(); 900 * 600];
+    let mut click = |label: &str| {
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 900);
+        });
+        let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+        let item = find_control(root, label).unwrap();
+        let rect = item.geometry();
+        let origin = item.map_to_native_window(rect.origin);
+        let position = slint::LogicalPosition::new(
+            origin.x + rect.size.width / 2.0,
+            origin.y + rect.size.height / 2.0,
+        );
+        let button = PointerEventButton::Left;
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+    };
+    click("Previous document page (Ctrl+PageUp)");
+    assert!(turns.borrow().is_empty());
+    click("Next document page (Ctrl+PageDown)");
+    assert_eq!(*turns.borrow(), [1]);
+    window.set_document_page(2);
+    click("Next document page (Ctrl+PageDown)");
+    assert_eq!(*turns.borrow(), [1]);
+    click("Previous document page (Ctrl+PageUp)");
+    assert_eq!(*turns.borrow(), [1, -1]);
+    assert!(window.get_content_focused());
+    window.hide().unwrap();
+}
+
+#[test]
 fn wrap_checkbox_emits_changes_only_when_available_and_returns_content_focus() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();

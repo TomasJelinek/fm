@@ -91,8 +91,10 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Version 8 includes tabs, panel modes, bookmarks, fonts, command history, shortcut
-  overrides and panel filters, with v1–7 migration. Shortcut settings accept only known semantic action
+  Version 15 includes window geometry and monitor identity in addition to tabs,
+  panel modes, bookmarks, fonts, command history, shortcuts, filters, editor,
+  viewer, archive, preview and filename-color choices, with v1–14 migration.
+  Shortcut settings accept only known semantic action
   IDs and bounded key chords, never executable commands. Duplicate, malformed and
   overlapping bindings fail validation atomically. Native editor/IME chords cannot be
   reassigned to broad application actions.
@@ -438,8 +440,20 @@ are separate removable libraries under the installation's `viewers/` root. The
 - Archive browsing is read-only. Names, links and declared sizes are untrusted;
   actual decompression, dictionaries, indexes, nesting and cache use share
   budgets. Listing never extracts a member to its declared host pathname.
-  Future extraction/copy uses the common destination readback/hash/publish
-  contract. ZIP/GZIP/7z checksums do not substitute for that verification.
+  Copying out uses the common destination readback/SHA-256/publish contract.
+  Opaque provider IDs and raw member names are captured; names must be safe
+  single destination components, never joined archive display paths. Links,
+  cycles, stale identities and resource overflows fail explicitly. Existing
+  destination entries are not silently replaced. ZIP/GZIP/7z checksums do not
+  substitute for destination readback verification.
+- PDF parsing/rendering uses a separately installed restricted worker with
+  bounded source length, page count, viewport and process memory/CPU. The host
+  brokers read-only source bytes; PDF scripts, external resources and automatic
+  link execution are disabled. A malformed page cannot select executable code.
+- File comparison captures native regular-file identities. Both text inputs
+  have byte/line/deadline limits; image inputs use the restricted image broker.
+  Rendered comparison surfaces and retained frames are bounded. Commands and
+  labels derived from content never execute.
 
 ## Dependencies
 

@@ -441,6 +441,7 @@ impl Engine {
                         Some(Command::ClearFilenameColors { pane, id }) => filename_colors.clear(pane, id),
                         Some(Command::EnqueueCopy(request)) => copies.enqueue(request).await,
                         Some(Command::EnqueueSelectedCopy(request)) => copies.enqueue_selected(request).await,
+                        Some(Command::EnqueueArchiveCopy(request)) => copies.enqueue_archive(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
                         Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut tasks).await,
@@ -470,7 +471,7 @@ impl Engine {
                             }
                         }
                         Some(Command::SavePreferences { revision, preferences }) => {
-                            if let Some(settings) = &settings { settings.save(revision, preferences); }
+                            if let Some(settings) = &settings { settings.save(revision, *preferences); }
                             else {
                                 let outbox = self.outbox.clone();
                                 tasks.spawn(async move { outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported))) }).await; });
@@ -824,6 +825,9 @@ fn list_directory(task: ListingTask) {
     for entry in &mut entries {
         if cancel.is_cancelled() {
             return;
+        }
+        if filesystem.listing_metadata_complete(entry) {
+            continue;
         }
         // A file can disappear or become unreadable while the directory is open.
         // Its name remains useful; unknown metadata is not presented as zero.

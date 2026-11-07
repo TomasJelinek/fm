@@ -3,6 +3,8 @@
 
 pub use midnight_image_viewer_api as api;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+mod document;
+pub use document::{Document, serve_document};
 
 /// An opaque seekable source. Its length is captured; it has no filesystem name or handle.
 pub trait ReadSeek: Read + Seek {}

@@ -102,7 +102,9 @@ impl Presenter {
             Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
             Event::EditorDefaultResolved(result) => self.editor_default_resolved(result),
             Event::FontFamiliesLoaded(result) => self.apply_font_families(result),
-            Event::PreferencesLoaded(result) => self.preferences_loaded(result),
+            Event::PreferencesLoaded(result) => {
+                self.preferences_loaded(result.map(|values| *values))
+            }
             Event::PreferencesSaved { revision, result } => {
                 self.preferences_saved(revision, result)
             }

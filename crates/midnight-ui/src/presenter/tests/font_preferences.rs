@@ -2,7 +2,7 @@ use super::*;
 
 fn with_catalog(families: &[&str]) -> Presenter {
     let mut p = with_unloaded_catalog(families);
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     p
 }
 
@@ -51,10 +51,10 @@ fn font_catalog_queue_failure_allows_retry() {
 #[test]
 fn catalog_keeps_unicode_names_and_missing_configured_family() {
     let mut p = with_unloaded_catalog(&["Noto Sans", "源ノ角ゴシック", "文档 🦀"]);
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
         font_family: "Unavailable Café".into(),
         ..Default::default()
-    })));
+    }))));
     assert_eq!(
         p.font_choices(),
         [
@@ -124,7 +124,7 @@ fn font_change_preserves_theme_density_shell_and_raw_family() {
     p.change_fonts(1, 8, 32, -1, &|command| {
         assert!(
             matches!(command, Command::SavePreferences { preferences, .. }
-            if preferences == UserPreferences {
+            if *preferences == UserPreferences {
                 theme: PreferenceTheme::Light,
                 density: UiDensity::Touch,
                 windows_shell: WindowsShell::Cmd,
@@ -165,11 +165,11 @@ fn invalid_font_sizes_or_indices_do_not_preview_or_save() {
 fn font_size_preview_wins_over_late_initial_preferences_load() {
     let mut p = Presenter::new(test_root(), test_root());
     p.change_fonts(0, 13, 19, -1, &|_| true);
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
         font_family: "Late loaded".into(),
         desktop_font_size: 21,
         ..Default::default()
-    })));
+    }))));
     assert_eq!(p.preferences.values.desktop_font_size, 13);
     assert_eq!(p.preferences.values.touch_font_size, 19);
     assert_eq!(p.preferences.values.font_family, "Late loaded");

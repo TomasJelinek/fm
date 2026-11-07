@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "protocol": 2,
+  "id": "midnight.viewer.pdf",
+  "name": "PDF viewer",
+  "version": "0.1.0",
+  "target": "x86_64-pc-windows-msvc",
+  "executable": "midnight-viewer-pdf.exe",
+  "extensions": ["pdf"]
+}

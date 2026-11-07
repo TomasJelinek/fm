@@ -64,6 +64,15 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
         size: slint::LogicalSize::new(1340.0, 820.0),
     });
     window.invoke_focus_files();
+    let compared = Rc::new(RefCell::new(Vec::new()));
+    let captured = compared.clone();
+    window.on_compare_files(move |pane| captured.borrow_mut().push(pane));
+    chord(&window, &[Key::Control, Key::Shift], "C");
+    assert_eq!(
+        *compared.borrow(),
+        vec![0],
+        "Ctrl+Shift+C opens file comparison"
+    );
     let sorts = Rc::new(RefCell::new(vec![]));
     let captured = sorts.clone();
     window.on_sort(move |pane, column| captured.borrow_mut().push((pane, column)));

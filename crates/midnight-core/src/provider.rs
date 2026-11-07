@@ -102,7 +102,7 @@ pub enum StorageKind {
 /// Blocking directory enumeration and metadata access; call on a worker thread.
 /// Paths and names retain their native identity without Unicode normalization.
 pub trait DirectoryService: Send + Sync + 'static {
-    /// Streams names and types with initially unknown metadata, without following links.
+    /// Streams names and types, optionally with cached metadata, without following links.
     /// Cancellation or a false callback return stops enumeration cooperatively.
     ///
     /// # Errors
@@ -114,6 +114,12 @@ pub trait DirectoryService: Send + Sync + 'static {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError>;
+
+    /// True when enumeration supplied this provider's complete display metadata.
+    /// This is a listing snapshot, never authority for later mutation or transfer.
+    fn listing_metadata_complete(&self, _entry: &Entry) -> bool {
+        false
+    }
 
     /// Reads metadata without following the final link or opening special-file contents.
     ///

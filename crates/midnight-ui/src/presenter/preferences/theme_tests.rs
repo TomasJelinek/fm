@@ -11,7 +11,7 @@ fn all_theme_choices_map_to_the_saved_choice_and_back() {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!("unexpected command");
             };
-            saved.borrow_mut().push(preferences);
+            saved.borrow_mut().push(*preferences);
             true
         });
         assert_eq!(presenter.preferences.values.theme, theme);
@@ -45,7 +45,7 @@ fn every_early_theme_preview_survives_delayed_load_without_losing_other_settings
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!("unexpected command");
             };
-            saved.borrow_mut().push(preferences);
+            saved.borrow_mut().push(*preferences);
             true
         });
         assert_eq!(saved.borrow().len(), 1);

@@ -17,11 +17,17 @@ pub struct Provider {
     pub name: String,
     pub version: String,
     pub extensions: Vec<String>,
+    pub(crate) protocol: u32,
     pub(crate) executable: PathBuf,
     package: PathBuf,
 }
 
 impl Provider {
+    /// Paged document workers cannot be treated as a complete single-image input.
+    pub fn is_document(&self) -> bool {
+        self.protocol == 2
+    }
+
     /// Trusted installation directory for diagnostics and the Options list.
     pub fn package_dir(&self) -> &Path {
         &self.package
@@ -63,7 +69,7 @@ struct Manifest {
 fn parse_manifest(bytes: &[u8]) -> io::Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(bytes)?;
     if manifest.schema != 1
-        || manifest.protocol != 1
+        || !matches!(manifest.protocol, 1 | 2)
         || manifest.target != midnight_plugin_host::host_target()
         || !identifier(&manifest.id, 64)
         || !identifier(&manifest.version, 64)
@@ -158,6 +164,7 @@ pub fn discover_with_diagnostics(application_executable: &Path) -> io::Result<Di
                 name: manifest.name,
                 version: manifest.version,
                 extensions: manifest.extensions,
+                protocol: manifest.protocol,
                 executable,
                 package: path.clone(),
             }))
@@ -270,5 +277,17 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../_build/image-viewer-nonexistent-installation");
         assert!(discover(&root.join("me.exe")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn document_protocol_is_supported_without_accepting_future_versions() {
+        let mut value = manifest();
+        value["protocol"] = 2.into();
+        value["extensions"] = serde_json::json!(["pdf"]);
+        assert!(parse_manifest(&serde_json::to_vec(&value).unwrap()).is_ok());
+        for unsupported in [0, 3, u32::MAX] {
+            value["protocol"] = unsupported.into();
+            assert!(parse_manifest(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
     }
 }

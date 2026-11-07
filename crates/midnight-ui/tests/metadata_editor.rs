@@ -49,6 +49,27 @@ fn rendered_file_rows(item: ItemRc) -> usize {
     count
 }
 
+fn action_is_not_vertically_clipped(test: &ui::TestUi, label: &str) {
+    use i_slint_core::{item_tree::ParentItemTraversalMode, items::Flickable};
+    let action = ui::popup_item(&test.window, label, AccessibleRole::Button);
+    let origin = action.map_to_native_window(action.geometry().origin);
+    let mut parent = action.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(item) = parent {
+        if item.downcast::<Flickable>().is_some() {
+            let clip = item.map_to_native_window(item.geometry().origin);
+            assert!(
+                origin.y >= clip.y
+                    && origin.y + action.geometry().height()
+                        <= clip.y + item.geometry().height() + 0.5,
+                "{label} is clipped vertically: action={origin:?} {:?}, viewport={clip:?} {:?}",
+                action.geometry(),
+                item.geometry()
+            );
+        }
+        parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+}
+
 #[test]
 fn metadata_editor_requires_preview_and_keeps_sections_readable() {
     let mut test = ui::TestUi::new();
@@ -89,21 +110,18 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
     let popups = inner.active_popups();
     let visible_rows =
         rendered_file_rows(ItemRc::new_root(popups.last().unwrap().component.clone()));
-    assert!(
-        visible_rows > 0 && visible_rows < 20,
-        "file list must virtualize 256 rows, rendered {visible_rows}"
+    assert_eq!(
+        visible_rows, 0,
+        "captured-file preview rows are no longer rendered"
     );
     drop(popups);
-    let header = ui::popup_item(&test.window, "Current name", AccessibleRole::Text);
-    let first = ui::popup_item(&test.window, "Captured file 0", AccessibleRole::Text);
-    let header_area = header.geometry();
-    let first_area = first.geometry();
-    let header_origin = header.map_to_native_window(header_area.origin);
-    let first_origin = first.map_to_native_window(first_area.origin);
+    let popups = WindowInner::from_pub(test.window.window()).active_popups();
+    let text = ui::text_values(ItemRc::new_root(popups.last().unwrap().component.clone()));
     assert!(
-        header_origin.y + header_area.height() <= first_origin.y,
-        "column headings must remain above the virtualized rows"
+        !text.iter().any(|value| value.as_str() == "Current name"),
+        "the redundant captured-file preview list is no longer part of the editor"
     );
+    drop(popups);
     ui::click_popup(&test.window, "Apply", AccessibleRole::Button);
     assert!(applies.borrow().is_empty(), "unreviewed draft cannot apply");
     ui::click_popup(&test.window, "Attributes", AccessibleRole::Button);
@@ -113,8 +131,18 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
     ui::click_popup(&test.window, "Hidden: Clear", AccessibleRole::Button);
     ui::click_popup(&test.window, "Read-only: Clear", AccessibleRole::Button);
     assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Clear");
+    settle(&mut test);
+    render::snapshot(&test, "metadata-before-refresh");
+    action_is_not_vertically_clipped(&test, "Refresh");
     ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
-    assert_eq!(drafts.borrow().last().unwrap().read_only, 2);
+    assert_eq!(
+        drafts
+            .borrow()
+            .last()
+            .expect("Refresh validates the current draft")
+            .read_only,
+        2
+    );
     assert_eq!(drafts.borrow().last().unwrap().hidden, 2);
     ui::click_popup(&test.window, "Read-only: Leave", AccessibleRole::Button);
     assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Leave");
@@ -177,6 +205,7 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
                 settle(&mut test);
                 render::snapshot(&test, &format!("metadata-{tab}-{density}-{font}"));
                 let apply = ui::popup_item(&test.window, "Apply", AccessibleRole::Button);
+                action_is_not_vertically_clipped(&test, "Apply");
                 let area = apply.geometry();
                 let origin = apply.map_to_native_window(area.origin);
                 assert!(area.size.width > 0.0 && area.size.height > 0.0);
@@ -227,6 +256,16 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
             test.window.set_metadata_error("".into());
             settle(&mut test);
         }
+    }
+    for (density, font) in [(0, 11), (1, 32)] {
+        test.window.invoke_apply_preferences(0, density);
+        test.window.invoke_apply_fonts("".into(), font, font);
+        test.resize(320, 200);
+        settle(&mut test);
+        for action in ["Refresh", "Preview changes", "Apply"] {
+            action_is_not_vertically_clipped(&test, action);
+        }
+        render::snapshot(&test, &format!("metadata-minimum-{density}-{font}"));
     }
     ui::key(&test.window, Key::Escape);
     slint::platform::update_timers_and_animations();

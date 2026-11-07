@@ -24,9 +24,24 @@ fn missing_packages_leave_archive_capability_absent() {
     assert!(catalog.choose(Path::new("file.zip")).is_none());
 }
 
+fn archive_fixture() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.gz")
+}
+
+#[test]
+fn captured_archive_source_rejects_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source.gz");
+    fs::copy(archive_fixture(), &source).unwrap();
+    let captured = midnight_plugin_host::CapturedFile::capture(&source).unwrap();
+    fs::write(&source, b"changed").unwrap();
+    assert!(captured.revalidate().is_err());
+    assert!(captured.read_at(0, 5).is_err());
+}
+
 #[test]
 #[ignore = "requires ARCHIVE_WORKER executable built by the independent plugin"]
-fn real_sandboxed_worker_lists_reads_and_rejects_changed_source() {
+fn real_sandboxed_worker_lists_reads_and_rejects_cancellation() {
     let root = tempfile::tempdir_in(
         std::env::var_os("ARCHIVE_TEST_INSTALL_ROOT").expect("private installation root"),
     )
@@ -35,15 +50,9 @@ fn real_sandboxed_worker_lists_reads_and_rejects_changed_source() {
     install(root.path(), Path::new(&worker), "archives");
     let catalog = Catalog::discover(root.path()).unwrap();
     assert_eq!(catalog.packages.len(), 1, "{:?}", catalog.diagnostics);
-    let source = root.path().join("source.gz");
-    fs::write(
-        &source,
-        [
-            31, 139, 8, 0, 0, 0, 0, 0, 2, 3, 203, 72, 205, 201, 201, 7, 0, 134, 166, 16, 54, 5, 0,
-            0, 0,
-        ],
-    )
-    .unwrap();
+    // Use settled input: endpoint security can asynchronously update fresh test
+    // files' metadata. The separate test above covers changed native revisions.
+    let source = archive_fixture();
     let (package, format) = catalog.choose(&source).unwrap();
     let cancel = Cancellation::default();
     let cancelled = Cancellation::default();
@@ -61,8 +70,6 @@ fn real_sandboxed_worker_lists_reads_and_rejects_changed_source() {
         mount.read(entries[0].id.entry, 1, 3, &cancel).unwrap(),
         b"ell"
     );
-    fs::write(&source, b"changed").unwrap();
-    assert!(mount.read(entries[0].id.entry, 0, 5, &cancel).is_err());
     drop(mount);
     install(root.path(), Path::new(&worker), "duplicate");
     assert!(Catalog::discover(root.path()).unwrap().packages.is_empty());

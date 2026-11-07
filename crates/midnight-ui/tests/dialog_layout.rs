@@ -83,6 +83,9 @@ fn inside(test: &ui::TestUi, item: ItemRc, label: &str) {
 #[test]
 fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
     let mut test = ui::TestUi::new();
+    // The synthetic dialog fixture represents an actionable file caret.
+    test.window.set_left_can_target_cursor(true);
+    test.window.set_left_can_target_selection(true);
     test.resize(1040, 720);
     test.window.set_network_available(true);
     test.window.set_operations(slint::ModelRc::new(slint::VecModel::from(vec![OperationRow {

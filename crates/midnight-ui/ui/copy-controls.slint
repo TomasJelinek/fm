@@ -1,7 +1,8 @@
-import { LineEdit } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
-import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 
 export component CopyConflictDialog inherits Rectangle {
@@ -12,9 +13,11 @@ export component CopyConflictDialog inherits Rectangle {
     in property <bool> allow-alternate-name: true;
     callback decide(int, string);
     callback later();
+    callback move-dialog(length, length);
+    private property <bool> compact: root.height < 280px;
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     forward-focus: scope;
-    init => { name.text = root.initial-name; }
+    init => { name.text = root.initial-name; later-button.focus(); }
     changed token => { name.text = root.initial-name; }
     scope := FocusScope {
         forward-focus: later-button;
@@ -23,13 +26,19 @@ export component CopyConflictDialog inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: 16px; spacing: 10px;
-            HorizontalLayout {
-                spacing: 12px; cross-axis-alignment: center;
-                NativeActionImage { native-icon: root.native-icon; fallback-icon: FallbackIcons.copy; width: 36px; height: 36px; }
-                Text { text: "Item already exists"; color: Theme.text; font-size: Theme.font-size * 1.2; font-weight: 600; wrap: word-wrap; }
+            padding: root.compact ? 8px : 16px; spacing: root.compact ? 4px : 10px;
+            DialogHeader {
+                title: "Item already exists"; native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
+                compact: root.compact; text-size: Theme.font-size * 1.2;
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            DialogText { text: root.body; vertical-stretch: 1; }
+            content := ScrollView {
+                min-height: 0px; min-width: 0px; vertical-stretch: 1;
+                horizontal-scrollbar-policy: as-needed;
+                content-width: max(self.visible-width, Theme.font-size * 16);
+                VerticalLayout {
+                    spacing: root.compact ? 4px : 10px; alignment: start;
+            DialogText { text: root.body; height: max(80px, Theme.font-size * 5); }
             name := LineEdit {
                 visible: root.allow-alternate-name;
                 accessible-label: "Copy under a different name";
@@ -41,9 +50,18 @@ export component CopyConflictDialog inherits Rectangle {
                 HintedActionButton { text: "Skip all"; hint: "Skip all name conflicts in this job only."; clicked => { root.decide(1, ""); } }
                 if root.allow-alternate-name : HintedActionButton { text: "Copy as"; hint: "Copy using the entered name. Existing items are never replaced."; enabled: name.text != ""; clicked => { root.decide(2, name.text); } }
             }
+                }
+            }
             HorizontalLayout {
-                alignment: end; spacing: 8px;
-                HintedActionButton { text: "Cancel job"; hint: "Stop this job. Completed changes are retained."; clicked => { root.decide(3, ""); } }
+                spacing: 8px;
+                ScrollView {
+                    horizontal-stretch: 1; min-width: 0px;
+                    height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), cancel-job-button.preferred-height);
+                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    HorizontalLayout { alignment: end;
+                        cancel-job-button := HintedActionButton { text: "Cancel job"; hint: "Stop this job. Completed changes are retained."; clicked => { root.decide(3, ""); } }
+                    }
+                }
                 later-button := HintedActionButton { text: "Decide later"; hint: "Continue browsing; resolve this conflict from Jobs."; clicked => { root.later(); } }
             }
         }

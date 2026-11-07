@@ -143,15 +143,15 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "midnight-image-viewer-api"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "dc73fb35daec6f4f0ff6681449bb6902c7017841f8c536fd9b15e9d7ee642db9"
+checksum = "6fb5a14d480a38bb8f2712aa872891478c85d28a49c42dcf19dde1c237fb6ce5"
 
 [[package]]
 name = "midnight-image-viewer-sdk"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "043dbd1026e3b1454aa2048236b58f30d8117d2b0fef7ddd7cdb87b245c2cdb0"
+checksum = "b3d58a3982b9ea30277ac9b82477e718b17fe53b0e85447b222cf493f24cb696"
 dependencies = [
  "midnight-image-viewer-api",
  "midnight-worker-sdk",

@@ -18,6 +18,63 @@ fn ready() -> Presenter {
     p
 }
 #[test]
+fn parent_row_is_navigation_only_but_real_selection_can_be_deleted() {
+    let mut p = ready();
+    p.panes[0].parent_cursor = true;
+    p.panes[0].cursor = None;
+    for kind in [
+        MutationKind::Rename,
+        MutationKind::Delete(DeleteMode::Trash),
+        MutationKind::Delete(DeleteMode::Permanent),
+        MutationKind::EditMetadata,
+    ] {
+        p.start_operation(PaneId::Left, kind, &|_| {
+            panic!("parent must not queue a job")
+        });
+    }
+    p.copy_files(PaneId::Left, &|_| panic!("parent must not enter clipboard"));
+    p.request_copy_dialog(PaneId::Left, &|_| panic!("parent must not be copied"));
+    p.open_metadata(PaneId::Left, false, &|_| {
+        panic!("parent cannot edit metadata")
+    });
+    assert!(!p.has_live_operations());
+    set_selected(&mut p, PaneId::Left, &[EntryId(2)]);
+    let selected_path = p.panes[0].entries[1].path.clone();
+    p.start_operation(
+        PaneId::Left,
+        MutationKind::Delete(DeleteMode::Trash),
+        &|command| {
+            let Command::PrepareOperation(request) = command else {
+                panic!()
+            };
+            assert_eq!(request.focused, None);
+            assert_eq!(request.selection.len(), 1);
+            assert!(request.selection.contains_path(&selected_path));
+            true
+        },
+    );
+}
+
+#[test]
+fn parent_navigation_keeps_location_based_creation_available() {
+    for kind in [MutationKind::CreateDirectory, MutationKind::CreateFile] {
+        let mut p = ready();
+        p.panes[0].parent_cursor = true;
+        p.panes[0].cursor = None;
+        p.start_operation(PaneId::Left, kind, &|command| {
+            let Command::PrepareOperation(request) = command else {
+                panic!()
+            };
+            assert_eq!(request.kind, kind);
+            assert!(request.focused.is_none());
+            assert!(request.selection.is_empty());
+            true
+        });
+        assert!(p.has_live_operations());
+    }
+}
+
+#[test]
 fn rename_captures_focus_and_delete_captures_selection_without_mutating() {
     for kind in [
         MutationKind::Rename,

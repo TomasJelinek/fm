@@ -66,7 +66,7 @@ fn alt_history_wraps_without_changing_terminal_or_executing() {
         locations: vec![],
     });
     p.borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             windows_shell: WindowsShell::Cmd,
             command_history: vec![
                 CommandHistoryEntry {
@@ -79,7 +79,7 @@ fn alt_history_wraps_without_changing_terminal_or_executing() {
                 },
             ],
             ..Default::default()
-        })));
+        }))));
     refresh(&test.window, &p.borrow());
     test.window.invoke_set_command("draft".into(), 5);
     sent.borrow_mut().clear();

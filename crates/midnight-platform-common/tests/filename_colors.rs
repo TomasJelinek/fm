@@ -152,10 +152,47 @@ fn invalid_disabled_expressions_and_excessive_rules_fail_atomically() {
 }
 
 #[test]
-fn default_preferences_preserve_existing_empty_rule_behavior() {
+fn defaults_color_common_file_categories_and_preserve_folder_theme() {
     let preferences =
         decode_preferences(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
-    assert!(preferences.filename_colors.is_empty());
+    assert_eq!(preferences.filename_colors.len(), 5);
+    let compiled = CompiledFilenameColors::new(&preferences.filename_colors).unwrap();
+    let categories = ["main.RS", "app.exe", "photo.jpg", "movie.mp4", "report.pdf"];
+    let colors: std::collections::HashSet<_> = categories
+        .iter()
+        .map(|name| {
+            let color = compiled
+                .style(name.as_ref(), EntryKind::File)
+                .unwrap()
+                .foreground
+                .unwrap();
+            (color.0, color.1, color.2)
+        })
+        .collect();
+    assert_eq!(colors.len(), categories.len());
+    assert!(
+        compiled
+            .style("folder.rs".as_ref(), EntryKind::Directory)
+            .is_none()
+    );
+    assert!(
+        compiled
+            .style("unclassified.xyz".as_ref(), EntryKind::File)
+            .is_none()
+    );
+}
+
+#[test]
+fn deleting_all_presets_survives_restart() {
+    let preferences = UserPreferences {
+        filename_colors: Vec::new().into(),
+        ..Default::default()
+    };
+    let bytes = encode_preferences(preferences).unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(stored["version"], 14);
+    let restored = decode_preferences(&bytes).unwrap();
+    assert!(restored.filename_colors.is_empty());
     assert!(
         CompiledFilenameColors::new(&[])
             .unwrap()

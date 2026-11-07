@@ -8,6 +8,7 @@ import { PathPartRow } from "navigation-models.slint";
 // Paths are parsed by the backend. Each token contains a whole component,
 // preserving its Unicode shaping; the UI never reconstructs an operation path.
 export component PathNavigation inherits Rectangle {
+    in property <length> text-size: Theme.font-size;
     in property <string> path;
     in property <[PathPartRow]> parts;
     in property <string> hint;
@@ -53,7 +54,7 @@ export component PathNavigation inherits Rectangle {
         HorizontalLayout {
             spacing: 0px; alignment: start;
             if root.parts.length == 0 : Text {
-                text: root.path; color: Theme.text; font-size: Theme.font-size;
+                text: root.path; color: Theme.text; font-size: root.text-size;
                 vertical-alignment: center;
             }
             for part[index] in root.parts : Rectangle {
@@ -67,7 +68,7 @@ export component PathNavigation inherits Rectangle {
                 caption := Text {
                     x: 0px; width: parent.width; height: parent.height;
                     text: part.label; color: root.hovered-index >= index ? Theme.accent : Theme.text;
-                    font-size: Theme.font-size; vertical-alignment: center;
+                    font-size: root.text-size; vertical-alignment: center;
                 }
                 TouchArea {
                     private property <string> pressed-id;
@@ -119,7 +120,7 @@ export component PathNavigation inherits Rectangle {
         accessible-role: button; accessible-label: "Edit full folder path";
         accessible-action-default => { root.focus-editor(); }
         dots := Text {
-            text: "…"; color: Theme.text; font-size: Theme.font-size;
+            text: "…"; color: Theme.text; font-size: root.text-size;
             horizontal-alignment: center; vertical-alignment: center;
         }
         TouchArea { clicked => { root.focus-editor(); } }
@@ -134,6 +135,7 @@ export component PathNavigation inherits Rectangle {
             reject
         }
         editor := HintedLineEdit {
+            font-size: root.text-size;
             x: 0px; y: 0px; width: parent.width; height: parent.height;
             accessible-label: "Folder path";
             hint: root.hint;

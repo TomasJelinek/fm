@@ -85,7 +85,34 @@ impl Job {
             }
             roots.push_back(source);
         }
-        Ok(Self {
+        Ok(Self::from_sources(destination, roots, cancel, status))
+    }
+
+    pub(super) fn prepare_archive(
+        path: std::path::PathBuf,
+        roots: VecDeque<Box<dyn TransferSource>>,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+    ) -> Result<Self, FsError> {
+        let destination = service.prepare_transfer_destination(&path, &cancel)?;
+        if destination.path() != path {
+            return Err(error(
+                &path,
+                io::ErrorKind::InvalidInput,
+                "Provider returned a different destination.",
+            ));
+        }
+        Ok(Self::from_sources(destination, roots, cancel, status))
+    }
+
+    fn from_sources(
+        destination: Arc<dyn TransferDirectory>,
+        roots: VecDeque<Box<dyn TransferSource>>,
+        cancel: Cancellation,
+        status: Status,
+    ) -> Self {
+        Self {
             progress: snapshot(&status),
             status,
             cancel,
@@ -97,7 +124,7 @@ impl Job {
             decision: None,
             version: 0,
             skip_all: false,
-        })
+        }
     }
 
     pub(super) fn accept_decision(&mut self, decision: CopyDecision) -> bool {
@@ -263,8 +290,10 @@ impl Job {
         }
         match source.entry().item.kind {
             EntryKind::Directory => {
-                work.destination
-                    .reject_source_ancestor(source.entry().identity, &self.cancel)?;
+                if let Some(identity) = source.native_identity() {
+                    work.destination
+                        .reject_source_ancestor(identity, &self.cancel)?;
+                }
                 let destination = work
                     .destination
                     .create_directory(&work.name, &self.cancel)?;

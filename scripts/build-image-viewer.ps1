@@ -3,7 +3,8 @@ param(
     [string]$WorkerSdkConfig,
     [string]$AppDirectory,
     [switch]$Test,
-    [switch]$Offline
+    [switch]$Offline,
+    [ValidateSet('image', 'pdf')][string]$Viewer = 'image'
 )
 $ErrorActionPreference = 'Stop'
 if (-not $WorkerSdkConfig) { $WorkerSdkConfig = $env:MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG }
@@ -13,7 +14,7 @@ foreach ($variable in @('TEMP', 'TMP', 'CARGO_HOME', 'RUSTUP_HOME', 'PATH', 'CAR
     $savedEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable)
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$buildRoot = Join-Path $projectRoot '_build/image-viewer'
+$buildRoot = Join-Path $projectRoot "_build/$Viewer-viewer"
 $temporaryRoot = Join-Path $projectRoot '_build/tmp'
 New-Item -ItemType Directory -Force $buildRoot, $temporaryRoot | Out-Null
 $env:TEMP = $temporaryRoot
@@ -60,7 +61,7 @@ try {
         }
     }
     $WorkerSdkConfig = (Resolve-Path -LiteralPath $WorkerSdkConfig).Path
-    $pluginRoot = Join-Path $projectRoot 'plugins/midnight-viewer-image'
+    $pluginRoot = Join-Path $projectRoot "plugins/midnight-viewer-$Viewer"
     $pluginBuild = Join-Path $buildRoot 'windows-plugin'
     $fetch = @('--config', $WorkerSdkConfig, 'fetch', '--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'), '--locked')
     if ($Offline) { $fetch += '--offline' }
@@ -71,9 +72,15 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Image-viewer tests failed' }
     }
     & (Join-Path $pluginRoot 'scripts/build.ps1') -SdkConfig $WorkerSdkConfig -BuildRoot $pluginBuild `
-        -OutputDirectory (Join-Path $AppDirectory 'viewers/midnight-viewer-image') -Profile $Profile
+        -OutputDirectory (Join-Path $AppDirectory "viewers/midnight-viewer-$Viewer") -Profile $Profile
     if ($LASTEXITCODE -ne 0) { throw 'Image-viewer build failed' }
 } finally {
     Pop-Location
-    foreach ($variable in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable]) }
+    foreach ($variable in $savedEnvironment.Keys) {
+        if ($null -eq $savedEnvironment[$variable]) {
+            Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable])
+        }
+    }
 }

@@ -59,7 +59,7 @@ class ImageViewerPackages(unittest.TestCase):
     def test_malformed_worker_packages_fail_before_staging(self):
         package, original = self.package()
         path = package / "image-viewer.json"
-        cases = [("schema", True), ("protocol", 2), ("target", "wrong-target"),
+        cases = [("schema", True), ("protocol", 3), ("protocol", True), ("target", "wrong-target"),
                  ("executable", "../worker"), ("executable", "image-worker.exe"),
                  ("extensions", [".png"]), ("extensions", ["png", "png"]),
                  ("unknown", "ignored?"), ("name", "")]
@@ -69,6 +69,17 @@ class ImageViewerPackages(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
                 self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_paginated_pdf_protocol_preserves_executable_and_notices(self):
+        package, original = self.package("pdf", "midnight.viewer.pdf")
+        original.update(protocol=2, extensions=["pdf"], name="PDF viewer")
+        (package / "image-viewer.json").write_text(json.dumps(original), encoding="utf-8")
+        inventory = packaging.copy_viewer_packages(self.stage, self.viewers, self.target,
+                                                  required_ids=("midnight.viewer.pdf",))
+        self.assertEqual(inventory[0]["protocol"], 2)
+        self.assertEqual(inventory[0]["id"], "midnight.viewer.pdf")
+        self.assertTrue((self.stage / "viewers/pdf/notices/image-LICENSE").is_file())
+        self.assertIn("midnight.viewer.pdf", packaging.REQUIRED_VIEWERS)
 
     def test_duplicate_ids_and_ambiguous_native_worker_package_are_refused(self):
         package, _ = self.package()

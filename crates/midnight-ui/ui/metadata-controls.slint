@@ -3,7 +3,9 @@ import { HintedActionButton, HintedCheckBox, HintedComboBox, HintedLineEdit } fr
 import { ScrollView } from "std-widgets.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
-import { MetadataFileList, MetadataFileRow } from "metadata-list.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { MetadataFileRow } from "metadata-list.slint";
 export { MetadataFileRow }
 
 export struct MetadataDraft {
@@ -110,6 +112,8 @@ component MetadataTime inherits HorizontalLayout {
 }
 
 export component MetadataDialog inherits Rectangle {
+    in property <image> native-icon;
+    callback move-dialog(length, length);
     in property <string> token;
     in property <string> revision;
     in property <string> summary;
@@ -161,16 +165,19 @@ export component MetadataDialog inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: 16px; spacing: 10px;
-            Text {
-                text: "Attributes, times and case"; color: Theme.strong-text;
-                font-size: Theme.font-size * 1.2; font-weight: 600; wrap: word-wrap;
-            }
+            padding: root.height < 350px ? 6px : 16px; spacing: root.height < 350px ? 4px : 10px;
+            DialogHeader { title: "Attributes, times and case"; text-size: Theme.font-size * 1.2;
+                fallback-icon: FallbackIcons.attributes; compact: root.height < 350px;
+                dragged(dx, dy) => { root.move-dialog(dx, dy); } }
+            contents := ScrollView {
+                min-height: 0px; min-width: 0px; vertical-stretch: 1;
+                horizontal-scrollbar-policy: as-needed;
+                content-width: max(self.visible-width, 500px);
+                VerticalLayout {
+                    spacing: 10px; alignment: start;
             Text { text: root.summary; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
             DialogTabs { labels: ["Attributes", "Times", "Case", "Preview"]; current-index <=> root.topic; }
-            ScrollView {
-                horizontal-scrollbar-policy: always-off;
-                vertical-stretch: 1; min-height: 0px;
+            VerticalLayout {
                 VerticalLayout {
                     spacing: 10px; alignment: start;
                     if root.topic == 0 : VerticalLayout {
@@ -250,36 +257,42 @@ export component MetadataDialog inherits Rectangle {
                 color: root.draft-edited ? Theme.pending-size : Theme.secondary-text;
                 font-size: Theme.small-font; overflow: elide;
             }
-            MetadataFileList {
-                rows: root.rows; stale: root.draft-edited || !root.preview-current;
-                height: max(80px, min(190px, root.height * 0.28));
-            }
             if root.error != "" : ErrorNotice {
                 text: root.error;
                 min-height: max(56px, Theme.font-size * 2);
                 preferred-height: max(80px, Theme.font-size * 2.5);
                 max-height: max(100px, Theme.font-size * 3);
             }
-            HorizontalLayout {
-                spacing: 8px; alignment: end;
-                cancel-button := HintedActionButton {
-                    text: "Cancel"; hint: "Close the editor without applying the draft (Escape).";
-                    clicked => { root.cancel(); }
                 }
-                HintedActionButton {
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                ScrollView {
+                    horizontal-stretch: 1; min-width: 0px;
+                    height: max(32px, Theme.control-height + (root.width < 600px ? 12px : 0px), refresh-button.preferred-height);
+                    horizontal-scrollbar-policy: as-needed;
+                    vertical-scrollbar-policy: always-off;
+                    HorizontalLayout { spacing: 8px;
+                refresh-button := HintedActionButton {
                     text: "Refresh"; enabled: !root.busy;
                     hint: "Read the captured files again and preview the current draft. This does not apply changes.";
                     clicked => { root.preview(root.draft); }
                 }
                 HintedActionButton {
                     text: "Preview changes"; enabled: !root.busy;
-                    hint: "Validate this draft on the backend and inspect proposed names before Apply.";
+                    hint: "Validate the draft and review the requested changes before Apply.";
                     clicked => { root.topic = 3; root.preview(root.draft); }
                 }
                 HintedActionButton {
                     text: "Apply"; enabled: root.ready && !root.busy && !root.draft-edited;
                     hint: "Queue the exact reviewed draft. Conflicts offer Skip, Skip all or Cancel. Completed changes are retained if later steps fail.";
                     clicked => { root.confirm(0); }
+                }
+                    }
+                }
+                cancel-button := HintedActionButton {
+                    text: "Cancel"; hint: "Close the editor without applying the draft (Escape).";
+                    clicked => { root.cancel(); }
                 }
             }
         }

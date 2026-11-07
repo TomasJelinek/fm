@@ -3,13 +3,14 @@ import { HintedCheckBox, HintedComboBox, HintedActionButton } from "hinted-input
 import { CompactPicker } from "controls.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
-import { KeyboardEditor } from "keyboard-editor.slint";
+import { KeyboardEditor, KeyboardEditorView } from "keyboard-editor.slint";
 import { OptionsNavigation } from "options-navigation.slint";
 import { EditorOptions } from "editor-options.slint";
 import { PluginOptions } from "plugin-options.slint";
 import { ThumbnailOptions } from "thumbnail-options.slint";
 import { ArchiveOptions } from "archive-options.slint";
 import { ColorOptions } from "color-options.slint";
+import { DialogHeader } from "dialog-frame.slint";
 
 component OptionPicker inherits Rectangle {
     in property <string> label;
@@ -66,21 +67,44 @@ export component OptionsBody inherits Rectangle {
     callback thumbnail-options-changed(bool, bool, int);
     callback thumbnail-clear-cache();
     callback close();
+    callback move-dialog(length, length);
+    private property <bool> compact: root.height < 350px;
+    private property <bool> narrow: root.width < 600px;
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
+    init => { done.focus(); }
+    forward-focus: option-focus;
+    option-focus := FocusScope {
+    forward-focus: done;
+    capture-key-pressed(event) => {
+        if event.text == Key.Escape && !KeyboardEditorView.capturing {
+            root.close(); return accept;
+        }
+        reject
+    }
     VerticalLayout {
-        padding: 18px; spacing: 12px;
-        Text { text: "Options"; color: Theme.strong-text; font-size: max(20px, Theme.font-size + 4px); }
+        padding: root.compact ? 6px : 18px; spacing: root.compact ? 4px : 12px;
+        DialogHeader { title: "Options"; compact: root.compact;
+            dragged(dx, dy) => { root.move-dialog(dx, dy); } }
         Rectangle { height: 1px; background: Theme.frame; }
+        if root.narrow : HintedComboBox {
+            accessible-label: "Options topic";
+            model: ["Panel", "Appearance", "Command", "Keyboard", "Editors", "Plugins", "Previews", "Archives", "Colors"];
+            current-index: root.topic-index;
+            hint: "Choose the Options page.";
+            selected(value) => { root.topic-index = self.current-index; }
+        }
         HorizontalLayout {
-            spacing: 18px;
-            OptionsNavigation {
+            spacing: root.narrow ? 0px : 18px;
+            min-height: 0px; vertical-stretch: 1;
+            if !root.narrow : OptionsNavigation {
                 width: max(144px, Theme.font-size * 6 + 28px);
                 selected <=> root.topic-index;
             }
             content := ScrollView {
-                horizontal-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
+                horizontal-stretch: 1; min-height: 0px; min-width: 0px;
+                horizontal-scrollbar-policy: root.narrow ? as-needed : always-off;
+                content-width: max(self.visible-width, root.narrow ? 460px : 0px);
             if root.topic-index == 7 : ArchiveOptions { }
             if root.topic-index == 8 : ColorOptions { }
             if root.topic-index == 6 : ThumbnailOptions {
@@ -169,12 +193,19 @@ export component OptionsBody inherits Rectangle {
         }
         Rectangle { height: 1px; background: Theme.frame; }
         HorizontalLayout {
-            spacing: 10px; alignment: end;
-            HintedActionButton {
+            spacing: 10px;
+            ScrollView {
+                horizontal-stretch: 1; min-width: 0px;
+                height: max(32px, Theme.control-height + (root.narrow ? 12px : 0px), save-again-button.preferred-height);
+                horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                HorizontalLayout { alignment: end;
+            save-again-button := HintedActionButton {
                 native-icon: root.action-icons.save-again; fallback-icon: FallbackIcons.save-again;
                 text: "Save again"; enabled: root.preferences-unsaved; min-height: Theme.control-height;
                 hint: "Retry saving preferences. Changes apply immediately.";
                 clicked => { root.preferences-changed(root.theme-index, root.density-index, 2); }
+            }
+                }
             }
             done := HintedActionButton {
                 native-icon: root.action-icons.done; fallback-icon: FallbackIcons.done;
@@ -183,6 +214,7 @@ export component OptionsBody inherits Rectangle {
                 clicked => { root.close(); }
             }
         }
+    }
     }
 }
 import { ThemePalettes } from "theme-palettes.slint";

@@ -31,7 +31,7 @@ fn installed_navigation_bridge_uses_ids_and_focuses_requested_panel() {
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let sent = commands.clone();
     install(

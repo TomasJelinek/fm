@@ -2,6 +2,7 @@ import { Button, ScrollView } from "std-widgets.slint";
 import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
+import { DialogHeader } from "dialog-frame.slint";
 
 export struct PanelFilterView {
     open: bool, pane: int, enabled: bool, regex: bool,
@@ -12,6 +13,9 @@ export component PanelFilterDialog inherits Rectangle {
     in property <PanelFilterView> model;
     callback apply(bool, bool, string, bool);
     callback cancel();
+    callback move-dialog(length, length);
+    changed width => { if root.width < 400px { cancel-button.focus(); } }
+    changed height => { if root.height < 350px { cancel-button.focus(); } }
     public function begin() {
         enabled.checked = root.model.enabled;
         regex.checked = root.model.regex;
@@ -27,9 +31,11 @@ export component PanelFilterDialog inherits Rectangle {
             return reject;
         }
         VerticalLayout {
-            padding: 20px; spacing: 12px;
-            Text { text: "Panel file filter"; color: Theme.strong-text; font-size: Theme.font-size + 5px; wrap: word-wrap; }
+            padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 12px;
+            DialogHeader { title: "Panel file filter"; compact: root.height < 280px;
+                dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             ScrollView {
+                min-height: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 12px; alignment: start;
@@ -58,7 +64,7 @@ export component PanelFilterDialog inherits Rectangle {
                 spacing: 12px;
                 Button { text: "Apply"; enabled: !root.model.busy; min-height: Theme.control-height;
                     clicked => { root.apply(enabled.checked, regex.checked, expression.text, names.checked); } }
-                Button { text: "Cancel"; min-height: Theme.control-height; clicked => { root.cancel(); } }
+                cancel-button := Button { text: "Cancel"; min-height: Theme.control-height; clicked => { root.cancel(); } }
             }
         }
     }

@@ -43,26 +43,61 @@ impl DirectoryService for ControlledFileSystem {
             }
         }
         for index in 0..300 {
-            if cancel.is_cancelled()
-                || !emit(Entry::new(
-                    EntryId(index),
-                    path.join(format!("file-{index:03}")),
-                    EntryKind::File,
-                ))
-            {
+            let mut entry = Entry::new(
+                EntryId(index),
+                path.join(format!("file-{index:03}")),
+                EntryKind::File,
+            );
+            if path == Path::new("cached") {
+                entry.metadata.size = Some(7);
+            }
+            if cancel.is_cancelled() || !emit(entry) {
                 break;
             }
         }
         Ok(())
     }
 
+    fn listing_metadata_complete(&self, entry: &Entry) -> bool {
+        entry.path.starts_with("cached")
+    }
+
     fn entry_metadata(&self, _path: &Path) -> Result<EntryMetadata, FsError> {
+        assert!(
+            !_path.starts_with("cached"),
+            "cached listing must not re-read metadata"
+        );
         Ok(EntryMetadata {
             size: Some(7),
             modified: None,
             ..EntryMetadata::default()
         })
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn complete_enumeration_metadata_is_published_without_another_read() {
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(16);
+    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "cached"))
+        .await
+        .unwrap();
+    loop {
+        match next(&mut events).await {
+            Event::MetadataBatch { .. } => panic!("no redundant metadata batch"),
+            Event::ListingFinished { entries, .. } => {
+                assert_eq!(entries.len(), 300);
+                assert!(entries.iter().all(|entry| entry.metadata.size == Some(7)));
+                break;
+            }
+            Event::ListingFailed { error, .. } => panic!("{error}"),
+            _ => {}
+        }
+    }
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
 }
 
 impl VolumeService for ControlledFileSystem {

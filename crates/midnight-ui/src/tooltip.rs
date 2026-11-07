@@ -9,7 +9,10 @@ use i_slint_core::{
     lengths::LogicalLength,
     window::{WindowInner, WindowKind},
 };
-use slint::{ComponentHandle, PlatformError, platform::WindowEvent};
+use slint::{
+    ComponentHandle, PlatformError,
+    platform::{PointerEventButton, WindowEvent},
+};
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -59,6 +62,25 @@ pub(crate) fn install(window: &MainWindow) -> Result<(), PlatformError> {
         for window in targets {
             if !std::ptr::eq(adapter.window(), window.window()) {
                 continue;
+            }
+            // Flickable may defer child pointer-down by 100ms. Preserve the footer's
+            // actual press action/pane before modifiers or focus can change.
+            match event {
+                WindowEvent::PointerPressed {
+                    position,
+                    button: PointerEventButton::Left,
+                } => {
+                    window.invoke_capture_function_press(position.x, position.y);
+                }
+                WindowEvent::PointerReleased {
+                    button: PointerEventButton::Left,
+                    ..
+                }
+                | WindowEvent::PointerExited
+                | WindowEvent::WindowActiveChanged(false) => {
+                    window.invoke_release_function_press();
+                }
+                _ => {}
             }
             let global = window.global::<TooltipPlacement>();
             let size = match event {

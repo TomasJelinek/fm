@@ -11,14 +11,21 @@ use std::{
 };
 
 pub(crate) enum Event {
-    Opened(Metadata),
-    Frame { revision: u64, frame: Frame },
+    Opened {
+        pages: Vec<Metadata>,
+        document: bool,
+    },
+    Frame {
+        revision: u64,
+        frame: Frame,
+    },
     Failed(String),
 }
 
 struct Render {
     revision: u64,
     viewport: Viewport,
+    page: usize,
 }
 
 pub(crate) struct ImageWorker {
@@ -41,14 +48,28 @@ impl ImageWorker {
                     let mut session =
                         ImageSession::open(&provider, source, &stopped, Duration::from_secs(30))
                             .map_err(|error| error.to_string())?;
-                    if output.try_send(Event::Opened(session.metadata())).is_err() {
+                    let pages = (0..session.page_count())
+                        .filter_map(|page| session.page_metadata(page))
+                        .collect();
+                    if output
+                        .try_send(Event::Opened {
+                            pages,
+                            document: session.is_document(),
+                        })
+                        .is_err()
+                    {
                         return Ok(());
                     }
                     while !stopped.load(Ordering::Acquire) {
                         match requests.recv_timeout(Duration::from_millis(10)) {
                             Ok(request) => {
                                 let mut frame = session
-                                    .render(request.viewport, &stopped, Duration::from_secs(15))
+                                    .render_page(
+                                        request.page,
+                                        request.viewport,
+                                        &stopped,
+                                        Duration::from_secs(15),
+                                    )
                                     .map_err(|error| error.to_string())?;
                                 crate::image_pixels::premultiply(&mut frame.rgba);
                                 if stopped.load(Ordering::Acquire)
@@ -82,8 +103,14 @@ impl ImageWorker {
         })
     }
 
-    pub fn render(&self, revision: u64, viewport: Viewport) -> bool {
-        self.sender.try_send(Render { revision, viewport }).is_ok()
+    pub fn render(&self, revision: u64, page: usize, viewport: Viewport) -> bool {
+        self.sender
+            .try_send(Render {
+                revision,
+                page,
+                viewport,
+            })
+            .is_ok()
     }
 
     pub fn cancel(&self) {

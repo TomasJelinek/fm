@@ -18,6 +18,7 @@ mod generated {
     slint::include_modules!();
 }
 pub use generated::ViewerWindow;
+pub use midnight_ui_input::WindowPlacement;
 
 pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
 
@@ -49,7 +50,7 @@ impl ViewerWindows {
         &self,
         launch: ViewerLaunch,
         appearance: ViewerAppearance,
-        size: slint::LogicalSize,
+        placement: impl Into<WindowPlacement>,
         keys: KeyResolver,
         copy: Rc<dyn Fn(String)>,
     ) -> Result<slint::Weak<ViewerWindow>, String> {
@@ -60,7 +61,10 @@ impl ViewerWindows {
             return Err("Close a viewer before opening another (maximum four windows).".into());
         }
         let window = ViewerWindow::new().map_err(|e| e.to_string())?;
-        window.window().set_size(size);
+        let placement = placement.into();
+        let size = placement.logical_size();
+        window.set_compact(size.width < 500.0);
+        placement.apply(window.window());
         window.set_foreground(color(appearance.foreground));
         window.set_background_color(color(appearance.background));
         window.set_accent(color(appearance.accent));
@@ -101,6 +105,7 @@ impl ViewerWindows {
                 }
                 let window = &open.window;
                 let scale = window.window().scale_factor();
+                window.set_compact(window.window().size().to_logical(scale).width < 500.0);
                 let width = (window.get_content_width() * scale).max(1.0) as u32;
                 let height = (window.get_content_height() * scale).max(1.0) as u32;
                 let geometry = (width, height, scale.to_bits());
@@ -140,6 +145,15 @@ impl ViewerWindows {
                                 window.invoke_focus_content();
                             }
                             window.set_image_mode(image_mode);
+                            window.set_document_page(
+                                frame.image.as_ref().map_or(0, |image| image.page as i32),
+                            );
+                            window.set_document_pages(
+                                frame
+                                    .image
+                                    .as_ref()
+                                    .map_or(0, |image| image.page_count as i32),
+                            );
                             window.set_zoom_percent(
                                 frame
                                     .image
@@ -210,6 +224,10 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        if midnight_ui_input::native_escape_pressed(event) {
+            close(&open);
+            return EventResult::PreventDefault;
+        }
         let consumed = native_state.borrow_mut().handle(event, |chord| {
             native_keys(&chord, !open.window.get_content_focused())
                 .is_some_and(|action| dispatch_key(&open, &action))
@@ -225,6 +243,10 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
         let Some(open) = weak.upgrade() else {
             return false;
         };
+        if midnight_ui_input::escape_pressed(&event) {
+            close(&open);
+            return true;
+        }
         let Some(chord) = native.borrow().logical_chord(&event) else {
             return false;
         };
@@ -264,6 +286,19 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             return true;
         }
         "viewer.next-file" => ViewerInput::NextFile,
+        "viewer.document-previous" | "viewer.document-next" => {
+            if open.window.get_document_page() == 0 {
+                return false;
+            }
+            ViewerInput::DocumentPage {
+                frame: open.frame.get(),
+                delta: if action == "viewer.document-next" {
+                    1
+                } else {
+                    -1
+                },
+            }
+        }
         "viewer.wrap" => ViewerInput::Wrap(!open.window.get_wrap_enabled()),
         "viewer.zoom-in" | "viewer.zoom-out" | "viewer.fit" | "viewer.actual-pixels" => {
             if !open.window.get_image_mode() {
@@ -358,6 +393,15 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
 }
 
 fn bind_image(open: &Rc<OpenWindow>) {
+    let weak = Rc::downgrade(open);
+    open.window.on_document_turn(move |delta| {
+        if let Some(open) = weak.upgrade() {
+            open.session.send(ViewerInput::DocumentPage {
+                frame: open.frame.get(),
+                delta,
+            });
+        }
+    });
     let weak = Rc::downgrade(open);
     open.window.on_image_command(move |command| {
         if let Some(open) = weak.upgrade() {

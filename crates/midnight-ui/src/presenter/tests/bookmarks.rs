@@ -16,7 +16,7 @@ fn hot_path_menu_labels_include_slots_one_through_zero_and_actual_keys() {
 
 fn ready(left: PathBuf, right: PathBuf) -> Presenter {
     let mut p = Presenter::new(left, right);
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     p
 }
 
@@ -202,7 +202,7 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
     );
     let local = p.bookmarks()[0].clone();
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             theme: PreferenceTheme::Light,
             bookmarks: vec![Bookmark {
                 id: BookmarkId(40),
@@ -211,7 +211,7 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
                 slot: Some(5),
             }],
             ..Default::default()
-        })),
+        }))),
         &|command| {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
@@ -242,7 +242,7 @@ fn rejected_save_keeps_bookmark_and_retry_preserves_latest_global_choices() {
         );
         true
     });
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert_eq!(p.bookmarks(), [bookmark]);
     assert_eq!(p.preferences.values.theme, PreferenceTheme::Dark);
 }
@@ -262,7 +262,7 @@ fn invalid_bookmarks_and_unknown_slots_do_not_dispatch() {
 #[test]
 fn removed_loaded_identity_is_never_reused_by_a_later_bookmark() {
     let mut p = Presenter::new(test_root(), test_root());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+    p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
         bookmarks: vec![Bookmark {
             id: BookmarkId(500),
             name: "Loaded".into(),
@@ -270,7 +270,7 @@ fn removed_loaded_identity_is_never_reused_by_a_later_bookmark() {
             slot: None,
         }],
         ..Default::default()
-    })));
+    }))));
     assert!(p.remove_bookmark(BookmarkId(500), &|_| true));
     assert!(p.add_bookmark(PaneId::Left, "New".into(), None, &|_| true));
     assert_eq!(p.bookmarks()[0].id, BookmarkId(501));

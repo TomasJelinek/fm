@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // Application actions are used only when the platform reports no native menu.
@@ -12,6 +13,14 @@ export component FileActionMenu inherits Rectangle {
     changed token => {
         root.committing = false;
         root.current = 0;
+    }
+    changed current => { root.reveal-current(); }
+    function reveal-current() {
+        let top = root.current * Theme.control-height;
+        if top < -menu-scroll.content-y { menu-scroll.content-y = -top; }
+        else if top + Theme.control-height > -menu-scroll.content-y + menu-scroll.visible-height {
+            menu-scroll.content-y = min(0px, menu-scroll.visible-height - top - Theme.control-height);
+        }
     }
     pure function action-enabled(index: int) -> bool {
         return root.mutable-target || (index != 3 && index != 4);
@@ -47,8 +56,15 @@ export component FileActionMenu inherits Rectangle {
                 }
                 reject
             }
-            VerticalLayout {
-                padding: 6px; spacing: 0px;
+            menu-scroll := ScrollView {
+                x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: Theme.control-height * 6;
+                changed visible-height => { root.reveal-current(); }
+                changed content-height => { root.reveal-current(); }
+                VerticalLayout {
+                padding: 0px; spacing: 0px;
                 for title[index] in ["Open", "Copy", "Paste", "Rename", "Move to Trash", "Properties"] : Rectangle {
                     height: Theme.control-height;
                     background: area.has-hover || root.current == index ? Theme.hover : transparent;
@@ -67,6 +83,7 @@ export component FileActionMenu inherits Rectangle {
                         enabled: root.action-enabled(index);
                         clicked => { root.choose(index); }
                     }
+                }
                 }
             }
         }

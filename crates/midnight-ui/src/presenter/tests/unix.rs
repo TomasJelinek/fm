@@ -7,13 +7,13 @@ pub(super) fn test_root() -> PathBuf {
 #[test]
 fn unique_bookmarks_compare_native_bytes_without_display_loss() {
     use crate::Presenter;
-    use midnight_core::{Event, PaneId, UserPreferences};
+    use midnight_core::{Event, PaneId};
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let first = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x80".to_vec()));
     let second = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x81".to_vec()));
     assert_eq!(first.to_string_lossy(), second.to_string_lossy());
     let mut p = Presenter::new(first.clone(), second.clone());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
     assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
     assert!(
@@ -60,11 +60,11 @@ fn native_choice_tokens_preserve_non_utf8_bytes_and_reject_display_alias_replace
 #[test]
 fn bookmark_and_tab_actions_preserve_non_utf8_native_bytes() {
     use crate::Presenter;
-    use midnight_core::{Command, Event, PaneId, UserPreferences};
+    use midnight_core::{Command, Event, PaneId};
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let path = PathBuf::from(OsString::from_vec(b"/tmp/\xff".to_vec()));
     let mut p = Presenter::new(path.clone(), test_root());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(
         p.add_bookmark(PaneId::Left, "Raw native".into(), Some(1), &|command| {
             let Command::SavePreferences { preferences, .. } = command else {

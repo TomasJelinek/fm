@@ -17,6 +17,12 @@ pub enum Format {
     Gzip = 3,
     TarGzip = 4,
     SevenZip = 5,
+    Xz = 6,
+    TarXz = 7,
+    Bzip2 = 8,
+    TarBzip2 = 9,
+    Zstd = 10,
+    TarZstd = 11,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

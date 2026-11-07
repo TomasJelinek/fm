@@ -78,6 +78,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
 | Ctrl+F8 | Unassigned by default; may be configured |
 | Ctrl+F10 | Compare the two displayed directories by size and/or modified time; select differences |
+| Ctrl+Shift+C | Compare two selected files in the active panel, or one selected/focused file per panel; image pairs support Side-by-Side, Swipe and Onion Skin |
 | Ctrl+F11 | Maximize the active panel; press again to restore the previous split |
 | Ctrl+F12 | Configure the active panel's saved wildcard or regular-expression file filter |
 | Ctrl+Shift+S / Ctrl+Shift+F10 | Start or cancel all-folder size calculation in the active pane |
@@ -230,6 +231,8 @@ Viewer windows have their own configurable shortcut context:
 | Ctrl+Minus | Zoom image out |
 | Ctrl+0 | Fit image without upscaling |
 | Ctrl+1 | Actual image pixels (1:1) |
+| Ctrl+PageUp / Ctrl+PageDown | Previous / next PDF document page; also available as page buttons |
+| F7 / Shift+F7 in file comparison | Next / previous text difference; configurable as `compare.next-difference` / `compare.previous-difference` |
 
 In image mode, Ctrl+wheel zooms around the pointer and dragging pans the image.
 Text search/wrap controls are hidden for images. The same Escape/Space window
@@ -245,6 +248,15 @@ Bulk selection runs through the backend and excludes `..`. Text editors retain
 their ordinary Ctrl+A behavior. The requested Ctrl+D takes precedence over
 Total Commander's bookmark meaning. During progressive listing, all/invert may
 wait for that listing to complete; input remains responsive.
+
+The synthetic `..` row is navigation only: it cannot be renamed, viewed, edited,
+copied, dragged, deleted or have its attributes changed. With no real selection,
+the corresponding footer buttons are disabled. If real entries are selected,
+Copy/Delete still target that captured selection even when the caret is on `..`;
+Rename/View/Edit require a real focused entry. Creating a file/folder and pasting
+into the current location remain available. This follows Salamander's parent-row
+enablers in `src/mainwnd1.cpp:2748–2910`; backend target validation also rejects
+paths ending in parent navigation instead of relying only on disabled UI controls.
 
 Behavioral references: local Salamander `src/salamand.rc:61–102` and
 `src/fileswn0.cpp:1220–1260`. Requested Ctrl+P/Ctrl+Enter behavior and folder-tab

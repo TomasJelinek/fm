@@ -10,7 +10,7 @@ fn binding(action: &str, keys: &[&str]) -> ShortcutBinding {
 #[test]
 fn keyboard_changes_validate_before_replacing_aliases_or_saving() {
     let mut p = Presenter::new("left".into(), "right".into());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     let sent = RefCell::new(Vec::new());
     let send = |command| {
         sent.borrow_mut().push(command);
@@ -89,10 +89,10 @@ fn shortcut_cache_survives_unrelated_preferences_and_early_edits_survive_initial
         "theme changes must not recompile keys"
     );
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             shortcuts: vec![binding("files.copy", &["Ctrl+Alt+K"])],
             ..Default::default()
-        })),
+        }))),
         &send,
     );
     assert_eq!(
@@ -116,7 +116,7 @@ fn shortcut_cache_survives_unrelated_preferences_and_early_edits_survive_initial
 #[test]
 fn shortcut_scope_explains_each_alias_when_native_search_rules_differ() {
     let mut p = Presenter::new("left".into(), "right".into());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(p.change_shortcuts("files.copy", vec![], &|_| true));
     assert!(
         p.change_shortcuts("files.rename", vec!["Ctrl+C".into(), "F2".into()], &|_| {

@@ -6,6 +6,13 @@ use slint::winit_030::winit::{
 };
 use std::collections::HashSet;
 
+/// Catch Escape before a native popup or focused control can consume it.
+pub fn native_escape_pressed(event: &WindowEvent) -> bool {
+    matches!(event, WindowEvent::KeyboardInput { event, is_synthetic: false, .. }
+        if event.state == ElementState::Pressed
+            && event.logical_key == Key::Named(NamedKey::Escape))
+}
+
 struct KeyInput<'a> {
     physical: PhysicalKey,
     logical: Key<&'a str>,

@@ -177,6 +177,7 @@ pub enum PanelViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
+    pub window_geometry: Option<crate::WindowGeometry>,
     /// Per-extension archive browsing choices; absent keys use the catalog default.
     pub archive_association_overrides: BTreeMap<String, bool>,
     pub disabled_viewer_plugins: Vec<String>,
@@ -216,6 +217,7 @@ pub const MAX_FONT_FAMILY_BYTES: usize = 512;
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            window_geometry: None,
             archive_association_overrides: BTreeMap::new(),
             disabled_viewer_plugins: Vec::new(),
             editor: crate::EditorPreferences::default(),
@@ -236,7 +238,7 @@ impl Default for UserPreferences {
             thumbnails_network: false,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),
-            filename_colors: Default::default(),
+            filename_colors: crate::default_filename_colors().into(),
         }
     }
 }
@@ -295,6 +297,11 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if let Some(geometry) = &self.window_geometry
+            && let Err(error) = geometry.validate()
+        {
+            message = Some(error);
+        }
         if self.archive_association_overrides.keys().any(|extension| {
             !crate::ARCHIVE_ASSOCIATIONS
                 .iter()

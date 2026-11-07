@@ -3,6 +3,8 @@
 
 mod logical;
 mod native;
+mod placement;
 
-pub use logical::chord;
-pub use native::ShortcutState;
+pub use logical::{chord, escape_pressed};
+pub use native::{ShortcutState, native_escape_pressed};
+pub use placement::WindowPlacement;

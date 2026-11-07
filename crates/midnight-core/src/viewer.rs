@@ -91,6 +91,9 @@ pub struct ViewerImageInfo {
     pub height: u32,
     pub zoom: f64,
     pub fitted: bool,
+    /// One-based document page; zero for ordinary images.
+    pub page: u32,
+    pub page_count: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +113,10 @@ pub enum ViewerInput {
     Image {
         frame: u64,
         input: ViewerImageInput,
+    },
+    DocumentPage {
+        frame: u64,
+        delta: i32,
     },
     Search {
         query: String,

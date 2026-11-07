@@ -191,7 +191,7 @@ async fn run(service: Arc<dyn SettingsService>, outbox: Outbox, shared: Arc<Shar
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .loading = false;
-                Event::PreferencesLoaded(result)
+                Event::PreferencesLoaded(result.map(Box::new))
             }
             Work::Save(save) => {
                 let save = *save;

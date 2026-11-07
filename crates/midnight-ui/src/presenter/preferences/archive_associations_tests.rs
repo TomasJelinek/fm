@@ -35,7 +35,7 @@ fn early_archive_choices_override_only_their_saved_extensions() {
     let saved = RefCell::new(Vec::new());
     presenter.flush_loaded_preferences(&|command| {
         if let Command::SavePreferences { preferences, .. } = command {
-            saved.borrow_mut().push(preferences);
+            saved.borrow_mut().push(*preferences);
         }
         true
     });
@@ -93,7 +93,7 @@ fn toggling_document_browsing_applies_immediately_and_saves_without_restart() {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };
-            saved.borrow_mut().push(preferences);
+            saved.borrow_mut().push(*preferences);
             true
         });
         assert_eq!(presenter.can_browse_archive(&entry), enabled);

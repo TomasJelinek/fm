@@ -1,6 +1,6 @@
 //! Exercise the real timer, presenter-backed models and Slint redraw together.
 use super::*;
-use midnight_core::{Event, UserPreferences};
+use midnight_core::Event;
 use slint::platform::{
     Platform, PlatformError, WindowAdapter,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -23,7 +23,7 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     midnight_ui::install(&window, presenter.clone(), Rc::new(|_| true));
     window.show().unwrap();
     native.set_size(slint::PhysicalSize::new(1000, 700));

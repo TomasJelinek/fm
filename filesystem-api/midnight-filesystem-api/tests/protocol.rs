@@ -2,6 +2,32 @@ use midnight_filesystem_api::*;
 use std::io::Cursor;
 
 #[test]
+fn compression_format_tags_round_trip_without_changing_existing_tags() {
+    for format in [
+        Format::Zip,
+        Format::Tar,
+        Format::Gzip,
+        Format::TarGzip,
+        Format::SevenZip,
+        Format::Xz,
+        Format::TarXz,
+        Format::Bzip2,
+        Format::TarBzip2,
+        Format::Zstd,
+        Format::TarZstd,
+    ] {
+        let message = Message::Open {
+            request: 1,
+            format,
+            length: 123,
+        };
+        let mut bytes = Vec::new();
+        write_message(&mut bytes, &message).unwrap();
+        assert_eq!(read_message(&mut Cursor::new(bytes)).unwrap(), message);
+    }
+}
+
+#[test]
 fn source_requests_and_opaque_directory_members_round_trip() {
     let messages = [
         Message::Open {

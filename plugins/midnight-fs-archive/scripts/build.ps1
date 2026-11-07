@@ -44,7 +44,7 @@ version = "0.1.0"
 entry_executable = "midnight-fs-archive.exe"
 target = "$target"
 protocol = 1
-formats = ["zip", "tar", "gzip", "tar-gzip", "7z"]
+formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 "@
         [IO.File]::WriteAllText((Join-Path $package 'plugin.toml'), $manifest.Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
         & python (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --output (Join-Path $package 'licenses')

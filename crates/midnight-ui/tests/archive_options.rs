@@ -8,7 +8,7 @@ use i_slint_core::{
     items::AccessibleRole,
     window::{PopupWindowLocation, WindowInner, WindowKind},
 };
-use midnight_core::{ARCHIVE_ASSOCIATIONS, Command, Event, UserPreferences};
+use midnight_core::{ARCHIVE_ASSOCIATIONS, Command, Event};
 use midnight_ui::{ArchiveOptionsView, Presenter};
 use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, rc::Rc};
@@ -72,7 +72,7 @@ fn archives_topic_has_individual_archive_and_document_checkboxes() {
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let saved = Rc::new(RefCell::new(Vec::new()));
     let captured = saved.clone();
     midnight_ui::install(

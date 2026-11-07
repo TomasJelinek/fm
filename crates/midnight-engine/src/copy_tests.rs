@@ -6,6 +6,8 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
+#[path = "archive_copy_tests.rs"]
+mod archive;
 #[path = "copy_queue_tests.rs"]
 mod queue;
 

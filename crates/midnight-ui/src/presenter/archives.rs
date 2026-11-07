@@ -10,7 +10,7 @@ pub(super) struct ArchivePane {
     requested_history: Option<usize>,
     pub(super) selected: Arc<HashSet<EntryId>>,
     totals: ArchiveSelectionTotals,
-    selection_pending: bool,
+    pub(super) selection_pending: bool,
 }
 impl ArchivePane {
     pub(super) fn unavailable(address: ArchiveAddress, origin: PathBuf) -> Self {
@@ -237,7 +237,10 @@ impl Presenter {
             return false;
         };
         if node.kind != EntryKind::Directory {
-            self.desktop.report("Archive member", "Use F3 to view a readable member. External launch and extraction are unavailable for this read-only provider.".into());
+            self.desktop.report(
+                "Archive member",
+                "Use F3 to view this member or F5 to copy it to a native folder. External launch inside an archive is unavailable.".into(),
+            );
             return false;
         }
         let mut location = archive.location.clone();

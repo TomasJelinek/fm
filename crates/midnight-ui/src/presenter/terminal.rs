@@ -389,10 +389,10 @@ mod tests {
             locations: vec![],
         });
         p.track_draft(true);
-        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             windows_shell: WindowsShell::Cmd,
             ..Default::default()
-        })));
+        }))));
         assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
         p.change_terminal(1, true, &|_| {
@@ -415,10 +415,10 @@ mod tests {
             locations: vec![],
         });
         assert_eq!(p.desktop.draft_shell, Some(ShellFlavor::PowerShell));
-        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             windows_shell: WindowsShell::Cmd,
             ..Default::default()
-        })));
+        }))));
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
     }
 
@@ -464,22 +464,16 @@ mod tests {
         });
         assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
         assert!(sent.borrow().is_empty(), "saves wait for the first load");
-        p.apply_with_sender(
-            Event::PreferencesLoaded(Ok(UserPreferences::default())),
-            &|command| {
-                sent.borrow_mut().push(command);
-                true
-            },
-        );
+        p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
         assert!(matches!(
-            sent.borrow()[0],
+            &sent.borrow()[0],
             Command::SavePreferences {
-                preferences: UserPreferences {
-                    windows_shell: WindowsShell::Cmd,
-                    ..
-                },
+                preferences,
                 ..
-            }
+            } if preferences.windows_shell == WindowsShell::Cmd
         ));
         assert_eq!(sent.borrow().len(), 1);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));

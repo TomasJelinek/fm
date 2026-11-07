@@ -320,13 +320,13 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(UserPreferences {
+            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
                 density,
                 desktop_font_size: font,
                 touch_font_size: font,
                 theme: scheme,
                 ..Default::default()
-            })));
+            }))));
         presenter.borrow_mut().apply(Event::DesktopContext {
             shell: ShellFlavor::Posix,
             locations: vec![NavigationLocation {

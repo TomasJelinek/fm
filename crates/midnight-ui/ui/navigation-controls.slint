@@ -1,3 +1,4 @@
+import { DialogFrame, DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { ListView, ScrollView } from "std-widgets.slint";
 import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
@@ -319,12 +320,17 @@ export component BookmarkMenu inherits Rectangle {
         clicked => { root.open(); }
     }
     popup := PopupWindow {
-        width: min(root.viewport-width - 24px, max(520px, Theme.font-size * 23));
-        height: min(root.viewport-height - 24px, Theme.touch ? 500px : 440px);
-        x: (root.viewport-width - self.width) / 2 - root.absolute-position.x;
-        y: (root.viewport-height - self.height) / 2 - root.absolute-position.y;
+        width: root.viewport-width; height: root.viewport-height;
+        x: -root.absolute-position.x; y: -root.absolute-position.y;
         close-policy: close-on-click-outside;
         forward-focus: popup-focus;
+        bookmark-frame := DialogFrame {
+            desired-width: max(520px, Theme.font-size * 23);
+            desired-height: Theme.touch ? 500px : 440px;
+            changed body-width => { if self.body-width < 400px { bookmark-close.focus(); } }
+            changed body-height => { if self.body-height < 350px { bookmark-close.focus(); } }
+            dismiss-on-outside: true;
+            dismiss => { root.dismiss(); }
         popup-focus := FocusScope {
             forward-focus: slot-picker;
             capture-key-pressed(event) => {
@@ -334,9 +340,17 @@ export component BookmarkMenu inherits Rectangle {
             Rectangle {
                 background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
                 VerticalLayout {
-                    padding: 16px; spacing: 10px;
-                    Text { text: "Manage Hot Paths"; color: Theme.strong-text; font-size: 20px; overflow: elide; }
+                    padding: bookmark-frame.body-height < 350px ? 6px : 16px;
+                    spacing: bookmark-frame.body-height < 350px ? 4px : 10px;
+                    DialogHeader { title: "Manage Hot Paths"; compact: bookmark-frame.body-height < 350px;
+                        fallback-icon: FallbackIcons.bookmarks; dragged(dx, dy) => { bookmark-frame.move-by(dx, dy); } }
+                    ScrollView {
+                        min-height: 0px; vertical-stretch: 1;
+                        horizontal-scrollbar-policy: as-needed;
+                        content-width: max(self.visible-width, 420px);
+                        VerticalLayout { spacing: 8px;
                     ListView {
+                        height: max(80px, bookmark-frame.body-height * 0.35);
                         horizontal-scrollbar-policy: always-off;
                         for bookmark[index] in root.model : Rectangle {
                             height: max(44px, Theme.font-size + Theme.small-font + 12px);
@@ -419,7 +433,9 @@ export component BookmarkMenu inherits Rectangle {
                         hint: "Save the current folder once, using the first free numbered shortcut.";
                         clicked => { root.add-bookmark(root.default-name, 0); }
                     }
-                    HintedActionButton {
+                        }
+                    }
+                    bookmark-close := HintedActionButton {
                         text: "Close"; min-height: Theme.control-height;
                         native-icon: root.action-icons.close; fallback-icon: FallbackIcons.close;
                         hint: "Close Bookmarks and return to the file panel.";
@@ -428,5 +444,6 @@ export component BookmarkMenu inherits Rectangle {
                 }
             }
         }
+    }
     }
 }

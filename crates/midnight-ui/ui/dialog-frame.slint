@@ -1,0 +1,84 @@
+import { Theme } from "theme.slint";
+import { NativeActionImage } from "action-icons.slint";
+import { ErrorGlyph } from "error-notice.slint";
+
+// A viewport-sized popup keeps its native lifetime and focus. Only the inner
+// rectangle moves: embedded Slint popups do not track x/y-only changes reliably.
+export component DialogFrame inherits Rectangle {
+    in property <length> desired-width;
+    in property <length> desired-height;
+    in property <bool> dismiss-on-outside;
+    in property <bool> dim;
+    callback dismiss();
+    private property <length> offset-x;
+    private property <length> offset-y;
+    private property <length> margin: root.width < 400px || root.height < 280px ? 4px : 12px;
+    out property <length> body-width: min(root.desired-width, max(0px, root.width - 2 * root.margin));
+    out property <length> body-height: min(root.desired-height, max(0px, root.height - 2 * root.margin));
+    out property <length> body-left: clamp((root.width - root.body-width) / 2 + root.offset-x,
+        root.margin, max(root.margin, root.width - root.body-width - root.margin));
+    out property <length> body-top: clamp((root.height - root.body-height) / 2 + root.offset-y,
+        root.margin, max(root.margin, root.height - root.body-height - root.margin));
+    min-width: 0px; min-height: 0px;
+    background: root.dim ? #00000060 : transparent;
+    public function reset() { root.offset-x = 0px; root.offset-y = 0px; }
+    public function move-by(dx: length, dy: length) {
+        root.offset-x = clamp(root.body-left + dx, root.margin,
+            max(root.margin, root.width - root.body-width - root.margin)) - (root.width - root.body-width) / 2;
+        root.offset-y = clamp(root.body-top + dy, root.margin,
+            max(root.margin, root.height - root.body-height - root.margin)) - (root.height - root.body-height) / 2;
+    }
+    TouchArea { clicked => { if root.dismiss-on-outside { root.dismiss(); } } }
+    body := Rectangle {
+        x: root.body-left; y: root.body-top;
+        width: root.body-width; height: root.body-height;
+        // Blank body areas must never activate the outside-dismiss surface.
+        TouchArea {}
+        @children
+    }
+}
+
+export component DialogHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <image> native-icon;
+    in property <image> fallback-icon;
+    in property <color> foreground: Theme.strong-text;
+    in property <bool> compact;
+    in property <bool> error;
+    in property <length> text-size: max(20px, Theme.font-size + 4px);
+    callback dragged(length, length);
+    height: max(root.compact ? 28px : 36px, root.text-size + 6px);
+    min-width: 0px;
+    HorizontalLayout {
+        spacing: 10px; cross-axis-alignment: center;
+        if root.error : ErrorGlyph {}
+        if root.native-icon.width > 0 || root.fallback-icon.width > 0 : NativeActionImage {
+            native-icon: root.native-icon; fallback-icon: root.fallback-icon;
+            width: root.compact ? 24px : 32px; height: self.width;
+        }
+        Text {
+            text: root.title; color: root.foreground; font-size: root.text-size;
+            font-weight: 600; overflow: elide; horizontal-stretch: 1;
+        }
+        if root.detail != "" && root.width > 400px : Text {
+            text: root.detail; color: Theme.secondary-text; font-size: Theme.small-font;
+        }
+    }
+    TouchArea {
+        private property <length> anchor-x;
+        private property <length> anchor-y;
+        private property <bool> dragging;
+        mouse-cursor: move;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.anchor-x = self.mouse-x; self.anchor-y = self.mouse-y; self.dragging = true;
+            } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                self.dragging = false;
+            }
+        }
+        moved => {
+            if self.pressed && self.dragging { root.dragged(self.mouse-x - self.anchor-x, self.mouse-y - self.anchor-y); }
+        }
+    }
+}

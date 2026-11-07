@@ -2,7 +2,7 @@ use crate::*;
 use std::io::Cursor;
 
 impl Archive {
-    pub(crate) fn zip(&mut self, source: &[u8]) -> Result<(), Error> {
+    pub(crate) fn zip(&mut self, source: Vec<u8>) -> Result<(), Error> {
         let mut zip = zip::ZipArchive::new(Cursor::new(source)).map_err(zip_error)?;
         if zip.len() > self.limits.max_entries {
             return Err(Error::limit());
@@ -33,19 +33,20 @@ impl Archive {
             {
                 return Err(Error::limit());
             }
+            let size = raw.size();
             drop(raw);
-            let data = if readable {
-                Some(bounded_read(
-                    zip.by_index(index).map_err(zip_error)?,
-                    self.limits
-                        .max_entry
-                        .min(self.limits.max_total.saturating_sub(self.total)),
-                )?)
-            } else {
-                None
-            };
-            self.add(&name, &display, kind, data, readable)?;
+            self.add(&name, &display, kind, None, readable)?;
+            if readable {
+                self.total = self.total.checked_add(size).ok_or_else(Error::limit)?;
+                if self.total > self.limits.max_total {
+                    return Err(Error::limit());
+                }
+                let node = self.nodes.last_mut().ok_or_else(Error::limit)?;
+                node.size = Some(size);
+                self.zip_members.insert(node.id, index);
+            }
         }
+        self.zip = Some(zip);
         Ok(())
     }
 
@@ -145,7 +146,7 @@ impl Archive {
         Ok(())
     }
 }
-fn zip_error(error: zip::result::ZipError) -> Error {
+pub(crate) fn zip_error(error: zip::result::ZipError) -> Error {
     let code = match error {
         zip::result::ZipError::UnsupportedArchive(_) => ErrorCode::Unsupported,
         _ => ErrorCode::Corrupt,

@@ -17,6 +17,19 @@ pub struct SelectedCopyRequest {
     pub destination: PathBuf,
 }
 
+/// F5 captures virtual identities without interpreting displayed archive paths.
+#[derive(Clone, Debug)]
+pub struct ArchiveCopyRequest {
+    pub id: OperationId,
+    pub location: crate::ArchiveLocation,
+    pub entries: Arc<[crate::Entry]>,
+    /// Visible projection captured with the selection; hidden rows are never targets.
+    pub view: Arc<crate::DirectoryIndex>,
+    pub selected: Arc<std::collections::HashSet<crate::EntryId>>,
+    pub fallback: Option<crate::EntryId>,
+    pub destination: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyOperationState {
     Queued,

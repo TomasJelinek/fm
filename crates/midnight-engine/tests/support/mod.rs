@@ -46,6 +46,10 @@ pub async fn navigate(
                     entries,
                 } if actual_pane == pane && actual == navigation => {
                     for entry in entries {
+                        if let Some(size) = entry.metadata.size {
+                            assert!(entry.metadata.modified.is_some());
+                            metadata.insert(entry.id, size);
+                        }
                         assert!(streamed.insert((entry.id, entry.path)));
                     }
                 }

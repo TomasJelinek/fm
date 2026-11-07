@@ -222,7 +222,7 @@ mod tests {
 
     fn editor(action: &str) -> Presenter {
         let mut presenter = Presenter::new("left".into(), "right".into());
-        presenter.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        presenter.apply(Event::PreferencesLoaded(Ok(Box::default())));
         presenter.keyboard.selected = shortcut_catalog()
             .iter()
             .position(|item| item.id == action)

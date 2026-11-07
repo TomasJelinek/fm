@@ -1,6 +1,6 @@
 use midnight_core::{Command, PaneId, ViewerAppearance};
 use midnight_ui::{MainWindow, Presenter, Theme};
-use midnight_viewer_ui::ViewerWindows;
+use midnight_viewer_ui::{ViewerWindows, WindowPlacement};
 use slint::ComponentHandle;
 use std::{cell::RefCell, rc::Rc};
 use tokio::sync::mpsc;
@@ -56,11 +56,8 @@ pub(crate) fn install(
                 .borrow_mut()
                 .copy_viewer_text(text, &|command| sender.try_send(command).is_ok())
         });
-        let size = window
-            .window()
-            .size()
-            .to_logical(window.window().scale_factor());
-        if let Err(error) = manager.open(launch, appearance, size, keys, copy) {
+        let placement = WindowPlacement::capture(window.window());
+        if let Err(error) = manager.open(launch, appearance, placement, keys, copy) {
             presenter.borrow_mut().report_viewer_error(error);
             midnight_ui::refresh(&window, &presenter.borrow());
         }

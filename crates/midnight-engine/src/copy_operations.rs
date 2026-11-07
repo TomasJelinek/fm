@@ -21,6 +21,8 @@ use tokio::{
 
 #[path = "copy_admission.rs"]
 mod admission;
+#[path = "archive_transfer.rs"]
+mod archive_source;
 #[path = "copy_input.rs"]
 mod input;
 #[path = "copy_worker.rs"]
@@ -99,6 +101,9 @@ impl Controller {
         self.enqueue_input(request.into()).await;
     }
     pub(crate) async fn enqueue_selected(&self, request: SelectedCopyRequest) {
+        self.enqueue_input(request.into()).await;
+    }
+    pub(crate) async fn enqueue_archive(&self, request: ArchiveCopyRequest) {
         self.enqueue_input(request.into()).await;
     }
     async fn enqueue_input(&self, request: CopyInput) {
@@ -335,11 +340,25 @@ async fn run_input(
     let prepared = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let command = command.resolve(&job_cancel)?;
-        status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .requested_roots = command.clipboard.paths.len() as u64;
-        worker::Job::prepare(command, &*service, job_cancel, status)
+        match command {
+            input::Resolved::Native(command) => {
+                status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .requested_roots = command.clipboard.paths.len() as u64;
+                worker::Job::prepare(command, &*service, job_cancel, status)
+            }
+            input::Resolved::Archive {
+                destination,
+                sources,
+            } => {
+                status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .requested_roots = sources.len() as u64;
+                worker::Job::prepare_archive(destination, sources, &*service, job_cancel, status)
+            }
+        }
     })
     .await;
     let mut job = match prepared {

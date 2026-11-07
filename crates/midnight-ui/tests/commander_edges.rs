@@ -28,6 +28,9 @@ fn control(test: &ui::TestUi, pressed: bool) {
 #[test]
 fn control_footer_and_zoom_fit_touch_density_with_large_fonts() {
     let mut test = ui::TestUi::new();
+    // This test isolates geometry; parent/selection capabilities have their own integration test.
+    test.window.set_left_can_target_cursor(true);
+    test.window.set_left_can_target_selection(true);
     test.resize(1040, 720);
     test.window.invoke_apply_preferences(3, 1);
     test.window.invoke_apply_fonts("".into(), 32, 32);
@@ -75,7 +78,10 @@ fn attributes_button_and_sort_stay_inside_narrow_panel_toolbars() {
                 let left = test.window.get_left_list_left();
                 let right = left + test.window.get_left_list_width();
                 for (label, role) in [
-                    ("Attributes and times (Ctrl+F2)", AccessibleRole::Button),
+                    (
+                        "Attributes, times and case (Ctrl+F2)",
+                        AccessibleRole::Button,
+                    ),
                     ("Left panel sort", AccessibleRole::Combobox),
                 ] {
                     let item = ui::root_item(&test.window, label, role);
@@ -94,6 +100,10 @@ fn attributes_button_and_sort_stay_inside_narrow_panel_toolbars() {
 #[test]
 fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
     let mut test = ui::TestUi::new();
+    test.window.set_left_can_target_cursor(true);
+    test.window.set_left_can_target_selection(true);
+    test.window.set_right_can_target_cursor(true);
+    test.window.set_right_can_target_selection(true);
     let weak = test.window.as_weak();
     test.window
         .on_activate(move |pane| weak.upgrade().unwrap().set_active_pane(pane));
@@ -105,41 +115,156 @@ fn footer_mouse_release_keeps_the_pressed_action_and_logical_pane() {
     let captured = actions.clone();
     test.window
         .on_sort(move |pane, _| captured.borrow_mut().push((pane, 3)));
+    let captured = actions.clone();
     test.window
-        .on_mutation(|_, _| panic!("release must not retarget the normal layer"));
-    for (label, expected) in [
-        ("Ctrl+F2 Attributes", 2),
-        ("Ctrl+F3 Name", 3),
-        ("Ctrl+F7 Case", 7),
-    ] {
-        for pane in [0, 1] {
-            test.window.set_active_pane(pane);
-            test.window.invoke_focus_files();
-            control(&test, true);
-            test.draw();
-            let position = ui::root_position(&test.window, label, AccessibleRole::Button);
-            test.window
-                .window()
-                .dispatch_event(WindowEvent::PointerPressed {
-                    position,
-                    button: PointerEventButton::Left,
-                });
-            control(&test, false);
-            test.window.set_active_pane(1 - pane);
-            test.draw();
-            test.window
-                .window()
-                .dispatch_event(WindowEvent::PointerReleased {
-                    position,
-                    button: PointerEventButton::Left,
-                });
-            assert_eq!(actions.borrow().last(), Some(&(pane, expected)), "{label}");
-            if expected == 3 {
-                assert_eq!(test.window.get_focused_pane(), pane);
+        .on_mutation(move |pane, action| captured.borrow_mut().push((pane, 100 + action)));
+    for (width, height) in [(1340, 820), (320, 200)] {
+        test.resize(width, height);
+        for (label, expected) in [
+            ("Ctrl+F2 Attributes", 2),
+            ("Ctrl+F3 Name", 3),
+            ("Ctrl+F6 Size", 3),
+            ("Ctrl+F7 Case", 7),
+        ] {
+            for pane in [0, 1] {
+                test.window.set_active_pane(pane);
+                test.window.invoke_focus_files();
+                control(&test, true);
+                let position = reveal_footer(&mut test, label);
+                let before_press = actions.borrow().len();
+                test.window
+                    .window()
+                    .dispatch_event(WindowEvent::PointerPressed {
+                        position,
+                        button: PointerEventButton::Left,
+                    });
+                assert_eq!(
+                    actions.borrow().len(),
+                    before_press,
+                    "Press must not dispatch {label}"
+                );
+                assert!(
+                    test.window.get_control_layer(),
+                    "Pointer press cleared Ctrl for {label}"
+                );
+                control(&test, false);
+                test.window.set_active_pane(1 - pane);
+                test.draw();
+                test.window
+                    .window()
+                    .dispatch_event(WindowEvent::PointerReleased {
+                        position,
+                        button: PointerEventButton::Left,
+                    });
+                assert_eq!(actions.borrow().last(), Some(&(pane, expected)), "{label}");
+                if expected == 3 {
+                    assert_eq!(test.window.get_focused_pane(), pane);
+                }
             }
         }
+        // The normal layer must also survive switching to Ctrl before release.
+        test.window.set_active_pane(0);
+        control(&test, false);
+        let position = reveal_footer(&mut test, "F2 Rename");
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+        control(&test, true);
+        test.window.set_active_pane(1);
+        test.draw();
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        assert_eq!(actions.borrow().last(), Some(&(0, 100)));
+
+        // Disabled Move cannot turn into the enabled Ctrl+F6 sort during a press.
+        control(&test, false);
+        let position = reveal_footer(&mut test, "Move — unavailable");
+        let before = actions.borrow().len();
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+        control(&test, true);
+        test.draw();
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        assert_eq!(
+            actions.borrow().len(),
+            before,
+            "disabled press at {width}px"
+        );
+
+        // A drag that scrolls the compact footer must not activate its starting cell.
+        let position = reveal_footer(&mut test, "Ctrl+F2 Attributes");
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+        let outside = if width == 320 {
+            slint::LogicalPosition::new(position.x - 50.0, position.y)
+        } else {
+            slint::LogicalPosition::new(position.x + 90.0, position.y - 60.0)
+        };
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position: outside });
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position: outside,
+                button: PointerEventButton::Left,
+            });
+        assert_eq!(
+            actions.borrow().len(),
+            before,
+            "cancelled press at {width}px"
+        );
     }
-    assert_eq!(actions.borrow().len(), 6);
+    assert_eq!(actions.borrow().len(), 18);
+}
+
+fn reveal_footer(test: &mut ui::TestUi, label: &str) -> slint::LogicalPosition {
+    let viewport = slint::LogicalPosition::new(100.0, test.height as f32 - 15.0);
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerScrolled {
+            position: viewport,
+            delta_x: 2000.0,
+            delta_y: 0.0,
+        });
+    test.draw();
+    let mut position = ui::root_position(&test.window, label, AccessibleRole::Button);
+    if test.width < 640 && position.x > 190.0 {
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position: viewport,
+                delta_x: 150.0 - position.x,
+                delta_y: 0.0,
+            });
+        test.draw();
+        position = ui::root_position(&test.window, label, AccessibleRole::Button);
+    }
+    assert!(
+        position.x >= 0.0 && position.x < test.width as f32 - 80.0,
+        "{label}: {position:?}"
+    );
+    position
 }
 
 #[test]
@@ -322,13 +447,13 @@ fn presenter(test: &ui::TestUi, values: UserPreferences) -> Rc<RefCell<Presenter
     });
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(values)));
+        .apply(Event::PreferencesLoaded(Ok(values.into())));
     refresh(&test.window, &presenter.borrow());
     presenter
 }
 
 #[test]
-fn reassigned_control_slot_dispatches_the_effective_action_and_disabled_slot_is_empty() {
+fn reassigned_control_slot_dispatches_the_effective_action_and_disabled_slot_does_not_dispatch() {
     let mut test = ui::TestUi::new();
     let _presenter = presenter(
         &test,
@@ -350,6 +475,8 @@ fn reassigned_control_slot_dispatches_the_effective_action_and_disabled_slot_is_
             ..Default::default()
         },
     );
+    test.window.set_left_can_target_cursor(true);
+    test.window.set_left_can_target_selection(true);
     let actions = Rc::new(RefCell::new(Vec::new()));
     let captured = actions.clone();
     test.window

@@ -40,10 +40,10 @@ tails, operation throughput and memory, rather than assuming that every addition
 optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
-executable. These helpers also build four independent viewer packages against
+executable. These helpers also build five independent viewer packages against
 the released public APIs/SDKs and stage them under `viewers/` beside the executable.
-Text/binary, source and Markdown use the native C ABI; the image viewer uses the
-restricted process protocol and its separate worker SDK release.
+Text/binary, source and Markdown use the native C ABI; image and PDF viewers use
+the restricted process protocol and its separate worker SDK release.
 Direct Cargo builds compile only the host; use `scripts/build-viewers.ps1` or
 `scripts/build-viewers.sh` to build its viewer packages separately. Each plugin has
 its own lockfile, tests, release profile and third-party notices.
@@ -102,7 +102,7 @@ build directories separate when sharing one checkout.
 
 Archives include run instructions, feature/shortcut/security requirements,
 `BUILD-INFO.json` with the source revision and executable SHA-256, the lockfile,
-dependency inventory and original license texts. The packager requires all four
+dependency inventory and original license texts. The packager requires all five
 viewer packages under `viewers/` (or `--viewers-root`), validates their platform,
 native ABI or image-worker protocol, code entry and package paths, and records
 their manifests, file sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned

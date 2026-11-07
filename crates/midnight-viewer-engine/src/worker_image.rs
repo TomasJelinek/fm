@@ -18,6 +18,22 @@ impl Worker {
                 return !matches!(input, ViewerInput::NextFile | ViewerInput::Close);
             };
             match input {
+                ViewerInput::DocumentPage { frame, delta } => {
+                    if !image.document || !self.frames.accepts(*frame) {
+                        return true;
+                    }
+                    let page = image
+                        .page
+                        .saturating_add_signed(*delta as isize)
+                        .min(image.pages.len().saturating_sub(1));
+                    if page == image.page {
+                        return true;
+                    }
+                    let metadata = image.pages[page];
+                    image.page = page;
+                    *view = ImageGeometry::new(metadata.width, metadata.height, self.image_size);
+                    image.frames = Default::default();
+                }
                 ViewerInput::Scroll { x, y } => view.scroll([f64::from(*x), f64::from(*y)]),
                 ViewerInput::Seek(position) => view.seek(1, *position),
                 ViewerInput::Pan(position) => view.seek(0, *position),
@@ -45,8 +61,13 @@ impl Worker {
             return;
         };
         match event {
-            Event::Opened(metadata) => {
+            Event::Opened { pages, document } => {
                 if let Some(image) = &mut self.image {
+                    let Some(metadata) = pages.first().copied() else {
+                        return;
+                    };
+                    image.pages = pages;
+                    image.document = document;
                     image.geometry = Some(ImageGeometry::new(
                         metadata.width,
                         metadata.height,
@@ -92,24 +113,44 @@ impl Worker {
                         height: view.height,
                         zoom: view.scale,
                         fitted: view.fitted,
+                        page: if image.document {
+                            image.page as u32 + 1
+                        } else {
+                            0
+                        },
+                        page_count: image.pages.len() as u32,
                     }),
                     width: frame.width,
                     height: frame.height,
                     pixels: frame.rgba.into(),
-                    accessible_text: format!("Image {} × {} pixels", view.width, view.height)
-                        .into(),
+                    accessible_text: (if image.document {
+                        format!("Document page {} of {}", image.page + 1, image.pages.len())
+                    } else {
+                        format!("Image {} × {} pixels", view.width, view.height)
+                    })
+                    .into(),
                     position,
                     vertical_extent,
                     horizontal_position,
                     horizontal_extent,
                     caption: self.caption.clone(),
-                    status: format!(
-                        "{} × {} pixels  {:.1}%{}",
-                        view.width,
-                        view.height,
-                        view.scale * 100.0,
-                        if view.fitted { "  Fit" } else { "" }
-                    ),
+                    status: if image.document {
+                        format!(
+                            "Page {} / {}  {:.1}%{}",
+                            image.page + 1,
+                            image.pages.len(),
+                            view.scale * 100.0,
+                            if view.fitted { "  Fit" } else { "" }
+                        )
+                    } else {
+                        format!(
+                            "{} × {} pixels  {:.1}%{}",
+                            view.width,
+                            view.height,
+                            view.scale * 100.0,
+                            if view.fitted { "  Fit" } else { "" }
+                        )
+                    },
                 }));
             }
             Event::Failed(error) => {

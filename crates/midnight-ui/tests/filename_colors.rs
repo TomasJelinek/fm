@@ -194,7 +194,11 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+            // Exercise creation and reordering from an explicitly cleared preset list.
+            filename_colors: Vec::new().into(),
+            ..UserPreferences::default()
+        }))));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let captured = commands.clone();
     let send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {

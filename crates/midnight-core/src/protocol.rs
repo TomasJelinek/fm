@@ -94,6 +94,7 @@ pub enum Command {
     },
     EnqueueCopy(crate::CopyRequest),
     EnqueueSelectedCopy(crate::SelectedCopyRequest),
+    EnqueueArchiveCopy(crate::ArchiveCopyRequest),
     DecideCopy(crate::CopyDecision),
     CancelCopy(crate::OperationId),
     AttachDragDrop {
@@ -139,7 +140,7 @@ pub enum Command {
     },
     SavePreferences {
         revision: PreferencesRevision,
-        preferences: UserPreferences,
+        preferences: Box<UserPreferences>,
     },
     /// Acknowledge the listing the UI actually accepted; queued stale listings do not count.
     PaneCommitted(VisibleDirectory),
@@ -306,7 +307,7 @@ pub enum Event {
     },
     FontFamiliesLoaded(Result<Vec<String>, FsError>),
     EditorDefaultResolved(Result<crate::EditorCommand, FsError>),
-    PreferencesLoaded(Result<UserPreferences, FsError>),
+    PreferencesLoaded(Result<Box<UserPreferences>, FsError>),
     PreferencesSaved {
         revision: PreferencesRevision,
         result: Result<(), FsError>,

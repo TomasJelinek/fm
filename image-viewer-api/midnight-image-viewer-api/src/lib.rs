@@ -17,6 +17,8 @@ pub const MAX_READ_BYTES: usize = 256 * 1024;
 pub const MIN_SCALE: f64 = 1.0 / MAX_DECODED_EDGE as f64;
 /// Largest supported physical-pixels-per-image-pixel scale.
 pub const MAX_SCALE: f64 = 64.0;
+/// Maximum pages in a paginated document. Metadata is bounded independently of raster pixels.
+pub const MAX_DOCUMENT_PAGES: usize = 4096;
 
 /// Original dimensions after orientation. Animated sources expose the first still frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +39,25 @@ impl Metadata {
             return Err(invalid());
         }
         Ok(self)
+    }
+}
+
+/// Ordered document page sizes in logical units. Raster viewports address one zero-based page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentMetadata {
+    pub pages: Vec<Metadata>,
+}
+
+impl DocumentMetadata {
+    /// Validate the page count before retaining metadata or accepting page requests.
+    pub fn validate(&self) -> io::Result<()> {
+        if self.pages.is_empty() || self.pages.len() > MAX_DOCUMENT_PAGES {
+            return Err(invalid());
+        }
+        for page in &self.pages {
+            page.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -77,16 +98,34 @@ pub struct Frame {
     pub rgba: Vec<u8>,
 }
 
-/// Complete version 1 protocol. Only Open may cause source reads; viewports use retained pixels.
+/// Raster protocol. Only Open may cause source reads; viewports use retained content.
+/// Protocol-2 document packages use the additive document metadata and page viewport messages.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
-    Open { source_length: u64 },
+    Open {
+        source_length: u64,
+    },
     Metadata(Metadata),
-    Viewport { id: u64, viewport: Viewport },
-    Rgba { id: u64, frame: Frame },
-    Read { offset: u64, length: u32 },
+    Viewport {
+        id: u64,
+        viewport: Viewport,
+    },
+    Rgba {
+        id: u64,
+        frame: Frame,
+    },
+    Read {
+        offset: u64,
+        length: u32,
+    },
     Data(Vec<u8>),
     Failure,
+    DocumentMetadata(DocumentMetadata),
+    PageViewport {
+        id: u64,
+        page: u32,
+        viewport: Viewport,
+    },
 }
 
 fn invalid() -> io::Error {
@@ -164,6 +203,29 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
             bytes = data;
         }
         Message::Failure => header.push(7),
+        Message::DocumentMetadata(metadata) => {
+            metadata.validate()?;
+            header.push(8);
+            header.extend_from_slice(&(metadata.pages.len() as u32).to_le_bytes());
+            for page in &metadata.pages {
+                header.extend_from_slice(&page.width.to_le_bytes());
+                header.extend_from_slice(&page.height.to_le_bytes());
+            }
+        }
+        Message::PageViewport { id, page, viewport } => {
+            viewport.validate()?;
+            if *page as usize >= MAX_DOCUMENT_PAGES {
+                return Err(invalid());
+            }
+            header.push(9);
+            header.extend_from_slice(&id.to_le_bytes());
+            header.extend_from_slice(&page.to_le_bytes());
+            header.extend_from_slice(&viewport.width.to_le_bytes());
+            header.extend_from_slice(&viewport.height.to_le_bytes());
+            header.extend_from_slice(&viewport.scale.to_le_bytes());
+            header.extend_from_slice(&viewport.origin_x.to_le_bytes());
+            header.extend_from_slice(&viewport.origin_y.to_le_bytes());
+        }
     }
     writer.write_all(b"MIV1")?;
     writer.write_all(&((header.len() + bytes.len()) as u32).to_le_bytes())?;
@@ -241,6 +303,39 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
             Ok(Message::Data(bytes))
         }
         (7, 1) => Ok(Message::Failure),
+        (8, length) if (13..=5 + 8 * MAX_DOCUMENT_PAGES).contains(&length) => {
+            let count = u32::from_le_bytes(array(reader)?) as usize;
+            if count == 0 || count > MAX_DOCUMENT_PAGES || length != 5 + count * 8 {
+                return Err(invalid());
+            }
+            let mut pages = Vec::with_capacity(count);
+            for _ in 0..count {
+                pages.push(
+                    Metadata {
+                        width: u32::from_le_bytes(array(reader)?),
+                        height: u32::from_le_bytes(array(reader)?),
+                    }
+                    .validate()?,
+                );
+            }
+            Ok(Message::DocumentMetadata(DocumentMetadata { pages }))
+        }
+        (9, 45) => {
+            let id = u64::from_le_bytes(array(reader)?);
+            let page = u32::from_le_bytes(array(reader)?);
+            if page as usize >= MAX_DOCUMENT_PAGES {
+                return Err(invalid());
+            }
+            let viewport = Viewport {
+                width: u32::from_le_bytes(array(reader)?),
+                height: u32::from_le_bytes(array(reader)?),
+                scale: f64::from_le_bytes(array(reader)?),
+                origin_x: f64::from_le_bytes(array(reader)?),
+                origin_y: f64::from_le_bytes(array(reader)?),
+            }
+            .validate()?;
+            Ok(Message::PageViewport { id, page, viewport })
+        }
         _ => Err(invalid()),
     }
 }

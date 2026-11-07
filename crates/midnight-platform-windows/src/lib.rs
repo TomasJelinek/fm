@@ -33,6 +33,8 @@ mod terminal_process;
 mod transfer;
 mod volume_details;
 mod watch;
+mod window_geometry;
+pub use window_geometry::monitor_work_area;
 
 /// Native windows volume discovery combined with safe portable directory operations.
 pub struct WindowsFileSystem {
@@ -58,8 +60,21 @@ impl DirectoryService for WindowsFileSystem {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        self.local
-            .read_directory_with(path, cancel, listing::classify, emit)
+        // Windows DirEntry metadata is cached enumeration data, without another OS call.
+        self.local.read_directory_with_metadata(
+            path,
+            cancel,
+            listing::classify,
+            |item| {
+                item.metadata()
+                    .ok()
+                    .map(|value| metadata::from_native(&value))
+            },
+            emit,
+        )
+    }
+    fn listing_metadata_complete(&self, entry: &Entry) -> bool {
+        entry.metadata.native_attributes.is_some()
     }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         metadata::read(path)

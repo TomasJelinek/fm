@@ -26,3 +26,9 @@ export struct BookmarkRow {
     path: string,
     slot: int,
 }
+
+export struct LocationRow {
+    identity: string, kind: LocationRole,
+    label: string, compact-label: string, is-drive: bool,
+    path: string, tooltip: string, icon: image, selected: bool
+}

@@ -10,6 +10,7 @@ pub(crate) mod drag_drop;
 mod editor;
 mod entry_sizes;
 mod file_actions;
+mod file_compare;
 mod filename_colors;
 mod filter;
 mod fonts;

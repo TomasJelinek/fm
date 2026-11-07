@@ -17,7 +17,7 @@ status is described here. The [public C header](../../api/midnight-plugin-api/in
 and [Rust API source](../../api/midnight-plugin-api/src/lib.rs) define the actual
 symbols; illustrative future types in design documents are not public exports.
 
-Executable filesystem, image-viewer and thumbnail plugins use separate public protocols and
+Executable filesystem, image/PDF-viewer and thumbnail plugins use separate public protocols and
 restricted processes. See the [filesystem API](FILESYSTEM_API.md) and
 [worker/thumbnail SDK](WORKER_SDK.md) and [image viewer API](IMAGE_VIEWER_API.md);
 they do not change the released viewer ABI.
@@ -50,8 +50,10 @@ One Git repository contains **separate Cargo workspaces**:
 | `filesystem-api/Cargo.toml` | Read-only executable filesystem protocol | Versioned public wire definitions; no application crates |
 | `worker-api/Cargo.toml` | Restricted executable startup SDK | Public platform containment contract |
 | `thumbnail-api/Cargo.toml` | Brokered media reads and bounded RGBA frame protocol | Independent public API/SDK; no application crates |
+| `image-viewer-api/Cargo.toml` | Raster image/document protocol and SDK 0.2.0 | Versioned public page metadata and bounded viewport messages |
 | `plugins/midnight-thumbnail-image/`, `plugins/midnight-thumbnail-video/` | Image and video frame decoding | Released thumbnail/worker SDK and plugin-owned codecs/tests |
-| `plugins/midnight-fs-archive/` | ZIP, GZIP, TAR/TAR.GZ and 7z browsing/reading | Released filesystem API and worker SDK plus plugin-owned parsers |
+| `plugins/midnight-fs-archive/` | ZIP, 7z, TAR and GZIP/XZ/BZIP2/Zstandard streams and TAR wrappers | Released filesystem API and worker SDK plus plugin-owned parsers |
+| `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs and plugin-owned tests/codecs |
 | `plugins/midnight-viewer-basic/` | Text/Binary decoding and search | Released public SDK plus plugin-owned dependencies |
 | `plugins/midnight-viewer-source/` | Source scanning and styles | Its own workspace, lockfile, dependencies and tests |
 | `plugins/midnight-viewer-markdown/` | Semantic Markdown | Its own workspace, lockfile, dependencies and tests |

@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn color_matching_waits_for_loaded_preferences_and_nonempty_entries() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let generation = begin(&mut p, PaneId::Left, "left");
+    finish(&mut p, PaneId::Left, generation, vec![entry(1, "a.rs")]);
+    p.flush_filename_colors(&|_| panic!("saved preferences have not arrived"));
+    p.preferences_loaded(Ok(UserPreferences::default()));
+    let matched = RefCell::new(Vec::new());
+    p.flush_filename_colors(&|command| {
+        let Command::MatchFilenameColors(request) = command else {
+            panic!("expected matching for populated panel")
+        };
+        matched.borrow_mut().push(request.pane);
+        true
+    });
+    assert_eq!(*matched.borrow(), [PaneId::Left]);
+}
+
 fn colored_preferences() -> UserPreferences {
     UserPreferences {
         filename_colors: vec![FilenameColorRule {
@@ -143,7 +161,7 @@ fn removing_last_rule_cancels_backend_work_and_releases_the_previous_snapshot() 
         cleared.borrow_mut().push(pane);
         true
     });
-    assert_eq!(*cleared.borrow(), [PaneId::Left, PaneId::Right]);
+    assert_eq!(*cleared.borrow(), [PaneId::Left]);
     assert!(
         p.filename_style(PaneId::Left, &p.panes[0].entries[0])
             .is_none()

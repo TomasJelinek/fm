@@ -278,10 +278,10 @@ fn checkbox_and_late_saved_filter_apply_to_already_matched_queries() {
         let request = query(&mut p, "al");
         accept(&mut p, &request, result(&request, &[0, 2], 2));
         if load_saved {
-            p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+            p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
                 quick_search_filter: true,
                 ..Default::default()
-            })));
+            }))));
         } else {
             p.change_search_filter(true, &|_| true);
         }

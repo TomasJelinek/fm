@@ -11,7 +11,7 @@ fn unique_bookmarks_compare_native_utf16_without_display_loss() {
     let second = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd801]));
     assert_eq!(first.to_string_lossy(), second.to_string_lossy());
     let mut p = Presenter::new(first.clone(), second.clone());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
     assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
     assert!(
@@ -58,7 +58,7 @@ fn bookmark_and_tab_actions_preserve_unpaired_native_utf16() {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     let path = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
     let mut p = Presenter::new(path.clone(), test_root());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(
         p.add_bookmark(PaneId::Left, "Raw native".into(), Some(1), &|command| {
             let Command::SavePreferences { preferences, .. } = command else {

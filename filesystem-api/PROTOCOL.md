@@ -13,7 +13,9 @@ little-endian `u64` request ID. Numeric fields are little endian. Booleans are
 exactly 0 or 1. Blobs and UTF-8 strings have `u32` byte lengths; lengths are checked
 against both field limits and remaining frame bytes before allocation. Unknown
 versions, tags, enum values, trailing bytes and malformed UTF-8 strings fail closed.
-Raw names are byte blobs and are never normalized or parsed by the host as paths.
+Raw names are byte blobs and are never normalized or parsed as source paths.
+Explicit host copy-out validates one raw basename before converting it to a native
+destination component; display labels never supply filesystem identity.
 
 | Tag | Message | Fields after request ID |
 | --- | --- | --- |
@@ -35,7 +37,10 @@ display strings each have a 64 KiB resource bound. Listing batches have at most
 increasing opaque member IDs, preserving duplicate and case-distinct names.
 Root node is 1; member IDs begin at 2. IDs are valid only within the captured mount.
 
-Formats: ZIP=1, TAR=2, GZIP=3, TAR.GZ=4, 7z=5. Kinds: directory=1, file=2,
+Formats: ZIP=1, TAR=2, GZIP=3, TAR.GZ=4, 7z=5, XZ=6, TAR.XZ=7,
+BZIP2=8, TAR.BZ2=9, ZSTD=10, TAR.ZST=11. New formats are selected only when
+advertised by the installed worker manifest; older workers retain their advertised
+format set and reject unfamiliar enum values. Kinds: directory=1, file=2,
 link=3, other=4. Errors: invalid=1, unsupported=2, limit=3, cancelled=4,
 source-changed=5, not-found=6, read-only=7, corrupt=8, I/O=9.
 

@@ -1,7 +1,7 @@
 //! Backend-only discovery and supervision of persistent restricted image-viewer processes.
 #![forbid(unsafe_code)]
 
-pub use midnight_image_viewer_api::{Frame, Metadata, Viewport};
+pub use midnight_image_viewer_api::{DocumentMetadata, Frame, Metadata, Viewport};
 mod providers;
 pub use providers::{Discovery, Provider, discover, discover_with_diagnostics};
 mod session;

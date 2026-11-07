@@ -116,6 +116,12 @@ fn build() -> Vec<ShortcutDefinition> {
     add("panel.zoom", "Zoom active panel", FilesAny, &["Ctrl+F11"]);
     add("files.view", "View focused file", FilesAny, &["F3"]);
     add(
+        "files.compare",
+        "Compare two files",
+        FilesAny,
+        &["Ctrl+Shift+C"],
+    );
+    add(
         "files.view-basic",
         "View as plain text",
         FilesAny,
@@ -128,6 +134,18 @@ fn build() -> Vec<ShortcutDefinition> {
         &["F4"],
     );
     add("viewer.close", "Close viewer", ViewerAny, &["Escape"]);
+    add(
+        "compare.next-difference",
+        "Next comparison difference",
+        ViewerContent,
+        &["F7"],
+    );
+    add(
+        "compare.previous-difference",
+        "Previous comparison difference",
+        ViewerContent,
+        &["Shift+F7"],
+    );
     add(
         "viewer.next-file",
         "View next captured file",
@@ -220,6 +238,18 @@ fn build() -> Vec<ShortcutDefinition> {
         "Beginning of viewed file",
         ViewerContent,
         &["Ctrl+Home"],
+    );
+    add(
+        "viewer.document-previous",
+        "Previous document page",
+        ViewerContent,
+        &["Ctrl+PageUp"],
+    );
+    add(
+        "viewer.document-next",
+        "Next document page",
+        ViewerContent,
+        &["Ctrl+PageDown"],
     );
     add(
         "viewer.last",

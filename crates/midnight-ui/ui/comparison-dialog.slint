@@ -2,6 +2,7 @@ import { Button, ScrollView } from "std-widgets.slint";
 import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
+import { DialogHeader } from "dialog-frame.slint";
 
 export struct ComparisonView {
     open: bool, busy: bool, error: string, summary: string,
@@ -14,6 +15,10 @@ export component CompareDirectoriesDialog inherits Rectangle {
     in property <ComparisonView> model;
     callback submit(bool, bool, bool, string, bool);
     callback cancel();
+    callback move-dialog(length, length);
+    // Shrinking can clip the focused field and clear Slint's focus entirely.
+    changed width => { if root.width < 400px { close-button.focus(); } }
+    changed height => { if root.height < 350px { close-button.focus(); } }
     public function begin() {
         sizes.checked = root.model.by-size;
         times.checked = root.model.by-modified;
@@ -30,9 +35,11 @@ export component CompareDirectoriesDialog inherits Rectangle {
             return reject;
         }
         VerticalLayout {
-            padding: 20px; spacing: 12px;
-            Text { text: "Compare displayed directories"; color: Theme.strong-text; font-size: Theme.font-size + 5px; wrap: word-wrap; }
+            padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 12px;
+            DialogHeader { title: "Compare displayed directories"; compact: root.height < 280px;
+                dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             ScrollView {
+                min-height: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 12px; alignment: start;
@@ -68,7 +75,7 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 spacing: 12px;
                 Button { text: "Compare"; enabled: !root.model.busy; min-height: Theme.control-height;
                     clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked); } }
-                Button { text: root.model.busy ? "Cancel" : "Close"; min-height: Theme.control-height; clicked => { root.cancel(); } }
+                close-button := Button { text: root.model.busy ? "Cancel" : "Close"; min-height: Theme.control-height; clicked => { root.cancel(); } }
             }
         }
     }

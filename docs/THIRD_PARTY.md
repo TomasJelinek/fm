@@ -3,15 +3,15 @@
 Inventory captured on 7 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **51**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **56**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **446**
-  package/version/source records, **422** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **486**
+  package/version/source records, **454** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The fourteen workspaces cover the application, public viewer/filesystem/thumbnail/image
-APIs and worker SDK, four independent viewer plugins, archive/image/video plugins,
+The fifteen workspaces cover the application, public viewer/filesystem/thumbnail/image
+APIs and worker SDK, five independent viewer plugins, archive/image/video plugins,
 and the independent viewer ABI conformance project. Project-owned crates
 are excluded. The negative descriptor fixture has no third-party dependencies.
 Both target graphs include normal, build and test dependencies; this is broader
@@ -36,7 +36,11 @@ This table is a guide; the linked inventories above contain every selected crate
 | notify 8.2.1 | Filesystem event watching | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |
-| sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z decoding | Apache-2.0 |
+| hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF plugin |
+| similar 2.7.0 | Bounded text comparison | Apache-2.0 |
+| sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z and XZ decoding | Apache-2.0 |
+| bzip2 0.6.1 / libbz2-rs-sys 0.2.6 | Pure Rust BZIP2 stream decoding | MIT OR Apache-2.0 / bzip2-1.0.6 |
+| ruzstd 0.9.1 / twox-hash 2.1.5 | Zstandard decoding and frame checksums | MIT |
 | tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |
 | blake3 1.8.7 | Thumbnail cache identities and integrity records | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | ffmpeg-next 9.0.0 / ffmpeg-sys-next 9.0.1 | Optional isolated video decoder bindings | WTFPL |
@@ -51,7 +55,8 @@ This table is a guide; the linked inventories above contain every selected crate
 | arboard 3.7.0 | Native clipboard integration | MIT OR Apache-2.0 |
 | cbindgen 0.29.4 | API C-header generation tool | MPL-2.0 |
 
-The archive provider supports bounded, read-only ZIP/7z/GZIP/TAR/TAR.GZ browsing;
+The archive provider supports bounded ZIP/7z/TAR and GZIP/XZ/BZIP2/Zstandard streams,
+including compressed TAR variants, with read-only browsing and host-verified copy-out;
 its concrete limits are in [the filesystem API](developer/FILESYSTEM_API.md).
 The source viewer currently uses custom lexical
 profiles with `regex`, not a comprehensive grammar engine such as syntect or
@@ -132,6 +137,7 @@ Capture JSON and tree text for each scope below, using Windows for
 | thumbnail-api | `thumbnail-api/Cargo.toml` |
 | image-viewer-api | `image-viewer-api/Cargo.toml` |
 | image-viewer | `plugins/midnight-viewer-image/Cargo.toml` |
+| pdf-viewer | `plugins/midnight-viewer-pdf/Cargo.toml` |
 | archive | `plugins/midnight-fs-archive/Cargo.toml` |
 | thumbnail-image | `plugins/midnight-thumbnail-image/Cargo.toml` |
 | thumbnail-video | `plugins/midnight-thumbnail-video/Cargo.toml` |
@@ -163,7 +169,7 @@ PowerShell's `Set-Content`; use `python3` where Python is installed under that n
 `cargo metadata`/`tree` do not compile native code. Capture each target on its
 native host: build dependencies/procedural macros follow the host, so a Windows
 cross-target query is not equivalent to the native Linux graph.
-The generator reads the twenty-eight captures, excludes project-owned API/SDK crates,
+The generator reads the thirty captures, excludes project-owned API/SDK crates,
 and writes deterministic Markdown/CSV. Recapture after every dependency or feature
 change. `--check` verifies tables against the supplied captures; it does not prove
 those captures are current. Current source hashes are deliberately not labelled

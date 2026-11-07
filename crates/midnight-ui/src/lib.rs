@@ -769,6 +769,7 @@ pub fn install_file_keys(window: &MainWindow) {
     filename_colors::install(window);
     job_presentation::install(window);
     shortcut_bridge::install_default(window);
+    tooltip::install(window).expect("install UI event observer after Slint initialization");
 }
 
 /// Register UI callbacks and request the initial locations. The sender must be nonblocking.

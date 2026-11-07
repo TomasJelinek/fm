@@ -8,6 +8,8 @@ mod archive_associations_tests;
 #[cfg(test)]
 #[path = "preferences/theme_tests.rs"]
 mod theme_tests;
+#[cfg(test)]
+mod window_geometry_tests;
 
 #[derive(Default)]
 pub(crate) struct PreferencesState {
@@ -24,6 +26,7 @@ pub(crate) struct PreferencesState {
 
 #[derive(Default)]
 pub(super) struct EditedFields {
+    window_geometry: bool,
     archive_associations: HashSet<String>,
     pub(super) disabled_viewer_plugins: bool,
     pub(super) editor: bool,
@@ -60,6 +63,39 @@ impl PreferencesState {
 }
 
 impl Presenter {
+    /// A saved geometry is meaningful only after the initial settings read succeeds.
+    pub fn window_geometry_ready(&self) -> bool {
+        self.preferences.loaded && self.preferences.save_blocked.is_none()
+    }
+
+    pub fn window_geometry(&self) -> Option<&midnight_core::WindowGeometry> {
+        self.preferences.values.window_geometry.as_ref()
+    }
+
+    /// The UI captures native bounds; the existing bounded settings worker stores them.
+    pub fn save_window_geometry(
+        &mut self,
+        geometry: midnight_core::WindowGeometry,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        if geometry.validate().is_err() {
+            return;
+        }
+        let mut values = self.preferences.values.clone();
+        values.window_geometry = Some(geometry);
+        self.update_preferences(values, send);
+    }
+
+    /// Retry an unsent final save during the same bounded shutdown grace.
+    pub fn pending_preferences_save(&self) -> Option<Command> {
+        (self.window_geometry_ready() && self.preferences.unsaved).then(|| {
+            Command::SavePreferences {
+                revision: self.preferences.revision,
+                preferences: Box::new(self.preferences.values.clone()),
+            }
+        })
+    }
+
     pub(crate) fn change_thumbnail_options(
         &mut self,
         enabled: bool,
@@ -122,6 +158,9 @@ impl Presenter {
                 self.prepare_loaded_tab_sessions(&mut loaded);
                 let local = &mut self.preferences.values;
                 let edited = &self.preferences.edited;
+                if edited.window_geometry {
+                    loaded.window_geometry = local.window_geometry.clone();
+                }
                 for extension in &edited.archive_associations {
                     if let Some(enabled) = local.archive_association_overrides.get(extension) {
                         loaded
@@ -399,6 +438,7 @@ impl Presenter {
         }
         let previous = &self.preferences.values;
         let edited = &mut self.preferences.edited;
+        edited.window_geometry |= preferences.window_geometry != previous.window_geometry;
         for association in ARCHIVE_ASSOCIATIONS {
             if preferences
                 .archive_association_overrides
@@ -475,7 +515,7 @@ impl Presenter {
         }
         if send(Command::SavePreferences {
             revision: self.preferences.revision,
-            preferences: self.preferences.values.clone(),
+            preferences: Box::new(self.preferences.values.clone()),
         }) {
             self.desktop.status = "Saving options…".into();
         } else {
@@ -571,11 +611,11 @@ mod tests {
     fn unchanged_provisional_defaults_do_not_mask_saved_values() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.change_preferences(0, 0, -1, &|_| true);
-        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             theme: PreferenceTheme::Light,
             density: UiDensity::Touch,
             ..Default::default()
-        })));
+        }))));
         assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
         assert_eq!(p.preferences.values.density, UiDensity::Touch);
         assert_eq!(p.preferences.revision, PreferencesRevision(1));
@@ -590,10 +630,7 @@ mod tests {
             true
         };
         p.change_preferences(2, 1, -1, &send);
-        p.apply_with_sender(
-            Event::PreferencesLoaded(Ok(UserPreferences::default())),
-            &send,
-        );
+        p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &send);
         assert_eq!(
             p.preferences.values,
             UserPreferences {
@@ -631,15 +668,11 @@ mod tests {
             }
         );
         assert!(matches!(
-            sent.borrow()[0],
+            &sent.borrow()[0],
             Command::SavePreferences {
                 revision: PreferencesRevision(1),
-                preferences: UserPreferences {
-                    theme: PreferenceTheme::Light,
-                    density: UiDensity::Touch,
-                    ..
-                }
-            }
+                preferences,
+            } if preferences.theme == PreferenceTheme::Light && preferences.density == UiDensity::Touch
         ));
         assert!(matches!(
             sent.borrow()[1],
@@ -653,7 +686,7 @@ mod tests {
     #[test]
     fn failed_enqueue_keeps_preview_and_allows_retrying_the_same_choices() {
         let mut p = Presenter::new("left".into(), "right".into());
-        p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        p.apply(Event::PreferencesLoaded(Ok(Box::default())));
         p.change_preferences(2, 1, -1, &|_| false);
         assert_eq!(p.preferences.theme_index(), 2);
         assert_eq!(p.preferences.density_index(), 1);

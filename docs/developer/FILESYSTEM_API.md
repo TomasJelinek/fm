@@ -1,9 +1,10 @@
 # Read-only filesystem worker API
 
-`midnight-filesystem-api` version `0.1.0` implements protocol **1** for independent
+`midnight-filesystem-api` version `0.2.0` implements protocol **1** for independent
 archive filesystem executables. It supports opening one captured byte source,
 listing directories and reading members. The application integrates this with
-pane navigation, selection, sorting, filtering, tabs and F3 viewing. This is a
+pane navigation, selection, sorting, filtering, tabs, F3 viewing and verified F5
+copy-out. This is a
 separate public workspace from the viewer C ABI: the viewer's `KIND_FILESYSTEM`
 constant remains reserved, and released viewer API/SDK `0.1.0` packages are
 unchanged. General native/network providers and filesystem mutation are future
@@ -23,7 +24,7 @@ and tests. Its public dependencies are pinned registry packages:
 
 ```toml
 [dependencies]
-midnight-filesystem-api = { version = "=0.1.0", registry = "midnight" }
+midnight-filesystem-api = { version = "=0.2.0", registry = "midnight" }
 midnight-worker-sdk = { version = "=0.1.0", registry = "midnight" }
 ```
 
@@ -46,7 +47,7 @@ version = "0.1.0"
 entry_executable = "example-archive.exe"
 target = "x86_64-pc-windows-msvc"
 protocol = 1
-formats = ["zip", "tar", "gzip", "tar-gzip", "7z"]
+formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 ```
 
 Linux uses its exact host target and executable basename without `.exe`. The
@@ -66,7 +67,8 @@ make discovery accept it.
 
 No package means no archive browsing capability. Native archive files retain
 normal OS activation when the catalog has no providers. With providers installed,
-the current host selects ZIP/JAR, TAR, GZ/GZIP, TAR.GZ/TGZ or 7z by extension and
+the current host selects ZIP containers, TAR, GZIP, XZ, BZIP2, Zstandard, their
+compressed TAR variants or 7z by extension and
 the manifest's format list; there is no arbitrary extension registration or
 provider-priority negotiation in protocol 1.
 
@@ -130,6 +132,11 @@ extraction request, native path conversion or external application launch. The
 host disables create, rename, delete, move, paste, editing, native clipboard and
 terminal operations in archive locations. F3 uses a provider content lease through
 the existing viewer broker; it does not create a temporary extracted file.
+F5 copy-out uses readable-member streams through the host's ordinary bounded copy
+queue; the plugin still receives no extraction or write request. The host validates
+raw destination basenames and requires independent SHA-256 readback before native
+no-replace publication. Linux preserves raw filename bytes; Windows rejects names
+that cannot be represented losslessly as Unicode. Existing targets remain conflicts.
 
 ## Persistent addresses and leases
 
@@ -170,15 +177,17 @@ also limits a directory to 100,000 nodes and 8 MiB aggregate raw/display names.
 
 The reference parser adds 64 MiB compressed source, 64 MiB per member, 128 MiB
 aggregate decoded data, 100,000 nodes, 8 MiB names and expansion ratio 200. It
-eagerly verifies and caches a bounded mount in memory. Solid 7z decoding is serial;
+indexes ZIP metadata and decodes/CRC-checks each member on its first read, before
+returning any bytes. Other formats eagerly cache a bounded mount. Solid 7z decoding is serial;
 later member reads use that verified cache. These limits can reject valid large
 archives. They do not imply unlimited streaming or per-entry parallel decoding.
 
 Supported formats are ZIP store/deflate, TAR including GNU/PAX names, concatenated
-GZIP, TAR.GZ, and 7z Copy/LZMA/LZMA2 with the enabled pure Rust BCJ filters. GZIP
-exposes a synthetic `content` member, ignoring untrusted FNAME. Links, junctions,
+GZIP/XZ/BZIP2/Zstandard and their TAR wrappers, and 7z Copy/LZMA/LZMA2 with the
+enabled pure Rust BCJ filters. Raw compressed streams
+expose a synthetic `content` member, ignoring untrusted FNAME. Links, junctions,
 reparse entries, hard links, special files, absolute/traversal names, backslashes,
-drive/ADS colons and NUL names are unreadable; there is no disk extraction.
+drive/ADS colons and NUL names are unreadable; the worker has no disk extraction capability.
 Duplicate regular files remain distinct. Encryption, passwords, multi-volume
 archives, RAR, nested mounts and archive writing are unsupported.
 
@@ -211,9 +220,9 @@ SDK bundle described in [worker SDK packaging](WORKER_SDK.md). Their archive byt
 and checksums differ: never substitute one bundle for another while retaining the
 wrong public package checksums in a lockfile. Released viewer bundles are separate.
 
-An exported plugin directory has passed all 11 archive fixture tests with
+The updated plugin has passed 16 archive fixture tests with
 `--locked --offline` from outside the host checkout, using packaged APIs only.
-Fixtures cover real ZIP/GZIP/TAR/7z, duplicate solid members, invalid names,
+Fixtures cover real ZIP/GZIP/XZ/BZIP2/Zstandard/TAR/7z, duplicate solid members, invalid names,
 Unicode, long names, links, CRC/trailer errors, malformed/truncated input and
 resource bounds. Host integration additionally exercises discovery, source
 brokering, changed-source failure and absent/duplicate providers. Current

@@ -419,13 +419,20 @@ impl ShortcutMap {
                 // These defaults were added after configurable shortcuts. Keep
                 // previously saved assignments valid, including their hints,
                 // without weakening conflicts between other defaults or overrides.
-                let added_default = definition.id == "files.copy-to"
-                    || (definition.id.starts_with("bookmark.open.")
-                        && !chord.control
-                        && !chord.alt
-                        && !chord.shift
-                        && !chord.meta
-                        && chord.key.starts_with("Digit"));
+                let added_default = matches!(
+                    definition.id.as_str(),
+                    "files.copy-to"
+                        | "files.compare"
+                        | "viewer.document-next"
+                        | "viewer.document-previous"
+                        | "compare.next-difference"
+                        | "compare.previous-difference"
+                ) || (definition.id.starts_with("bookmark.open.")
+                    && !chord.control
+                    && !chord.alt
+                    && !chord.shift
+                    && !chord.meta
+                    && chord.key.starts_with("Digit"));
                 if !replacements.contains_key(definition.id.as_str())
                     && added_default
                     && explicit_keys.get(&chord).is_some_and(|assigned| {

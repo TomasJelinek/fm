@@ -1,6 +1,6 @@
 //! Bounded expansion of a captured selection. Never call on the UI thread.
 use midnight_core::{Cancellation, DirectoryIndex, FsError, SelectionSnapshot};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub(crate) fn resolve(
     selection: &SelectionSnapshot,
@@ -23,6 +23,12 @@ pub(crate) fn resolve(
             return Err(failure(
                 io::ErrorKind::Interrupted,
                 "File selection cancelled.",
+            ));
+        }
+        if path.components().next_back() == Some(Component::ParentDir) {
+            return Err(failure(
+                io::ErrorKind::InvalidInput,
+                "Parent navigation is not a file-operation target.",
             ));
         }
         let raw = path.as_os_str().as_encoded_bytes();
@@ -101,6 +107,37 @@ mod tests {
             )
             .unwrap(),
             vec![PathBuf::from("a"), "文档 $(literal)".into(), "z".into()]
+        );
+    }
+
+    #[test]
+    fn parent_navigation_paths_are_rejected_before_native_file_actions() {
+        for name in ["..", "folder/.."] {
+            let view = index(&[name]);
+            let selected = SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap();
+            assert!(resolve(&selected, &view, None, &Cancellation::default()).is_err());
+            assert!(
+                resolve(
+                    &SelectionSnapshot::default(),
+                    &view,
+                    Some(Path::new(name)),
+                    &Cancellation::default()
+                )
+                .is_err()
+            );
+        }
+        // A real listed entry can retain an unnormalized directory prefix,
+        // for example when the application was opened with --left ../other.
+        let path = Path::new("folder/../other/file.txt");
+        assert_eq!(
+            resolve(
+                &SelectionSnapshot::default(),
+                &index(&[]),
+                Some(path),
+                &Cancellation::default()
+            )
+            .unwrap(),
+            vec![path.to_path_buf()]
         );
     }
 

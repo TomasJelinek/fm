@@ -26,6 +26,7 @@ SCOPES = {
     "thumbnail-api": "thumbnail-api/Cargo.toml",
     "image-viewer-api": "image-viewer-api/Cargo.toml",
     "image-viewer": "plugins/midnight-viewer-image/Cargo.toml",
+    "pdf-viewer": "plugins/midnight-viewer-pdf/Cargo.toml",
     "archive": "plugins/midnight-fs-archive/Cargo.toml",
     "thumbnail-image": "plugins/midnight-thumbnail-image/Cargo.toml",
     "thumbnail-video": "plugins/midnight-thumbnail-video/Cargo.toml",

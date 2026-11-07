@@ -19,7 +19,7 @@ fn installed_ui() -> (ui::TestUi, Rc<RefCell<Presenter>>) {
     )));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     install(&ui.window, presenter.clone(), Rc::new(|_| true));
     refresh(&ui.window, &presenter.borrow());
     ui.window.invoke_focus_files();

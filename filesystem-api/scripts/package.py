@@ -16,8 +16,12 @@ if len(sys.argv) > 2:
     root = pathlib.Path(sys.argv[2]).resolve()
 subprocess.run(["cargo", "package", "--manifest-path", str(root / "Cargo.toml"),
                 "-p", name, "--allow-dirty", "--no-verify", "--offline"], check=True)
-artifact = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / f"package/{name}-0.1.0.crate"
-package = out / f"packages/{name}-0.1.0"
+metadata = json.loads(subprocess.check_output([
+    "cargo", "metadata", "--manifest-path", str(root / "Cargo.toml"),
+    "--format-version", "1", "--no-deps", "--offline"], text=True))
+version = next(p["version"] for p in metadata["packages"] if p["name"] == name)
+artifact = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / f"package/{name}-{version}.crate"
+package = out / f"packages/{name}-{version}"
 digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
 if package.exists():
     previous = json.loads((package / ".cargo-checksum.json").read_text(encoding="utf-8"))

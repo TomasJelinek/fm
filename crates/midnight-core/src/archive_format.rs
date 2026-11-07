@@ -9,6 +9,12 @@ pub enum ArchiveFormat {
     Gzip,
     TarGzip,
     SevenZip,
+    Xz,
+    TarXz,
+    Bzip2,
+    TarBzip2,
+    Zstd,
+    TarZstd,
 }
 
 /// One configurable filename association. The extension is ASCII without a leading dot.
@@ -26,12 +32,20 @@ pub struct ArchiveAssociation {
 /// The worker validates actual content when opening. See `docs/ARCHIVE_FORMATS.md`.
 pub fn archive_association(path: &Path) -> Option<&'static ArchiveAssociation> {
     let name = path.file_name()?.as_encoded_bytes();
-    // Match the compound suffix before ".gz". Slice bytes only for ASCII comparison.
-    let extension = if name.len() >= 7 && name[name.len() - 7..].eq_ignore_ascii_case(b".tar.gz") {
-        b"tar.gz".as_slice()
-    } else {
-        path.extension()?.as_encoded_bytes()
-    };
+    // Compound containers take precedence over their compression-stream suffix.
+    // Slice bytes only for ASCII comparison; native Unicode remains untouched.
+    let extension = ["tar.gz", "tar.xz", "tar.bz2", "tar.zst"]
+        .into_iter()
+        .find(|suffix| {
+            name.len() > suffix.len()
+                && name[name.len() - suffix.len() - 1] == b'.'
+                && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+        })
+        .map(str::as_bytes)
+        .or_else(|| {
+            path.extension()
+                .map(|extension| extension.as_encoded_bytes())
+        })?;
     ARCHIVE_ASSOCIATIONS
         .iter()
         .find(|association| extension.eq_ignore_ascii_case(association.extension.as_bytes()))
@@ -296,4 +310,49 @@ pub const ARCHIVE_ASSOCIATIONS: &[ArchiveAssociation] = &[
         true,
     ),
     association("7z", "7-Zip archive", ArchiveFormat::SevenZip, true),
+    association("xz", "XZ stream", ArchiveFormat::Xz, true),
+    association(
+        "tar.xz",
+        "XZ-compressed TAR archive",
+        ArchiveFormat::TarXz,
+        true,
+    ),
+    association(
+        "txz",
+        "XZ-compressed TAR archive",
+        ArchiveFormat::TarXz,
+        true,
+    ),
+    association("bz2", "Bzip2 stream", ArchiveFormat::Bzip2, true),
+    association(
+        "tar.bz2",
+        "Bzip2-compressed TAR archive",
+        ArchiveFormat::TarBzip2,
+        true,
+    ),
+    association(
+        "tbz2",
+        "Bzip2-compressed TAR archive",
+        ArchiveFormat::TarBzip2,
+        true,
+    ),
+    association(
+        "tbz",
+        "Bzip2-compressed TAR archive",
+        ArchiveFormat::TarBzip2,
+        true,
+    ),
+    association("zst", "Zstandard stream", ArchiveFormat::Zstd, true),
+    association(
+        "tar.zst",
+        "Zstandard-compressed TAR archive",
+        ArchiveFormat::TarZstd,
+        true,
+    ),
+    association(
+        "tzst",
+        "Zstandard-compressed TAR archive",
+        ArchiveFormat::TarZstd,
+        true,
+    ),
 ];

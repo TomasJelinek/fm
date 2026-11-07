@@ -40,6 +40,19 @@ impl LocalServices {
         classify: impl Fn(fs::FileType) -> EntryKind,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
+        self.read_directory_with_metadata(path, cancel, classify, |_| None, emit)
+    }
+
+    /// Let a platform reuse metadata already returned by native enumeration.
+    /// The callback must not follow links or open file contents.
+    pub fn read_directory_with_metadata(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+        classify: impl Fn(fs::FileType) -> EntryKind,
+        metadata: impl Fn(&fs::DirEntry) -> Option<EntryMetadata>,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
         if cancel.is_cancelled() {
             return Ok(());
         }
@@ -69,7 +82,11 @@ impl LocalServices {
                 break;
             }
             let id = EntryId(self.next_entry_id.fetch_add(1, Ordering::Relaxed));
-            if !emit(Entry::new(id, item.path(), kind)) {
+            let mut entry = Entry::new(id, item.path(), kind);
+            if let Some(value) = metadata(&item) {
+                entry.metadata = value;
+            }
+            if !emit(entry) {
                 break;
             }
         }
