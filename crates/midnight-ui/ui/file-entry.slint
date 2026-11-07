@@ -71,7 +71,7 @@ export component FileEntry inherits Rectangle {
                 if item.browsable-archive : ArchiveBadge {
                     x: parent.width - self.width;
                     y: (parent.height - Theme.file-icon-size) / 2;
-                    width: 11px; height: 11px;
+                    width: 7px; height: 8px;
                 }
                 if root.view-mode == 1 && item.size-state == 3 : ErrorGlyph {
                     width: 12px; height: 12px; x: parent.width - self.width;
@@ -124,7 +124,7 @@ export component FileEntry inherits Rectangle {
             accessible-role: none;
         }
         if item.browsable-archive : ArchiveBadge {
-            x: parent.width / 2 + 20px; y: 12px; width: 16px; height: 16px;
+            x: parent.width / 2 + 26px; y: 12px; width: 10px; height: 10px;
         }
         if item.size-state == 3 : ErrorGlyph {
             x: parent.width / 2 + 22px; y: 12px; width: 16px; height: 16px;

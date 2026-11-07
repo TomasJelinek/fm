@@ -5,6 +5,9 @@ when a trusted, compatible filesystem worker advertises its decoder. An entrance
 badge marks these files in Detailed, Brief and Thumbnails views, alongside the host icon.
 The badge is a handler hint, not a claim that the contents have already been validated.
 No file-content probing or archive indexing happens in the UI or during badge rendering.
+Browsable archives use a small, muted corner chevron without an opaque background:
+7 × 8 logical pixels in Detailed/Brief views and 10 × 10 in Thumbnails. The
+associated file icon and selection remain visible, and row sizes do not change.
 
 Options → Archives lists every known association with a checkbox. A saved override
 changes panel activation and the badge immediately; it does not register an operating
