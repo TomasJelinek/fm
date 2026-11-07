@@ -223,7 +223,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Archive dependency fetch failed' }
           cargo fmt --manifest-path "$plugin/Cargo.toml" --all -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Archive formatting failed' }
-          cargo --config $sdk clippy --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
+          cargo clippy --config $sdk --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Archive strict Clippy failed' }
           if ($IsWindows) {
             & "$plugin/scripts/build.ps1" -SdkConfig $sdk -BuildRoot $build -OutputDirectory $package -Test -Offline
