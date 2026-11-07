@@ -74,6 +74,7 @@ struct FairnessProbe {
     consumer: PathBuf,
     total_files: usize,
     completed_metadata: AtomicUsize,
+    producer_work_at_consumer_completion: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -159,6 +160,14 @@ impl DirectoryService for Files {
             && path.parent() == Some(probe.producer.as_path())
         {
             probe.completed_metadata.fetch_add(1, Ordering::SeqCst);
+        }
+        if let Some(probe) = &self.fairness_probe
+            && path.parent() == Some(probe.consumer.as_path())
+        {
+            probe.producer_work_at_consumer_completion.store(
+                probe.completed_metadata.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
         }
         if self.missing.contains(path) {
             return Err(FsError::from_io(
@@ -357,7 +366,7 @@ fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_r
 }
 
 #[test]
-fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_first() {
+fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_io_first() {
     let block = Arc::new(Blocker::default());
     let _release = ReleaseOnDrop(block.clone());
     let mut files = Files {
@@ -370,27 +379,31 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_firs
     let big_files = QUANTUM_ENTRIES + 1;
     files.files("big", big_files);
     files.files("small", 1);
-    files.fairness_probe = Some(Arc::new(FairnessProbe {
+    let probe = Arc::new(FairnessProbe {
         producer: "big".into(),
         consumer: "small".into(),
         total_files: big_files,
         completed_metadata: AtomicUsize::new(0),
-    }));
+        producer_work_at_consumer_completion: AtomicUsize::new(usize::MAX),
+    });
+    files.fairness_probe = Some(probe.clone());
     files.opens.insert("big".into(), block.clone());
     let files = Arc::new(files);
     let budget = Arc::new(IoBudget::isolated());
     let (completed, order) = mpsc::channel();
-    let big_files = files.clone();
+    let (big_reported, wait_for_big_report) = mpsc::channel();
+    let big_source = files.clone();
     let big_budget = budget.clone();
     let big_completed = completed.clone();
     let big = thread::spawn(move || {
         compute_batched(
-            big_files.as_ref(),
+            big_source.as_ref(),
             &[root(1, "big")],
             &Cancellation::default(),
             &mut |id, size| {
                 if size.finished {
-                    big_completed.send(id).unwrap();
+                    big_completed.send((id, size)).unwrap();
+                    big_reported.send(()).unwrap();
                 }
                 true
             },
@@ -406,7 +419,13 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_firs
             &Cancellation::default(),
             &mut |id, size| {
                 if size.finished {
-                    completed.send(id).unwrap();
+                    // These are separate operations with independent result
+                    // receivers. Their callbacks can run in either order after
+                    // releasing I/O. Deliberately deliver the small result last.
+                    wait_for_big_report
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap();
+                    completed.send((id, size)).unwrap();
                 }
                 true
             },
@@ -415,16 +434,27 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_firs
     });
     queued(&budget, 1);
     block.release();
-    assert_eq!(
-        order.recv_timeout(Duration::from_secs(3)).unwrap(),
-        EntryId(2)
-    );
-    assert_eq!(
-        order.recv_timeout(Duration::from_secs(3)).unwrap(),
-        EntryId(1)
-    );
+    let (big_id, big_size) = order.recv_timeout(Duration::from_secs(3)).unwrap();
+    let (small_id, small_size) = order.recv_timeout(Duration::from_secs(3)).unwrap();
     big.join().unwrap();
     small.join().unwrap();
+    assert_eq!(
+        (big_id, big_size.bytes, big_size.errors),
+        (EntryId(1), big_files as u64, 0)
+    );
+    assert_eq!(
+        (small_id, small_size.bytes, small_size.errors),
+        (EntryId(2), 1, 0)
+    );
+    assert!(
+        (1..big_files).contains(
+            &probe
+                .producer_work_at_consumer_completion
+                .load(Ordering::SeqCst)
+        ),
+        "the small root must finish its I/O while the large root still has work"
+    );
+    assert_eq!(probe.completed_metadata.load(Ordering::SeqCst), big_files);
 }
 
 #[test]
