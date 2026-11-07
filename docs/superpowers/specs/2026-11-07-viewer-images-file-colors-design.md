@@ -80,8 +80,9 @@ theme/selection states. Update developer API, design, hotkeys and dependency doc
   accounts remain named in the full menu; Shell/account registrations for the same
   directory merge by native identity while preserving the original path.
 - Hot Paths appear only in dropdowns, with assigned slot numbers 1–9/0. No bare
-  number buttons remain on the toolbar. Special-location artwork grows 10% within
-  the existing button geometry.
+  number buttons remain on the toolbar. The Hot Paths split button sits in the
+  right-hand toolbar group beside the view-mode and sort dropdowns in each panel.
+  Special-location artwork grows 10% within the existing button geometry.
 - Archive display paths concatenate the native container and member names using
   the platform separator, without added spaces. Breadcrumb prefixes/history use
   the same representation; actions still carry opaque provider identities.

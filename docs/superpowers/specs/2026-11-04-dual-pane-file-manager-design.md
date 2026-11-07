@@ -1422,7 +1422,8 @@ přidané bez změny identit předchozích témat.
 
 Nabídka disků má neutrální tlačítko, využívá dostupnou výšku okna a zachovává
 označení aktuálního disku v nabídce i mezi tlačítky. Oblíbené cesty jsou pouze
-v nabídkách s čísly 1–0. OneDrive má jeden primární zástupce na liště, zatímco
+v nabídkách s čísly 1–0. Tlačítko Hot Paths je v pravé části horní lišty každého
+panelu vedle voleb zobrazení a řazení. OneDrive má jeden primární zástupce na liště, zatímco
 různé účty mají rozlišené položky v nabídce; stejné fyzické cíle se neduplikují.
 Ikony zvláštních složek jsou větší v nezměněných tlačítkách. Archivní cesty mají
 nativní oddělovače bez vložených mezer. Generickou ikonu listu u podporovaného

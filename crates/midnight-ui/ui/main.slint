@@ -319,6 +319,7 @@ component FilePane inherits Rectangle {
                 Tool { width: root.toolbar-tool-width; native-icon: root.action-icons.refresh; icon: FallbackIcons.refresh; hint: ShortcutHints.hint("Refresh", "panel.refresh"); clicked => { root.activate(); root.action(3); } }
                 Tool { enabled: root.native-filesystem; width: root.toolbar-tool-width; native-icon: root.action-icons.new-file; icon: FallbackIcons.new-file; hint: ShortcutHints.hint("New empty file", "files.create-file"); clicked => { root.activate(); root.mutation(4); root.focus-list(); } }
                 Tool { enabled: root.native-filesystem; width: root.toolbar-tool-width; native-icon: root.action-icons.properties; icon: FallbackIcons.properties; hint: ShortcutHints.hint("Attributes and times", "files.attributes"); clicked => { root.activate(); root.attributes(); } }
+                Rectangle { horizontal-stretch: 1; }
                 Rectangle {
                     width: root.toolbar-tool-width + root.toolbar-arrow-width;
                     height: Theme.control-height;
@@ -360,7 +361,6 @@ component FilePane inherits Rectangle {
                     assign-bookmark(identity, slot) => { root.bookmark-assign(identity, slot); }
                     remove-bookmark(identity) => { root.bookmark-remove(identity); }
                 }
-                Rectangle { horizontal-stretch: 1; }
                 CompactPicker {
                     private property <bool> compact: root.width < 620px;
                     width: self.compact ? 40px : 116px;

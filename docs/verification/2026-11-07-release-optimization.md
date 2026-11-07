@@ -158,3 +158,20 @@ the entire bottom toolbar rendered correctly on the initial capture. Smoke runs
 used temporary in-memory preferences rather than changing the user's settings.
 Logs, deployment path and `native-release.png` are retained under
 `_build/qa/2026-11-07-final/`.
+
+## Subsequent Hot Paths placement
+
+After the comparison committed in `433b261`, the Hot Paths split button moved
+into the right-hand group beside the view and sort dropdowns in both panels.
+The rebuilt application retains the same release profile and **37,096,448-byte**
+size; its SHA-256 is now
+`fccdee2d36694eb9356be72e640e56e1a94548262a6c1bbad546fdf5bc6057eb`.
+The earlier performance results refer to the preserved comparison artifacts;
+this placement-only rebuild was not benchmarked again.
+
+All 18 keyboard/options and two panel-chrome tests passed. The inactive private
+installation was updated atomically with verified SHA-256 readback. Native UI
+smoke exited 0 with empty stderr, and `hot-path-native.png` was inspected to
+confirm the right-hand placement, complete footer and unchanged control sizes.
+Evidence is in `hot-path-placement-tests.log`, `hot-path-placement-build.log`
+and `hot-path-native.*` under `_build/qa/2026-11-07-final/`.
