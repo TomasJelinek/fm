@@ -1,4 +1,4 @@
-"""Build entry points must build the app before independent viewers and retain failures."""
+"""Build entry points order app, plugins and private deployment, retaining failures."""
 import os
 from pathlib import Path
 import shutil
@@ -21,7 +21,7 @@ class BuildHookTests(unittest.TestCase):
         fake_bin.mkdir()
         self.environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                                 BUILD_TEST_LOG=str(self.log), BUILD_TEST_APP_EXIT="0",
-                                BUILD_TEST_VIEWER_EXIT="0")
+                                BUILD_TEST_VIEWER_EXIT="0", BUILD_TEST_DEPLOY_EXIT="0")
         if os.name == "nt":
             entry = "build.bat"
             (fake_bin / "cargo.cmd").write_text(
@@ -29,6 +29,9 @@ class BuildHookTests(unittest.TestCase):
             (self.root / "scripts/build-viewers.ps1").write_text(
                 'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "viewer $Profile"\n'
                 'exit ([int]$env:BUILD_TEST_VIEWER_EXIT)\n')
+            (self.root / "scripts/deploy-build.ps1").write_text(
+                'param([string]$Profile)\nAdd-Content -LiteralPath $env:BUILD_TEST_LOG "deploy $Profile"\n'
+                'exit ([int]$env:BUILD_TEST_DEPLOY_EXIT)\n')
             self.command = ["cmd.exe", "/d", "/c", str(self.root / entry)]
         else:
             entry = "build.sh"
@@ -42,18 +45,22 @@ class BuildHookTests(unittest.TestCase):
             self.command = ["sh", str(self.root / entry)]
         shutil.copyfile(repository / entry, self.root / entry)
 
-    def run_build(self, profile="release", app_exit="0", viewer_exit="0"):
+    def run_build(self, profile="release", app_exit="0", viewer_exit="0", deploy_exit="0"):
         environment = dict(self.environment, BUILD_TEST_APP_EXIT=app_exit,
-                           BUILD_TEST_VIEWER_EXIT=viewer_exit)
+                           BUILD_TEST_VIEWER_EXIT=viewer_exit, BUILD_TEST_DEPLOY_EXIT=deploy_exit)
         result = subprocess.run(self.command + [profile], cwd=self.root, env=environment,
                                 capture_output=True, text=True, timeout=30)
         calls = self.log.read_text().splitlines() if self.log.exists() else []
+        self.build_output = result.stdout + result.stderr
         return result.returncode, calls
 
     def test_success_builds_application_then_viewers_for_same_profile(self):
         code, calls = self.run_build()
-        self.assertEqual(code, 0)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release", "viewer release"])
+        self.assertEqual(code, 0, self.build_output)
+        expected = ["cargo build -p midnight-explorer --locked --release", "viewer release"]
+        if os.name == "nt":
+            expected.append("deploy release")
+        self.assertEqual(calls, expected)
 
     def test_application_failure_skips_viewer_build(self):
         code, calls = self.run_build(app_exit="35")
@@ -69,6 +76,13 @@ class BuildHookTests(unittest.TestCase):
         code, calls = self.run_build(profile="unknown")
         self.assertEqual(code, 2)
         self.assertEqual(calls, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows private deployment hook")
+    def test_deployment_failure_is_returned_after_app_and_viewers(self):
+        code, calls = self.run_build(deploy_exit="47")
+        self.assertEqual(code, 47, self.build_output)
+        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release",
+                                 "viewer release", "deploy release"])
 
 
 if __name__ == "__main__":
