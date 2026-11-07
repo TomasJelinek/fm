@@ -14,12 +14,9 @@ jobs:
   public-sdk:
     runs-on: ubuntu-24.04
     steps:
+      # cargo package inspects repository ignore files through libgit2, which
+      # cannot lazily fetch blobs omitted by checkout's sparse clone.
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /api/
-            /rust-toolchain.toml
       - name: Prepare SDK release workspace
         run: |
           mkdir -p "$GITHUB_WORKSPACE/_build/tmp"
@@ -119,16 +116,9 @@ jobs:
   public-worker-sdk:
     runs-on: ubuntu-24.04
     steps:
+      # Keep all blobs for Cargo packaging; downstream plugin jobs remain sparse
+      # and receive only their own sources plus the released public SDK bundle.
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /api/
-            /worker-api/
-            /thumbnail-api/
-            /filesystem-api/
-            /image-viewer-api/
-            /rust-toolchain.toml
       - name: Check and package public image and worker APIs
         id: sdk
         shell: bash
