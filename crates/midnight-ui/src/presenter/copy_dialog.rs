@@ -18,6 +18,30 @@ pub(crate) struct CopyDraft {
     pub(crate) intent: TransferIntent,
 }
 
+impl CopyDraft {
+    /// Cached facts only; unknown native kinds still require backend preflight.
+    pub(crate) fn metadata_available(&self) -> bool {
+        if !(1..=64).contains(&self.input.roots()) {
+            return false;
+        }
+        match &self.input {
+            CopyDraftInput::Native(files) => {
+                files.selection.folder_count() == 0
+                    && !(files.selection.is_empty()
+                        && files.fallback.as_ref().is_some_and(|path| {
+                            files
+                                .view
+                                .by_path
+                                .get(path)
+                                .is_some_and(|id| files.view.is_directory(*id))
+                        }))
+            }
+            CopyDraftInput::Clipboard(_) => true,
+            CopyDraftInput::Archive(_) => false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum CopyDraftInput {
     Native(SelectedFiles),
@@ -40,7 +64,13 @@ impl CopyDraftInput {
         }
     }
 
-    fn command(self, id: OperationId, destination: PathBuf, intent: TransferIntent) -> Command {
+    fn command(
+        self,
+        id: OperationId,
+        destination: PathBuf,
+        intent: TransferIntent,
+        metadata: TransferMetadataPolicy,
+    ) -> Command {
         match self {
             Self::Native(files) => {
                 let request = SelectedCopyRequest {
@@ -48,7 +78,13 @@ impl CopyDraftInput {
                     files,
                     destination,
                 };
-                if intent == TransferIntent::RecoverableMove {
+                if metadata == TransferMetadataPolicy::RequireModifiedTime {
+                    Command::EnqueueTransferWithMetadata(Box::new(MetadataTransferRequest {
+                        input: MetadataTransferInput::Selected(request),
+                        intent,
+                        metadata,
+                    }))
+                } else if intent == TransferIntent::RecoverableMove {
                     Command::EnqueueSelectedMove(request)
                 } else {
                     Command::EnqueueSelectedCopy(request)
@@ -59,11 +95,22 @@ impl CopyDraftInput {
                 request.destination = destination;
                 Command::EnqueueArchiveCopy(request)
             }
-            Self::Clipboard(clipboard) => Command::EnqueueClipboardMove(ClipboardMoveRequest {
-                id,
-                clipboard,
-                destination,
-            }),
+            Self::Clipboard(clipboard) => {
+                let request = ClipboardMoveRequest {
+                    id,
+                    clipboard,
+                    destination,
+                };
+                if metadata == TransferMetadataPolicy::RequireModifiedTime {
+                    Command::EnqueueTransferWithMetadata(Box::new(MetadataTransferRequest {
+                        input: MetadataTransferInput::Clipboard(request),
+                        intent,
+                        metadata,
+                    }))
+                } else {
+                    Command::EnqueueClipboardMove(request)
+                }
+            }
         }
     }
 }
@@ -150,6 +197,21 @@ impl Presenter {
         destination: &str,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.confirm_copy_dialog_metadata(
+            token,
+            destination,
+            TransferMetadataPolicy::ContentOnly,
+            send,
+        );
+    }
+
+    pub(crate) fn confirm_copy_dialog_metadata(
+        &mut self,
+        token: &str,
+        destination: &str,
+        metadata: TransferMetadataPolicy,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         let Some(draft) = self
             .copies
             .draft
@@ -158,6 +220,10 @@ impl Presenter {
         else {
             return;
         };
+        if metadata == TransferMetadataPolicy::RequireModifiedTime && !draft.metadata_available() {
+            draft.error = "Exact modified time requires at most 64 native regular files. Folders, links and archive members are unsupported.".into();
+            return;
+        }
         // Unchanged lossy presentation must never replace the original native identity.
         let destination = if draft.destination.to_string_lossy() == destination {
             draft.destination.clone()
@@ -188,7 +254,7 @@ impl Presenter {
             destination,
             roots,
             intent,
-            move |id| input.command(id, target, intent),
+            move |id| input.command(id, target, intent, metadata),
             send,
         ) {
             self.retire_copy_draft();

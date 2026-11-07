@@ -145,6 +145,25 @@ impl TransferDirectory for Directory {
             .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
     }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        self.make_stage(false, cancel)
+    }
+    fn stage_file_with_metadata(
+        &self,
+        policy: midnight_core::TransferMetadataPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        self.make_stage(
+            policy == midnight_core::TransferMetadataPolicy::RequireModifiedTime,
+            cancel,
+        )
+    }
+}
+impl Directory {
+    fn make_stage(
+        &self,
+        metadata: bool,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.revalidate(cancel)?;
         for _ in 0..16 {
             checked(cancel, &self.path)?;
@@ -160,7 +179,12 @@ impl TransferDirectory for Directory {
             match native::open_relative(
                 &self.file,
                 &name,
-                FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+                FILE_READ_DATA
+                    | FILE_WRITE_DATA
+                    | FILE_READ_ATTRIBUTES
+                    | DELETE
+                    | SYNCHRONIZE
+                    | if metadata { FILE_WRITE_ATTRIBUTES } else { 0 },
                 FILE_SHARE_READ,
                 FILE_CREATE,
                 FILE_NON_DIRECTORY_FILE,
@@ -174,6 +198,7 @@ impl TransferDirectory for Directory {
                         cleaned: false,
                         path,
                         replacement: None,
+                        metadata,
                     }));
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -191,6 +216,7 @@ impl TransferDirectory for Directory {
 }
 
 struct Stage {
+    metadata: bool,
     file: File,
     directory: Directory,
     published: bool,
@@ -218,6 +244,28 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn set_modified_time(
+        &mut self,
+        expected: std::time::SystemTime,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if self.published || self.cleaned || !self.metadata {
+            return Err(unsupported(
+                &self.path,
+                "modified time can only be set on an owned unpublished metadata stage",
+            ));
+        }
+        super::metadata::set(&self.file, &self.path, expected, cancel)
+    }
+    fn modified_time(&self, cancel: &Cancellation) -> Result<std::time::SystemTime, FsError> {
+        if self.cleaned || !self.metadata {
+            return Err(unsupported(
+                &self.path,
+                "required modified time is unsupported by this stage",
+            ));
+        }
+        super::metadata::modified(&self.file, &self.path, cancel)
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,

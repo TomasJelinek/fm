@@ -25,13 +25,18 @@ fn nullable_color<'de, D: serde::Deserializer<'de>>(
 
 impl StoredFilenameColor {
     pub(super) fn into_rule(self) -> io::Result<FilenameColorRule> {
+        if !matches!(self.mode.as_str(), "masks" | "regex") {
+            return Err(invalid(
+                "filename colors support Masks or Regex, not metadata expressions",
+            ));
+        }
         let filter = StoredPanelFilter {
             enabled: true,
             mode: self.mode,
             expression: self.expression,
             case_sensitive: self.case_sensitive,
         }
-        .into_filter()?;
+        .into_filter(super::CURRENT_PREFERENCES_VERSION)?;
         Ok(FilenameColorRule {
             enabled: self.enabled,
             mode: filter.mode,
@@ -65,6 +70,7 @@ impl StoredFilenameColor {
             mode: match rule.mode {
                 FilterMode::Masks => "masks",
                 FilterMode::Regex => "regex",
+                FilterMode::Expression => "expression",
             }
             .into(),
             expression: rule.expression,

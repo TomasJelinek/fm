@@ -27,6 +27,7 @@ fn stage(path: &Path) -> Stage {
         .unwrap(),
     );
     let mut stage = Stage {
+        metadata: false,
         file: Some(file),
         directory,
         published: false,

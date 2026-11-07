@@ -220,6 +220,29 @@ Výchozí návrh je **BLAKE3 s 256bitovým výstupem**, průběžně počítaný
 
 Hash ověřuje běžný datový obsah. Zachování práv, ACL, NTFS alternate data streams, rozšířených atributů, hardlinků a sparse rozložení představuje samostatné schopnosti a není součástí prvního slibu bezeztrátové kopie. Kopírovací UI musí předem uvádět dostupnou politiku metadat; selhání slíbeného zachování metadat se nesmí vydávat za úplný úspěch.
 
+### Implementovaný první řez COPY-03 (2026-11-07)
+
+Existující API zůstávají `ContentOnly`. Výslovné `RequireModifiedTime` podporuje
+nejvýše 64 různých nativních běžných souborů na Windows/Linuxu; složky, odkazy a
+virtuální zdroje odmítá bez tichého snížení záruky. UI volba zachování přesného
+času změny je ve výchozím stavu vypnutá; její testy UI prošly na Windows i Linuxu
+a aktuální Windows release prošel nativním ověřením spuštění.
+[Ověření](../../verification/2026-11-07-metadata-filters-provider-checkpoint.md),
+[kontrakt](../../developer/TRANSFERS.md) a
+[volba dialogu](../../developer/TRANSFER_OPTIONS.md) vymezují skutečný rozsah.
+
+Backend zachytí čas ze zdrojového handle před čtením dat. Po zdrojovém SHA-256 a
+úplném nezávislém čtení cíle nastaví čas na vlastním neveřejném souboru, provede
+synchronizaci a přesný metadata readback. Typy a schopnosti celé dávky se ověřují
+před zápisem dat; konkrétní nepodporované rozlišení cíle se může zjistit až po
+ověření dat, před publikováním daného souboru. Dřívější dokončené cíle zůstanou;
+chyba před záchyty blokuje všechny zdrojové záchyty přesunu. Časové kontroly pouze
+doplňují úplné hashe a nové nativní revize; publikovaný cíl se nikdy neopravuje,
+aby se skryla změna. Původní data přesunu zůstávají v recovery, místo se neuvolňuje.
+
+Ostatní časy, atributy, práva, ACL, xattrs, proudy, metadata adresářů a zachování
+odkazů tím nejsou dokončeny. Obecný přesun adresářů zůstává samostatnou etapou.
+
 ### Postup pro jeden běžný soubor
 
 1. Otevřít zdroj jednou a zaznamenat identitu a dostupné indikátory změny. Odmítnout kopii do téhož souboru, včetně detekovatelných aliasů.
@@ -1249,8 +1272,8 @@ Ctrl+F10 porovnává viditelné adresáře na backendu podle velikosti a změnov
 času s volitelnou tolerancí (výchozí dvě sekundy). Označuje chybějící, větší nebo
 novější soubory. Shoda metadat neznamená shodu obsahu. Rozšíření o porovnání
 obsahu a rekurzi zůstává další etapou. Zrušený nebo zastaralý výsledek nemění
-výběr. Ctrl+F12 nastavuje samostatný uložený filtr panelu s maskami nebo regulárním
-výrazem; složky zůstávají viditelné. Ctrl+F11 zvětšuje aktivní panel, ponechá
+výběr. Ctrl+F12 nastavuje samostatný uložený filtr panelu: Masks/Regex ponechávají
+složky viditelné, Expression vyhodnocuje typovaná metadata i u složek. Ctrl+F11 zvětšuje aktivní panel, ponechá
 aktivační pruh druhého a při vypnutí obnoví původní poměr šířek.
 
 Ctrl+F2 otevírá společný editor atributů, časů a velikosti písmen; Ctrl+F7 tentýž
@@ -1437,8 +1460,19 @@ Public API/SDK, testy a plugin zůstávají samostatnými Cargo projekty; viz
 Options → Colors obsahuje pořadí pravidel masek/regexu, jednu základní barvu
 písma a volitelné pozadí. Stav focus/selection se odvozuje automaticky s kontrolou
 kontrastu; čtyři stavy jsou vidět v náhledu. Vyhodnocení probíhá na backendu proti
-neměnnému snapshotu. Ctrl+F12 již umí masky i regex; obecný jazyk výrazů nad
-metadaty souborů zůstává budoucím rozšířením. Carbon Green je deváté téma,
+neměnnému snapshotu. Ctrl+F12 vedle masek a regexu nabízí Expression nad jménem,
+velikostí běžného souboru, časem změny, druhem a hlášenými nativními atributy.
+Výrazy používají `not`/`and`/`or`, typované hodnoty a výslovné UTC nebo číselný
+časový posun. Chybějící metadata zůstávají neznámá i po negaci; jejich zahrnutí
+určují `missing(...)`/`present(...)`. Neznámé kódování archivního jména se nenahrazuje
+zobrazeným popiskem. Linux dot-jméno nepředstírá nativní příznak hidden.
+Backend kontroluje 4096 UTF-8 bajtů, 512 tokenů, 256 uzlů, zanoření 32 a nejvýše 16
+jmenných vzorů; neprovádí I/O, skripty ani čtení obsahu. Chybný či zastaralý návrh
+nezmění platný filtr; dialog zachová text a ukáže řádek/sloupec chyby. Verze
+nastavení 18 zachovává dřívější příkazy i volby kontrolních součtů. Kontext předků v inline stromu
+čeká na TREE-01. [Syntaxe a limity](../../developer/METADATA_FILTERS.md),
+[ověření Windows/Linux](../../verification/2026-11-07-metadata-expression-filters.md).
+Carbon Green je deváté téma,
 přidané bez změny identit předchozích témat.
 
 Nabídka disků má neutrální tlačítko, využívá dostupnou výšku okna a zachovává

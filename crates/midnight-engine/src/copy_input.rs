@@ -15,6 +15,7 @@ impl From<ArchiveCopyRequest> for CopyInput {
             id: request.id,
             destination: request.destination.clone(),
             intent: TransferIntent::Copy,
+            metadata: TransferMetadataPolicy::ContentOnly,
             sources: Sources::Archive(request),
         }
     }
@@ -33,6 +34,7 @@ pub(super) struct CopyInput {
     pub(super) id: OperationId,
     pub(super) destination: PathBuf,
     pub(super) intent: TransferIntent,
+    pub(super) metadata: TransferMetadataPolicy,
     sources: Sources,
 }
 
@@ -42,6 +44,7 @@ impl From<CopyRequest> for CopyInput {
             id: request.id,
             destination: request.destination,
             intent: TransferIntent::Copy,
+            metadata: TransferMetadataPolicy::ContentOnly,
             sources: Sources::Paths(request.clipboard),
         }
     }
@@ -53,17 +56,29 @@ impl From<SelectedCopyRequest> for CopyInput {
             id: request.id,
             destination: request.destination,
             intent: TransferIntent::Copy,
+            metadata: TransferMetadataPolicy::ContentOnly,
             sources: Sources::Selection(request.files),
         }
     }
 }
 
 impl CopyInput {
+    pub(super) fn metadata(request: MetadataTransferRequest) -> Self {
+        let mut input = match request.input {
+            MetadataTransferInput::Paths(paths) => Self::from(paths),
+            MetadataTransferInput::Selected(selected) => Self::from(selected),
+            MetadataTransferInput::Clipboard(clipboard) => Self::move_clipboard(clipboard),
+        };
+        input.intent = request.intent;
+        input.metadata = request.metadata;
+        input
+    }
     pub(super) fn move_clipboard(request: ClipboardMoveRequest) -> Self {
         Self {
             id: request.id,
             destination: request.destination,
             intent: TransferIntent::RecoverableMove,
+            metadata: TransferMetadataPolicy::ContentOnly,
             sources: Sources::SharedPaths(request.clipboard),
         }
     }
@@ -97,10 +112,12 @@ impl CopyInput {
     }
 
     pub(super) fn validate(&self) -> Result<(), FsError> {
-        if let Sources::SharedPaths(files) = &self.sources {
-            files.validate()?;
-        }
-        if let Sources::Paths(files) = &self.sources {
+        let clipboard = match &self.sources {
+            Sources::Paths(files) => Some(files),
+            Sources::SharedPaths(files) => Some(files.as_ref()),
+            _ => None,
+        };
+        if let Some(files) = clipboard {
             files.validate()?;
             if files.intent == FileClipboardIntent::Move && self.intent == TransferIntent::Copy {
                 return Err(error(

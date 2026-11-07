@@ -16,6 +16,8 @@ use std::{
 };
 #[path = "transfer_destination.rs"]
 mod destination;
+#[path = "transfer_metadata.rs"]
+mod metadata;
 #[path = "transfer_move.rs"]
 mod move_source;
 #[path = "transfer_source.rs"]

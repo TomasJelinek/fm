@@ -78,7 +78,12 @@ impl Presenter {
     }
 
     pub(super) fn apply_filter_event(&mut self, event: Event) -> Option<Event> {
-        let Event::PanelFilterValidated { request, result } = event else {
+        let Event::PanelFilterValidated {
+            request,
+            result,
+            diagnostic,
+        } = event
+        else {
             return Some(event);
         };
         if self.filter_dialog.open
@@ -90,7 +95,10 @@ impl Presenter {
             match result {
                 Ok(()) => self.filter_dialog.ready = Some(request),
                 Err(error) => {
-                    self.filter_dialog.error = crate::error_presentation::describe(&error)
+                    self.filter_dialog.error = diagnostic.map_or_else(
+                        || crate::error_presentation::describe(&error),
+                        |diagnostic| describe_diagnostic(&request.filter.expression, &diagnostic),
+                    )
                 }
             }
         }
@@ -106,3 +114,15 @@ impl Presenter {
         }
     }
 }
+
+fn describe_diagnostic(source: &str, diagnostic: &FilterDiagnostic) -> String {
+    let start = source.floor_char_boundary(diagnostic.span.start.min(source.len()));
+    let prefix = &source[..start];
+    let line = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
+    let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    format!("Line {line}, column {column}: {}", diagnostic.message)
+}
+
+#[cfg(test)]
+#[path = "filter_tests.rs"]
+mod tests;

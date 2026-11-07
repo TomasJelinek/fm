@@ -10,6 +10,8 @@ use windows_sys::Win32::Storage::FileSystem::*;
 
 #[path = "transfer_destination.rs"]
 mod destination;
+#[path = "transfer_metadata.rs"]
+mod metadata;
 #[path = "transfer_move.rs"]
 mod move_source;
 #[path = "transfer_source.rs"]

@@ -296,3 +296,200 @@ fn f6_waits_for_the_exact_pending_selection_revision() {
     assert!(Arc::ptr_eq(&files.selection, &selection));
     assert_eq!(draft.intent, TransferIntent::RecoverableMove);
 }
+
+#[test]
+fn required_modified_time_preserves_captured_copy_and_move_after_queue_retry() {
+    for moving in [false, true] {
+        let (mut p, root) = loaded();
+        if moving {
+            p.request_move_dialog(PaneId::Left, &|_| true);
+        } else {
+            p.request_copy_dialog(PaneId::Left, &|_| true);
+        }
+        let draft = p.copies.draft.as_ref().unwrap();
+        assert!(draft.metadata_available());
+        let token = draft.token.clone();
+        let target = draft.destination.clone();
+        let crate::presenter::copy_dialog::CopyDraftInput::Native(files) = &draft.input else {
+            panic!("native capture");
+        };
+        let selection = files.selection.clone();
+        let view = files.view.clone();
+        p.focus_display_row(PaneId::Left, 2);
+        p.confirm_copy_dialog_metadata(
+            &token,
+            &target.to_string_lossy(),
+            TransferMetadataPolicy::RequireModifiedTime,
+            &|_| false,
+        );
+        assert!(p.copies.draft.is_some());
+        assert!(!p.has_live_operations());
+        let queued = RefCell::new(Vec::new());
+        let send = |command| {
+            queued.borrow_mut().push(command);
+            true
+        };
+        p.confirm_copy_dialog_metadata(
+            "stale",
+            &target.to_string_lossy(),
+            TransferMetadataPolicy::RequireModifiedTime,
+            &send,
+        );
+        p.confirm_copy_dialog_metadata(
+            &token,
+            &target.to_string_lossy(),
+            TransferMetadataPolicy::RequireModifiedTime,
+            &send,
+        );
+        let queued = queued.borrow();
+        let [Command::EnqueueTransferWithMetadata(request)] = queued.as_slice() else {
+            panic!("exactly one required metadata command");
+        };
+        assert_eq!(
+            request.metadata,
+            TransferMetadataPolicy::RequireModifiedTime
+        );
+        assert_eq!(
+            request.intent,
+            if moving {
+                TransferIntent::RecoverableMove
+            } else {
+                TransferIntent::Copy
+            }
+        );
+        let MetadataTransferInput::Selected(request) = &request.input else {
+            panic!("selected capture");
+        };
+        assert!(Arc::ptr_eq(&request.files.selection, &selection));
+        assert!(Arc::ptr_eq(&request.files.view, &view));
+        assert_eq!(request.files.fallback, Some(root.join("first.txt")));
+        assert_eq!(request.destination, target);
+        assert!(p.copies.draft.is_none());
+    }
+}
+
+#[test]
+fn required_metadata_refuses_known_folders_and_over_budget_without_downgrading() {
+    for (kind, count, selected) in [
+        (EntryKind::Directory, 1usize, false),
+        (EntryKind::DirectoryLink, 1, false),
+        (EntryKind::Directory, 1, true),
+        (EntryKind::File, 65, true),
+    ] {
+        let (mut p, root) = loaded();
+        p.request_copy_dialog(PaneId::Left, &|_| true);
+        let entries = (0..count)
+            .map(|id| Entry::new(EntryId(id as u64), root.join(format!("item-{id}")), kind))
+            .collect::<Vec<_>>();
+        let view = Arc::new(DirectoryIndex::from_entries(&entries));
+        let selection = if selected {
+            let mut bits = vec![u64::MAX; count.div_ceil(64)];
+            if count % 64 != 0 {
+                *bits.last_mut().unwrap() = (1u64 << (count % 64)) - 1;
+            }
+            Arc::new(SelectionSnapshot::from_bits(view.clone(), bits).unwrap())
+        } else {
+            Arc::default()
+        };
+        let draft = p.copies.draft.as_mut().unwrap();
+        draft.input = crate::presenter::copy_dialog::CopyDraftInput::Native(SelectedFiles {
+            selection,
+            view,
+            fallback: Some(entries[0].path.clone()),
+        });
+        assert!(!draft.metadata_available());
+        let token = draft.token.clone();
+        let target = draft.destination.clone();
+        p.confirm_copy_dialog_metadata(
+            &token,
+            &target.to_string_lossy(),
+            TransferMetadataPolicy::RequireModifiedTime,
+            &|_| panic!("an unsupported required policy must never enqueue content-only work"),
+        );
+        assert!(!p.copies.draft.as_ref().unwrap().error.is_empty());
+        assert!(!p.has_live_operations());
+    }
+}
+
+#[test]
+fn clipboard_required_metadata_retains_original_raw_payload_and_intent() {
+    let (mut p, root) = loaded();
+    let target = root.join("target");
+    p.start_copy(
+        FileClipboard {
+            paths: vec![root.join("source 文档")],
+            intent: FileClipboardIntent::Move,
+        },
+        target.clone(),
+        &|_| panic!("confirmation first"),
+    );
+    let draft = p.copies.draft.as_ref().unwrap();
+    assert!(draft.metadata_available());
+    let crate::presenter::copy_dialog::CopyDraftInput::Clipboard(files) = &draft.input else {
+        panic!("clipboard capture");
+    };
+    let owner = Arc::downgrade(files);
+    let token = draft.token.clone();
+    p.confirm_copy_dialog_metadata(
+        &token,
+        &target.to_string_lossy(),
+        TransferMetadataPolicy::RequireModifiedTime,
+        &|_| false,
+    );
+    assert_eq!(owner.strong_count(), 1);
+    p.confirm_copy_dialog_metadata(
+        &token,
+        &target.to_string_lossy(),
+        TransferMetadataPolicy::RequireModifiedTime,
+        &|command| {
+            let Command::EnqueueTransferWithMetadata(request) = command else {
+                panic!("metadata command");
+            };
+            assert_eq!(request.intent, TransferIntent::RecoverableMove);
+            assert_eq!(
+                request.metadata,
+                TransferMetadataPolicy::RequireModifiedTime
+            );
+            let MetadataTransferInput::Clipboard(request) = request.input else {
+                panic!("clipboard metadata");
+            };
+            assert!(Arc::ptr_eq(&request.clipboard, &owner.upgrade().unwrap()));
+            assert_eq!(request.destination, target);
+            true
+        },
+    );
+    assert!(p.copies.draft.is_none());
+}
+
+#[test]
+fn archive_required_metadata_refuses_forged_option_without_native_access() {
+    let (mut p, root) = loaded();
+    p.request_copy_dialog(PaneId::Left, &|_| true);
+    let draft = p.copies.draft.as_mut().unwrap();
+    draft.input = crate::presenter::copy_dialog::CopyDraftInput::Archive(ArchiveCopyRequest {
+        id: OperationId(0),
+        location: ArchiveLocation::unavailable(ArchiveAddress {
+            provider: "fake.archive".into(),
+            container: root.join("source.zip"),
+            source_version: vec![1],
+            components: vec![],
+        }),
+        entries: Arc::from([]),
+        view: Arc::default(),
+        selected: Arc::default(),
+        fallback: Some(EntryId(2)),
+        destination: root.join("target"),
+    });
+    assert!(!draft.metadata_available());
+    let token = draft.token.clone();
+    let target = draft.destination.clone();
+    p.confirm_copy_dialog_metadata(
+        &token,
+        &target.to_string_lossy(),
+        TransferMetadataPolicy::RequireModifiedTime,
+        &|_| panic!("archive required metadata must not silently downgrade"),
+    );
+    assert!(p.copies.draft.is_some());
+    assert!(!p.copies.draft.as_ref().unwrap().error.is_empty());
+    assert!(!p.has_live_operations());
+}

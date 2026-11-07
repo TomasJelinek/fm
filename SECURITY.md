@@ -232,10 +232,25 @@ private (0700). Creation rejects destination parents owned by an untrusted UID,
 or shared-writable parents lacking sticky protection. mkdir/open is not an atomic
 operation; same-UID/root interference remains outside this isolation boundary.
 Windows uses exclusive staging and a retained handle for no-replace rename.
-Content verification does not promise preservation of ACLs, alternate streams,
+ContentOnly verification does not promise preservation of ACLs, alternate streams,
 xattrs, sparse allocation, timestamps or links. Windows file sync does not promise
 power-loss durability of the parent entry; Linux separately reports parent-sync
 failure even if publication succeeded.
+
+Explicit RequireModifiedTime accepts at most 64 distinct native regular-file roots
+within the 4 MiB proof-path reservation. It captures metadata from retained source
+handles before data reads and preflights every source pin and owned destination
+stage before content writes. After the full SHA-256/readback gate, the exact stage
+modified time is set, synced and independently read back without rounding
+tolerance. Value-specific precision failures happen on unpublished stages after
+data verification; earlier completed files may remain, but such a failure blocks
+all Move captures. Unsupported directories, links and virtual sources never
+silently downgrade to ContentOnly. Source write attributes are not requested;
+Windows adds WRITE_ATTRIBUTES only to owned required-metadata stages.
+Source/destination times supplement, never replace, full Move hashes and fresh
+native read guards. Published targets are never rewritten to hide a mismatch;
+late errors retain originals in recovery. Access/creation time, attributes,
+permissions, ACLs, xattrs, streams and link preservation remain separate features.
 
 Recoverable Move preflight obtains source mutation authority separately from Copy,
 retains every actual source reader and empty stage, and verifies native source

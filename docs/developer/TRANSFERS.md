@@ -147,9 +147,60 @@ can retain both modification/change indicators. Full hashes remain required.
 Linux no-replace capture plus identity inspection/restoration is not compare-ID
 unlink. Same-device Move never shortcuts the full verification barrier.
 
+## Required modified time
+
+Existing requests and constructors remain `ContentOnly`. An explicit
+`Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
+`TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
+selection or shared clipboard input, with an explicit Copy/RecoverableMove intent.
+The first slice accepts at most 64 distinct native regular-file roots within the
+existing 4 MiB proof-path reservation. Directories, links, virtual sources and
+unsupported providers are refused without a policy downgrade. The UI option is
+described separately in [transfer options](TRANSFER_OPTIONS.md).
+
+All source metadata pins and destination staging capabilities are prepared before
+content writes. Source pins capture a consistent native modified time and
+revision before any source data read, retaining the existing file object through
+`Arc<File>`. This adds no source write authority or pathname reopen. Native read
+errors propagate; continuously changing metadata is refused after bounded
+capture attempts. Existing stages and constructors retain their original rights;
+Windows requests WRITE_ATTRIBUTES only on newly owned required-metadata stages.
+
+The existing source SHA-256 and full independent destination readback complete
+first. The source metadata pin is revalidated; modified time is set on the exact
+unpublished stage, synchronized and read back exactly, then the source pin is
+checked again. Readback has no rounding tolerance. A metadata failure cannot
+publish that file or create a Move proof. Before publication, both the source pin
+and stage time are checked again; validation errors are terminal. A late conflict
+reuses this same verified stage through existing replacement preparation.
+
+Preflight establishes kinds and capabilities, not that every source timestamp is
+representable by every destination. Value-specific destination precision failures
+are discovered after data verification on unpublished stages. Earlier completed
+files may remain published; a failure at this stage blocks all Move source captures. There is
+no silent switch to content-only copying.
+
+Move proofs retain the metadata pin and expected modified time alongside their
+existing source/stage/digest/length. Full source/destination hashes, fresh native
+read guards and exact final-name checks remain mandatory. Expected source and
+destination times are checked during each proof and before captures. After our
+source rename, the old revision token is not compared to its changed ctime;
+fresh proof guards and the retained source-handle timestamp read are used.
+Published targets are never corrected to conceal a mismatch. A mismatch after
+capture reports an error and retains the original bytes in recovery.
+
+Windows preserves native 100 ns values and explicitly refuses reserved/unsettable
+FILETIME values; Linux preserves native nanoseconds, including supported negative
+epoch values, with access time left to its existing policy. Timestamp readback is
+verified after native synchronization, and native tests also check the final
+closed file. Current native filesystem coverage is NTFS on Windows and ext on
+Linux; this does not broaden remote commit or power-loss guarantees. Native
+version checks are still not immutable snapshots.
+
 ## Current limits and next stage
 
-Copy preserves verified content. Link copying and complete times/attributes,
+Copy preserves verified content, with explicit required modified time as above.
+Link copying and remaining times/attributes,
 permissions, ACLs, extended attributes and alternate streams need their declared
 metadata capability matrix. Existing source link/special entries are refused.
 Recursive directory Move remains a separate stage: root metadata cannot prove

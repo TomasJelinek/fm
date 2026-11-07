@@ -150,6 +150,7 @@ fn invalid_or_cancelled_filter_validation_cannot_change_saved_filters() {
     p.apply(Event::PanelFilterValidated {
         request,
         result: Ok(()),
+        diagnostic: None,
     });
     p.flush_filters(&|_| true);
     assert!(!p.preferences.values.panel_filters[0].enabled);
@@ -165,6 +166,7 @@ fn invalid_or_cancelled_filter_validation_cannot_change_saved_filters() {
     p.apply(Event::PanelFilterValidated {
         request,
         result: Ok(()),
+        diagnostic: None,
     });
     p.flush_filters(&|_| true);
     assert!(p.preferences.values.panel_filters[0].enabled);
@@ -175,41 +177,47 @@ fn invalid_or_cancelled_filter_validation_cannot_change_saved_filters() {
 
 #[test]
 fn persistent_empty_projection_cannot_activate_a_previously_visible_cursor() {
-    let mut p = loaded();
-    p.preferences.values.panel_filters[0] = PanelFilter {
-        enabled: true,
-        expression: "*.none".into(),
-        ..Default::default()
-    };
-    p.search_filter_changed();
-    let commands = RefCell::new(Vec::new());
-    p.flush_search(&|command| {
-        commands.borrow_mut().push(command);
-        true
-    });
-    let request = commands
-        .into_inner()
-        .into_iter()
-        .find_map(|command| match command {
-            Command::Search(request) => Some(request),
-            _ => None,
-        })
-        .unwrap();
-    p.apply(Event::SearchReady {
-        pane: PaneId::Left,
-        navigation: NavigationId(1),
-        revision: request.revision,
-        result: Arc::new(SearchResult {
-            source: request.source,
-            matches: Arc::default(),
-            index: Arc::default(),
-            filtered: Arc::default(),
-            filtered_index: Arc::default(),
-        }),
-    });
-    assert_eq!(p.panes[0].display_len(), 0);
-    assert!(
-        !p.panes[0].search_allows_activation(),
-        "hidden cursor must not become a fallback operation target"
-    );
+    for (mode, expression) in [
+        (FilterMode::Masks, "*.none"),
+        (FilterMode::Expression, "kind = file and size > 100GiB"),
+    ] {
+        let mut p = loaded();
+        p.preferences.values.panel_filters[0] = PanelFilter {
+            enabled: true,
+            mode,
+            expression: expression.into(),
+            ..Default::default()
+        };
+        p.search_filter_changed();
+        let commands = RefCell::new(Vec::new());
+        p.flush_search(&|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        let request = commands
+            .into_inner()
+            .into_iter()
+            .find_map(|command| match command {
+                Command::Search(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        p.apply(Event::SearchReady {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            revision: request.revision,
+            result: Arc::new(SearchResult {
+                source: request.source,
+                matches: Arc::default(),
+                index: Arc::default(),
+                filtered: Arc::default(),
+                filtered_index: Arc::default(),
+            }),
+        });
+        assert_eq!(p.panes[0].display_len(), 0);
+        assert!(
+            !p.panes[0].search_allows_activation(),
+            "hidden cursor must not become a fallback operation target"
+        );
+    }
 }

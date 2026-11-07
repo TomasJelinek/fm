@@ -6,6 +6,7 @@ use std::{
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 
 /// Provider-native identity; callers compare it but must not reconstruct paths from it.
@@ -82,6 +83,15 @@ pub trait TransferService: Send + Sync {
 /// A regular file or directory opened without following the selected entry's links.
 /// Iteration opens at most one child per call. Retain directory sources on the traversal stack.
 pub trait TransferSource: Send {
+    fn prepare_modified_time(
+        &self,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn crate::TransferModifiedTimePin>, FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "required modified time is unsupported",
+        ))
+    }
     /// Rewind the retained file and guard its current revision. This must continue
     /// working after recoverable source capture changes its original pathname.
     fn rewind_for_validation(
@@ -108,6 +118,17 @@ pub trait TransferSource: Send {
 }
 
 pub trait TransferDirectory: Send + Sync {
+    /// Optional owned-stage authority. ContentOnly callers keep using stage_file.
+    fn stage_file_with_metadata(
+        &self,
+        _policy: crate::TransferMetadataPolicy,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        Err(transfer_unsupported(
+            self.path(),
+            "required modified time is unsupported",
+        ))
+    }
     fn path(&self) -> &Path;
     fn identity(&self) -> TransferIdentity;
     fn capabilities(&self) -> TransferCapabilities {
@@ -201,8 +222,27 @@ pub struct TransferRecovery {
 }
 
 /// A provider-owned exclusive staging inode. Drop cleans up only its own unpublished inode.
-/// Content-only policy: ACLs, timestamps, alternate streams and extended attributes are not promised.
+/// Default stages are content-only; required modified time is a separate optional
+/// authority. ACLs, other timestamps, streams and extended attributes are not promised.
 pub trait StagedTransferFile: Read + Write + Seek + Send {
+    /// Change only modified time on the owned unpublished inode, never data or a
+    /// published target. The caller separately syncs and reads back the exact value.
+    fn set_modified_time(
+        &mut self,
+        _expected: SystemTime,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Err(transfer_unsupported(
+            Path::new(""),
+            "required modified time is unsupported",
+        ))
+    }
+    fn modified_time(&self, _cancel: &Cancellation) -> Result<SystemTime, FsError> {
+        Err(transfer_unsupported(
+            Path::new(""),
+            "required modified time is unsupported",
+        ))
+    }
     fn rewind_for_validation(
         &mut self,
         _cancel: &Cancellation,

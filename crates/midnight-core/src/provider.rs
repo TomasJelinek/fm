@@ -35,6 +35,19 @@ impl Cancellation {
             parents: parents.into(),
         }
     }
+
+    /// A fresh child cancelled by either lifetime, without cancelling either parent.
+    pub fn linked(&self, other: &Self) -> Self {
+        let mut parents = Vec::with_capacity(self.parents.len() + other.parents.len() + 2);
+        parents.push(self.local.clone());
+        parents.extend(self.parents.iter().cloned());
+        parents.push(other.local.clone());
+        parents.extend(other.parents.iter().cloned());
+        Self {
+            local: Arc::default(),
+            parents: parents.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

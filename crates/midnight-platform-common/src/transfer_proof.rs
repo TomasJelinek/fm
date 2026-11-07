@@ -23,6 +23,7 @@ pub struct VerifiedFileProof {
     hash: Sha256,
     read: u64,
     validation_bytes: u64,
+    modified_time: Option<Box<dyn TransferModifiedTimePin>>,
 }
 
 impl VerifiedFileCopy {
@@ -50,6 +51,7 @@ impl VerifiedFileCopy {
             hash: Sha256::new(),
             read: 0,
             validation_bytes: 0,
+            modified_time: self.modified_time,
         })
     }
 }
@@ -76,6 +78,19 @@ impl VerifiedFileProof {
         if self.stage.revalidate_publication(cancel)? != self.identity {
             return Err(failure(path, "published destination identity changed"));
         }
+        self.check_modified_time(cancel)?;
+        Ok(())
+    }
+    fn check_modified_time(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        if let Some(pin) = &self.modified_time
+            && (pin.current_modified(cancel)? != pin.modified()
+                || self.stage.modified_time(cancel)? != pin.modified())
+        {
+            return Err(failure(
+                &self.source.entry().item.path,
+                "required modified time changed after publication",
+            ));
+        }
         Ok(())
     }
     pub fn begin_validation(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -95,6 +110,7 @@ impl VerifiedFileProof {
             ));
         }
         let _permit = io_permit(cancel, path)?;
+        self.check_modified_time(cancel)?;
         if self.stage.revalidate_publication(cancel)? != self.identity {
             return Err(failure(path, "published destination identity changed"));
         }
@@ -179,6 +195,7 @@ impl VerifiedFileProof {
                 .as_ref()
                 .expect("active proof read has a guard")
                 .revalidate(cancel)?;
+            self.check_modified_time(cancel)?;
             if self.phase == FileProofPhase::Destination
                 && self.stage.revalidate_publication(cancel)? != self.identity
             {

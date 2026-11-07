@@ -1,5 +1,7 @@
-//! Bounded worker-side mask/regex compilation; filenames are never converted lossily.
-use midnight_core::{FilterMode, PanelFilter};
+//! Bounded worker-side panel/name filter compilation; names are never converted lossily.
+use midnight_core::{
+    Entry, EntryKind, FilterDiagnostic, FilterDiagnosticKind, FilterMode, PanelFilter,
+};
 use regex::{Regex, RegexBuilder};
 use std::ffi::OsStr;
 
@@ -14,6 +16,9 @@ pub struct CompiledFilter {
 impl CompiledFilter {
     pub fn new(filter: &PanelFilter) -> Result<Self, String> {
         filter.validate_bounds().map_err(str::to_owned)?;
+        if filter.mode == FilterMode::Expression {
+            return Err("Metadata expressions require entry metadata; filename filters support Masks or Regex.".into());
+        }
         if !filter.enabled {
             return Ok(Self {
                 include: None,
@@ -42,6 +47,7 @@ impl CompiledFilter {
                     exclude: exclude.as_deref().map(compile).transpose()?,
                 })
             }
+            FilterMode::Expression => Err("Metadata expressions require entry metadata.".into()),
         }
     }
 
@@ -57,6 +63,58 @@ impl CompiledFilter {
                 .exclude
                 .as_ref()
                 .is_some_and(|regex| regex.is_match(name))
+    }
+}
+
+/// Panel filtering receives complete captured entries; legacy modes keep folders visible.
+pub struct CompiledPanelFilter(PanelMatcher);
+
+enum PanelMatcher {
+    Disabled,
+    Name(CompiledFilter),
+    Expression(crate::filter_expression::CompiledExpression),
+}
+
+impl CompiledPanelFilter {
+    pub fn new(filter: &PanelFilter) -> Result<Self, FilterDiagnostic> {
+        filter.validate_bounds().map_err(|message| {
+            FilterDiagnostic::new(
+                0..filter.expression.len(),
+                FilterDiagnosticKind::Limit,
+                message,
+            )
+        })?;
+        if filter.mode == FilterMode::Expression {
+            // Accepted expression drafts are always typed, even when disabled.
+            let expression = crate::filter_expression::CompiledExpression::new(
+                &filter.expression,
+                filter.case_sensitive,
+            )?;
+            return Ok(Self(if filter.enabled {
+                PanelMatcher::Expression(expression)
+            } else {
+                PanelMatcher::Disabled
+            }));
+        }
+        CompiledFilter::new(filter)
+            .map(|names| Self(PanelMatcher::Name(names)))
+            .map_err(|message| {
+                FilterDiagnostic::new(
+                    0..filter.expression.len(),
+                    FilterDiagnosticKind::Pattern,
+                    message,
+                )
+            })
+    }
+    pub fn matches_entry(&self, entry: &Entry) -> bool {
+        match &self.0 {
+            PanelMatcher::Disabled => true,
+            PanelMatcher::Name(names) => {
+                matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                    || names.matches(&entry.name)
+            }
+            PanelMatcher::Expression(expression) => expression.matches(entry),
+        }
     }
 }
 

@@ -176,13 +176,13 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
         return Computation::Cancelled;
     }
     let query = UniCase::unicode(&request.query).to_folded_case();
-    let filter = match midnight_platform_common::filter::CompiledFilter::new(&request.filter) {
+    let filter = match midnight_platform_common::filter::CompiledPanelFilter::new(&request.filter) {
         Ok(filter) => filter,
         Err(error) => {
             return Computation::Failed(FsError::from_io(
                 "filter filenames",
                 &request.location,
-                io::Error::new(io::ErrorKind::InvalidInput, error),
+                io::Error::new(io::ErrorKind::InvalidInput, error.message),
             ));
         }
     };
@@ -194,9 +194,7 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
         if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
             return Computation::Cancelled;
         }
-        if !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
-            && !filter.matches(&entry.name)
-        {
+        if !filter.matches_entry(entry) {
             continue;
         }
         if !append_entry(&mut filtered_index, entry, filtered.len()) {

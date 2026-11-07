@@ -4,6 +4,8 @@ use std::ffi::OsStr;
 #[cfg(target_os = "linux")]
 #[path = "move_linux_tests.rs"]
 mod linux;
+#[path = "copy_metadata_tests.rs"]
+mod metadata;
 
 fn protected_fixture() -> (tempfile::TempDir, PathBuf) {
     use std::io::Write;

@@ -52,3 +52,72 @@ fn malformed_filters_are_rejected_instead_of_partially_loading() {
         assert!(decode_preferences(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }
+
+#[test]
+fn metadata_expression_roundtrip_uses_schema18_and_preserves_required_earlier_defaults() {
+    let mut preferences = UserPreferences::default();
+    preferences.panel_filters[0] = midnight_core::PanelFilter {
+        enabled: true,
+        mode: midnight_core::FilterMode::Expression,
+        expression: "kind = file and size >= 10MiB".into(),
+        case_sensitive: false,
+    };
+    let bytes = encode_preferences(preferences.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["version"], 18);
+    assert_eq!(value["user_commands"], serde_json::json!([]));
+    assert!(value.get("checksum_algorithms").is_some());
+    assert_eq!(decode_preferences(&bytes).unwrap(), preferences);
+}
+
+#[test]
+fn expression_schema_preserves_commands_checksums_and_rejects_old_or_missing_required_fields() {
+    use midnight_core::*;
+    use std::sync::Arc;
+    let mut preferences = UserPreferences::default();
+    preferences.panel_filters[1] = PanelFilter {
+        enabled: true,
+        mode: FilterMode::Expression,
+        expression: "modified >= \"2026-11-01T00:00:00Z\"".into(),
+        case_sensitive: true,
+    };
+    preferences.checksum_algorithms =
+        ChecksumAlgorithms::new(&[ChecksumAlgorithm::Md5, ChecksumAlgorithm::Sha512]).unwrap();
+    preferences.user_commands = Arc::new(vec![UserCommand {
+        id: UserCommandId::new("kept").unwrap(),
+        name: "Kept 文档".into(),
+        enabled: false,
+        toolbar_label: None,
+        icon: None,
+        working_directory: "${active.path}".into(),
+        launch: UserCommandLaunch::Single,
+        invocation: UserCommandInvocation::Program {
+            executable: std::env::current_exe().unwrap(),
+            arguments: vec![],
+        },
+    }]);
+    let bytes = encode_preferences(preferences.clone()).unwrap();
+    assert_eq!(decode_preferences(&bytes).unwrap(), preferences);
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let mut old = value.clone();
+    old["version"] = 17.into();
+    assert!(decode_preferences(&serde_json::to_vec(&old).unwrap()).is_err());
+    for field in ["user_commands", "checksum_algorithms"] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            decode_preferences(&serde_json::to_vec(&missing).unwrap()).is_err(),
+            "{field}"
+        );
+    }
+    for enabled in [true, false] {
+        let mut invalid = preferences.clone();
+        invalid.panel_filters[1].enabled = enabled;
+        invalid.panel_filters[1].expression = "size = \"large\"".into();
+        assert!(encode_preferences(invalid).is_err());
+    }
+    let mut colors = value;
+    colors["filename_colors"][0]["mode"] = "expression".into();
+    colors["filename_colors"][0]["expression"] = "kind = file".into();
+    assert!(decode_preferences(&serde_json::to_vec(&colors).unwrap()).is_err());
+}

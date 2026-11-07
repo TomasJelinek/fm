@@ -1,8 +1,9 @@
 import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton } from "hinted-inputs.slint";
+import { HintedActionButton, HintedCheckBox } from "hinted-inputs.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
 
 export component OperationDialog inherits Rectangle {
@@ -17,6 +18,11 @@ export component OperationDialog inherits Rectangle {
     in property <image> native-icon;
     in property <image> fallback-icon;
     in property <string> warning;
+    in property <bool> option-visible;
+    in property <bool> option-enabled: true;
+    in-out property <bool> option-checked;
+    in property <string> option-label;
+    in property <string> option-hint;
     callback confirm(string);
     callback cancel();
     callback move-dialog(length, length);
@@ -37,15 +43,26 @@ export component OperationDialog inherits Rectangle {
                 if event.modifiers.shift || event.text == Key.Backtab {
                     if name.has-focus { if confirm-button.enabled { confirm-button.focus(); } else { cancel-button.focus(); } }
                     else if cancel-button.has-focus {
+                        if root.option-visible && root.option-enabled { option.focus(); }
+                        else if root.has-name { name.focus(); }
+                        else if confirm-button.enabled { confirm-button.focus(); }
+                        else { cancel-button.focus(); }
+                    }
+                    else if option.has-focus {
                         if root.has-name { name.focus(); }
                         else if confirm-button.enabled { confirm-button.focus(); }
                         else { cancel-button.focus(); }
                     }
                     else { cancel-button.focus(); }
                 } else {
-                    if name.has-focus { cancel-button.focus(); }
+                    if name.has-focus {
+                        if root.option-visible && root.option-enabled { option.focus(); }
+                        else { cancel-button.focus(); }
+                    }
+                    else if option.has-focus { cancel-button.focus(); }
                     else if cancel-button.has-focus && confirm-button.enabled { confirm-button.focus(); }
                     else if root.has-name { name.focus(); }
+                    else if root.option-visible && root.option-enabled { option.focus(); }
                     else { cancel-button.focus(); }
                 }
                 return accept;
@@ -68,10 +85,26 @@ export component OperationDialog inherits Rectangle {
             if root.has-name && root.input-label != "" && !root.compact : Text {
                 text: root.input-label; color: Theme.text; font-size: Theme.font-size;
             }
-            name := LineEdit {
-                visible: root.has-name;
-                accessible-label: root.input-label == "" ? root.title : root.input-label;
-                accepted => { if self.text != "" { root.confirm(self.text); } }
+            VerticalLayout {
+                spacing: root.option-visible ? (root.compact ? 4px : 12px) : 0px;
+                name := LineEdit {
+                    visible: root.has-name;
+                    accessible-label: root.input-label == "" ? root.title : root.input-label;
+                    accepted => { if self.text != "" { root.confirm(self.text); } }
+                }
+                ScrollView {
+                    visible: root.option-visible; min-width: 0px;
+                    height: root.option-visible ? max(Theme.control-height, option.preferred-height) + FluentScrollMetrics.overlay-size : 0px;
+                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    HorizontalLayout {
+                        option := HintedCheckBox {
+                            text: root.option-label; hint: root.option-hint;
+                            enabled: root.option-visible && root.option-enabled;
+                            checked <=> root.option-checked;
+                            font-size: Theme.font-size;
+                        }
+                    }
+                }
             }
             HorizontalLayout {
                 spacing: 8px;

@@ -1,7 +1,8 @@
 //! Bounded independent SHA-256 readback; native adapters own all filesystem publication.
 use midnight_core::{
     Cancellation, EntryKind, FsError, StagedTransferFile, TransferEntry, TransferIdentity,
-    TransferPublication, TransferReplacementPolicy, TransferSource, TransferTarget,
+    TransferModifiedTimePin, TransferPublication, TransferReplacementPolicy, TransferSource,
+    TransferTarget,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -36,6 +37,7 @@ pub struct VerifiedFileCopy {
     copied: u64,
     verified: u64,
     proof_eligible: bool,
+    modified_time: Option<Box<dyn TransferModifiedTimePin>>,
 }
 impl VerifiedFileCopy {
     pub fn new(
@@ -60,7 +62,18 @@ impl VerifiedFileCopy {
             copied: 0,
             verified: 0,
             proof_eligible: false,
+            modified_time: None,
         })
+    }
+    /// Use a source metadata pin captured before any source data read.
+    pub fn new_with_modified_time(
+        source: Box<dyn TransferSource>,
+        stage: Box<dyn StagedTransferFile>,
+        pin: Box<dyn TransferModifiedTimePin>,
+    ) -> Result<Self, FsError> {
+        let mut copy = Self::new(source, stage)?;
+        copy.modified_time = Some(pin);
+        Ok(copy)
     }
     pub fn source_entry(&self) -> &TransferEntry {
         self.source.entry()
@@ -88,7 +101,7 @@ impl VerifiedFileCopy {
         }
         self.stage.cleanup()
     }
-    /// At most one 256 KiB source/readback block, or one sync phase. Individual
+    /// At most one 256 KiB block, or bounded sync/metadata finalization. Individual
     /// native calls share the process I/O budget; hashing runs after releasing it.
     pub fn step(&mut self, cancel: &Cancellation) -> Result<CopyPhase, FsError> {
         let result = self.advance(cancel);
@@ -178,6 +191,20 @@ impl VerifiedFileCopy {
                     {
                         let _permit = io_permit(cancel, path)?;
                         self.source.revalidate(cancel)?;
+                        if let Some(pin) = &self.modified_time {
+                            pin.revalidate(cancel)?;
+                            self.stage.set_modified_time(pin.modified(), cancel)?;
+                            check_cancel(cancel, path)?;
+                            self.stage.sync(cancel)?;
+                            check_cancel(cancel, path)?;
+                            if self.stage.modified_time(cancel)? != pin.modified() {
+                                return Err(failure(
+                                    path,
+                                    "required modified time was not retained exactly",
+                                ));
+                            }
+                            pin.revalidate(cancel)?;
+                        }
                     }
                     self.phase = CopyPhase::ReadyToPublish;
                 } else {
@@ -237,6 +264,12 @@ impl VerifiedFileCopy {
             self.phase = CopyPhase::Failed;
             return Err(error);
         }
+        if let Some(pin) = &self.modified_time
+            && let Err(error) = pin.revalidate(cancel)
+        {
+            self.phase = CopyPhase::Failed;
+            return Err(error);
+        }
         self.stage
             .prepare_replacement(name, expected, policy, cancel)
     }
@@ -266,6 +299,24 @@ impl VerifiedFileCopy {
         }
         let _permit = io_permit(cancel, path)?;
         if let Err(error) = self.source.revalidate(cancel) {
+            self.phase = CopyPhase::Failed;
+            return Err(error);
+        }
+        let metadata = self
+            .modified_time
+            .as_ref()
+            .map(|pin| {
+                pin.revalidate(cancel)?;
+                if self.stage.modified_time(cancel)? != pin.modified() {
+                    return Err(failure(
+                        path,
+                        "required modified time changed before publication",
+                    ));
+                }
+                Ok::<(), FsError>(())
+            })
+            .transpose();
+        if let Err(error) = metadata {
             self.phase = CopyPhase::Failed;
             return Err(error);
         }

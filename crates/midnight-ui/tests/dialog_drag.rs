@@ -254,7 +254,7 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
                         open: true,
                         ..Default::default()
                     });
-                "Panel file filter"
+                "Panel filter"
             }
             8 => {
                 test.window.set_message_title("Error details".into());

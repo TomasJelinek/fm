@@ -124,6 +124,11 @@ pub fn validate_filename_colors(rules: &[FilenameColorRule]) -> Result<(), &'sta
         return Err("At most 32 filename color rules are supported.");
     }
     for rule in rules {
+        if rule.mode == FilterMode::Expression {
+            return Err(
+                "Filename colors support Masks or Regex; metadata expressions are panel filters.",
+            );
+        }
         rule.filter().validate_bounds()?;
     }
     Ok(())

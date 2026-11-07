@@ -23,6 +23,7 @@ mod operations;
 #[cfg(test)]
 mod outbox_tests;
 mod preferences;
+pub mod providers;
 pub mod reclaim;
 mod scan_cache;
 mod search;
@@ -518,6 +519,7 @@ impl Engine {
                         Some(Command::EnqueueMove(request)) => copies.enqueue_move(request).await,
                         Some(Command::EnqueueSelectedMove(request)) => copies.enqueue_selected_move(request).await,
                         Some(Command::EnqueueClipboardMove(request)) => copies.enqueue_clipboard_move(request).await,
+                        Some(Command::EnqueueTransferWithMetadata(request)) => copies.enqueue_metadata(*request).await,
                         Some(Command::EnqueueArchiveCopy(request)) => copies.enqueue_archive(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),

@@ -31,7 +31,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 17;
+const CURRENT_PREFERENCES_VERSION: u32 = 18;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,18 +131,19 @@ struct StoredPanelFilter {
 }
 
 impl StoredPanelFilter {
-    fn into_filter(self) -> io::Result<midnight_core::PanelFilter> {
+    fn into_filter(self, version: u32) -> io::Result<midnight_core::PanelFilter> {
         let filter = midnight_core::PanelFilter {
             enabled: self.enabled,
             mode: match self.mode.as_str() {
                 "masks" => midnight_core::FilterMode::Masks,
                 "regex" => midnight_core::FilterMode::Regex,
+                "expression" if version >= 18 => midnight_core::FilterMode::Expression,
                 _ => return Err(invalid("unknown panel filter mode")),
             },
             expression: self.expression,
             case_sensitive: self.case_sensitive,
         };
-        crate::filter::CompiledFilter::new(&filter).map_err(invalid)?;
+        crate::filter::CompiledPanelFilter::new(&filter).map_err(|error| invalid(error.message))?;
         Ok(filter)
     }
 }
@@ -417,9 +418,10 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     };
     let panel_filters = match (stored.version, stored.panel_filters) {
         (1..=7, None) => Default::default(),
-        (8..=CURRENT_PREFERENCES_VERSION, Some([left, right])) => {
-            [left.into_filter()?, right.into_filter()?]
-        }
+        (8..=CURRENT_PREFERENCES_VERSION, Some([left, right])) => [
+            left.into_filter(stored.version)?,
+            right.into_filter(stored.version)?,
+        ],
         (8..=CURRENT_PREFERENCES_VERSION, None) => return Err(invalid("missing panel filters")),
         _ => return Err(invalid("panel filters require preferences version 8")),
     };
@@ -504,11 +506,15 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     crate::filename_colors::CompiledFilenameColors::new(&preferences.filename_colors)
         .map_err(invalid)?;
     for filter in &preferences.panel_filters {
-        crate::filter::CompiledFilter::new(filter).map_err(invalid)?;
+        crate::filter::CompiledPanelFilter::new(filter).map_err(|error| invalid(error.message))?;
     }
     // An explicit empty list must survive restart; omitted legacy rules mean presets.
     let geometry_choices = preferences.window_geometry.is_some();
-    let command_choices = !preferences.user_commands.is_empty();
+    let expression_choices = preferences
+        .panel_filters
+        .iter()
+        .any(|filter| filter.mode == midnight_core::FilterMode::Expression);
+    let command_choices = expression_choices || !preferences.user_commands.is_empty();
     let checksum_choices =
         preferences.checksum_algorithms != midnight_core::ChecksumAlgorithms::default();
     let color_choices = command_choices
@@ -541,7 +547,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         archive_association_overrides: archive_choices.then_some(StoredArchiveAssociations(
             preferences.archive_association_overrides,
         )),
-        version: if command_choices {
+        version: if expression_choices {
+            18
+        } else if command_choices {
             17
         } else if checksum_choices {
             16
@@ -577,6 +585,7 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
                 mode: match filter.mode {
                     midnight_core::FilterMode::Masks => "masks",
                     midnight_core::FilterMode::Regex => "regex",
+                    midnight_core::FilterMode::Expression => "expression",
                 }
                 .into(),
                 expression: filter.expression,

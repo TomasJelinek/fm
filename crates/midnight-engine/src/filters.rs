@@ -1,7 +1,7 @@
 //! Coalescing worker validation keeps regex compilation out of UI callbacks.
 use crate::Outbox;
 use midnight_core::{Event, FilterValidationRequest, FsError};
-use midnight_platform_common::filter::CompiledFilter;
+use midnight_platform_common::filter::CompiledPanelFilter;
 use std::{io, path::Path, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
 
@@ -49,20 +49,33 @@ async fn run(outbox: Outbox, mut input: watch::Receiver<Intent>) {
             continue;
         };
         let filter = request.filter.clone();
-        let result = tokio::task::spawn_blocking(move || CompiledFilter::new(&filter).map(|_| ()))
-            .await
-            .map_err(|error| error.to_string())
-            .and_then(|value| value)
-            .map_err(|message| {
-                FsError::from_io(
+        let (result, diagnostic) = match tokio::task::spawn_blocking(move || {
+            CompiledPanelFilter::new(&filter).map(|_| ())
+        })
+        .await
+        {
+            Ok(Ok(())) => (Ok(()), None),
+            Ok(Err(diagnostic)) => {
+                let error = FsError::from_io(
                     "validate panel filter",
                     Path::new(""),
-                    io::Error::new(io::ErrorKind::InvalidInput, message),
-                )
-            });
+                    io::Error::new(io::ErrorKind::InvalidInput, diagnostic.message.clone()),
+                );
+                (Err(error), Some(diagnostic))
+            }
+            Err(error) => (
+                Err(FsError::from_io(
+                    "validate panel filter",
+                    Path::new(""),
+                    io::Error::other(error.to_string()),
+                )),
+                None,
+            ),
+        };
         let event = Event::PanelFilterValidated {
             request: (*request).clone(),
             result,
+            diagnostic,
         };
         tokio::select! {
             biased;
@@ -78,3 +91,7 @@ async fn run(outbox: Outbox, mut input: watch::Receiver<Intent>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "filters_tests.rs"]
+mod tests;

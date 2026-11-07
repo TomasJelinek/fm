@@ -112,6 +112,9 @@ impl Controller {
     pub(crate) async fn enqueue_clipboard_move(&self, request: ClipboardMoveRequest) {
         self.enqueue_input(CopyInput::move_clipboard(request)).await;
     }
+    pub(crate) async fn enqueue_metadata(&self, request: MetadataTransferRequest) {
+        self.enqueue_input(CopyInput::metadata(request)).await;
+    }
     pub(crate) async fn enqueue_archive(&self, request: ArchiveCopyRequest) {
         self.enqueue_input(request.into()).await;
     }
@@ -348,6 +351,7 @@ async fn run_input(
     let command = request.command;
     let prepared = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let metadata = command.metadata;
         let command = command.resolve(&job_cancel)?;
         match command {
             input::Resolved::NativeMove(command) => {
@@ -355,14 +359,16 @@ async fn run_input(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .requested_roots = command.clipboard.paths.len() as u64;
-                worker::Job::prepare_move(command, &*service, job_cancel, status)
+                worker::Job::prepare_move_with_metadata(
+                    command, &*service, job_cancel, status, metadata,
+                )
             }
             input::Resolved::Native(command) => {
                 status
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .requested_roots = command.clipboard.paths.len() as u64;
-                worker::Job::prepare(command, &*service, job_cancel, status)
+                worker::Job::prepare_with_metadata(command, &*service, job_cancel, status, metadata)
             }
             input::Resolved::Archive {
                 destination,

@@ -32,11 +32,20 @@ pub(super) fn prepare(
     cancel: Cancellation,
     status: Status,
 ) -> Result<Job, FsError> {
+    prepare_with_metadata(
+        request,
+        service,
+        cancel,
+        status,
+        TransferMetadataPolicy::ContentOnly,
+    )
+}
+pub(super) fn check_bounds(request: &CopyRequest) -> Result<(), FsError> {
     request.clipboard.validate()?;
     if request.clipboard.paths.len() > MAX_MOVE_FILES {
         return Err(unsupported(
             &request.destination,
-            "Recoverable Move currently accepts at most 64 regular files. Choose Copy for larger or recursive selections.",
+            "This verified transfer policy accepts at most 64 regular files. Choose content-only Copy for larger or recursive selections.",
         ));
     }
     // Reserve repeated native source/parent/stage/proof and receipt path storage,
@@ -63,10 +72,20 @@ pub(super) fn prepare(
         if bytes > MAX_PROOF_PATH_BYTES {
             return Err(unsupported(
                 source,
-                "Recoverable Move proof paths exceed the 4 MiB budget. Choose Copy or a smaller batch.",
+                "Verified transfer proof paths exceed the 4 MiB budget. Choose content-only Copy or a smaller batch.",
             ));
         }
     }
+    Ok(())
+}
+pub(super) fn prepare_with_metadata(
+    request: CopyRequest,
+    service: &dyn TransferService,
+    cancel: Cancellation,
+    status: Status,
+    metadata: TransferMetadataPolicy,
+) -> Result<Job, FsError> {
+    check_bounds(&request)?;
     let _permit = permit(&cancel, &request.destination)?;
     let destination = service.prepare_move_destination(&request.destination, &cancel)?;
     if destination.path() != request.destination {
@@ -107,40 +126,17 @@ pub(super) fn prepare(
         roots.push_back(prepared.source);
         captures.push(prepared.capture);
     }
-    let mut stages = HashMap::new();
-    for source in &roots {
-        let result = (|| {
-            let mut stage = destination.stage_file(&cancel)?;
-            if let Err(mut failure) = stage
-                .rewind_for_validation(&cancel)
-                .and_then(|guard| guard.revalidate(&cancel))
-            {
-                if let Err(cleanup) = stage.cleanup() {
-                    failure
-                        .message
-                        .push_str(&format!("\nStage cleanup requires attention: {cleanup}"));
-                }
-                return Err(failure);
-            }
-            Ok::<_, FsError>(stage)
-        })();
-        match result {
-            Ok(stage) => {
-                stages.insert(source.entry().identity, stage);
-            }
-            Err(mut failure) => {
-                for stage in stages.values_mut() {
-                    if let Err(cleanup) = stage.cleanup() {
-                        failure
-                            .message
-                            .push_str(&format!("\nStage cleanup requires attention: {cleanup}"));
-                    }
-                }
-                return Err(failure);
-            }
-        }
-    }
+    let pins = if metadata == TransferMetadataPolicy::RequireModifiedTime {
+        Some(super::metadata_job::pins(&roots, &cancel)?)
+    } else {
+        None
+    };
+    let stages = super::metadata_job::stages(&roots, &destination, metadata, true, &cancel)?;
     let mut job = Job::from_sources(destination, roots, cancel, status);
+    job.metadata = pins.map(|pins| super::metadata_job::MetadataWork {
+        pins,
+        stages: HashMap::new(),
+    });
     job.progress.intent = TransferIntent::RecoverableMove;
     job.move_work = Some(MoveWork {
         captures,
@@ -345,7 +341,10 @@ fn record_source(
         });
     }
 }
-fn permit(cancel: &Cancellation, path: &Path) -> Result<midnight_work_budget::Permit, FsError> {
+pub(super) fn permit(
+    cancel: &Cancellation,
+    path: &Path,
+) -> Result<midnight_work_budget::Permit, FsError> {
     midnight_work_budget::shared_io()
         .acquire(midnight_work_budget::IO_SLOTS, || cancel.is_cancelled())
         .ok_or_else(|| {

@@ -2,10 +2,12 @@
 //! Portable, blocking local directory and capacity services shared by native adapters.
 pub mod filename_colors;
 pub mod filter;
+pub mod filter_expression;
 pub mod fonts;
 pub mod metadata;
 pub mod settings;
 pub mod transfer;
+pub mod transfer_modified_time;
 
 use midnight_core::{
     Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, FsError, SpaceInfo,

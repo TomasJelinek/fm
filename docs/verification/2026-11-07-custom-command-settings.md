@@ -64,3 +64,13 @@ the updated portable fixture is included. Workspace Rust formatting passed.
 These software-window tests do not by themselves qualify native GPU startup.
 Release startup evidence follows in the checkpoint report. Production preferences
 are not modified by the fixtures.
+
+## Shared UI checkpoint regression
+
+After the metadata/filter/provider checkpoint changed shared UI bindings, the
+complete `user_command_settings_ui` target was rebuilt and rerun on both
+platforms: **12 passed on Windows and 12 passed on Linux**, no failures or skips.
+The source implements the same drag gesture described above. Logs are
+`_build/goal/vfs/command-order-windows.log` and `command-order-linux.log`.
+The [checkpoint report](2026-11-07-metadata-filters-provider-checkpoint.md) records
+the new Windows release hash, protected runtime and successful native startup.

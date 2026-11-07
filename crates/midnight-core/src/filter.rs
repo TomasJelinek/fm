@@ -1,5 +1,6 @@
-//! Saved per-panel filename filtering; compilation and matching belong to workers.
+//! Saved per-panel name/metadata filtering; compilation and matching belong to workers.
 use crate::PaneId;
+use std::ops::Range;
 
 pub const MAX_FILTER_BYTES: usize = 4096;
 
@@ -8,6 +9,34 @@ pub enum FilterMode {
     #[default]
     Masks,
     Regex,
+    Expression,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterDiagnosticKind {
+    Syntax,
+    Type,
+    Limit,
+    Literal,
+    Pattern,
+}
+
+/// UTF-8 byte range in the submitted expression, distinct from native names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilterDiagnostic {
+    pub span: Range<usize>,
+    pub kind: FilterDiagnosticKind,
+    pub message: String,
+}
+
+impl FilterDiagnostic {
+    pub fn new(span: Range<usize>, kind: FilterDiagnosticKind, message: impl Into<String>) -> Self {
+        Self {
+            span,
+            kind,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

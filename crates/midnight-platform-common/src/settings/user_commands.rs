@@ -138,7 +138,11 @@ pub(super) fn decode(
 ) -> io::Result<Vec<UserCommand>> {
     let commands = match (version, commands) {
         (1..=16, None) => return Ok(Vec::new()),
-        (17, Some(commands)) if commands.len() <= MAX_USER_COMMANDS => commands,
+        (17..=super::CURRENT_PREFERENCES_VERSION, Some(commands))
+            if commands.len() <= MAX_USER_COMMANDS =>
+        {
+            commands
+        }
         _ => return Err(invalid("missing, unexpected or excessive Custom Commands")),
     }
     .into_iter()

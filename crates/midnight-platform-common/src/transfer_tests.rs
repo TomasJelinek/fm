@@ -4,6 +4,8 @@ use std::{
     io::{self, Cursor, Read, Seek, SeekFrom, Write},
     sync::{Arc, Mutex},
 };
+#[path = "transfer_metadata_tests.rs"]
+mod metadata;
 
 struct Source {
     entry: TransferEntry,
@@ -37,6 +39,7 @@ impl TransferSource for Source {
 }
 #[derive(Default)]
 struct Stage {
+    metadata: Option<Arc<Mutex<metadata::State>>>,
     data: Cursor<Vec<u8>>,
     corrupt_on_sync: bool,
     truncate_on_sync: bool,
@@ -47,6 +50,9 @@ struct Stage {
 }
 impl Read for Stage {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        if let Some(state) = &self.metadata {
+            state.lock().unwrap().events.push("data-read");
+        }
         self.data.read(b)
     }
 }
@@ -64,6 +70,37 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn set_modified_time(
+        &mut self,
+        expected: std::time::SystemTime,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let state = self.metadata.as_ref().expect("metadata enabled");
+        let mut state = state.lock().unwrap();
+        state.events.push("set-time");
+        if state.failure == "set" {
+            return Err(failure(Path::new("stage"), "injected metadata set error"));
+        }
+        state.actual = expected;
+        if state.failure == "cancel" {
+            cancel.cancel();
+        }
+        Ok(())
+    }
+    fn modified_time(&self, _: &Cancellation) -> Result<std::time::SystemTime, FsError> {
+        let mut state = self
+            .metadata
+            .as_ref()
+            .expect("metadata enabled")
+            .lock()
+            .unwrap();
+        state.events.push("read-time");
+        Ok(if state.failure == "readback" {
+            std::time::SystemTime::UNIX_EPOCH
+        } else {
+            state.actual
+        })
+    }
     fn rewind_for_validation(
         &mut self,
         _: &Cancellation,
@@ -87,6 +124,21 @@ impl StagedTransferFile for Stage {
         })
     }
     fn sync(&mut self, _: &Cancellation) -> Result<(), FsError> {
+        if let Some(state) = &self.metadata {
+            let mut state = state.lock().unwrap();
+            let metadata = state.events.contains(&"set-time");
+            state.events.push(if metadata {
+                "metadata-sync"
+            } else {
+                "data-sync"
+            });
+            if metadata && state.failure == "sync" {
+                return Err(failure(
+                    Path::new("stage"),
+                    "injected metadata sync failure",
+                ));
+            }
+        }
         if self.fail_sync {
             return Err(io_error(
                 Path::new("stage"),

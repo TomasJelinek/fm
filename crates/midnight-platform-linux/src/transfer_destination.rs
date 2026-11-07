@@ -179,6 +179,25 @@ impl TransferDirectory for Directory {
             .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
     }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        self.make_stage(false, cancel)
+    }
+    fn stage_file_with_metadata(
+        &self,
+        policy: midnight_core::TransferMetadataPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        self.make_stage(
+            policy == midnight_core::TransferMetadataPolicy::RequireModifiedTime,
+            cancel,
+        )
+    }
+}
+impl Directory {
+    fn make_stage(
+        &self,
+        metadata: bool,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.revalidate(cancel)?;
         // O_TMPFILE creates an exclusive unnamed inode on the destination filesystem.
         // The file can never be substituted by a staged-path rename. No EXCL here:
@@ -198,11 +217,13 @@ impl TransferDirectory for Directory {
             published: false,
             published_name: None,
             replacement: None,
+            metadata,
         }))
     }
 }
 
 struct Stage {
+    metadata: bool,
     file: Option<File>,
     directory: Directory,
     published: bool,
@@ -240,6 +261,37 @@ impl Seek for Stage {
     }
 }
 impl StagedTransferFile for Stage {
+    fn set_modified_time(
+        &mut self,
+        expected: std::time::SystemTime,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if self.published || !self.metadata {
+            return Err(unsupported(
+                &self.directory.path,
+                "modified time can only be set on an owned unpublished metadata stage",
+            ));
+        }
+        super::metadata::set(
+            self.file().map_err(|e| error(&self.directory.path, e))?,
+            &self.directory.path,
+            expected,
+            cancel,
+        )
+    }
+    fn modified_time(&self, cancel: &Cancellation) -> Result<std::time::SystemTime, FsError> {
+        if !self.metadata {
+            return Err(unsupported(
+                &self.directory.path,
+                "required modified time is unsupported by this stage",
+            ));
+        }
+        super::metadata::modified(
+            self.file().map_err(|e| error(&self.directory.path, e))?,
+            &self.directory.path,
+            cancel,
+        )
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,

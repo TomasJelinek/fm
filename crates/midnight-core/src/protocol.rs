@@ -127,6 +127,7 @@ pub enum Command {
     EnqueueMove(crate::CopyRequest),
     EnqueueSelectedMove(crate::SelectedCopyRequest),
     EnqueueClipboardMove(crate::ClipboardMoveRequest),
+    EnqueueTransferWithMetadata(Box<crate::MetadataTransferRequest>),
     EnqueueArchiveCopy(crate::ArchiveCopyRequest),
     DecideCopy(crate::CopyDecision),
     CancelCopy(crate::OperationId),
@@ -300,6 +301,7 @@ pub enum Event {
     PanelFilterValidated {
         request: crate::FilterValidationRequest,
         result: Result<(), FsError>,
+        diagnostic: Option<crate::FilterDiagnostic>,
     },
     FilenameColorsValidated {
         request: crate::FilenameColorsValidation,

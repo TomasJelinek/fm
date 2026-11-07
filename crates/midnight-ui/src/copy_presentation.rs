@@ -12,9 +12,20 @@ pub(super) fn install(
         let Some(window) = weak.upgrade() else {
             return;
         };
-        state
-            .borrow_mut()
-            .confirm_copy_dialog(token.as_str(), destination.as_str(), send.as_ref());
+        if window.get_copy_draft_preserve_time() {
+            state.borrow_mut().confirm_copy_dialog_metadata(
+                token.as_str(),
+                destination.as_str(),
+                TransferMetadataPolicy::RequireModifiedTime,
+                send.as_ref(),
+            );
+        } else {
+            state.borrow_mut().confirm_copy_dialog(
+                token.as_str(),
+                destination.as_str(),
+                send.as_ref(),
+            );
+        }
         // Showing/closing popups synchronously reads presenter-backed row models.
         crate::refresh(&window, &state.borrow());
     });
@@ -44,6 +55,8 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     let destination = draft.destination.to_string_lossy();
     let moving = draft.intent == TransferIntent::RecoverableMove;
     window.set_copy_draft_move(moving);
+    window.set_copy_draft_metadata_enabled(draft.metadata_available());
+    window.set_copy_draft_preserve_time(false);
     let policy = if moving {
         "Up to 64 regular files; folders and links are unsupported. Every file must be copied and checked before originals move into protected recovery folders. Source disk space is not freed.\n\n"
     } else {

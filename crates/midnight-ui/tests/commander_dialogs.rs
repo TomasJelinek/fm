@@ -153,3 +153,58 @@ fn filter_dialog_preserves_expression_and_captured_pane_after_validation_feedbac
         }
     }
 }
+
+#[test]
+fn expression_mode_uses_the_explicit_picker_and_keeps_draft_on_feedback_at_minimum_size() {
+    let mut test = ui::TestUi::new();
+    test.resize(1040, 820);
+    let submissions = Rc::new(RefCell::new(Vec::new()));
+    let captured = submissions.clone();
+    test.window
+        .on_apply_panel_filter(move |pane, enabled, mode, expression, case| {
+            captured
+                .borrow_mut()
+                .push((pane, enabled, mode.to_string(), expression, case));
+        });
+    let weak = test.window.as_weak();
+    test.window.on_cancel_panel_filter(move || {
+        let window = weak.upgrade().unwrap();
+        let mut model = window.get_panel_filter_view();
+        model.open = false;
+        window.set_panel_filter_view(model);
+    });
+    test.window.set_panel_filter_view(PanelFilterView {
+        open: true,
+        pane: 1,
+        enabled: true,
+        expression: "kind = file and size >= 10MiB".into(),
+        ..Default::default()
+    });
+    settle(&mut test);
+    ui::click_popup(&test.window, "Filter mode", AccessibleRole::Combobox);
+    ui::key(&test.window, Key::DownArrow);
+    ui::key(&test.window, Key::DownArrow);
+    ui::key(&test.window, Key::Return);
+    settle(&mut test);
+    assert!(
+        submissions.borrow().is_empty(),
+        "Choosing a mode does not apply a draft"
+    );
+    let mut model = test.window.get_panel_filter_view();
+    model.error = "Line 1, column 24: Use an unsigned byte size.".into();
+    test.window.set_panel_filter_view(model);
+    test.window.set_active_pane(0);
+    test.resize(320, 200);
+    settle(&mut test);
+    action_in_viewport(&test, "Apply");
+    action_in_viewport(&test, "Cancel");
+    ui::click_popup(&test.window, "Apply", AccessibleRole::Button);
+    let calls = submissions.borrow();
+    assert_eq!(calls.last().unwrap().0, 1);
+    assert_eq!(calls.last().unwrap().2, "2");
+    assert_eq!(calls.last().unwrap().3, "kind = file and size >= 10MiB");
+    drop(calls);
+    ui::key(&test.window, Key::Escape);
+    settle(&mut test);
+    assert!(!test.window.get_panel_filter_view().open);
+}

@@ -3,7 +3,10 @@
 Datum návrhu: 5. listopadu 2026. Stav k 7. listopadu: loader, F3 pro text/binary,
 source, Markdown, obrázky a PDF, procházení archivů a ověřené vykopírování jsou
 implementované. Nativní Windows/Linux filesystémy dosud tvoří interní crates;
-jejich převod na nezávislé pluginy a obecné providerové identity ještě zbývá.
+jejich převod na nezávislé pluginy ještě zbývá. Interní registr už zavádí typované
+identity, odvolatelné čtecí lease a přechodové adaptéry native/archive; produkční
+panely a zápisové operace se na něj dosud nepřevedly. Kontrakt a zbývající kroky
+popisuje [provider registry](../../developer/PROVIDER_REGISTRY.md).
 Aktuální rozsah a důkazy sleduje [implementační přehled](../../IMPLEMENTATION_BACKLOG.md).
 Navazuje na [hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md)
 a [původní viewer/VFS návrh](2026-11-04-viewer-vfs-design.md).

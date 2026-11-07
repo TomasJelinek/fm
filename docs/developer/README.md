@@ -26,6 +26,11 @@ Application contributors working on copy and archive extraction should also read
 the internal [native transfer contract](TRANSFERS.md). Its Rust capabilities are
 not part of the external plugin ABI.
 
+The [filesystem migration map](FILESYSTEM_MIGRATION.md) and
+[internal provider registry](PROVIDER_REGISTRY.md) describe the transitional
+Browse/Read adapters and remaining native-plugin cutover. Internal Rust traits
+are not an alternative public plugin dependency.
+
 The internal [recursive Find contract](FIND.md) documents bounded sessions,
 native content traversal, modeless UI ownership and safe result navigation.
 The [checksum contract](CHECKSUMS.md) describes captured calculation, results,

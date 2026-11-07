@@ -166,6 +166,19 @@ impl Source {
     }
 }
 impl TransferSource for Source {
+    fn prepare_modified_time(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferModifiedTimePin>, FsError> {
+        if self.entry.item.kind != EntryKind::File {
+            return Err(unsupported(
+                &self.entry.item.path,
+                "required modified time supports regular files only",
+            ));
+        }
+        self.revalidate(cancel)?;
+        super::metadata::prepare(self.file.clone(), &self.entry.item.path, cancel)
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,

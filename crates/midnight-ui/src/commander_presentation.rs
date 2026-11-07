@@ -1,4 +1,4 @@
-//! Small UI bindings for worker-owned directory comparison and filename filtering.
+//! Small UI bindings for worker-owned directory comparison and panel filtering.
 use super::*;
 
 pub(super) fn bind(
@@ -63,21 +63,26 @@ pub(super) fn bind(
     });
     callback!(
         on_apply_panel_filter,
-        |p, s, id, enabled, regex, expression, case_sensitive| {
+        |p, s, id, enabled, mode, expression, case_sensitive| {
             if let Some(pane) = match id {
                 0 => Some(PaneId::Left),
                 1 => Some(PaneId::Right),
                 _ => None,
             } {
+                let mode = match mode {
+                    0 => FilterMode::Masks,
+                    1 => FilterMode::Regex,
+                    2 => FilterMode::Expression,
+                    _ => {
+                        p.filter_dialog.error = "Choose Masks, Regex or Expression.".into();
+                        return;
+                    }
+                };
                 p.submit_panel_filter(
                     pane,
                     PanelFilter {
                         enabled,
-                        mode: if regex {
-                            FilterMode::Regex
-                        } else {
-                            FilterMode::Masks
-                        },
+                        mode,
                         expression: expression.to_string(),
                         case_sensitive,
                     },
@@ -116,7 +121,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         open: state.open,
         pane: state.pane.index() as i32,
         enabled: state.draft.enabled,
-        regex: state.draft.mode == FilterMode::Regex,
+        mode: match state.draft.mode {
+            FilterMode::Masks => 0,
+            FilterMode::Regex => 1,
+            FilterMode::Expression => 2,
+        },
         expression: state.draft.expression.as_str().into(),
         case_sensitive: state.draft.case_sensitive,
         busy: state.busy,
@@ -129,10 +138,10 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         }
         format!(
             "Filter: {}{}",
-            if filter.mode == FilterMode::Regex {
-                "regex "
-            } else {
-                ""
+            match filter.mode {
+                FilterMode::Masks => "",
+                FilterMode::Regex => "regex ",
+                FilterMode::Expression => "expression ",
             },
             filter.expression
         )

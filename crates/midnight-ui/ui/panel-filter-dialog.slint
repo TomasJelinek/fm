@@ -1,24 +1,24 @@
 import { Button, ScrollView } from "std-widgets.slint";
-import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedCheckBox, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogHeader } from "dialog-frame.slint";
 
 export struct PanelFilterView {
-    open: bool, pane: int, enabled: bool, regex: bool,
+    open: bool, pane: int, enabled: bool, mode: int,
     expression: string, case-sensitive: bool, busy: bool, error: string,
 }
 
 export component PanelFilterDialog inherits Rectangle {
     in property <PanelFilterView> model;
-    callback apply(bool, bool, string, bool);
+    callback apply(bool, int, string, bool);
     callback cancel();
     callback move-dialog(length, length);
     changed width => { if root.width < 400px { cancel-button.focus(); } }
     changed height => { if root.height < 350px { cancel-button.focus(); } }
     public function begin() {
         enabled.checked = root.model.enabled;
-        regex.checked = root.model.regex;
+        mode.current-index = root.model.mode;
         expression.text = root.model.expression;
         names.checked = root.model.case-sensitive;
         expression.focus();
@@ -32,7 +32,7 @@ export component PanelFilterDialog inherits Rectangle {
         }
         VerticalLayout {
             padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 12px;
-            DialogHeader { title: "Panel file filter"; compact: root.height < 280px;
+            DialogHeader { title: "Panel filter"; compact: root.height < 280px;
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             ScrollView {
                 min-height: 0px; vertical-stretch: 1;
@@ -40,22 +40,37 @@ export component PanelFilterDialog inherits Rectangle {
                 VerticalLayout {
                     spacing: 12px; alignment: start;
                     enabled := HintedCheckBox {
-                        text: "Enable persistent file filter"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        text: "Enable persistent panel filter"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Save an independent filter for this panel. It follows the panel across folders and combines with quick search.";
                     }
-                    regex := HintedCheckBox {
-                        text: "Use regular expression"; enabled: !root.model.busy; min-height: Theme.control-height;
-                        hint: "Rust regular expression syntax. A match anywhere in the filename is included; use ^ and $ for a whole name.";
+                    mode := HintedComboBox {
+                        model: ["Masks", "Regex", "Expression"]; enabled: !root.model.busy; min-height: Theme.control-height;
+                        accessible-label: "Filter mode";
+                        hint: "Masks and Regex match names and keep folders visible. Expression tests captured metadata and can also filter folders.";
                     }
                     expression := HintedLineEdit {
                         enabled: !root.model.busy; accessible-label: "File filter expression"; min-height: Theme.control-height;
-                        hint: "Masks: * matches any text, ? one character, ; separates masks, | starts exclusions, ;; means a literal semicolon. Example: *.txt;*.md|secret*. *.* includes extensionless files. Maximum 4096 UTF-8 bytes.";
+                        hint: mode.current-index == 2 ? "Typed expression, for example kind = file and size >= 10MiB. Maximum 4096 UTF-8 bytes. No scripts or file-content reads."
+                            : mode.current-index == 1 ? "Rust regular expression syntax. A match anywhere in the filename is included; use ^ and $ for a whole name. Maximum 4096 UTF-8 bytes."
+                            : "Masks: * matches any text, ? one character, ; separates masks, | starts exclusions, ;; means a literal semicolon. Example: *.txt;*.md|secret*. *.* includes extensionless files. Maximum 4096 UTF-8 bytes.";
                     }
                     names := HintedCheckBox {
                         text: "Case sensitive"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Compare Unicode letters with exact case. Native filenames are never changed.";
                     }
-                    Text { text: "Directories remain visible."; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    Text {
+                        text: mode.current-index == 2 ? "Fields: name, size, modified, kind, attributes. Combine predicates with not, and, or and parentheses. Example: kind = file and size >= 10MiB. Expressions also filter folders; size is known only for regular files."
+                            : "Directories remain visible.";
+                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                    }
+                    if mode.current-index == 2: Text {
+                        text: "Names: name like \"*.rs\" or name =~ \"^report\". Sizes: B, kB/MB/GB/TB or KiB/MiB/GiB/TiB. Modified time requires an explicit timezone, for example modified >= \"2026-11-01T00:00:00Z\".";
+                        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                    }
+                    if mode.current-index == 2: Text {
+                        text: "Attributes means reported native filesystem flags, for example attributes has hidden. Linux dot-names do not supply that flag. Missing metadata does not match comparisons or their negation; use missing(attributes) to include unavailable flags. Filtering uses listing metadata; refresh to see changes.";
+                        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                    }
                     if root.model.busy: Text { text: "Validating filter…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                     if root.model.error != "": ErrorNotice { text: root.model.error; }
                 }
@@ -63,7 +78,7 @@ export component PanelFilterDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 12px;
                 Button { text: "Apply"; enabled: !root.model.busy; min-height: Theme.control-height;
-                    clicked => { root.apply(enabled.checked, regex.checked, expression.text, names.checked); } }
+                    clicked => { root.apply(enabled.checked, mode.current-index, expression.text, names.checked); } }
                 cancel-button := Button { text: "Cancel"; min-height: Theme.control-height; clicked => { root.cancel(); } }
             }
         }

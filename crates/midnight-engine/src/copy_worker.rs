@@ -6,6 +6,8 @@ use std::{
     ffi::OsString,
     path::Component,
 };
+#[path = "copy_metadata_worker.rs"]
+mod metadata_job;
 #[path = "move_worker.rs"]
 mod move_job;
 
@@ -72,8 +74,40 @@ pub(super) struct Job {
     replace_all: bool,
     merge_all: bool,
     move_work: Option<move_job::MoveWork>,
+    metadata: Option<metadata_job::MetadataWork>,
 }
 impl Job {
+    pub(super) fn prepare_with_metadata(
+        request: CopyRequest,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+    ) -> Result<Self, FsError> {
+        if metadata == TransferMetadataPolicy::ContentOnly {
+            return Self::prepare(request, service, cancel, status);
+        }
+        move_job::check_bounds(&request)?;
+        let mut job = Self::prepare(request, service, cancel, status)?;
+        let _permit = move_job::permit(&job.cancel, &job.progress.destination_directory)?;
+        let pins = metadata_job::pins(&job.roots, &job.cancel)?;
+        let stages =
+            metadata_job::stages(&job.roots, &job.destination, metadata, false, &job.cancel)?;
+        job.metadata = Some(metadata_job::MetadataWork { pins, stages });
+        Ok(job)
+    }
+    pub(super) fn prepare_move_with_metadata(
+        request: CopyRequest,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+    ) -> Result<Self, FsError> {
+        if metadata == TransferMetadataPolicy::ContentOnly {
+            return Self::prepare_move(request, service, cancel, status);
+        }
+        move_job::prepare_with_metadata(request, service, cancel, status, metadata)
+    }
     pub(super) fn prepare_move(
         request: CopyRequest,
         service: &dyn TransferService,
@@ -165,6 +199,7 @@ impl Job {
             replace_all: false,
             merge_all: false,
             move_work: None,
+            metadata: None,
         }
     }
 
@@ -424,10 +459,38 @@ impl Job {
                             )
                         })?
                 } else {
-                    work.destination.stage_file(&self.cancel)?
+                    if let Some(metadata) = self.metadata.as_mut() {
+                        metadata
+                            .stages
+                            .remove(&source.entry().identity)
+                            .ok_or_else(|| {
+                                error(
+                                    &source.entry().item.path,
+                                    io::ErrorKind::InvalidData,
+                                    "Prepared metadata stage is missing",
+                                )
+                            })?
+                    } else {
+                        work.destination.stage_file(&self.cancel)?
+                    }
                 };
                 let source = work.source.take().expect("regular source");
-                work.copy = Some(VerifiedFileCopy::new(source, stage)?);
+                work.copy = Some(if let Some(metadata) = self.metadata.as_mut() {
+                    let pin = metadata
+                        .pins
+                        .remove(&source.entry().identity)
+                        .ok_or_else(|| {
+                            error(
+                                &source.entry().item.path,
+                                io::ErrorKind::InvalidData,
+                                "Prepared source metadata pin is missing",
+                            )
+                        })?;
+                    pin.revalidate(&self.cancel)?;
+                    VerifiedFileCopy::new_with_modified_time(source, stage, pin)?
+                } else {
+                    VerifiedFileCopy::new(source, stage)?
+                });
                 self.progress.phase = CopyOperationPhase::Copying;
                 Ok(Action::Keep)
             }
@@ -674,6 +737,11 @@ impl Job {
     }
     pub(super) fn finish(mut self) -> CopyProgress {
         self.drop_current();
+        if let Some(metadata) = self.metadata.as_mut() {
+            for failure in metadata.cleanup() {
+                self.record(failure);
+            }
+        }
         if let Some(move_work) = self.move_work.as_mut() {
             for error in move_work.cleanup() {
                 self.record(error);
