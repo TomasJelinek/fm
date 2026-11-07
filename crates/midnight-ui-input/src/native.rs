@@ -200,6 +200,11 @@ mod tests {
     #[test]
     fn viewer_bindings_resolve_physical_digits_on_us_and_czech_layouts() {
         let map = ShortcutMap::new(&[
+            // Reassign the image viewer's default chord explicitly, as settings require.
+            ShortcutBinding {
+                action: "viewer.actual-pixels".into(),
+                keys: Vec::new(),
+            },
             ShortcutBinding {
                 action: "viewer.next-file".into(),
                 keys: vec!["Ctrl+Digit1".into()],
