@@ -271,28 +271,10 @@ Write-Output "Private installation: $Destination"
 Write-Output ('Run: & "' + (Join-Path $Destination 'me.exe') + '"')
 if ($CreateDesktopShortcut) {
     $desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
-    if (-not $desktopPath -or -not (Test-Path -LiteralPath $desktopPath -PathType Container)) {
+    if (-not $desktopPath) {
         throw 'No desktop directory is available; the private installation is ready to run directly'
     }
-    $shortcutPath = Join-Path $desktopPath 'Midnight Explorer.lnk'
-    if (Test-Path -LiteralPath $shortcutPath) {
-        Assert-PlainPath $shortcutPath
-    }
-    $shell = New-Object -ComObject WScript.Shell
-    try {
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        try {
-            $shortcut.TargetPath = Join-Path $Destination 'me.exe'
-            $shortcut.WorkingDirectory = $env:USERPROFILE
-            $shortcut.Arguments = ''
-            $shortcut.IconLocation = (Join-Path $Destination 'me.exe') + ',0'
-            $shortcut.Description = 'Midnight Explorer — private verified installation'
-            $shortcut.Save()
-        } finally {
-            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)
-        }
-    } finally {
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
-    }
-    Write-Output "Desktop shortcut: $shortcutPath"
+    . (Join-Path $PSScriptRoot 'windows-shortcut.ps1')
+    $shortcutHash = (Get-FileHash -LiteralPath (Join-Path $Destination 'me.exe') -Algorithm SHA256).Hash
+    Install-MidnightDesktopShortcut $Destination $desktopPath $shortcutHash
 }
