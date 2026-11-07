@@ -19,8 +19,11 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "copy_input.rs"]
+mod input;
 #[path = "copy_worker.rs"]
 mod worker;
+use input::CopyInput;
 type Status = Arc<Mutex<CopyProgress>>;
 type Registry = Arc<Mutex<HashMap<OperationId, Registered>>>;
 const MAX_JOBS: usize = 32;
@@ -32,7 +35,7 @@ struct Registered {
 }
 struct Request {
     _capacity: OwnedSemaphorePermit,
-    command: CopyRequest,
+    command: CopyInput,
     cancel: Cancellation,
     status: Status,
     decisions: mpsc::Receiver<CopyDecision>,
@@ -89,6 +92,12 @@ impl Controller {
         })
     }
     pub(crate) async fn enqueue(&self, request: CopyRequest) {
+        self.enqueue_input(request.into()).await;
+    }
+    pub(crate) async fn enqueue_selected(&self, request: SelectedCopyRequest) {
+        self.enqueue_input(request.into()).await;
+    }
+    async fn enqueue_input(&self, request: CopyInput) {
         let permit = match self.reserve() {
             Ok(permit) => permit,
             Err(error) => {
@@ -99,25 +108,42 @@ impl Controller {
                 return;
             }
         };
-        self.enqueue_reserved(request, permit).await;
+        self.enqueue_input_reserved(request, permit).await;
     }
     pub(crate) async fn enqueue_reserved(
         &self,
         request: CopyRequest,
         capacity: OwnedSemaphorePermit,
     ) {
+        self.enqueue_input_reserved(request.into(), capacity).await;
+    }
+    async fn enqueue_input_reserved(&self, request: CopyInput, capacity: OwnedSemaphorePermit) {
         if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
             return;
         }
         let progress = initial(&request);
-        let rejected = request.clipboard.validate().err().or_else(|| {
-            if request.clipboard.intent == FileClipboardIntent::Move {
-                Some(error(&request.destination, io::ErrorKind::Unsupported, "Move clipboard operations are not supported; sources have been retained. Use Copy instead."))
-            } else if !request.destination.is_absolute() || request.destination.as_os_str().as_encoded_bytes().contains(&0) {
-                Some(error(&request.destination, io::ErrorKind::InvalidInput, "The destination must be an absolute native directory path."))
+        let rejected = request.validate().err().or_else(|| {
+            if !request.destination.is_absolute()
+                || request
+                    .destination
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .contains(&0)
+            {
+                Some(error(
+                    &request.destination,
+                    io::ErrorKind::InvalidInput,
+                    "The destination must be an absolute native directory path.",
+                ))
             } else if self.cancel.is_cancelled() {
-                Some(error(&request.destination, io::ErrorKind::Interrupted, "The application is closing."))
-            } else { None }
+                Some(error(
+                    &request.destination,
+                    io::ErrorKind::Interrupted,
+                    "The application is closing.",
+                ))
+            } else {
+                None
+            }
         });
         if let Some(error) = rejected {
             publish(&self.outbox, rejected_progress(progress, error)).await;
@@ -304,6 +330,11 @@ async fn run_job(
     let command = request.command;
     let prepared = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let command = command.resolve(&job_cancel)?;
+        status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .requested_roots = command.clipboard.paths.len() as u64;
         worker::Job::prepare(command, &*service, job_cancel, status)
     })
     .await;
@@ -434,12 +465,12 @@ fn panicked(status: &Status, message: String, cancel: &Cancellation) -> CopyProg
     )
 }
 
-fn initial(request: &CopyRequest) -> CopyProgress {
+fn initial(request: &CopyInput) -> CopyProgress {
     CopyProgress {
         id: request.id,
         state: CopyOperationState::Queued,
         phase: CopyOperationPhase::Planning,
-        requested_roots: request.clipboard.paths.len() as u64,
+        requested_roots: request.requested_roots(),
         files_completed: 0,
         directories_created: 0,
         skipped: 0,

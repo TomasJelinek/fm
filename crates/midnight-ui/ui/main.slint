@@ -651,6 +651,14 @@ export component MainWindow inherits Window {
     callback resolve-copy(string);
     public function show-copy-conflict() { root.drag-invalidate-targets(); operations-popup.close(); copy-popup.show(); }
     public function close-copy-conflict() { copy-popup.close(); }
+    in property <string> copy-draft-token;
+    in property <string> copy-draft-body;
+    in property <string> copy-draft-destination;
+    in property <int> copy-draft-selection-end;
+    in property <string> copy-draft-error;
+    callback confirm-copy-draft(string, string);
+    callback cancel-copy-draft(string);
+    public function show-copy-draft() { root.drag-invalidate-targets(); copy-draft-dialog.begin(); }
     in property <string> metadata-conflict-token;
     in property <string> metadata-conflict-body;
     callback decide-metadata-conflict(string, int);
@@ -980,7 +988,10 @@ export component MainWindow inherits Window {
         Theme.desktop-font-size = desktop;
         Theme.touch-font-size = touch;
     }
-    public function focus-files() { if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); } }
+    public function focus-files() {
+        if root.copy-draft-token != "" { copy-draft-dialog.focus-input(); }
+        else if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); }
+    }
     public function reset-files-input(pane: int) {
         if pane == 0 { left.reset-search-context(); } else { right.reset-search-context(); }
     }
@@ -1360,6 +1371,22 @@ export component MainWindow inherits Window {
             resolve(id) => { root.resolve-copy(id); }
             copy-details(id) => { root.copy-job-details(id); }
             close => { operations-popup.close(); root.focus-files(); }
+        }
+    }
+    Rectangle {
+        visible: root.copy-draft-token != "";
+        width: root.width; height: root.height; background: #00000060;
+        TouchArea {}
+        copy-draft-dialog := OperationDialog {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(parent.width - 24px, max(620px, Theme.font-size * 26));
+            height: min(parent.height - 24px, max(300px, Theme.font-size * 14));
+            title: "Copy"; body: root.copy-draft-body; has-name: true;
+            initial-name: root.copy-draft-destination; selection-end: root.copy-draft-selection-end;
+            input-label: "Destination folder"; confirm-text: "Copy"; warning: root.copy-draft-error;
+            native-icon: root.action-icons.copy; fallback-icon: FallbackIcons.copy;
+            confirm(destination) => { root.confirm-copy-draft(root.copy-draft-token, destination); }
+            cancel => { root.cancel-copy-draft(root.copy-draft-token); }
         }
     }
     copy-popup := PopupWindow {

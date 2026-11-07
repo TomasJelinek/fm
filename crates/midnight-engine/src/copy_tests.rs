@@ -169,6 +169,101 @@ async fn recursive_multisource_copy_verifies_bytes_and_preserves_sources() {
     h.close().await;
 }
 
+fn selected_request(id: u64, entries: &[Entry], destination: &Path) -> SelectedCopyRequest {
+    let view = Arc::new(DirectoryIndex::from_entries(entries));
+    SelectedCopyRequest {
+        id: OperationId(id),
+        files: SelectedFiles {
+            selection: Arc::new(SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap()),
+            view,
+            fallback: entries.last().map(|entry| entry.path.clone()),
+        },
+        destination: destination.to_owned(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_copy_uses_the_captured_view_and_never_falls_back_to_other_files() {
+    let temp = fixture();
+    let destination = temp.path().join("target");
+    fs::create_dir(&destination).unwrap();
+    let entries: Vec<_> = ["文档.bin", "not selected.bin"]
+        .into_iter()
+        .enumerate()
+        .map(|(id, name)| {
+            let path = temp.path().join(name);
+            fs::write(&path, b"verified bytes").unwrap();
+            Entry::new(EntryId(id as u64), path, EntryKind::File)
+        })
+        .collect();
+    let mut h = Harness::native();
+    h.controller
+        .enqueue_selected(selected_request(1, &entries, &destination))
+        .await;
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Completed);
+    assert_eq!(done.files_completed, 1);
+    assert_eq!(done.verified_bytes, 14);
+    assert_eq!(
+        fs::read(destination.join("文档.bin")).unwrap(),
+        b"verified bytes"
+    );
+    assert!(!destination.join("not selected.bin").exists());
+
+    let mut filtered = selected_request(2, &entries, &destination);
+    filtered.files.view = Arc::new(DirectoryIndex::from_entries(&entries[1..]));
+    h.controller.enqueue_selected(filtered).await;
+    assert_eq!(h.terminal(2).await.state, CopyOperationState::Failed);
+    assert!(!destination.join("not selected.bin").exists());
+    h.close().await;
+}
+
+#[tokio::test]
+async fn selected_copy_shares_admission_and_cancellation_with_paste_and_drop() {
+    let temp = fixture();
+    let entries = [Entry::new(
+        EntryId(1),
+        temp.path().join("source"),
+        EntryKind::File,
+    )];
+    let mut h = Harness::native();
+    let reservations: Vec<_> = (0..32).map(|_| h.controller.reserve().unwrap()).collect();
+    h.controller
+        .enqueue_selected(selected_request(1, &entries, temp.path()))
+        .await;
+    assert_eq!(
+        h.terminal(1).await.errors[0].kind,
+        io::ErrorKind::WouldBlock
+    );
+    drop(reservations);
+    let gate = h.mutation.clone().acquire_owned().await.unwrap();
+    h.controller
+        .enqueue_selected(selected_request(2, &entries, temp.path()))
+        .await;
+    h.controller.cancel(OperationId(2));
+    drop(gate);
+    assert_eq!(h.terminal(2).await.state, CopyOperationState::Cancelled);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn selected_copy_rejects_relative_destination_before_opening_any_sources() {
+    let mut h = Harness::native();
+    let entries = [Entry::new(
+        EntryId(1),
+        PathBuf::from("missing"),
+        EntryKind::File,
+    )];
+    h.controller
+        .enqueue_selected(selected_request(1, &entries, Path::new("relative")))
+        .await;
+    assert_eq!(
+        h.terminal(1).await.errors[0].kind,
+        io::ErrorKind::InvalidInput
+    );
+    h.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conflict_wait_accepts_more_work_and_rejects_stale_decisions() {
     let temp = fixture();

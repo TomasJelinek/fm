@@ -4,6 +4,7 @@ mod bookmarks;
 mod choices;
 mod comparison;
 mod copies;
+mod copy_dialog;
 mod desktop;
 pub(crate) mod drag_drop;
 mod editor;
@@ -239,6 +240,7 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.retire_copy_draft();
         self.retire_metadata();
         self.retire_drag_drop();
         self.retired

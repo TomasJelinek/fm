@@ -51,6 +51,8 @@ fn host(window: &MainWindow) -> Option<NativeDragWindow> {
 
 fn rectangles(window: &MainWindow) -> [Option<DropRect>; 2] {
     if !window.window().is_visible()
+        || !window.get_copy_draft_token().is_empty()
+        || !window.get_operation_token().is_empty()
         || WindowInner::from_pub(window.window())
             .active_popups()
             .iter()

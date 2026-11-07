@@ -9,6 +9,14 @@ pub struct CopyRequest {
     pub destination: PathBuf,
 }
 
+/// F5 captures the shared selection and projection without expanding them on the UI thread.
+#[derive(Clone, Debug)]
+pub struct SelectedCopyRequest {
+    pub id: OperationId,
+    pub files: crate::SelectedFiles,
+    pub destination: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyOperationState {
     Queued,

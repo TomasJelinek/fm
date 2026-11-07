@@ -295,6 +295,12 @@ fn build() -> Vec<ShortcutDefinition> {
         &["Alt+Enter", "Ctrl+Alt+Enter"],
     );
     add(
+        "files.copy-to",
+        "Copy selected files to folder",
+        FilesAny,
+        &["F5"],
+    );
+    add(
         "files.copy",
         "Copy files to clipboard",
         FilesIdle,

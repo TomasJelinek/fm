@@ -5,6 +5,7 @@ use super::*;
 pub(super) enum SelectionIntent {
     Properties,
     Copy,
+    CopyDialog(copy_dialog::CopyContext),
     Metadata { pane: PaneId, case: bool },
     FolderSizes(PaneId),
     Menu(file_actions::MenuContext),
@@ -16,6 +17,7 @@ impl SelectionIntent {
         match self {
             Self::Properties => "Properties",
             Self::Copy => "Copy",
+            Self::CopyDialog(_) => "Copy to folder",
             Self::Metadata { .. } => "editing attributes, times and case",
             Self::FolderSizes(_) => "calculating folder sizes",
             Self::Menu(_) => "Context menu",
@@ -124,6 +126,11 @@ impl Presenter {
                 fallback: files.fallback,
             },
             SelectionIntent::Copy => Command::CopyFiles { request, files },
+            SelectionIntent::CopyDialog(context) => {
+                self.desktop.requests.remove(&request);
+                self.open_captured_copy(request, context, files);
+                return;
+            }
             SelectionIntent::Metadata { pane, case } => {
                 self.desktop.requests.remove(&request);
                 self.start_captured_metadata(pane, case, &files, send);

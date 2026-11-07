@@ -87,6 +87,7 @@ pub enum Command {
     CancelComparison(crate::CompareId),
     ValidatePanelFilter(crate::FilterValidationRequest),
     EnqueueCopy(crate::CopyRequest),
+    EnqueueSelectedCopy(crate::SelectedCopyRequest),
     DecideCopy(crate::CopyDecision),
     CancelCopy(crate::OperationId),
     AttachDragDrop {

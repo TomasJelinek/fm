@@ -3,6 +3,7 @@ use super::*;
 
 #[derive(Default)]
 pub(crate) struct CopiesState {
+    pub(crate) draft: Option<copy_dialog::CopyDraft>,
     pub(crate) progress: Vec<Arc<CopyProgress>>,
     pub(crate) conflicts: Vec<Arc<CopyConflict>>,
 }
@@ -14,21 +15,43 @@ impl Presenter {
         destination: PathBuf,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if self.operations.closing {
-            return;
-        }
-        if !self.flush_admitted_drops_before_copy(send) {
-            self.retired.push(Box::new(clipboard));
-            self.desktop
-                .report("Copy queue busy", "Try pasting again.".into());
-            return;
-        }
         if clipboard.intent == FileClipboardIntent::Move {
             self.desktop.report(
                 "Move unavailable",
                 "Cut items remain at their source. Use Copy to duplicate them safely.".into(),
             );
             return;
+        }
+        let requested_roots = clipboard.paths.len() as u64;
+        let target = destination.clone();
+        self.submit_copy(
+            destination,
+            requested_roots,
+            move |id| {
+                Command::EnqueueCopy(CopyRequest {
+                    id,
+                    clipboard,
+                    destination: target,
+                })
+            },
+            send,
+        );
+    }
+
+    pub(super) fn submit_copy(
+        &mut self,
+        destination: PathBuf,
+        requested_roots: u64,
+        command: impl FnOnce(OperationId) -> Command,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if self.operations.closing {
+            return false;
+        }
+        if !self.flush_admitted_drops_before_copy(send) {
+            self.desktop
+                .report("Copy queue busy", "Try copying again.".into());
+            return false;
         }
         if self
             .copies
@@ -42,21 +65,16 @@ impl Presenter {
                 "Copy queue full",
                 "Wait for a copy to finish or cancel a queued job.".into(),
             );
-            return;
+            return false;
         }
         let Some(next) = self.operations.next_id.checked_add(1) else {
-            return;
+            return false;
         };
         let id = OperationId(next);
-        let requested_roots = clipboard.paths.len() as u64;
-        if !send(Command::EnqueueCopy(CopyRequest {
-            id,
-            clipboard,
-            destination: destination.clone(),
-        })) {
+        if !send(command(id)) {
             self.desktop
-                .report("Copy queue busy", "Try pasting again.".into());
-            return;
+                .report("Copy queue busy", "Try copying again.".into());
+            return false;
         }
         self.operations.next_id = next;
         self.copies.progress.push(Arc::new(CopyProgress {
@@ -75,6 +93,7 @@ impl Presenter {
             message: String::new(),
             errors: vec![],
         }));
+        true
     }
 
     pub(crate) fn decide_copy(

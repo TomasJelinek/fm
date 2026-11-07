@@ -433,6 +433,7 @@ impl Engine {
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
                         Some(Command::EnqueueCopy(request)) => copies.enqueue(request).await,
+                        Some(Command::EnqueueSelectedCopy(request)) => copies.enqueue_selected(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
                         Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut tasks).await,

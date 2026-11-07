@@ -157,6 +157,7 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "files.properties" => FileKey::Properties,
         "files.copy" => FileKey::Clipboard(0),
         "files.paste" => FileKey::Clipboard(1),
+        "files.copy-to" => FileKey::Clipboard(2),
         "panel.as-other" => FileKey::Window(W::OtherPanel),
         "panel.swap" => FileKey::Window(W::SwapPanels),
         "tab.new" => FileKey::Window(W::NewTab),

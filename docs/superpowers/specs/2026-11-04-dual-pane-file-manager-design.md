@@ -1,6 +1,6 @@
 # Midnight Explorer — dvoupanelový souborový manažer v Rustu
 
-Datum: 4. listopadu 2026; doplněno 6. listopadu 2026
+Datum: 4. listopadu 2026; doplněno 7. listopadu 2026
 
 Stav: průběžný návrh produktu Midnight Explorer 0.1. Aktuální rozšíření operací,
 ovládání a pluginů níže mají přednost před historickými etapami tohoto dokumentu.
@@ -35,6 +35,11 @@ a [sjednocené zobrazení chyb](2026-11-06-error-presentation-design.md).
 dosud neimplementovaná funkce: MD5/SHA-1 pro kompatibilitu, výchozí SHA-256
 a volitelné SHA-512, výběr souborů, neblokující průběh a export. Ctrl+F7 zůstává
 změně velikosti písmen názvu. Ověřování kopie se nadále provádí SHA-256.
+
+[Dialog kopírování F5](2026-11-07-copy-dialog-design.md) zachytí výběr a cestu
+druhého panelu, umožní upravit cílovou složku a zařadí úlohu přímo do společné
+ověřované fronty. Nepoužívá systémovou schránku. Přepsání, sloučení složek a F6
+zůstávají samostatným navazujícím rozšířením nativních transferových schopností.
 
 ## 1. Záměr a potvrzená rozhodnutí
 

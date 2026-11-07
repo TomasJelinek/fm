@@ -265,6 +265,22 @@ fn published_regions_follow_swapping_zoom_and_modal_exclusion() {
         targets.lock().unwrap().targets.is_empty(),
         "a dialog cannot receive a file drop"
     );
+    ui::key(&h.ui.window, Key::Escape);
+    h.settle();
+    assert!(!targets.lock().unwrap().targets.is_empty());
+    h.ui.window.invoke_activate(0);
+    h.ui.window.invoke_focus_files();
+    ui::key(&h.ui.window, Key::End);
+    ui::key(&h.ui.window, Key::F5);
+    h.settle();
+    assert!(!h.ui.window.get_copy_draft_token().is_empty());
+    assert!(
+        targets.lock().unwrap().targets.is_empty(),
+        "the persistent copy overlay excludes native drops on every poll"
+    );
+    ui::key(&h.ui.window, Key::Escape);
+    h.settle();
+    assert!(!targets.lock().unwrap().targets.is_empty());
 }
 
 #[test]

@@ -72,6 +72,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Insert | Toggle selection and move to the next row |
 | Ctrl+A / Ctrl+D / Ctrl+I | Select all / clear / invert selection in the focused file pane |
 | Ctrl+C / Ctrl+V in files | Publish the selected/focused files to the native clipboard / queue a verified copy into the captured active folder |
+| F5 | Copy the captured selection or focused item; edit the destination folder, initially the other panel. Enter queues the copy; Escape cancels the dialog |
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort by name / type-extension / modified time / size |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
@@ -189,7 +190,10 @@ bookmarks are suspended during search/composition. Queries are independent per
 pane, survive sorting/refresh and clear on folder/tab navigation. Pending or
 empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 
-F5 Copy and F6 Move remain reserved for later stages.
+F5 Copy opens the destination dialog without changing the clipboard. The selection
+and other-panel destination are captured at the gesture; later panel changes do
+not retarget it. Edited destinations must be absolute paths to existing folders.
+F6 Move remains reserved for the next transfer increment.
 Options follows F12 on the bottom bar; Jobs shows queued/running operations and
 allows cancellation. Cancellation retains changes already completed. No Trash
 failure ever falls back to permanent deletion. F7 accepts paths outside the active

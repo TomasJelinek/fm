@@ -172,6 +172,7 @@ impl Presenter {
                 .any(|p| !p.state.is_terminal())
     }
     pub fn request_operation_shutdown(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.retire_copy_draft();
         self.shutdown_drag_drop(send);
         self.retire_metadata();
         self.operations.closing = true;

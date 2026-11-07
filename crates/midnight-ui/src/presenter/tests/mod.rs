@@ -7,6 +7,7 @@ mod bookmarks;
 mod bulk_selection;
 mod choices;
 mod controls;
+pub(super) mod copy_dialog;
 mod drag_drop;
 mod file_actions;
 mod font_preferences;

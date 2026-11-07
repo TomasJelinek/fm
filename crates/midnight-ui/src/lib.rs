@@ -754,6 +754,7 @@ pub fn install(
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
     shell_bridge::install(window, presenter.clone(), send.clone());
+    copy_presentation::install(window, presenter.clone(), send.clone());
     drag_bridge::install(window, presenter.clone(), send.clone());
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
     window.set_left_rows(ModelRc::new(Rows::new(presenter.clone(), PaneId::Left)));

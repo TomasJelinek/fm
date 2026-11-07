@@ -9,6 +9,7 @@ export component OperationDialog inherits Rectangle {
     in property <string> title;
     in property <string> body;
     in property <string> initial-name;
+    in property <string> input-label;
     in property <int> selection-end;
     in property <bool> has-name;
     in property <bool> dangerous;
@@ -24,9 +25,29 @@ export component OperationDialog inherits Rectangle {
         if root.has-name { name.focus(); name.set-selection-offsets(0, root.selection-end); }
         else { cancel-button.focus(); }
     }
+    public function focus-input() {
+        if root.has-name { name.focus(); } else { cancel-button.focus(); }
+    }
     FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                if event.modifiers.shift || event.text == Key.Backtab {
+                    if name.has-focus { if confirm-button.enabled { confirm-button.focus(); } else { cancel-button.focus(); } }
+                    else if cancel-button.has-focus {
+                        if root.has-name { name.focus(); }
+                        else if confirm-button.enabled { confirm-button.focus(); }
+                        else { cancel-button.focus(); }
+                    }
+                    else { cancel-button.focus(); }
+                } else {
+                    if name.has-focus { cancel-button.focus(); }
+                    else if cancel-button.has-focus && confirm-button.enabled { confirm-button.focus(); }
+                    else if root.has-name { name.focus(); }
+                    else { cancel-button.focus(); }
+                }
+                return accept;
+            }
             reject
         }
         VerticalLayout {
@@ -44,15 +65,18 @@ export component OperationDialog inherits Rectangle {
                 font-size: Theme.font-size; wrap: word-wrap;
             }
             DialogText { text: root.body; vertical-stretch: 1; }
+            if root.has-name && root.input-label != "" : Text {
+                text: root.input-label; color: Theme.text; font-size: Theme.font-size;
+            }
             name := LineEdit {
                 visible: root.has-name;
-                accessible-label: root.title;
+                accessible-label: root.input-label == "" ? root.title : root.input-label;
                 accepted => { if self.text != "" { root.confirm(self.text); } }
             }
             HorizontalLayout {
                 alignment: end; spacing: 8px;
                 cancel-button := HintedActionButton { text: "Cancel"; hint: "Leave files unchanged (Escape)."; clicked => { root.cancel(); } }
-                HintedActionButton {
+                confirm-button := HintedActionButton {
                     text: root.confirm-text; enabled: !root.has-name || name.text != "";
                     hint: root.dangerous ? "Permanently delete the confirmed targets. This cannot be undone." : root.confirm-text;
                     clicked => { root.confirm(name.text); }
