@@ -1507,3 +1507,15 @@ vždy zavře i při změně uživatelského mapování. Omezení Waylandu a ově
 Výběr obdélníkem zůstává navazující úkol: Brief a Thumbnails vyžadují více
 nesouvislých rozsahů, bezpečné dávkování změn na backend a podporu archivů.
 Přesouvání souborů myší mezi panely a ven z aplikace tím není změněno.
+
+### Spuštění pluginů ze sdíleného Windows buildu
+
+Build helper vytvoří soukromou instalaci a registraci svázanou se SHA-256 přesného
+host EXE. Spuštění `_build/release/me.exe` pak může použít bezpečné pluginy této
+instalace, i když samotný checkout leží na sdíleném disku. Stejný backendový
+resolver používají viewery, náhledy, archivy i obrazový porovnávač. Registrace ani
+její cíl nesmějí být přepsatelné jiným účtem nebo vést přes junction. Kontroly
+pluginů zůstávají aktivní a při startu se žádný plugin automaticky nekopíruje.
+Soukromé přenosné instalace nadále používají sousední složky. Viz
+[návrh](2026-11-07-trusted-runtime-resolution.md) a
+[vývojářský kontrakt](../../developer/RUNTIME_DISCOVERY.md).

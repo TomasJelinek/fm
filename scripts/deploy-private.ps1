@@ -7,7 +7,9 @@ param(
     [string]$Destination,
     [switch]$IncludeFilesystems,
     [switch]$IncludeThumbnailers,
-    [switch]$CreateDesktopShortcut
+    [switch]$CreateDesktopShortcut,
+    [switch]$RegisterRuntime,
+    [string]$RegistrationDirectory
 )
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This deployment helper requires Windows' }
@@ -72,6 +74,79 @@ function Assert-PrivatePath([string]$Path, [bool]$CheckContents) {
         $current = if ($parent) { $parent.FullName } else { $null }
         $first = $false
     }
+}
+
+function Assert-RegistrationLocation([string]$Path) {
+    $existing = $Path
+    while (-not (Test-Path -LiteralPath $existing)) {
+        $existing = Split-Path -Parent $existing
+        if (-not $existing) { throw 'Registration directory has no existing parent' }
+    }
+    if (-not (Test-Path -LiteralPath $existing -PathType Container)) {
+        throw "Registration ancestor is not a directory: $existing"
+    }
+    # The closest existing directory must also reject untrusted child creation.
+    Assert-PrivatePath $existing $true
+}
+
+function Register-PrivateRuntime([string]$Directory, [string]$Executable,
+    [Security.AccessControl.DirectorySecurity]$Acl) {
+    Assert-RegistrationLocation $Directory
+    $missing = New-Object 'System.Collections.Generic.Stack[string]'
+    $existing = $Directory
+    while (-not (Test-Path -LiteralPath $existing)) {
+        $missing.Push($existing)
+        $existing = Split-Path -Parent $existing
+    }
+    while ($missing.Count -gt 0) {
+        $created = $missing.Pop()
+        New-Item -ItemType Directory -Path $created | Out-Null
+        Set-Acl -LiteralPath $created -AclObject $Acl
+        Assert-PrivatePath $created $true
+    }
+    Assert-PrivatePath $Executable $true
+    $hash = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()
+    $units = ($Executable.ToCharArray() | ForEach-Object { [uint16]$_ }) -join ','
+    $text = "schema_version = 1`nsha256 = `"$hash`"`nexecutable_utf16 = [$units]`n"
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
+    if ($bytes.Length -gt 1048576) { throw 'Runtime registration exceeds 1 MiB' }
+    $record = Join-Path $Directory "$hash.toml"
+    if (Test-Path -LiteralPath $record) { Assert-PrivatePath $record $true }
+    $temporary = Join-Path $Directory ('.' + $hash + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $ownsTemporary = $false
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $ownsTemporary = $true
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        Assert-PrivatePath $temporary $true
+        if (Test-Path -LiteralPath $record) {
+            Assert-PrivatePath $record $true
+            [IO.File]::Replace($temporary, $record, [NullString]::Value)
+        } else {
+            [IO.File]::Move($temporary, $record)
+        }
+        Assert-PrivatePath $record $true
+    } finally {
+        if ($ownsTemporary -and (Test-Path -LiteralPath $temporary)) {
+            Remove-Item -LiteralPath $temporary
+        }
+    }
+    Write-Output "Registered matching build: $record"
+}
+
+if ($RegistrationDirectory -and -not $RegisterRuntime) {
+    throw '-RegistrationDirectory requires -RegisterRuntime'
+}
+if ($RegisterRuntime) {
+    if (-not $RegistrationDirectory) {
+        if (-not $env:USERPROFILE) { throw 'USERPROFILE is required for runtime registration' }
+        $RegistrationDirectory = Join-Path $env:USERPROFILE '.midnight-explorer/plugin-runtimes'
+    }
+    $RegistrationDirectory = [IO.Path]::GetFullPath($RegistrationDirectory).TrimEnd('\')
+    if ($RegistrationDirectory -notmatch '^[A-Za-z]:\\') { throw 'Registration requires an absolute local directory' }
+    Assert-RegistrationLocation $RegistrationDirectory
 }
 
 if (Test-Path -LiteralPath $Destination) { throw "Destination already exists; choose a new installation: $Destination" }
@@ -188,6 +263,9 @@ public static class MidnightWorkerDeploymentIdentity {
         Set-Acl -LiteralPath $path -AclObject $acl
         Assert-PrivatePath $path $true
     }
+}
+if ($RegisterRuntime) {
+    Register-PrivateRuntime $RegistrationDirectory (Join-Path $Destination 'me.exe') $privateAcl
 }
 Write-Output "Private installation: $Destination"
 Write-Output ('Run: & "' + (Join-Path $Destination 'me.exe') + '"')

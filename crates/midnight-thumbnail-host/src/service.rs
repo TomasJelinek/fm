@@ -115,7 +115,12 @@ pub struct Service {
 }
 impl Service {
     pub fn installed() -> Self {
-        Self::initialize(|| Ok((std::env::current_exe()?, default_cache_root()?)))
+        Self::initialize(|| {
+            Ok((
+                midnight_plugin_host::installed_executable().map_err(io::Error::other)?,
+                default_cache_root()?,
+            ))
+        })
     }
     /// Initialization, discovery, cleanup and cache directory creation happen on the backend.
     pub fn start(executable: PathBuf, cache: PathBuf) -> Self {

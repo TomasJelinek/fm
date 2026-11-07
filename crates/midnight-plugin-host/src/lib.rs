@@ -13,6 +13,30 @@ mod discovery;
 pub use discovery::{Diagnostic, PluginInfo, host_target};
 mod content;
 pub use content::{CapturedFile, ContentSource};
+#[cfg(windows)]
+#[path = "installation_windows.rs"]
+mod installation;
+#[cfg(target_os = "linux")]
+#[path = "installation_linux.rs"]
+mod installation;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "installation_unsupported.rs"]
+mod installation;
+/// Resolve the installation used by every plugin host on a backend worker.
+///
+/// Windows prefers a protected executable directory, then an explicitly
+/// registered private deployment with an identical executable hash. Malformed
+/// or unsafe registrations return an error. A missing registration is allowed
+/// for a standalone executable without adjacent plugin directories.
+/// Other platforms retain executable-relative discovery.
+///
+/// The result is retained until restart. Discovery and loading still validate
+/// package permissions; resolving a location does not authorize its contents.
+pub fn installed_executable() -> Result<std::path::PathBuf, Error> {
+    static INSTALLATION: std::sync::OnceLock<Result<std::path::PathBuf, Error>> =
+        std::sync::OnceLock::new();
+    INSTALLATION.get_or_init(installation::resolve).clone()
+}
 /// Shared installation trust check for host-owned executable plugin discovery.
 pub fn validate_plugin_path(path: &std::path::Path) -> Result<(), Error> {
     trust::check(path)?;

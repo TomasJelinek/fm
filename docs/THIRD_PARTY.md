@@ -32,7 +32,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | Slint 1.18.1 | UI, compiler and render integration | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0; royalty-free desktop branch selected |
 | Tokio 1.54.1 | Async backend orchestration | MIT |
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Data/settings/manifest serialization | MIT OR Apache-2.0 |
-| sha2 0.10.9 | SHA-256 copy/readback verification | MIT OR Apache-2.0 |
+| sha2 0.10.9 | SHA-256 copy/readback verification and matching protected Windows plugin runtimes | MIT OR Apache-2.0 |
 | notify 8.2.1 | Filesystem event watching | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |

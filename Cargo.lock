@@ -2776,6 +2776,7 @@ dependencies = [
  "libc",
  "midnight-plugin-api",
  "serde",
+ "sha2",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
  "windows-sys 0.61.2",
@@ -2865,6 +2866,7 @@ version = "0.1.0"
 dependencies = [
  "i-slint-core",
  "midnight-core",
+ "midnight-plugin-host",
  "midnight-ui-input",
  "midnight-viewer-engine",
  "png",

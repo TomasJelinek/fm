@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $deploy = Join-Path $projectRoot 'scripts/deploy-private.ps1'
-$testParent = if ($env:HOST_TEST_INSTALL_ROOT) { $env:HOST_TEST_INSTALL_ROOT } else { $env:USERPROFILE }
+$testParent = if ($env:HOST_TEST_INSTALL_ROOT) { $env:HOST_TEST_INSTALL_ROOT } else { Join-Path $env:USERPROFILE '_build' }
+New-Item -ItemType Directory -Path $testParent -Force | Out-Null
 $testRoot = Join-Path $testParent ('deployment-test-' + [guid]::NewGuid().ToString('N'))
 $source = Join-Path $projectRoot ('_build/tmp/deployment-source-' + [guid]::NewGuid().ToString('N'))
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value

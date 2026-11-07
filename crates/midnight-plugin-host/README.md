@@ -4,11 +4,18 @@ This crate is the backend boundary for trusted, in-process viewer plugins. It ha
 no UI dependency and contains no concrete parser or statically linked viewer.
 Native code has the application's privileges; ABI checks are not a sandbox.
 
-`Runtime::discover(actual_executable_directory)` reads only direct packages under
+`Runtime::discover(resolved_executable_directory)` reads only direct packages under
 `viewers/`. Call discovery, `CapturedFile::capture`, `preferred_basic_mode`, and
 `Runtime::open` on backend workers. Captures preserve native paths and stable
 identity/metadata without retaining a handle for every panel entry. Display names
 are lossy display-only strings; they never authorize access to a path.
+
+Application services first call `installed_executable()` on a backend worker.
+Windows can resolve an explicitly registered private copy for an identical shared
+host build; trusted portable installations retain adjacent discovery. Other
+platforms retain the actual executable's location. The cached result does not
+authorize any package or bypass the checks below. See the
+[runtime discovery contract](../../docs/developer/RUNTIME_DISCOVERY.md).
 
 `choose` and `choose_enabled` route by the published modes/extensions. Extension
 matches prefer Document, then Source, then Text; a Text package with no extensions

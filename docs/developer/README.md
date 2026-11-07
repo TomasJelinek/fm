@@ -72,9 +72,11 @@ to the project's own API/SDK code.
 
 ## Discovery and trust
 
-Only direct packages in `viewers/<package>/` next to the **actual application
-executable** are discovered. The current working directory is not the plugin
-root. A package contains `plugin.toml`, its native library and distribution
+Only direct packages in `viewers/<package>/` inside the **resolved installation**
+are discovered. Normally this is the actual executable's directory; shared
+Windows builds can use an explicitly registered private copy with an identical
+host hash. See [runtime discovery](RUNTIME_DISCOVERY.md). The current working
+directory is not the plugin root. A package contains `plugin.toml`, its native library and distribution
 notices. The directory name need not equal the manifest ID. Discovery reads
 metadata without loading code; first use loads and checks the ABI descriptor.
 Duplicate IDs disable all packages with that ID and produce diagnostics.

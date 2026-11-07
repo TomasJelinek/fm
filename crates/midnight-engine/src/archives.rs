@@ -35,7 +35,8 @@ impl Controller {
         };
         tasks.spawn(async move {
             let discovered = tokio::task::spawn_blocking(|| {
-                let executable = std::env::current_exe()?;
+                let executable =
+                    midnight_plugin_host::installed_executable().map_err(std::io::Error::other)?;
                 Catalog::discover(executable.parent().unwrap_or(Path::new(".")))
             })
             .await

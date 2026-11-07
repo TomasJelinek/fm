@@ -420,6 +420,15 @@ are separate removable libraries under the installation's `viewers/` root. The
   Building, testing or installing a plugin must never patch host sources or the
   executable. Integration tests consume a released host binary in a temporary
   distribution; extending host API requires a separate host-owned change.
+- Shared Windows host builds can resolve a private runtime published by explicit
+  deployment. Its protected per-user registration and target executable must match
+  the running host's SHA-256. Registration and target paths reject reparse points
+  before canonicalization and retain the same ancestor/owner/DACL policy. Reads use
+  handles denying concurrent writes and renames, with bounded lengths and revision
+  checks. No package is copied or trusted automatically at startup. The process
+  caches the resolved location; existing discovery/load checks still validate code.
+  The hash matches builds; it does **not** authenticate a publisher or make an
+  already launched shared executable safe. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
 - Host-owned leases scope content services; no Rust allocator, future, Tokio
   runtime or Slint object crosses the ABI. Buffers have explicit ownership and
   release functions. Loaded code outlives every worker, callback, session and

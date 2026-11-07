@@ -14,7 +14,8 @@ impl Controller {
         tasks.spawn(async move {
             while requests.recv().await.is_some() {
                 let result = tokio::task::spawn_blocking(|| {
-                    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+                    let executable = midnight_plugin_host::installed_executable()
+                        .map_err(|error| error.to_string())?;
                     catalog(&executable)
                 })
                 .await

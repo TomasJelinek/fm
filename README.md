@@ -119,21 +119,22 @@ even in debug, and generated/UI code uses level 1. Backend/application code reta
 normal debug behavior. Release still optimizes the full application. The first build after
 changing these profiles recompiles the affected dependencies under `_build`.
 
-Run either executable directly, or let Cargo build and run it. Plugin-enabled
-Windows builds must reside in a private directory that other accounts cannot
-replace. A shared checkout such as `D:\experiments` can fail this check even if
-its plugin files themselves are read-only. To prepare a private release and a
-desktop shortcut without weakening the plugin checks:
+Run either executable directly, or let Cargo build and run it. `build.bat` also
+deploys the completed Windows bundle to a new private installation and registers
+it for the exact host executable's SHA-256. This lets `_build\release\me.exe`
+use protected plugins even when its checkout is on a shared drive. Plugin code
+is never loaded from an unsafe shared directory. After a raw Cargo build, or after
+adding/removing plugin packages, deploy and register explicitly:
 
 ```powershell
-powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -IncludeFilesystems -IncludeThumbnailers -CreateDesktopShortcut
+powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release -IncludeFilesystems -IncludeThumbnailers -RegisterRuntime -CreateDesktopShortcut
 ```
 
-Use the **Midnight Explorer** desktop shortcut or the installation path printed
-by that command. Run it again after rebuilding to update the shortcut to the new
-verified installation. The `-IncludeFilesystems` and `-IncludeThumbnailers`
-switches require those independently built packages; omit a switch when its
-optional package is absent. Direct development launches remain available:
+Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
+private installation path printed by that command. Restart after deployment.
+The `-IncludeFilesystems` and `-IncludeThumbnailers` switches require those
+independently built packages; omit a switch when its optional package is absent.
+The helper does not launch the app or change saved settings. Direct launches:
 
 ```powershell
 .\_build\debug\me.exe
@@ -670,7 +671,7 @@ initially show the first frame. This viewer does not require or enlarge a thumbn
 
 Plugins are independent Cargo projects in `plugins/`, with their own tests and locks.
 Only built packages under `viewers/<package>/plugin.toml` (text/source/Markdown) or
-`viewers/<package>/image-viewer.json` (isolated image worker) beside the executable are
+`viewers/<package>/image-viewer.json` (isolated image/PDF worker) in the resolved installation are
 discovered. Options → Plugins lists available/refused packages and lets you disable
 or enable them for the next startup. Missing or disabled plugins remove their
 capability; the host has no built-in parser fallback. At most four viewer windows
@@ -686,18 +687,21 @@ write access. On Windows, keep modification rights restricted to your account,
 Administrators and SYSTEM. See the [original viewer verification](docs/verification/viewer-implementation.md)
 and [text, binary and image controls verification and limits](docs/verification/2026-11-07-viewer-controls.md).
 
-For a Windows checkout on a shared/writable drive, deploy a private runnable copy:
+For a Windows checkout on a shared/writable drive, the full helper builds,
+deploys and registers a private runnable copy:
 
 ```powershell
 .\build.bat release
-powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/release
 ```
 
 The deployment helper prints a fresh installation path under your user profile.
-Run `me.exe` from that path. It copies the executable and viewer packages, protects
+Run `me.exe` from that path or the matching `_build` path. It copies the executable and viewer packages, protects
 the new installation's permissions, and refuses unsafe parents or an existing
 destination. It never changes the checkout's permissions or launches the app.
 This is a runtime installation; compiler and intermediate files remain in `_build`.
+Registrations live in `%USERPROFILE%\.midnight-explorer\plugin-runtimes`, keyed by
+the host's SHA-256. Protected portable installations still discover their adjacent
+plugins directly. See the [resolution and security contract](docs/developer/RUNTIME_DISCOVERY.md).
 
 Options → Editors configures F4 using an absolute executable and a JSON array of
 literal arguments. `{file}` must occupy a complete argument; paths are never expanded

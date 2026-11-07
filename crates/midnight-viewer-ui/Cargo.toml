@@ -16,5 +16,6 @@ i-slint-core = { version = "=1.18.1", default-features = false, features = ["std
 slint-build.workspace = true
 
 [dev-dependencies]
+midnight-plugin-host = { path = "../midnight-plugin-host" }
 tokio.workspace = true
 png = "0.18"

@@ -128,7 +128,8 @@ impl Service {
                 let runtime = {
                     let mut loaded = service.runtime.lock().unwrap_or_else(|e| e.into_inner());
                     if loaded.is_none() {
-                        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+                        let executable = midnight_plugin_host::installed_executable()
+                            .map_err(|e| e.to_string())?;
                         let directory = executable.parent().ok_or("Executable has no directory")?;
                         *loaded = Some(Arc::new(
                             Runtime::discover(directory).map_err(|e| e.to_string())?,
@@ -142,8 +143,8 @@ impl Service {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     if loaded.is_none() {
-                        let executable =
-                            std::env::current_exe().map_err(|error| error.to_string())?;
+                        let executable = midnight_plugin_host::installed_executable()
+                            .map_err(|error| error.to_string())?;
                         // Invalid process packages expose no feature. Options reports discovery diagnostics.
                         *loaded = Some(
                             midnight_image_viewer_host::discover(&executable)

@@ -37,8 +37,11 @@ pub(crate) fn run(
     let right = CapturedFile::capture(&paths[1])
         .map_err(|error| format!("{}: {error}", paths[1].display()))?;
     let sources = [left, right];
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let providers = midnight_image_viewer_host::discover(&executable).unwrap_or_default();
+    // Image viewers are optional: a missing registered runtime cannot disable text diff.
+    let providers = midnight_plugin_host::installed_executable()
+        .ok()
+        .and_then(|executable| midnight_image_viewer_host::discover(&executable).ok())
+        .unwrap_or_default();
     let selected = paths.each_ref().map(|path| {
         path.extension()
             .and_then(|extension| extension.to_str())
