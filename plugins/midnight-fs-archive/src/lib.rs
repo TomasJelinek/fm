@@ -1,6 +1,8 @@
 //! Read-only archive parsing. This code runs only inside the isolated worker.
 mod formats;
+mod sevenzip;
 mod streams;
+mod tar;
 mod tree;
 use midnight_filesystem_api::{ErrorCode, Format, Kind, MAX_BATCH, MAX_READ, Node};
 use std::{
@@ -61,7 +63,7 @@ impl From<io::Error> for Error {
     }
 }
 
-/// One bounded, immutable mount. ZIP contents are decoded and CRC-checked on first read.
+/// One bounded, immutable mount. ZIP members and 7z blocks are verified on first read.
 /// No extraction, path opening or host association is implemented here.
 pub struct Archive {
     nodes: Vec<Node>,
@@ -70,6 +72,8 @@ pub struct Archive {
     children: HashMap<u64, Vec<usize>>,
     zip: Option<zip::ZipArchive<std::io::Cursor<Vec<u8>>>>,
     zip_members: HashMap<u64, usize>,
+    tar_content: Option<tar::Content>,
+    sevenzip_content: Option<sevenzip::Content>,
     limits: Limits,
     names: usize,
     total: u64,
@@ -87,13 +91,15 @@ impl Archive {
             children: HashMap::new(),
             zip: None,
             zip_members: HashMap::new(),
+            tar_content: None,
+            sevenzip_content: None,
             limits,
             names: 0,
             total: 0,
         };
         match format {
             Format::Zip => result.zip(source)?,
-            Format::Tar => result.tar(&source)?,
+            Format::Tar => result.tar(source)?,
             Format::Gzip | Format::TarGzip => {
                 let budget = limits
                     .max_total
@@ -101,12 +107,12 @@ impl Archive {
                 let bytes =
                     bounded_read(flate2::read::MultiGzDecoder::new(source.as_slice()), budget)?;
                 if format == Format::TarGzip {
-                    result.tar(&bytes)?;
+                    result.tar(bytes)?;
                 } else {
                     result.add(b"content", "content", Kind::File, Some(bytes), true)?;
                 }
             }
-            Format::SevenZip => result.sevenzip(&source)?,
+            Format::SevenZip => result.sevenzip(source)?,
             Format::Xz
             | Format::TarXz
             | Format::Bzip2
@@ -118,7 +124,7 @@ impl Archive {
                     .min(source_length.saturating_mul(limits.max_ratio));
                 let bytes = streams::decode(format, &source, budget, limits.max_entry)?;
                 if matches!(format, Format::TarXz | Format::TarBzip2 | Format::TarZstd) {
-                    result.tar(&bytes)?;
+                    result.tar(bytes)?;
                 } else {
                     result.add(b"content", "content", Kind::File, Some(bytes), true)?;
                 }
@@ -164,6 +170,15 @@ impl Archive {
             ));
         }
         let declared_size = node.size;
+        if let Some(tar) = &self.tar_content {
+            return tar.read(entry, offset, length);
+        }
+        if !self.contents.contains_key(&entry)
+            && let Some(sevenzip) = &mut self.sevenzip_content
+        {
+            // The whole requested block is staged and verified before any cache publication.
+            self.contents.extend(sevenzip.decode(entry, self.limits)?);
+        }
         if !self.contents.contains_key(&entry)
             && let Some(index) = self.zip_members.get(&entry).copied()
         {
@@ -187,14 +202,18 @@ impl Archive {
             .contents
             .get(&entry)
             .ok_or_else(|| Error::new(ErrorCode::Unsupported, "Directory has no byte content"))?;
-        let start = usize::try_from(offset.min(data.len() as u64)).map_err(|_| Error::limit())?;
-        let end = start.saturating_add(length as usize).min(data.len());
-        Ok((data[start..end].to_vec(), end == data.len()))
+        read_slice(data, offset, length)
     }
 
     fn node(&self, id: u64) -> Option<&Node> {
         self.nodes.get(usize::try_from(id.checked_sub(2)?).ok()?)
     }
+}
+
+fn read_slice(data: &[u8], offset: u64, length: u32) -> Result<(Vec<u8>, bool), Error> {
+    let start = usize::try_from(offset.min(data.len() as u64)).map_err(|_| Error::limit())?;
+    let end = start.saturating_add(length as usize).min(data.len());
+    Ok((data[start..end].to_vec(), end == data.len()))
 }
 
 pub(crate) fn bounded_read(mut reader: impl Read, limit: u64) -> Result<Vec<u8>, Error> {

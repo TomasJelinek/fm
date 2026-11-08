@@ -14,6 +14,16 @@ pub(crate) fn safe_name(name: &[u8]) -> bool {
 }
 
 impl Archive {
+    /// Add the bounded declared length to the just-indexed regular file.
+    pub(crate) fn indexed_size(&mut self, size: u64) -> Result<u64, Error> {
+        self.total = self.total.checked_add(size).ok_or_else(Error::limit)?;
+        if size > self.limits.max_entry || self.total > self.limits.max_total {
+            return Err(Error::limit());
+        }
+        let node = self.nodes.last_mut().ok_or_else(Error::limit)?;
+        node.size = Some(size);
+        Ok(node.id)
+    }
     pub(crate) fn add(
         &mut self,
         raw: &[u8],

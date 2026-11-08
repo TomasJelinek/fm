@@ -20,12 +20,20 @@ and NUL names are not readable or extractable. Duplicate member names have
 independent opaque IDs. GZIP's untrusted FNAME never controls its synthetic member
 name, which is `content`.
 
-ZIP mounting indexes metadata without decompressing members; the first read
-decodes and checks the complete member CRC before returning any of its bytes.
-Other formats cache decoded content in bounded memory. Limits: 64 MiB input,
+ZIP and 7z mounting index metadata without decompressing file bodies. ZIP's first
+read decodes and verifies that complete member. A 7z first read decodes only the
+requested compression block, serially, and checks all its member lengths and
+available member/block CRCs before publishing any bytes. Solid-block siblings
+share that verified cache; unrelated blocks remain compressed. Corrupt payloads
+can therefore be listed but fail when read, just as with ZIP.
+TAR indexes checked ranges in one immutable backing buffer, without copying file
+payloads. Compressed TAR must still decode and validate its complete outer stream
+to discover all headers; it then uses the same range index. Standalone compressed
+streams retain their fully verified decoded content. Limits: 64 MiB input,
 64 MiB member, 128 MiB decoded aggregate, 100,000 entries, 8 MiB names, expansion
-ratio 200. Exceeding them returns Limit. Solid archives decode serially once per
-mount; later member reads use the verified cache. There is no disk extraction,
+ratio 200. Declared 7z sizes are checked when mounting, before deferred decoding;
+actual decoded sizes are checked again before cache publication. Exceeding limits
+returns Limit. There is no disk extraction,
 archive writing, password support, RAR codec or nested mounting in this release.
 XZ dictionaries and Zstandard windows are bounded to 64 MiB; BZIP2 uses its format's
 bounded block sizes. Concatenated stream members are supported. Zstandard frame
@@ -37,6 +45,16 @@ Python 3 on PATH, providing an offline
 public SDK config, a build output directory and an optional package destination.
 Source directories are not output destinations. Exporting this directory does not
 require the host checkout. See THIRD-PARTY.md for pinned dependency decisions.
+
+For reproducible opening measurements, run the ignored
+`measure_tar_and_sevenzip_open` test in `tests/performance.rs` with
+`cargo test --release --test performance measure_tar_and_sevenzip_open -- --ignored --nocapture`
+and the same public SDK configuration used to build this project. It generates
+64 deterministic 256 KiB members and reports five separate opening, listing and
+first/last read timings for TAR, independent 7z blocks and solid 7z. Fixture creation
+and source cloning are excluded; reads compare exact contents. Set
+`MIDNIGHT_ARCHIVE_PERF_DIR` to a directory beneath `_build/` to retain the archives
+for host/sandbox measurements. Ordinary tests use no wall-clock thresholds.
 
 Host browsing uses opaque member IDs. Saved tabs store the provider ID, native
 container path, captured source revision and raw member components separately.
