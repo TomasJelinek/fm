@@ -86,8 +86,12 @@ the mount owner and checks revocation around calls. Viewer consumers never recei
 a fabricated native member path. This is LiveValidated content, not a claim of
 an immutable snapshot. Unknown-length/sequential sources need an additive API.
 
-The native adapter delegates directory enumeration to the existing native
-`FileSystem` and read capture to the existing native broker. It is read-only and
+The native adapter delegates directory enumeration to an injected `FileSystem`.
+`NativeProvider::new` is browse-only: `with_capture` supplies the explicit native
+plugin capture seam and unavailable capture fails without a built-in fallback.
+`with_locale` uses the shared backend date/time formatter; complete enumeration
+metadata avoids an extra stat, while incomplete rows use the injected service.
+The adapter is read-only and
 provides no shell bridge, mutation, copy destination or removal authority. Native
 entry paths must be direct children of the requested directory. Raw names use
 the platform codec, while captions use display conversion only.
@@ -99,6 +103,21 @@ It retains the source revision, rejects unknown-size/unreadable/link members for
 content, validates exact bounded reads, and installs list cache changes only after
 the complete successful callback sequence. Existing archive worker restrictions,
 source limits and publication/copy-out guarantees remain unchanged.
+
+`resolve_target` returns a retained backend context: an exact native path or an
+archive directory/member with its full captured raw ancestry. A file's archive
+location denotes its immediate parent; a directory's location denotes itself.
+It never interprets captions, lists again or extracts data to reconstruct a
+target. Invalid/cyclic ancestry and resource exhaustion fail explicitly; links
+and special archive members do not gain unsupported actions.
+
+`MountedTarget` validates the source registration and any enclosing tree
+contexts. Cloning an archive location or mount retains the same leases: list,
+read and validate reject revocation before and after provider calls. Resources
+are destroyed before their registrations. Cancellation propagates into running
+provider calls; a late successful reply cannot publish after cancellation.
+These are routing/lifetime checks, not immutable file identity, authorization
+to mutate, or proof that a row is still selected in the current panel snapshot.
 
 ## Qualification and remaining migration
 

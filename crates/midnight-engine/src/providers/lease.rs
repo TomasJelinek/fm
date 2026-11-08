@@ -14,6 +14,10 @@ const MAX_LIST_ENTRIES: usize = 50_000;
 const MAX_LIST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ISSUED_NODES: usize = 100_000;
 
+#[path = "target.rs"]
+mod target;
+pub use target::MountedTarget;
+
 struct MountLease {
     reference: MountRef,
     mount: Arc<dyn MountedFilesystem>,

@@ -9,13 +9,30 @@ mod registry;
 pub mod tree;
 
 pub use archive::captured_archive;
-pub use lease::{MountedEntry, MountedLocation};
-pub use native::{NativeProvider, native_location};
+pub use lease::{MountedEntry, MountedLocation, MountedTarget};
+pub use native::{NativeCapture, NativeProvider, native_location};
 pub use registry::ProviderRegistry;
 
-use midnight_core::{Cancellation, EntryKind, EntryMetadata, NodeToken, StoredLocation};
+use midnight_core::{
+    ArchiveLocation, ArchiveNode, Cancellation, EntryKind, EntryMetadata, NodeToken, StoredLocation,
+};
 use midnight_plugin_host::ContentSource;
 use std::{fmt, sync::Arc};
+
+/// Exact backend target, never constructed from a displayed name. Resolving a
+/// target supplies context only; mutation still requires its own native proof.
+#[derive(Clone, Debug)]
+pub enum ProviderTarget {
+    Native(std::path::PathBuf),
+    Archive(Box<ArchiveTarget>),
+}
+
+/// A directory location, or one member in its exact immediate parent location.
+#[derive(Clone, Debug)]
+pub struct ArchiveTarget {
+    pub location: ArchiveLocation,
+    pub member: Option<ArchiveNode>,
+}
 
 /// Provider-owned logical node. Raw names and captions never become native paths.
 #[derive(Clone, Debug)]
@@ -48,6 +65,16 @@ pub trait FilesystemProvider: Send + Sync + 'static {
 /// the mount. Metadata/content can change; capturing content must validate its
 /// own revision, and a node reference is never immutable object identity.
 pub trait MountedFilesystem: Send + Sync + 'static {
+    /// Resolve navigation/action context on a backend worker. Captions, raw names
+    /// and opaque tokens must not be parsed by callers to synthesize this target.
+    fn resolve_target(
+        &self,
+        _node: &NodeToken,
+        _cancel: &Cancellation,
+    ) -> Result<ProviderTarget, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
     /// Errors and cancellation invalidate this attempt, not an earlier valid listing.
     /// Stop producing entries as soon as the callback returns false.
     fn list(
@@ -112,6 +139,8 @@ mod contract_tests;
 mod folder_listing_tests;
 #[cfg(test)]
 mod ownership_tests;
+#[cfg(test)]
+mod target_contract_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

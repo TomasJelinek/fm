@@ -963,6 +963,17 @@ fn list_directory(task: ListingTask) {
     );
 }
 
+fn localize_metadata(
+    metadata: &mut midnight_core::EntryMetadata,
+    locale: Option<&dyn midnight_core::LocaleService>,
+) {
+    if metadata.localized_modified.is_none()
+        && let (Some(locale), Some(modified)) = (locale, metadata.modified)
+    {
+        metadata.localized_modified = locale.format_datetime(modified);
+    }
+}
+
 fn publish_listing(
     outbox: &Outbox,
     snapshots: &Snapshots,

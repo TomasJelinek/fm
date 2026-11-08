@@ -147,6 +147,40 @@ impl BranchWork {
 }
 
 impl DirectoryTree {
+    /// Resolve a visible source entry, not a container mounted on that entry.
+    /// The downstream service still establishes action-specific authority.
+    pub fn resolve_entry_target(
+        &self,
+        branch: BranchId,
+        cancel: &Cancellation,
+    ) -> Result<super::MountedTarget, ProviderError> {
+        super::registry::check_cancel(cancel)?;
+        let node = self
+            .nodes
+            .get(&branch)
+            .ok_or(ProviderError::StaleReference)?;
+        if branch == self.root {
+            return Err(ProviderError::Unsupported);
+        }
+        // Entering a container uses navigation_target instead. An unavailable
+        // mount on this entry must not make its enclosing source file unusable.
+        let mut contexts = Vec::new();
+        let mut ancestor = node.parent;
+        while let Some(id) = ancestor {
+            let parent = self.nodes.get(&id).ok_or(ProviderError::StaleReference)?;
+            if !parent.expanded {
+                return Err(ProviderError::StaleReference);
+            }
+            contexts.push((parent.source.clone(), parent.node.clone()));
+            if let Some(container) = &parent.target {
+                contexts.push((container.clone(), container.root().clone()));
+            }
+            ancestor = parent.parent;
+        }
+        node.source
+            .resolve_target_with_context(&node.node, cancel, contexts)
+    }
+
     /// Bind an explicitly opened provider container, such as a captured archive.
     /// This never guesses a format from a caption or opens a container itself.
     pub fn attach_container(

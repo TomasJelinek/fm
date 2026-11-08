@@ -1,5 +1,7 @@
 //! Transitional adapter for an already captured read-only archive session.
-use super::{MountedFilesystem, OpenedLocation, ProviderEntry, ProviderError};
+use super::{
+    ArchiveTarget, MountedFilesystem, OpenedLocation, ProviderEntry, ProviderError, ProviderTarget,
+};
 use midnight_core::{
     ArchiveLocation, ArchiveMount, ArchiveNode, Cancellation, EntryKind, EntryMetadata, FsError,
     NodeToken,
@@ -14,6 +16,8 @@ use std::{
 const MAX_NODES: usize = 100_000;
 const MAX_NAMES_BYTES: usize = 8 * 1024 * 1024;
 const MAX_READ_BYTES: u32 = 256 * 1024;
+const MAX_COMPONENTS: usize = 256;
+const MAX_LOCATOR_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 struct Record {
@@ -29,7 +33,7 @@ struct Records {
 
 struct CapturedArchive {
     mount: Arc<dyn ArchiveMount>,
-    version: Vec<u8>,
+    captured: ArchiveLocation,
     records: Mutex<Records>,
 }
 
@@ -44,7 +48,8 @@ pub fn captured_archive(
         || location.address.source_version.is_empty()
         || location.address.source_version.len() > 256
         || location.trail.is_empty()
-        || location.trail.len() > 257
+        || location.trail.len() > MAX_COMPONENTS + 1
+        || location.address.components.len() + 1 != location.trail.len()
         || location.trail.first().map(|row| row.0) != Some(1)
         || location.trail.last().map(|row| row.0) != Some(location.directory)
     {
@@ -52,6 +57,26 @@ pub fn captured_archive(
             "invalid captured archive location",
         ));
     }
+    location
+        .address
+        .validate()
+        .map_err(|_| ProviderError::InvalidResponse("invalid captured archive address"))?;
+    let names_bytes = location.trail.iter().try_fold(
+        location
+            .address
+            .components
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>(),
+        |total, (_, caption)| {
+            let total = total.saturating_add(caption.len());
+            if caption.len() > MAX_LOCATOR_BYTES || total > MAX_NAMES_BYTES {
+                Err(ProviderError::ResourceLimited)
+            } else {
+                Ok(total)
+            }
+        },
+    )?;
     check(mount.as_ref(), cancel)?;
     let root = token(mount.id(), location.directory)?;
     let mut nodes = HashMap::new();
@@ -72,20 +97,176 @@ pub fn captured_archive(
         );
         parent = Some(*id);
     }
+    let captured = location.clone();
+    check(mount.as_ref(), cancel)?;
     Ok(OpenedLocation {
         root,
         mount: Arc::new(CapturedArchive {
             mount,
-            version: location.address.source_version.clone(),
-            records: Mutex::new(Records {
-                nodes,
-                names_bytes: 0,
-            }),
+            captured,
+            records: Mutex::new(Records { nodes, names_bytes }),
         }),
     })
 }
 
 impl CapturedArchive {
+    fn base_index(&self, id: u64) -> Option<usize> {
+        self.captured.trail.iter().position(|row| row.0 == id)
+    }
+
+    fn validate_member(
+        &self,
+        id: u64,
+        record: &Record,
+        node: &ArchiveNode,
+    ) -> Result<(), ProviderError> {
+        if node.id.mount != self.mount.id()
+            || node.id.entry != id
+            || record.parent != Some(node.parent)
+            || record.kind != node.kind
+        {
+            return Err(ProviderError::InvalidResponse(
+                "invalid retained archive member",
+            ));
+        }
+        if node.raw_name.len() > MAX_LOCATOR_BYTES || node.display_name.len() > MAX_LOCATOR_BYTES {
+            return Err(ProviderError::ResourceLimited);
+        }
+        let raw = node.raw_name.as_ref();
+        if raw.is_empty()
+            || raw == b"."
+            || raw == b".."
+            || raw.iter().any(|byte| b"/\\:\0".contains(byte))
+        {
+            return Err(ProviderError::InvalidResponse(
+                "invalid archive member locator",
+            ));
+        }
+        Ok(())
+    }
+
+    fn archive_target(
+        &self,
+        token: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<ArchiveTarget, ProviderError> {
+        let (id, record) = self.record(token)?;
+        let (directory, member) = match record.kind {
+            EntryKind::Directory => (id, None),
+            EntryKind::File => {
+                let member = record
+                    .node
+                    .as_ref()
+                    .ok_or(ProviderError::InvalidResponse("missing archive member"))?;
+                self.validate_member(id, &record, member)?;
+                (member.parent, Some(member.clone()))
+            }
+            EntryKind::DirectoryLink | EntryKind::Symlink | EntryKind::Other => {
+                return Err(ProviderError::Unsupported);
+            }
+        };
+        let mut chain = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current = directory;
+        let mut raw_bytes = 0usize;
+        let mut names_bytes =
+            self.captured.trail[0]
+                .1
+                .len()
+                .saturating_add(member.as_ref().map_or(0, |node| {
+                    node.raw_name.len().saturating_add(node.display_name.len())
+                }));
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| super::registry::poisoned())?;
+        loop {
+            super::registry::check_cancel(cancel)?;
+            if !seen.insert(current) {
+                return Err(ProviderError::InvalidResponse(
+                    "cyclic archive parent trail",
+                ));
+            }
+            let record = records
+                .nodes
+                .get(&current)
+                .ok_or(ProviderError::InvalidResponse("unknown archive parent"))?;
+            if record.kind != EntryKind::Directory {
+                return Err(ProviderError::InvalidResponse(
+                    "archive parent is not a directory",
+                ));
+            }
+            if current == 1 {
+                if record.parent.is_some() {
+                    return Err(ProviderError::InvalidResponse(
+                        "invalid archive root parent",
+                    ));
+                }
+                break;
+            }
+            if chain.len() >= MAX_COMPONENTS {
+                return Err(ProviderError::ResourceLimited);
+            }
+            let parent = record
+                .parent
+                .ok_or(ProviderError::InvalidResponse("missing archive parent"))?;
+            let (raw, caption) = if let Some(index) = self.base_index(current) {
+                if index == 0 || parent != self.captured.trail[index - 1].0 {
+                    return Err(ProviderError::InvalidResponse(
+                        "captured archive parent changed",
+                    ));
+                }
+                let raw = &self.captured.address.components[index - 1];
+                if let Some(node) = &record.node {
+                    self.validate_member(current, record, node)?;
+                    if node.raw_name.as_ref() != raw.as_slice() {
+                        return Err(ProviderError::InvalidResponse(
+                            "captured archive name changed",
+                        ));
+                    }
+                }
+                (raw.clone(), self.captured.trail[index].1.clone())
+            } else {
+                let node = record
+                    .node
+                    .as_ref()
+                    .ok_or(ProviderError::InvalidResponse("missing archive ancestor"))?;
+                self.validate_member(current, record, node)?;
+                (node.raw_name.to_vec(), node.display_name.clone())
+            };
+            raw_bytes = raw_bytes.saturating_add(raw.len());
+            names_bytes = names_bytes
+                .saturating_add(raw.len())
+                .saturating_add(caption.len());
+            if raw_bytes > MAX_LOCATOR_BYTES || names_bytes > MAX_NAMES_BYTES {
+                return Err(ProviderError::ResourceLimited);
+            }
+            chain.push((current, raw, caption));
+            current = parent;
+        }
+        drop(records);
+        let mut trail = vec![self.captured.trail[0].clone()];
+        let mut components = Vec::with_capacity(chain.len());
+        for (id, raw, caption) in chain.into_iter().rev() {
+            trail.push((id, caption));
+            components.push(raw);
+        }
+        let mut address = self.captured.address.clone();
+        address.components = components;
+        address
+            .validate()
+            .map_err(|_| ProviderError::InvalidResponse("invalid archive target address"))?;
+        Ok(ArchiveTarget {
+            location: ArchiveLocation {
+                mount: Some(self.mount.clone()),
+                address,
+                directory,
+                trail,
+            },
+            member,
+        })
+    }
+
     fn record(&self, token: &NodeToken) -> Result<(u64, Record), ProviderError> {
         let raw: [u8; 16] = token
             .as_bytes()
@@ -158,6 +339,12 @@ impl CapturedArchive {
             if let Some(old) = records.nodes.get(&node.id.entry) {
                 if old.parent != Some(node.parent)
                     || old.kind != node.kind
+                    || (old.node.is_none()
+                        && self.base_index(node.id.entry).is_some_and(|index| {
+                            index == 0
+                                || self.captured.address.components[index - 1].as_slice()
+                                    != node.raw_name.as_ref()
+                        }))
                     || old.node.as_ref().is_some_and(|old| {
                         old.raw_name != node.raw_name
                             || old.size != node.size
@@ -205,6 +392,17 @@ impl CapturedArchive {
 }
 
 impl MountedFilesystem for CapturedArchive {
+    fn resolve_target(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<ProviderTarget, ProviderError> {
+        check(self.mount.as_ref(), cancel)?;
+        let target = self.archive_target(node, cancel)?;
+        check(self.mount.as_ref(), cancel)?;
+        Ok(ProviderTarget::Archive(Box::new(target)))
+    }
+
     fn list(
         &self,
         directory: &NodeToken,
@@ -264,7 +462,7 @@ impl MountedFilesystem for CapturedArchive {
             return Err(ProviderError::Unsupported);
         }
         let length = node.size.ok_or(ProviderError::Unsupported)?;
-        let mut version = self.version.clone();
+        let mut version = self.captured.address.source_version.clone();
         version.extend_from_slice(&self.mount.id().to_le_bytes());
         version.extend_from_slice(&id.to_le_bytes());
         Ok(Arc::new(MemberContent {

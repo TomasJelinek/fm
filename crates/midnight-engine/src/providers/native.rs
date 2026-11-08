@@ -1,4 +1,4 @@
-//! Transitional adapter over existing native services, not the final dynamic plugin.
+//! Internal identity adapter over injected native services; no implicit read fallback.
 use super::{
     FilesystemProvider, MountedFilesystem, OpenedLocation, ProviderEntry, ProviderError,
     registry::check_cancel,
@@ -27,11 +27,31 @@ mod codec;
 
 pub struct NativeProvider {
     filesystem: Arc<dyn FileSystem>,
+    capture: Option<NativeCapture>,
+    locale: Option<Arc<dyn midnight_core::LocaleService>>,
 }
+
+pub type NativeCapture =
+    Arc<dyn Fn(&Path, &Cancellation) -> Result<CapturedFile, ProviderError> + Send + Sync>;
 
 impl NativeProvider {
     pub fn new(filesystem: Arc<dyn FileSystem>) -> Self {
-        Self { filesystem }
+        Self {
+            filesystem,
+            capture: None,
+            locale: None,
+        }
+    }
+
+    /// Production injects the installed filesystem plugin's capture service.
+    /// A browse-only adapter returns Unsupported for content, never native I/O.
+    pub fn with_capture(mut self, capture: NativeCapture) -> Self {
+        self.capture = Some(capture);
+        self
+    }
+    pub fn with_locale(mut self, locale: Arc<dyn midnight_core::LocaleService>) -> Self {
+        self.locale = Some(locale);
+        self
     }
 }
 
@@ -79,6 +99,8 @@ impl FilesystemProvider for NativeProvider {
         Ok(OpenedLocation {
             mount: Arc::new(NativeMount {
                 filesystem: self.filesystem.clone(),
+                capture: self.capture.clone(),
+                locale: self.locale.clone(),
                 nodes: Mutex::new(nodes),
             }),
             root,
@@ -88,10 +110,27 @@ impl FilesystemProvider for NativeProvider {
 
 struct NativeMount {
     filesystem: Arc<dyn FileSystem>,
+    capture: Option<NativeCapture>,
+    locale: Option<Arc<dyn midnight_core::LocaleService>>,
     nodes: Mutex<NativeNodes>,
 }
 
 impl MountedFilesystem for NativeMount {
+    fn resolve_target(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<super::ProviderTarget, ProviderError> {
+        check_cancel(cancel)?;
+        let node = self
+            .nodes
+            .lock()
+            .map_err(|_| super::registry::poisoned())?
+            .get(node)?;
+        check_cancel(cancel)?;
+        Ok(super::ProviderTarget::Native(node.path.as_ref().clone()))
+    }
+
     fn list(
         &self,
         directory: &NodeToken,
@@ -111,7 +150,7 @@ impl MountedFilesystem for NativeMount {
         let mut stopped = false;
         let result = self
             .filesystem
-            .read_directory(&node.path, cancel, &mut |entry| {
+            .read_directory(&node.path, cancel, &mut |mut entry| {
                 if stopped {
                     return false;
                 }
@@ -128,11 +167,19 @@ impl MountedFilesystem for NativeMount {
                             "native entry outside its directory",
                         ));
                     }
+                    let path = path.to_owned();
+                    if !self.filesystem.listing_metadata_complete(&entry)
+                        && let Ok(metadata) = self.filesystem.entry_metadata(&path)
+                    {
+                        entry.metadata = metadata;
+                    }
+                    check_cancel(cancel)?;
+                    crate::localize_metadata(&mut entry.metadata, self.locale.as_deref());
                     let token = self
                         .nodes
                         .lock()
                         .map_err(|_| super::registry::poisoned())?
-                        .bind(path.to_owned(), entry.kind)?;
+                        .bind(path, entry.kind)?;
                     Ok(ProviderEntry {
                         token,
                         raw_name: Arc::from(codec::encode(&entry.name)?),
@@ -188,8 +235,8 @@ impl MountedFilesystem for NativeMount {
         if node.kind != EntryKind::File {
             return Err(ProviderError::Unsupported);
         }
-        let source = CapturedFile::capture(&node.path)
-            .map_err(|error| ProviderError::Failed(error.to_string()))?;
+        let capture = self.capture.as_ref().ok_or(ProviderError::Unsupported)?;
+        let source = capture(&node.path, cancel)?;
         check_cancel(cancel)?;
         Ok(Arc::new(NativeContent(source)))
     }

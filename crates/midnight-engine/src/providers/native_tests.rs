@@ -6,6 +6,9 @@ use midnight_core::{
 };
 use std::{io, path::PathBuf};
 
+#[path = "native_tree_target_tests.rs"]
+mod tree_targets;
+
 struct Files;
 impl DirectoryService for Files {
     fn read_directory(
@@ -96,6 +99,32 @@ fn native_listing_is_reusable_without_turning_captions_into_paths() {
 }
 
 #[test]
+fn native_targets_preserve_exact_paths_and_retained_targets_reject_provider_loss() {
+    let registry = ProviderRegistry::default();
+    let root = path().join("東京 Žluťoučký");
+    let address = native_location(&root).unwrap();
+    registry
+        .register(
+            address.provider().clone(),
+            Arc::new(NativeProvider::new(Arc::new(Files))),
+        )
+        .unwrap();
+    let mount = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let rows = mount.list(mount.root(), &Cancellation::default()).unwrap();
+    let target = mount
+        .resolve_target(&rows[0].node, &Cancellation::default())
+        .unwrap();
+    let super::super::ProviderTarget::Native(exact) = target.value().unwrap() else {
+        panic!("native target must not become an archive");
+    };
+    assert_eq!(exact, &root.join("same name"));
+    drop(registry);
+    assert!(matches!(target.value(), Err(ProviderError::StaleReference)));
+}
+
+#[test]
 fn native_tree_navigation_retains_exact_provider_parent_and_root_files() {
     use crate::providers::tree::{DirectoryTree, TreeLimits, TreeRequest};
     let registry = ProviderRegistry::default();
@@ -146,7 +175,12 @@ fn native_content_broker_reads_exact_file_and_rejects_source_change() {
     registry
         .register(
             address.provider().clone(),
-            Arc::new(NativeProvider::new(Arc::new(Files))),
+            Arc::new(
+                NativeProvider::new(Arc::new(Files)).with_capture(Arc::new(|path, _| {
+                    CapturedFile::capture(path)
+                        .map_err(|error| ProviderError::Failed(error.to_string()))
+                })),
+            ),
         )
         .unwrap();
     let mounted = registry
@@ -164,6 +198,181 @@ fn native_content_broker_reads_exact_file_and_rejects_source_change() {
     assert_eq!(captured.read_at(9, 256).unwrap(), b"content");
     std::fs::write(&source, b"changed source with a different length").unwrap();
     assert!(captured.read_at(0, 256).is_err());
+}
+
+#[test]
+fn a_browse_only_native_adapter_cannot_open_files_through_a_hidden_fallback() {
+    let registry = ProviderRegistry::default();
+    let address = native_location(&path()).unwrap();
+    registry
+        .register(
+            address.provider().clone(),
+            Arc::new(NativeProvider::new(Arc::new(Files))),
+        )
+        .unwrap();
+    let mounted = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let file = mounted
+        .list(mounted.root(), &Cancellation::default())
+        .unwrap()
+        .remove(0);
+    assert!(matches!(
+        mounted.open_content(&file.node, &Cancellation::default()),
+        Err(ProviderError::Unsupported)
+    ));
+}
+
+#[test]
+fn native_read_capture_calls_the_injected_provider_and_keeps_its_failure() {
+    let registry = ProviderRegistry::default();
+    let address = native_location(&path()).unwrap();
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = captured.clone();
+    let provider =
+        NativeProvider::new(Arc::new(Files)).with_capture(Arc::new(move |path, cancel| {
+            assert!(!cancel.is_cancelled());
+            calls.lock().unwrap().push(path.to_owned());
+            Err(ProviderError::Unavailable)
+        }));
+    registry
+        .register(address.provider().clone(), Arc::new(provider))
+        .unwrap();
+    let mounted = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let file = mounted
+        .list(mounted.root(), &Cancellation::default())
+        .unwrap()
+        .remove(0);
+    assert!(matches!(
+        mounted.open_content(&file.node, &Cancellation::default()),
+        Err(ProviderError::Unavailable)
+    ));
+    assert_eq!(*captured.lock().unwrap(), [path().join("same name")]);
+}
+
+#[test]
+fn native_capture_cancellation_discards_a_late_successful_source() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(fixture.path().join("same name"), b"captured bytes").unwrap();
+    let address = native_location(fixture.path()).unwrap();
+    let registry = ProviderRegistry::default();
+    let provider = NativeProvider::new(Arc::new(Files)).with_capture(Arc::new(|path, cancel| {
+        let source = CapturedFile::capture(path)
+            .map_err(|error| ProviderError::Failed(error.to_string()))?;
+        cancel.cancel();
+        Ok(source)
+    }));
+    registry
+        .register(address.provider().clone(), Arc::new(provider))
+        .unwrap();
+    let mount = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let row = mount
+        .list(mount.root(), &Cancellation::default())
+        .unwrap()
+        .remove(0);
+    let outer = Cancellation::default();
+    assert!(matches!(
+        mount.open_content(&row.node, &outer),
+        Err(ProviderError::Cancelled)
+    ));
+    assert!(
+        !outer.is_cancelled(),
+        "local request cancellation must not cancel its caller"
+    );
+    assert!(
+        mount.list(mount.root(), &outer).is_ok(),
+        "request cancellation must not revoke the mount"
+    );
+}
+
+struct MetadataFiles {
+    complete: bool,
+    stats: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl DirectoryService for MetadataFiles {
+    fn read_directory(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        let mut entry = Entry::new(EntryId(1), path.join("name"), EntryKind::File);
+        if self.complete {
+            entry.metadata.modified = Some(std::time::UNIX_EPOCH);
+        }
+        emit(entry);
+        Ok(())
+    }
+    fn listing_metadata_complete(&self, _: &Entry) -> bool {
+        self.complete
+    }
+    fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
+        self.stats
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(EntryMetadata {
+            modified: Some(std::time::UNIX_EPOCH),
+            ..EntryMetadata::default()
+        })
+    }
+}
+impl VolumeService for MetadataFiles {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        Files.list_volumes()
+    }
+}
+impl StorageService for MetadataFiles {
+    fn space_info(&self, path: &Path) -> Result<SpaceInfo, FsError> {
+        Files.space_info(path)
+    }
+}
+struct Locale;
+impl midnight_core::LocaleService for Locale {
+    fn number_locale(&self) -> Result<midnight_core::NumberLocale, FsError> {
+        Ok(Default::default())
+    }
+    fn format_datetime(
+        &self,
+        _: std::time::SystemTime,
+    ) -> Option<midnight_core::LocalizedDateTime> {
+        Some(midnight_core::LocalizedDateTime {
+            date: "local date".into(),
+            time: "local time".into(),
+        })
+    }
+}
+
+#[test]
+fn native_registry_listing_keeps_locale_parity_without_reopening_complete_rows() {
+    for complete in [true, false] {
+        let stats = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = NativeProvider::new(Arc::new(MetadataFiles {
+            complete,
+            stats: stats.clone(),
+        }))
+        .with_locale(Arc::new(Locale));
+        let opened = provider
+            .resolve(&native_location(&path()).unwrap(), &Cancellation::default())
+            .unwrap();
+        let mut rows = Vec::new();
+        opened
+            .mount
+            .list(&opened.root, &Cancellation::default(), &mut |entry| {
+                rows.push(entry);
+                true
+            })
+            .unwrap();
+        let formatted = rows[0].metadata.localized_modified.as_ref().unwrap();
+        assert_eq!(formatted.date, "local date");
+        assert_eq!(formatted.time, "local time");
+        assert_eq!(
+            stats.load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(!complete)
+        );
+    }
 }
 
 #[test]

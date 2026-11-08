@@ -12,6 +12,8 @@ use std::{
     },
 };
 
+type DropEvents = Arc<Mutex<Vec<&'static str>>>;
+
 #[derive(Debug, Default)]
 struct State {
     invalid: AtomicBool,
@@ -19,6 +21,11 @@ struct State {
     reads: AtomicUsize,
     read_mode: AtomicUsize,
     list_mode: AtomicUsize,
+    lists: AtomicUsize,
+    validations: AtomicUsize,
+    fail_validate_at: AtomicUsize,
+    cancel_validate: Mutex<Option<(usize, Cancellation)>>,
+    drop_events: Mutex<Option<DropEvents>>,
     rows: Mutex<HashMap<u64, Vec<ArchiveNode>>>,
 }
 
@@ -26,6 +33,14 @@ struct State {
 struct FakeMount {
     id: u64,
     state: Arc<State>,
+}
+
+impl Drop for FakeMount {
+    fn drop(&mut self) {
+        if let Some(events) = &*self.state.drop_events.lock().unwrap() {
+            events.lock().unwrap().push("archive");
+        }
+    }
 }
 
 fn failure(message: &str) -> FsError {
@@ -37,13 +52,22 @@ impl ArchiveMount for FakeMount {
         self.id
     }
     fn validate(&self) -> Result<(), FsError> {
-        if self.state.invalid.load(Ordering::Acquire) {
+        let count = self.state.validations.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some((at, cancel)) = &*self.state.cancel_validate.lock().unwrap()
+            && *at == count
+        {
+            cancel.cancel();
+        }
+        if self.state.invalid.load(Ordering::Acquire)
+            || self.state.fail_validate_at.load(Ordering::Acquire) == count
+        {
             Err(failure("captured source changed"))
         } else {
             Ok(())
         }
     }
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        self.state.lists.fetch_add(1, Ordering::AcqRel);
         self.validate()?;
         if cancel.is_cancelled() {
             return Err(FsError::from_io(
@@ -141,7 +165,11 @@ fn fixture(id: u64, directory: u64) -> (ArchiveLocation, Arc<State>) {
                 provider: "fake.archive".into(),
                 container,
                 source_version: vec![9, 8, 7],
-                components: Vec::new(),
+                components: if directory == 1 {
+                    Vec::new()
+                } else {
+                    vec![vec![0xff, 4]]
+                },
             },
             directory,
             trail,
@@ -149,6 +177,9 @@ fn fixture(id: u64, directory: u64) -> (ArchiveLocation, Arc<State>) {
         state,
     )
 }
+
+#[path = "archive_target_tests.rs"]
+mod targets;
 
 fn listing(mount: &dyn MountedFilesystem, root: &NodeToken) -> Vec<super::super::ProviderEntry> {
     let mut rows = Vec::new();

@@ -62,6 +62,13 @@ pub struct LocalizedDateTime {
 pub trait LocaleService: Send + Sync {
     fn number_locale(&self) -> Result<NumberLocale, FsError>;
 
+    /// Format an existing timestamp using native date, time and timezone preferences.
+    /// Call only on a backend worker. None retains the caller's fallback display;
+    /// formatting never requires reopening the file that supplied the timestamp.
+    fn format_datetime(&self, _value: std::time::SystemTime) -> Option<LocalizedDateTime> {
+        None
+    }
+
     /// Produce an opaque, lexicographically comparable key using one immutable
     /// session locale. Call only on a backend worker, never in a sort comparator.
     /// None preserves an unrepresentable native name through deterministic raw

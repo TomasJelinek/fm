@@ -49,6 +49,15 @@ its enclosing source and ancestors remain valid. An extension or caption never
 mounts an archive implicitly. Production discovery of nested browsable container
 files alongside folders remains part of the panel/provider integration.
 
+`resolve_entry_target` resolves the source entry for a currently visible branch.
+It rejects the hidden root, collapsed descendants and foreign branch IDs. For an
+attached archive this means the container file itself; `navigation_target`
+instead returns its entered root. Losing the container does not make a still
+valid source file unusable. Descendant targets retain and validate all enclosing
+registrations, including when their archive handles are cloned independently.
+The final operation must still capture/validate panel selection and native
+object identity; obtaining a target never grants mutation permission.
+
 ## Budgets
 
 Default per-tree bounds are 10,000 retained occurrences including the hidden root,
@@ -79,13 +88,14 @@ limits must not become new file-panel navigation or OS path-length limits.
 Backend projection must map branch identities to exact typed action targets and
 selection scopes before any row becomes selectable. Do not weaken native
 mutation's immediate-parent and captured-snapshot checks to accept arbitrary
-descendants. Archive navigation needs complete ancestry for each inline row.
+descendants. The adapters now provide complete typed native/archive ancestry;
+the production actor must consume it instead of reconstructing a display path.
 
 Preserve provider locale enrichment, native-plugin content capture, raw path
 identity, queued-operation ownership, watches, filtering, prefix search,
 rectangle/file dragging and virtualization. The transitional registry native
-adapter's old content capture is not an authorized substitute for the mandatory
-native plugin's capture seam.
+adapter requires explicit capture injection and has no implicit native read
+fallback. Production must supply the mandatory native plugin's capture seam.
 
 The model tests and native/archive adapter tests are backend evidence, not proof
 of production tree UI, real plugin interaction or completed VFS migration.

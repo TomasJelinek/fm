@@ -96,3 +96,9 @@ filesystem and archive adapters, Slint virtualized panel rows. No new dependency
   listing available; these branch budgets are not new navigation/path limits.
   Typed descendant operation scopes and archive ancestry remain task2 blockers;
   no immediate-parent or captured-snapshot mutation check may be weakened.
+- Typed adapter targets now retain native paths or complete archive ancestry.
+  Tree entry resolution distinguishes the source container file from its entered
+  root and rejects hidden/root/foreign occurrences. Explicit native capture and
+  locale injection preserve production seams; cloned archive target handles
+  retain the source/enclosing registrations and enforce revocation. This closes
+  a backend prerequisite, not task2's production actor/selection/UI integration.
