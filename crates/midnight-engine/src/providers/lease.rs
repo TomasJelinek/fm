@@ -94,12 +94,38 @@ impl MountedLocation {
         }))
     }
 
+    /// Folder-only branch listing. Irrelevant files neither consume retained-row
+    /// budgets nor acquire node authority. Directory links are returned for display;
+    /// callers must not recursively enumerate them automatically.
+    pub fn list_folders(
+        &self,
+        node: &NodeRef,
+        cancel: &Cancellation,
+        limit: usize,
+    ) -> Result<Vec<MountedEntry>, ProviderError> {
+        self.list_selected(node, cancel, true, limit.min(MAX_LIST_ENTRIES))
+    }
+
     /// Complete bounded listing. Partial/failed attempts never issue new references.
     /// Production's streaming projection remains in place during this migration.
     pub fn list(
         &self,
         node: &NodeRef,
         cancel: &Cancellation,
+    ) -> Result<Vec<MountedEntry>, ProviderError> {
+        self.list_selected(node, cancel, false, MAX_LIST_ENTRIES)
+    }
+
+    pub(super) fn validate_reference(&self, node: &NodeRef) -> Result<(), ProviderError> {
+        self.lease.check_node(node).map(|_| ())
+    }
+
+    fn list_selected(
+        &self,
+        node: &NodeRef,
+        cancel: &Cancellation,
+        folders_only: bool,
+        limit: usize,
     ) -> Result<Vec<MountedEntry>, ProviderError> {
         if !matches!(
             self.lease.check_node(node)?,
@@ -112,33 +138,60 @@ impl MountedLocation {
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
         let mut bytes = 0_usize;
+        let mut token_bytes = 0_usize;
+        let mut inspected = 0_usize;
         let mut failure = None;
         let result = self.lease.mount.list(&node.token, &request, &mut |entry| {
             if failure.is_some() {
                 return false;
             }
             let result = check_cancel(&request).and_then(|()| {
+                inspected = inspected.saturating_add(1);
+                if inspected > 1_000_000 {
+                    return Err(ProviderError::ResourceLimited);
+                }
+                token_bytes = token_bytes
+                    .saturating_add(entry.token.as_bytes().len())
+                    .saturating_add(std::mem::size_of::<NodeToken>() + 64);
+                if token_bytes > MAX_LIST_BYTES {
+                    return Err(ProviderError::ResourceLimited);
+                }
                 if entry.token == node.token || !seen.insert(entry.token.clone()) {
                     return Err(ProviderError::InvalidResponse(
                         "duplicate or self-referencing listing node",
                     ));
                 }
+                self.lease.validate_kind(&entry.token, entry.kind)?;
+                Ok(())
+            });
+            if let Err(error) = result {
+                failure = Some(error);
+                return false;
+            }
+            if folders_only
+                && !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+            {
+                return true;
+            }
+            let result = (|| {
                 let localized = entry
                     .metadata
                     .localized_modified
                     .as_ref()
-                    .map_or(0, |value| value.date.len().saturating_add(value.time.len()));
+                    .map_or(0, |value| {
+                        value.date.capacity().saturating_add(value.time.capacity())
+                    });
                 let size = std::mem::size_of::<MountedEntry>()
                     .saturating_add(entry.raw_name.len())
-                    .saturating_add(entry.display_name.len())
+                    .saturating_add(entry.display_name.capacity())
                     .saturating_add(entry.token.as_bytes().len())
                     .saturating_add(localized);
                 bytes = bytes.saturating_add(size);
-                if entries.len() >= MAX_LIST_ENTRIES || bytes > MAX_LIST_BYTES {
+                if entries.len() >= limit || bytes > MAX_LIST_BYTES {
                     return Err(ProviderError::ResourceLimited);
                 }
                 Ok(())
-            });
+            })();
             if let Err(error) = result {
                 failure = Some(error);
                 return false;
@@ -189,6 +242,14 @@ impl MountedLocation {
 }
 
 impl MountLease {
+    fn validate_kind(&self, token: &NodeToken, kind: EntryKind) -> Result<(), ProviderError> {
+        let nodes = self.nodes.lock().map_err(|_| poisoned())?;
+        if nodes.get(token).is_some_and(|known| *known != kind) {
+            return Err(ProviderError::InvalidResponse("issued node changed kind"));
+        }
+        Ok(())
+    }
+
     fn check_node(&self, node: &NodeRef) -> Result<EntryKind, ProviderError> {
         if self.lifetime.is_cancelled() || node.mount != self.reference {
             return Err(ProviderError::StaleReference);

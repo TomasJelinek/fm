@@ -66,7 +66,10 @@ budget and that codec's worst-case expansion; native encoding checks its raw
 charge first. The production cutover must also align caches across mounts with
 the shared application budget, rather than treating each per-mount limit as RSS.
 The registry's complete-list adapter is not yet the production streaming panel
-projection.
+projection. Folder-only listings use a separate bounded token-validation ledger,
+so irrelevant regular files do not consume the retained-folder quota. See
+[inline provider branches](INLINE_TREES.md) for the backend tree model, ownership,
+limits and pending production projection.
 
 Listings reject duplicate/self-referencing tokens, contradictory known kinds,
 oversized output and cancellation. A failed registry listing issues no partial

@@ -138,6 +138,7 @@ fn fixture(id: u64, directory: u64) -> (ArchiveLocation, Arc<State>) {
                 state: state.clone(),
             })),
             address: ArchiveAddress {
+                format: None,
                 provider: "fake.archive".into(),
                 container,
                 source_version: vec![9, 8, 7],
@@ -216,6 +217,66 @@ fn captured_subdirectory_keeps_provider_parent_and_foreign_tokens_are_rejected()
                 .is_err()
         );
     }
+}
+
+#[test]
+fn captured_archive_tree_omits_descendant_files_and_rejects_changed_container() {
+    use crate::providers::{
+        FilesystemProvider, OpenedLocation, ProviderError, ProviderRegistry,
+        tree::{DirectoryTree, Disclosure, TreeLimits, TreeRequest},
+    };
+    use midnight_core::{ProviderId, StoredLocation};
+    struct Captured(ArchiveLocation);
+    impl FilesystemProvider for Captured {
+        fn resolve(
+            &self,
+            _: &StoredLocation,
+            cancel: &Cancellation,
+        ) -> Result<OpenedLocation, ProviderError> {
+            captured_archive(&self.0, cancel)
+        }
+    }
+    let (location, state) = fixture(91, 1);
+    let registry = ProviderRegistry::default();
+    let address = StoredLocation::new(
+        ProviderId::new("test.archive.tree").unwrap(),
+        std::num::NonZeroU32::MIN,
+        Arc::from([]),
+    );
+    registry
+        .register(address.provider().clone(), Arc::new(Captured(location)))
+        .unwrap();
+    let mount = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let mut tree = DirectoryTree::new(mount, TreeLimits::default()).unwrap();
+    let result = tree
+        .request(tree.root(), TreeRequest::Expand)
+        .unwrap()
+        .run();
+    assert!(tree.apply(result));
+    let rows = tree.rows();
+    assert_eq!(rows.len(), 3);
+    let folder = rows
+        .iter()
+        .find(|row| row.entry.kind == EntryKind::Directory)
+        .unwrap();
+    let result = tree.request(folder.id, TreeRequest::Expand).unwrap().run();
+    assert!(tree.apply(result));
+    assert_eq!(tree.state(folder.id).unwrap().disclosure, Disclosure::Empty);
+    assert_eq!(tree.rows().len(), 3);
+    state.invalid.store(true, Ordering::Release);
+    let result = tree.request(folder.id, TreeRequest::Refresh).unwrap().run();
+    assert!(tree.apply(result));
+    assert_eq!(
+        tree.state(folder.id).unwrap().disclosure,
+        Disclosure::Failed
+    );
+    assert_eq!(
+        state.reads.load(Ordering::Acquire),
+        0,
+        "tree listing must not extract members"
+    );
 }
 
 #[test]

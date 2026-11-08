@@ -96,6 +96,45 @@ fn native_listing_is_reusable_without_turning_captions_into_paths() {
 }
 
 #[test]
+fn native_tree_navigation_retains_exact_provider_parent_and_root_files() {
+    use crate::providers::tree::{DirectoryTree, TreeLimits, TreeRequest};
+    let registry = ProviderRegistry::default();
+    let address = native_location(&path().join("東京 Žluťoučký")).unwrap();
+    registry
+        .register(
+            address.provider().clone(),
+            Arc::new(NativeProvider::new(Arc::new(Files))),
+        )
+        .unwrap();
+    let mount = registry
+        .resolve(&address, &Cancellation::default())
+        .unwrap();
+    let mut tree = DirectoryTree::new(mount, TreeLimits::default()).unwrap();
+    let result = tree
+        .request(tree.root(), TreeRequest::Expand)
+        .unwrap()
+        .run();
+    assert!(tree.apply(result));
+    let rows = tree.rows();
+    assert_eq!(rows.len(), 2);
+    let folder = rows
+        .iter()
+        .find(|row| row.entry.kind == EntryKind::Directory)
+        .unwrap();
+    let result = tree.request(folder.id, TreeRequest::Expand).unwrap().run();
+    assert!(tree.apply(result));
+    let rows = tree.rows();
+    assert_eq!(rows.len(), 3);
+    let descendant = rows.iter().find(|row| row.depth == 1).unwrap();
+    let (mount, node) = tree.navigation_target(descendant.id).unwrap();
+    assert_eq!(
+        mount.parent(&node, &Cancellation::default()).unwrap(),
+        Some(folder.node.clone())
+    );
+    assert_eq!(mount.address(), &address);
+}
+
+#[test]
 fn native_content_broker_reads_exact_file_and_rejects_source_change() {
     let fixture = tempfile::tempdir().unwrap();
     let directory = fixture.path().join("Žluťoučký 東京");

@@ -6,6 +6,7 @@ mod archive;
 mod lease;
 mod native;
 mod registry;
+pub mod tree;
 
 pub use archive::captured_archive;
 pub use lease::{MountedEntry, MountedLocation};
@@ -108,6 +109,10 @@ impl std::error::Error for ProviderError {}
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
+mod folder_listing_tests;
+#[cfg(test)]
 mod ownership_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tree_tests;
