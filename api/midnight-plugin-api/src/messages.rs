@@ -35,6 +35,16 @@ pub struct Viewport {
     pub max_lines: u32,
 }
 
+/// Optional lookup independent of viewport delivery. Cancellation stops indexing;
+/// old plugins may reject the request as UNSUPPORTED without affecting viewing.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct Locate {
+    /// A raw source byte offset, not a decoded UTF-8 or display-column offset.
+    #[n(0)]
+    pub source_anchor: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 #[cbor(map)]
 pub struct Search {
@@ -140,6 +150,12 @@ impl Model for Viewport {
             (1..=viewer::MAX_PAGE_BYTES as u32).contains(&self.max_bytes)
                 && (1..=4096).contains(&self.max_lines),
         )
+    }
+}
+
+impl Model for Locate {
+    fn validate(&self) -> Result<(), WireError> {
+        Ok(()) // The source-owning plugin checks its captured source length.
     }
 }
 

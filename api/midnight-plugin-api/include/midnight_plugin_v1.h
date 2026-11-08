@@ -29,6 +29,11 @@
 
 #define MidnightREQUEST_SERVICE_REPLY 5
 
+/**
+ * Optional text/source coordinate lookup. Older plugins may return UNSUPPORTED.
+ */
+#define MidnightREQUEST_LOCATE 6
+
 #define MidnightEVENT_OPENED 1
 
 #define MidnightEVENT_TEXT_PAGE 2
@@ -40,6 +45,11 @@
 #define MidnightEVENT_SEARCH_MATCH 5
 
 #define MidnightEVENT_PROGRESS 6
+
+/**
+ * Sent only in response to an accepted REQUEST_LOCATE.
+ */
+#define MidnightEVENT_TEXT_POSITION 7
 
 #define MidnightEVENT_COMPLETED 100
 

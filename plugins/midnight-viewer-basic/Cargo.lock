@@ -6,7 +6,7 @@ version = 4
 name = "midnight-plugin-api"
 version = "0.1.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "51eab0fac11555c4224fe68abf188e9965bd75d5f9d6fed4264d9dd70d2f713e"
+checksum = "7f1820f3ae94df7f377cc287fa7a7d5fee82b3061cbf4e78df861e70e03fc9e0"
 dependencies = [
  "minicbor",
 ]
@@ -15,7 +15,7 @@ dependencies = [
 name = "midnight-plugin-sdk"
 version = "0.1.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "4c576bfd7238e97263ad51eb7e51387774e57b7b149450b1959fb08bf2cb4f9d"
+checksum = "8df0f3156505a88a84d67dd7e3a38807a284f0f61ee2922e739249a40aed915f"
 dependencies = [
  "midnight-plugin-api",
 ]

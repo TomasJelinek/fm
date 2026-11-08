@@ -51,7 +51,11 @@ impl Request {
     ) -> Result<Self, abi::Status> {
         if !matches!(
             kind,
-            abi::REQUEST_OPEN | abi::REQUEST_VIEWPORT | abi::REQUEST_SEARCH | abi::REQUEST_CLOSE
+            abi::REQUEST_OPEN
+                | abi::REQUEST_VIEWPORT
+                | abi::REQUEST_SEARCH
+                | abi::REQUEST_CLOSE
+                | abi::REQUEST_LOCATE
         ) {
             return Err(abi::UNSUPPORTED);
         }

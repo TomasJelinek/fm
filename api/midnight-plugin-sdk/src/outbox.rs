@@ -133,7 +133,7 @@ impl Outbox {
         if self.ordinary >= MAX_ORDINARY {
             return Err((QueueError::Full, output));
         }
-        if !(abi::EVENT_OPENED..=abi::EVENT_PROGRESS).contains(&output.kind)
+        if !(abi::EVENT_OPENED..=abi::EVENT_TEXT_POSITION).contains(&output.kind)
             || output.payload.len() > wire::MAX_MESSAGE_BYTES
             || output
                 .content
@@ -343,6 +343,20 @@ mod tests {
             payload: vec![0xa0].into_boxed_slice(),
             content: None,
         }
+    }
+
+    #[test]
+    fn optional_text_position_uses_the_normal_bounded_output_queue() {
+        let mut outbox = outbox();
+        let ticket = outbox.begin(origin(8)).unwrap();
+        let output = Output::text_position(&viewer::TextPosition {
+            revision: 1,
+            source_offset: 1 << 40,
+            line: 80,
+            column: 3,
+        })
+        .unwrap();
+        assert!(outbox.emit(ticket, output).is_ok());
     }
 
     #[test]

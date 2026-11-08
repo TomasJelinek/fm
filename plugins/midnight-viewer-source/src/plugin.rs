@@ -1,6 +1,6 @@
 use crate::{
     decode::{self, Encoding},
-    paging, search,
+    paging, positions, search,
 };
 use midnight_plugin_sdk::{
     Context, Output, Request, Viewer,
@@ -30,6 +30,7 @@ pub struct Session {
     pub closed: AtomicBool,
     pub metadata: Mutex<Metadata>,
     pub hints: Mutex<paging::Hints>,
+    pub(crate) positions: Mutex<positions::Index>,
 }
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -63,7 +64,13 @@ impl Viewer for Plugin {
         if self
             .work
             .try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
-                (n < 4).then_some(n + 1)
+                // Locate never takes the last slot needed for viewport work.
+                (n < if request.kind() == abi::REQUEST_LOCATE {
+                    3
+                } else {
+                    4
+                })
+                .then_some(n + 1)
             })
             .is_err()
         {
@@ -100,6 +107,7 @@ impl Viewer for Plugin {
                     ready: false,
                 }),
                 hints: Mutex::new(paging::Hints::new(&open.display_name, open.mode)),
+                positions: Mutex::new(positions::Index::default()),
             });
             {
                 let mut sessions = lock(&self.sessions);
@@ -152,6 +160,16 @@ impl Viewer for Plugin {
             return;
         }
         match request.kind() {
+            abi::REQUEST_LOCATE => {
+                let locate: messages::Locate = match request.decode() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let _ = context.fail(abi::INVALID, "Invalid Locate");
+                        return;
+                    }
+                };
+                positions::start(context, session, locate, Box::new(move || drop(permit)));
+            }
             abi::REQUEST_VIEWPORT => {
                 let viewport: messages::Viewport = match request.decode() {
                     Ok(value) => value,

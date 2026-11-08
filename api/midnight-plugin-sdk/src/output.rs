@@ -17,6 +17,9 @@ impl Output {
     pub fn progress(value: &messages::Progress) -> Result<Self, WireError> {
         Self::encode(abi::EVENT_PROGRESS, value)
     }
+    pub fn text_position(value: &viewer::TextPosition) -> Result<Self, WireError> {
+        Self::encode(abi::EVENT_TEXT_POSITION, value)
+    }
 
     pub fn binary(value: &viewer::BinaryPage, content: Box<[u8]>) -> Result<Self, WireError> {
         if value.source.length != content.len() as u64 {

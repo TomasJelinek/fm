@@ -88,6 +88,32 @@ pub struct Anchor {
     pub source_offset: u64,
 }
 
+/// Exact logical coordinates at a decoded source boundary, scoped to a revision.
+/// Lines/columns are one-based. Columns count displayed Unicode scalar values,
+/// including tabs and combining scalars individually, not glyphs, UTF-16 words,
+/// screen cells or bytes. CR/CRLF normalize to LF; LF, U+2028 and U+2029 start
+/// lines. BOM is excluded. Invalid/control substitutions count as one scalar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct TextPosition {
+    #[n(0)]
+    pub revision: u64,
+    /// First complete decoded boundary at or after the requested raw anchor.
+    /// A request within a scalar or CRLF may therefore return a later offset.
+    #[n(1)]
+    pub source_offset: u64,
+    #[n(2)]
+    pub line: u64,
+    #[n(3)]
+    pub column: u64,
+}
+
+impl crate::codec::Model for TextPosition {
+    fn validate(&self) -> Result<(), WireError> {
+        crate::messages::check(self.line != 0 && self.column != 0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 #[cbor(map)]
 pub struct TextPage {

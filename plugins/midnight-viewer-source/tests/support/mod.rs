@@ -260,7 +260,7 @@ impl Host {
         }
         true
     }
-    fn drain(&self, result: &mut Vec<Event>) {
+    pub fn drain(&self, result: &mut Vec<Event>) {
         loop {
             let mut event = MaybeUninit::<abi::Event>::uninit();
             let mut count = 0;
