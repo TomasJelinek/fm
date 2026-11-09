@@ -5,6 +5,7 @@ or a change to the repository's license.
 
 | Asset | Origin | External reference or copied artwork |
 | --- | --- | --- |
+| Tokyo Night, One Dark, Rosé Pine/Dawn, Catppuccin Latte, Norton Commander, Amber Terminal and Verdant Light theme colors | Semantic palette adaptations and original retro/green color combinations added 8–9 November 2026. Amber Terminal replaces DOS Commander. | [Exact modern palette sources, licenses and modifications](THEME_PROVENANCE.md); retained license files accompany distributions. Original palettes include no copied product code, screenshot pixels, fonts, logos or icons. |
 | `crates/midnight-ui/ui/icons/find.svg` | Circle and handle authored directly as SVG for this project, 7 November 2026; viewBox 24×24. | No external artwork or icon set used; conventional magnifying-glass symbol. |
 | `crates/midnight-ui/ui/icons/archive.svg` | SVG paths and shapes authored directly by the assistant for this project, 7 November 2026. A gold archive box with a zipper; viewBox 24×24. | None used. The box/zipper is a conventional archive symbol, not a reproduction of a particular product icon. |
 | `crates/midnight-ui/ui/icons/attributes.svg` | SVG paths authored directly by the assistant for this project, 7 November 2026. A folded document with a clock, recolored by the active theme; viewBox 24×24. | No external artwork or icon set used. Used in the attributes/time/case toolbar, function action and dialog header. |

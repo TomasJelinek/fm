@@ -414,6 +414,13 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
     rust_target = stage / "licenses" / "rust"
     rust_target.mkdir(parents=True)
     shutil.copyfile(rust_docs / "COPYRIGHT-library.html", rust_target / "COPYRIGHT-library.html")
+    project_docs = Path(__file__).resolve().parents[1] / "docs"
+    for author in ("folke", "joshdick", "rose-pine", "catppuccin"):
+        relative = Path("licenses/themes") / author / "LICENSE"
+        destination = stage / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(project_docs / relative, destination)
+    shutil.copyfile(project_docs / "THEME_PROVENANCE.md", stage / "THEME_PROVENANCE.md")
     (stage / "THIRD-PARTY.json").write_text(
         json.dumps(inventory, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (stage / "THIRD-PARTY.txt").write_text(
@@ -421,6 +428,7 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         "Original license and copyright notices are retained under licenses/.\n"
         "The inventory conservatively includes build dependencies, not just linked code.\n"
         "Rust standard-library notices are in licenses/rust/.\n"
+        "Adapted palette sources are in THEME_PROVENANCE.md; licenses are in licenses/themes/.\n"
         "Midnight Explorer uses Slint under its royalty-free desktop application license.\n"
         "The release download page displays Slint's attribution badge.\n"
         "These notices do not assign a new license to Midnight Explorer source code.\n",

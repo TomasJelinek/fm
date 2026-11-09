@@ -99,11 +99,19 @@ pub enum PreferenceTheme {
     CatppuccinMocha = 6,
     SolarizedLight = 7,
     CarbonGreen = 8,
+    TokyoNight = 9,
+    OneDark = 10,
+    RosePine = 11,
+    NortonCommander = 12,
+    AmberTerminal = 13,
+    VerdantLight = 14,
+    CatppuccinLatte = 15,
+    RosePineDawn = 16,
 }
 
 impl PreferenceTheme {
-    /// Stable picker order. Existing indices and persisted names must not change.
-    pub const ALL: [Self; 9] = [
+    /// Stable picker order. Replaced names retain a storage migration alias.
+    pub const ALL: [Self; 17] = [
         Self::Blue,
         Self::Dark,
         Self::Light,
@@ -113,6 +121,14 @@ impl PreferenceTheme {
         Self::CatppuccinMocha,
         Self::SolarizedLight,
         Self::CarbonGreen,
+        Self::TokyoNight,
+        Self::OneDark,
+        Self::RosePine,
+        Self::NortonCommander,
+        Self::AmberTerminal,
+        Self::VerdantLight,
+        Self::CatppuccinLatte,
+        Self::RosePineDawn,
     ];
 
     pub const fn index(self) -> i32 {
@@ -136,10 +152,21 @@ impl PreferenceTheme {
             Self::CatppuccinMocha => "catppuccin-mocha",
             Self::SolarizedLight => "solarized-light",
             Self::CarbonGreen => "carbon-green",
+            Self::TokyoNight => "tokyo-night",
+            Self::OneDark => "one-dark",
+            Self::RosePine => "rose-pine",
+            Self::NortonCommander => "norton-commander",
+            Self::AmberTerminal => "amber-terminal",
+            Self::VerdantLight => "verdant-light",
+            Self::CatppuccinLatte => "catppuccin-latte",
+            Self::RosePineDawn => "rose-pine-dawn",
         }
     }
 
     pub fn from_storage_name(name: &str) -> Option<Self> {
+        if name == "dos-commander" {
+            return Some(Self::AmberTerminal);
+        }
         Self::ALL
             .into_iter()
             .find(|theme| theme.storage_name() == name)

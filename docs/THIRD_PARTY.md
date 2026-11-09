@@ -1,5 +1,10 @@
 # Third-party libraries and licenses
 
+The additional color themes add no Cargo library or feature. Modern palette
+references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppuccin), with
+[pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
+Release packages carry that record and `licenses/themes/` alongside library notices.
+
 Inventory captured on 7 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64:
 

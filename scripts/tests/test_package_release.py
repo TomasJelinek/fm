@@ -48,6 +48,25 @@ class DependencyInventoryTests(unittest.TestCase):
 
 
 class ArchivePermissionsTests(unittest.TestCase):
+    def test_distribution_keeps_palette_licenses_and_attribution(self):
+        root = Path(__file__).resolve().parents[2]
+        temporary = root / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            stage = Path(directory) / "release"
+            stage.mkdir()
+            rust_docs = Path(directory) / "rust"
+            rust_docs.mkdir()
+            (rust_docs / "COPYRIGHT-library.html").write_text("Rust fixture", encoding="utf-8")
+            packaging.add_notices(stage, {"packages": [package("midnight-explorer", None)]},
+                                  "midnight-explorer v0.1.0\n", rust_docs, None)
+            for author in ("folke", "joshdick", "rose-pine", "catppuccin"):
+                relative = Path("licenses/themes") / author / "LICENSE"
+                self.assertTrue((stage / relative).is_file(), f"Missing palette notice: {author}")
+                self.assertEqual((stage / relative).read_bytes(), (root / "docs" / relative).read_bytes())
+            self.assertEqual((stage / "THEME_PROVENANCE.md").read_bytes(),
+                             (root / "docs/THEME_PROVENANCE.md").read_bytes())
+
     def test_archive_modes_do_not_inherit_world_writable_staging_permissions(self):
         temporary = Path(__file__).resolve().parents[2] / "_build" / "tmp"
         temporary.mkdir(parents=True, exist_ok=True)

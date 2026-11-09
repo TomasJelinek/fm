@@ -2,7 +2,7 @@ use midnight_core::{UiDensity, UserPreferences};
 use midnight_platform_common::settings::{decode_preferences, encode_preferences};
 use std::{fs, io, path::Path};
 
-const THEME_NAMES: [&str; 9] = [
+const THEME_NAMES: [&str; 17] = [
     "blue",
     "dark",
     "light",
@@ -12,7 +12,27 @@ const THEME_NAMES: [&str; 9] = [
     "catppuccin-mocha",
     "solarized-light",
     "carbon-green",
+    "tokyo-night",
+    "one-dark",
+    "rose-pine",
+    "norton-commander",
+    "amber-terminal",
+    "verdant-light",
+    "catppuccin-latte",
+    "rose-pine-dawn",
 ];
+
+#[test]
+fn legacy_dos_theme_loads_as_amber_terminal_and_saves_only_the_new_name() {
+    let mut input: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
+    input["theme"] = "dos-commander".into();
+    let loaded = decode_preferences(&serde_json::to_vec(&input).unwrap()).unwrap();
+    let output: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
+    input["theme"] = "amber-terminal".into();
+    assert_eq!(output, input);
+}
 
 #[test]
 fn all_theme_names_roundtrip_without_changing_the_schema_or_other_preferences() {

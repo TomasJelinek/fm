@@ -95,7 +95,7 @@ fn readable(theme: &Theme<'_>, name: &str) {
 }
 
 #[test]
-fn nine_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
+fn all_themes_are_selectable_and_keep_text_readable() {
     let mut test = ui::TestUi::new();
     let choices = [
         "Blue",
@@ -107,6 +107,14 @@ fn nine_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
         "Catppuccin Mocha",
         "Solarized Light",
         "Carbon Green",
+        "Tokyo Night",
+        "One Dark",
+        "Rosé Pine",
+        "Norton Commander",
+        "Amber Terminal",
+        "Verdant Light",
+        "Catppuccin Latte",
+        "Rosé Pine Dawn",
     ];
     let accepted = Rc::new(Cell::new(0));
     let changed = accepted.clone();
@@ -173,7 +181,11 @@ fn nine_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
             test.draw();
             assert_eq!(accepted.get(), index as i32, "picker must offer {name}");
             let theme = test.window.global::<Theme>();
-            assert_eq!(theme.get_light(), matches!(index, 2 | 7), "{name}");
+            assert_eq!(
+                theme.get_light(),
+                matches!(index, 2 | 7 | 14..=16),
+                "{name}"
+            );
             let color = theme.get_pane_background();
             assert!(
                 unique.insert((color.red(), color.green(), color.blue())),
@@ -181,7 +193,7 @@ fn nine_distinct_themes_are_selectable_and_new_palettes_keep_text_readable() {
             );
             readable(&theme, name);
             render::snapshot(&test, &format!("palette-{index}-density-{density}-options"));
-            ui::click_popup(&test.window, "Done", AccessibleRole::Button);
+            ui::key(&test.window, Key::Escape);
             test.draw();
             render::snapshot(&test, &format!("palette-{index}-density-{density}-panel"));
         }

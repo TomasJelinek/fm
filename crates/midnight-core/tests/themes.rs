@@ -8,6 +8,42 @@ fn carbon_green_is_an_appended_stable_theme() {
 }
 
 #[test]
+fn modern_and_retro_themes_append_without_reusing_saved_ids() {
+    for (index, name) in [
+        (9, "tokyo-night"),
+        (10, "one-dark"),
+        (11, "rose-pine"),
+        (12, "norton-commander"),
+        (13, "amber-terminal"),
+        (14, "verdant-light"),
+        (15, "catppuccin-latte"),
+        (16, "rose-pine-dawn"),
+    ] {
+        let theme = PreferenceTheme::from_storage_name(name)
+            .unwrap_or_else(|| panic!("missing saved theme {name}"));
+        assert_eq!(theme.index(), index);
+        assert_eq!(PreferenceTheme::from_index(index), Some(theme));
+        assert_eq!(theme.storage_name(), name);
+    }
+    assert_eq!(PreferenceTheme::ALL.len(), 17);
+}
+
+#[test]
+fn removed_dos_theme_migrates_to_its_replacement_without_adding_a_picker_entry() {
+    let replacement = PreferenceTheme::from_storage_name("amber-terminal").unwrap();
+    assert_eq!(
+        PreferenceTheme::from_storage_name("dos-commander"),
+        Some(replacement)
+    );
+    assert_eq!(replacement.index(), 13);
+    assert!(
+        PreferenceTheme::ALL
+            .iter()
+            .all(|theme| theme.storage_name() != "dos-commander")
+    );
+}
+
+#[test]
 fn theme_catalog_keeps_original_ids_and_appends_stable_names() {
     let expected = [
         (PreferenceTheme::Blue, "blue"),
@@ -21,7 +57,7 @@ fn theme_catalog_keeps_original_ids_and_appends_stable_names() {
         (PreferenceTheme::CarbonGreen, "carbon-green"),
     ];
     assert_eq!(PreferenceTheme::default(), PreferenceTheme::Blue);
-    assert_eq!(PreferenceTheme::ALL.len(), expected.len());
+    assert!(PreferenceTheme::ALL.len() >= expected.len());
     for (index, (theme, name)) in expected.into_iter().enumerate() {
         assert_eq!(PreferenceTheme::ALL[index], theme);
         assert_eq!(theme.index(), index as i32);
@@ -33,7 +69,7 @@ fn theme_catalog_keeps_original_ids_and_appends_stable_names() {
 
 #[test]
 fn unknown_theme_ids_and_names_are_never_silently_coerced() {
-    for index in [i32::MIN, -1, 9, 99, i32::MAX] {
+    for index in [i32::MIN, -1, 17, 99, i32::MAX] {
         assert_eq!(PreferenceTheme::from_index(index), None);
     }
     for name in ["", "future-theme", "Nord", "gruvbox_dark", "dracula "] {
