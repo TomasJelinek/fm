@@ -35,7 +35,12 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     // An empty executable identity is invalid on every platform. Discovery fails
     // before cache creation and delivers its normal asynchronous error notice.
     let service = Rc::new(Service::start(PathBuf::new(), PathBuf::new()));
-    let controller = install_service(&window, presenter, service);
+    let controller = install_service(
+        &window,
+        presenter,
+        service,
+        std::sync::Arc::new(|_, _| panic!("discovery must not request provider content")),
+    );
     let deadline = Instant::now() + Duration::from_secs(5);
     while window.get_message_generation() == 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

@@ -2,6 +2,7 @@
 
 mod archive_selection;
 mod archives;
+pub use archives::ArchiveCapture;
 mod checksum;
 mod checksum_actor;
 mod clipboard;
@@ -107,6 +108,7 @@ impl Request {
 }
 
 pub struct Engine {
+    archive_capture: Option<ArchiveCapture>,
     user_commands: Option<Arc<dyn midnight_core::UserCommandService>>,
     find: Option<Arc<dyn midnight_core::FindService>>,
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
@@ -185,6 +187,7 @@ impl Engine {
         wakeup: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         Self {
+            archive_capture: None,
             user_commands: None,
             find: None,
             locale: None,
@@ -204,6 +207,12 @@ impl Engine {
                 wakeup,
             },
         }
+    }
+
+    /// Native archive container reads require this explicit backend provider authority.
+    pub fn with_archive_capture(mut self, capture: ArchiveCapture) -> Self {
+        self.archive_capture = Some(capture);
+        self
     }
 
     /// Optional native services stay independent of the filesystem provider.
@@ -313,8 +322,12 @@ impl Engine {
         let mut clipboard = clipboard::Controller::new(self.clipboard, self.outbox.clone());
         let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
         let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
-        let mut archives =
-            archives::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
+        let mut archives = archives::Controller::new(
+            self.archive_capture,
+            self.outbox.clone(),
+            snapshots.clone(),
+            &mut tasks,
+        );
         let comparison =
             comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
@@ -851,10 +864,11 @@ fn list_directory(task: ListingTask) {
     let mut icon_types = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
-    let result = filesystem.read_directory(&path, &cancel, &mut |entry| {
+    let result = filesystem.read_directory(&path, &cancel, &mut |mut entry| {
         if cancel.is_cancelled() {
             return false;
         }
+        localize_metadata(&mut entry.metadata, locale.as_deref());
         entries.push(entry.clone());
         if icon_types.len() < 128 {
             let key = IconKey::for_entry(&entry);
@@ -915,7 +929,8 @@ fn list_directory(task: ListingTask) {
         }
         // A file can disappear or become unreadable while the directory is open.
         // Its name remains useful; unknown metadata is not presented as zero.
-        if let Ok(value) = filesystem.entry_metadata(&entry.path) {
+        if let Ok(mut value) = filesystem.entry_metadata(&entry.path) {
+            localize_metadata(&mut value, locale.as_deref());
             entry.metadata = value.clone();
             metadata.push((entry.id, value));
         }

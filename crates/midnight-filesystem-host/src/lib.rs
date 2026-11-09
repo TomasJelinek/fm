@@ -4,3 +4,5 @@ mod discovery;
 mod session;
 pub use discovery::{Catalog, Package};
 pub use session::Mount;
+#[cfg(test)]
+mod captured_source_tests;

@@ -10,10 +10,9 @@ pub(crate) fn install(
     presenter: Rc<RefCell<Presenter>>,
     commands: mpsc::Sender<Command>,
     runtime: &tokio::runtime::Handle,
+    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> Rc<ViewerWindows> {
-    let viewers = Rc::new(ViewerWindows::new(midnight_viewer_engine::Service::new(
-        runtime.clone(),
-    )));
+    let viewers = Rc::new(ViewerWindows::new(service(runtime, filesystem)));
     let manager = viewers.clone();
     let weak = window.as_weak();
     window.on_view_file(move |pane, basic| {
@@ -64,3 +63,17 @@ pub(crate) fn install(
     });
     viewers
 }
+
+fn service(
+    runtime: &tokio::runtime::Handle,
+    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
+) -> midnight_viewer_engine::Service {
+    midnight_viewer_engine::Service::with_native_capture(
+        runtime.clone(),
+        crate::native_content::factory(filesystem),
+    )
+}
+
+#[cfg(test)]
+#[path = "viewer_filesystem_tests.rs"]
+mod tests;

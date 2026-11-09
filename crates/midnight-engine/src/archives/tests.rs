@@ -1,6 +1,50 @@
 use super::*;
 use std::sync::Mutex;
 
+#[test]
+fn injected_archive_capture_has_no_fallback_and_receives_restore_revision() {
+    let called = Arc::new(Mutex::new(None));
+    let record = called.clone();
+    let capture: ArchiveCapture = Arc::new(move |path, expected, _| {
+        *record.lock().unwrap() = Some((path.to_owned(), expected.map(<[u8]>::to_vec)));
+        Err(error("provider refused capture"))
+    });
+    // An existing readable file must not be opened when its provider rejects it.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    assert!(path.is_file());
+    let expected = [1, 2, 3];
+    let result = capture_source(
+        Some(&capture),
+        &path,
+        Some(&expected),
+        &Cancellation::default(),
+    );
+    assert!(matches!(result, Err(ref e) if e.to_string().contains("provider refused")));
+    assert_eq!(
+        *called.lock().unwrap(),
+        Some((path.clone(), Some(expected.to_vec())))
+    );
+    assert!(capture_source(None, &path, None, &Cancellation::default()).is_err());
+}
+
+#[test]
+fn archive_capture_cancellation_is_checked_before_and_after_callback() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    let capture: ArchiveCapture = Arc::new(|_, _, _| panic!("cancelled callback ran"));
+    let result = capture_source(Some(&capture), &path, None, &cancel);
+    assert!(matches!(result, Err(ref e) if e.kind == std::io::ErrorKind::Interrupted));
+
+    let capture: ArchiveCapture = Arc::new(|path, _, cancel| {
+        let source = midnight_plugin_host::CapturedFile::capture(path).unwrap();
+        cancel.cancel();
+        Ok(source)
+    });
+    let result = capture_source(Some(&capture), &path, None, &Cancellation::default());
+    assert!(matches!(result, Err(ref e) if e.kind == std::io::ErrorKind::Interrupted));
+}
+
 async fn failed_navigation(action: ArchiveAction) -> crate::SnapshotState {
     let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
     snapshots.lock().unwrap()[0].committed = Some(crate::CommittedSnapshot {
@@ -13,6 +57,7 @@ async fn failed_navigation(action: ArchiveAction) -> crate::SnapshotState {
     let catalog = OnceLock::new();
     catalog.set(Catalog::default()).unwrap();
     let mut controller = Controller {
+        capture: None,
         catalog: Arc::new(catalog),
         budget: Arc::new(Semaphore::new(2)),
         cancellations: std::array::from_fn(|_| Cancellation::default()),

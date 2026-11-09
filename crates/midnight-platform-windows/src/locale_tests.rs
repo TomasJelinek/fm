@@ -114,7 +114,8 @@ fn timestamp_matches_native_user_overrides_and_historical_timezone_conversion() 
         time: String::from_utf16(&time[..time_count as usize - 1]).unwrap(),
     };
     assert_eq!(
-        modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
+        WindowsFileSystem::new(None)
+            .format_datetime(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
         Some(expected)
     );
 }

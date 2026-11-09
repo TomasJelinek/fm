@@ -13,6 +13,7 @@ path = "src/main.rs"
 midnight-core.workspace = true
 midnight-engine.workspace = true
 midnight-platform.workspace = true
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
 midnight-ui.workspace = true
 midnight-viewer-engine = { path = "../midnight-viewer-engine" }
 midnight-viewer-ui = { path = "../midnight-viewer-ui" }
@@ -23,6 +24,9 @@ tokio.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+midnight-plugin-host = { path = "../midnight-plugin-host" }
 
 [target.'cfg(windows)'.build-dependencies]
 find-msvc-tools = "0.1.15"

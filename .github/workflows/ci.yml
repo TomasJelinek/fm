@@ -403,6 +403,26 @@ jobs:
         run: cargo test -p midnight-viewer-engine --lib --locked -- --ignored --nocapture
       - name: Installed native filesystem browse, read, volumes and absence checks
         run: cargo test -p midnight-native-filesystem-host --test native --locked -- --ignored --test-threads=1
+      - name: Application viewers use native provider and refuse missing provider
+        shell: pwsh
+        run: |
+          $messages = cargo test -p midnight-explorer --no-run --locked --message-format=json
+          if ($LASTEXITCODE -ne 0) { throw 'Application integration test build failed' }
+          $artifact = $messages | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'me' -and $_.profile.test -and $_.executable } |
+            Select-Object -Last 1
+          if (-not $artifact) { throw 'Application test executable not reported' }
+          $name = if ($IsWindows) { 'native-app-test.exe' } else { 'native-app-test' }
+          $probe = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
+          Copy-Item -LiteralPath $artifact.executable -Destination $probe
+          if (-not $IsWindows) { chmod 700 -- $probe }
+          $fixture = Join-Path $env:GITHUB_WORKSPACE '_build/native-app-fixture'
+          New-Item -ItemType Directory -Force $fixture | Out-Null
+          Set-Content -LiteralPath (Join-Path $fixture 'first 文档.txt') -Value 'First native provider content' -Encoding utf8NoBOM
+          Set-Content -LiteralPath (Join-Path $fixture 'second.txt') -Value 'Second native provider content' -Encoding utf8NoBOM
+          $env:MIDNIGHT_APP_NATIVE_TEST_FILES=$fixture
+          & $probe viewers::tests::native_plugin_ --ignored --nocapture --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Application F3 native plugin integration failed' }
       - name: Restricted image process source validation, cancellation and retained pixels
         run: cargo test -p midnight-image-viewer-host --test native --locked -- --ignored --test-threads=1
       - name: Restricted PDF process pagination, source validation and cancellation
@@ -430,4 +450,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Release archive worker executable permissions failed' }
           }
       - name: Release filesystem smoke test
-        run: cargo run -p midnight-explorer --release --locked -- --smoke-test
+        shell: pwsh
+        run: |
+          $name = if ($IsWindows) { 'me.exe' } else { 'me' }
+          $executable = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
+          Copy-Item -LiteralPath "_build/release/$name" -Destination $executable
+          if ($IsWindows) {
+            $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw 'Installed native filesystem smoke failed' }
+          } else {
+            chmod 700 -- $executable
+            & $executable --smoke-test
+            if ($LASTEXITCODE -ne 0) { throw 'Installed native filesystem smoke failed' }
+          }

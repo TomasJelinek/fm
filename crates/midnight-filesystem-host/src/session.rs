@@ -5,7 +5,7 @@ use midnight_plugin_host::CapturedFile;
 use std::{
     fs::File,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -29,6 +29,7 @@ struct Channel {
 pub struct Mount {
     id: u64,
     provider: String,
+    container: PathBuf,
     source: CapturedFile,
     channel: Mutex<Channel>,
     supervision: Arc<Supervision>,
@@ -41,10 +42,47 @@ impl std::fmt::Debug for Mount {
     }
 }
 impl Mount {
+    /// Open a native archive locator using content captured by its filesystem provider.
+    /// The locator is retained for navigation/errors, never opened by this route.
+    pub fn open_captured(
+        package: &Package,
+        format: Format,
+        locator: &Path,
+        source: CapturedFile,
+        cancel: &Cancellation,
+    ) -> Result<Arc<Self>, FsError> {
+        let fail = |error: io::Error| FsError::from_io("open archive", locator, error);
+        if cancel.is_cancelled() {
+            return Err(fail(io::ErrorKind::Interrupted.into()));
+        }
+        if !locator.is_absolute() || locator.as_os_str().as_encoded_bytes().contains(&0) {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Archive container locator must be an absolute native path",
+            )));
+        }
+        if source.length() > 64 * 1024 * 1024 {
+            return Err(fail(io::Error::other(
+                "Archive source exceeds 64 MiB mount budget",
+            )));
+        }
+        if source.stable_version().len() > 256 {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Archive source revision exceeds address budget",
+            )));
+        }
+        source.revalidate().map_err(|e| fail(io::Error::other(e)))?;
+        if cancel.is_cancelled() {
+            return Err(fail(io::ErrorKind::Interrupted.into()));
+        }
+        Self::start(package, format, locator, source, cancel)
+    }
+
     pub fn address(&self) -> midnight_core::ArchiveAddress {
         midnight_core::ArchiveAddress {
             provider: self.provider.clone(),
-            container: self.source.path().to_owned(),
+            container: self.container.clone(),
             source_version: self.source.stable_version(),
             components: Vec::new(),
         }
@@ -60,11 +98,17 @@ impl Mount {
             return Err(fail(io::ErrorKind::Interrupted.into()));
         }
         let source = CapturedFile::capture(path).map_err(|e| fail(io::Error::other(e)))?;
-        if source.length() > 64 * 1024 * 1024 {
-            return Err(fail(io::Error::other(
-                "Archive source exceeds 64 MiB mount budget",
-            )));
-        }
+        Self::open_captured(package, format, path, source, cancel)
+    }
+
+    fn start(
+        package: &Package,
+        format: Format,
+        path: &Path,
+        source: CapturedFile,
+        cancel: &Cancellation,
+    ) -> Result<Arc<Self>, FsError> {
+        let fail = |error: io::Error| FsError::from_io("open archive", path, error);
         ACTIVE
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < 2).then_some(n + 1)
@@ -123,6 +167,7 @@ impl Mount {
         let mount = Arc::new(Self {
             id,
             provider: package.id.clone(),
+            container: path.to_owned(),
             source,
             channel: Mutex::new(Channel {
                 input: worker.input,
@@ -150,7 +195,7 @@ impl Mount {
         cancel: &Cancellation,
         message: impl FnOnce(u64) -> Message,
     ) -> Result<Message, FsError> {
-        let fail = |error: io::Error| FsError::from_io("archive", self.source.path(), error);
+        let fail = |error: io::Error| FsError::from_io("archive", &self.container, error);
         let mut channel = self.channel.lock().unwrap_or_else(|e| e.into_inner());
         if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
             return Err(fail(io::ErrorKind::Interrupted.into()));
@@ -235,7 +280,7 @@ impl ArchiveMount for Mount {
         self.source.revalidate().map_err(|e| {
             FsError::from_io(
                 "archive source changed",
-                self.source.path(),
+                &self.container,
                 io::Error::other(e),
             )
         })
@@ -254,14 +299,14 @@ impl ArchiveMount for Mount {
             else {
                 return Err(FsError::from_io(
                     "archive list",
-                    self.source.path(),
+                    &self.container,
                     io::ErrorKind::InvalidData.into(),
                 ));
             };
             if more && entries.is_empty() {
                 return Err(FsError::from_io(
                     "archive list",
-                    self.source.path(),
+                    &self.container,
                     io::ErrorKind::InvalidData.into(),
                 ));
             }
@@ -277,7 +322,7 @@ impl ArchiveMount for Mount {
                 {
                     return Err(FsError::from_io(
                         "archive list",
-                        self.source.path(),
+                        &self.container,
                         io::ErrorKind::InvalidData.into(),
                     ));
                 }
@@ -321,7 +366,7 @@ impl ArchiveMount for Mount {
             Message::Content { bytes, .. } if bytes.len() <= length as usize => Ok(bytes),
             _ => Err(FsError::from_io(
                 "archive read",
-                self.source.path(),
+                &self.container,
                 io::ErrorKind::InvalidData.into(),
             )),
         }

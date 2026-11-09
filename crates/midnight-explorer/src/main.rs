@@ -1,7 +1,8 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
 mod comparator;
+mod native_content;
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
@@ -13,8 +14,7 @@ mod window_backend;
 mod window_state;
 
 use midnight_core::{
-    Command, DesktopServices, Event, FileSystem, NavigationId, PaneId, SettingsService, SortSpec,
-    WatchService,
+    Command, DesktopServices, Event, NavigationId, PaneId, SettingsService, SortSpec, WatchService,
 };
 use midnight_engine::{Engine, reclaim, snapshot};
 use midnight_platform::{LocalFileSystem, home_directory};
@@ -127,7 +127,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     };
     let local = Arc::new(LocalFileSystem::new(home_directory()));
-    let filesystem: Arc<dyn FileSystem> = local.clone();
+    let filesystem = midnight_native_filesystem_host::InstalledProvider::shared(home_directory());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(16)
@@ -139,25 +139,21 @@ fn run() -> Result<(), String> {
         runtime.shutdown_timeout(Duration::from_secs(1));
         return result;
     }
-    let result = run_window(
-        &runtime,
-        local.clone(),
-        local.clone(),
-        local.clone(),
-        local.clone(),
-        local,
-        &options,
-    );
+    let result = run_window(&runtime, local, filesystem, &options);
     // Normal close drains mutation cancellation before hiding the window.
     runtime.shutdown_timeout(Duration::from_secs(1));
     result
 }
 
-async fn smoke_test(filesystem: Arc<dyn FileSystem>, options: &Options) -> Result<(), String> {
+async fn smoke_test(
+    filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
+    options: &Options,
+) -> Result<(), String> {
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(16);
     let engine = tokio::spawn(
-        Engine::new(filesystem, sender)
+        Engine::new(filesystem.clone(), sender)
+            .with_archive_capture(native_content::archive(filesystem))
             .with_locale(midnight_platform::locale_service())
             .run(receiver),
     );
@@ -222,12 +218,15 @@ async fn smoke_test(filesystem: Arc<dyn FileSystem>, options: &Options) -> Resul
 fn run_window(
     runtime: &tokio::runtime::Runtime,
     local: Arc<LocalFileSystem>,
-    desktop: Arc<dyn DesktopServices>,
-    watch: Arc<dyn WatchService>,
-    settings: Arc<dyn SettingsService>,
-    mutations: Arc<dyn midnight_core::MutationService>,
+    filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
     options: &Options,
 ) -> Result<(), String> {
+    // Desktop integration and mutations keep their explicit platform services.
+    // Browsing, volume queries and viewer reads route only through the native plugin.
+    let desktop: Arc<dyn DesktopServices> = local.clone();
+    let watch: Arc<dyn WatchService> = local.clone();
+    let settings: Arc<dyn SettingsService> = local.clone();
+    let mutations: Arc<dyn midnight_core::MutationService> = local.clone();
     window_backend::select(options.software)?;
     let window = MainWindow::new()
         .map_err(|error| format!("Cannot create window: {error}. Try --software."))?;
@@ -267,7 +266,8 @@ fn run_window(
     let retire_queue = reclaim::start(runtime.handle(), notify.clone());
     let retire_pending = Rc::new(RefCell::new(None::<reclaim::Retired>));
     let engine = runtime.spawn(
-        Engine::with_wakeup(local.clone(), event_sender, notify.clone())
+        Engine::with_wakeup(filesystem.clone(), event_sender, notify.clone())
+            .with_archive_capture(native_content::archive(filesystem.clone()))
             .with_shell_menu(local.clone())
             .with_transfers(local.clone())
             .with_find(local.clone())
@@ -438,9 +438,10 @@ fn run_window(
         presenter.clone(),
         commands.clone(),
         runtime.handle(),
+        filesystem.clone(),
     );
-    let thumbnail_timer = thumbnails::install(&window, presenter.clone());
-    let comparators = comparator::install(&window, presenter.clone(), runtime.handle());
+    let thumbnail_timer = thumbnails::install(&window, presenter.clone(), filesystem.clone());
+    let comparators = comparator::install(&window, presenter.clone(), runtime.handle(), filesystem);
     let window_state = window_state::WindowState::install(
         &window,
         presenter.clone(),

@@ -1,0 +1,268 @@
+use crate::{Frame, NativeCapture, Output, Service, Session};
+use midnight_core::{
+    DirectoryIndex, Entry, EntryId, EntryKind, FileCompareLaunch, FileCompareSource,
+    SelectionSnapshot, ViewerAppearance, ViewerGeometry,
+};
+use midnight_plugin_host::{CapturedFile, ContentSource, Error};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
+
+#[derive(Debug)]
+struct Memory {
+    bytes: &'static [u8],
+    reads: Arc<AtomicUsize>,
+}
+
+impl ContentSource for Memory {
+    fn length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn display_name(&self) -> String {
+        "provider.txt".into()
+    }
+
+    fn version(&self) -> Vec<u8> {
+        vec![1]
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let start = offset.min(self.length()) as usize;
+        let end = start.saturating_add(length as usize).min(self.bytes.len());
+        Ok(self.bytes[start..end].to_vec())
+    }
+}
+
+fn memory(bytes: &'static [u8], reads: &Arc<AtomicUsize>) -> Result<CapturedFile, String> {
+    CapturedFile::from_source(Arc::new(Memory {
+        bytes,
+        reads: reads.clone(),
+    }))
+    .map_err(|error| error.to_string())
+}
+
+fn fixture() -> tempfile::TempDir {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("_build/compare-capture-tests");
+    std::fs::create_dir_all(&root).unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
+fn paths(root: &Path) -> [PathBuf; 2] {
+    [
+        root.join("left").join("Žluťoučký 世界 🐈.txt"),
+        root.join("right").join("Žluťoučký 世界 🐈.txt"),
+    ]
+}
+
+fn launch(paths: &[PathBuf; 2]) -> FileCompareLaunch {
+    FileCompareLaunch {
+        sources: paths
+            .iter()
+            .cloned()
+            .map(FileCompareSource::Focused)
+            .collect(),
+        disabled_plugins: Arc::from([]),
+    }
+}
+
+fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, String> {
+    service.open(
+        launch,
+        ViewerAppearance {
+            family: "monospace".into(),
+            font_size: 14.0,
+            foreground: [255; 4],
+            background: [30, 30, 30, 255],
+            selection: [50, 80, 120, 255],
+            accent: [90, 150, 220, 255],
+        },
+        ViewerGeometry {
+            width: 640,
+            height: 200,
+            scale: 1.0,
+        },
+    )
+}
+
+fn wait_for<T>(mut poll: impl FnMut() -> Option<T>) -> T {
+    let start = Instant::now();
+    loop {
+        if let Some(value) = poll() {
+            return value;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "Worker timed out"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn frame(session: &Session) -> Frame {
+    wait_for(|| match session.mailbox.take() {
+        Some(Output::Frame { frame, .. }) => Some(frame),
+        _ => None,
+    })
+}
+
+fn failure(session: &Session) -> String {
+    wait_for(|| match session.mailbox.take() {
+        Some(Output::Status(message)) if message.contains("Installed provider unavailable") => {
+            Some(message)
+        }
+        Some(Output::Frame { .. }) => panic!("Capture failure must not produce a frame"),
+        _ => None,
+    })
+}
+
+#[test]
+fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
+    let root = fixture();
+    let paths = paths(root.path());
+    assert!(paths.iter().all(|path| !path.exists()));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let record = calls.clone();
+    let observed_reads = reads.clone();
+    let expected = paths.clone();
+    let capture: NativeCapture = Arc::new(move |path, cancel| {
+        assert!(!cancel.load(Ordering::Acquire));
+        record.lock().unwrap().push((
+            path.to_path_buf(),
+            std::thread::current().id(),
+            std::ptr::from_ref(cancel).addr(),
+        ));
+        if path == expected[0] {
+            memory("provider český\nold\n".as_bytes(), &observed_reads)
+        } else if path == expected[1] {
+            memory("provider český\nnew\n".as_bytes(), &observed_reads)
+        } else {
+            Err("Unexpected provider identity".into())
+        }
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let entries: Arc<[Entry]> =
+        vec![Entry::new(EntryId(7), paths[1].clone(), EntryKind::File)].into();
+    let mut launch = launch(&paths);
+    let view = Arc::new(DirectoryIndex::from_entries(&entries));
+    launch.sources[1] = FileCompareSource::Selected {
+        selection: Arc::new(SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap()),
+        view,
+        entries,
+    };
+    let session = open(&service, launch).unwrap();
+    let frame = frame(&session);
+    assert!(frame.accessible_text.contains("provider český"));
+    assert!(frame.accessible_text.contains("old"));
+    assert!(frame.accessible_text.contains("new"));
+    assert!(frame.status.contains("1 difference"));
+    assert!(reads.load(Ordering::Relaxed) >= 2);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    for (side, (path, thread, cancel)) in calls.iter().enumerate() {
+        assert_eq!(path, &paths[side]);
+        assert_ne!(*thread, std::thread::current().id());
+        assert_eq!(*cancel, Arc::as_ptr(&session.cancelled).addr());
+    }
+    session.close();
+}
+
+#[test]
+fn injected_rejection_on_either_side_never_falls_back_to_readable_native_files() {
+    let root = fixture();
+    let paths = paths(root.path());
+    for path in &paths {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"native bytes must not be read\n").unwrap();
+    }
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for rejected in 0..2 {
+        let rejected_path = paths[rejected].clone();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let capture: NativeCapture = Arc::new(move |path, _| {
+            if path == rejected_path {
+                Err("Installed provider unavailable".into())
+            } else {
+                memory(b"provider bytes\n", &reads)
+            }
+        });
+        let service = Service::with_native_capture(runtime.handle().clone(), capture);
+        let session = open(&service, launch(&paths)).unwrap();
+        let failure = failure(&session);
+        assert!(failure.contains("Installed provider unavailable"));
+        assert!(failure.contains(&paths[rejected].display().to_string()));
+        session.close();
+    }
+}
+
+#[test]
+fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_late_output() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for blocked in 0..2 {
+        let blocked_path = paths[blocked].clone();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let observed_reads = reads.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        let (entered, entry) = mpsc::sync_channel(1);
+        let (observed, cancellation) = mpsc::sync_channel(1);
+        let (release, returned) = mpsc::sync_channel(1);
+        let returned = Mutex::new(returned);
+        let capture: NativeCapture = Arc::new(move |path, cancel| {
+            observed_calls.fetch_add(1, Ordering::Relaxed);
+            if path == blocked_path {
+                entered.send(std::ptr::from_ref(cancel).addr()).unwrap();
+                wait_for(|| cancel.load(Ordering::Acquire).then_some(()));
+                observed.send(()).unwrap();
+                returned
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+            }
+            memory(b"late provider content\n", &observed_reads)
+        });
+        let service = Service::with_native_capture(runtime.handle().clone(), capture);
+        let session = open(&service, launch(&paths)).unwrap();
+        assert_eq!(
+            entry.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Arc::as_ptr(&session.cancelled).addr()
+        );
+        session.mailbox.take();
+        session.close();
+        cancellation.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            service.active.load(Ordering::Acquire),
+            1,
+            "Capture still owns its slot"
+        );
+        release.send(()).unwrap();
+        wait_for(|| (service.active.load(Ordering::Acquire) == 0).then_some(()));
+        assert_eq!(calls.load(Ordering::Relaxed), blocked + 1);
+        assert_eq!(reads.load(Ordering::Relaxed), 0);
+        assert!(
+            session.mailbox.take().is_none(),
+            "Closed session published late output"
+        );
+    }
+}

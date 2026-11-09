@@ -26,7 +26,7 @@ fn target(token: u64) -> Target {
         extension: "raw".into(),
         selected: false,
         hovered: false,
-        capture: Arc::new(|| Ok(Arc::new(Bytes))),
+        capture: Arc::new(|_| Ok(Arc::new(Bytes))),
     }
 }
 
@@ -49,11 +49,11 @@ fn every_animation_sample_retains_the_same_captured_source_revision() {
     }
     let captures = Arc::new(std::sync::atomic::AtomicU8::new(1));
     let count = captures.clone();
-    let capture = pin_capture(Arc::new(move || {
+    let capture = pin_capture(Arc::new(move |_| {
         Ok(Arc::new(Revision(count.fetch_add(1, Ordering::SeqCst))))
     }));
     for _ in 0..6 {
-        let source = capture().unwrap();
+        let source = capture(&AtomicBool::new(false)).unwrap();
         assert_eq!(source.version(), [1]);
         assert_eq!(source.read_at(0, 1).unwrap(), [1]);
     }

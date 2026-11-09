@@ -12,7 +12,7 @@ use std::{
 pub struct Package {
     pub id: String,
     pub executable: PathBuf,
-    formats: Vec<Format>,
+    pub(crate) formats: Vec<Format>,
 }
 #[derive(Default, Debug)]
 pub struct Catalog {
@@ -45,16 +45,16 @@ impl Catalog {
             result.diagnostics.push(error.to_string());
             return Ok(result);
         }
-        for entry in std::fs::read_dir(&root)?.take(65) {
-            if result.packages.len() + result.diagnostics.len() >= 64 {
-                result
-                    .diagnostics
-                    .push("Filesystem package count limit".into());
-                break;
+        for (index, entry) in std::fs::read_dir(&root)?.enumerate() {
+            if index >= 64 {
+                return Err(io::Error::other(
+                    "Filesystem package count limit exceeded; a partial scan cannot rule out duplicates",
+                ));
             }
             let path = entry?.path();
             match package(&path) {
-                Ok(package) => result.packages.push(package),
+                Ok(Some(package)) => result.packages.push(package),
+                Ok(None) => (),
                 Err(error) => result
                     .diagnostics
                     .push(format!("{}: {error}", path.display())),
@@ -126,7 +126,7 @@ impl Catalog {
             .map(|p| (p, format))
     }
 }
-fn package(path: &Path) -> io::Result<Package> {
+fn package(path: &Path) -> io::Result<Option<Package>> {
     let check = |path: &Path| validate_plugin_path(path).map_err(io::Error::other);
     check(path)?;
     let manifest_path = path.join("plugin.toml");
@@ -137,6 +137,11 @@ fn package(path: &Path) -> io::Result<Package> {
     }
     let bytes = source.read_at(0, 16 * 1024).map_err(io::Error::other)?;
     let text = String::from_utf8(bytes).map_err(io::Error::other)?;
+    let kind: toml::Value = toml::from_str(&text).map_err(io::Error::other)?;
+    if kind.get("kind").and_then(toml::Value::as_str) == Some("filesystem-native") {
+        // The native host owns validation/loading of its independently versioned ABI.
+        return Ok(None);
+    }
     let m: Manifest = toml::from_str(&text).map_err(io::Error::other)?;
     if m.schema_version != 1
         || m.protocol != 1
@@ -178,11 +183,11 @@ fn package(path: &Path) -> io::Result<Package> {
     let executable = path.join(m.entry_executable);
     check(&executable)?;
     CapturedFile::capture(&executable).map_err(io::Error::other)?;
-    Ok(Package {
+    Ok(Some(Package {
         id: m.id,
         executable,
         formats,
-    })
+    }))
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 //! Composition bridge: copy bounded visible identities, and present completed RGBA buffers.
-use midnight_thumbnail_host::service::{self, Service, Target, View};
+use midnight_thumbnail_host::service::{Service, Target, View};
 use midnight_ui::{MainWindow, Presenter, ThumbnailTarget};
 use slint::ComponentHandle;
 use std::{
@@ -25,14 +25,24 @@ impl Drop for Controller {
     }
 }
 
-pub(crate) fn install(window: &MainWindow, presenter: Rc<RefCell<Presenter>>) -> Controller {
-    install_service(window, presenter, Rc::new(Service::installed()))
+pub(crate) fn install(
+    window: &MainWindow,
+    presenter: Rc<RefCell<Presenter>>,
+    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
+) -> Controller {
+    install_service(
+        window,
+        presenter,
+        Rc::new(Service::installed()),
+        crate::native_content::factory(filesystem),
+    )
 }
 
 fn install_service(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     service: Rc<Service>,
+    capture: crate::native_content::Capture,
 ) -> Controller {
     let control = service.clone();
     let epoch = Rc::new(Cell::new(1u64));
@@ -111,7 +121,11 @@ fn install_service(
                                 .to_ascii_lowercase(),
                             selected: row.selected,
                             hovered: row.hovered,
-                            capture: service::native_capture(row.path.clone(), row.confirmed_ssd),
+                            capture: crate::native_content::thumbnail(
+                                capture.clone(),
+                                row.path.clone(),
+                                row.confirmed_ssd,
+                            ),
                         })
                     })
                     .collect();

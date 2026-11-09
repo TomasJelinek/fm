@@ -19,17 +19,21 @@ use std::{
     time::Duration,
 };
 
-pub type Capture = Arc<dyn Fn() -> io::Result<Arc<dyn Source>> + Send + Sync>;
+/// Invoked only by an admitted backend job, with that job's live cancellation flag.
+pub type Capture = Arc<dyn Fn(&AtomicBool) -> io::Result<Arc<dyn Source>> + Send + Sync>;
 /// One immutable revision belongs to a visible token, including all its animation samples.
 fn pin_capture(capture: Capture) -> Capture {
     let source: Mutex<Option<Arc<dyn Source>>> = Mutex::new(None);
-    Arc::new(move || {
+    Arc::new(move |cancel| {
+        check_cancel(cancel)?;
         let mut pinned = source.lock().unwrap_or_else(|error| error.into_inner());
+        check_cancel(cancel)?;
         if let Some(source) = &*pinned {
             return Ok(source.clone());
         }
-        let source = capture()?;
+        let source = capture(cancel)?;
         source.validate()?;
+        check_cancel(cancel)?;
         let source: Arc<dyn Source> = Arc::new(FrozenSource {
             version: source.version(),
             length: source.length(),
@@ -204,21 +208,22 @@ impl Service {
     }
 }
 
-/// Native source factory executes only when a bounded backend job is admitted. Virtual providers
-/// can supply their own Capture closure with the same opaque identity and revision contract.
-pub fn native_capture(path: PathBuf, confirmed_ssd: bool) -> Capture {
-    Arc::new(move || {
-        Ok(Arc::new(NativeSource {
-            file: midnight_plugin_host::CapturedFile::capture(&path).map_err(io::Error::other)?,
-            confirmed_ssd,
-        }))
+/// Adapt already captured provider content without opening a native path.
+/// The caller must supply only a positively established local SSD hint.
+pub fn captured_source(
+    file: midnight_plugin_host::CapturedFile,
+    confirmed_ssd: bool,
+) -> Arc<dyn Source> {
+    Arc::new(CapturedSource {
+        file,
+        confirmed_ssd,
     })
 }
-struct NativeSource {
+struct CapturedSource {
     file: midnight_plugin_host::CapturedFile,
     confirmed_ssd: bool,
 }
-impl Source for NativeSource {
+impl Source for CapturedSource {
     fn length(&self) -> u64 {
         self.file.length()
     }
@@ -441,8 +446,9 @@ fn render(
                 cancel.load(Ordering::Acquire)
             })
             .ok_or_else(|| io::Error::from(io::ErrorKind::Interrupted))?;
-        (target.capture)()?
+        (target.capture)(cancel)?
     };
+    check_cancel(cancel)?;
     // Keep native paths or future authenticated provider addresses out of cache record plaintext.
     // The complete source revision remains in the key and is independently revalidated on every hit.
     let opaque_identity = blake3::hash(&target.identity);
@@ -460,6 +466,7 @@ fn render(
         .get(&key, &*source)
         .map_err(cache_failure)?
     {
+        check_cancel(cancel)?;
         return Ok(frame);
     }
     if cancel.load(Ordering::Acquire) {
@@ -488,6 +495,14 @@ fn render(
         .map_err(cache_failure)
 }
 
+fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Acquire) {
+        Err(io::ErrorKind::Interrupted.into())
+    } else {
+        Ok(())
+    }
+}
+
 /// Resolving an environment setting belongs to backend setup; PrivateStore validates its ancestry.
 pub fn default_cache_root() -> io::Result<PathBuf> {
     crate::paths::cache_root()
@@ -496,3 +511,7 @@ pub fn default_cache_root() -> io::Result<PathBuf> {
 #[cfg(test)]
 #[path = "service_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "service_capture_tests.rs"]
+mod capture_tests;

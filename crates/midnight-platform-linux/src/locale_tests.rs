@@ -28,8 +28,9 @@ fn posix_grouping_distinguishes_repeat_from_char_max_termination() {
 
 #[test]
 fn current_native_timestamp_has_separate_complete_date_and_time_fields() {
-    let value =
-        modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)).unwrap();
+    let value = LinuxFileSystem::new(None)
+        .format_datetime(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+        .unwrap();
     assert!(!value.date.is_empty());
     assert!(!value.time.is_empty());
     let seconds: libc::time_t = 1_700_000_000;

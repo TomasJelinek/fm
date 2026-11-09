@@ -5,12 +5,23 @@ mod images;
 mod text;
 mod worker;
 
+#[cfg(test)]
+mod capture_tests;
+
 use midnight_core::{FileCompareLaunch, ViewerAppearance, ViewerGeometry};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, SyncSender},
 };
+
+/// Backend-only native source capture. Failure never invokes a fallback opener.
+/// The borrowed cancellation flag remains valid for the duration of this call.
+pub type NativeCapture = Arc<
+    dyn Fn(&std::path::Path, &AtomicBool) -> Result<midnight_plugin_host::CapturedFile, String>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ImageMode {
@@ -69,6 +80,7 @@ impl Mailbox {
 #[derive(Clone)]
 pub struct Service {
     handle: tokio::runtime::Handle,
+    capture: NativeCapture,
     active: Arc<AtomicUsize>,
 }
 
@@ -105,8 +117,21 @@ impl Drop for Permit {
 
 impl Service {
     pub fn new(handle: tokio::runtime::Handle) -> Self {
+        Self::with_native_capture(
+            handle,
+            Arc::new(|path, cancel| {
+                check_cancel(cancel)?;
+                midnight_plugin_host::CapturedFile::capture(path).map_err(|error| error.to_string())
+            }),
+        )
+    }
+    /// Install the filesystem's capture authority for both comparison sources.
+    /// Invoked only by comparison workers. The callback must retain its provider
+    /// for the lifetime of every returned content lease; errors never fall back.
+    pub fn with_native_capture(handle: tokio::runtime::Handle, capture: NativeCapture) -> Self {
         Self {
             handle,
+            capture,
             active: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -127,13 +152,26 @@ impl Service {
         let cancelled = Arc::new(AtomicBool::new(false));
         let output = mailbox.clone();
         let stop = cancelled.clone();
+        let capture = self.capture.clone();
         self.handle.spawn_blocking(move || {
             let _permit = permit;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                worker::run(launch, appearance, geometry, receiver, &output, &stop)
+                worker::run(
+                    launch,
+                    appearance,
+                    geometry,
+                    receiver,
+                    &output,
+                    worker::Capture {
+                        factory: &capture,
+                        cancel: &stop,
+                    },
+                )
             }))
             .unwrap_or_else(|_| Err("Comparison stopped after an internal error.".into()));
-            if let Err(error) = result {
+            if let Err(error) = result
+                && !stop.load(Ordering::Acquire)
+            {
                 output.put(Output::Status(error));
             }
         });

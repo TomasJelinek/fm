@@ -1,4 +1,6 @@
-use crate::{Input, Mailbox, Output, check_cancel, images::Images, text::TextComparison};
+use crate::{
+    Input, Mailbox, NativeCapture, Output, check_cancel, images::Images, text::TextComparison,
+};
 use midnight_core::{
     EntryKind, FileCompareLaunch, FileCompareSource, ViewerAppearance, ViewerGeometry,
 };
@@ -16,6 +18,20 @@ enum Content {
     Images(Box<Images>),
 }
 
+pub(crate) struct Capture<'a> {
+    pub factory: &'a NativeCapture,
+    pub cancel: &'a AtomicBool,
+}
+
+impl Capture<'_> {
+    fn open(&self, path: &std::path::Path) -> Result<CapturedFile, String> {
+        check_cancel(self.cancel)?;
+        let result = (self.factory)(path, self.cancel);
+        check_cancel(self.cancel)?;
+        result
+    }
+}
+
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
@@ -26,15 +42,18 @@ pub(crate) fn run(
     geometry: ViewerGeometry,
     receiver: Receiver<Input>,
     output: &Mailbox,
-    cancel: &AtomicBool,
+    capture: Capture<'_>,
 ) -> Result<(), String> {
+    let cancel = capture.cancel;
     output.put(Output::Status("Preparing file identities…".into()));
     let paths = resolve(&launch, cancel)?;
     check_cancel(cancel)?;
-    let left = CapturedFile::capture(&paths[0])
+    let left = capture
+        .open(&paths[0])
         .map_err(|error| format!("{}: {error}", paths[0].display()))?;
     check_cancel(cancel)?;
-    let right = CapturedFile::capture(&paths[1])
+    let right = capture
+        .open(&paths[1])
         .map_err(|error| format!("{}: {error}", paths[1].display()))?;
     let sources = [left, right];
     // Image viewers are optional: a missing registered runtime cannot disable text diff.

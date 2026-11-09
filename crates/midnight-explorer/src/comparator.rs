@@ -8,10 +8,9 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     runtime: &tokio::runtime::Handle,
+    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> Rc<ComparatorWindows> {
-    let windows = Rc::new(ComparatorWindows::new(
-        midnight_compare_engine::Service::new(runtime.clone()),
-    ));
+    let windows = Rc::new(ComparatorWindows::new(service(runtime, filesystem)));
     let manager = windows.clone();
     let weak = window.as_weak();
     window.on_compare_files(move |pane| {
@@ -50,4 +49,14 @@ pub(crate) fn install(
         }
     });
     windows
+}
+
+pub(crate) fn service(
+    runtime: &tokio::runtime::Handle,
+    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
+) -> midnight_compare_engine::Service {
+    midnight_compare_engine::Service::with_native_capture(
+        runtime.clone(),
+        crate::native_content::factory(filesystem),
+    )
 }

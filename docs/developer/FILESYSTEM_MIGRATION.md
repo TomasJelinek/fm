@@ -1,5 +1,23 @@
 # Filesystem migration inventory
 
+## Native application cutover, 2026-11-09
+
+Production composition now supplies `InstalledProvider` for panel browsing,
+metadata, folder-size traversal and storage queries. Native viewer, comparison,
+thumbnail and archive-container reads share injected provider capture; missing
+providers fail without a built-in content fallback. Archive restore validates
+the saved source revision through that same authority. Existing desktop, watch,
+mutation, transfer and other explicit platform services remain separate.
+
+The public API/SDK and independent native packages are already committed. The
+application candidate preserves those interfaces and the existing archive worker
+protocol. See [scope and verification status](../verification/2026-11-09-native-application-cutover.md).
+This is not completion of generic provider actions, inline trees, nested archives
+or the full VFS migration. The following dated inventory records the earlier
+composition and the remaining migration boundaries.
+
+## Original M0 source inventory
+
 Read-only M0 source review, 2026-11-07. This records the production composition
 before the internal M1 registry is connected. Concurrent new `vfs_*` and
 `engine/providers/` modules do not by themselves change that composition. No

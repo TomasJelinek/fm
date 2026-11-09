@@ -148,6 +148,10 @@ fn capture() -> Result<Locales, FsError> {
 }
 
 impl LocaleService for LinuxFileSystem {
+    fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
+        modified(value)
+    }
+
     fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
         crate::sort_keys::key(value)
     }

@@ -51,7 +51,7 @@ fn private_installed_runtime_passes_discovery_and_decodes_through_the_service() 
             extension: "avi".into(),
             selected: false,
             hovered: false,
-            capture: Arc::new(move || Ok(source.clone())),
+            capture: Arc::new(move |_| Ok(source.clone())),
         }],
     });
     let deadline = Instant::now() + Duration::from_secs(10);

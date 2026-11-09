@@ -13,7 +13,52 @@ use tokio::{
 #[cfg(test)]
 mod tests;
 
+/// Backend capture authority. An expected revision must be validated before returning content.
+pub type ArchiveCapture = Arc<
+    dyn Fn(
+            &Path,
+            Option<&[u8]>,
+            &Cancellation,
+        ) -> Result<midnight_plugin_host::CapturedFile, FsError>
+        + Send
+        + Sync,
+>;
+
+fn capture_source(
+    capture: Option<&ArchiveCapture>,
+    path: &Path,
+    expected: Option<&[u8]>,
+    cancel: &Cancellation,
+) -> Result<midnight_plugin_host::CapturedFile, FsError> {
+    let interrupted = || {
+        FsError::from_io(
+            "capture archive",
+            path,
+            std::io::ErrorKind::Interrupted.into(),
+        )
+    };
+    if cancel.is_cancelled() {
+        return Err(interrupted());
+    }
+    let capture = capture.ok_or_else(|| {
+        FsError::from_io(
+            "capture archive",
+            path,
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Native filesystem content capture is unavailable",
+            ),
+        )
+    })?;
+    let source = capture(path, expected, cancel)?;
+    if cancel.is_cancelled() {
+        return Err(interrupted());
+    }
+    Ok(source)
+}
+
 pub(crate) struct Controller {
+    capture: Option<ArchiveCapture>,
     catalog: Arc<OnceLock<Catalog>>,
     budget: Arc<Semaphore>,
     cancellations: [Cancellation; 2],
@@ -22,10 +67,16 @@ pub(crate) struct Controller {
     ready: Arc<Notify>,
 }
 impl Controller {
-    pub(crate) fn new(outbox: Outbox, snapshots: Snapshots, tasks: &mut JoinSet<()>) -> Self {
+    pub(crate) fn new(
+        capture: Option<ArchiveCapture>,
+        outbox: Outbox,
+        snapshots: Snapshots,
+        tasks: &mut JoinSet<()>,
+    ) -> Self {
         let catalog = Arc::new(OnceLock::new());
         let ready = Arc::new(Notify::new());
         let result = Self {
+            capture,
             catalog: catalog.clone(),
             budget: Arc::new(Semaphore::new(2)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
@@ -68,6 +119,7 @@ impl Controller {
         let cancel = Cancellation::default();
         self.cancellations[pane.index()] = cancel.clone();
         let catalog = self.catalog.clone();
+        let capture = self.capture.clone();
         let ready = self.ready.clone();
         let snapshots = self.snapshots.clone();
         {
@@ -102,7 +154,9 @@ impl Controller {
                                         ),
                                     )
                                 })?;
-                            let mount = Mount::open(package, format, &path, &cancel)?;
+                            let source = capture_source(capture.as_ref(), &path, None, &cancel)?;
+                            let mount =
+                                Mount::open_captured(package, format, &path, source, &cancel)?;
                             ArchiveLocation {
                                 address: mount.address(),
                                 mount: Some(mount),
@@ -117,7 +171,7 @@ impl Controller {
                             }
                         }
                         ArchiveAction::List(location) if location.mount.is_none() => {
-                            restore(catalog.get(), location.address, &cancel)?
+                            restore(catalog.get(), capture.as_ref(), location.address, &cancel)?
                         }
                         ArchiveAction::List(location) => location,
                     };
@@ -182,7 +236,8 @@ fn error(message: impl Into<String>) -> FsError {
 
 fn restore(
     catalog: Option<&Catalog>,
-    address: ArchiveAddress,
+    capture: Option<&ArchiveCapture>,
+    mut address: ArchiveAddress,
     cancel: &Cancellation,
 ) -> Result<ArchiveLocation, FsError> {
     address.validate().map_err(error)?;
@@ -191,12 +246,15 @@ fn restore(
         .ok_or_else(|| {
             error("Saved archive filesystem plugin is unavailable; the tab address is retained")
         })?;
-    let mount = Mount::open(package, format, &address.container, cancel)?;
-    if mount.address().source_version != address.source_version {
-        return Err(error(
-            "Saved archive source changed; reopen the archive from its native directory",
-        ));
-    }
+    let source = capture_source(
+        capture,
+        &address.container,
+        Some(&address.source_version),
+        cancel,
+    )?;
+    let mount = Mount::open_captured(package, format, &address.container, source, cancel)?;
+    // The authority validated the saved token, including complete supported legacy encodings.
+    address.source_version = mount.address().source_version;
     let mut location = ArchiveLocation {
         mount: Some(mount.clone()),
         directory: 1,

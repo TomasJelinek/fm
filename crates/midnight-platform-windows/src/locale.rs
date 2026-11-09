@@ -38,6 +38,10 @@ impl LocaleService for WindowsFileSystem {
         Ok(snapshot()?.numbers.clone())
     }
 
+    fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
+        modified(value)
+    }
+
     fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
         crate::sort_keys::key(collation_name()?, value).map_err(|error| {
             FsError::from_io("prepare Windows collation key", Path::new(""), error)

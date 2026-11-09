@@ -1,5 +1,12 @@
 # Third-party libraries and licenses
 
+The native application cutover adds only local host dependencies already covered
+by this workspace inventory. Third-party declarations, pins, license choices and
+notices are unchanged. Fresh Windows and Linux dependency captures confirm that
+the selected package pins, declared licenses and target scopes are covered by
+the existing inventory;
+see [candidate scope and verification](verification/2026-11-09-native-application-cutover.md).
+
 The additional color themes add no Cargo library or feature. Modern palette
 references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppuccin), with
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
