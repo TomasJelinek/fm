@@ -238,7 +238,7 @@ def copy_worker_files(stage, source_root, prefix, files, executables):
     return inventory, digest
 
 
-def copy_filesystem_packages(stage, source, target):
+def copy_filesystem_packages(stage, source, target, require_native=False):
     source = worker_input(stage, source)
     packages, identities = [], set()
     entries = sorted(source.iterdir())
@@ -249,6 +249,10 @@ def copy_filesystem_packages(stage, source, target):
         files = plain_tree(package)
         manifest = read_worker_manifest(package / "plugin.toml", tomllib.loads)
         worker_identity(manifest, identities)
+        if manifest.get("kind") == "filesystem-native":
+            library = native_filesystem_manifest(manifest, package, files, target)
+            packages.append((package, manifest, files, library))
+            continue
         formats = manifest.get("formats")
         if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
                 or manifest["schema_version"] != 1 or manifest.get("kind") != "filesystem-worker"
@@ -262,12 +266,46 @@ def copy_filesystem_packages(stage, source, target):
                 or not any(file.is_relative_to(package / "licenses") for file in files)):
             raise ValueError("Filesystem package is missing its executable or attribution")
         packages.append((package, manifest, files, executable))
+    native_count = sum(manifest["kind"] == "filesystem-native" for _, manifest, _, _ in packages)
+    if native_count > 1 or (require_native and native_count != 1):
+        raise ValueError("Release requires exactly one native filesystem provider for its platform")
     inventory = []
     for package, manifest, files, executable in packages:
+        standalone = {package / executable} if manifest["kind"] == "filesystem-worker" else set()
         copied, digest = copy_worker_files(stage, package, Path("filesystems") / package.name,
-                                           files, {package / executable})
+                                           files, standalone)
         inventory.append({**manifest, "package_sha256": digest, "files": copied})
     return inventory
+
+
+def native_filesystem_manifest(manifest, package, files, target):
+    fields = {"schema_version", "id", "kind", "version", "entry_library", "target", "protocol",
+              "abi_major", "minimum_host_minor", "capabilities", "address_encoding"}
+    supported = {"browse", "read", "stat", "volumes", "storage", "native-address", "volume-details"}
+    capabilities = manifest.get("capabilities")
+    version = manifest.get("version")
+    encoding = "windows-utf16le" if "windows" in target else "unix-bytes"
+    if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
+            or manifest["schema_version"] != 1 or manifest.get("target") != target
+            or not isinstance(version, str) or not 1 <= len(version.encode("utf-8")) <= 64
+            or type(manifest.get("protocol")) is not int or manifest["protocol"] != 1
+            or type(manifest.get("abi_major")) is not int or manifest["abi_major"] != 1
+            or type(manifest.get("minimum_host_minor")) is not int
+            or not 0 <= manifest["minimum_host_minor"] <= 1
+            or manifest.get("address_encoding") != encoding
+            or not isinstance(capabilities, list) or not 1 <= len(capabilities) <= len(supported)
+            or any(not isinstance(value, str) or value not in supported for value in capabilities)
+            or len(set(capabilities)) != len(capabilities) or "native-address" not in capabilities):
+        raise ValueError("Incompatible native filesystem manifest")
+    library = manifest.get("entry_library")
+    if not isinstance(library, str):
+        raise ValueError("Native filesystem entry must be a library filename")
+    portable_component(library)
+    suffix = ".dll" if "windows" in target else ".so"
+    if (not library.endswith(suffix) or package / library not in files
+            or package / "THIRD-PARTY.md" not in files):
+        raise ValueError("Native filesystem package lacks its library or embedded notices")
+    return library
 
 
 def copy_thumbnail_packages(stage, source, target):
@@ -443,7 +481,7 @@ def main():
     parser.add_argument("--viewers-root", type=Path,
                         help="Independent plugin packages; defaults to viewers beside the executable")
     parser.add_argument("--filesystems-root", type=Path,
-                        help="Optional independent packages; defaults to filesystems beside the executable")
+                        help="Native and optional archive packages; defaults to filesystems beside executable")
     parser.add_argument("--thumbnailers-root", type=Path,
                         help="Optional flat worker installation; defaults to thumbnailers beside the executable")
     parser.add_argument("--output", type=Path, required=True)
@@ -476,8 +514,7 @@ def main():
                                   args.target, required_ids=REQUIRED_VIEWERS)
     filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
     thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
-    filesystems = copy_filesystem_packages(stage, filesystem_root, args.target) if (
-        args.filesystems_root or filesystem_root.exists()) else []
+    filesystems = copy_filesystem_packages(stage, filesystem_root, args.target, require_native=True)
     thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target) if (
         args.thumbnailers_root or thumbnail_root.exists()) else {"providers": [], "files": []}
     worker_files = [file for package in filesystems for file in package["files"]] + thumbnails["files"]

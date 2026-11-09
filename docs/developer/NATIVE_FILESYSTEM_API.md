@@ -60,9 +60,53 @@ arbitrary provider tokens.
 
 This backend baseline makes the host and independent packages available for
 composition. Application browsing and content routes are not changed by this
-commit; build/deployment helpers and production cutover are separate work.
+commit; production cutover is a separate composition gate.
 Watch/mutation contracts, generic provider identities and macOS remain
 separate migration gates. Native tests are available in each package and
 `midnight-native-filesystem-host`; this document makes no deployment claim.
 See the [backend baseline checks](../verification/2026-11-09-native-backend-baseline.md)
 for the tested candidate and its platform limits.
+
+## Building the native package
+
+The root `build.bat` and `build.sh` helpers build the host, then the platform's
+native filesystem package, then the viewers. Native packages depend only on the
+public filesystem API/SDK and keep their own lockfiles and notices. Building or
+packaging a provider does not prove that an application route uses it.
+
+To build and test just the Windows package, run:
+
+```powershell
+scripts/build-native-filesystem.ps1 -Profile debug -Test -Offline
+```
+
+`-AppDirectory` selects the executable directory; `-BuildRoot` selects the native
+plugin build directory. Defaults are the current Cargo target's `debug` or
+`release` directory and `_build/native-filesystems/windows`, respectively.
+`MIDNIGHT_NATIVE_FILESYSTEM_OFFLINE=1` also enables offline builds. Remove `-Offline`
+when locked dependencies still need downloading.
+
+On Linux:
+
+```sh
+MIDNIGHT_TEST_NATIVE_FILESYSTEM=1 MIDNIGHT_NATIVE_FILESYSTEM_OFFLINE=1 \
+    bash scripts/build-native-filesystem.sh debug
+```
+
+The optional second argument selects the executable directory;
+`MIDNIGHT_NATIVE_FILESYSTEM_BUILD_ROOT` overrides `_build/native-filesystems/linux`.
+The executable directory defaults to the current Cargo target's profile directory.
+Change `debug` to `release` for either helper. Tests run before the build/install
+step; omit the test switch or variable for a build alone.
+
+Both helpers stage the library, manifest, README and notices before publishing
+them under `filesystems/native.windows` or `filesystems/native.linux`. Linux
+replaces the shared library by renaming a completed new inode, preserving existing
+mapped readers. Windows refuses to replace a locked DLL before changing the
+manifest or notices. Restart hosts to load a newly installed library. These are
+package-file installation steps, not an atomic update of an entire running app.
+
+CI builds each platform plugin with only its source and the public filesystem
+API/SDK present, checks the API/SDK and plugin, and passes the package artifact to
+the host's protected-installation integration tests. Release archives require one
+compatible native provider; optional archive workers can coexist alongside it.

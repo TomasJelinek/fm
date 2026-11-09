@@ -26,4 +26,5 @@ if [ "$build_profile" = release ]; then
 else
     cargo build -p midnight-explorer --locked
 fi
+bash scripts/build-native-filesystem.sh "$build_profile"
 exec bash scripts/build-viewers.sh "$build_profile"

@@ -77,18 +77,23 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They also build the five independent viewer packages using the public
-SDK and install their artifacts under the executable's `viewers/` directory. They do
-not install system packages or launch the application. Direct `cargo build` builds
-the host only; run `scripts/build-viewers.ps1` or `scripts/build-viewers.sh` to add viewers.
+exit status. They then build the platform's independent native filesystem package
+and the five independent viewer packages using the public APIs/SDKs, and install
+their artifacts under the executable's `filesystems/` and `viewers/` directories.
+They do not install system packages or launch the application. Direct `cargo build`
+builds the host only; use `scripts/build-native-filesystem.ps1` / `.sh` and
+`scripts/build-viewers.ps1` / `.sh` to add these packages separately. See the
+[native filesystem build instructions](docs/developer/NATIVE_FILESYSTEM_API.md#building-the-native-package)
+for test and offline options.
 Archive and thumbnail workers have separate builds; the root helpers do not install
 them. Use the archive plugin's `scripts/build.ps1` or `scripts/build.sh` with a
 canonical worker SDK configuration, and `scripts/build-thumbnailers.ps1` or
 `scripts/build-thumbnailers.sh` for thumbnails. Stage the results in executable-adjacent
 `filesystems/` and `thumbnailers/` respectively. See the
 [filesystem API and build reference](docs/developer/FILESYSTEM_API.md) and
-[worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging accepts these
-optional package roots and preserves their executable permissions and notices.
+[worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging requires exactly
+one compatible native filesystem provider; archive and thumbnail packages are
+optional. It preserves package permissions and notices.
 The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
 and `me` on Linux.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`

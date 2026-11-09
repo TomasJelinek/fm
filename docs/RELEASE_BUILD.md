@@ -40,12 +40,16 @@ tails, operation throughput and memory, rather than assuming that every addition
 optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
-executable. These helpers also build five independent viewer packages against
-the released public APIs/SDKs and stage them under `viewers/` beside the executable.
+executable. These helpers also build the platform's independent native filesystem
+package and five viewer packages against the public APIs/SDKs and stage them under
+`filesystems/` and `viewers/` beside the executable.
 Text/binary, source and Markdown use the native C ABI; image and PDF viewers use
 the restricted process protocol and its separate worker SDK release.
-Direct Cargo builds compile only the host; use `scripts/build-viewers.ps1` or
-`scripts/build-viewers.sh` to build its viewer packages separately. Each plugin has
+Direct Cargo builds compile only the host; use `scripts/build-native-filesystem.ps1`
+or `.sh` and `scripts/build-viewers.ps1` or `.sh` to build its packages separately.
+The native helper's test and offline options are documented in the
+[native filesystem build instructions](developer/NATIVE_FILESYSTEM_API.md#building-the-native-package).
+Each plugin has
 its own lockfile, tests, release profile and third-party notices.
 Native tests that exercise integrity and queue/cancellation semantics
 must also run under the release profile. Builds take longer and may use more RAM
@@ -107,6 +111,13 @@ viewer packages under `viewers/` (or `--viewers-root`), validates their platform
 native ABI or image-worker protocol, code entry and package paths, and records
 their manifests, file sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned
 notices remain inside each package.
+The packager also requires exactly one compatible native filesystem provider under
+`filesystems/` (or `--filesystems-root`). It validates the native protocol, ABI,
+target, address encoding, capabilities, library entry and embedded notices before
+copying any filesystem packages. Optional archive workers can share that root;
+native library entries and archive executable entries remain distinct in
+`BUILD-INFO.json`. Optional thumbnail workers use `thumbnailers/` (or
+`--thumbnailers-root`). Native providers run with application authority.
 It rejects symlinks, escaped paths and missing notices. Package hashes establish
 integrity, not publisher authenticity. Native C ABI viewers retain application
 authority; image decoding additionally runs in the required restricted worker.

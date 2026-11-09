@@ -238,8 +238,62 @@ jobs:
           if-no-files-found: error
           path: _build/archive-ci/package/
 
+  native-filesystem:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-24.04
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /plugins/midnight-filesystem-native-${{ matrix.platform }}/
+            /filesystem-api/
+            /rust-toolchain.toml
+      - name: Build and test with public filesystem API only
+        shell: pwsh
+        run: |
+          if (Test-Path 'crates') { throw 'Private application code leaked into native plugin build' }
+          $plugin = 'plugins/midnight-filesystem-native-${{ matrix.platform }}'
+          $build = Join-Path $env:GITHUB_WORKSPACE '_build/native-filesystem'
+          $temporary = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
+          New-Item -ItemType Directory -Force $temporary | Out-Null
+          $env:CARGO_TARGET_DIR=$build; $env:TEMP=$temporary; $env:TMP=$temporary; $env:TMPDIR=$temporary
+          cargo fmt --manifest-path filesystem-api/Cargo.toml --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem API formatting failed' }
+          cargo test --manifest-path filesystem-api/Cargo.toml --workspace --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem API/SDK tests failed' }
+          cargo clippy --manifest-path filesystem-api/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem API/SDK strict checks failed' }
+          cargo fmt --manifest-path "$plugin/Cargo.toml" --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Native plugin formatting failed' }
+          cargo test --manifest-path "$plugin/Cargo.toml" --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Native plugin tests failed' }
+          cargo clippy --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Native plugin strict checks failed' }
+          cargo build --manifest-path "$plugin/Cargo.toml" --release --locked --offline
+          if ($LASTEXITCODE -ne 0) { throw 'Native plugin release build failed' }
+          $package = Join-Path $build 'package/native.${{ matrix.platform }}'
+          New-Item -ItemType Directory -Force $package | Out-Null
+          $library = if ($IsWindows) { 'midnight_filesystem_native_windows.dll' } else { 'libmidnight_filesystem_native_linux.so' }
+          Copy-Item -LiteralPath (Join-Path $build "release/$library") -Destination $package
+          foreach ($name in @('plugin.toml','README.md','THIRD-PARTY.md')) {
+            Copy-Item -LiteralPath "$plugin/$name" -Destination $package
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filesystem-${{ runner.os }}-native
+          if-no-files-found: error
+          path: _build/native-filesystem/package/
+
   check:
-    needs: [viewers, image-viewer, archive-filesystem]
+    needs: [viewers, image-viewer, archive-filesystem, native-filesystem]
     strategy:
       fail-fast: false
       matrix:
@@ -254,7 +308,8 @@ jobs:
           path: _build/viewer-packages
       - uses: actions/download-artifact@v4
         with:
-          name: filesystem-${{ runner.os }}-archive
+          pattern: filesystem-${{ runner.os }}-*
+          merge-multiple: true
           path: _build/filesystem-packages
       - name: Prepare build temporary directory and private native test installation
         shell: pwsh
@@ -292,6 +347,17 @@ jobs:
             }
           }
           "MIDNIGHT_VIEWER_TEST_INSTALL=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $installedFilesystems = Join-Path $testRoot 'filesystems'
+          Copy-Item -LiteralPath '_build/filesystem-packages' -Destination $installedFilesystems -Recurse
+          if (-not $IsWindows) {
+            chmod 700 -- $installedFilesystems
+            Get-ChildItem -LiteralPath $installedFilesystems -Force -Recurse | ForEach-Object {
+              $mode = if ($_.PSIsContainer -or $_.Name -eq 'midnight-fs-archive') { '700' } else { '600' }
+              chmod $mode -- $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw 'Private filesystem installation permissions failed' }
+            }
+          }
+          "MIDNIGHT_NATIVE_TEST_INSTALLATION=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $testApplication = Join-Path $testRoot 'midnight-explorer.exe'
           "MIDNIGHT_IMAGE_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "MIDNIGHT_PDF_VIEWER_TEST_APPLICATION=$testApplication" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -335,6 +401,8 @@ jobs:
         run: cargo test -p midnight-plugin-host --locked -- --include-ignored
       - name: Native viewer engine rendering, search, copy, mode and file-cycle integration
         run: cargo test -p midnight-viewer-engine --lib --locked -- --ignored --nocapture
+      - name: Installed native filesystem browse, read, volumes and absence checks
+        run: cargo test -p midnight-native-filesystem-host --test native --locked -- --ignored --test-threads=1
       - name: Restricted image process source validation, cancellation and retained pixels
         run: cargo test -p midnight-image-viewer-host --test native --locked -- --ignored --test-threads=1
       - name: Restricted PDF process pagination, source validation and cancellation
