@@ -204,8 +204,20 @@ pub(crate) fn rename(source: &File, name: &OsStr) -> io::Result<()> {
 }
 
 pub(crate) fn remove(source: &File) -> io::Result<()> {
+    remove_with_flags(source, 0)
+}
+
+fn remove_confirmed(source: &File) -> io::Result<()> {
+    // The user explicitly confirmed permanent deletion. Ignore only the DOS
+    // read-only attribute, without changing it on surviving hard links. DELETE
+    // access, identity pins and no-follow traversal are still required. Copy/
+    // move cleanup uses remove() and retains its stricter attribute policy.
+    remove_with_flags(source, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE)
+}
+
+fn remove_with_flags(source: &File, flags: FILE_DISPOSITION_INFO_EX_FLAGS) -> io::Result<()> {
     let information = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | flags,
     };
     // SAFETY: source has DELETE access; the fixed-size structure is valid during this call.
     if unsafe {
@@ -262,7 +274,8 @@ pub(super) fn delete_tree(
                     io::Error::other("missing traversal frame"),
                 )
             })?;
-            remove(&frame.file).map_err(|e| failure("delete directory", &frame.path, e))?;
+            remove_confirmed(&frame.file)
+                .map_err(|e| failure("delete directory", &frame.path, e))?;
             drop(frame.file);
             progress(&frame.path);
         }
@@ -282,7 +295,7 @@ fn visit_delete_entry(
         .map_err(|e| failure("read delete attributes", &path, e))?
         .file_attributes();
     if attrs & FILE_ATTRIBUTE_DIRECTORY == 0 || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        remove(&file).map_err(|e| failure("delete", &path, e))?;
+        remove_confirmed(&file).map_err(|e| failure("delete", &path, e))?;
         drop(file);
         progress(&path);
         return Ok(None);

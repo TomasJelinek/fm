@@ -124,13 +124,25 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.files = 0;
     preview.folders = 1;
     preview.file_bytes = Some(0);
+    preview.sample = vec![sample[0].clone()];
+    preview.sample[0].path = path.join("složka 文档 🦀");
     preview.sample[0].kind = EntryKind::Directory;
     preview.sample[0].metadata.size = Some(999_999);
     let body = show(&mut ui, &state, &commands, preview.clone());
     assert!(body.contains("1 folder"), "{body}");
     assert!(!body.contains("0 files"));
     assert!(!body.contains("bytes"));
-    assert!(!body.contains("žluťoučký"));
+    assert!(body.contains("Name: složka 文档 🦀"), "{body}");
+    assert!(
+        body.contains("Modified: 6. listopadu 2026 9:05 PM"),
+        "{body}"
+    );
+    render::snapshot(&ui, "delete-single-folder");
+
+    preview.folders = 2;
+    let body = show(&mut ui, &state, &commands, preview.clone());
+    assert!(body.contains("2 folders"), "{body}");
+    assert!(!body.contains("složka"));
 
     preview.files = u64::MAX;
     preview.folders = u64::MAX;

@@ -308,22 +308,45 @@ fn parent_replacement_does_not_retarget_the_prepared_entry() {
 }
 
 #[test]
-fn read_only_delete_errors_without_changing_attributes_or_contents() {
+fn confirmed_permanent_delete_removes_read_only_files_without_changing_other_links() {
     let temp = fixture();
     let path = temp.path().join("readonly");
-    fs::write(&path, b"keep me").unwrap();
+    let retained = temp.path().join("retained link");
+    fs::write(&path, b"retained through another name").unwrap();
+    fs::hard_link(&path, &retained).unwrap();
     let original = fs::metadata(&path).unwrap().permissions();
     let mut permissions = original.clone();
     permissions.set_readonly(true);
     fs::set_permissions(&path, permissions).unwrap();
-    assert!(
-        prepare(&path)
-            .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
-            .is_err()
+    let result =
+        prepare(&path).delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {});
+    let retained_readonly = fs::metadata(&retained).unwrap().permissions().readonly();
+    fs::set_permissions(&retained, original).unwrap();
+    result.unwrap();
+    assert!(!path.exists());
+    assert!(retained_readonly);
+    assert_eq!(
+        fs::read(retained).unwrap(),
+        b"retained through another name"
     );
-    assert_eq!(fs::read(&path).unwrap(), b"keep me");
-    assert!(fs::metadata(&path).unwrap().permissions().readonly());
-    fs::set_permissions(&path, original).unwrap();
+}
+
+#[test]
+fn confirmed_permanent_delete_removes_read_only_empty_directories() {
+    let temp = fixture();
+    let path = temp.path().join("readonly folder");
+    fs::create_dir(&path).unwrap();
+    let original = fs::metadata(&path).unwrap().permissions();
+    let mut permissions = original.clone();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).unwrap();
+    let result =
+        prepare(&path).delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {});
+    if path.exists() {
+        fs::set_permissions(&path, original).unwrap();
+    }
+    result.unwrap();
+    assert!(!path.exists());
 }
 
 #[test]

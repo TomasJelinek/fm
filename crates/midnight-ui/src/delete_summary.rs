@@ -2,8 +2,8 @@
 use midnight_core::{EntryKind, NumberLocale, OperationPreview};
 
 pub(super) fn summary(preview: &OperationPreview, locale: &NumberLocale) -> String {
-    if preview.files == 1
-        && preview.folders == 0
+    if ((preview.files == 1 && preview.folders == 0)
+        || (preview.files == 0 && preview.folders == 1))
         && let Some(item) = preview.sample.first()
     {
         let name = item
@@ -17,10 +17,14 @@ pub(super) fn summary(preview: &OperationPreview, locale: &NumberLocale) -> Stri
         let size = (item.kind == EntryKind::File)
             .then_some(item.metadata.size)
             .flatten();
-        return format!(
-            "1 file\nName: {name}\nSize: {}\nModified: {modified}",
-            bytes(size, locale)
-        );
+        return if preview.folders == 1 {
+            format!("1 folder\nName: {name}\nModified: {modified}")
+        } else {
+            format!(
+                "1 file\nName: {name}\nSize: {}\nModified: {modified}",
+                bytes(size, locale)
+            )
+        };
     }
     let mut text = String::new();
     if preview.files != 0 || preview.folders == 0 {
