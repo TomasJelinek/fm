@@ -2699,6 +2699,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "midnight-filesystem-plugin-api"
+version = "0.1.0"
+
+[[package]]
 name = "midnight-image-viewer-api"
 version = "0.2.0"
 
@@ -2713,6 +2717,18 @@ dependencies = [
  "midnight-worker-sdk",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "midnight-native-filesystem-host"
+version = "0.1.0"
+dependencies = [
+ "midnight-core",
+ "midnight-filesystem-plugin-api",
+ "midnight-plugin-host",
+ "serde",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

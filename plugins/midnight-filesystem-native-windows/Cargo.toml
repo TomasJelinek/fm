@@ -1,0 +1,25 @@
+[package]
+name = "midnight-filesystem-native-windows"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+
+[dependencies]
+midnight-filesystem-plugin-api = { version = "=0.1.0", path = "../../filesystem-api/midnight-filesystem-plugin-api" }
+midnight-filesystem-plugin-sdk = { version = "=0.1.0", path = "../../filesystem-api/midnight-filesystem-plugin-sdk" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_WindowsProgramming", "Win32_System_Diagnostics_Debug", "Win32_System_SystemServices"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader"] }
+
+[profile.release]
+overflow-checks = true
+panic = "unwind"

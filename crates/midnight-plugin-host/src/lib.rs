@@ -65,6 +65,8 @@ mod native;
 #[path = "native_unsupported.rs"]
 mod native;
 mod package_trust;
+mod trusted_library;
+pub use trusted_library::TrustedLibrary;
 mod replies;
 #[cfg(windows)]
 #[path = "trust_windows.rs"]

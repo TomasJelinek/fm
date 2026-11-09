@@ -10,9 +10,10 @@ Cargo selections for Windows x64 and Linux x86-64:
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The fifteen workspaces cover the application, public viewer/filesystem/thumbnail/image
+The seventeen workspaces cover the application, public viewer/filesystem/thumbnail/image
 APIs and worker SDK, five independent viewer plugins, archive/image/video plugins,
-and the independent viewer ABI conformance project. Project-owned crates
+the independent native Windows/Linux filesystem packages, and the independent
+viewer ABI conformance project. Project-owned crates
 are excluded. The negative descriptor fixture has no third-party dependencies.
 Both target graphs include normal, build and test dependencies; this is broader
 than the libraries linked into `me.exe`/`me`. Unused lockfile entries and optional
@@ -22,6 +23,20 @@ packages present only in Cargo metadata's feature union are excluded using
 All entries have a declared license. Alternatives are retained verbatim; they do
 not mean all alternatives are selected. The mandatory free-of-charge requirement
 and Slint's selected royalty-free branch are in [the policy](DEPENDENCY_POLICY.md).
+
+The native Browse/Read API and author SDK use only `std`. The host adds only
+project-owned API dependencies and new dependants of already pinned serde,
+toml and test-only tempfile. The inventory reconciles these dependants and
+the two native package scopes with the existing package/version records;
+the application dependency selections otherwise remain unchanged.
+
+Independent Windows and Linux packages reuse windows-sys 0.61.2/windows-link
+0.2.1 and libc 0.2.191 under their inspected MIT alternatives. Linux enables
+only libc `std`. Windows enables Foundation, Storage_FileSystem, System_IO,
+System_Ioctl, System_WindowsProgramming, System_Diagnostics_Debug and
+System_SystemServices; dynamic-loader tests also enable System_LibraryLoader.
+Each package includes its complete selected MIT notices in `THIRD-PARTY.md`.
+No third-party version, paid alternative or mandatory fee is introduced.
 
 ## Main functional libraries
 
@@ -143,6 +158,8 @@ Capture JSON and tree text for each scope below, using Windows for
 | markdown | `plugins/midnight-viewer-markdown/Cargo.toml` |
 | conformance | `plugins/viewer-conformance/Cargo.toml` |
 | filesystem-api | `filesystem-api/Cargo.toml` |
+| native-windows | `plugins/midnight-filesystem-native-windows/Cargo.toml` |
+| native-linux | `plugins/midnight-filesystem-native-linux/Cargo.toml` |
 | worker-api | `worker-api/Cargo.toml` |
 | thumbnail-api | `thumbnail-api/Cargo.toml` |
 | image-viewer-api | `image-viewer-api/Cargo.toml` |
@@ -179,7 +196,7 @@ PowerShell's `Set-Content`; use `python3` where Python is installed under that n
 `cargo metadata`/`tree` do not compile native code. Capture each target on its
 native host: build dependencies/procedural macros follow the host, so a Windows
 cross-target query is not equivalent to the native Linux graph.
-The generator reads the thirty captures, excludes project-owned API/SDK crates,
+The generator reads the thirty-four captures, excludes project-owned API/SDK crates,
 and writes deterministic Markdown/CSV. Recapture after every dependency or feature
 change. `--check` verifies tables against the supplied captures; it does not prove
 those captures are current. Current source hashes are deliberately not labelled

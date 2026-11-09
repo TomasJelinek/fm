@@ -4,13 +4,14 @@
 488 third-party package/version/source records; 456 distinct crate names.
 
 Includes normal, build and development/test dependencies selected by Cargo tree
-for 15 workspaces on Windows x64 and Linux x86-64. This is a development
+for 17 workspaces on Windows x64 and Linux x86-64. This is a development
 inventory, not a claim that every entry is linked into the release executable.
 Unused metadata feature-union/lockfile entries and project-owned crates are excluded.
 
 `app` = application workspace; `api` = public API/SDK and its tools;
 `basic`, `source`, `markdown` = independent viewer plugins;
 `conformance` = independent viewer ABI test fixture;
+`native-windows`, `native-linux` = independent native filesystem plugins;
 `filesystem-api`, `worker-api`, `thumbnail-api`, `image-viewer-api` = public worker protocols/SDK;
 `archive`, `thumbnail-image`, `thumbnail-video`, `image-viewer` = independent filesystem/media plugins.
 
@@ -34,6 +35,8 @@ captures and does not prove that old captures match today's source files.
 | [plugins/midnight-viewer-markdown/Cargo.toml](../../plugins/midnight-viewer-markdown/Cargo.toml) | [plugins/midnight-viewer-markdown/Cargo.lock](../../plugins/midnight-viewer-markdown/Cargo.lock) |
 | [plugins/viewer-conformance/Cargo.toml](../../plugins/viewer-conformance/Cargo.toml) | [plugins/viewer-conformance/Cargo.lock](../../plugins/viewer-conformance/Cargo.lock) |
 | [filesystem-api/Cargo.toml](../../filesystem-api/Cargo.toml) | [filesystem-api/Cargo.lock](../../filesystem-api/Cargo.lock) |
+| [plugins/midnight-filesystem-native-windows/Cargo.toml](../../plugins/midnight-filesystem-native-windows/Cargo.toml) | [plugins/midnight-filesystem-native-windows/Cargo.lock](../../plugins/midnight-filesystem-native-windows/Cargo.lock) |
+| [plugins/midnight-filesystem-native-linux/Cargo.toml](../../plugins/midnight-filesystem-native-linux/Cargo.toml) | [plugins/midnight-filesystem-native-linux/Cargo.lock](../../plugins/midnight-filesystem-native-linux/Cargo.lock) |
 | [worker-api/Cargo.toml](../../worker-api/Cargo.toml) | [worker-api/Cargo.lock](../../worker-api/Cargo.lock) |
 | [thumbnail-api/Cargo.toml](../../thumbnail-api/Cargo.toml) | [thumbnail-api/Cargo.lock](../../thumbnail-api/Cargo.lock) |
 | [image-viewer-api/Cargo.toml](../../image-viewer-api/Cargo.toml) | [image-viewer-api/Cargo.lock](../../image-viewer-api/Cargo.lock) |
@@ -250,7 +253,7 @@ captures and does not prove that old captures match today's source files.
 | [kurbo](https://crates.io/crates/kurbo/0.13.1) | 0.13.1 | Apache-2.0 OR MIT | app, pdf-viewer | Linux, Windows | — |
 | [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [libbz2-rs-sys](https://crates.io/crates/libbz2-rs-sys/0.2.6) | 0.2.6 | bzip2-1.0.6 | archive | Linux, Windows | — |
-| [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | api, app, archive, image-viewer, image-viewer-api, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Linux, Windows | yes |
+| [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | api, app, archive, image-viewer, image-viewer-api, native-linux, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Linux, Windows | yes |
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | app, thumbnail-video | Linux, Windows | — |
 | [libm](https://crates.io/crates/libm/0.2.16) | 0.2.16 | MIT | app | Linux, Windows | — |
 | [linebender_resource_handle](https://crates.io/crates/linebender_resource_handle/0.1.1) | 0.1.1 | Apache-2.0 OR MIT | app, pdf-viewer | Linux, Windows | — |
@@ -487,12 +490,12 @@ captures and does not prove that old captures match today's source files.
 | [windows-future](https://crates.io/crates/windows-future/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows-implement](https://crates.io/crates/windows-implement/0.60.2) | 0.60.2 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows-interface](https://crates.io/crates/windows-interface/0.59.3) | 0.59.3 | MIT OR Apache-2.0 | app | Windows | — |
-| [windows-link](https://crates.io/crates/windows-link/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | api, app, archive, image-viewer, image-viewer-api, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | — |
+| [windows-link](https://crates.io/crates/windows-link/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | api, app, archive, image-viewer, image-viewer-api, native-windows, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | — |
 | [windows-numerics](https://crates.io/crates/windows-numerics/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows-result](https://crates.io/crates/windows-result/0.4.1) | 0.4.1 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows-strings](https://crates.io/crates/windows-strings/0.5.1) | 0.5.1 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows-sys](https://crates.io/crates/windows-sys/0.52.0) | 0.52.0 | MIT OR Apache-2.0 | app | Windows | — |
-| [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | api, app, archive, image-viewer, image-viewer-api, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | yes |
+| [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | api, app, archive, image-viewer, image-viewer-api, native-windows, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | yes |
 | [windows-targets](https://crates.io/crates/windows-targets/0.52.6) | 0.52.6 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows-threading](https://crates.io/crates/windows-threading/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | app | Windows | — |
 | [windows_x86_64_msvc](https://crates.io/crates/windows_x86_64_msvc/0.52.6) | 0.52.6 | MIT OR Apache-2.0 | app | Windows | — |

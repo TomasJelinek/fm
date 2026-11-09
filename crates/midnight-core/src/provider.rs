@@ -161,6 +161,20 @@ pub trait VolumeService: Send + Sync + 'static {
 
 /// Blocking storage-capacity queries; call on a worker thread separately from listing.
 pub trait StorageService: Send + Sync + 'static {
+    /// Explicit read-only native volume details. Run on a bounded backend worker.
+    /// Unsupported fields are absent; cancellation is cooperative between OS calls.
+    fn volume_information(
+        &self,
+        path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<crate::VolumeInformation, FsError> {
+        Err(FsError::from_io(
+            "query volume information",
+            path,
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
     /// Only positively identified local solid-state storage permits parallel scans.
     /// Unsupported providers remain conservative without changing their path semantics.
     fn storage_kind(&self, _path: &Path) -> Result<StorageKind, FsError> {

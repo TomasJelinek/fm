@@ -1,0 +1,13 @@
+[package]
+name = "midnight-filesystem-plugin-sdk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Safe author SDK for independent synchronous filesystem packages"
+
+[dependencies]
+midnight-filesystem-plugin-api = { version = "=0.1.0", path = "../midnight-filesystem-plugin-api" }
+
+[lints.rust]
+unsafe_code = "deny"

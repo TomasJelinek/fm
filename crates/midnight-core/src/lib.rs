@@ -41,6 +41,7 @@ mod user_commands;
 mod vfs_identity;
 mod vfs_location;
 mod viewer;
+mod volume_information;
 mod watch;
 mod window_geometry;
 
@@ -85,5 +86,6 @@ pub use user_commands::*;
 pub use vfs_identity::*;
 pub use vfs_location::*;
 pub use viewer::*;
+pub use volume_information::*;
 pub use watch::*;
 pub use window_geometry::*;

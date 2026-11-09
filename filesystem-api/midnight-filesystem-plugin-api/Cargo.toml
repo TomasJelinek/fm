@@ -1,0 +1,10 @@
+[package]
+name = "midnight-filesystem-plugin-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Public synchronous Browse/Read ABI for independent filesystem packages"
+
+[lints.rust]
+unsafe_code = "forbid"

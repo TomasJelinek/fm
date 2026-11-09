@@ -88,6 +88,30 @@ pub(crate) struct Library(HMODULE);
 unsafe impl Send for Library {}
 unsafe impl Sync for Library {}
 impl Library {
+    pub(crate) fn symbol(
+        &self,
+        name: &std::ffi::CStr,
+    ) -> Result<std::ptr::NonNull<std::ffi::c_void>, Error> {
+        // SAFETY: retained module and borrowed NUL-terminated symbol name.
+        let function = unsafe { GetProcAddress(self.0, name.as_ptr().cast()) }
+            .ok_or_else(|| Error(format!("Missing plugin export {}", name.to_string_lossy())))?;
+        std::ptr::NonNull::new(function as *mut std::ffi::c_void)
+            .ok_or_else(|| Error("Null plugin export".into()))
+    }
+    pub(crate) fn owns_address(&self, address: *const std::ffi::c_void) -> bool {
+        let mut module = std::ptr::null_mut();
+        // SAFETY: FROM_ADDRESS treats the argument as an address, not a string;
+        // UNCHANGED_REFCOUNT does not transfer ownership of the returned module.
+        unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                address.cast(),
+                &mut module,
+            ) != 0
+                && module == self.0
+        }
+    }
     pub(crate) fn open(path: &Path) -> Result<Self, Error> {
         let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         if wide[..wide.len() - 1].contains(&0) {

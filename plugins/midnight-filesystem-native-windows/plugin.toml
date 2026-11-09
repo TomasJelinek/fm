@@ -1,0 +1,11 @@
+schema_version = 1
+id = "native.windows"
+kind = "filesystem-native"
+version = "0.1.0"
+entry_library = "midnight_filesystem_native_windows.dll"
+target = "x86_64-pc-windows-msvc"
+abi_major = 1
+minimum_host_minor = 0
+protocol = 1
+capabilities = ["browse", "read", "stat", "volumes", "storage", "native-address", "volume-details"]
+address_encoding = "windows-utf16le"

@@ -18,6 +18,15 @@ pub(crate) fn snapshot(_: &File) -> io::Result<Snapshot> {
 }
 pub(crate) struct Library;
 impl Library {
+    pub(crate) fn symbol(
+        &self,
+        _: &std::ffi::CStr,
+    ) -> Result<std::ptr::NonNull<std::ffi::c_void>, Error> {
+        Err(Error("Native plugins unsupported on this platform".into()))
+    }
+    pub(crate) fn owns_address(&self, _: *const std::ffi::c_void) -> bool {
+        false
+    }
     pub(crate) fn open(_: &Path) -> Result<Self, Error> {
         Err(Error(
             "Native viewer plugins unsupported on this platform".into(),
