@@ -20,6 +20,23 @@ pub trait ContentSource: Send + Sync + std::fmt::Debug {
     fn version(&self) -> Vec<u8>;
     fn validate(&self) -> Result<(), Error>;
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error>;
+
+    /// Read against the original captured metadata, validating before and after the read.
+    /// A trusted adapter may override this only when its underlying read operation provides
+    /// the same live revision/identity checks. Bounds and returned lengths remain host checked.
+    /// This Rust host interface never crosses a plugin ABI.
+    fn read_checked(
+        &self,
+        offset: u64,
+        length: u32,
+        expected_length: u64,
+        expected_version: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        validate_source(self, expected_length, expected_version)?;
+        let bytes = self.read_at(offset, length)?;
+        validate_source(self, expected_length, expected_version)?;
+        Ok(bytes)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +111,15 @@ impl CapturedFile {
     /// Bounded broker read. Reopening validates both pathname replacement and
     /// before/after handle metadata against the original captured revision.
     pub fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
+        if let Some(source) = &self.source {
+            return read_source(
+                source.as_ref(),
+                offset,
+                length,
+                self.source_length,
+                &self.source_version,
+            );
+        }
         self.open()?.read_at(offset, length)
     }
     pub fn display_name(&self) -> String {
@@ -108,7 +134,7 @@ impl CapturedFile {
     }
     /// Backend only; reads at most 4096 bytes through the same revision validation.
     pub fn preferred_basic_mode(&self) -> Result<u16, Error> {
-        let bytes = self.open()?.read_at(0, 4096)?;
+        let bytes = self.read_at(0, 4096)?;
         Ok(if crate::text_detection::is_text(&bytes) {
             viewer::MODE_TEXT
         } else {
@@ -160,33 +186,15 @@ impl CapturedFile {
 }
 impl Reader {
     pub(crate) fn read_at(&mut self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
-        if length == 0
-            || length as usize > viewer::MAX_PAGE_BYTES
-            || offset.checked_add(u64::from(length)).is_none()
-        {
-            return Err(Error("Invalid read bounds".into()));
-        }
         if let Self::Provider {
             source,
             version,
             length: source_length,
         } = self
         {
-            validate_source(source.as_ref(), *source_length, version)?;
-            let length = source_length.saturating_sub(offset).min(u64::from(length)) as u32;
-            let bytes = if length == 0 {
-                Vec::new()
-            } else {
-                source.read_at(offset, length)?
-            };
-            if bytes.len() != length as usize {
-                return Err(Error(
-                    "Provider returned an inconsistent read length".into(),
-                ));
-            }
-            validate_source(source.as_ref(), *source_length, version)?;
-            return Ok(bytes);
+            return read_source(source.as_ref(), offset, length, *source_length, version);
         }
+        check_read_bounds(offset, length)?;
         let Self::Native { file, snapshot } = self else {
             return Err(Error("Invalid content reader".into()));
         };
@@ -206,16 +214,59 @@ impl Reader {
         Ok(bytes)
     }
 }
+fn check_read_bounds(offset: u64, length: u32) -> Result<(), Error> {
+    if length == 0
+        || length as usize > viewer::MAX_PAGE_BYTES
+        || offset.checked_add(u64::from(length)).is_none()
+    {
+        return Err(Error("Invalid read bounds".into()));
+    }
+    Ok(())
+}
+
+fn read_source(
+    source: &dyn ContentSource,
+    offset: u64,
+    length: u32,
+    expected_length: u64,
+    expected_version: &[u8],
+) -> Result<Vec<u8>, Error> {
+    check_read_bounds(offset, length)?;
+    let length = expected_length
+        .saturating_sub(offset)
+        .min(u64::from(length)) as u32;
+    // EOF still validates the captured source, without issuing an invalid native read.
+    if length == 0 {
+        validate_source(source, expected_length, expected_version)?;
+        return Ok(Vec::new());
+    }
+    let bytes = source.read_checked(offset, length, expected_length, expected_version)?;
+    if bytes.len() != length as usize {
+        return Err(Error(
+            "Provider returned an inconsistent read length".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn changed() -> Error {
     Error("Source changed since capture (LiveValidated revision)".into())
 }
-fn validate_source(source: &dyn ContentSource, length: u64, version: &[u8]) -> Result<(), Error> {
+fn validate_source(
+    source: &(impl ContentSource + ?Sized),
+    length: u64,
+    version: &[u8],
+) -> Result<(), Error> {
     source.validate()?;
     if source.length() != length || source.version() != version {
         return Err(changed());
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "checked_read_tests.rs"]
+mod checked_read_tests;
 
 #[cfg(test)]
 mod provider_tests {
