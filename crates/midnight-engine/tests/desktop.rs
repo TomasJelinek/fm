@@ -1,6 +1,7 @@
 use midnight_core::*;
 use midnight_engine::Engine;
 use std::{
+    future::{Future, poll_fn},
     io,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
@@ -85,6 +86,19 @@ impl Drop for ReleaseOpen {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.0.release_open.1.notify_all();
+    }
+}
+
+struct ReleaseProperties(Arc<Services>);
+impl Drop for ReleaseProperties {
+    fn drop(&mut self) {
+        *self
+            .0
+            .release_properties
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        self.0.release_properties.1.notify_all();
     }
 }
 
@@ -401,6 +415,7 @@ async fn desktop_context_publishes_choices_before_loading_each_drive_and_special
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn modal_properties_do_not_block_navigation_or_explicit_terminal_errors() {
     let services = Arc::new(Services::default());
+    let _release = ReleaseProperties(services.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let task = tokio::spawn(
@@ -712,4 +727,143 @@ async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
     commands.send(Command::Shutdown).await.unwrap();
     drop(events);
     task.await.unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RejectedWork {
+    Terminal,
+    Open,
+    LoadPreferences,
+    SavePreferences,
+    FolderScan,
+    EntryScan,
+    Clipboard,
+    SelectionProperties,
+}
+
+impl RejectedWork {
+    fn command(self, id: u64) -> Command {
+        let request = DesktopRequestId(id);
+        match self {
+            Self::Terminal => Command::LaunchTerminal {
+                request,
+                terminal: TerminalRequest {
+                    command: "literal".into(),
+                    working_directory: "captured".into(),
+                    shell: ShellFlavor::Posix,
+                    mode: TerminalMode::Standard,
+                },
+            },
+            Self::Open => Command::OpenEntry {
+                request,
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                path: "captured/file".into(),
+            },
+            Self::LoadPreferences => Command::LoadPreferences,
+            Self::SavePreferences => Command::SavePreferences {
+                revision: PreferencesRevision(id),
+                preferences: UserPreferences::default(),
+            },
+            Self::FolderScan => Command::ComputeFolderSizes {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                scan: FolderSizeScanId(id),
+            },
+            Self::EntryScan => Command::ComputeEntrySize {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                scan: FolderSizeScanId(id),
+                entry: EntryId(1),
+            },
+            Self::Clipboard => Command::CopyText {
+                request,
+                text: "literal".into(),
+            },
+            Self::SelectionProperties => Command::ShowSelectionProperties {
+                request,
+                selection: Arc::default(),
+                view: Arc::default(),
+                fallback: Some("captured/file".into()),
+            },
+        }
+    }
+}
+
+#[tokio::test]
+async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_consumer() {
+    let mut unbounded = Vec::new();
+    for case in [
+        RejectedWork::Terminal,
+        RejectedWork::Open,
+        RejectedWork::LoadPreferences,
+        RejectedWork::SavePreferences,
+        RejectedWork::FolderScan,
+        RejectedWork::EntryScan,
+        RejectedWork::Clipboard,
+        RejectedWork::SelectionProperties,
+    ] {
+        let (commands, receiver) = mpsc::channel(2);
+        let (sender, events) = mpsc::channel(1);
+        sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+        let engine = tokio::spawn(Engine::new(Arc::new(Services::default()), sender).run(receiver));
+        let mut producer = tokio::spawn(async move {
+            for id in 1..=2048 {
+                commands.send(case.command(id)).await.unwrap();
+            }
+        });
+        let result = tokio::time::timeout(Duration::from_millis(200), &mut producer).await;
+        producer.abort();
+        engine.abort();
+        // Release blocking clipboard/output workers before any assertion can panic.
+        drop(events);
+        let _ = engine.await;
+        if let Ok(result) = result {
+            result.unwrap();
+            unbounded.push(case);
+        }
+    }
+    assert!(
+        unbounded.is_empty(),
+        "Unbounded pending responses: {unbounded:?}"
+    );
+}
+
+#[tokio::test]
+async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
+    for case in [
+        RejectedWork::Terminal,
+        RejectedWork::Open,
+        RejectedWork::LoadPreferences,
+        RejectedWork::SavePreferences,
+        RejectedWork::FolderScan,
+        RejectedWork::EntryScan,
+        RejectedWork::Clipboard,
+        RejectedWork::SelectionProperties,
+    ] {
+        let (commands, receiver) = mpsc::channel(33);
+        let (sender, events) = mpsc::channel(1);
+        sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+        for id in 1..=32 {
+            commands.try_send(case.command(id)).unwrap();
+        }
+        commands.try_send(Command::Shutdown).unwrap();
+        let mut engine =
+            std::pin::pin!(Engine::new(Arc::new(Services::default()), sender).run(receiver));
+        // One poll reaches a rejection even for the 16-slot clipboard queue.
+        // The full output must block before the queued Shutdown is consumed.
+        poll_fn(|context| {
+            assert!(engine.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(
+            commands.capacity() < 33,
+            "No output backpressure for {case:?}"
+        );
+        drop(events);
+        tokio::time::timeout(Duration::from_secs(3), engine)
+            .await
+            .unwrap_or_else(|_| panic!("Closing output stranded {case:?}"));
+    }
 }

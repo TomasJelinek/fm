@@ -15,6 +15,18 @@ struct ControlledFileSystem {
     entered: Arc<Notify>,
     released: Arc<(Mutex<bool>, Condvar)>,
     cooperative: bool,
+    cancellation: Mutex<Option<Cancellation>>,
+}
+
+struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let (lock, condition) = &*self.0;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        condition.notify_all();
+    }
 }
 
 impl DirectoryService for ControlledFileSystem {
@@ -32,6 +44,7 @@ impl DirectoryService for ControlledFileSystem {
             ));
         }
         if path == Path::new("slow") {
+            *self.cancellation.lock().unwrap() = Some(cancel.clone());
             self.entered.notify_one();
             let (lock, condition) = &*self.released;
             let mut released = lock.lock().unwrap();
@@ -131,6 +144,7 @@ fn provider() -> Arc<ControlledFileSystem> {
         entered: Arc::new(Notify::new()),
         released: Arc::new((Mutex::new(false), Condvar::new())),
         cooperative: true,
+        cancellation: Mutex::new(None),
     })
 }
 
@@ -153,6 +167,7 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_left_listing_does_not_prevent_right_completion() {
     let filesystem = provider();
+    let _release = ReleaseOnDrop(filesystem.released.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
     let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
@@ -186,6 +201,7 @@ async fn blocked_left_listing_does_not_prevent_right_completion() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replacing_navigation_cancels_old_completion() {
     let filesystem = provider();
+    let _release = ReleaseOnDrop(filesystem.released.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
@@ -292,15 +308,9 @@ async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
         entered: Arc::new(Notify::new()),
         released: Arc::new((Mutex::new(false), Condvar::new())),
         cooperative: false,
+        cancellation: Mutex::new(None),
     });
-    struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
-    impl Drop for ReleaseOnDrop {
-        fn drop(&mut self) {
-            let (lock, condition) = &*self.0;
-            *lock.lock().unwrap() = true;
-            condition.notify_all();
-        }
-    }
+
     let _release = ReleaseOnDrop(filesystem.released.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
@@ -341,4 +351,28 @@ async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
     }
     commands.send(Command::Shutdown).await.unwrap();
     task.await.unwrap();
+}
+
+#[tokio::test]
+async fn aborting_engine_cancels_the_cooperative_listing_it_owns() {
+    let filesystem = provider();
+    let _release = ReleaseOnDrop(filesystem.released.clone());
+    let (commands, receiver) = mpsc::channel(4);
+    let (sender, events) = mpsc::channel(16);
+    let engine = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "slow"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), filesystem.entered.notified())
+        .await
+        .unwrap();
+    let cancellation = filesystem.cancellation.lock().unwrap().clone().unwrap();
+    engine.abort();
+    assert!(engine.await.unwrap_err().is_cancelled());
+    drop(events);
+    assert!(
+        cancellation.is_cancelled(),
+        "Engine drop left its native listing uncancelled"
+    );
 }

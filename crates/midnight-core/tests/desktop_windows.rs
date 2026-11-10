@@ -124,42 +124,46 @@ fn powershell_argument_context_preserves_unicode_numeric_names_and_inert_shell_s
         "C:\\with space\\tail\\",
         "back\\slash\"quote\\",
     ];
-    for value in cases {
+    let mut script = String::from(
+        "function Read-MidnightArgs { [Console]::Out.WriteLine($args.Count); foreach ($value in $args) { [Console]::Out.WriteLine([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes([string]$value)).Replace('-', '')) } };",
+    );
+    let mut expected = Vec::new();
+    for (index, value) in cases.into_iter().enumerate() {
         let token = quote_shell_path(Path::new(value), ShellFlavor::PowerShell).unwrap();
-        // A real command/function argument context, not an expression-only parser.
-        let script = format!(
-            "function Read-MidnightArgs {{ [Console]::Out.WriteLine($args.Count); foreach ($value in $args) {{ [Console]::Out.WriteLine([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes([string]$value)).Replace('-', '')) }} }}; Read-MidnightArgs {token} {SENTINEL}"
-        );
-        let mut command = Command::new(system_program("WindowsPowerShell/v1.0/powershell.exe"));
-        command
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-            ])
-            .arg(encoded_command(&script));
-        let output = run_hidden(command);
-        assert!(
-            output.status.success(),
-            "{value:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let actual: Vec<_> = String::from_utf8(output.stdout)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(
-            actual,
-            [
-                "2".to_owned(),
-                hex(value.as_bytes()),
-                hex(SENTINEL.as_bytes())
-            ],
-            "{value:?}: {token}"
-        );
+        // Keep a separate native function invocation and sentinel per case. Only
+        // process startup is shared; the numbered markers detect missing output.
+        let marker = format!("CASE_{index}");
+        script.push_str(&format!(
+            "[Console]::Out.WriteLine('{marker}'); Read-MidnightArgs {token} {SENTINEL};"
+        ));
+        expected.extend([
+            marker,
+            "2".to_owned(),
+            hex(value.as_bytes()),
+            hex(SENTINEL.as_bytes()),
+        ]);
     }
+    let mut command = Command::new(system_program("WindowsPowerShell/v1.0/powershell.exe"));
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+        ])
+        .arg(encoded_command(&script));
+    let output = run_hidden(command);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual: Vec<_> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(actual, expected);
 }
 
 struct ProbeFile(PathBuf);

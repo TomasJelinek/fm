@@ -1,6 +1,5 @@
 //! Real keyboard/pointer routing; mock commands never touch a filesystem.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::platform::Key;

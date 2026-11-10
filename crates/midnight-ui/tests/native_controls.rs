@@ -1,6 +1,5 @@
 //! Native navigation identities survive asynchronous metadata; full cwd stays readable.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
@@ -26,19 +25,9 @@ use std::{
     time::Duration,
 };
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
+use crate::platform_keys;
 
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
-#[cfg(windows)]
-#[path = "support/windows_raw_paths.rs"]
-mod raw_paths;
-#[cfg(unix)]
-#[path = "support/unix_raw_paths.rs"]
-mod raw_paths;
+use crate::raw_paths;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
 impl Platform for TestPlatform {

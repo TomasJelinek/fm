@@ -1,6 +1,5 @@
+use crate::selection;
 use midnight_core::*;
-#[path = "support/selection.rs"]
-mod selection;
 use midnight_ui::{MainWindow, Presenter, Theme, install};
 use slint::{
     ComponentHandle, Model,
@@ -18,12 +17,7 @@ use std::{
 };
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
+use crate::platform_keys;
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         Ok(self.0.clone())

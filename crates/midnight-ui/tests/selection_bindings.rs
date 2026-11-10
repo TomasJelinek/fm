@@ -1,4 +1,5 @@
 //! Exercise the installed presenter bridge and explicit asynchronous worker results.
+use crate::selection;
 use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, install, refresh};
 use slint::{
@@ -9,8 +10,6 @@ use slint::{
     },
 };
 use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
-#[path = "support/selection.rs"]
-mod selection;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {

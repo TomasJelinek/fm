@@ -6,6 +6,7 @@ mod detail_attributes;
 mod file_key_bridge;
 mod file_keys;
 mod font_model;
+mod history_models;
 mod native_shortcuts;
 mod navigation_models;
 mod operation_presentation;

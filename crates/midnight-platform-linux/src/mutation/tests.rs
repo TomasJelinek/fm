@@ -399,13 +399,48 @@ fn staged_identity_is_checked_before_any_unlink() {
 #[test]
 fn cross_filesystem_trash_returns_unsupported_and_keeps_source() {
     use std::os::unix::fs::MetadataExt;
-    let fixture = tempfile::tempdir().unwrap();
-    let separate = tempfile::tempdir_in("/dev/shm").unwrap();
+    let mut first = None;
+    let mut pair = None;
+    for parent in [
+        std::env::temp_dir(),
+        "/dev/shm".into(),
+        "/tmp".into(),
+        "/var/tmp".into(),
+    ] {
+        // Canonical parents also avoid symlink ancestors rejected by mutation setup.
+        let Ok(parent) = fs::canonicalize(parent) else {
+            continue;
+        };
+        let Ok(candidate) = tempfile::Builder::new()
+            .prefix("midnight-cross-filesystem-")
+            .tempdir_in(parent)
+        else {
+            continue;
+        };
+        let device = fs::metadata(candidate.path()).unwrap().dev();
+        if let Some((fixture, previous_device)) = first.take() {
+            if previous_device != device {
+                pair = Some((fixture, candidate));
+                break;
+            }
+            first = Some((fixture, previous_device));
+        } else {
+            first = Some((candidate, device));
+        }
+    }
+    let Some((fixture, separate)) = pair else {
+        eprintln!(
+            "SKIP cross_filesystem_trash: no two writable distinct filesystems among \
+             the configured temporary directory, /dev/shm, /tmp and /var/tmp"
+        );
+        return;
+    };
     assert_ne!(
         fs::metadata(fixture.path()).unwrap().dev(),
         fs::metadata(separate.path()).unwrap().dev(),
         "fixture needs a second filesystem"
     );
+    eprintln!("QUALIFIED cross_filesystem_trash: owned fixtures are on distinct filesystems");
     let source = fixture.path().join("source");
     fs::write(&source, b"keep").unwrap();
     let cancel = Cancellation::default();

@@ -1,5 +1,6 @@
 pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
     let mut roots = Vec::new();
+    let mut seen = std::collections::HashSet::<Vec<u8>>::new();
     for line in input.split(|byte| *byte == b'\n') {
         let Some(separator) = line.windows(3).position(|bytes| bytes == b" - ") else {
             continue;
@@ -67,7 +68,8 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         {
             continue;
         }
-        if !roots.contains(&decoded) {
+        if !seen.contains(decoded.as_slice()) {
+            seen.insert(decoded.clone());
             roots.push(decoded);
         }
     }
@@ -93,5 +95,39 @@ mod tests {
             mount_paths(input),
             vec![b"/".to_vec(), b"/mnt/data".to_vec()]
         );
+    }
+
+    #[test]
+    fn mountinfo_deduplicates_decoded_raw_paths_in_first_occurrence_order() {
+        let input = b"1 0 8:1 / /mnt/z rw - ext4 x rw\n2 0 8:1 / /mnt/raw\\377 rw - ext4 x rw\n3 0 8:1 / /mnt/raw\\376 rw - ext4 x rw\n4 0 8:1 / /mnt/\\172 rw - ext4 x rw\n5 0 8:1 / /mnt/a\\040disk rw - ext4 x rw\n6 0 8:1 / /mnt/raw\\377 rw - ext4 x rw\n7 0 8:1 / /mnt/\\141\\040disk rw - ext4 x rw\n";
+        assert_eq!(
+            mount_paths(input),
+            [
+                b"/mnt/z".to_vec(),
+                b"/mnt/raw\xff".to_vec(),
+                b"/mnt/raw\xfe".to_vec(),
+                b"/mnt/a disk".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mountinfo_filters_internal_tmpfs_components_without_hiding_prefix_siblings() {
+        let input = b"1 0 0:1 / /run rw - tmpfs x rw\n2 0 0:1 / /run/sub rw - tmpfs x rw\n3 0 0:1 / /runner rw - tmpfs x rw\n4 0 0:1 / /mnt/tmp rw - tmpfs x rw\n5 0 8:1 / /run/user-disk rw - ext4 x rw\n";
+        assert_eq!(
+            mount_paths(input),
+            [
+                b"/runner".to_vec(),
+                b"/mnt/tmp".to_vec(),
+                b"/run/user-disk".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn large_repeated_mountinfo_emits_each_decoded_root_once() {
+        let input = b"1 0 8:1 / /mnt/a rw - ext4 x rw\n2 0 8:1 / /mnt/\\141 rw - ext4 x rw\n"
+            .repeat(25_000);
+        assert_eq!(mount_paths(&input), [b"/mnt/a".to_vec()]);
     }
 }

@@ -102,24 +102,24 @@ impl Presenter {
         self.navigate(pane, part.path, None, send)
     }
 
-    pub(crate) fn history_entries(&self, pane: PaneId, forward: bool) -> Vec<HistoryChoice> {
+    pub(crate) fn history_entry(
+        &self,
+        pane: PaneId,
+        forward: bool,
+        row: usize,
+    ) -> Option<HistoryChoice> {
         let p = &self.panes[pane.index()];
-        let Some(current) = p.history_index else {
-            return Vec::new();
-        };
-        let mut indexes: Vec<_> = if forward {
-            (current.saturating_add(1)..p.history.len()).collect()
+        let current = p.history_index?;
+        let index = if forward {
+            current.checked_add(row)?.checked_add(1)?
         } else {
-            (0..current).rev().collect()
+            current.checked_sub(row)?.checked_sub(1)?
         };
-        indexes
-            .drain(..)
-            .map(|index| HistoryChoice {
-                identity: format!("history:{}:{}:{index}", p.generation, u8::from(forward)),
-                path: p.history[index].clone(),
-                index,
-            })
-            .collect()
+        Some(HistoryChoice {
+            identity: format!("history:{}:{}:{index}", p.generation, u8::from(forward)),
+            path: p.history.get(index)?.clone(),
+            index,
+        })
     }
 
     pub(crate) fn choose_history_entry(
@@ -129,13 +129,27 @@ impl Presenter {
         token: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        let Some(choice) = self
-            .history_entries(pane, forward)
-            .into_iter()
-            .find(|choice| choice.identity == token)
+        let p = &self.panes[pane.index()];
+        let prefix = format!("history:{}:{}:", p.generation, u8::from(forward));
+        let Some(index) = token
+            .strip_prefix(&prefix)
+            .and_then(|index| index.parse::<usize>().ok())
         else {
             return false;
         };
+        let row = p.history_index.and_then(|current| {
+            if forward {
+                index.checked_sub(current)?.checked_sub(1)
+            } else {
+                current.checked_sub(index)?.checked_sub(1)
+            }
+        });
+        let Some(choice) = row.and_then(|row| self.history_entry(pane, forward, row)) else {
+            return false;
+        };
+        if choice.identity != token {
+            return false;
+        }
         self.navigate(pane, choice.path, Some(choice.index), send)
     }
 

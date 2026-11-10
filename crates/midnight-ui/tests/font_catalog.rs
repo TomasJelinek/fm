@@ -1,6 +1,5 @@
 //! A large installed-font catalog must stay lazy and commit only accepted choices.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::MainWindow;

@@ -336,11 +336,16 @@ pub fn read_preferences(file: File) -> io::Result<UserPreferences> {
     if !metadata.is_file() {
         return Err(invalid("preferences are not a regular file"));
     }
-    if metadata.len() > MAX_PREFERENCES_BYTES as u64 {
+    read_sized_preferences(file, metadata.len())
+}
+
+fn read_sized_preferences(reader: impl Read, file_size: u64) -> io::Result<UserPreferences> {
+    if file_size > MAX_PREFERENCES_BYTES as u64 {
         return Err(invalid("preferences exceed 4 MiB"));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_PREFERENCES_BYTES as u64 + 1)
+    reader
+        .take(MAX_PREFERENCES_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
     decode_preferences(&bytes)
 }
@@ -779,5 +784,70 @@ mod tests {
         assert_eq!(attempts, 16);
         assert_eq!(fs::read(&target).unwrap(), b"old");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 17);
+    }
+
+    struct CountingReader<R> {
+        inner: R,
+        consumed: usize,
+        chunk_limit: usize,
+    }
+
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let length = output.len().min(self.chunk_limit);
+            let count = self.inner.read(&mut output[..length])?;
+            self.consumed += count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn oversized_metadata_rejects_preferences_before_reading() {
+        struct UnexpectedRead;
+        impl Read for UnexpectedRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("oversized preferences must be rejected before reading");
+            }
+        }
+        let error =
+            read_sized_preferences(UnexpectedRead, MAX_PREFERENCES_BYTES as u64 + 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("preferences exceed"));
+    }
+
+    #[test]
+    fn valid_preferences_at_exact_byte_budget_accept_short_reads() {
+        let expected = UserPreferences::default();
+        let mut bytes = encode_preferences(expected.clone()).unwrap();
+        bytes.resize(MAX_PREFERENCES_BYTES, b' ');
+        assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_ok());
+        let mut reader = CountingReader {
+            inner: io::Cursor::new(bytes),
+            consumed: 0,
+            chunk_limit: 4093,
+        };
+        assert_eq!(
+            read_sized_preferences(&mut reader, MAX_PREFERENCES_BYTES as u64).unwrap(),
+            expected
+        );
+        assert_eq!(reader.consumed, MAX_PREFERENCES_BYTES);
+    }
+
+    #[test]
+    fn preferences_growing_after_metadata_stop_one_byte_over_the_read_budget() {
+        let mut bytes = encode_preferences(UserPreferences::default()).unwrap();
+        let original_length = bytes.len() as u64;
+        bytes.resize(MAX_PREFERENCES_BYTES + 2, b' ');
+        // Every byte remains valid JSON whitespace; a syntax error cannot satisfy this test.
+        assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_ok());
+        let mut reader = CountingReader {
+            inner: io::Cursor::new(bytes),
+            consumed: 0,
+            chunk_limit: 4093,
+        };
+        let error = read_sized_preferences(&mut reader, original_length).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("preferences exceed"));
+        assert_eq!(reader.consumed, MAX_PREFERENCES_BYTES + 1);
     }
 }

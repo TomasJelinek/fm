@@ -1,6 +1,5 @@
 //! Prefix search follows actual file-panel text focus and immutable backend snapshots.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::input::{InternalKeyEvent, KeyEvent, KeyEventType};
 use i_slint_core::items::AccessibleRole;
@@ -15,16 +14,10 @@ use slint::{
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
+use crate::platform_keys;
 
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
 #[cfg(windows)]
-#[path = "support/windows_search_keys.rs"]
-mod search_keys;
+use crate::search_keys;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {

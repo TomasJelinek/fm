@@ -1,6 +1,5 @@
 //! Font options use real focus and keys, including while enumeration is pending.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{MainWindow, Theme};

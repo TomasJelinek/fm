@@ -1,6 +1,5 @@
 //! The topic tabs and nested pickers remain usable through actual pointer input.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{NavigationChoiceRow, Theme};

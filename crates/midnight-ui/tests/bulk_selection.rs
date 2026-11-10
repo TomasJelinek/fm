@@ -12,12 +12,7 @@ use std::{
     rc::Rc,
 };
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
+use crate::platform_keys;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {

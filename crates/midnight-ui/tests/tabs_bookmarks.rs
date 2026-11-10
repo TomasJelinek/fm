@@ -1,6 +1,5 @@
 //! Real keyboard and pointer routing for tab identities and persistent bookmarks.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
@@ -16,12 +15,7 @@ use slint::{
 };
 use std::{cell::RefCell, rc::Rc};
 
-#[cfg(windows)]
-#[path = "support/windows_keys.rs"]
-mod platform_keys;
-#[cfg(not(windows))]
-#[path = "support/default_keys.rs"]
-mod platform_keys;
+use crate::platform_keys;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {

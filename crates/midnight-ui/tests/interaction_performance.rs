@@ -1,6 +1,5 @@
 //! Reproducible debug-only interaction timings; no machine-specific pass thresholds.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{ComponentHandle, Model, platform::WindowEvent};
