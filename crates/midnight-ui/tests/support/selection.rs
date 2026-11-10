@@ -35,7 +35,7 @@ pub fn acknowledge(
         navigation: request.navigation,
         revision: request.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(index, bits).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
     request
 }

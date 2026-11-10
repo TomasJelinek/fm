@@ -1,6 +1,8 @@
 //! Independent synchronous filesystem Browse/Read contract; no host/application dependency.
 #![forbid(unsafe_code)]
 pub mod abi;
+mod activation;
+pub use activation::ActivationTarget;
 mod model;
 mod volume;
 mod wire;

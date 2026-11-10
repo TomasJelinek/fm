@@ -1,6 +1,10 @@
 use super::*;
 #[path = "image_integration_tests.rs"]
 mod images;
+#[path = "pdf_navigation_tests.rs"]
+mod pdf_navigation;
+#[path = "source_position_tests.rs"]
+mod source_position;
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, ViewerFrame};
 use std::{
     path::Path,
@@ -25,6 +29,10 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
         .map(|(index, name)| Entry::new(EntryId(index as u64), root.join(name), EntryKind::File))
         .collect();
     ViewerLaunch {
+        associations: Default::default(),
+        tree: None,
+        generated: None,
+        preferences: Arc::new(Default::default()),
         archive: None,
         focused: entries[0].path.clone(),
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
@@ -41,8 +49,11 @@ fn frame(session: &WindowSession, predicate: impl Fn(&ViewerFrame) -> bool) -> V
     while Instant::now() < deadline {
         for output in session.mailbox.take() {
             match output {
-                ViewerOutput::Frame(frame) if predicate(&frame) => return frame,
+                ViewerOutput::Frame(frame) if predicate(&frame) => return *frame,
                 ViewerOutput::Status(status) => messages.push(status),
+                ViewerOutput::ImageUnavailable { message, .. } => {
+                    panic!("Image/document unavailable: {message}");
+                }
                 _ => {}
             }
         }
@@ -68,9 +79,7 @@ fn status(session: &WindowSession, needle: &str) {
 
 #[test]
 fn slow_ui_mailbox_retains_only_latest_frame_status_and_copy() {
-    let mailbox = Mailbox {
-        output: Mutex::new(Vec::new()),
-    };
+    let mailbox = Mailbox::default();
     for index in 0..100 {
         mailbox.put(ViewerOutput::Status(index.to_string()));
         mailbox.put(ViewerOutput::CopyText(index.to_string()));
@@ -124,6 +133,10 @@ fn enormous_panel_capture_is_rejected_before_native_identity_work() {
         })
         .collect();
     let launch = ViewerLaunch {
+        associations: Default::default(),
+        tree: None,
+        generated: None,
+        preferences: Arc::new(Default::default()),
         archive: None,
         focused: entries[0].path.clone(),
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
@@ -150,11 +163,13 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         .build()
         .unwrap();
     let service = Service {
+        web: Arc::new(Mutex::new(Some(Arc::from([])))),
         handle: executor.handle().clone(),
         capture: crate::capture::native(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
         images: Arc::new(Mutex::new(Some(Arc::from([])))),
         windows: Arc::new(AtomicUsize::new(0)),
+        fonts: Default::default(),
     };
     let files = tempfile::tempdir().unwrap();
     {
@@ -239,9 +254,11 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     let near_edge = frame(&session, |f| f.revision > selected.revision);
     session.send(ViewerInput::Scroll { x: 0.0, y: 300.0 });
     let bottom = frame(&session, |f| f.revision > near_edge.revision);
-    assert_eq!(
-        bottom.accessible_text, initial.accessible_text,
-        "PageDown must show the unseen page tail before fetching the next page"
+    assert!(
+        bottom
+            .accessible_text
+            .contains(initial.accessible_text.lines().rev().nth(1).unwrap()),
+        "A demand page must overlap the unseen source tail rather than jumping past it"
     );
     let search_started = Instant::now();
     session.send(ViewerInput::Search {
@@ -276,10 +293,26 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     let source = frame(&session, |f| f.caption.contains("second.rs"));
     eprintln!("Cancel search and cycle: {:?}", cancelling.elapsed());
     assert_eq!(source.mode, midnight_plugin_host::api::viewer::MODE_SOURCE);
+    session.send(ViewerInput::Search {
+        query: "Second".into(),
+        backwards: false,
+        case_sensitive: true,
+    });
+    frame(&session, |f| {
+        f.revision > source.revision && f.accessible_text.contains("Second")
+    });
     session.send(ViewerInput::NextFile);
     let markdown = frame(&session, |f| f.caption.contains("third.md"));
     assert!(markdown.accessible_text.contains("Hello world!"));
     assert!(!markdown.accessible_text.contains("**"));
+    session.send(ViewerInput::Search {
+        query: "world".into(),
+        backwards: false,
+        case_sensitive: true,
+    });
+    frame(&session, |f| {
+        f.revision > markdown.revision && f.accessible_text.contains("world")
+    });
     session.send(ViewerInput::Mode(
         midnight_plugin_host::api::viewer::MODE_TEXT,
     ));
@@ -321,6 +354,14 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     assert!(hex.accessible_text.contains("00 01 02 FF 41"));
     assert!(hex.accessible_text.contains("│ ····A"));
     assert!(!hex.wrap_available);
+    basic.send(ViewerInput::Search {
+        query: "A".into(),
+        backwards: false,
+        case_sensitive: true,
+    });
+    frame(&basic, |f| {
+        f.revision > hex.revision && f.accessible_text.contains("41")
+    });
     basic.close();
 
     for (name, bytes) in [

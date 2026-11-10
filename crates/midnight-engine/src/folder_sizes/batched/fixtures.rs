@@ -578,7 +578,17 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             skipped_links: 2,
             errors: 1,
             finished: true,
+            warnings: results[&EntryId(1)].warnings.clone(),
         }
+    );
+    assert_eq!(
+        results[&EntryId(1)]
+            .warnings
+            .as_ref()
+            .unwrap()
+            .summary()
+            .observed,
+        1
     );
     assert_eq!(
         results.len(),

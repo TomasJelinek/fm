@@ -1,13 +1,45 @@
 //! Public, path-free filesystem worker contract. See PROTOCOL.md.
+mod streaming;
+mod timestamp;
 mod wire;
 use std::io;
-pub use wire::{read_message, write_message};
+pub use timestamp::Timestamp;
+pub use wire::{
+    read_message, read_message_with_protocol, write_message, write_message_with_protocol,
+};
 
 pub const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_READ: u32 = 256 * 1024;
 pub const MAX_NAME: usize = 64 * 1024;
 pub const MAX_BATCH: usize = 128;
 pub const VERSION: u16 = 1;
+
+/// Select the installed worker's protocol explicitly; legacy helpers always use V1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u16)]
+pub enum Protocol {
+    #[default]
+    V1 = 1,
+    V2 = 2,
+}
+
+impl TryFrom<u16> for Protocol {
+    type Error = io::Error;
+    fn try_from(value: u16) -> io::Result<Self> {
+        match value {
+            1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
+            _ => Err(invalid()),
+        }
+    }
+}
+
+/// Host-owned staging authority. IDs are session scoped and never filesystem paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StagePurpose {
+    Member { entry: u64 },
+    Scratch,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -58,6 +90,8 @@ pub struct Node {
     pub kind: Kind,
     pub size: Option<u64>,
     pub readable: bool,
+    /// UTC when the archive records an offset, otherwise a timezone-free civil time.
+    pub modified: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +143,66 @@ pub enum Message {
     Close {
         request: u64,
     },
+    StageBegin {
+        request: u64,
+        purpose: StagePurpose,
+        expected_length: Option<u64>,
+        max_length: u64,
+    },
+    StageCreated {
+        request: u64,
+        stage: u64,
+    },
+    StageAppend {
+        request: u64,
+        stage: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    StageAck {
+        request: u64,
+        stage: u64,
+        next_offset: u64,
+    },
+    StageSeal {
+        request: u64,
+        stage: u64,
+        length: u64,
+    },
+    StageSealed {
+        request: u64,
+        stage: u64,
+        length: u64,
+    },
+    SpoolRead {
+        request: u64,
+        stage: u64,
+        offset: u64,
+        length: u32,
+    },
+    SpoolData {
+        request: u64,
+        stage: u64,
+        bytes: Vec<u8>,
+    },
+    ContentReady {
+        request: u64,
+        entry: u64,
+        stage: u64,
+        offset: u64,
+        length: u64,
+    },
+    /// Actual decoded bytes consumed while validating unpublished staged content.
+    StageProgress {
+        request: u64,
+        stage: u64,
+        completed: u64,
+    },
+    StageProgressAck {
+        request: u64,
+        stage: u64,
+        completed: u64,
+    },
 }
 
 impl Message {
@@ -123,7 +217,19 @@ impl Message {
             | Self::SourceRead { request, .. }
             | Self::SourceData { request, .. }
             | Self::Failed { request, .. }
-            | Self::Close { request } => *request,
+            | Self::Close { request }
+            | Self::StageBegin { request, .. }
+            | Self::StageCreated { request, .. }
+            | Self::StageAppend { request, .. }
+            | Self::StageAck { request, .. }
+            | Self::StageSeal { request, .. }
+            | Self::StageSealed { request, .. }
+            | Self::SpoolRead { request, .. }
+            | Self::SpoolData { request, .. }
+            | Self::ContentReady { request, .. } => *request,
+            Self::StageProgress { request, .. } | Self::StageProgressAck { request, .. } => {
+                *request
+            }
         }
     }
 }

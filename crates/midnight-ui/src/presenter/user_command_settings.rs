@@ -22,6 +22,11 @@ pub(crate) struct State {
     pub error: String,
     pub validation: String,
     pub status: String,
+    pub(crate) draft: Option<Form>,
+    pub(crate) picked_executable: Option<PathBuf>,
+    pub(crate) picked_icon: Option<PathBuf>,
+    pub(crate) edit_revision: u64,
+    pub(crate) preview_revision: u64,
     next_id: u64,
 }
 impl State {
@@ -35,16 +40,74 @@ impl State {
     fn changed(&mut self, draft: bool) {
         self.revision = self.revision.saturating_add(1);
         if draft {
+            self.status.clear();
             self.draft_revision = self.draft_revision.saturating_add(1);
         }
     }
-    fn fail(&mut self, error: impl Into<String>) {
+    pub(super) fn clear_status(&mut self) {
+        if !self.status.is_empty() {
+            self.status.clear();
+            self.changed(false);
+        }
+    }
+    pub(super) fn fail(&mut self, error: impl Into<String>) {
         self.error = error.into();
         self.changed(false);
     }
 }
 
 impl Presenter {
+    pub(crate) fn remember_user_command_form(&mut self, token: &str, form: Form) {
+        if token != self.user_command_settings.token()
+            || self
+                .user_command_settings
+                .selected
+                .as_ref()
+                .is_none_or(|id| id.as_str() != form.id)
+        {
+            return;
+        }
+        let state = &mut self.user_command_settings;
+        if state
+            .picked_executable
+            .as_ref()
+            .is_some_and(|p| p.to_string_lossy() != form.executable)
+        {
+            state.picked_executable = None;
+        }
+        if state
+            .picked_icon
+            .as_ref()
+            .is_some_and(|p| p.to_string_lossy() != form.icon)
+        {
+            state.picked_icon = None;
+        }
+        if let Some(old) = state.draft.replace(form) {
+            self.retired.push(Box::new(old));
+        }
+        self.user_command_settings.edit_revision =
+            self.user_command_settings.edit_revision.saturating_add(1);
+        self.mark_user_command_setting_dirty(token);
+    }
+    pub(crate) fn edit_user_command_argument(
+        &mut self,
+        token: &str,
+        operation: i32,
+        row: i32,
+        text: &str,
+    ) {
+        let Some(mut form) = self.user_command_settings_form() else {
+            return;
+        };
+        let Ok(mut values) = serde_json::from_str::<Vec<String>>(&form.arguments) else {
+            return;
+        };
+        if !crate::argument_rows::change(&mut values, operation, row, text) {
+            return;
+        }
+        form.arguments = serde_json::to_string(&values).unwrap_or_default();
+        self.remember_user_command_form(token, form);
+    }
     pub(crate) fn user_command_settings_available(&self) -> bool {
         self.preferences.loaded && !self.operations.closing
     }
@@ -91,6 +154,7 @@ impl Presenter {
         if token != self.user_command_settings.token() {
             return;
         }
+        self.settings_picker.invalidate();
         let state = &mut self.user_command_settings;
         state.drag.cancel();
         state.dirty = true;
@@ -98,6 +162,7 @@ impl Presenter {
         state.can_preview = false;
         state.error.clear();
         state.validation.clear();
+        state.status.clear();
         state.changed(false);
     }
     pub(crate) fn sync_user_command_settings(&mut self) {
@@ -134,6 +199,9 @@ impl Presenter {
             .filter(|id| commands.iter().any(|command| command.id == *id))
             .or_else(|| commands.first().map(|command| command.id.clone()));
         state.new = false;
+        state.draft = None;
+        state.picked_executable = None;
+        state.picked_icon = None;
         state.error.clear();
         state.validation.clear();
         state.can_apply = false;
@@ -142,6 +210,9 @@ impl Presenter {
     }
     pub(crate) fn user_command_settings_form(&self) -> Option<Form> {
         let state = &self.user_command_settings;
+        if let Some(form) = &state.draft {
+            return Some(form.clone());
+        }
         let id = state.selected.as_ref()?;
         if state.new {
             let mut form = Form::new(id.as_str().into());
@@ -189,6 +260,9 @@ impl Presenter {
         self.user_command_settings.selected = Some(id);
         self.user_command_settings.source = Arc::downgrade(&self.preferences.values.user_commands);
         self.user_command_settings.new = false;
+        self.user_command_settings.draft = None;
+        self.user_command_settings.picked_executable = None;
+        self.user_command_settings.picked_icon = None;
         self.user_command_settings.can_apply = false;
         self.user_command_settings.can_preview = true;
         self.user_command_settings.error.clear();
@@ -233,6 +307,9 @@ impl Presenter {
             state.drag.cancel();
             state.selected = Some(id);
             state.new = true;
+            state.draft = None;
+            state.picked_executable = None;
+            state.picked_icon = None;
             state.dirty = true;
             state.can_apply = false;
             state.can_preview = false;
@@ -248,6 +325,7 @@ impl Presenter {
     }
     pub(crate) fn cancel_user_command_setting(&mut self) {
         let state = &mut self.user_command_settings;
+        state.status.clear();
         state.drag.cancel();
         state.dirty = false;
         state.new = false;
@@ -285,7 +363,11 @@ impl Presenter {
         if !state.new && position.is_none() || state.new && position.is_some() {
             return Err("This command no longer matches its configuration.".into());
         }
-        let command = form.command(position.and_then(|row| source.get(row)))?;
+        let command = form.command_with_native(
+            position.and_then(|row| source.get(row)),
+            state.picked_executable.as_deref(),
+            state.picked_icon.as_deref(),
+        )?;
         let mut commands = source.as_ref().clone();
         if let Some(row) = position {
             commands[row] = command;
@@ -476,11 +558,17 @@ impl Presenter {
         );
         self.retired.push(Box::new(values));
         if accepted {
-            self.user_command_settings.status = "Preview requested.".into();
+            self.user_command_settings.error.clear();
+            self.user_command_settings.status = if self.current_settings_command_preview().is_none()
+            {
+                "Waiting for panel selection...".into()
+            } else {
+                String::new()
+            };
             self.user_command_settings.changed(false);
-        } else {
+        } else if self.user_command_settings.error.is_empty() {
             self.user_command_settings
-                .fail("Preview could not be queued. Check the application message and try again.");
+                .fail("Preview could not be queued. Try again.");
         }
         accepted
     }

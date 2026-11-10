@@ -33,6 +33,7 @@ mod tests {
         let failed_path = PathBuf::from("parent/子目录/too-many-children");
         let progress = OperationProgress {
             id: OperationId(1),
+            throughput: Default::default(),
             kind: MutationKind::EditMetadata,
             state: OperationState::CompletedWithErrors,
             total: 1,

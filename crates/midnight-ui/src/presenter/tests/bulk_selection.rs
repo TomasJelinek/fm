@@ -30,7 +30,11 @@ fn ack(
         navigation: request.navigation,
         revision: request.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(basis, bits).unwrap()),
-        deferred,
+        deferred: if deferred {
+            SelectionDefaults::ALL
+        } else {
+            SelectionDefaults::NONE
+        },
     }
 }
 

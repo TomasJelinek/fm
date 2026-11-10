@@ -4,6 +4,7 @@ use std::{
     io,
     path::{Component, Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 pub const MAX_FIND_ROOTS: usize = 16;
@@ -22,6 +23,7 @@ pub struct FindResultId(pub u64);
 pub struct FindContentQuery {
     pub text: String,
     pub case_sensitive: bool,
+    pub whole_words: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +35,7 @@ pub struct FindLimits {
     pub max_retained_bytes: usize,
     pub max_content_bytes_per_file: usize,
     pub max_content_bytes: u64,
+    pub max_duplicate_candidates: usize,
 }
 impl Default for FindLimits {
     fn default() -> Self {
@@ -43,6 +46,7 @@ impl Default for FindLimits {
             max_retained_bytes: 64 * 1024 * 1024,
             max_content_bytes_per_file: 1024 * 1024 * 1024,
             max_content_bytes: 16 * 1024 * 1024 * 1024,
+            max_duplicate_candidates: 100_000,
         }
     }
 }
@@ -53,9 +57,16 @@ pub struct FindRequest {
     pub generation: FindGeneration,
     pub roots: Vec<PathBuf>,
     pub masks: String,
+    /// Masks by default; Regex and typed metadata Expression use the shared compiler.
+    pub name_mode: crate::FilterMode,
+    pub sort: FindSortSpec,
     pub name_case_sensitive: bool,
     pub recursive: bool,
     pub content: Option<FindContentQuery>,
+    /// Inclusive age interval ending at backend admission, excluding future/unknown times.
+    pub modified_within: Option<Duration>,
+    /// Distinct native identities with equal bytes; hard-link aliases count once.
+    pub duplicates: bool,
     pub limits: FindLimits,
 }
 impl FindRequest {
@@ -65,9 +76,13 @@ impl FindRequest {
             generation,
             roots,
             masks: "*.*".into(),
+            name_mode: crate::FilterMode::Masks,
+            sort: FindSortSpec::default(),
             name_case_sensitive: false,
             recursive: true,
             content: None,
+            modified_within: None,
+            duplicates: false,
             limits: FindLimits::default(),
         }
     }
@@ -105,6 +120,11 @@ impl FindRequest {
             return Err("Find content must contain 1 to 4096 UTF-8 bytes without NUL.");
         }
         let l = self.limits;
+        if self.modified_within.is_some_and(|duration| {
+            duration.is_zero() || duration > Duration::from_secs(366 * 24 * 60 * 60)
+        }) {
+            return Err("Find modified age must be positive and no greater than 366 days.");
+        }
         let max = FindLimits::default();
         if l.max_results == 0
             || l.max_results > max.max_results
@@ -118,6 +138,8 @@ impl FindRequest {
             || l.max_content_bytes_per_file > max.max_content_bytes_per_file
             || l.max_content_bytes == 0
             || l.max_content_bytes > max.max_content_bytes
+            || l.max_duplicate_candidates == 0
+            || l.max_duplicate_candidates > max.max_duplicate_candidates
         {
             return Err(
                 "Find resource limits must be positive and no greater than their defaults.",
@@ -152,6 +174,10 @@ impl FindEntry {
 pub struct FindResult {
     pub id: FindResultId,
     pub entry: FindEntry,
+    /// Stable within this search; every published group contains at least two identities.
+    pub duplicate_group: Option<u64>,
+    /// Full group size, or zero for ordinary results.
+    pub duplicate_group_size: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,8 +214,17 @@ pub trait FindService: Send + Sync + 'static {
     ) -> Result<Box<dyn FindSource>, FsError>;
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FindPhase {
+    #[default]
+    Scanning,
+    HashingDuplicates,
+    ComparingDuplicates,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FindProgress {
+    pub phase: FindPhase,
     pub examined: u64,
     pub directories: u64,
     pub files: u64,
@@ -200,6 +235,10 @@ pub struct FindProgress {
     pub skipped_mounts: u64,
     pub errors: u64,
     pub limited_files: u64,
+    pub duplicate_candidates: u64,
+    pub duplicate_groups: u64,
+    /// Actual hash/compare bytes, also charged to content_bytes and its shared limit.
+    pub duplicate_bytes: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FindBudget {
@@ -209,6 +248,7 @@ pub enum FindBudget {
     RetainedBytes,
     FileContent,
     TotalContent,
+    DuplicateCandidates,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FindCompletion {
@@ -230,7 +270,47 @@ pub enum FindUpdate {
     Started,
     Batch(Arc<[Arc<FindResult>]>),
     Progress(FindProgress),
+    /// Raw scan location (directory during traversal, file during duplicate
+    /// hashing/comparison), sampled no more than four times per second even
+    /// while native I/O blocks. Never an operation target.
+    CurrentDirectory(Arc<PathBuf>),
+    Sorted(Arc<FindOrder>),
+    SortFailed {
+        revision: u64,
+        error: FsError,
+    },
     Finished(FindSummary),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FindSortColumn {
+    #[default]
+    Name,
+    Extension,
+    Path,
+    Size,
+    Modified,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindSortSpec {
+    pub column: FindSortColumn,
+    pub descending: bool,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct FindSortRequest {
+    pub session: FindSessionId,
+    pub generation: FindGeneration,
+    pub revision: u64,
+    pub sort: FindSortSpec,
+}
+/// Bounded backend-built view; discovery-order result authority is never reordered.
+/// `positions[id-1]` is the row of that stable ID in `ids`.
+#[derive(Clone, Debug)]
+pub struct FindOrder {
+    pub revision: u64,
+    pub sort: FindSortSpec,
+    pub ids: Arc<[FindResultId]>,
+    pub positions: Arc<[usize]>,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct FindValidationRequest {

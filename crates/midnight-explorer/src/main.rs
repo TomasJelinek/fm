@@ -6,6 +6,7 @@ mod native_content;
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
+mod startup;
 mod thumbnails;
 mod viewers;
 mod visible_sync;
@@ -63,8 +64,8 @@ fn options() -> Result<Option<Options>, String> {
                     "       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\n",
                     "Native browsing, installed viewers, external editing, rename, ",
                     "file/directory creation, confirmed deletion, verified copying, ",
-                    "recoverable regular-file moves, Find and checksums. ",
-                    "Recoverable moves retain originals in recovery folders."
+                    "per-file verified moves, Find and checksums. ",
+                    "A move removes each source only after its destination is verified."
                 ));
                 return Ok(None);
             }
@@ -268,12 +269,14 @@ fn run_window(
     let engine = runtime.spawn(
         Engine::with_wakeup(filesystem.clone(), event_sender, notify.clone())
             .with_archive_capture(native_content::archive(filesystem.clone()))
+            .with_navigation_fallback(local.clone())
             .with_shell_menu(local.clone())
+            .with_path_picker(local.clone())
             .with_transfers(local.clone())
             .with_find(local.clone())
             .with_user_commands(local.clone())
             .with_editor(local.clone())
-            .with_drag_drop(local)
+            .with_drag_drop(local.clone())
             .with_locale(midnight_platform::locale_service())
             .with_mutations(mutations)
             .with_network(network)
@@ -306,12 +309,25 @@ fn run_window(
     let final_retire_pending = retire_pending.clone();
     let size_updates = Rc::new(RefCell::new(size_refresh::SizeRefresh::default()));
     let pending_sizes = size_updates.clone();
+    let window_state = Rc::new(window_state::WindowState::install(
+        &window,
+        presenter.clone(),
+        commands.clone(),
+        !options.ui_smoke,
+    ));
+    let startup = Rc::new(startup::Startup::install(
+        &window,
+        presenter.clone(),
+        window_state.clone(),
+    )?);
+    let startup_ready = startup.clone();
     window.on_backend_ready(move || {
         let Some(window) = weak.upgrade() else {
             return;
         };
         let start = Instant::now();
         let mut changed = false;
+        let mut preferences_applied = false;
         let mut can_drain = reclaim::flush_pending(&retire_queue, &mut retire_pending.borrow_mut());
         {
             let mut events = ui_receiver.borrow_mut();
@@ -331,9 +347,12 @@ fn run_window(
                 let Ok(event) = events.try_recv() else {
                     break;
                 };
+                preferences_applied |= matches!(&event, Event::PreferencesLoaded(_));
                 let size_only = matches!(
                     &event,
-                    Event::FolderSizeUpdated { .. } | Event::FolderSizesFinished { .. }
+                    Event::FolderSizeUpdated { .. }
+                        | Event::FolderSizesFinished { .. }
+                        | Event::ArchiveSizes(_)
                 );
                 if let Event::ListingFinished { pane, .. } | Event::ListingFailed { pane, .. } =
                     &event
@@ -370,6 +389,11 @@ fn run_window(
             midnight_ui::refresh(&window, &state.borrow());
             pending_sizes.borrow_mut().painted();
             sync_visible(&state.borrow(), &ui_commands, &ui_visible_sync);
+        }
+        if preferences_applied {
+            // Both successful and failed reads must complete startup, after
+            // their appearance/error presentation has reached the hidden UI.
+            startup_ready.preferences_applied();
         }
         // Clear before rechecking the queue. A producer racing this check either
         // schedules its own callback or leaves data seen by this recheck.
@@ -428,10 +452,20 @@ fn run_window(
     });
 
     let sender = commands.clone();
+    let startup_request = startup.clone();
     midnight_ui::install(
         &window,
         presenter.clone(),
-        Rc::new(move |command| sender.try_send(command).is_ok()),
+        Rc::new(move |command| {
+            let initial_preferences = matches!(&command, Command::LoadPreferences);
+            let sent = sender.try_send(command).is_ok();
+            if initial_preferences && !sent {
+                // install reports the rejected request and refreshes before
+                // returning to the event loop. Do not leave startup waiting.
+                startup_request.preferences_applied();
+            }
+            sent
+        }),
     );
     let viewers = viewers::install(
         &window,
@@ -439,14 +473,16 @@ fn run_window(
         commands.clone(),
         runtime.handle(),
         filesystem.clone(),
+        local.clone(),
     );
     let thumbnail_timer = thumbnails::install(&window, presenter.clone(), filesystem.clone());
-    let comparators = comparator::install(&window, presenter.clone(), runtime.handle(), filesystem);
-    let window_state = window_state::WindowState::install(
+    let comparators = comparator::install(
         &window,
         presenter.clone(),
         commands.clone(),
-        !options.ui_smoke,
+        runtime.handle(),
+        local,
+        filesystem,
     );
     // Both panes share a four-Hz size pulse. Interactive/backend events still
     // repaint immediately and include the latest cached totals.
@@ -484,6 +520,8 @@ fn run_window(
                 sync_comparators.close_all();
                 window.invoke_close_find_windows();
                 window.invoke_close_checksum_windows();
+                window.invoke_close_file_list_window();
+                window.invoke_close_information_windows();
                 let _ = window.hide();
             }
             if sync_window
@@ -513,21 +551,23 @@ fn run_window(
             let _ = slint::quit_event_loop();
         });
     }
-    // ComponentHandle::run hides before returning. Keep these steps explicit so
-    // native drop targets become invalid before that hide, including loop errors.
-    let result = window
-        .show()
-        .and_then(|()| slint::run_event_loop())
-        .map_err(|error| error.to_string());
+    // Run while hidden so preferences can arrive without displaying defaults.
+    // Startup restores native geometry before its first show. Keep hide explicit
+    // so native drop targets become invalid first, including loop errors.
+    let result = slint::run_event_loop()
+        .map_err(|error| error.to_string())
+        .and(startup.finish());
     window_state.finish(&window, &mut presenter.borrow_mut());
     presenter
         .borrow_mut()
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
     let result = result.and(window.hide().map_err(|error| error.to_string()));
+    window.invoke_close_information_windows();
     viewers.close_all();
     comparators.close_all();
     window.invoke_close_find_windows();
     window.invoke_close_checksum_windows();
+    window.invoke_close_file_list_window();
     visible_timer.stop();
     size_timer.stop();
     thumbnail_timer.stop();

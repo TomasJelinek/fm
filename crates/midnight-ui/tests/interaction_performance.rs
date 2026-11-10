@@ -119,7 +119,7 @@ fn interaction_performance() {
             navigation: req.navigation,
             revision: req.revision,
             selection: Arc::new(SelectionSnapshot::from_bits(basis, bits).unwrap()),
-            deferred: false,
+            deferred: Default::default(),
         });
         refresh(&ui.window, &presenter.borrow());
         ui.draw();

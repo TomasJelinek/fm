@@ -46,6 +46,8 @@ impl Harness {
         let snapshots = Arc::new(Mutex::new([
             SnapshotState {
                 archive: None,
+                network: None,
+                network_navigation: None,
                 archive_navigation: None,
                 visible: Some(CommittedSnapshot {
                     navigation: source.navigation,

@@ -12,6 +12,8 @@ pub struct TabSummary {
 }
 
 struct TabLocation {
+    network: Option<network_neighborhood::NetworkPane>,
+    network_return: Option<network_neighborhood::NetworkReturn>,
     archive: Option<archives::ArchivePane>,
     path: PathBuf,
     history: Vec<PathBuf>,
@@ -24,12 +26,28 @@ struct TabLocation {
 }
 
 impl TabLocation {
-    fn from_saved(path: PathBuf, archive: Option<ArchiveAddress>, sort: SortSpec) -> Self {
+    fn from_saved(
+        path: PathBuf,
+        archive: Option<ArchiveAddress>,
+        network: Option<NetworkAddress>,
+        sort: SortSpec,
+    ) -> Self {
         let mut location = Self::new(path.clone(), sort);
-        location.archive = archive.map(|address| archives::ArchivePane::unavailable(address, path));
+        location.archive =
+            archive.map(|address| archives::ArchivePane::unavailable(address, path.clone()));
+        location.network =
+            network.map(|address| network_neighborhood::NetworkPane::restored(address, path));
         location
     }
     fn command(&self, pane: PaneId, navigation: NavigationId) -> Command {
+        if let Some(network) = &self.network {
+            return Command::NetworkNavigate {
+                pane,
+                navigation,
+                action: NetworkAction::Browse(network.address.clone()),
+                sort: self.sort,
+            };
+        }
         if let Some(a) = &self.archive {
             Command::ArchiveNavigate {
                 pane,
@@ -49,6 +67,8 @@ impl TabLocation {
     fn new(path: PathBuf, sort: SortSpec) -> Self {
         Self {
             archive: None,
+            network: None,
+            network_return: None,
             parent_cursor: parent_path(&path).is_some(),
             path,
             history: Vec::new(),
@@ -75,6 +95,8 @@ impl TabLocation {
             .filter(|index| pane.history.get(*index) == Some(&path));
         Self {
             archive: pane.archive.take(),
+            network: pane.network.take(),
+            network_return: pane.network_return.take(),
             path,
             history: mem::take(&mut pane.history),
             history_index: pane.history_index,
@@ -158,9 +180,24 @@ impl Presenter {
                 } else {
                     tab.parked.as_ref().and_then(|p| p.archive.as_ref())
                 };
-                let title = archive
-                    .and_then(|a| a.location.trail.last().map(|(_, name)| name.clone()))
+                let network = if active {
+                    self.panes[pane.index()].network.as_ref()
+                } else {
+                    tab.parked.as_ref().and_then(|p| p.network.as_ref())
+                };
+                let title = network
+                    .map(|network| network.address.display.clone())
+                    .or_else(|| {
+                        archive.and_then(|a| a.location.trail.last().map(|(_, name)| name.clone()))
+                    })
                     .unwrap_or(native_title);
+                let title = if active {
+                    self.panes[pane.index()]
+                        .pending_network_text()
+                        .map_or(title, str::to_owned)
+                } else {
+                    title
+                };
                 TabSummary {
                     id: tab.id,
                     title,
@@ -187,11 +224,13 @@ impl Presenter {
         let p = &self.panes[slot];
         let mut location = TabLocation::new(p.display_path().to_owned(), p.sort);
         location.archive = p.archive.clone();
+        location.network = p.network.clone();
+        location.network_return = p.network_return.clone();
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             return false;
         };
         if !send(location.command(pane, navigation)) {
-            self.panes[slot].error = "Navigation queue is busy. Try again.".into();
+            self.panes[slot].set_error("Navigation queue is busy. Try again.", &mut self.retired);
             return false;
         }
         let target = self.tabs.panes[slot].tabs.len();
@@ -231,7 +270,7 @@ impl Presenter {
             return false;
         };
         if !send(location.command(pane, navigation)) {
-            self.panes[slot].error = "Navigation queue is busy. Try again.".into();
+            self.panes[slot].set_error("Navigation queue is busy. Try again.", &mut self.retired);
             return false;
         }
         let location = self.tabs.panes[slot].tabs[target]
@@ -250,9 +289,73 @@ impl Presenter {
         navigation: NavigationId,
         send: &dyn Fn(Command) -> bool,
     ) {
+        let mut outgoing = self.replace_pane_location(pane, &mut location, send);
+        let tabs = &mut self.tabs.panes[pane.index()];
+        tabs.tabs[tabs.active].parked = Some(TabLocation::park(&mut outgoing));
+        tabs.active = target;
+        self.retired.push(Box::new(outgoing));
+        self.navigation_accepted(
+            pane,
+            navigation,
+            location.path,
+            location.navigation_history,
+            send,
+        );
+        self.panes[pane.index()].network_request = self.panes[pane.index()].network.is_some();
+        self.panes[pane.index()].network_pending = self.panes[pane.index()]
+            .network
+            .as_ref()
+            .map(|network| NetworkAction::Browse(network.address.clone()));
+        self.panes[pane.index()].archive_request = self.panes[pane.index()].archive.is_some();
+        if let Some(request) = &mut self.panes[pane.index()].pending {
+            request.wanted_cursor = location.cursor_path;
+        }
+    }
+
+    /// Reopen a durable archive address in this tab, without reviving old rows
+    /// or interpreting its display string as a native filesystem path.
+    pub(super) fn open_archive_address(
+        &mut self,
+        pane: PaneId,
+        address: ArchiveAddress,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if address.validate().is_err() {
+            return false;
+        }
+        let Some(parent) = address.container.parent().map(Path::to_owned) else {
+            return false;
+        };
+        let current = &self.panes[pane.index()];
+        let Some(navigation) = current.generation.checked_add(1).map(NavigationId) else {
+            return false;
+        };
+        let mut location = TabLocation::from_saved(parent, Some(address), None, current.sort);
+        if !send(location.command(pane, navigation)) {
+            self.panes[pane.index()]
+                .set_error("Archive navigation queue is busy", &mut self.retired);
+            return false;
+        }
+        let outgoing = self.replace_pane_location(pane, &mut location, send);
+        self.retired.push(Box::new(outgoing));
+        self.navigation_accepted(pane, navigation, location.path, None, send);
+        self.panes[pane.index()].archive_request = true;
+        self.tab_session_changed(pane, send);
+        drag_drop::invalidate(&self.drag_drop.targets);
+        true
+    }
+
+    fn replace_pane_location(
+        &mut self,
+        pane: PaneId,
+        location: &mut TabLocation,
+        send: &dyn Fn(Command) -> bool,
+    ) -> Pane {
         let slot = pane.index();
         let mut incoming = Pane::new(location.path.clone());
         incoming.archive = location.archive.take();
+        incoming.network = location.network.take();
+        incoming.network_return = location.network_return.take();
         incoming.history = mem::take(&mut location.history);
         incoming.history_index = location.history_index;
         incoming.sort = location.sort;
@@ -266,20 +369,7 @@ impl Presenter {
         if let Some(scan) = outgoing.size_scan.take() {
             send(Command::CancelFolderSizes { pane, scan });
         }
-        let tabs = &mut self.tabs.panes[slot];
-        tabs.tabs[tabs.active].parked = Some(TabLocation::park(&mut outgoing));
-        tabs.active = target;
-        self.retired.push(Box::new(outgoing));
-        self.navigation_accepted(
-            pane,
-            navigation,
-            location.path,
-            location.navigation_history,
-            send,
-        );
-        if let Some(request) = &mut self.panes[slot].pending {
-            request.wanted_cursor = location.cursor_path;
-        }
+        outgoing
     }
 
     /// Close an inactive tab immediately; an active close commits only when its

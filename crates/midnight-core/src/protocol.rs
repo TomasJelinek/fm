@@ -28,7 +28,7 @@ impl PaneId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NavigationId(pub u64);
 
 /// Shared selection captured at the instant of the user's action. Expansion belongs to workers.
@@ -42,11 +42,39 @@ pub struct SelectedFiles {
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    EnqueueCapturedTransfer(crate::CapturedTransferRequest),
+    RunFileList(Box<crate::FileListRequest>),
+    ConfirmFileList {
+        id: DesktopRequestId,
+        generation: u64,
+    },
+    CancelFileList {
+        id: DesktopRequestId,
+        generation: u64,
+    },
+    CopyGeneratedText {
+        request: DesktopRequestId,
+        content: Arc<dyn crate::GeneratedTextSource>,
+        cancel: crate::Cancellation,
+    },
+    OpenSizeWarnings {
+        request: DesktopRequestId,
+        report: crate::SizeWarningReport,
+        cancel: crate::Cancellation,
+    },
+    Tree(Box<crate::TreeCommand>),
+    NetworkNavigate {
+        pane: PaneId,
+        navigation: NavigationId,
+        action: crate::NetworkAction,
+        sort: SortSpec,
+    },
     PreviewUserCommand(Box<crate::UserCommandRequest>),
     ExecuteUserCommand(Box<crate::UserCommandRequest>),
     CancelUserCommand(crate::UserCommandRequestId),
     StartChecksums(Box<crate::ChecksumRequest>),
     StartSelectedChecksums(Box<crate::SelectedChecksumRequest>),
+    VerifyChecksumManifest(Box<crate::ChecksumVerifyRequest>),
     CancelChecksums {
         job: crate::ChecksumJobId,
         generation: crate::ChecksumGeneration,
@@ -65,6 +93,7 @@ pub enum Command {
         save_id: crate::ChecksumManifestId,
     },
     StartFind(Box<crate::FindRequest>),
+    SortFind(crate::FindSortRequest),
     CancelFind {
         session: crate::FindSessionId,
         generation: crate::FindGeneration,
@@ -144,17 +173,24 @@ pub enum Command {
         navigation: NavigationId,
         files: SelectedFiles,
     },
+    PrepareCapturedDrag {
+        id: crate::DragId,
+        pane: PaneId,
+        navigation: NavigationId,
+        source: Arc<dyn crate::CapturedClipboardFiles>,
+    },
     StartDrag(crate::DragId),
     CancelDrag(crate::DragId),
     AcceptDrop {
+        verification: crate::TransferVerification,
         token: crate::DropToken,
         id: crate::OperationId,
     },
     RejectDrop(crate::DropToken),
-    InternalDrop {
+    InternalDrop(Box<crate::InternalDropRequest>),
+    CompleteInternalDrop {
         id: crate::DragId,
-        target: crate::FileDropTarget,
-        targets_revision: u64,
+        target: Arc<dyn crate::CapturedDropDirectory>,
     },
     Search(SearchRequest),
     CancelSearch {
@@ -186,9 +222,24 @@ pub enum Command {
         request: DesktopRequestId,
         text: String,
     },
+    ReadPathClipboardText {
+        request: DesktopRequestId,
+    },
+    PickPath {
+        request: DesktopRequestId,
+        input: crate::PathPickerRequest,
+    },
+    CancelPathPicker {
+        request: DesktopRequestId,
+    },
     CopyFiles {
         request: DesktopRequestId,
         files: SelectedFiles,
+    },
+    CopyCapturedFiles {
+        request: DesktopRequestId,
+        source: Arc<dyn crate::CapturedClipboardFiles>,
+        cancel: crate::Cancellation,
     },
     CutFiles {
         request: DesktopRequestId,
@@ -210,6 +261,7 @@ pub enum Command {
         request: DesktopRequestId,
         paths: Vec<PathBuf>,
     },
+    QueryVolumeInformation(crate::VolumeInformationRequest),
     /// Expand the immutable selected paths on a backend worker, never in UI.
     ShowSelectionProperties {
         request: DesktopRequestId,
@@ -223,6 +275,14 @@ pub enum Command {
         navigation: NavigationId,
         path: PathBuf,
     },
+    /// Directory-only activation must never invoke a host file association,
+    /// including when the captured link has since been replaced with a file.
+    ResolveDirectoryLink {
+        request: DesktopRequestId,
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
+    },
     ComputeFolderSizes {
         pane: PaneId,
         navigation: NavigationId,
@@ -231,6 +291,7 @@ pub enum Command {
         /// an empty or files-only snapshot never falls back to all directories.
         selection: Option<Arc<SelectionSnapshot>>,
     },
+    ArchiveSizes(crate::ArchiveSizeCommand),
     /// Observe cached and future folder sizes for this immutable selection.
     SummarizeSelectedFolders(crate::SelectionSizeRequest),
     ComputeEntrySize {
@@ -273,6 +334,15 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    FileList(Box<crate::FileListEvent>),
+    ArchiveSizes(Box<crate::ArchiveSizeEvent>),
+    Tree(Box<crate::TreeEvent>),
+    NetworkAvailability(bool),
+    NetworkUpdated {
+        pane: PaneId,
+        navigation: NavigationId,
+        update: Box<crate::NetworkUpdate>,
+    },
     UserCommand(Box<crate::UserCommandEvent>),
     Checksum(Box<crate::ChecksumEvent>),
     ChecksumRejected(Box<crate::ChecksumRejected>),
@@ -294,6 +364,7 @@ pub enum Event {
     },
     ArchiveAvailability(Vec<crate::ArchiveFormat>),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
+    FilesystemPluginsListed(Result<Vec<crate::FilesystemPluginInfo>, String>),
     DirectoriesCompared {
         id: crate::CompareId,
         result: Result<Arc<crate::CompareResult>, FsError>,
@@ -317,6 +388,14 @@ pub enum Event {
         request: DesktopRequestId,
         destination: PathBuf,
         result: Result<crate::FileClipboard, FsError>,
+    },
+    PathClipboardTextRead {
+        request: DesktopRequestId,
+        result: Result<Arc<str>, FsError>,
+    },
+    PathPicked {
+        request: DesktopRequestId,
+        result: Result<Option<PathBuf>, FsError>,
     },
     ShellMenuFinished {
         request: DesktopRequestId,
@@ -342,9 +421,9 @@ pub enum Event {
         navigation: NavigationId,
         revision: SelectionRevision,
         selection: Arc<SelectionSnapshot>,
-        /// All/Invert still applies to unseen rows: paths absent from the basis
-        /// are selected until the complete-view rebase supplies explicit bits.
-        deferred: bool,
+        /// Selection defaults for paths absent from the snapshot's basis until
+        /// the complete-view rebase supplies explicit bits for every row.
+        deferred: crate::SelectionDefaults,
     },
     SelectionFailed {
         pane: PaneId,
@@ -370,6 +449,10 @@ pub enum Event {
         entry: EntryId,
         size: FolderSize,
     },
+    SizeWarningsReady {
+        request: DesktopRequestId,
+        result: Result<Arc<dyn crate::GeneratedTextSource>, FsError>,
+    },
     FolderSizesFinished {
         pane: PaneId,
         navigation: NavigationId,
@@ -388,6 +471,9 @@ pub enum Event {
     DesktopContext {
         shell: ShellFlavor,
         locations: Vec<NavigationLocation>,
+        /// Virtual Network position within the special-location section. Zero
+        /// places it after all drives and before every local special folder.
+        network_position: usize,
     },
     DesktopContextFailed(FsError),
     IconLoaded {
@@ -404,6 +490,7 @@ pub enum Event {
         root: PathBuf,
         details: VolumeDetails,
     },
+    VolumeInformationLoaded(Box<crate::VolumeInformationResult>),
     VolumesFailed(FsError),
     ListingStarted {
         pane: PaneId,
@@ -429,6 +516,14 @@ pub enum Event {
     ListingFailed {
         pane: PaneId,
         navigation: NavigationId,
+        error: FsError,
+    },
+    /// A native listing failed. Retry the raw fallback under a fresh navigation ID
+    /// only while this exact request remains pending; otherwise discard the event.
+    ListingFallback {
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
         error: FsError,
     },
     SpaceUpdated {

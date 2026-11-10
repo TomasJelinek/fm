@@ -42,7 +42,8 @@ manifest is strict: unknown fields, foreign targets, unsupported versions,
 relative executable traversal, duplicate extensions and control characters in
 the display name are rejected. Extensions are lowercase ASCII letters/digits,
 at most 32 bytes each and 64 entries. A package must not contain both this
-manifest and native-viewer `plugin.toml`. Duplicate image-provider IDs exclude
+manifest and native-viewer `plugin.toml` or web-viewer `web-viewer.json`.
+Duplicate image-provider IDs exclude
 all conflicting providers; application composition also checks native IDs.
 
 `discover(application_executable: &Path)` takes the **full executable path**, not
@@ -88,6 +89,7 @@ session.page_count() -> usize
 session.page_metadata(page: usize) -> Option<Metadata>
 session.render(viewport, &cancel, timeout) -> io::Result<Frame>
 session.render_page(page: usize, viewport, &cancel, timeout) -> io::Result<Frame>
+session.validate(&cancel) -> io::Result<()>
 session.close()
 ```
 
@@ -99,6 +101,19 @@ cannot request more source data. `Metadata { width, height }` describes original
 oriented dimensions. `Frame { width, height, rgba }` contains a complete physical
 viewport with straight alpha. Every render error, cancellation or source change
 invalidates the session; subsequent requests cannot revive it.
+
+The application's raster-image presentation may request individual bounded tiles
+through the same positioned viewport operation. Retained host tiles still require
+source revalidation before a new camera frame is published. `validate` performs
+that check on the backend without another decoder render. The host also rejects
+a reply whose declared payload exceeds the requested raster before allocating its
+body. These are host changes; the independent wire/SDK version is unchanged.
+
+Document providers currently retain one bounded viewport per render. They are
+identified by actual document metadata, not a filename suffix. Reinterpreting a
+whole PDF page for each small tile would amplify CPU work; document tiling is not
+claimed as an optimization. Both paths retain cancellation, captured-source
+validation and the same public viewport bounds.
 
 Page indices are zero-based. `metadata()` and existing `render()` address page
 zero; an ordinary image has one page and `is_document() == false`. Out-of-range
@@ -113,6 +128,55 @@ progress can remain blocked until the OS returns; decoder termination does not
 claim to interrupt that call or release its worker early. Source reads share
 the application's weighted I/O budget. Session admission/generation checks and
 discarding obsolete results belong to the viewer engine.
+
+## Source ranges and archive memory
+
+The user resumed generic archive streaming and private disk spooling on
+9 November 2026. ARCH-01 is implementation work in progress; the paragraphs
+below describe the installed runtime until its replacement is qualified.
+The experimental JPEG-only adapter remains reverted; all raster formats use
+the shared image-rs decoder path. The replacement must address the common
+source/cache lifecycle for all viewers, with no fixed archive/member byte-size
+ceiling. Bounded working memory, cancellation, integrity verification and explicit
+out-of-space errors remain required.
+
+Broker `Read { offset, length }` requests allow a decoder to request only part of
+the encoded file; they do not guarantee that the decoder itself streams. In the
+pinned `image 0.25.10`, `JpegDecoder::new` calls `read_to_end` into its own `Vec<u8>`.
+This happens for both native and archive JPEGs. For an archive JPEG, the archive
+cache and image worker can therefore retain separate encoded copies during
+decoding, in addition to decoded pixels and the archive source. The JPEG decoder's
+input is dropped after decode; the archive cache has a separate lifetime.
+A future format-specific decoder could read only an embedded preview. PSD is
+not a currently supported codec. The current raster plugin retains the complete
+decoded still image, within its pixel budget.
+Broker source reads are currently available during Open, not arbitrary later
+render calls; deferred layer/content loading would need a separately qualified
+protocol extension.
+
+An archive source is not automatically a streaming source. The current archive
+worker retains its bounded source in RAM; first ZIP member access decompresses
+and verifies that complete member into RAM, and solid 7z access stages and
+verifies the required block. A small viewer read can therefore cause much more
+decompression and retained memory than the requested range. No extracted image
+TEMP file or disk spool is currently created for internal viewing. Viewer pixels
+are released with the decoder; archive content can outlive the viewer while a
+panel or another reader retains the mount. Thumbnail disk caching is separate.
+
+ARCH-01 tracks replacing these full-memory archive buffers with bounded source
+reads and, when seek/decompression needs it, a private disk spool owned by a
+content lease. This must preserve source identity, aggregate RAM budgets,
+cancellation, cleanup and low-disk errors. It must not expose an unverified member
+as verified: full CRC validation can still require reading the whole member or
+solid block even when only a preview is displayed. The whole decoded payload
+need not occupy RAM. Spooling is a planned backend capability, not an implemented
+property of the current `read_at` interface.
+Replacing the JPEG decoder's own full-input buffer requires separately verified
+streaming decoder behavior; disk spooling alone cannot remove that allocation.
+Use an aggregate small-file RAM budget and spill larger content to disk rather
+than writing every small image unconditionally. Future qualification must measure
+peak memory across both workers, not just broker chunk sizes, and cover preview-only
+reads, source changes, cancellation, CRC failure and exhausted spool storage.
 
 ## Wire format and resource limits
 

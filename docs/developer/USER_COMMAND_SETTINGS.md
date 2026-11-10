@@ -7,10 +7,10 @@ through `UserPreferences::replace_user_commands`, preserving unrelated bindings.
 The toolbar's Settings action selects the corresponding ID on this page.
 
 Drag a list row to change command order; the insertion line shows its destination.
-Dropping commits one preferences transaction and keeps the dragged command
-selected. A same-position drop does not save. Up/Down remain available for keyboard
+Dropping stages the new order within Options and keeps the dragged command
+selected. OK persists it; Cancel restores the original order. Up/Down remain available for keyboard
 and accessibility use. The list scrolls at its edges while dragging, and keyboard
-navigation reveals the selected row. Dirty drafts require Apply or Cancel before
+navigation reveals the selected row. Dirty drafts require Update command or Discard before
 reordering. Escape, right-click, pointer cancellation, closing Options, stale
 configuration and releases outside the actually visible list cancel the drag.
 
@@ -23,18 +23,27 @@ Salamander's `src/edtlbwnd.cpp::MoveItem` and mouse/timer/cancel handling, with 
 Menu's `EDTLBN_MOVEITEM2` integration in `src/dialogs4.cpp`; no reference source or
 assets are copied.
 
-Program mode has an absolute native executable path and a JSON list of argument
-templates. Each JSON string is one argument, including empty strings; no shell
-splitting is applied. Terminal mode has literal script text, a shell choice and
-explicit required scalar context declarations. The variable picker adds a quoted
-environment reference and its declaration together. `${selected.paths}` is a whole
-Program argument in Single mode; the core rejects invalid combinations.
+The page follows Salamander's User Menu: Menu Contents and its New/Delete/Up/Down
+controls appear above the selected item's Command, Arguments and Initial
+directory fields. The reference layout is `src/lang/lang.rc:247`; field-specific
+menus and local editing are in `src/dialogs4.cpp:1980–2341` and
+`src/execute.cpp:223/321/407/1965`. No reference assets or source are copied.
 
-Apply validates the complete candidate configuration through the core before
-using the ordinary preferences transaction. A refused save retains explicitly
-unsaved local preferences and the existing Save again action. Cancel reloads the
-current saved-in-memory configuration. Changing the selected command while a draft
-is dirty requires Apply or Cancel. A configuration replacement invalidates stale
+Program mode has an absolute native executable path and editable argument rows.
+Each row is one argument, including empty rows; spaces and quotes are literal,
+and no shell splitting is applied. Add/Remove and Up/Down edit those boundaries.
+The argument value menu inserts captured file/folder values as complete arguments.
+`${selected.paths}` is a whole Program argument in Single mode; the core rejects
+invalid combinations. Terminal script is an explicit advanced choice with a shell
+and required captured context declarations. Its script runs literally.
+
+Update command validates and stages one command, allowing another command to be
+edited. The common OK footer also validates any remaining draft, saves the complete
+Options transaction, and closes only after storage succeeds. A failed save keeps
+the dialog open for retry. Discard changes reloads the currently staged command;
+Cancel discards the entire Options session, including applied commands and order.
+Changing the selected command while a draft is dirty requires Update command or
+Discard. A configuration replacement invalidates stale
 draft callbacks; no displayed path is used as an existing native identity.
 
 Executable and icon fields remember whether the user edited that path. Renaming
@@ -46,10 +55,24 @@ native parent. Keep the original path or enter a fully representable replacement
 Images are requested by the toolbar's
 backend image service; this editor performs no filesystem or image loading.
 
+Browse buttons use the backend's native program, directory and image pickers.
+Requests capture the target field, draft revision and configuration identity;
+typing, changing pages or closing Options invalidates the result. Cancel leaves
+the draft unchanged. Program and image picks retain the original native path,
+including values whose displayed Unicode caption is lossy. Initial directory is
+currently a template string: unrepresentable native directory picks are refused,
+and dollar signs in a picked literal are escaped for that template. The Active
+folder button remains available without converting a native folder to text.
+
+Options → Editors shares the argument-row control and a Browse button. Its draft
+also survives page switches; Cancel discards it. Use the system default editor
+or choose a program and include a complete File argument for F4. OK validates
+the editor configuration once; editing or browsing never launches the editor.
+
 Preview validates an immutable transient configuration and invokes the backend's
 Preview command only. It neither applies settings nor executes processes. Once
-accepted, Options closes and Jobs displays the captured preparation result. The
-draft remains available when Options reopens. Disabled commands can be previewed;
+accepted, Jobs displays the captured preparation result while Options remains
+open with its draft. Disabled commands can be previewed;
 execution remains disabled. Availability and native-shell errors are backend
 results. See [the backend contract](USER_COMMANDS.md) for provider and shell limits.
 
@@ -70,6 +93,10 @@ Focused checks live in `presenter/user_command_settings_tests.rs`, the pure form
 tests and `tests/user_command_settings_ui.rs`. Qualification evidence is recorded
 in [the settings report](../verification/2026-11-07-custom-command-settings.md);
 raw test output remains under `_build/goal/commands/`.
-The final settings target passes all 12 software-window cases on Windows and
-Linux, with strict UI/application Clippy. The checks exercise pointer, keyboard
-and widget accessibility actions; real-desktop acceptance is qualified separately.
+The earlier settings target passed 12 software-window cases on Windows and Linux;
+that evidence predates the argument-row/native-picker refactor. Current refactor
+qualification is recorded separately under `_build/goal/commands-refactor/`.
+See [the refactor verification](../verification/2026-11-07-user-menu-refactor.md)
+for the fresh 510 Windows / 506 Linux functional scope and remaining strict gate.
+The checks exercise pointer, keyboard and widget accessibility actions;
+real-desktop acceptance is qualified separately.

@@ -16,7 +16,7 @@ pub(super) fn prepare(
                 .unwrap_or_else(|error| error.into_inner())
                 .iter()
                 .filter(|(path, _)| !selection.contains_path(path))
-                .map(|(path, size)| (path.clone(), *size))
+                .map(|(path, size)| (path.clone(), size.clone()))
                 .collect()
         })
         .unwrap_or_default();
@@ -62,8 +62,13 @@ mod tests {
         let old_worker_cache = original.sizes.clone();
         let snapshots = Arc::new(Mutex::new([
             SnapshotState {
+                tree_root: None,
+                tree_notify: None,
                 archive: None,
+                network: None,
+                network_navigation: None,
                 archive_navigation: None,
+                archive_sort_sizes: None,
                 visible: Some(original.clone()),
                 committed: Some(original.clone()),
                 pending: None,
@@ -100,8 +105,13 @@ mod tests {
         let unrelated_cache = unrelated.sizes.clone();
         let snapshots = Arc::new(Mutex::new([
             SnapshotState {
+                tree_root: None,
+                tree_notify: None,
                 archive: None,
+                network: None,
+                network_navigation: None,
                 archive_navigation: None,
+                archive_sort_sizes: None,
                 visible: Some(original.clone()),
                 committed: Some(unrelated),
                 pending: None,

@@ -1,0 +1,72 @@
+import { ComboBox } from "std-widgets.slint";
+import { HintedLineEdit } from "hinted-inputs.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { Theme } from "theme.slint";
+
+// Kept instantiated while collapsed: disclosure never discards an unsaved query.
+export component FindAdvanced inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <bool> narrow;
+    in property <bool> content-enabled;
+    in-out property <bool> modified-enabled;
+    in-out property <string> modified-text: "1";
+    in-out property <int> modified-unit: 1;
+    in-out property <bool> duplicates;
+    in-out property <bool> whole-words;
+    private property <int> seconds-per-unit: root.modified-unit == 0 ? 60 : root.modified-unit == 1 ? 3600 : 86400;
+    out property <bool> valid: !root.modified-enabled || (root.modified-text.is-float()
+        && root.modified-text.to-float() > 0
+        && root.modified-text.to-float() == floor(root.modified-text.to-float())
+        && root.modified-text.to-float() <= 31622400 / root.seconds-per-unit);
+    out property <int> modified-seconds: root.valid && root.modified-enabled
+        ? round(root.modified-text.to-float() * root.seconds-per-unit) : 0;
+    out property <string> summary: (root.modified-enabled
+        ? (root.valid ? "Modified: last " + root.modified-text + " " + ["minutes", "hours", "days"][root.modified-unit]
+            : "Modified interval needs a positive whole number") : "")
+        + (root.duplicates ? (root.modified-enabled ? " · " : "") + "Identical files" : "")
+        + (root.whole-words && root.content-enabled ? (root.modified-enabled || root.duplicates ? " · " : "") + "Whole words" : "");
+    callback submit();
+    min-width: 0px;
+    preferred-height: fields.preferred-height;
+    fields := VerticalLayout {
+        spacing: 6px; alignment: start;
+        GridLayout {
+            spacing: 6px;
+            WrappingCheckBox {
+                row: 0; col: 0;
+                text: "Modified within"; checked <=> root.modified-enabled; enabled: root.enabled;
+                hint: "Match modification times in the interval ending when this search starts. Unknown and future times do not match.";
+            }
+            HintedLineEdit {
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                text <=> root.modified-text; enabled: root.enabled && root.modified-enabled;
+                accessible-label: "Modified age"; min-width: 0px; horizontal-stretch: 1;
+                hint: "A positive whole number, up to 366 days in the chosen unit.";
+                accepted => { root.submit(); }
+            }
+            ComboBox {
+                row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
+                model: ["Minutes", "Hours", "Days"]; current-index <=> root.modified-unit;
+                enabled: root.enabled && root.modified-enabled;
+                accessible-label: "Modified age unit"; min-width: 0px;
+            }
+        }
+        if !root.valid: Text {
+            text: "Enter a positive whole number, no more than 366 days.";
+            color: Theme.error-text; wrap: word-wrap;
+        }
+        WrappingCheckBox {
+            text: "Identical files"; checked <=> root.duplicates; enabled: root.enabled;
+            hint: "Find groups of different files with identical bytes. Matching sizes and hashes are verified by comparing contents. Hard-link aliases count once.";
+        }
+        if root.duplicates: Text {
+            text: "Files only · identical contents · grouped results";
+            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        WrappingCheckBox {
+            text: "Whole words"; checked <=> root.whole-words;
+            enabled: root.enabled && root.content-enabled;
+            hint: "Match text at word boundaries. Enable Containing text to use this option.";
+        }
+    }
+}

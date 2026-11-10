@@ -1,4 +1,4 @@
-use crate::Limits;
+use crate::{CpuBudget, ResourcePolicy};
 use std::io;
 
 fn limit(resource: libc::__rlimit_resource_t, value: u64) -> io::Result<()> {
@@ -13,9 +13,11 @@ fn limit(resource: libc::__rlimit_resource_t, value: u64) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn restrict(limits: Limits) -> io::Result<()> {
+pub(super) fn restrict(limits: ResourcePolicy) -> io::Result<()> {
     limit(libc::RLIMIT_AS, limits.memory_bytes)?;
-    limit(libc::RLIMIT_CPU, u64::from(limits.cpu_seconds))?;
+    if let CpuBudget::Seconds(seconds) = limits.cpu {
+        limit(libc::RLIMIT_CPU, u64::from(seconds))?;
+    }
     limit(libc::RLIMIT_CORE, 0)?;
     limit(libc::RLIMIT_FSIZE, 0)?;
     limit(libc::RLIMIT_NOFILE, 3)?;

@@ -28,6 +28,11 @@ pub(crate) fn run(
     shared: Arc<Shared>,
     commands: Receiver<Command>,
 ) {
+    let dispatcher = std::thread::current();
+    shared.dispatcher.bind(Arc::new(move || {
+        dispatcher.unpark();
+        true
+    }));
     let (bridge, receivers) = Bridge::new(shared.clone());
     let Ok((_registration, host)) = bridge.register() else {
         shared.fatal(1, "Host callback registration failed".into());
@@ -80,6 +85,7 @@ pub(crate) fn run(
     let mut shutting_down = false;
     let mut pending_reply: Option<crate::replies::PendingReply> = None;
     loop {
+        shared.dispatcher.reset();
         let closing = shared.closing.load(Ordering::Acquire);
         if closing && !shutting_down {
             shared.discard_output(); // Large model cleanup remains on backend before quota release.
@@ -128,7 +134,23 @@ pub(crate) fn run(
                 // SAFETY: request data are borrowed only until submit returns.
                 let status = unsafe { loaded.api.submit.unwrap()(instance, &request) };
                 if status != abi::OK {
-                    shared.failure(command.id, format!("Plugin rejected request ({status})"));
+                    if command.kind == abi::REQUEST_LOCATE {
+                        shared.push(
+                            HostEvent {
+                                request_id: command.id,
+                                generation: shared.generation,
+                                kind: EventKind::Failed(messages::Failure {
+                                    code: status,
+                                    message: format!(
+                                        "Plugin rejected optional location request ({status})"
+                                    ),
+                                }),
+                            },
+                            8192,
+                        );
+                    } else {
+                        shared.failure(command.id, format!("Plugin rejected request ({status})"));
+                    }
                 }
             }
         }
@@ -199,7 +221,9 @@ pub(crate) fn run(
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(2));
+        // Every command, plugin-ready callback, read reply and completed work
+        // wakes this owner. Timeout is only a shutdown/backpressure fallback.
+        std::thread::park_timeout(Duration::from_millis(10));
     }
     bridge.stop.store(true, Ordering::Release);
     for worker in workers {
@@ -269,6 +293,7 @@ fn services(
         {
             break;
         }
+        bridge.shared.dispatcher.notify();
     }
 }
 
@@ -358,6 +383,9 @@ fn decode_event(event: abi::Event) -> Result<Option<(EventKind, usize)>, crate::
             }
         }
         abi::EVENT_SEARCH_MATCH => EventKind::SearchMatch(codec::decode(payload).map_err(invalid)?),
+        abi::EVENT_TEXT_POSITION => {
+            EventKind::TextPosition(codec::decode(payload).map_err(invalid)?)
+        }
         abi::EVENT_PROGRESS => EventKind::Progress(codec::decode(payload).map_err(invalid)?),
         abi::EVENT_FAILED => EventKind::Failed(codec::decode(payload).map_err(invalid)?),
         abi::EVENT_COMPLETED if payload.is_empty() => EventKind::Completed,
@@ -398,6 +426,11 @@ fn valid_revision(kind: &EventKind, shared: &Shared) -> bool {
                 && within(&page.source)
         }
         EventKind::SearchMatch(found) => within(&found.source),
+        EventKind::TextPosition(position) => {
+            matches!(shared.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
+                && position.revision == shared.revision
+                && position.source_offset <= shared.length
+        }
         _ => true,
     }
 }
@@ -406,8 +439,35 @@ fn valid_revision(kind: &EventKind, shared: &Shared) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn optional_position_is_validated_against_captured_source_and_mode() {
+        let mut shared = crate::session::tests::shared();
+        let position = viewer::TextPosition {
+            revision: 9,
+            source_offset: 64,
+            line: 100,
+            column: 7,
+        };
+        assert!(valid_revision(&EventKind::TextPosition(position), &shared));
+        assert!(!valid_revision(
+            &EventKind::TextPosition(viewer::TextPosition {
+                revision: 8,
+                ..position
+            }),
+            &shared
+        ));
+        assert!(!valid_revision(
+            &EventKind::TextPosition(viewer::TextPosition {
+                source_offset: 65,
+                ..position
+            }),
+            &shared
+        ));
+        Arc::get_mut(&mut shared).unwrap().mode = viewer::MODE_BINARY;
+        assert!(!valid_revision(&EventKind::TextPosition(position), &shared));
+    }
+    #[test]
     fn document_budget_accounts_for_decoded_block_and_anchor_allocations() {
-        use crate::api::document::{BLOCK_RULE, Block, DocumentPage};
+        use crate::api::document::{BLOCK_PARAGRAPH, Block, DocumentPage, TableCell, TableRow};
         let text = viewer::TextPage {
             revision: 9,
             source: viewer::SourceRange {
@@ -432,7 +492,19 @@ mod tests {
             },
             blocks: vec![
                 Block {
-                    kind: BLOCK_RULE,
+                    table: Some(TableRow {
+                        header: false,
+                        cells: vec![
+                            TableCell {
+                                start: 0,
+                                end: 0,
+                                alignment: 0
+                            };
+                            8
+                        ],
+                    }),
+                    strikethrough: None,
+                    kind: BLOCK_PARAGRAPH,
                     depth: 0,
                     heading_level: 0,
                     text,
@@ -458,7 +530,11 @@ mod tests {
         };
         let (_, charged) = decode_event(event).unwrap().unwrap();
         assert!(
-            charged >= 512 * (size_of::<Block>() + size_of::<viewer::Anchor>()),
+            charged
+                >= 512
+                    * (size_of::<Block>()
+                        + size_of::<viewer::Anchor>()
+                        + 8 * size_of::<TableCell>()),
             "decoded allocation was charged as compact wire bytes"
         );
     }

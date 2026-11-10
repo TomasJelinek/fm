@@ -19,21 +19,19 @@ fn settle(test: &mut ui::TestUi) {
     }
 }
 
-fn assert_choice(test: &ui::TestUi, field: &str, labels: &[&str], chosen: &str) {
-    for label in labels {
-        let item = ui::popup_item(
-            &test.window,
-            &format!("{field}: {label}"),
-            AccessibleRole::Button,
-        );
-        let checked = item
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap();
-        assert_eq!(
-            checked.as_str(),
-            if *label == chosen { "true" } else { "false" }
-        );
+fn choose_attribute(test: &ui::TestUi, field: &str, value: &str) {
+    for _ in 0..3 {
+        let item = ui::popup_item(&test.window, field, AccessibleRole::Checkbox);
+        if item
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap()
+            == value
+        {
+            return;
+        }
+        ui::click_popup(&test.window, field, AccessibleRole::Checkbox);
     }
+    panic!("attribute {field} cannot reach {value}");
 }
 
 fn rendered_file_rows(item: ItemRc) -> usize {
@@ -70,8 +68,143 @@ fn action_is_not_vertically_clipped(test: &ui::TestUi, label: &str) {
     }
 }
 
+fn has_label(item: ItemRc, label: &str) -> bool {
+    if item
+        .accessible_string_property(AccessibleStringProperty::Label)
+        .is_some_and(|value| value == label)
+    {
+        return true;
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if has_label(item, label) {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
-fn metadata_editor_requires_preview_and_keeps_sections_readable() {
+fn attributes_use_one_compact_three_state_control_each() {
+    let mut test = ui::TestUi::new();
+    test.window.set_metadata_can_windows(true);
+    test.window.set_metadata_windows_mask(39);
+    test.window.set_metadata_can_compress(true);
+    test.window.set_metadata_token("compact:1".into());
+    settle(&mut test);
+    let drafts = Rc::new(RefCell::new(Vec::<MetadataDraft>::new()));
+    let captured = drafts.clone();
+    test.window
+        .on_preview_metadata(move |_, draft| captured.borrow_mut().push(draft));
+    for label in ["Read-only", "Hidden", "System", "Archive", "Compression"] {
+        let control = ui::popup_item(&test.window, label, AccessibleRole::Checkbox);
+        assert!(
+            control.geometry().height() <= 30.0,
+            "attribute row should be compact"
+        );
+        assert_eq!(
+            control
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .unwrap()
+                .as_str(),
+            "Unchanged"
+        );
+    }
+    for (expected, value) in [(1, "Set"), (2, "Clear"), (0, "Unchanged")] {
+        ui::click_popup(&test.window, "Read-only", AccessibleRole::Checkbox);
+        let control = ui::popup_item(&test.window, "Read-only", AccessibleRole::Checkbox);
+        assert_eq!(
+            control
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .unwrap()
+                .as_str(),
+            value
+        );
+        ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+        assert_eq!(drafts.borrow().last().unwrap().read_only, expected);
+    }
+    ui::key(&test.window, Key::Escape);
+}
+
+#[test]
+fn compact_attribute_keyboard_and_capabilities_preserve_leave_semantics() {
+    let mut test = ui::TestUi::new();
+    test.window.set_metadata_can_windows(true);
+    test.window.set_metadata_windows_mask(1);
+    test.window.set_metadata_token("keyboard:1".into());
+    settle(&mut test);
+    let hidden = ui::popup_item(&test.window, "Hidden", AccessibleRole::Checkbox);
+    assert_eq!(
+        hidden
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .unwrap(),
+        "false"
+    );
+    assert_eq!(
+        hidden
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap(),
+        "Unavailable"
+    );
+    drop(hidden);
+    ui::click_popup(&test.window, "Read-only", AccessibleRole::Checkbox);
+    ui::key(&test.window, Key::Space);
+    let value = || {
+        ui::popup_item(&test.window, "Read-only", AccessibleRole::Checkbox)
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap()
+    };
+    assert_eq!(value(), "Clear");
+    ui::chord(&test.window, &[Key::Shift], Key::Space);
+    assert_eq!(value(), "Set");
+    ui::key(&test.window, Key::Delete);
+    assert_eq!(value(), "Unchanged");
+}
+
+#[test]
+fn metadata_edit_sections_exclude_obsolete_preview_and_require_prepared_confirmation() {
+    let mut test = ui::TestUi::new();
+    test.window.set_metadata_can_windows(true);
+    test.window.set_metadata_can_modified(true);
+    test.window.set_metadata_can_rename(true);
+    test.window.set_metadata_token("review:1".into());
+    settle(&mut test);
+    let root = {
+        let popups = WindowInner::from_pub(test.window.window()).active_popups();
+        ItemRc::new_root(popups.last().unwrap().component.clone())
+    };
+    assert!(
+        !has_label(root.clone(), "Preview"),
+        "obsolete Preview tab remains"
+    );
+    for tab in ["Attributes", "Times", "Case"] {
+        assert!(has_label(root.clone(), tab));
+    }
+    let previews = Rc::new(RefCell::new(Vec::new()));
+    let captured = previews.clone();
+    test.window
+        .on_preview_metadata(move |_, draft| captured.borrow_mut().push(draft));
+    let applied = Rc::new(RefCell::new(false));
+    let captured = applied.clone();
+    test.window
+        .on_confirm_metadata(move |_, _, _| *captured.borrow_mut() = true);
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
+    assert_eq!(previews.borrow().len(), 1);
+    assert!(
+        !*applied.borrow(),
+        "review must not apply an unprepared draft"
+    );
+    test.window.set_metadata_revision("4".into());
+    test.window.set_metadata_ready(true);
+    test.window.set_metadata_preview_current(true);
+    settle(&mut test);
+    ui::click_popup(&test.window, "Apply", AccessibleRole::Button);
+    assert!(*applied.borrow());
+}
+
+#[test]
+fn metadata_editor_requires_review_and_keeps_sections_readable() {
     let mut test = ui::TestUi::new();
     test.window.set_metadata_can_windows(true);
     test.window.set_metadata_windows_mask(39);
@@ -122,15 +255,20 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
         "the redundant captured-file preview list is no longer part of the editor"
     );
     drop(popups);
-    ui::click_popup(&test.window, "Apply", AccessibleRole::Button);
+    let popups = WindowInner::from_pub(test.window.window()).active_popups();
+    assert!(
+        !has_label(
+            ItemRc::new_root(popups.last().unwrap().component.clone()),
+            "Apply"
+        ),
+        "Apply must only be offered after an explicit prepared review"
+    );
+    drop(popups);
     assert!(applies.borrow().is_empty(), "unreviewed draft cannot apply");
     ui::click_popup(&test.window, "Attributes", AccessibleRole::Button);
-    ui::click_popup(&test.window, "Read-only: Set", AccessibleRole::Button);
-    ui::click_popup(&test.window, "Read-only: Set", AccessibleRole::Button);
-    assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Set");
-    ui::click_popup(&test.window, "Hidden: Clear", AccessibleRole::Button);
-    ui::click_popup(&test.window, "Read-only: Clear", AccessibleRole::Button);
-    assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Clear");
+    choose_attribute(&test, "Read-only", "Set");
+    choose_attribute(&test, "Hidden", "Clear");
+    choose_attribute(&test, "Read-only", "Clear");
     settle(&mut test);
     render::snapshot(&test, "metadata-before-refresh");
     action_is_not_vertically_clipped(&test, "Refresh");
@@ -144,33 +282,24 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
         2
     );
     assert_eq!(drafts.borrow().last().unwrap().hidden, 2);
-    ui::click_popup(&test.window, "Read-only: Leave", AccessibleRole::Button);
-    assert_choice(&test, "Read-only", &["Leave", "Set", "Clear"], "Leave");
-    ui::click_popup(
-        &test.window,
-        "Compression: Compress",
-        AccessibleRole::Button,
-    );
-    ui::click_popup(
-        &test.window,
-        "Compression: Uncompress",
-        AccessibleRole::Button,
-    );
-    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    choose_attribute(&test, "Read-only", "Unchanged");
+    choose_attribute(&test, "Compression", "Compress");
+    choose_attribute(&test, "Compression", "Uncompress");
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert_eq!(drafts.borrow().last().unwrap().read_only, 0);
     assert_eq!(drafts.borrow().last().unwrap().hidden, 2);
     assert_eq!(drafts.borrow().last().unwrap().compressed, 2);
     ui::click_popup(&test.window, "Times", AccessibleRole::Button);
     ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
     ui::click_popup(&test.window, "Modified: Now", AccessibleRole::Button);
-    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert_eq!(drafts.borrow().last().unwrap().modified_mode, 2);
     assert_eq!(drafts.borrow().last().unwrap().created_mode, 0);
     ui::click_popup(&test.window, "Times", AccessibleRole::Button);
     ui::click_popup(&test.window, "Change Modified", AccessibleRole::Checkbox);
-    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert_eq!(drafts.borrow().last().unwrap().modified_mode, 0);
-    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert!(
         drafts
             .borrow()
@@ -183,14 +312,27 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
     ui::key(&test.window, Key::Home);
     ui::key(&test.window, Key::DownArrow);
     ui::key(&test.window, Key::Return);
-    ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert_eq!(drafts.borrow().last().unwrap().case_mode, 1);
     test.window.set_metadata_revision("7".into());
     test.window.set_metadata_ready(true);
-    slint::platform::update_timers_and_animations();
+    test.window.set_metadata_preview_current(true);
+    settle(&mut test);
     ui::click_popup(&test.window, "Apply", AccessibleRole::Button);
     assert_eq!(applies.borrow()[0].0.as_str(), "1");
     assert_eq!(applies.borrow()[0].1.as_str(), "7");
+    ui::click_popup(&test.window, "Back to editing", AccessibleRole::Button);
+
+    // Recursion belongs to the whole prepared operation, including edits on other topics.
+    ui::click_popup(&test.window, "Include subfolders", AccessibleRole::Checkbox);
+    for tab in ["Times", "Case", "Attributes"] {
+        ui::click_popup(&test.window, tab, AccessibleRole::Button);
+        ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+        assert!(drafts.borrow().last().unwrap().recursive);
+    }
+    ui::click_popup(&test.window, "Include subfolders", AccessibleRole::Checkbox);
+    ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+    assert!(!drafts.borrow().last().unwrap().recursive);
 
     test.resize(1040, 720);
     settle(&mut test);
@@ -200,12 +342,12 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
             test.window.invoke_apply_fonts("".into(), font, font);
             std::thread::sleep(std::time::Duration::from_millis(250));
             settle(&mut test);
-            for tab in ["Attributes", "Times", "Case", "Preview"] {
+            for tab in ["Attributes", "Times", "Case"] {
                 ui::click_popup(&test.window, tab, AccessibleRole::Button);
                 settle(&mut test);
                 render::snapshot(&test, &format!("metadata-{tab}-{density}-{font}"));
-                let apply = ui::popup_item(&test.window, "Apply", AccessibleRole::Button);
-                action_is_not_vertically_clipped(&test, "Apply");
+                let apply = ui::popup_item(&test.window, "Review changes", AccessibleRole::Button);
+                action_is_not_vertically_clipped(&test, "Review changes");
                 let area = apply.geometry();
                 let origin = apply.map_to_native_window(area.origin);
                 assert!(area.size.width > 0.0 && area.size.height > 0.0);
@@ -218,7 +360,7 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
                     "{tab}, density={density}, font={font}: origin={origin:?}, bounds={area:?}"
                 );
             }
-            ui::click_popup(&test.window, "Preview changes", AccessibleRole::Button);
+            ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
             assert_eq!(
                 drafts.borrow().last().unwrap().case_mode,
                 1,
@@ -241,12 +383,21 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
                 ),
                 AccessibleRole::Text,
             );
+            let mut ancestor =
+                error.parent_item(i_slint_core::item_tree::ParentItemTraversalMode::StopAtPopups);
+            let viewport = loop {
+                let item = ancestor.expect("error text has a scroll viewport");
+                if item.downcast::<i_slint_core::items::Flickable>().is_some() {
+                    break item;
+                }
+                ancestor = item
+                    .parent_item(i_slint_core::item_tree::ParentItemTraversalMode::StopAtPopups);
+            };
             assert!(
-                error.geometry().width() > 500.0,
-                "error text must use the available card width, got {:?}",
-                error.geometry()
+                error.geometry().width() >= viewport.geometry().width() - 24.0,
+                "error text must fill the available compact viewport"
             );
-            let apply = ui::popup_item(&test.window, "Apply", AccessibleRole::Button);
+            let apply = ui::popup_item(&test.window, "Review changes", AccessibleRole::Button);
             let area = apply.geometry();
             let origin = apply.map_to_native_window(area.origin);
             assert!(
@@ -262,7 +413,7 @@ fn metadata_editor_requires_preview_and_keeps_sections_readable() {
         test.window.invoke_apply_fonts("".into(), font, font);
         test.resize(320, 200);
         settle(&mut test);
-        for action in ["Refresh", "Preview changes", "Apply"] {
+        for action in ["Refresh", "Review changes", "Cancel"] {
             action_is_not_vertically_clipped(&test, action);
         }
         render::snapshot(&test, &format!("metadata-minimum-{density}-{font}"));

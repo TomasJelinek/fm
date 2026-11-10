@@ -1,0 +1,39 @@
+import { CheckBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+
+// Keep the native keyboard/accessibility control while long settings captions
+// wrap at the page width. Resizing does not replace the control or its draft.
+export component WrappingCheckBox inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <string> accessible-name;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    in property <length> font-size: Theme.font-size;
+    callback toggled();
+    min-width: 0px;
+    height: max(Theme.control-height, caption.preferred-height);
+    forward-focus: checkbox;
+    HorizontalLayout {
+        spacing: 4px; cross-axis-alignment: center;
+        checkbox := CheckBox {
+            text: ""; checked <=> root.checked; enabled: root.enabled;
+            accessible-label: root.accessible-name == "" ? root.text : root.accessible-name;
+            font-size: root.font-size;
+            width: Theme.control-height; height: root.height; horizontal-stretch: 0;
+            toggled => { checkbox.focus(); root.toggled(); }
+        }
+        caption := Text {
+            text: root.text; color: root.enabled ? Theme.text : Theme.muted-text;
+            font-size: root.font-size; wrap: word-wrap;
+            height: root.height; vertical-alignment: center;
+            min-width: 0px; horizontal-stretch: 1;
+            TouchArea {
+                enabled: root.enabled;
+                clicked => { root.checked = !root.checked; checkbox.focus(); root.toggled(); }
+            }
+        }
+    }
+    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+}

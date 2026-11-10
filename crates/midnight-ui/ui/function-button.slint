@@ -15,6 +15,7 @@ export component FunctionButton inherits Rectangle {
     in property <string> action-id;
     in property <int> pane;
     in property <bool> pointer-snapshot;
+    in property <bool> press-cancelled;
     in property <string> snapshot-action;
     in property <int> snapshot-pane;
     private property <bool> pointer-armed;
@@ -98,8 +99,10 @@ export component FunctionButton inherits Rectangle {
             }
             clicked => {
                 if root.pointer-armed {
-                    focus.focus();
-                    root.trigger(root.pressed-action, root.pressed-pane);
+                    if !root.press-cancelled {
+                        focus.focus();
+                        root.trigger(root.pressed-action, root.pressed-pane);
+                    }
                     root.pointer-armed = false;
                 }
             }

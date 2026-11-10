@@ -197,9 +197,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "midnight-filesystem-api"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "b7f9d8b56f899b412f92528f1a4a95aff10ffc69e0d3ee84fdf03631b7beab80"
+checksum = "178da54dec892eb0871e8192afe35156cdc8bee73eda78b7dbe1cf9bc2a13a78"
 
 [[package]]
 name = "midnight-fs-archive"
@@ -218,9 +218,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-worker-sdk"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "4bebb3875212b35f7bb1aa8c3e85b420dfcd62effba1a4879d421598e6a51ff0"
+checksum = "e152410939fc51a77d6234821fbed38fbfcb8664b43579cab91affc29a176e61"
 dependencies = [
  "libc",
  "windows-sys",

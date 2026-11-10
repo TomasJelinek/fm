@@ -7,6 +7,7 @@ pub(crate) struct PathPart {
     pub(crate) prefix: String,
     path: PathBuf,
     archive: Option<ArchiveLocation>,
+    network: Option<NetworkAction>,
 }
 
 pub(crate) struct HistoryChoice {
@@ -14,6 +15,7 @@ pub(crate) struct HistoryChoice {
     pub(crate) path: PathBuf,
     pub(crate) display: Option<String>,
     archive: bool,
+    network: bool,
     index: usize,
 }
 
@@ -23,6 +25,19 @@ impl Presenter {
         pane: PaneId,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.other().index()].network_pending.is_some() {
+            let Some(action) = self.panes[pane.other().index()].pending_network_browse() else {
+                return false;
+            };
+            return self.network_navigate(pane, action, send);
+        }
+        if let Some(network) = &self.panes[pane.other().index()].network {
+            return self.network_navigate(
+                pane,
+                NetworkAction::Browse(network.address.clone()),
+                send,
+            );
+        }
         if let Some(a) = &self.panes[pane.other().index()].archive {
             return self.archive_navigate(pane, ArchiveAction::List(a.location.clone()), send);
         }
@@ -64,6 +79,27 @@ impl Presenter {
 
     pub(crate) fn path_parts(&self, pane: PaneId) -> Vec<PathPart> {
         let p = &self.panes[pane.index()];
+        if let Some(action) = &p.network_pending {
+            let label = p.display_location_text();
+            return vec![PathPart {
+                identity: format!("network-pending-path:{}", p.generation),
+                label: label.clone(),
+                prefix: label,
+                path: PathBuf::new(),
+                archive: None,
+                network: Some(action.clone()),
+            }];
+        }
+        if let Some(network) = &p.network {
+            return vec![PathPart {
+                identity: format!("network-path:{}", p.generation),
+                label: network.address.display.clone(),
+                prefix: network.address.display.clone(),
+                path: PathBuf::new(),
+                archive: None,
+                network: Some(NetworkAction::Browse(network.address.clone())),
+            }];
+        }
         if let Some(a) = &p.archive {
             let mut previous = String::new();
             return a
@@ -89,6 +125,7 @@ impl Presenter {
                         prefix,
                         path: PathBuf::new(),
                         archive: Some(location),
+                        network: None,
                     }
                 })
                 .collect();
@@ -117,6 +154,7 @@ impl Presenter {
                     prefix,
                     path: path.to_owned(),
                     archive: None,
+                    network: None,
                 }
             })
             .collect()
@@ -135,6 +173,9 @@ impl Presenter {
         else {
             return false;
         };
+        if let Some(action) = part.network {
+            return self.network_navigate(pane, action, send);
+        }
         if let Some(location) = part.archive {
             return self.archive_navigate(pane, ArchiveAction::List(location), send);
         }
@@ -143,6 +184,24 @@ impl Presenter {
 
     pub(crate) fn history_entries(&self, pane: PaneId, forward: bool) -> Vec<HistoryChoice> {
         let p = &self.panes[pane.index()];
+        if let Some(network) = &p.network {
+            let indices: Vec<_> = if forward {
+                (network.history_index + 1..network.history.len()).collect()
+            } else {
+                (0..network.history_index).rev().collect()
+            };
+            return indices
+                .into_iter()
+                .map(|index| HistoryChoice {
+                    identity: format!("network-history:{}:{index}", p.generation),
+                    path: network.origin.clone(),
+                    display: Some(network.history[index].display.clone()),
+                    archive: false,
+                    network: true,
+                    index,
+                })
+                .collect();
+        }
         if let Some(a) = &p.archive {
             let indexes: Vec<usize> = if forward {
                 (a.history_index + 1..a.history.len()).collect()
@@ -160,6 +219,7 @@ impl Presenter {
                     path: a.origin.clone(),
                     display: Some(a.history[index].display_text()),
                     archive: true,
+                    network: false,
                     index,
                 })
                 .collect();
@@ -179,6 +239,7 @@ impl Presenter {
                 path: p.history[index].clone(),
                 display: None,
                 archive: false,
+                network: false,
                 index,
             })
             .collect()
@@ -198,6 +259,16 @@ impl Presenter {
         else {
             return false;
         };
+        if choice.network {
+            let Some(network) = &self.panes[pane.index()].network else {
+                return false;
+            };
+            return self.network_history(
+                pane,
+                choice.index as isize - network.history_index as isize,
+                send,
+            );
+        }
         if choice.archive {
             let Some(a) = &self.panes[pane.index()].archive else {
                 return false;

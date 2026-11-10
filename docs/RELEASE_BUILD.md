@@ -3,6 +3,14 @@
 The application package `midnight-explorer` builds `me.exe` on Windows and `me` on
 Linux. Native output is `_build/release/me.exe` or `_build/release/me`.
 
+Use **debug/test for ordinary development iteration**. `build.bat` and `build.sh`
+already default to debug, producing `_build/debug/me.exe` or `_build/debug/me`.
+For a focused host-code iteration, build only `midnight-explorer` with Cargo;
+rebuild plugins when their own code/API changes. Native plugin trust/deployment
+requirements still apply in debug. Run release for final integration/packaging or
+a specific performance comparison, rather than after every UI edit. Fat LTO and
+one code-generation unit deliberately trade build time for the published binary.
+
 OS baselines, runtime dependencies and build RAM/storage allowances are specified
 in [system requirements](SYSTEM_REQUIREMENTS.md). Release qualification must include
 those baselines; a successful build on a newer host does not prove compatibility
@@ -40,15 +48,20 @@ tails, operation throughput and memory, rather than assuming that every addition
 optimization always improves performance.
 
 Run `build.bat release` or `./build.sh release` (Cargo uses `--release`), then smoke-test that actual
-executable. These helpers also build the platform's independent native filesystem
-package and five viewer packages against the public APIs/SDKs and stage them under
+executable. These helpers also build the platform's independent native and network
+filesystem packages and five viewer packages against the public APIs/SDKs and stage them under
 `filesystems/` and `viewers/` beside the executable.
 Text/binary, source and Markdown use the native C ABI; image and PDF viewers use
 the restricted process protocol and its separate worker SDK release.
 Direct Cargo builds compile only the host; use `scripts/build-native-filesystem.ps1`
-or `.sh` and `scripts/build-viewers.ps1` or `.sh` to build its packages separately.
+or `.sh`, `scripts/build-network-filesystem.ps1` or `.sh`, and
+`scripts/build-viewers.ps1` or `.sh` to build its packages separately.
 The native helper's test and offline options are documented in the
 [native filesystem build instructions](developer/NATIVE_FILESYSTEM_API.md#building-the-native-package).
+The network helper has the same staging/test/offline options; its
+[guide](../plugins/midnight-filesystem-network/README.md) covers Linux system runtime
+requirements and discovery qualification limits. Both use the shared filesystem
+package helper, which stages all inputs before replacing an installed library.
 Each plugin has
 its own lockfile, tests, release profile and third-party notices.
 Native tests that exercise integrity and queue/cancellation semantics
@@ -111,11 +124,12 @@ viewer packages under `viewers/` (or `--viewers-root`), validates their platform
 native ABI or image-worker protocol, code entry and package paths, and records
 their manifests, file sizes and SHA-256 values in `BUILD-INFO.json`. Plugin-owned
 notices remain inside each package.
-The packager also requires exactly one compatible native filesystem provider under
+The packager also requires one compatible native and one network filesystem provider under
 `filesystems/` (or `--filesystems-root`). It validates the native protocol, ABI,
 target, address encoding, capabilities, library entry and embedded notices before
-copying any filesystem packages. Optional archive workers can share that root;
-native library entries and archive executable entries remain distinct in
+copying any filesystem packages. Network manifests require ABI 1.2, opaque addresses
+and explicit activate/refresh/resolve-text capabilities. Optional archive workers
+can share that root; library entries and archive executable entries remain distinct in
 `BUILD-INFO.json`. Optional thumbnail workers use `thumbnailers/` (or
 `--thumbnailers-root`). Native providers run with application authority.
 It rejects symlinks, escaped paths and missing notices. Package hashes establish

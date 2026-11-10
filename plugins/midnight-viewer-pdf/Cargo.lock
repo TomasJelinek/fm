@@ -379,9 +379,9 @@ checksum = "6fb5a14d480a38bb8f2712aa872891478c85d28a49c42dcf19dde1c237fb6ce5"
 
 [[package]]
 name = "midnight-image-viewer-sdk"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "b3d58a3982b9ea30277ac9b82477e718b17fe53b0e85447b222cf493f24cb696"
+checksum = "fb35f1591ca683860b78c50b043c7820bf5f32ca4c118d127ac5845e5befd980"
 dependencies = [
  "midnight-image-viewer-api",
  "midnight-worker-sdk",
@@ -397,9 +397,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-worker-sdk"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "4bebb3875212b35f7bb1aa8c3e85b420dfcd62effba1a4879d421598e6a51ff0"
+checksum = "e152410939fc51a77d6234821fbed38fbfcb8664b43579cab91affc29a176e61"
 dependencies = [
  "libc",
  "windows-sys",

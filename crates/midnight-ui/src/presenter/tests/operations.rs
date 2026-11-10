@@ -131,6 +131,7 @@ fn created_entry_refresh(p: &mut Presenter, destination: PathBuf, kind: Mutation
     p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
             id: OperationId(1),
+            throughput: Arc::default(),
             kind,
             state: OperationState::Completed,
             total: 1,

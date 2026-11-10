@@ -4,7 +4,13 @@ This is work in progress, not release acceptance. The latest implementation adds
 lazy ZIP indexing, XZ/BZIP2/Zstandard and compressed TAR variants, plus verified
 F5 copy-out. See [the current measurements and security checks](verification/2026-11-07-archive-copy.md).
 The historical checkpoints below describe earlier implementations and test counts.
-The filesystem API is now 0.2.0 with wire protocol 1; the worker SDK remains 0.1.0.
+The resumed generic streaming implementation uses filesystem API 0.3.0/protocol 2
+and worker SDK 0.2.0, preserving protocol-1 and legacy startup compatibility.
+ZIP and TAR index captured ranges; verified member content streams into host-owned
+private TEMP files. There are no artificial source/member/aggregate disk byte
+ceilings. Metadata, chunks, decoder windows and process memory remain bounded.
+Compressed TAR still requires complete outer-stream decoding and integrity checks.
+See [the resumed design and Salamander source references](superpowers/specs/2026-11-09-archive-streaming-design.md).
 The current author-facing reference is [Filesystem API](developer/FILESYSTEM_API.md).
 
 Integrated verification on 7 November 2026:

@@ -1,5 +1,6 @@
 schema_version = 1
 id = "midnight.viewer.basic"
+name = "Text and binary viewer"
 kind = "viewer"
 version = "0.1.0"
 entry_library = "midnight_viewer_basic.dll"
@@ -11,4 +12,4 @@ models = ["text-page.v1", "binary-page.v1"]
 modes = ["text", "binary"]
 extensions = []
 priority = 0
-description = "Bounded UTF-8 / BOM UTF-16 text and binary viewer"
+description = "Displays text and binary files; supports UTF-8 and BOM-marked UTF-16."

@@ -13,6 +13,7 @@ export component OperationDialog inherits Rectangle {
     in property <string> input-label;
     in property <int> selection-end;
     in property <bool> has-name;
+    out property <length> input-height: root.has-name ? name.height : 0px;
     in property <bool> dangerous;
     in property <string> confirm-text;
     in property <image> native-icon;
@@ -27,30 +28,57 @@ export component OperationDialog inherits Rectangle {
     callback cancel();
     callback move-dialog(length, length);
     private property <bool> compact: root.height < 280px;
+    function focus-primary() {
+        // A Fluent button's zero-width focus point sits at its left edge.
+        // Keep keyboard input outside the scrolled content when that edge can
+        // be clipped; Slint drops keys before ancestor capture in that case.
+        primary-focus.focus();
+    }
+    // Size the initial presentation from its actual wrapped summary. Resizing
+    // remains independent in DialogFrame; editing never recreates the input.
+    out property <length> preferred-dialog-height: clamp(
+        32px + max(36px, Theme.font-size * 1.2 + 6px)
+        + min(280px, summary-measure.preferred-height)
+        + (root.has-name ? max(Theme.control-height, name.preferred-height) + 12px : 0px)
+        + (root.has-name && root.input-label != "" ? Theme.font-size * 1.5 + 12px : 0px)
+        + (root.option-visible ? max(Theme.control-height, option.preferred-height) + 24px : 0px)
+        + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
+    summary-measure := Text {
+        visible: false; accessible-role: none; width: max(1px, root.width - 48px);
+        text: (root.warning != "" ? root.warning + "\n\n" : "") + root.body;
+        font-size: Theme.font-size; wrap: word-wrap;
+    }
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     public function begin() {
         name.text = root.initial-name;
         if root.has-name { name.focus(); name.set-selection-offsets(0, root.selection-end); }
-        else { cancel-button.focus(); }
+        else { root.focus-primary(); }
     }
     public function focus-input() {
-        if root.has-name { name.focus(); } else { cancel-button.focus(); }
+        if root.has-name { name.focus(); } else { root.focus-primary(); }
     }
-    FocusScope {
+    scope := FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.cancel(); return accept; }
+            // Enter confirms from the input, option or primary action. Keep
+            // focused Cancel and the header close button's own key handlers.
+            if (event.text == Key.Return && (primary-focus.has-focus || name.has-focus || option.has-focus || confirm-button.has-focus))
+                || (event.text == Key.Space && primary-focus.has-focus) {
+                if confirm-button.enabled { root.confirm(name.text); }
+                return accept;
+            }
             if event.text == Key.Tab || event.text == Key.Backtab {
                 if event.modifiers.shift || event.text == Key.Backtab {
-                    if name.has-focus { if confirm-button.enabled { confirm-button.focus(); } else { cancel-button.focus(); } }
+                    if name.has-focus { if confirm-button.enabled { root.focus-primary(); } else { cancel-button.focus(); } }
                     else if cancel-button.has-focus {
                         if root.option-visible && root.option-enabled { option.focus(); }
                         else if root.has-name { name.focus(); }
-                        else if confirm-button.enabled { confirm-button.focus(); }
+                        else if confirm-button.enabled { root.focus-primary(); }
                         else { cancel-button.focus(); }
                     }
                     else if option.has-focus {
                         if root.has-name { name.focus(); }
-                        else if confirm-button.enabled { confirm-button.focus(); }
+                        else if confirm-button.enabled { root.focus-primary(); }
                         else { cancel-button.focus(); }
                     }
                     else { cancel-button.focus(); }
@@ -60,7 +88,7 @@ export component OperationDialog inherits Rectangle {
                         else { cancel-button.focus(); }
                     }
                     else if option.has-focus { cancel-button.focus(); }
-                    else if cancel-button.has-focus && confirm-button.enabled { confirm-button.focus(); }
+                    else if cancel-button.has-focus && confirm-button.enabled { root.focus-primary(); }
                     else if root.has-name { name.focus(); }
                     else if root.option-visible && root.option-enabled { option.focus(); }
                     else { cancel-button.focus(); }
@@ -75,6 +103,7 @@ export component OperationDialog inherits Rectangle {
                 title: root.title; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
                 compact: root.compact; text-size: Theme.font-size * 1.2;
                 foreground: root.dangerous ? Theme.error-text : Theme.text;
+                close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             if root.warning != "" && !root.compact : Text {
@@ -87,7 +116,10 @@ export component OperationDialog inherits Rectangle {
             }
             VerticalLayout {
                 spacing: root.option-visible ? (root.compact ? 4px : 12px) : 0px;
+                alignment: start; vertical-stretch: 0;
                 name := LineEdit {
+                    max-height: max(Theme.control-height, self.preferred-height);
+                    vertical-stretch: 0;
                     visible: root.has-name;
                     accessible-label: root.input-label == "" ? root.title : root.input-label;
                     accepted => { if self.text != "" { root.confirm(self.text); } }
@@ -109,16 +141,40 @@ export component OperationDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
                 cancel-button := HintedActionButton { text: "Cancel"; hint: "Leave files unchanged (Escape)."; clicked => { root.cancel(); } }
-                ScrollView {
+                Rectangle {
                     horizontal-stretch: 1; min-width: 0px;
                     height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), confirm-button.preferred-height);
-                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
-                    HorizontalLayout { alignment: end;
-                        confirm-button := HintedActionButton {
-                            text: root.confirm-text; enabled: !root.has-name || name.text != "";
-                            hint: root.dangerous ? "Permanently delete the confirmed targets. This cannot be undone." : root.confirm-text;
-                            clicked => { root.confirm(name.text); }
+                    primary-scroll := ScrollView {
+                        width: parent.width; height: parent.height;
+                        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                        HorizontalLayout { alignment: end;
+                            confirm-button := HintedActionButton {
+                                primary: true;
+                                text: root.confirm-text; enabled: !root.has-name || name.text != "";
+                                accessible-role: none;
+                                hint: root.dangerous ? "Permanently delete the confirmed targets. This cannot be undone." : root.confirm-text;
+                                clicked => { primary-focus.focus(); root.confirm(name.text); }
+                            }
                         }
+                    }
+                    primary-focus := FocusScope {
+                        x: max(0px, parent.width - confirm-button.width);
+                        width: min(parent.width, confirm-button.width); height: parent.height;
+                        enabled: confirm-button.enabled;
+                        focus-on-click: false; focus-on-tab-navigation: false;
+                        // This stationary semantic button owns keyboard focus
+                        // and accessibility; the native caption owns pointer input.
+                        accessible-role: button;
+                        accessible-label: root.confirm-text;
+                        accessible-enabled: confirm-button.enabled;
+                        accessible-action-default => { if confirm-button.enabled { primary-focus.focus(); root.confirm(name.text); } }
+                    }
+                    Rectangle {
+                        x: primary-focus.x;
+                        width: primary-focus.width; height: parent.height;
+                        background: transparent; border-radius: 3px;
+                        border-width: primary-focus.has-focus ? 2px : 0px;
+                        border-color: Theme.active-frame; accessible-role: none;
                     }
                 }
             }

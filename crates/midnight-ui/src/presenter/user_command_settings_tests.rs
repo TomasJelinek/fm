@@ -149,6 +149,34 @@ fn unsaved_preview_uses_exact_validated_configuration_without_saving_or_executin
 }
 
 #[test]
+fn settings_preview_never_requests_the_jobs_popup() {
+    let mut p = setup();
+    let token = p.user_command_settings.token();
+    let form = p.user_command_settings_form().unwrap();
+    assert!(p.preview_user_command_setting(&token, &form, &|command| {
+        assert!(!matches!(
+            command,
+            Command::ExecuteUserCommand(_) | Command::SavePreferences { .. }
+        ));
+        true
+    }));
+    let job = p.command_launches.jobs.last().unwrap();
+    p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+        request: job.id,
+        command: job.command.clone(),
+        update: UserCommandUpdate::Preview(Arc::new(UserCommandPreview {
+            processes: Arc::from([]),
+            retention: UserCommandRetention::new(()),
+        })),
+    })));
+    assert!(p.command_launches.jobs.last().unwrap().finished);
+    assert!(
+        p.command_launches.preview_ready.is_none(),
+        "settings previews must stay inside Options, never request a Jobs popup"
+    );
+}
+
+#[test]
 fn keyboard_editor_uses_dynamic_catalog_and_invalidates_on_config_without_binding_changes() {
     let mut p = setup();
     let mut values = p.preferences.values.clone();
@@ -179,6 +207,187 @@ fn keyboard_editor_uses_dynamic_catalog_and_invalidates_on_config_without_bindin
     let selected = &p.keyboard.snapshot.map.definitions()[p.keyboard.selected];
     assert_eq!(selected.id, "user-command.first");
     assert_eq!(selected.label, "Renamed action");
+}
+
+#[test]
+fn settings_preview_tracks_the_exact_draft_and_ignores_late_errors() {
+    for transition in ["edit", "select", "cancel"] {
+        let mut p = setup();
+        let token = p.user_command_settings.token();
+        let mut form = p.user_command_settings_form().unwrap();
+        assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+        let job = p.current_settings_command_preview().unwrap();
+        let request = job.id;
+        let command = job.command.clone();
+        match transition {
+            "edit" => {
+                form.name = "A newer draft".into();
+                p.remember_user_command_form(&token, form);
+            }
+            "select" => p.select_user_command_setting("second"),
+            _ => p.cancel_user_command_setting(),
+        }
+        assert!(
+            p.current_settings_command_preview().is_none(),
+            "{transition}"
+        );
+        p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+            request,
+            command,
+            update: UserCommandUpdate::Rejected(FsError::from_io(
+                "preview",
+                Path::new("missing-tool"),
+                std::io::ErrorKind::NotFound.into(),
+            )),
+        })));
+        assert!(p.user_command_settings.error.is_empty(), "{transition}");
+        assert!(p.desktop.notice.is_none(), "{transition}");
+        assert!(p.command_launches.preview_ready.is_none(), "{transition}");
+    }
+}
+
+#[test]
+fn settings_preview_failures_stay_in_the_form_and_preserve_transport_details() {
+    let mut p = setup();
+    let token = p.user_command_settings.token();
+    let form = p.user_command_settings_form().unwrap();
+    assert!(!p.preview_user_command_setting(&token, &form, &|_| false));
+    assert!(p.user_command_settings.error.contains("queue"));
+    assert!(
+        !p.user_command_settings
+            .error
+            .contains("application message")
+    );
+    assert!(p.desktop.notice.is_none());
+    assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+    let job = p.current_settings_command_preview().unwrap();
+    p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+        request: job.id,
+        command: job.command.clone(),
+        update: UserCommandUpdate::Rejected(FsError::from_io(
+            "preview",
+            Path::new("missing-tool"),
+            std::io::ErrorKind::NotFound.into(),
+        )),
+    })));
+    assert!(p.user_command_settings.error.contains("missing-tool"));
+    assert!(p.desktop.notice.is_none());
+    assert!(p.current_settings_command_preview().unwrap().finished);
+}
+
+#[test]
+fn older_preview_failure_cannot_replace_a_newer_success_for_the_same_draft() {
+    let mut p = setup();
+    let token = p.user_command_settings.token();
+    let form = p.user_command_settings_form().unwrap();
+    assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+    let first = p.current_settings_command_preview().unwrap().id;
+    assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+    let job = p.current_settings_command_preview().unwrap();
+    let current = job.id;
+    let command = job.command.clone();
+    p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+        request: current,
+        command: command.clone(),
+        update: UserCommandUpdate::Preview(Arc::new(UserCommandPreview {
+            processes: Arc::from([]),
+            retention: UserCommandRetention::new(()),
+        })),
+    })));
+    p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+        request: first,
+        command,
+        update: UserCommandUpdate::Rejected(FsError::from_io(
+            "preview",
+            Path::new("obsolete-tool"),
+            std::io::ErrorKind::NotFound.into(),
+        )),
+    })));
+    assert_eq!(p.current_settings_command_preview().unwrap().id, current);
+    assert!(
+        p.current_settings_command_preview()
+            .unwrap()
+            .preview
+            .is_some()
+    );
+    assert!(
+        p.user_command_settings.error.is_empty(),
+        "obsolete failure reached current draft"
+    );
+    assert!(p.desktop.notice.is_none());
+}
+
+#[test]
+fn settings_preview_selection_failures_remain_scoped_to_the_current_form() {
+    for stale in [false, true] {
+        let mut p = setup();
+        let pane = p.active;
+        p.panes[pane.index()].selection_revision = SelectionRevision(1);
+        let token = p.user_command_settings.token();
+        let form = p.user_command_settings_form().unwrap();
+        assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+        assert!(p.selection_actions[pane.index()].is_some());
+        if stale {
+            p.cancel_user_command_setting();
+        }
+        p.dispatch_selection_actions(
+            &Event::SelectionFailed {
+                pane,
+                navigation: NavigationId(p.panes[pane.index()].generation),
+                revision: SelectionRevision(1),
+                error: FsError::from_io(
+                    "selection",
+                    Path::new("fixture"),
+                    std::io::ErrorKind::Interrupted.into(),
+                ),
+            },
+            &|_| panic!("failed selection cannot launch a preview"),
+        );
+        assert!(
+            p.desktop.notice.is_none(),
+            "selection failure opened another popup"
+        );
+        assert_eq!(p.user_command_settings.error.is_empty(), stale);
+        assert!(p.selection_actions[pane.index()].is_none());
+    }
+}
+
+#[test]
+fn edited_preview_waiting_for_selection_is_not_submitted_when_capture_finishes() {
+    let mut p = setup();
+    let pane = p.active;
+    p.panes[pane.index()].selection_revision = SelectionRevision(1);
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+    assert!(p.user_command_settings.status.contains("selection"));
+    form.name = "Changed while waiting".into();
+    p.remember_user_command_form(&token, form);
+    assert!(p.user_command_settings.status.is_empty());
+    p.dispatch_selection_actions(
+        &Event::SelectionChanged {
+            pane,
+            navigation: NavigationId(p.panes[pane.index()].generation),
+            revision: SelectionRevision(1),
+            selection: p.panes[pane.index()].selected.clone(),
+            deferred: Default::default(),
+        },
+        &|_| panic!("an edited draft's old capture cannot be submitted"),
+    );
+    assert!(p.selection_actions[pane.index()].is_none());
+    assert!(p.command_launches.jobs.is_empty());
+    assert!(p.desktop.notice.is_none());
+}
+
+#[test]
+fn settings_preview_blocked_by_bulk_selection_reports_inside_options() {
+    let mut p = setup();
+    p.panes[p.active.index()].selection_pending_bulk = true;
+    let token = p.user_command_settings.token();
+    let form = p.user_command_settings_form().unwrap();
+    assert!(!p.preview_user_command_setting(&token, &form, &|_| panic!("selection not ready")));
+    assert!(p.user_command_settings.error.contains("selection"));
+    assert!(p.desktop.notice.is_none());
 }
 
 #[test]
@@ -328,4 +537,122 @@ fn cancelled_replaced_deleted_or_obsolete_command_drags_cannot_commit() {
         Arc::new(vec![p.preferences.values.user_commands[1].clone()]);
     p.sync_user_command_settings();
     assert!(!p.finish_user_command_drag(&token, 0, true, &send));
+}
+
+#[test]
+fn settings_waiting_status_is_removed_from_the_rendered_form_after_capture_or_draft_changes() {
+    use slint::{
+        ComponentHandle,
+        platform::{
+            Platform, PlatformError, WindowAdapter,
+            software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        },
+    };
+    use std::rc::Rc;
+    struct TestPlatform;
+    impl Platform for TestPlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))
+        }
+    }
+    slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+    for transition in ["submit", "navigate", "select", "sync"] {
+        let window = crate::MainWindow::new().unwrap();
+        window.set_options_open(true);
+        let mut p = setup();
+        let pane = p.active;
+        p.panes[pane.index()].selection_revision = SelectionRevision(1);
+        let token = p.user_command_settings.token();
+        let form = p.user_command_settings_form().unwrap();
+        assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+        crate::user_command_settings_presentation::refresh(&window, &p);
+        let view = window.global::<crate::UserCommandSettingsView>();
+        assert!(view.get_status().contains("selection"), "{transition}");
+        let waiting_revision = p.user_command_settings.revision;
+        match transition {
+            "submit" => {
+                let sent = RefCell::new(Vec::new());
+                p.dispatch_selection_actions(
+                    &Event::SelectionChanged {
+                        pane,
+                        navigation: NavigationId(p.panes[pane.index()].generation),
+                        revision: SelectionRevision(1),
+                        selection: p.panes[pane.index()].selected.clone(),
+                        deferred: Default::default(),
+                    },
+                    &|command| {
+                        sent.borrow_mut().push(command);
+                        true
+                    },
+                );
+                assert!(matches!(
+                    sent.borrow().as_slice(),
+                    [Command::PreviewUserCommand(_)]
+                ));
+            }
+            "navigate" => {
+                assert!(p.navigate(
+                    pane,
+                    std::env::temp_dir().join("next preview folder"),
+                    None,
+                    &|_| true
+                ));
+                assert!(p.selection_actions[pane.index()].is_none());
+            }
+            "select" => p.select_user_command_setting("second"),
+            _ => {
+                p.preferences.values.user_commands =
+                    Arc::new(p.preferences.values.user_commands.as_ref().clone());
+                p.sync_user_command_settings();
+            }
+        }
+        crate::user_command_settings_presentation::refresh(&window, &p);
+        assert!(
+            view.get_status().is_empty(),
+            "{transition}: {}",
+            view.get_status()
+        );
+        assert!(p.user_command_settings.status.is_empty(), "{transition}");
+        assert!(
+            p.user_command_settings.revision > waiting_revision,
+            "{transition}: refresh cache was not invalidated"
+        );
+        assert!(p.desktop.notice.is_none(), "{transition}");
+    }
+}
+
+#[test]
+fn settings_waiting_status_survives_cancelled_older_or_unrelated_selection_actions() {
+    for old_intent in ["preview", "properties"] {
+        let mut p = setup();
+        p.panes[PaneId::Left.index()].selection_revision = SelectionRevision(1);
+        let token = p.user_command_settings.token();
+        let form = p.user_command_settings_form().unwrap();
+        if old_intent == "preview" {
+            assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+        } else {
+            p.request_selection_action(
+                PaneId::Left,
+                selection_actions::SelectionIntent::Properties,
+                &|_| true,
+            );
+        }
+        p.active = PaneId::Right;
+        p.panes[PaneId::Right.index()].selection_revision = SelectionRevision(1);
+        assert!(p.preview_user_command_setting(&token, &form, &|_| true));
+        let revision = p.user_command_settings.revision;
+        let status = p.user_command_settings.status.clone();
+        assert!(status.contains("selection"));
+        p.cancel_selection_actions(PaneId::Left);
+        assert_eq!(p.user_command_settings.status, status, "{old_intent}");
+        assert_eq!(p.user_command_settings.revision, revision, "{old_intent}");
+        assert!(p.selection_actions[PaneId::Right.index()].is_some());
+        p.cancel_selection_actions(PaneId::Right);
+        assert!(p.user_command_settings.status.is_empty());
+        assert!(p.user_command_settings.revision > revision);
+        let cleared_revision = p.user_command_settings.revision;
+        p.cancel_selection_actions(PaneId::Right);
+        assert_eq!(p.user_command_settings.revision, cleared_revision);
+        assert!(p.desktop.notice.is_none());
+    }
 }

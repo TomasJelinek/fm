@@ -3,6 +3,462 @@ use midnight_core::{
     Cancellation, TransferMoveCapture, TransferMoveCaptureOutcome, TransferService,
 };
 use std::{fs, path::PathBuf};
+
+#[test]
+fn native_drop_device_observes_actual_volume_without_capturing_a_source() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ordinary file");
+    fs::write(&path, b"content must remain unchanged").unwrap();
+    let filesystem = crate::WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let directory = filesystem
+        .prepare_transfer_destination(temp.path(), &cancel)
+        .unwrap();
+    let expected = Some(directory.identity().device);
+    let no_delete = fs::File::options()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_READ_DATA)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&path)
+        .unwrap();
+    assert!(
+        filesystem.prepare_move_source(&path, &cancel).is_err(),
+        "fixture pin denies DELETE access"
+    );
+    assert_eq!(
+        filesystem.native_drop_device(&path, &cancel).unwrap(),
+        expected
+    );
+    assert_eq!(
+        filesystem.native_drop_device(temp.path(), &cancel).unwrap(),
+        expected
+    );
+    drop(no_delete);
+    drop(filesystem.prepare_move_source(&path, &cancel).unwrap());
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    assert_eq!(fs::read(&path).unwrap(), b"content must remain unchanged");
+    cancel.cancel();
+    assert_eq!(
+        filesystem
+            .native_drop_device(&path, &cancel)
+            .unwrap_err()
+            .kind,
+        std::io::ErrorKind::Interrupted
+    );
+}
+
+#[test]
+fn native_move_preserves_identity_and_streams_without_creating_copy_stages() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferSource};
+    let (_temp, parent) = fixture();
+    let source_path = parent.join("source 文档");
+    fs::write(&source_path, b"original").unwrap();
+    let mut ads = source_path.as_os_str().to_owned();
+    ads.push(":notes");
+    fs::write(PathBuf::from(ads), b"retained stream").unwrap();
+    let destination_path = parent.join("target");
+    fs::create_dir(&destination_path).unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&source_path, &cancel).unwrap();
+    let expected = source.entry().identity;
+    let filesystem = crate::WindowsFileSystem::new(None);
+    let destination = filesystem
+        .prepare_transfer_destination(&destination_path, &cancel)
+        .unwrap();
+    assert!(destination.supports_native_move_replacement(expected));
+    let outcome = capture
+        .try_native_move(
+            destination.as_ref(),
+            std::ffi::OsStr::new("moved"),
+            None,
+            &cancel,
+        )
+        .unwrap();
+    assert!(
+        matches!(outcome, TransferNativeMoveOutcome::Moved { ref recovery, .. } if recovery.is_empty())
+    );
+    let moved = destination
+        .inspect(std::ffi::OsStr::new("moved"), &cancel)
+        .unwrap()
+        .unwrap();
+    assert_eq!(moved.identity, expected);
+    assert!(!source_path.exists());
+    drop(source);
+    drop(capture);
+    assert_eq!(
+        fs::read(destination_path.join("moved")).unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        fs::read(destination_path.join("moved:notes")).unwrap(),
+        b"retained stream"
+    );
+    assert_eq!(fs::read_dir(destination_path).unwrap().count(), 1);
+}
+
+#[test]
+fn native_move_collision_cancel_case_and_hardlink_alias_keep_exact_entries() {
+    use midnight_core::TransferNativeMoveOutcome;
+    use std::ffi::OsStr;
+    let (_temp, parent) = fixture();
+    let source = parent.join("Case.txt");
+    fs::write(&source, b"source").unwrap();
+    fs::write(parent.join("winner"), b"winner").unwrap();
+    fs::hard_link(&source, parent.join("alias")).unwrap();
+    let cancel = Cancellation::default();
+    let (_source, capture) = prepare_native(&source, &cancel).unwrap();
+    let destination = crate::WindowsFileSystem::new(None)
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    assert!(matches!(
+        capture
+            .try_native_move(destination.as_ref(), OsStr::new("Case.txt"), None, &cancel)
+            .unwrap(),
+        TransferNativeMoveOutcome::SameEntry
+    ));
+    assert!(
+        capture
+            .try_native_move(destination.as_ref(), OsStr::new("alias"), None, &cancel)
+            .is_err()
+    );
+    assert!(
+        capture
+            .try_native_move(destination.as_ref(), OsStr::new("winner"), None, &cancel)
+            .is_err()
+    );
+    let stopped = Cancellation::default();
+    stopped.cancel();
+    assert!(
+        capture
+            .try_native_move(
+                destination.as_ref(),
+                OsStr::new("cancelled"),
+                None,
+                &stopped
+            )
+            .is_err()
+    );
+    assert!(source.exists());
+    assert_eq!(fs::read(parent.join("winner")).unwrap(), b"winner");
+    assert!(matches!(
+        capture
+            .try_native_move(destination.as_ref(), OsStr::new("CASE.txt"), None, &cancel)
+            .unwrap(),
+        TransferNativeMoveOutcome::Moved { .. }
+    ));
+    let names: Vec<_> = fs::read_dir(&parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(names.contains(&"CASE.txt".into()));
+    assert!(!names.contains(&"Case.txt".into()));
+    assert!(names.contains(&"alias".into()));
+}
+
+#[test]
+fn native_move_replacement_retains_original_and_conflict_gap_winners() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferReplacementPolicy};
+    use std::ffi::OsStr;
+    for gap in ["none", "cancel", "winner"] {
+        let (_temp, parent) = fixture();
+        let source = parent.join("source");
+        fs::write(&source, b"source").unwrap();
+        let destination_path = parent.join("target");
+        fs::create_dir(&destination_path).unwrap();
+        let final_path = destination_path.join("final");
+        fs::write(&final_path, b"old target").unwrap();
+        let cancel = Cancellation::default();
+        let (_source, capture) = prepare_native(&source, &cancel).unwrap();
+        let destination = crate::WindowsFileSystem::new(None)
+            .prepare_transfer_destination(&destination_path, &cancel)
+            .unwrap();
+        let expected = destination
+            .prepare_target(OsStr::new("final"), &cancel)
+            .unwrap()
+            .unwrap();
+        let outcome = super::native_move::attempt_with(
+            &capture,
+            destination.as_ref(),
+            OsStr::new("final"),
+            Some((expected, TransferReplacementPolicy::RecoverableCurrentEntry)),
+            &cancel,
+            || match gap {
+                "cancel" => cancel.cancel(),
+                "winner" => fs::write(&final_path, b"new winner").unwrap(),
+                _ => {}
+            },
+        );
+        match gap {
+            "none" => {
+                let TransferNativeMoveOutcome::Moved { recovery, .. } = outcome.unwrap() else {
+                    panic!("native replacement did not commit")
+                };
+                assert_eq!(recovery.len(), 1);
+                assert_eq!(fs::read(&recovery[0].path).unwrap(), b"old target");
+                assert!(!source.exists());
+                drop(capture);
+                drop(_source);
+                assert_eq!(fs::read(&final_path).unwrap(), b"source");
+            }
+            "cancel" => {
+                assert!(
+                    matches!(outcome.unwrap(), TransferNativeMoveOutcome::RecoveryRequired { destination: None, recovery, .. } if recovery.is_empty())
+                );
+                assert!(source.exists());
+                assert_eq!(fs::read(&final_path).unwrap(), b"old target");
+                assert_eq!(fs::read_dir(&destination_path).unwrap().count(), 1);
+            }
+            "winner" => {
+                let TransferNativeMoveOutcome::RecoveryRequired {
+                    destination,
+                    recovery,
+                    ..
+                } = outcome.unwrap()
+                else {
+                    panic!("gap winner must retain original recovery")
+                };
+                assert!(destination.is_none());
+                assert!(source.exists());
+                assert_eq!(fs::read(&final_path).unwrap(), b"new winner");
+                assert_eq!(fs::read(&recovery[0].path).unwrap(), b"old target");
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn lazy_move_validation_seeks_the_retained_file_after_capture() {
+    use midnight_core::TransferSource;
+    let (_temp, parent) = fixture();
+    let path = parent.join("retained");
+    fs::write(&path, b"original bytes").unwrap();
+    let cancel = Cancellation::default();
+    let (mut source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    capture.capture(&cancel).unwrap();
+    fs::write(&path, b"different new namespace winner").unwrap();
+    let guard = source.rewind_for_validation(&cancel).unwrap();
+    assert_eq!(source.seek_for_validation(9, &cancel).unwrap(), 14);
+    let mut bytes = [0; 5];
+    assert_eq!(source.read_chunk(&mut bytes, &cancel).unwrap(), 5);
+    assert_eq!(&bytes, b"bytes");
+    assert!(source.seek_for_validation(15, &cancel).is_err());
+    assert_eq!(source.seek_for_validation(0, &cancel).unwrap(), 14);
+    guard.revalidate(&cancel).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"different new namespace winner");
+}
+
+#[test]
+fn native_move_merge_lists_lazily_and_removes_only_the_empty_source_directory() {
+    use midnight_core::TransferNativeMoveOutcome;
+    use std::ffi::OsStr;
+    let (_temp, parent) = fixture();
+    let source = parent.join("source-dir");
+    let target = parent.join("existing-dir");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(source.join("child"), b"moved").unwrap();
+    fs::write(target.join("kept"), b"kept").unwrap();
+    let filesystem = crate::WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let mut prepared = filesystem.prepare_move_source(&source, &cancel).unwrap();
+    let destination = filesystem
+        .prepare_move_destination(&target, &cancel)
+        .unwrap();
+    let child = prepared.source.next_move_child(&cancel).unwrap().unwrap();
+    assert!(matches!(
+        child
+            .capture
+            .try_native_move(destination.as_ref(), OsStr::new("child"), None, &cancel)
+            .unwrap(),
+        TransferNativeMoveOutcome::Moved { .. }
+    ));
+    drop(child);
+    assert!(prepared.source.next_move_child(&cancel).unwrap().is_none());
+    prepared.capture.remove_empty_directory(&cancel).unwrap();
+    drop(prepared);
+    assert!(!source.exists());
+    assert_eq!(fs::read(target.join("child")).unwrap(), b"moved");
+    assert_eq!(fs::read(target.join("kept")).unwrap(), b"kept");
+}
+
+#[test]
+fn native_move_stale_replacement_consent_preserves_source_and_new_target() {
+    use midnight_core::TransferReplacementPolicy;
+    use std::ffi::OsStr;
+    let (_temp, parent) = fixture();
+    let source = parent.join("source");
+    let target = parent.join("target");
+    fs::write(&source, b"source").unwrap();
+    fs::write(&target, b"old target").unwrap();
+    let cancel = Cancellation::default();
+    let prepared = crate::WindowsFileSystem::new(None)
+        .prepare_move_source(&source, &cancel)
+        .unwrap();
+    let destination = crate::WindowsFileSystem::new(None)
+        .prepare_transfer_destination(&parent, &cancel)
+        .unwrap();
+    let consent = destination
+        .prepare_target(OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    fs::rename(&target, parent.join("old-away")).unwrap();
+    fs::write(&target, b"new target").unwrap();
+    let failure = prepared
+        .capture
+        .try_native_move(
+            destination.as_ref(),
+            OsStr::new("target"),
+            Some((consent, TransferReplacementPolicy::RecoverableCurrentEntry)),
+            &cancel,
+        )
+        .unwrap_err();
+    assert_eq!(failure.kind, std::io::ErrorKind::AlreadyExists);
+    assert!(source.exists());
+    assert_eq!(fs::read(&target).unwrap(), b"new target");
+    assert_eq!(fs::read(parent.join("old-away")).unwrap(), b"old target");
+}
+
+#[test]
+#[ignore = "requires NATIVE_MOVE_OTHER_VOLUME_ROOT on a distinct Windows volume"]
+fn native_move_cross_volume_reports_unchanged_namespace() {
+    use midnight_core::TransferNativeMoveOutcome;
+    use std::ffi::OsStr;
+    let (_temp, parent) = fixture();
+    let path = parent.join("source");
+    fs::write(&path, b"source bytes").unwrap();
+    let other = tempfile::tempdir_in(
+        std::env::var_os("NATIVE_MOVE_OTHER_VOLUME_ROOT")
+            .expect("owned fixture root on a different volume"),
+    )
+    .unwrap();
+    fs::write(other.path().join("target"), b"existing target").unwrap();
+    let filesystem = crate::WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let prepared = filesystem.prepare_move_source(&path, &cancel).unwrap();
+    let destination = filesystem
+        .prepare_move_destination(other.path(), &cancel)
+        .unwrap();
+    assert_ne!(
+        prepared.source.entry().identity.device,
+        destination.identity().device,
+        "fixture must use distinct actual volume identities"
+    );
+    assert!(!destination.supports_native_move_replacement(prepared.source.entry().identity));
+    assert!(matches!(
+        prepared
+            .capture
+            .try_native_move(destination.as_ref(), OsStr::new("target"), None, &cancel)
+            .unwrap(),
+        TransferNativeMoveOutcome::CrossDevice
+    ));
+    assert_eq!(fs::read(&path).unwrap(), b"source bytes");
+    assert_eq!(
+        fs::read(other.path().join("target")).unwrap(),
+        b"existing target"
+    );
+    assert_eq!(fs::read_dir(other.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn ordinary_move_cleans_stage_while_an_external_reader_retains_bytes() {
+    use std::{io::Read, os::windows::fs::OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::*;
+    let (_temp, parent) = fixture();
+    let path = parent.join("ordinary 文档");
+    fs::write(&path, b"verified original").unwrap();
+    let mut reader = fs::File::options()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(&path)
+        .unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    capture.capture(&cancel).unwrap();
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    let cleanup = capture.take_stage_cleanup().unwrap();
+    let stage = cleanup.path().to_owned();
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    cleanup.cleanup().unwrap();
+    assert!(!stage.exists());
+    assert!(!path.exists());
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"verified original");
+    assert_eq!(fs::read_dir(parent).unwrap().count(), 1); // fixture seed
+}
+
+#[test]
+fn late_ads_refusal_restores_exact_original_and_cleans_temporary_stage() {
+    for after_prepare in [false, true] {
+        let (_temp, parent) = fixture();
+        let path = parent.join("ADS 文档");
+        fs::write(&path, b"verified unnamed bytes").unwrap();
+        let cancel = Cancellation::default();
+        let (source, capture) = prepare_native(&path, &cancel).unwrap();
+        capture.preflight_finalization(&cancel).unwrap();
+        let TransferMoveCaptureOutcome::Captured { recovery, .. } =
+            capture.capture(&cancel).unwrap()
+        else {
+            panic!("not staged")
+        };
+        let mut finalizer = after_prepare.then(|| capture.prepare_finalization(&cancel).unwrap());
+        let mut ads = recovery.path.as_os_str().to_owned();
+        ads.push(":late-notes");
+        fs::write(PathBuf::from(ads), b"unverified stream").unwrap();
+        if let Some(finalizer) = finalizer.as_mut() {
+            assert!(matches!(
+                finalizer.finalize(&cancel),
+                midnight_core::TransferMoveFinalizeOutcome::Retained { .. }
+            ));
+        } else {
+            assert!(capture.prepare_finalization(&cancel).is_err());
+        }
+        drop(finalizer);
+        capture.restore().unwrap();
+        let cleanup = capture.take_stage_cleanup().unwrap();
+        drop(source);
+        drop(capture);
+        cleanup.cleanup().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"verified unnamed bytes");
+        let mut ads = path.as_os_str().to_owned();
+        ads.push(":late-notes");
+        assert_eq!(fs::read(PathBuf::from(ads)).unwrap(), b"unverified stream");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 2);
+    }
+}
+
+#[test]
+fn restore_conflict_never_clobbers_new_winner_or_cleans_nonempty_stage() {
+    let (_temp, parent) = fixture();
+    let path = parent.join("conflict");
+    fs::write(&path, b"selected original").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("not staged")
+    };
+    fs::write(&path, b"new winner").unwrap();
+    assert!(capture.restore().is_err());
+    let cleanup = capture.take_stage_cleanup().unwrap();
+    drop(source);
+    drop(capture);
+    assert!(cleanup.cleanup().is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"new winner");
+    assert_eq!(fs::read(recovery.path).unwrap(), b"selected original");
+}
 #[test]
 fn retained_validation_survives_source_capture_and_proves_published_binding() {
     use std::io::{Read, Write};
@@ -265,7 +721,7 @@ fn an_existing_incompatible_writer_refuses_move_preparation() {
 }
 
 #[test]
-fn unsafe_source_parent_is_refused_before_any_capture_and_copy_still_works() {
+fn unsafe_source_parent_is_refused_before_verified_capture_and_copy_still_works() {
     use std::{
         mem::size_of,
         os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
@@ -335,12 +791,26 @@ fn unsafe_source_parent_is_refused_before_any_capture_and_copy_still_works() {
     );
     drop(file);
     let provider = crate::WindowsFileSystem::new(None);
-    let error = match provider.prepare_move_source(&source, &Cancellation::default()) {
-        Ok(_) => panic!("unsafe parent admitted"),
-        Err(error) => error,
-    };
+    // Metadata-only native rename admission does not need recovery staging.
+    // Both cross-volume proof admission and direct capture still reject it.
+    let prepared = provider
+        .prepare_move_source(&source, &Cancellation::default())
+        .unwrap();
+    let error = prepared
+        .capture
+        .preflight_finalization(&Cancellation::default())
+        .unwrap_err();
     assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
     assert!(error.message.contains("Copy"));
+    assert_eq!(
+        prepared
+            .capture
+            .capture(&Cancellation::default())
+            .unwrap_err()
+            .kind,
+        std::io::ErrorKind::Unsupported
+    );
+    drop(prepared);
     assert!(
         provider
             .prepare_transfer_source(&source, &Cancellation::default())

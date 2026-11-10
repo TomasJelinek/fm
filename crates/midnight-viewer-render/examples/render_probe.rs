@@ -1,10 +1,7 @@
 //! Reproducible renderer timing and image evidence; output stays below `_build`.
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
-use std::{
-    fs::File,
-    io::{BufWriter, Write},
-    time::Instant,
-};
+use std::time::Instant;
+mod support;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = TextRenderer::default();
@@ -34,22 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = source.find("العربية").unwrap();
     let raster = renderer.rasterize(&page, view, Some(start..start + "العربية".len()))?;
     if let Some(path) = std::env::args_os().nth(1) {
-        let mut file = BufWriter::new(File::create(path)?);
-        let length = 54 + raster.rgba.len() as u32;
-        file.write_all(b"BM")?;
-        file.write_all(&length.to_le_bytes())?;
-        file.write_all(&[0; 4])?;
-        file.write_all(&54u32.to_le_bytes())?;
-        file.write_all(&40u32.to_le_bytes())?;
-        file.write_all(&(raster.width as i32).to_le_bytes())?;
-        file.write_all(&(-(raster.height as i32)).to_le_bytes())?;
-        file.write_all(&1u16.to_le_bytes())?;
-        file.write_all(&32u16.to_le_bytes())?;
-        file.write_all(&[0; 24])?;
-        for pixel in raster.rgba.as_chunks::<4>().0 {
-            file.write_all(&[pixel[2], pixel[1], pixel[0], 255])?;
-        }
-        file.flush()?;
+        support::write_bmp(std::path::Path::new(&path), &raster)?;
     }
     for (name, text) in [
         ("4096 lines", "abcdef 1234567890\n".repeat(4095)),

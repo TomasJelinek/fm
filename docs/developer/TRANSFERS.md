@@ -8,10 +8,14 @@ uses the same native destination and verification state machine.
 ## Verification and ownership
 
 `VerifiedFileCopy` performs bounded 256 KiB steps: source read/stage write,
-flush/sync, independent complete stage readback, then publication. Source and
-readback SHA-256 digests and lengths must match. It revalidates the opened source
-before accepting replacement consent and immediately before publishing. A failed,
-cancelled or recovery-terminal copy cannot publish again. A late no-replace
+flush/sync, independent stage readback, then publication. The immutable job policy
+defaults to full SHA-256 and exact length. Explicit `SizeAndSamples` compares
+exact length and first/middle/last 64 KiB (all bytes for files up to 192 KiB), retaining
+at most 192 KiB of source evidence gathered during streaming. It cannot detect
+corruption between samples. It revalidates the opened source
+before accepting replacement consent and immediately before publishing. A failed
+copy stays stopped until an explicitly supported Retry restores its checkpoint;
+cancelled and recovery-terminal copies cannot publish again. A late no-replace
 collision leaves the verified stage available for a different name or explicit
 replacement; the consumed source stream is not replayed.
 
@@ -19,6 +23,23 @@ All methods run on backend workers. UI receives bounded immutable progress and
 versioned conflict metadata, and sends a choice with the exact job/version. The
 queue currently runs serially on every storage class. More than one stream still
 requires positive local SSD classification at both endpoints and shared budgets.
+The [local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md)
+found substantial component gains for large/mixed files, but abnormal small-file
+audit delays left its full qualification incomplete. It therefore authorizes no
+production concurrency change; there is no new parallel-copy setting or default.
+
+Windows stages use a twenty-character basename, `.me-` plus sixteen random hex
+characters. Exclusive creation is relative to a held directory handle, without a
+260-character `MAX_PATH` restriction. Linux stages remain unnamed `O_TMPFILE`
+inodes. Both stage on the destination filesystem. The final name is assigned only
+after verification; same-volume native Move does not stage content.
+
+Cancellation waits for any in-flight native step and explicitly removes the
+unpublished stage before terminal progress. Factory failures after stage creation
+also attempt explicit cleanup. Unfinished sources, existing target originals and
+already completed files are retained. A cleanup refusal is reported with its exact
+residual path, even when the job is Cancelled; destructor cleanup alone does not
+prove removal. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
 
 ## Destination capabilities
 
@@ -38,6 +59,17 @@ filesystems. Network, removable and unknown replacement semantics are not
 silently treated as equivalent. Other no-replace and merge operations retain
 their own provider capability/error behavior.
 
+Native same-volume Move first attempts the retained native rename capability,
+before content/proof admission. It reads no contents and skips hashing. Actual
+cross-device results enter the ordinary verified transfer route; generic errors
+never authorize that fallback. Whole-directory rename does not list descendants.
+`native_entries_moved` and items/s express this work separately from copied bytes.
+Committed errors retain their recovery facts and cannot replay a source transfer.
+The [current policy and API design](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md)
+supersedes earlier unconditional SHA-256 and same-volume-copy descriptions below;
+full-hash proof discussions describe the default mode, and sampled proofs retain
+the same identity/revision/publication guards with bounded range reads.
+
 ## Conflict policies
 
 Replace/Replace all keep originals. Merge/Merge all keep existing children and
@@ -50,6 +82,90 @@ A target change while a decision is pending invalidates that decision. A newly
 appearing destination at publication requires a fresh conflict, even after
 Replace all. A stale job/version response cannot authorize a new conflict.
 Skip, another name and Cancel remain available when replacement is unsupported.
+
+## I/O errors and progress lifetime
+
+`CopyEvent::Failure` carries a `CopyFailure` with operation ID, monotonically
+increasing decision version, `CopyErrorStage`, native error and separate source
+and destination paths. `can_retry` and `can_skip` are capabilities, not UI guesses.
+Decisions use the existing `Command::DecideCopy` route. A stale version, wrong job
+or unsupported choice leaves the pending decision unchanged. Error Retry and
+Skip All never provide consent to replace or merge a conflicting destination.
+
+The async decision waiter releases blocking workers and the shared I/O permit.
+The logical mutation queue reservation remains held, preserving FIFO ordering;
+the user can still browse or enqueue more jobs. Cancel/shutdown wakes a paused
+job and performs cleanup before delivering terminal progress.
+
+Retry retains native identities and the original source/stage handles:
+
+- Preparation revalidates all objects already pinned by earlier attempts. It can
+  offer Retry/Cancel, but cannot safely skip a root before admission completes.
+  Frozen-selection validation and unsupported providers fail without a retry loop.
+- Source reads require an explicit retained-reader reposition capability. Partial
+  writes retain their block, seek to the last fully committed offset and rewrite
+  the block; progress and the source hash advance only after the complete write.
+- Flush/sync and readback preserve full length and SHA-256 validation. Readback
+  retry restores the verified offset, including after an error advances a cursor.
+- Publication retry is allowed only before namespace mutation. A late collision
+  becomes a fresh name conflict. Integrity failures, changed identities and
+  uncertain publication never authorize retry or deletion.
+- Enumeration errors cannot replay a cursor safely and offer Skip/Cancel, with
+  Skip All scoped to this error type. Move retains the skipped subtree/ancestors.
+- File-source deletion Retry keeps the verified destination, obtains a fresh
+  native finalizer and rehashes both held objects before another removal attempt.
+  It never recopies the file. Directory removal retries the exhausted frame,
+  revalidating bindings without enumerating that directory again.
+
+Skip All is scoped by phase, native error kind and operation name within one job.
+Successful retries do not increment failed counts; skipped errors and cleanup or
+restoration failures remain in history. A source-name restoration conflict retains
+both objects and reports the residual path. Unsafe cleanup/commit failures stop
+the job instead of offering an optimistic Retry.
+
+The error dialog has Retry/Skip/Skip All/Cancel only when supported. Escape or
+Decide later preserves the attention state; Jobs → Resolve opens the exact pending
+decision. Successful Copy/Move closes only automatically opened progress, after
+all associated work succeeds. Manually opened Jobs remains open. Completed
+records remain in the bounded recent history, including when progress closes.
+See the [interaction design](../superpowers/specs/2026-11-08-transfer-errors-design.md)
+and [Salamander reference audit](../verification/2026-11-08-transfer-error-reference-audit.md).
+
+## Activity charts
+
+Copy, Move and Delete expose `Arc<OperationThroughput>` snapshots alongside their
+existing progress. Engine-owned `Tracker` instances sample monotonic elapsed time
+and actual cumulative counters every 250 ms. Each snapshot retains at most 240
+intervals spanning the whole operation. When full, adjacent intervals are combined
+and future intervals use the same coarser resolution. Original timestamps and
+per-series measured maxima survive, so early peaks remain visible and determine
+the vertical scale. Different series' peaks in a combined interval need not have
+occurred simultaneously. Current labels remain the latest actual interval rates,
+not aggregated peaks. The UI displays one chart for the selected
+job, caches its geometry by snapshot identity and never measures I/O itself.
+
+Copy/Move charts distinguish written bytes/s from SHA-256 readback and additional
+Move proof reads. Verification is not added to copied bytes. Labels use IEC units
+(KiB/s, MiB/s). Delete charts use processed items/s, including reported directories;
+system Trash may report only top-level items. No recursive sizing pass is started
+to estimate deletion throughput. These are operation activity rates, not physical
+disk bandwidth or completion percentages.
+
+Stalled operations receive zero-activity samples even while a native call is
+blocked. Waiting/cancelling/terminal states show zero current speed; real work
+completed by an already running native call after cancellation still enters the
+history. Short final intervals are merged into the previous sample when necessary,
+and short completed jobs retain a visible point. Counter resets rebase measurement
+instead of producing negative rates. Terminal chart history remains with the
+existing session-only Jobs record and is not written to settings.
+
+The shared Slint chart appears in both automatic progress and manually opened
+Jobs. Its horizontal scale contracts from time zero as the operation grows, and
+its vertical scale expands when a higher peak appears. The filled write/deletion
+series, separate verification line and text labels adapt to the theme and dialog
+size. Existing queue, confirmation, cancellation,
+checksum and source-removal policies are unchanged. See the
+[chart design](../superpowers/specs/2026-11-10-operation-speed-chart-design.md).
 
 ## Publication and recovery
 
@@ -85,7 +201,7 @@ the latest 16 completed jobs and is not persisted across restart; copy the job
 details while available. The files themselves remain on disk until explicitly
 removed. This is not a persistent recovery catalogue or an automatic Undo action.
 
-## Bounded regular-file Recoverable Move
+## Bounded ordinary Move
 
 Explicit Move uses the same FIFO, admission, mutation exclusion, cancellation and
 completion receipts as Copy. F6 retains the captured native selection and other
@@ -96,13 +212,17 @@ UI; `CopyInput` unwraps/clones it only in blocking preparation. Ordinary Copy an
 archive Copy keep their existing routes. Native formats retain raw paths; no
 shell parses file names.
 
-The first scope accepts at most 64 ordinary file roots, with a conservative 4 MiB
-reservation for source/capture/stage/proof/receipt paths. The entire batch is
-rejected before publication for a directory, link, virtual source, duplicate
-native identity, unsupported recovery/proof capability or exceeded budget.
-Preparation retains every native source capture authority and empty stage before
-copying; failure cleans only its owned stages on a worker. Windows source DELETE
-authority is obtained upfront, separately from Copy's unchanged read-only pin.
+Content-only Move accepts at most 64 ordinary native file or directory roots,
+with a conservative 4 MiB active source/capture/stage/proof/receipt path reservation.
+Duplicate identities, overlapping roots (including a selected file beneath a
+selected directory), a destination inside a source directory, unsupported root
+authority and exceeded root budgets are rejected before writes. Preparation pins
+all root authorities and root-file stages. Recursive traversal admits one child
+at a time, with at most 128 active directory frames and 100,000 admitted entries;
+the child's native authority and file proof support are checked before its copy.
+A later unsupported child or exceeded traversal budget stops unfinished work and
+retains earlier completed moves. Windows source DELETE authority is obtained
+before each source's copy, separately from Copy's unchanged read-only pin.
 Protected source parents and qualified local NTFS/ext semantics are mandatory;
 unsupported parents suggest Copy, never permission weakening or silent fallback.
 
@@ -110,16 +230,20 @@ Optional contracts default to Unsupported:
 
 | Contract | Meaning |
 | --- | --- |
-| `prepare_move_source` | Retain the actual source reader plus opaque root capture authority, without changing source names. |
+| `prepare_move_source` | Retain the actual source reader plus opaque root authority, without changing source names. |
+| `TransferSource::next_move_child` | Open one child relative to the held directory without following links, returning explicit Move authority. Ordinary Copy sources refuse this method. |
 | `prepare_move_destination` | Qualify retained stage read and final-name proof support before copying. |
 | `rewind_for_validation` | Rewind the existing source/stage file object and obtain a fresh handle-only revision guard; no old source pathname reopen. |
 | `revalidate_publication` | Check held destination directory/final basename against the exact held stage identity, without following replacement links. |
-| `TransferMoveCapture::capture` | Retain the root under its original raw basename in private sibling recovery. Structured Captured/Restored/RecoveryRequired facts describe actual mutation; no inode is unlinked. |
+| `TransferMoveCapture::capture` | Temporarily stage the held source under its raw basename in a private sibling directory. Structured outcomes describe actual mutation; this call does not delete data. |
+| `TransferMoveCapture::restore` | Restore the exact held original without replacing a new original-name winner, using cancellation-independent cleanup. |
+| `take_stage_cleanup` | Transfer exact directory-only authority; remove the empty stage after source owners close. Never recursively delete children. |
+| `TransferMoveCapture::remove_empty_directory` | Revalidate source identity/parent binding and remove only the held ordinary directory after completed children. The kernel must enforce emptiness; this never deletes children. |
 
 Only completely successful Published/Replaced copies yield `VerifiedFileProof`.
 The user-requested Move order is per file: copy and independently verify one
 file, validate its retained source/destination SHA-256 and required metadata,
-capture that source, establish native writer quiescence, rehash both objects,
+capture that source, retain the platform's source-write guard, rehash both objects,
 then explicitly remove that source before starting the next copy. Each full
 proof pass uses one shared 256 KiB buffer; source and destination revisions from
 the final reads remain guarded through the removal gate. Earlier destination
@@ -128,48 +252,87 @@ identities stay protected from later replacement, without retaining their files.
 `TransferMoveCapture::preflight_finalization` refuses unsupported removal before
 publication. `prepare_finalization` requires a matching successful capture and
 returns an opaque `TransferMoveFinalizer`; its `revalidate` checks the retained
-object/recovery binding, and `finalize` reports actual Removed/Retained facts.
-Drop never removes recovery. The first removal scope is Windows local fixed NTFS, single-link native
-regular files. Windows refuses readonly files and any named alternate
+object/temporary binding, and `finalize` reports actual Removed/Retained facts.
+Drop never removes originals. Regular-file removal on Windows requires local fixed NTFS and single-link native
+files. Windows refuses readonly files and any named alternate
 data stream, including empty streams that were not copied and verified.
 
-Linux source finalization is currently Unsupported before publication, with an
-explicit suggestion to use Copy. A read-lease probe detects existing writable
-handles/mappings, but cannot exclude an old-name open already in progress when
-capture renames the source. Holding a lease does not solve arbitrary pauses past
-its forced-break timeout. Neither advisory locks nor a revision-to-unlink race
-is silently accepted as writer exclusion. Existing Linux Copy, capture and proof
-primitives remain; no reachable source-unlink implementation is enabled.
+Linux now supports live-validated removal of owned, single-link regular files on
+qualified local ext filesystems with protected source parents. Preflight retains
+a read lease before publication, refusing existing writers or writable mappings.
+One bounded dedicated thread receives blocked, thread-directed SIGIO notifications;
+the process-wide signal disposition is unchanged. The lease remains held through
+staging, complete source/destination rehashes, identity/revision/metadata checks
+and directory-relative unlink. Any observed lease break or source change refuses
+removal and attempts no-replace restoration. Drop never removes source data.
+
+This Linux path is not atomic compare-and-unlink or an immutable snapshot. A pending
+old-name writer triggers a lease break; the kernel can forcibly remove a lease
+after its configured timeout. Checks refuse observed breaks, but arbitrary pauses
+between the final check and unlink across that timeout are outside the guarantee.
+Private staging does not isolate malicious same-UID/root namespace mutation.
+Unsupported source filesystems/kinds/rights fail before that entry's publication without a
+silent downgrade to Copy. See [native qualification and race evidence](../verification/2026-11-08-ordinary-move.md).
 
 On Windows, a Read oplock probe on an asynchronous exact-object `ReOpenFile`
 handle rejects preexisting writable mapped sections. Its pending IO is cancelled
 and drained before buffers disappear; the original source handle continues to
-deny write sharing. Removal uses normal exact-handle disposition with image
-section checks, without POSIX semantics or readonly overrides. All application
-source/proof/finalizer owners close before the next file. External readers can
-delay storage reclamation; parent-entry power-loss durability is not promised.
+deny write sharing for the unnamed stream. Removal uses exact-handle POSIX
+disposition with image-section checks and no readonly override. All application
+source/proof/finalizer owners close, then the empty source stage is removed,
+before the next file. External readers can retain bytes after logical name
+removal; physical storage release and parent-entry power-loss durability are not
+promised. Named stream sharing is per stream: no whole-file snapshot/CAS claim is
+made. Qualification is repeated before removal and late ADS changes refuse it.
 
-A skip retains that file. Failure or cancellation stops unfinished Move work;
+A skip retains that entry or subtree and all of its active source ancestors.
+Other siblings can still finish. Source directories are removed in postorder,
+after their source/destination bindings are checked. Windows uses the retained
+DELETE handle and refuses readonly directories or unverified directory streams
+both at admission and final removal. Linux checks the held parent and no-follow
+directory identity before `unlinkat(AT_REMOVEDIR)`. Linux has no inode-CAS rmdir;
+the same live-operation namespace boundary applies. An unexpected child makes
+empty-only removal fail. A skipped ancestor is retained without attempting removal.
+No complete-tree snapshot, root-capture manifest or recursive deletion is used.
+
+An unresolved terminal failure or cancellation stops unfinished Move work;
 earlier successful moves remain completed, and later source names stay in place.
-A failure after capture retains the original in recovery. No destination rollback
-is attempted. Progress reports actual removal/delete-pending/durability counts,
-remaining recovery objects, first16 raw recovery mappings and at most64 source
-parents for refresh. `.midnight-recovery-<random>/<original raw basename>` retains
-local recovery context, without an automatic recovery catalogue or journal.
-Empty recovery directories may remain. Physical freed space is never measured or
-promised: open readers, mappings and filesystem allocation can delay reclamation.
+At a supported failure pause, explicit Skip retains that source and allows later
+siblings to continue; Retry resumes only the failed phase.
+Every pre-deletion failure or cancellation after staging attempts a no-replace
+restore to the original name, even when the user cancellation token is set.
+The transient path is `.midnight-move-<random>/<original raw basename>`. A
+successful move retains no source copy and removes its empty temporary directory.
+This is internal staging, not a selectable recovery mode, journal or catalogue.
+If a new source-name winner blocks restoration, both objects are preserved and
+the exact exceptional temporary location is reported. Failed empty-directory
+cleanup is also reported; cleanup never removes an unexpected child. Progress
+reports actual file removals, source disposition/durability facts, exceptional
+residual counts, first16 raw residual mappings and at most64 source parents for
+refresh, prioritizing selected-root parents. File-removal counts exclude directories;
+disposition/durability counters include empty-directory removals. They do not
+measure reclaimed space.
+No destination rollback or batch rollback is attempted.
+
+Salamander `src/worker.cpp` cross-volume `DoMoveFile` calls `DoCopyFile`, then
+deletes that file's source on successful non-skipped copy (around lines6067–6080).
+FM follows this per-file interaction with additional mandatory SHA-256 readback,
+held-object deletion and no readonly/ACL weakening. Earlier retained-source
+Move verification reports are historical and superseded by this ordinary policy.
 
 Same-device Move still performs the full content proof instead of a rename-only
-shortcut. Directories, hardlinks, links, virtual providers and broader metadata
-remain separate unfinished scope. No phase promises an atomic snapshot or batch
-rollback under arbitrary concurrent mutation.
+shortcut. Recursive Move currently uses ContentOnly; required modified time still
+accepts only distinct regular-file roots. Hardlinks, links, virtual providers and
+broader metadata remain separate unfinished scope. No phase promises an atomic
+snapshot or batch rollback under arbitrary concurrent mutation. See
+[recursive native qualification](../verification/2026-11-08-recursive-move.md).
 
 ## Required modified time
 
 Existing requests and constructors remain `ContentOnly`. An explicit
 `Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
 `TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
-selection or shared clipboard input, with an explicit Copy/RecoverableMove intent.
+selection or shared clipboard input, with an explicit Copy/Move intent.
 The first slice accepts at most 64 distinct native regular-file roots within the
 existing 4 MiB proof-path reservation. Directories, links, virtual sources and
 unsupported providers are refused without a policy downgrade. The UI option is
@@ -204,7 +367,8 @@ destination times are checked during each proof and before captures. After our
 source rename, the old revision token is not compared to its changed ctime;
 fresh proof guards and the retained source-handle timestamp read are used.
 Published targets are never corrected to conceal a mismatch. A mismatch after
-capture reports an error and retains the original bytes in recovery.
+temporary staging reports an error and attempts no-replace source restoration;
+an exceptional restoration conflict preserves and reports the exact staged bytes.
 
 Windows preserves native 100 ns values and explicitly refuses reserved/unsettable
 FILETIME values; Linux preserves native nanoseconds, including supported negative
@@ -214,14 +378,40 @@ closed file. Current native filesystem coverage is NTFS on Windows and ext on
 Linux; this does not broaden remote commit or power-loss guarantees. Native
 version checks are still not immutable snapshots.
 
+## Progressive selection feedback
+
+`CopyEvent::RootCompleted` reports one requested root after verified publication
+and, for Move, source removal. It is independent of throttled byte-progress
+snapshots and precedes the next conflict or terminal event. Directory completion
+requires the entire subtree with no skipped or failed descendants. Failed,
+skipped or cancelled unfinished roots remain selected. This is feedback only;
+it grants no filesystem authority and never infers success from a progress count.
+
+Native selection identities use the exact raw source path; archive adapters
+provide `TransferSource::virtual_identity` and retain mount/entry identity.
+Presenters capture the originating pane context, preserve the caret, and queue
+small idempotent Remove edits on existing selection workers. Bounded-channel
+pressure and coalesced refusal acknowledgements must retry. Same-folder refresh
+rebases by path; navigating away must not alter a new selection context. See the
+[regression evidence](../verification/2026-11-08-transfer-selection.md).
+
+Adopted trees use exact occurrence/session completion identities from an
+intent-bound `CapturedTransferSources`. F5 supports native/archive captures;
+F6 requires native preparation and the ordinary Move proofs. Confirmation never
+upgrades Copy authority into Move. Successful-root Remove acknowledgements settle
+before native root/loaded-branch reconciliation. See the
+[tree transfer contract](TREE_PANEL.md#move-and-transfer-reconciliation) and
+[integration evidence](../verification/2026-11-10-tree-move.md).
+
 ## Current limits and next stage
 
 Copy preserves verified content, with explicit required modified time as above.
 Link copying and remaining times/attributes,
 permissions, ACLs, extended attributes and alternate streams need their declared
 metadata capability matrix. Existing source link/special entries are refused.
-Recursive directory Move remains a separate stage: root metadata cannot prove
-descendant content/namespace closure. It requires a complete bounded child proof
-manifest and another reviewed barrier before root capture. Permanent source
-reclamation is also separate; skips, failure, cancellation or recovery/durability uncertainty cannot satisfy
-that barrier. Nothing in this API permanently deletes a source inode.
+Recursive directory Move uses the per-file proof and postorder empty-directory
+removal contract above. It does not infer descendant verification from root
+metadata. Skips retain ancestors; failures/cancellation preserve unfinished
+sources and earlier completed moves. Remaining directory metadata preservation
+needs its own declared postorder capability. Physical storage reclamation and
+atomic tree snapshots remain outside the contract.

@@ -26,7 +26,7 @@ impl Presenter {
         let p = &self.panes[pane.index()];
         !p.search_view_waiting()
             && !p.selection_pending_bulk
-            && !p.selection_deferred
+            && !p.selection_deferred.any()
             && !p.selection_rebase_pending
             && p.selection_revision <= p.selection_resolved
             && p.archive
@@ -41,6 +41,13 @@ impl Presenter {
         kind: MutationKind,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !matches!(
+            kind,
+            MutationKind::CreateDirectory | MutationKind::CreateFile
+        ) && !self.tree_action_allowed(pane)
+        {
+            return;
+        }
         if !self.native_action_allowed(pane) {
             return;
         }
@@ -65,9 +72,13 @@ impl Presenter {
             return;
         }
         let files = SelectedFiles {
-            view: p.display_index().clone(),
+            view: if p.tree_view().is_some() {
+                p.index.clone()
+            } else {
+                p.display_index().clone()
+            },
             selection: p.selected.clone(),
-            fallback: (!p.parent_cursor)
+            fallback: (!p.parent_cursor && p.tree_view().is_none())
                 .then(|| {
                     p.cursor
                         .and_then(|id| p.entry_by_id(id))
@@ -129,6 +140,7 @@ impl Presenter {
             // Register immediately: closing before Preparing arrives must not abandon a job.
             self.operations.progress.push(Arc::new(OperationProgress {
                 id,
+                throughput: Arc::default(),
                 kind,
                 state: OperationState::Preparing,
                 total: 0,
@@ -205,9 +217,12 @@ impl Presenter {
         self.shutdown_drag_drop(send);
         self.retire_metadata();
         self.operations.closing = true;
+        self.retire_warning_viewer();
         self.operations.pending = None;
         self.operations.preview = None;
         self.copies.conflicts.clear();
+        self.copies.failures.clear();
+        self.copies.deferred_decisions.clear();
         self.operations.metadata_conflicts.clear();
         for job in &self.command_launches.jobs {
             if !job.finished {
@@ -257,6 +272,14 @@ impl Presenter {
                 }
             }
             OperationEvent::Progress(progress) => {
+                if self
+                    .operations
+                    .progress
+                    .iter()
+                    .any(|old| old.id == progress.id && !old.state.is_terminal())
+                {
+                    self.copies.automatic_jobs.observe_mutation(&progress);
+                }
                 if progress.state.is_terminal() {
                     self.operations
                         .metadata_conflicts

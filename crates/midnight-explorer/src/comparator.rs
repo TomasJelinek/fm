@@ -2,15 +2,27 @@ use midnight_compare_ui::{ComparatorWindows, WindowPlacement};
 use midnight_core::{PaneId, ViewerAppearance};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use slint::ComponentHandle;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
+    commands: tokio::sync::mpsc::Sender<midnight_core::Command>,
     runtime: &tokio::runtime::Handle,
-    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
+    picker: Arc<dyn midnight_core::PathPickerService>,
+    filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> Rc<ComparatorWindows> {
-    let windows = Rc::new(ComparatorWindows::new(service(runtime, filesystem)));
+    let windows = Rc::new(
+        ComparatorWindows::new(service(runtime, filesystem).with_path_picker(picker))
+            .with_picker_owner(midnight_ui::native_path_picker_owner),
+    );
+    let settings = presenter.clone();
+    windows.set_font_listener(Rc::new(move |family| {
+        settings.borrow_mut().save_viewer_preferences(
+            midnight_core::ViewerPreferenceChange::ComparisonFont(family),
+            &|command| commands.try_send(command).is_ok(),
+        );
+    }));
     let manager = windows.clone();
     let weak = window.as_weak();
     window.on_compare_files(move |pane| {
@@ -29,7 +41,11 @@ pub(crate) fn install(
                 [color.red, color.green, color.blue, color.alpha]
             };
             let appearance = ViewerAppearance {
-                family: theme.get_font_family().to_string(),
+                family: presenter
+                    .borrow()
+                    .viewer_preferences()
+                    .comparison_font
+                    .clone(),
                 font_size: theme.get_font_size().max(11.0),
                 foreground: rgba(theme.get_text()),
                 background: rgba(theme.get_pane_background()),
@@ -53,7 +69,7 @@ pub(crate) fn install(
 
 pub(crate) fn service(
     runtime: &tokio::runtime::Handle,
-    filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
+    filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> midnight_compare_engine::Service {
     midnight_compare_engine::Service::with_native_capture(
         runtime.clone(),

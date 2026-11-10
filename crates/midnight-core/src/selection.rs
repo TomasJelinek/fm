@@ -1,5 +1,5 @@
 //! Immutable, shareable selection data prepared by backend workers.
-use crate::{DirectoryIndex, NavigationId, PaneId};
+use crate::{DirectoryIndex, EntryKind, NavigationId, PaneId};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -7,9 +7,59 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionOperation {
+    /// Select visible top-level entries, including folders and directory links.
+    /// Inline trees apply their depth policy before this per-kind policy.
     All,
+    /// Replace selection with visible non-directory entries.
+    FilesOnly,
     Clear,
+    /// Invert non-directory entries; preserve folders and directory links.
     Invert,
+    /// Invert all visible top-level entries, preserving nested tree marks.
+    InvertAll,
+}
+
+impl SelectionOperation {
+    /// Shared row policy for backend providers and immediate visual feedback.
+    pub fn selects(self, directory: bool, selected: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::FilesOnly => !directory,
+            Self::Clear => false,
+            Self::Invert => selected ^ !directory,
+            Self::InvertAll => !selected,
+        }
+    }
+}
+
+/// Selection of not-yet-enumerated rows after ordered streaming bulk actions.
+/// Explicit bits for paths already present in the snapshot always take precedence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectionDefaults {
+    pub files: bool,
+    pub directories: bool,
+}
+impl SelectionDefaults {
+    pub const NONE: Self = Self {
+        files: false,
+        directories: false,
+    };
+    pub const ALL: Self = Self {
+        files: true,
+        directories: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.files || self.directories
+    }
+
+    pub fn selects(self, kind: EntryKind) -> bool {
+        if matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            self.directories
+        } else {
+            self.files
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -91,6 +141,8 @@ impl SelectionRanges {
 pub enum SelectionAction {
     Bulk(SelectionOperation),
     Toggle(PathBuf),
+    /// Idempotent completion feedback, applied by the ordered selection worker.
+    Remove(Arc<std::collections::HashSet<PathBuf>>),
     /// Inclusive positions resolved from raw paths in the captured immutable view.
     Range {
         anchor: PathBuf,

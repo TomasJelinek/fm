@@ -12,22 +12,22 @@ use std::{
 };
 
 #[derive(Default)]
-struct Tree {
+pub(super) struct Tree {
     directories: HashMap<PathBuf, Vec<Entry>>,
     lengths: HashMap<PathBuf, u64>,
-    unreadable: HashSet<PathBuf>,
+    pub(super) unreadable: HashSet<PathBuf>,
     reads: Mutex<Vec<PathBuf>>,
     metadata_reads: Mutex<Vec<PathBuf>>,
-    cancel_on_metadata: Option<Cancellation>,
+    pub(super) cancel_on_metadata: Option<Cancellation>,
     metadata_delay: Duration,
 }
 
 impl Tree {
-    fn directory(&mut self, path: &str, entries: Vec<Entry>) {
+    pub(super) fn directory(&mut self, path: &str, entries: Vec<Entry>) {
         self.directories.insert(path.into(), entries);
     }
 
-    fn length(&mut self, path: &str, bytes: u64) {
+    pub(super) fn length(&mut self, path: &str, bytes: u64) {
         self.lengths.insert(path.into(), bytes);
     }
 }
@@ -90,18 +90,32 @@ impl StorageService for Tree {
     }
 }
 
-fn item(id: u64, path: &str, kind: EntryKind) -> Entry {
+pub(super) fn item(id: u64, path: &str, kind: EntryKind) -> Entry {
     Entry::new(EntryId(id), path.into(), kind)
 }
 
 fn finished(tree: &Tree, roots: &[Entry]) -> Vec<(EntryId, FolderSize)> {
     let mut results = vec![];
-    compute(tree, roots, &Cancellation::default(), &mut |id, size| {
-        if size.finished {
-            results.push((id, size));
-        }
-        true
-    });
+    compute(
+        tree,
+        roots,
+        &Cancellation::default(),
+        &mut |id, mut size| {
+            if size.finished {
+                // Scalar tests remain independent of opaque report identity, while
+                // every counted error must still retain a diagnostic handle.
+                assert_eq!(
+                    size.warnings
+                        .as_ref()
+                        .map_or(0, |report| report.summary().observed),
+                    size.errors
+                );
+                size.warnings = None;
+                results.push((id, size));
+            }
+            true
+        },
+    );
     results
 }
 
@@ -404,8 +418,10 @@ fn frontier_budget_reports_omitted_subtree_as_partial() {
         &tree,
         &[item(1, "root/dir", EntryKind::Directory)],
         &Cancellation::default(),
-        &mut |_, size| {
+        &mut |_, mut size| {
             if size.finished {
+                assert_eq!(size.warnings.as_ref().unwrap().summary().observed, 1);
+                size.warnings = None;
                 results.push(size);
             }
             true

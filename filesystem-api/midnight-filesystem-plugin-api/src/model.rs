@@ -86,6 +86,11 @@ pub enum ErrorCode {
     Io = 8,
     StaleReference = 9,
     Busy = 10,
+    Unavailable = 11,
+    Offline = 12,
+    AuthenticationRequired = 13,
+    MountRequired = 14,
+    TimedOut = 15,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -143,9 +148,26 @@ pub enum Operation {
     SpaceInfo = 14,
     VolumeLabel = 15,
     VolumeInformation = 16,
+    Activate = 17,
+    Refresh = 18,
+    ResolveText = 19,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Explicit Enter/double-click only; never used while restoring or listing.
+    Activate {
+        mount: u64,
+        node: u64,
+    },
+    /// Explicit cache invalidation, without activating or connecting to a target.
+    Refresh {
+        mount: u64,
+        node: u64,
+    },
+    /// Parse user-entered provider syntax; distinct from restoring an opaque address.
+    ResolveText {
+        text: String,
+    },
     Resolve {
         address: Address,
     },
@@ -205,6 +227,9 @@ pub enum Request {
 impl Request {
     pub fn operation(&self) -> Operation {
         match self {
+            Self::Activate { .. } => Operation::Activate,
+            Self::Refresh { .. } => Operation::Refresh,
+            Self::ResolveText { .. } => Operation::ResolveText,
             Self::Resolve { .. } => Operation::Resolve,
             Self::Stat { .. } => Operation::Stat,
             Self::ListBegin { .. } => Operation::ListBegin,
@@ -226,6 +251,7 @@ impl Request {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
+    Activated(crate::ActivationTarget),
     Unit,
     Resolved {
         mount: u64,

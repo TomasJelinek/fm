@@ -29,6 +29,34 @@ fn request(p: &mut Presenter) -> SelectionSizeRequest {
     }
 }
 
+#[test]
+fn unmeasured_selected_folders_do_not_add_an_unknown_status_field() {
+    let mut p = selected_panel();
+    let captured = request(&mut p);
+    p.apply(Event::SelectedFolderSizes {
+        request: captured.id,
+        pane: captured.pane,
+        navigation: captured.navigation,
+        selection_revision: captured.revision,
+        version: 1,
+        summary: SelectedFolderSizes {
+            folders: 3,
+            complete: 0,
+            complete_bytes: Some(0),
+            partial: 0,
+            partial_bytes: Some(0),
+        },
+    });
+    let fields = p.panel_details(PaneId::Left);
+    assert_eq!(fields[0].value, "1 file, 3 folders");
+    assert!(fields[1].value.contains("123 bytes"));
+    assert_eq!(
+        fields.len(),
+        2,
+        "unmeasured folders need no size placeholder"
+    );
+}
+
 fn result(request: &SelectionSizeRequest, version: u64, bytes: u64) -> Event {
     Event::SelectedFolderSizes {
         request: request.id,
@@ -47,24 +75,23 @@ fn result(request: &SelectionSizeRequest, version: u64, bytes: u64) -> Event {
 }
 
 #[test]
-fn selected_status_keeps_file_bytes_separate_and_labels_partial_unknown_folders() {
+fn selected_status_keeps_known_file_and_folder_bytes_separate_and_labels_partial_totals() {
     let mut p = selected_panel();
     let captured = request(&mut p);
     let fields = p.panel_details(PaneId::Left);
     assert_eq!(
         fields.len(),
-        3,
-        "mixed selections need separate file and folder byte fields"
+        2,
+        "unmeasured folder totals must not produce a placeholder"
     );
     assert!(fields[1].value.contains("123"));
-    assert!(fields[2].value.contains("updating"));
     p.apply(result(&captured, 1, 42));
     let fields = p.panel_details(PaneId::Left);
     assert!(fields[2].value.contains("42 bytes"));
     assert!(fields[2].value.contains("1 of 3"));
     assert!(fields[2].value.contains("≈ 8 bytes"));
     assert!(fields[2].value.contains("1 partial"));
-    assert!(fields[2].value.contains("1 unknown"));
+    assert!(!fields[2].value.contains("unknown"));
 }
 
 #[test]
@@ -77,13 +104,13 @@ fn stale_totals_and_pending_selection_never_reuse_another_selections_exact_bytes
     let token = p.panel_details(PaneId::Left)[2].identity.clone();
     p.panes[0].selection_revision = SelectionRevision(1);
     p.panes[0].selection_pending_bulk = true;
-    assert!(p.panel_details(PaneId::Left)[2].value.contains("updating"));
+    assert_eq!(p.panel_details(PaneId::Left).len(), 2);
     assert!(!p.copy_panel_detail(PaneId::Left, &token, &|_| panic!("stale summary copied")));
     p.panes[0].selection_pending_bulk = false;
     p.panes[0].selection_applied = SelectionRevision(1);
     let next = request(&mut p);
     p.apply(result(&captured, 3, 777));
-    assert!(p.panel_details(PaneId::Left)[2].value.contains("updating"));
+    assert_eq!(p.panel_details(PaneId::Left).len(), 2);
     p.apply(result(&next, 4, 19));
     assert!(p.panel_details(PaneId::Left)[2].value.contains("19 bytes"));
 }
@@ -113,7 +140,7 @@ fn selecting_in_a_new_tab_never_reuses_an_old_summary_request_identity() {
         "backend latest-request guards must accept the new tab"
     );
     p.apply(result(&first, 99, 999));
-    assert!(p.panel_details(PaneId::Left)[2].value.contains("updating"));
+    assert_eq!(p.panel_details(PaneId::Left).len(), 2);
     p.apply(result(&next, 100, 23));
     assert!(p.panel_details(PaneId::Left)[2].value.contains("23 bytes"));
 }
@@ -142,6 +169,7 @@ fn archive_status_uses_cached_provider_totals_and_never_requests_native_folder_s
     let origin = p.panes[0].path.clone();
     p.panes[0].archive = Some(crate::presenter::archives::ArchivePane::unavailable(
         ArchiveAddress {
+            format: None,
             provider: "test-provider".into(),
             container: origin.join("資料.zip"),
             source_version: vec![1],
@@ -168,6 +196,10 @@ fn archive_status_uses_cached_provider_totals_and_never_requests_native_folder_s
     let fields = p.panel_details(PaneId::Left);
     assert_eq!(fields[0].value, "1 file, 1 folder");
     assert!(fields[1].value.contains("777 bytes"));
-    assert!(fields[2].value.contains("1 unknown"));
+    assert_eq!(
+        fields.len(),
+        2,
+        "archive folders have no native size estimate"
+    );
     p.flush_selection_sizes(&|_| panic!("virtual selection must not request native cache data"));
 }

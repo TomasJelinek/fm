@@ -108,8 +108,9 @@ disabled rather than borrowing an unrelated command's shortcut.
 The explicit requested overrides are Ctrl+Enter to append the focused basename
 to the end of the command draft, and Ctrl+P to insert the active pane path at the
 editor selection. Ctrl+[ and Ctrl+] retain left/right insertion. Backend-provided
-raw names are quoted with the draft's shell grammar; unsafe insertion contexts
-and unrepresentable names fail explicitly. These actions focus the command
+raw names are inserted without generated quotes, escaping or separator spaces
+(user update, 7 November 2026). Actual name spaces remain intact; control
+characters and unrepresentable names fail explicitly. These actions focus the command
 editor and never submit, activate a file or start a terminal.
 
 ## Fonts and settings
@@ -173,7 +174,7 @@ cached images. Paths, labels and icons are not interchangeable identities.
 ## Verification obligations
 
 Selection mapping: Ctrl+A select all, Ctrl+D clear all, Ctrl+I invert the active
-panel's selection. These bindings are scoped to file lists; editors retain
+panel's file selection, preserving folders and directory links. These bindings are scoped to file lists; editors retain
 normal text selection. Backend selection snapshots and scan continuity are
 specified in [the current extension](2026-11-04-selection-and-continuous-sizes-design.md).
 Salamander's Ctrl+Num+/Num-/Num* aliases remain candidates for a later stage.

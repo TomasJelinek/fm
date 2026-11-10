@@ -2,11 +2,13 @@ use super::*;
 use std::{cell::RefCell, io};
 
 mod activation;
+mod archive_sizes;
 mod archives;
 mod bookmarks;
 mod bulk_selection;
 mod choices;
 mod controls;
+mod copy_completion;
 pub(super) mod copy_dialog;
 mod drag_drop;
 mod file_actions;
@@ -15,8 +17,11 @@ mod font_preferences;
 mod keyboard;
 mod metadata;
 mod navigation;
+mod navigation_fallback;
+mod network_neighborhood;
 mod operations;
 mod panel_navigation;
+mod parent_focus;
 mod preferences_load;
 mod reclamation;
 mod search;
@@ -27,6 +32,11 @@ mod selection_rectangle;
 mod shortcuts;
 mod size_continuity;
 mod tabs;
+mod tree;
+mod tree_clipboard;
+mod tree_copy;
+mod tree_drag;
+mod tree_refresh;
 mod user_commands;
 mod volumes;
 mod watch;
@@ -107,7 +117,7 @@ fn fixture_toggle(p: &mut Presenter, pane: PaneId, command: Option<Command>) {
         navigation: request.navigation,
         revision: request.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(basis, bits).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
 }
 

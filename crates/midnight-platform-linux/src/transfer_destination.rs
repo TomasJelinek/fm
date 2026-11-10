@@ -10,6 +10,8 @@ use std::{
     os::fd::AsRawFd,
 };
 
+#[path = "transfer_preservation.rs"]
+mod preservation;
 #[path = "transfer_recovery.rs"]
 pub(super) mod recovery;
 
@@ -46,6 +48,15 @@ impl Directory {
     }
 }
 impl TransferDirectory for Directory {
+    fn open_read_child(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.revalidate(cancel)?;
+        super::source::Source::open(self.file.clone(), self.path.clone(), name, cancel)
+            .map(|source| Box::new(source) as Box<dyn TransferSource>)
+    }
     fn path(&self) -> &Path {
         &self.path
     }
@@ -58,6 +69,9 @@ impl TransferDirectory for Directory {
             conditional_overwrite: false,
             recoverable_replacement: recovery::supported(self),
         }
+    }
+    fn supports_native_move_replacement(&self, source: TransferIdentity) -> bool {
+        super::move_source::supports_native_replacement(self, source)
     }
     fn prepare_target(
         &self,
@@ -84,6 +98,22 @@ impl TransferDirectory for Directory {
         let mut stage = self.stage_file(cancel)?;
         stage.prepare_replacement(name, expected, policy, cancel)?;
         Ok(stage)
+    }
+    fn stage_file_preserving_target(
+        &self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        let preserved = preservation::Snapshot::capture(self, name, expected.as_ref(), cancel)?;
+        let mut stage = self.create_stage(false, cancel)?;
+        let file = stage.file().map_err(|e| error(&self.path, e))?;
+        preserved.initialize(file, &self.path)?;
+        expected.revalidate(cancel)?;
+        stage.preserved = Some(preserved);
+        stage.prepare_replacement(name, expected, policy, cancel)?;
+        Ok(Box::new(stage))
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
@@ -198,6 +228,10 @@ impl Directory {
         metadata: bool,
         cancel: &Cancellation,
     ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        self.create_stage(metadata, cancel)
+            .map(|stage| Box::new(stage) as Box<dyn StagedTransferFile>)
+    }
+    fn create_stage(&self, metadata: bool, cancel: &Cancellation) -> Result<Stage, FsError> {
         self.revalidate(cancel)?;
         // O_TMPFILE creates an exclusive unnamed inode on the destination filesystem.
         // The file can never be substituted by a staged-path rename. No EXCL here:
@@ -211,19 +245,21 @@ impl Directory {
             )
             .map_err(|e| error(&self.path, e.into()))?,
         );
-        Ok(Box::new(Stage {
+        Ok(Stage {
             file: Some(file),
             directory: self.clone(),
             published: false,
             published_name: None,
             replacement: None,
             metadata,
-        }))
+            preserved: None,
+        })
     }
 }
 
 struct Stage {
     metadata: bool,
+    preserved: Option<preservation::Snapshot>,
     file: Option<File>,
     directory: Directory,
     published: bool,
@@ -337,6 +373,12 @@ impl StagedTransferFile for Stage {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<TransferPublication, FsError> {
+        if let Some(snapshot) = &self.preserved {
+            snapshot.verify(
+                self.file().map_err(|e| error(&self.directory.path, e))?,
+                &self.directory.path,
+            )?;
+        }
         self.replace(name, cancel, || {})
     }
     fn sync(&mut self, cancel: &Cancellation) -> Result<(), FsError> {

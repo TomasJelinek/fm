@@ -18,6 +18,9 @@ pub(crate) fn apply(
 ) -> Result<ArchiveSelectionResult, FsError> {
     let mut result = selected.clone();
     match action {
+        ArchiveSelectionAction::Remove(ids) => {
+            result.retain(|id| !ids.contains(id));
+        }
         ArchiveSelectionAction::Toggle(id) => {
             if view.by_id.contains_key(&id) && !result.remove(&id) {
                 result.insert(id);
@@ -25,11 +28,14 @@ pub(crate) fn apply(
         }
         ArchiveSelectionAction::Bulk(SelectionOperation::Clear) => result.clear(),
         ArchiveSelectionAction::Bulk(operation) => {
+            if operation == SelectionOperation::FilesOnly {
+                result.clear();
+            }
             for id in view.by_id.keys() {
-                if operation == SelectionOperation::Invert && result.contains(id) {
-                    result.remove(id);
-                } else {
+                if operation.selects(view.is_directory(*id), result.contains(id)) {
                     result.insert(*id);
+                } else {
+                    result.remove(id);
                 }
             }
         }

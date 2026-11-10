@@ -113,11 +113,14 @@ fn actual_text_and_image_comparison_use_installed_native_content() {
                 Some(midnight_compare_engine::Output::Frame { frame, .. }) => {
                     assert_eq!(frame.image, image);
                     if image {
-                        assert!(!frame.pixels.is_empty());
+                        assert!(frame.layers.is_some());
                     } else {
                         assert!(frame.accessible_text.contains("native"));
                     }
                     break;
+                }
+                Some(midnight_compare_engine::Output::ChooseFiles(choice)) => {
+                    panic!("Provider comparison failed: {}", choice.message)
                 }
                 Some(midnight_compare_engine::Output::Status(text)) => status = text,
                 None => {}
@@ -135,9 +138,8 @@ fn actual_text_and_image_comparison_use_installed_native_content() {
             Some(midnight_compare_engine::Output::Frame { .. }) => {
                 panic!("Missing native provider emitted compared content")
             }
-            Some(midnight_compare_engine::Output::Status(message))
-                if message.contains("Native filesystem") =>
-            {
+            Some(midnight_compare_engine::Output::ChooseFiles(choice)) if choice.is_error => {
+                assert!(choice.message.contains("Native filesystem"));
                 break;
             }
             _ => {}
@@ -163,6 +165,7 @@ fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
             let path = fixtures().join(name);
             service::Target {
                 token,
+                edge: 96,
                 identity: path.as_os_str().as_encoded_bytes().to_vec(),
                 extension: extension.into(),
                 selected: token == 2,

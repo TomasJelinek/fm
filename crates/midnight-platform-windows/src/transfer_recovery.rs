@@ -22,11 +22,14 @@ use windows_sys::{
 };
 
 impl Directory {
-    pub(in crate::transfer) fn source_recovery(
-        &self,
-        cancel: &Cancellation,
-    ) -> Result<Self, FsError> {
-        create_recovery(self, cancel)
+    pub(in crate::transfer) fn source_stage(&self, cancel: &Cancellation) -> Result<Self, FsError> {
+        create_named_directory(self, cancel, ".midnight-move-", DELETE)
+    }
+    pub(in crate::transfer) fn remove_empty_stage(self) -> Result<(), FsError> {
+        self.revalidate(&Cancellation::default())?;
+        // Exact directory handle; the kernel refuses nonempty directories. Never
+        // enumerate/delete children, reopen a path or weaken the private ACL.
+        native::remove(&self.file).map_err(|e| error(&self.path, e))
     }
     pub(in crate::transfer) fn capture_handle(
         &self,
@@ -45,8 +48,30 @@ impl Directory {
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
         self.revalidate(cancel)?;
-        trusted_recovery_parent(&self.file).map_err(|failure| unsupported(&self.path,
-            &format!("Recoverable Move needs a protected source parent: {failure}. Choose Copy to retain the source; no Move fallback is performed.")))
+        if !supported(self) {
+            return Err(unsupported(
+                &self.path,
+                "Verified Move recovery requires local fixed NTFS",
+            ));
+        }
+        // Native rename needs no DACL-query rights. Acquire them only for the
+        // cross-volume recovery path. ReOpenFile cannot reopen directories;
+        // compare the new handle to the retained identity before trusting its DACL.
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&self.path)
+            .map_err(|e| error(&self.path, e))?;
+        if identity(&held, &self.path)? != self.identity {
+            return Err(invalid(
+                &self.path,
+                "recovery parent changed before DACL check",
+            ));
+        }
+        trusted_recovery_parent(&held).map_err(|failure| unsupported(&self.path,
+            &format!("Move needs a protected source parent: {failure}. Choose Copy to retain the source; no Move fallback is performed.")))
     }
 }
 
@@ -366,7 +391,11 @@ impl Stage {
     }
 }
 
-fn rename_into(source: &File, parent: &File, name: &OsStr) -> io::Result<()> {
+pub(in crate::transfer) fn rename_into(
+    source: &File,
+    parent: &File,
+    name: &OsStr,
+) -> io::Result<()> {
     let wide: Vec<_> = name.encode_wide().collect();
     let length = size_of::<FILE_RENAME_INFORMATION>() + wide.len() * 2;
     let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];
@@ -400,14 +429,28 @@ fn rename_into(source: &File, parent: &File, name: &OsStr) -> io::Result<()> {
 }
 
 fn create_recovery(directory: &Directory, cancel: &Cancellation) -> Result<Directory, FsError> {
+    create_named_directory(directory, cancel, ".midnight-recovery-", 0)
+}
+pub(in crate::transfer) fn native_move_recovery(
+    directory: &Directory,
+    cancel: &Cancellation,
+) -> Result<Directory, FsError> {
+    create_named_directory(directory, cancel, ".midnight-recovery-", DELETE)
+}
+fn create_named_directory(
+    directory: &Directory,
+    cancel: &Cancellation,
+    prefix: &str,
+    additional_access: u32,
+) -> Result<Directory, FsError> {
     for _ in 0..16 {
         checked(cancel, &directory.path)?;
         let mut random = [0u8; 16];
         getrandom::fill(&mut random)
             .map_err(|e| error(&directory.path, io::Error::other(e.to_string())))?;
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-        let name = OsString::from(format!(".midnight-recovery-{suffix}"));
-        match create_private_directory(&directory.file, &name) {
+        let name = OsString::from(format!("{prefix}{suffix}"));
+        match create_private_directory(&directory.file, &name, additional_access) {
             Ok(file) => return Directory::from_file(file, directory.path.join(name)),
             Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(failure) => return Err(error(&directory.path, failure)),
@@ -561,7 +604,35 @@ fn trusted_recovery_parent(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-fn create_private_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+fn create_private_directory(
+    parent: &File,
+    name: &OsStr,
+    additional_access: u32,
+) -> io::Result<File> {
+    create_private_object(parent, name, additional_access, true)
+}
+
+pub(super) fn create_private_file(parent: &File, name: &OsStr) -> io::Result<File> {
+    create_private_object(
+        parent,
+        name,
+        FILE_READ_DATA
+            | FILE_WRITE_DATA
+            | FILE_WRITE_ATTRIBUTES
+            | DELETE
+            | READ_CONTROL
+            | WRITE_DAC
+            | WRITE_OWNER,
+        false,
+    )
+}
+
+fn create_private_object(
+    parent: &File,
+    name: &OsStr,
+    additional_access: u32,
+    directory: bool,
+) -> io::Result<File> {
     use std::os::windows::io::FromRawHandle;
     let user = current_user()?;
     // SAFETY: successful native query initialized TOKEN_USER in the aligned buffer.
@@ -612,14 +683,26 @@ fn create_private_directory(parent: &File, name: &OsStr) -> io::Result<File> {
     let code = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+            FILE_READ_ATTRIBUTES
+                | SYNCHRONIZE
+                | additional_access
+                | if directory { FILE_TRAVERSE } else { 0 },
             &attributes,
             &mut status,
             ptr::null(),
-            FILE_ATTRIBUTE_DIRECTORY,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            if directory {
+                FILE_ATTRIBUTE_DIRECTORY
+            } else {
+                FILE_ATTRIBUTE_NORMAL
+            },
+            FILE_SHARE_READ | if directory { FILE_SHARE_WRITE } else { 0 },
             FILE_CREATE,
-            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            (if directory {
+                FILE_DIRECTORY_FILE
+            } else {
+                FILE_NON_DIRECTORY_FILE
+            }) | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
             0,
         )

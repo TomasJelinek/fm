@@ -6,21 +6,35 @@ use std::{
     ffi::OsString,
     path::Component,
 };
+#[path = "copy_failures.rs"]
+mod failures;
 #[path = "copy_metadata_worker.rs"]
 mod metadata_job;
 #[path = "move_worker.rs"]
 mod move_job;
+#[path = "move_native.rs"]
+mod native_move;
 
 pub(super) enum Step {
     Continue,
     Conflict(Arc<CopyConflict>),
+    Failure(Arc<CopyFailure>),
     Done,
 }
 struct Frame {
     source: Box<dyn TransferSource>,
     destination: Arc<dyn TransferDirectory>,
+    retain_source: bool,
+    enumeration_complete: bool,
+}
+struct RootCompletion {
+    source: CompletedCopySource,
+    failed: u64,
+    skipped: u64,
 }
 struct EntryWork {
+    entry: TransferEntry,
+    native_identity: Option<TransferIdentity>,
     source: Option<Box<dyn TransferSource>>,
     copy: Option<VerifiedFileCopy>,
     destination: Arc<dyn TransferDirectory>,
@@ -28,6 +42,8 @@ struct EntryWork {
     target: Option<Arc<dyn TransferTarget>>,
     consent: Option<Consent>,
     replacement_prepared: bool,
+    native_fallback: bool,
+    move_preflight_done: bool,
     force_prompt: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,24 +53,10 @@ enum Consent {
 }
 impl EntryWork {
     fn native_identity(&self) -> Option<TransferIdentity> {
-        self.source.as_ref().map_or_else(
-            || {
-                self.copy
-                    .as_ref()
-                    .and_then(VerifiedFileCopy::source_native_identity)
-            },
-            |source| source.native_identity(),
-        )
+        self.native_identity
     }
     fn entry(&self) -> &TransferEntry {
-        if let Some(source) = &self.source {
-            source.entry()
-        } else {
-            self.copy
-                .as_ref()
-                .expect("entry owns a source or verified copy")
-                .source_entry()
-        }
+        &self.entry
     }
 }
 
@@ -68,6 +70,10 @@ pub(super) struct Job {
     stack: Vec<Frame>,
     current: Option<EntryWork>,
     conflict: Option<CopyConflict>,
+    failure: Option<CopyFailure>,
+    failure_context: failures::Context,
+    skipped_errors: HashSet<failures::Scope>,
+    halt: bool,
     decision: Option<CopyChoice>,
     version: u64,
     skip_all: bool,
@@ -75,8 +81,38 @@ pub(super) struct Job {
     merge_all: bool,
     move_work: Option<move_job::MoveWork>,
     metadata: Option<metadata_job::MetadataWork>,
+    verification: TransferVerification,
+    active_root: Option<RootCompletion>,
+    completed_root: Option<CompletedCopySource>,
+    // Declared last: native sources, captures and cleanup authority close before
+    // the provider registration and shared capture permit are released.
+    drop_retention: Option<Arc<crate::drag_drop::Retention>>,
+}
+pub(super) fn check_move_bounds<'a>(
+    destination: &Path,
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> Result<(), FsError> {
+    move_job::check_root_bounds(destination, paths)
 }
 impl Job {
+    pub(super) fn set_drop_retention(&mut self, retention: Arc<crate::drag_drop::Retention>) {
+        self.drop_retention = Some(retention);
+    }
+    pub(super) fn set_verification(&mut self, verification: TransferVerification) {
+        self.verification = verification;
+        self.progress.verification = verification;
+    }
+    pub(super) fn prepare_move_sources(
+        destination: std::path::PathBuf,
+        roots: VecDeque<PreparedTransferMove>,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+    ) -> Result<Self, FsError> {
+        move_job::prepare_sources(destination, roots, service, cancel, status, metadata)
+    }
+
     pub(super) fn prepare_with_metadata(
         request: CopyRequest,
         service: &dyn TransferService,
@@ -152,7 +188,9 @@ impl Job {
             }
             roots.push_back(source);
         }
-        Ok(Self::from_sources(destination, roots, cancel, status))
+        let mut job = Self::from_sources(destination, roots, cancel, status);
+        job.set_verification(request.verification);
+        Ok(job)
     }
 
     pub(super) fn prepare_archive(
@@ -171,6 +209,131 @@ impl Job {
             ));
         }
         Ok(Self::from_sources(destination, roots, cancel, status))
+    }
+
+    pub(super) fn prepare_sources(
+        path: std::path::PathBuf,
+        roots: VecDeque<Box<dyn TransferSource>>,
+        service: &dyn TransferService,
+        cancel: Cancellation,
+        status: Status,
+        metadata: TransferMetadataPolicy,
+    ) -> Result<Self, FsError> {
+        if roots.is_empty() || roots.len() > 4096 {
+            return Err(error(
+                &path,
+                io::ErrorKind::InvalidInput,
+                "Invalid captured Copy root count.",
+            ));
+        }
+        if metadata != TransferMetadataPolicy::ContentOnly {
+            let paths = roots
+                .iter()
+                .map(|source| source.entry().item.path.clone())
+                .collect();
+            move_job::check_bounds(&CopyRequest {
+                verification: snapshot(&status).verification,
+                id: snapshot(&status).id,
+                clipboard: FileClipboard {
+                    paths,
+                    intent: FileClipboardIntent::Copy,
+                },
+                destination: path.clone(),
+            })?;
+        }
+        let destination = service.prepare_transfer_destination(&path, &cancel)?;
+        if destination.path() != path {
+            return Err(error(
+                &path,
+                io::ErrorKind::InvalidInput,
+                "Provider returned a different destination.",
+            ));
+        }
+        let mut identities = HashSet::new();
+        for source in &roots {
+            source.revalidate(&cancel)?;
+            if !matches!(
+                source.entry().item.kind,
+                EntryKind::File | EntryKind::Directory
+            ) {
+                return Err(error(
+                    &path,
+                    io::ErrorKind::Unsupported,
+                    "Captured Copy requires ordinary files or directories.",
+                ));
+            }
+            if let Some(id) = source.native_identity() {
+                if id != source.entry().identity {
+                    return Err(error(
+                        &path,
+                        io::ErrorKind::InvalidData,
+                        "Native Copy source identity is inconsistent.",
+                    ));
+                }
+                if !identities.insert(id) {
+                    return Err(error(
+                        &path,
+                        io::ErrorKind::InvalidInput,
+                        "Duplicate native Copy roots.",
+                    ));
+                }
+                if source.entry().item.kind == EntryKind::Directory {
+                    destination.reject_source_ancestor(id, &cancel)?;
+                }
+            }
+        }
+        // Read-only ancestry authority avoids requiring writes to source parents.
+        let directories: Vec<_> = roots
+            .iter()
+            .filter(|source| source.entry().item.kind == EntryKind::Directory)
+            .filter_map(|source| source.native_identity())
+            .collect();
+        let mut parents = Vec::new();
+        if !directories.is_empty() {
+            for source in roots
+                .iter()
+                .filter(|source| source.native_identity().is_some())
+            {
+                let source_path = &source.entry().item.path;
+                let parent = source_path.parent().ok_or_else(|| {
+                    error(
+                        source_path,
+                        io::ErrorKind::InvalidInput,
+                        "Copy source needs a parent.",
+                    )
+                })?;
+                let directory = service.prepare_checksum_directory(parent, &cancel)?;
+                if directory.path() != parent {
+                    return Err(error(
+                        parent,
+                        io::ErrorKind::InvalidData,
+                        "Provider returned a different source parent.",
+                    ));
+                }
+                for id in &directories {
+                    directory.reject_source_ancestor(*id, &cancel)?;
+                }
+                parents.push(directory);
+            }
+        }
+        for source in &roots {
+            source.revalidate(&cancel)?;
+        }
+        let mut job = Self::from_sources(destination, roots, cancel, status);
+        if metadata != TransferMetadataPolicy::ContentOnly {
+            if job.roots.len() > 64 {
+                return Err(error(
+                    &path,
+                    io::ErrorKind::Unsupported,
+                    "Required modified time accepts at most 64 roots.",
+                ));
+            }
+            let pins = metadata_job::pins(&job.roots, &job.cancel)?;
+            let stages =
+                metadata_job::stages(&job.roots, &job.destination, metadata, false, &job.cancel)?;
+            job.metadata = Some(metadata_job::MetadataWork { pins, stages });
+        }
+        Ok(job)
     }
 
     fn from_sources(
@@ -193,6 +356,10 @@ impl Job {
             stack: vec![],
             current: None,
             conflict: None,
+            failure: None,
+            failure_context: failures::Context::Entry,
+            skipped_errors: HashSet::new(),
+            halt: false,
             decision: None,
             version: 0,
             skip_all: false,
@@ -200,13 +367,35 @@ impl Job {
             merge_all: false,
             move_work: None,
             metadata: None,
+            verification: TransferVerification::default(),
+            active_root: None,
+            completed_root: None,
+            drop_retention: None,
         }
     }
 
     pub(super) fn accept_decision(&mut self, decision: CopyDecision) -> bool {
-        if self.conflict.as_ref().is_some_and(|conflict| {
-            conflict.id == decision.id && conflict.version == decision.version
-        }) {
+        let conflict = self.conflict.as_ref().is_some_and(|conflict| {
+            conflict.id == decision.id
+                && conflict.version == decision.version
+                && match decision.choice {
+                    CopyChoice::Retry | CopyChoice::SkipAllErrors => false,
+                    CopyChoice::ReplaceRecoverable { .. } => conflict.can_replace,
+                    CopyChoice::Merge { .. } => conflict.can_merge,
+                    _ => true,
+                }
+        });
+        let failure = self.failure.as_ref().is_some_and(|failure| {
+            failure.id == decision.id
+                && failure.version == decision.version
+                && match decision.choice {
+                    CopyChoice::Retry => failure.can_retry,
+                    CopyChoice::Skip | CopyChoice::SkipAllErrors => failure.can_skip,
+                    CopyChoice::Cancel => true,
+                    _ => false,
+                }
+        });
+        if conflict || failure {
             self.decision = Some(decision.choice);
             true
         } else {
@@ -216,21 +405,52 @@ impl Job {
 
     pub(super) fn step(&mut self) -> Step {
         let step = self.advance();
+        // Completion is a root boundary, never an inferred percentage. In Move,
+        // pending proof/finalization work must finish before reporting success.
+        if self.current.is_none()
+            && self.stack.is_empty()
+            && self
+                .move_work
+                .as_ref()
+                .is_none_or(|work| !work.has_pending())
+            && let Some(root) = self.active_root.take()
+            && root.failed == self.progress.failed
+            && root.skipped == self.progress.skipped
+        {
+            self.completed_root = Some(root.source);
+        }
         self.progress.state = if self.cancel.is_cancelled() {
             CopyOperationState::CancelRequested
         } else {
             CopyOperationState::Running
         };
-        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = self.progress.clone();
+        self.store_progress();
         step
+    }
+
+    fn store_progress(&mut self) {
+        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        self.progress.throughput = status.throughput.clone();
+        if self.cancel.is_cancelled() {
+            self.progress.state = CopyOperationState::CancelRequested;
+            crate::operation_throughput::stop(&mut self.progress.throughput);
+        }
+        *status = self.progress.clone();
+    }
+    pub(super) fn take_completed_root(&mut self) -> Option<CompletedCopySource> {
+        self.completed_root.take()
     }
     fn advance(&mut self) -> Step {
         if self.cancel.is_cancelled() {
             return Step::Done;
         }
+        if self.failure.is_some() {
+            return self.advance_failure();
+        }
         if let Some(choice) = self.decision.take() {
             let conflict = self.conflict.take();
             match choice {
+                CopyChoice::Retry | CopyChoice::SkipAllErrors => return Step::Continue,
                 CopyChoice::Cancel => {
                     self.cancel.cancel();
                     return Step::Done;
@@ -310,7 +530,7 @@ impl Job {
         if let Some(conflict) = &self.conflict {
             return Step::Conflict(Arc::new(conflict.clone()));
         }
-        if self.move_work.is_some() && self.progress.failed != 0 {
+        if self.halt {
             return Step::Done;
         }
         if let Some(work) = self.current.take() {
@@ -327,22 +547,95 @@ impl Job {
         self.progress.phase = CopyOperationPhase::Planning;
         self.progress.current_path = None;
         let next = if let Some(frame) = self.stack.last_mut() {
-            match frame.source.next_child(&self.cancel) {
+            let next = if frame.enumeration_complete {
+                Ok(None)
+            } else if let Some(move_work) = self.move_work.as_mut() {
+                frame
+                    .source
+                    .next_move_child(&self.cancel)
+                    .and_then(|child| {
+                        child
+                            .map(|prepared| {
+                                move_work.admit_child(
+                                    prepared,
+                                    &frame.source.entry().item.path,
+                                    &self.cancel,
+                                )
+                            })
+                            .transpose()
+                    })
+            } else {
+                frame.source.next_child(&self.cancel)
+            };
+            match next {
                 Ok(Some(source)) => Some((source, frame.destination.clone())),
                 Ok(None) => {
+                    // Removal retries must not advance an already consumed iterator.
+                    // This remains true even if its provider is not fused after EOF.
+                    self.stack
+                        .last_mut()
+                        .expect("completed traversal frame")
+                        .enumeration_complete = true;
+                    let frame = self.stack.last().expect("completed traversal frame");
+                    let retaining = frame.retain_source;
+                    if let Some(mut move_work) = self.move_work.take() {
+                        let entry = frame.source.entry().clone();
+                        let result = if frame.retain_source {
+                            move_work.discard(entry.identity)
+                        } else {
+                            frame
+                                .source
+                                .revalidate(&self.cancel)
+                                .and_then(|()| frame.destination.revalidate(&self.cancel))
+                                .and_then(|()| move_work.remove_directory(&entry, self))
+                        };
+                        self.move_work = Some(move_work);
+                        if let Err(error) = result {
+                            if retaining {
+                                self.record(error);
+                                return Step::Done;
+                            }
+                            return self
+                                .wait_for_failure(error, failures::Context::DirectoryRemoval);
+                        }
+                    }
                     self.stack.pop();
                     return Step::Continue;
                 }
                 Err(error) => {
-                    self.record(error);
-                    self.stack.pop();
-                    return Step::Continue;
+                    return self.wait_for_failure(error, failures::Context::Enumeration);
                 }
             }
         } else {
-            self.roots
-                .pop_front()
-                .map(|source| (source, self.destination.clone()))
+            self.roots.pop_front().map(|source| {
+                self.active_root = Some(RootCompletion {
+                    source: source
+                        .tree_copy_occurrence()
+                        .or_else(|| {
+                            self.drop_retention
+                                .as_ref()?
+                                .completions
+                                .get(&source.entry().item.path)
+                                .copied()
+                        })
+                        .map_or_else(
+                            || {
+                                source.virtual_identity().map_or_else(
+                                    || {
+                                        CompletedCopySource::Native(
+                                            source.entry().item.path.clone(),
+                                        )
+                                    },
+                                    CompletedCopySource::Archive,
+                                )
+                            },
+                            CompletedCopySource::Tree,
+                        ),
+                    failed: self.progress.failed,
+                    skipped: self.progress.skipped,
+                });
+                (source, self.destination.clone())
+            })
         };
         let Some((source, destination)) = next else {
             return self.advance_move();
@@ -358,6 +651,8 @@ impl Job {
         };
         let name = name.to_owned();
         self.current = Some(EntryWork {
+            entry: source.entry().clone(),
+            native_identity: source.native_identity(),
             source: Some(source),
             copy: None,
             destination,
@@ -365,6 +660,8 @@ impl Job {
             target: None,
             consent: None,
             replacement_prepared: false,
+            native_fallback: false,
+            move_preflight_done: false,
             force_prompt: false,
         });
         Step::Continue
@@ -387,6 +684,8 @@ impl Job {
                 self.stack.push(Frame {
                     source: work.source.take().expect("directory source"),
                     destination,
+                    retain_source: false,
+                    enumeration_complete: false,
                 });
                 Step::Continue
             }
@@ -403,16 +702,14 @@ impl Job {
                         Step::Continue
                     }
                     Err(error) => {
-                        self.cleanup_work(&mut work);
-                        self.record(error);
-                        Step::Continue
+                        self.current = Some(work);
+                        self.wait_for_failure(error, failures::Context::Entry)
                     }
                 }
             }
             Err(error) => {
-                self.cleanup_work(&mut work);
-                self.record(error);
-                Step::Continue
+                self.current = Some(work);
+                self.wait_for_failure(error, failures::Context::Entry)
             }
         }
     }
@@ -425,11 +722,32 @@ impl Job {
         if work.consent.is_none()
             && let Some(target) = self.observe_target(work)?
         {
+            // The provider distinguishes an exact same-name no-op, a case-only
+            // rename, and a distinct hard-link alias without inferring from text.
+            if self.move_work.is_some()
+                && work.native_identity() == Some(target.identity)
+                && self.try_native_move(work)?
+            {
+                return Ok(Action::Done);
+            }
             return Ok(Action::Conflict(target));
         }
+        if self.try_native_move(work)? {
+            return Ok(Action::Done);
+        }
+        self.prepare_move_copy(work)?;
         let source = work.source.as_ref().expect("unstarted entry source");
         match source.entry().item.kind {
             EntryKind::Directory => {
+                if self.move_work.is_some()
+                    && self.stack.len() >= move_job::MAX_MOVE_DIRECTORY_DEPTH
+                {
+                    return Err(error(
+                        &source.entry().item.path,
+                        io::ErrorKind::Unsupported,
+                        "Recursive Move exceeds the 128-directory traversal-depth budget.",
+                    ));
+                }
                 if let Some(identity) = source.native_identity() {
                     work.destination
                         .reject_source_ancestor(identity, &self.cancel)?;
@@ -455,17 +773,48 @@ impl Job {
                 Ok(Action::Directory(destination))
             }
             EntryKind::File => {
-                let stage = if let Some(move_work) = self.move_work.as_mut() {
-                    move_work
-                        .stages
-                        .remove(&source.entry().identity)
+                if source.entry().item.metadata.size.is_none() {
+                    return Err(error(
+                        &source.entry().item.path,
+                        io::ErrorKind::InvalidData,
+                        "A regular source file with known length is required.",
+                    ));
+                }
+                // Validate optional metadata before consuming a prepared stage/source.
+                if let Some(metadata) = self.metadata.as_ref() {
+                    metadata
+                        .pins
+                        .get(&source.entry().identity)
                         .ok_or_else(|| {
                             error(
                                 &source.entry().item.path,
                                 io::ErrorKind::InvalidData,
-                                "Prepared Move stage is missing; all sources retained.",
+                                "Prepared source metadata pin is missing",
                             )
                         })?
+                        .revalidate(&self.cancel)?;
+                }
+                let stage = if let Some(move_work) = self.move_work.as_mut() {
+                    if let Some(stage) = move_work.stages.remove(&source.entry().identity) {
+                        stage
+                    } else {
+                        let mut stage = if move_work.metadata_policy
+                            == TransferMetadataPolicy::ContentOnly
+                        {
+                            work.destination.stage_file(&self.cancel)?
+                        } else {
+                            work.destination
+                                .stage_file_with_metadata(move_work.metadata_policy, &self.cancel)?
+                        };
+                        if let Err(failure) = stage
+                            .rewind_for_validation(&self.cancel)
+                            .and_then(|guard| guard.revalidate(&self.cancel))
+                        {
+                            stage.cleanup()?;
+                            return Err(failure);
+                        }
+                        stage
+                    }
                 } else {
                     if let Some(metadata) = self.metadata.as_mut() {
                         metadata
@@ -494,10 +843,9 @@ impl Job {
                                 "Prepared source metadata pin is missing",
                             )
                         })?;
-                    pin.revalidate(&self.cancel)?;
-                    VerifiedFileCopy::new_with_modified_time(source, stage, pin)?
+                    VerifiedFileCopy::new_with_options(source, stage, Some(pin), self.verification)?
                 } else {
-                    VerifiedFileCopy::new(source, stage)?
+                    VerifiedFileCopy::new_with_verification(source, stage, self.verification)?
                 });
                 self.progress.phase = CopyOperationPhase::Copying;
                 Ok(Action::Keep)
@@ -649,6 +997,12 @@ impl Job {
         self.version = version;
         let work = self.current.as_ref().expect("conflicting entry");
         let capabilities = work.destination.capabilities();
+        let native_replacement = self.move_work.is_some()
+            && !work.native_fallback
+            && work.copy.is_none()
+            && work.native_identity().is_some_and(|identity| {
+                work.destination.supports_native_move_replacement(identity)
+            });
         let distinct = work.native_identity() != Some(target.identity)
             && !self.protected_roots.contains(&target.identity);
         let guarded = work.target.is_some() && distinct;
@@ -660,7 +1014,7 @@ impl Job {
             target: target.item,
             destination: work.destination.path().join(&work.name),
             can_replace: guarded
-                && capabilities.recoverable_replacement
+                && (capabilities.recoverable_replacement || native_replacement)
                 && work.entry().item.kind == EntryKind::File
                 && target_kind == EntryKind::File,
             can_merge: guarded
@@ -707,17 +1061,21 @@ impl Job {
                 Step::Continue
             }
             Err(failure) => {
-                self.cleanup_work(&mut work);
-                self.record(failure);
-                Step::Continue
+                self.current = Some(work);
+                self.wait_for_failure(failure, failures::Context::Entry)
             }
         }
     }
     fn record(&mut self, error: FsError) {
-        self.progress.failed += 1;
-        if self.progress.errors.len() < 16 {
-            self.progress.errors.push(error);
-        }
+        self.halt |= self.move_work.is_some();
+        self.record_decided_error(error);
+    }
+    fn record_decided_error(&mut self, error: FsError) {
+        retain_error(&mut self.progress, error, false);
+    }
+    fn record_cleanup_error(&mut self, error: FsError) {
+        self.halt |= self.move_work.is_some();
+        retain_error(&mut self.progress, error, true);
     }
     fn record_recovery(&mut self, path: std::path::PathBuf) {
         self.progress.recovery_count += 1;
@@ -729,7 +1087,7 @@ impl Job {
         if let Some(copy) = &mut work.copy
             && let Err(error) = copy.cleanup()
         {
-            self.record(error);
+            self.record_cleanup_error(error);
         }
     }
     fn drop_current(&mut self) {
@@ -739,28 +1097,62 @@ impl Job {
         self.progress.current_path = None;
     }
     fn skip_current(&mut self) {
+        if let Some(move_work) = self.move_work.as_mut() {
+            for frame in &mut self.stack {
+                frame.retain_source = true;
+            }
+            if let Some(current) = &self.current
+                && let Err(error) = move_work.discard(current.entry().identity)
+            {
+                self.record(error);
+            }
+        }
         self.drop_current();
         self.progress.skipped += 1;
         self.progress.phase = CopyOperationPhase::Planning;
     }
     pub(super) fn finish(mut self) -> CopyProgress {
-        self.drop_current();
+        if let Some(failure) = self.failure.take() {
+            self.record_decided_error(failure.error);
+        }
+        // Clean and drop the active native object in the same order as normal
+        // disposal. Keep only its diagnostic until the unused stages and Move
+        // recovery finish, so they cannot evict the current partial's path.
+        let current_cleanup = self
+            .current
+            .take()
+            .and_then(|mut work| work.copy.as_mut().and_then(|copy| copy.cleanup().err()));
+        self.progress.current_path = None;
         if let Some(metadata) = self.metadata.as_mut() {
             for failure in metadata.cleanup() {
-                self.record(failure);
+                self.record_cleanup_error(failure);
             }
         }
-        if let Some(move_work) = self.move_work.as_mut() {
-            for error in move_work.cleanup() {
-                self.record(error);
+        if let Some(mut move_work) = self.move_work.take() {
+            for error in move_work.cleanup(&mut self) {
+                self.record_cleanup_error(error);
             }
         }
+        if let Some(error) = current_cleanup {
+            self.record_cleanup_error(error);
+        }
+        // Keep heartbeat status nonterminal until owned native resources finish
+        // dropping. The async caller publishes the returned terminal state only
+        // after this worker and its I/O/mutation permits have been released.
+        self.store_progress();
         self.progress.state = if self.cancel.is_cancelled() {
             CopyOperationState::Cancelled
         } else if self.progress.failed == 0 && self.progress.skipped == 0 {
             CopyOperationState::Completed
+        } else if self.progress.failed > 0
+            && self.progress.files_completed == 0
+            && self.progress.directories_created == 0
+            && self.progress.native_entries_moved == 0
+        {
+            CopyOperationState::Failed
         } else if self.progress.files_completed > 0
             || self.progress.directories_created > 0
+            || self.progress.native_entries_moved > 0
             || self.progress.skipped > 0
         {
             CopyOperationState::CompletedWithErrors
@@ -774,6 +1166,15 @@ impl Job {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
+        let omitted = self
+            .progress
+            .failed
+            .saturating_sub(self.progress.errors.len() as u64);
+        if omitted > 0 {
+            self.progress.message.push_str(&format!(
+                "\n{omitted} earlier error details omitted from the bounded diagnostic history."
+            ));
+        }
         if self.progress.skipped > 0 {
             self.progress.message.push_str(&format!(
                 "\n{} entries or subtrees skipped; source data retained.",
@@ -783,7 +1184,11 @@ impl Job {
         if self.cancel.is_cancelled() {
             self.progress
                 .message
-                .push_str("\nCopy cancelled; already published files are retained.");
+                .push_str(if self.progress.intent == TransferIntent::Move {
+                    "\nMove cancelled; completed moves and already published destinations remain."
+                } else {
+                    "\nCopy cancelled; already published files are retained."
+                });
         }
         if self.progress.recovery_count > 0 {
             self.progress.message.push_str(&format!(
@@ -791,10 +1196,9 @@ impl Job {
                 self.progress.recovery_count
             ));
         }
-        if self.progress.intent == TransferIntent::RecoverableMove {
-            self.progress.message.push_str(&format!("\n{} verified source files removed; {} originals retained in source recovery. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Directory Move is not supported in this increment.", self.progress.source_files_removed, self.progress.source_recovery_count));
+        if self.progress.intent == TransferIntent::Move {
+            self.progress.message.push_str(&format!("\n{} entries moved by native rename; {} verified source files removed; {} temporary source locations need attention. Unfinished sources were restored unless an error above reports otherwise. Earlier completed moves remain after later errors or cancellation. Open readers can delay storage reclamation. Merged source directories are removed only after completed children and an empty-directory check.", self.progress.native_entries_moved, self.progress.source_files_removed, self.progress.source_residual_count));
         }
-        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = self.progress.clone();
         self.progress.clone()
     }
     fn advance_move(&mut self) -> Step {
@@ -807,10 +1211,7 @@ impl Job {
             Ok(false) => Step::Continue,
             Ok(true) if self.roots.is_empty() && self.stack.is_empty() => Step::Done,
             Ok(true) => Step::Continue,
-            Err(error) => {
-                self.record(error);
-                Step::Done
-            }
+            Err(error) => self.wait_for_failure(error, failures::Context::Move),
         }
     }
 }
@@ -820,3 +1221,7 @@ enum Action {
     Directory(Arc<dyn TransferDirectory>),
     Conflict(TransferEntry),
 }
+
+#[cfg(test)]
+#[path = "copy_cleanup_contract_tests.rs"]
+mod cleanup_contract;

@@ -1,23 +1,24 @@
 //! The decoder never receives paths, inherited files, network access or command arguments.
 use midnight_filesystem_api::*;
+use midnight_fs_archive::broker::Broker;
 use midnight_fs_archive::{Archive, Error, Limits};
-use std::io::{self, Read, Write};
+use std::{io, rc::Rc};
 
 fn main() {
     // Both parent and child enforce containment. No untrusted bytes precede this handshake.
-    let mut input = io::stdin().lock();
-    let mut output = io::stdout().lock();
+    let mut input = io::stdin();
+    let mut output = io::stdout();
     if midnight_worker_sdk::enter(&mut input, &mut output).is_err() {
         return;
     }
-    let _ = serve(&mut input, &mut output);
+    let _ = serve(Broker::new(input, output));
 }
 
-fn serve(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
+fn serve(broker: Broker) -> io::Result<()> {
     let mut archive = None;
     let mut last_request = 0;
     loop {
-        let message = read_message(input)?;
+        let message = broker.receive()?;
         let request = message.request();
         if request <= last_request {
             return Err(io::ErrorKind::InvalidData.into());
@@ -26,41 +27,18 @@ fn serve(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
         let result: Result<Message, Error> = match message {
             Message::Open { format, length, .. } if archive.is_none() => {
                 let limits = Limits::default();
-                if length > limits.max_source {
-                    Err(Error {
-                        code: ErrorCode::Limit,
-                        message: "Archive exceeds the 64 MiB source budget".into(),
-                    })
-                } else {
-                    let mut bytes = Vec::with_capacity(length as usize);
-                    while bytes.len() < length as usize {
-                        let count = ((length as usize - bytes.len()).min(MAX_READ as usize)) as u32;
-                        write_message(
-                            output,
-                            &Message::SourceRead {
-                                request,
-                                offset: bytes.len() as u64,
-                                length: count,
-                            },
-                        )?;
-                        match read_message(input)? {
-                            Message::SourceData {
-                                request: reply,
-                                bytes: data,
-                            } if reply == request && data.len() == count as usize => {
-                                bytes.extend(data)
-                            }
-                            Message::Failed { .. } => return Ok(()),
-                            _ => return Err(io::ErrorKind::InvalidData.into()),
-                        }
+                match Archive::open_stream(
+                    format,
+                    broker.source(length),
+                    length,
+                    Rc::new(broker.clone()),
+                    limits,
+                ) {
+                    Ok(value) => {
+                        archive = Some(value);
+                        Ok(Message::Opened { request, root: 1 })
                     }
-                    match Archive::open(format, bytes, limits) {
-                        Ok(value) => {
-                            archive = Some(value);
-                            Ok(Message::Opened { request, root: 1 })
-                        }
-                        Err(error) => Err(error),
-                    }
+                    Err(error) => Err(error),
                 }
             }
             Message::List {
@@ -72,7 +50,7 @@ fn serve(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
                         .into_iter()
                         .take_while(|entry| {
                             bytes =
-                                bytes.saturating_add(entry.name.len() + entry.display.len() + 40);
+                                bytes.saturating_add(entry.name.len() + entry.display.len() + 64);
                             bytes <= MAX_FRAME
                         })
                         .collect();
@@ -89,21 +67,14 @@ fn serve(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
                 }),
                 None => Err(unopened()),
             },
-            Message::Read {
-                entry,
-                offset,
-                length,
-                ..
-            } => match archive.as_mut() {
-                Some(archive) => {
-                    archive
-                        .read(entry, offset, length)
-                        .map(|(bytes, eof)| Message::Content {
-                            request,
-                            bytes,
-                            eof,
-                        })
-                }
+            Message::Read { entry, .. } => match archive.as_mut() {
+                Some(archive) => archive.prepare(entry).map(|content| Message::ContentReady {
+                    request,
+                    entry,
+                    stage: content.stage,
+                    offset: content.offset,
+                    length: content.length,
+                }),
                 None => Err(unopened()),
             },
             Message::Close { .. } => return Ok(()),
@@ -112,14 +83,11 @@ fn serve(input: &mut impl Read, output: &mut impl Write) -> io::Result<()> {
                 message: "Unsupported read-only archive operation".into(),
             }),
         };
-        write_message(
-            output,
-            &result.unwrap_or_else(|error| Message::Failed {
-                request,
-                code: error.code,
-                message: error.message.chars().take(1024).collect(),
-            }),
-        )?;
+        broker.send(&result.unwrap_or_else(|error| Message::Failed {
+            request,
+            code: error.code,
+            message: error.message.chars().take(1024).collect(),
+        }))?;
     }
 }
 fn unopened() -> Error {

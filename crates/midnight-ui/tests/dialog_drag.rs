@@ -33,14 +33,16 @@ fn find_text(item: ItemRc, value: &str) -> Option<ItemRc> {
     None
 }
 
+#[track_caller]
 fn popup_title(test: &ui::TestUi, title: &str) -> ItemRc {
     let popups = WindowInner::from_pub(test.window.window()).active_popups();
     let popup = popups
         .iter()
         .rev()
         .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
-        .unwrap();
-    find_text(ItemRc::new_root(popup.component.clone()), title).unwrap()
+        .unwrap_or_else(|| panic!("No popup for title {title}"));
+    find_text(ItemRc::new_root(popup.component.clone()), title)
+        .unwrap_or_else(|| panic!("Popup header is missing: {title}"))
 }
 
 fn origin(item: &ItemRc) -> LogicalPosition {
@@ -136,7 +138,7 @@ fn bounds_error(test: &ui::TestUi, item: &ItemRc, label: &str) -> Option<String>
 fn open_options_follows_header_drag_and_remains_reachable_after_resize() {
     let mut test = ui::TestUi::new();
     test.window.invoke_show_options();
-    test.draw();
+    draw(&mut test);
     let title = popup_title(&test, "Options");
     let before = origin(&title);
     drag(&mut test, &title, 32.0, 20.0);
@@ -160,14 +162,14 @@ fn open_options_follows_header_drag_and_remains_reachable_after_resize() {
         &test,
         &ui::popup_item(
             &test.window,
-            "Done",
+            "Cancel",
             i_slint_core::items::AccessibleRole::Button,
         ),
-        "Done after shrink",
+        "Cancel after shrink",
     );
     ui::click_popup(
         &test.window,
-        "Done",
+        "Cancel",
         i_slint_core::items::AccessibleRole::Button,
     );
     test.draw();
@@ -208,7 +210,9 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
         model.open = false;
         window.set_panel_filter_view(model);
     });
-    for kind in 0..11 {
+    // Native Help/About/Notice use OS titlebars. Their independent resize and
+    // close behavior is covered by native_information_windows and error_notices.
+    for kind in [0, 1, 3, 4, 5, 6, 7, 9] {
         test.window.invoke_apply_fonts("".into(), 11, 15);
         test.window.invoke_apply_preferences(0, 0);
         test.resize(1340, 820);
@@ -220,10 +224,6 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
             1 => {
                 test.window.invoke_show_operations();
                 "Jobs"
-            }
-            2 => {
-                test.window.invoke_show_app_menu(0);
-                "Midnight Explorer keyboard help"
             }
             3 => {
                 test.window.set_copy_token("copy:1:1".into());
@@ -256,53 +256,46 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
                     });
                 "Panel filter"
             }
-            8 => {
-                test.window.set_message_title("Error details".into());
-                test.window.set_message_generation(1);
-                "Error details"
-            }
             9 => {
                 ui::click_root(&test.window, "Hot Paths", AccessibleRole::Combobox);
                 draw(&mut test);
                 ui::click_popup(&test.window, "Manage Hot Paths…", AccessibleRole::Button);
                 "Manage Hot Paths"
             }
-            _ => {
-                test.window.invoke_show_app_menu(2);
-                draw(&mut test);
-                ui::click_popup(
-                    &test.window,
-                    "About Midnight Explorer",
-                    AccessibleRole::Button,
-                );
-                "Midnight Explorer · File Manager"
-            }
+            _ => unreachable!("only remaining embedded dialog cases are listed"),
         };
         draw(&mut test);
         let item = popup_title(&test, title);
         moves(&mut test, item);
         test.resize(320, 200);
         draw(&mut test);
-        outside.extend(bounds_error(&test, &popup_title(&test, title), title));
+        outside.extend(bounds_error(
+            &test,
+            &popup_title(&test, title),
+            &format!("{title} header, Desktop/font11 after shrinking"),
+        ));
         let close = match kind {
-            0 => "Done",
             3 | 4 => "Decide later",
-            5 | 7 => "Cancel",
+            0 | 5 | 7 => "Cancel",
             _ => "Close",
         };
         outside.extend(bounds_error(
             &test,
             &ui::popup_item(&test.window, close, AccessibleRole::Button),
-            close,
+            &format!("{title}: {close}, Desktop/font11 after shrinking"),
         ));
         test.window.invoke_apply_fonts("".into(), 32, 32);
         test.window.invoke_apply_preferences(0, 1);
         draw(&mut test);
-        outside.extend(bounds_error(&test, &popup_title(&test, title), title));
+        outside.extend(bounds_error(
+            &test,
+            &popup_title(&test, title),
+            &format!("{title} header, Touch/font32 after shrinking"),
+        ));
         outside.extend(bounds_error(
             &test,
             &ui::popup_item(&test.window, close, AccessibleRole::Button),
-            close,
+            &format!("{title}: {close}, Touch/font32 after shrinking"),
         ));
         ui::key(&test.window, Key::Escape);
         draw(&mut test);
@@ -322,18 +315,22 @@ fn outside_click_preserves_dialog_policies_and_reopening_centers_again() {
     ui::click(&test.window, 2.0, 2.0);
     draw(&mut test);
     assert!(
-        !ui::has_popup(&test.window),
-        "Options keeps outside-click dismissal"
+        ui::has_popup(&test.window),
+        "Options retains drafts on outside clicks"
     );
+    ui::key(&test.window, Key::Escape);
+    draw(&mut test);
     test.window.invoke_show_options();
     draw(&mut test);
     assert_eq!(origin(&popup_title(&test, "Options")), center);
     ui::click(&test.window, -2.0, -2.0);
     draw(&mut test);
     assert!(
-        !ui::has_popup(&test.window),
-        "Options also dismisses outside the host viewport"
+        ui::has_popup(&test.window),
+        "Options retains drafts outside the host viewport too"
     );
+    ui::key(&test.window, Key::Escape);
+    draw(&mut test);
     test.window.invoke_show_operations();
     draw(&mut test);
     ui::click(&test.window, 2.0, 2.0);
@@ -345,6 +342,64 @@ fn outside_click_preserves_dialog_policies_and_reopening_centers_again() {
     ui::key(&test.window, Key::Escape);
     draw(&mut test);
     assert!(!ui::has_popup(&test.window));
+}
+
+#[test]
+fn compact_options_keeps_cancel_reachable_during_validation_and_locked_during_save() {
+    use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+    let enabled = |test: &ui::TestUi, label: &str| {
+        ui::popup_item(&test.window, label, AccessibleRole::Button)
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .is_some_and(|value| value == "true")
+    };
+    let mut test = ui::TestUi::new();
+    test.window.invoke_apply_fonts("".into(), 32, 32);
+    test.window.invoke_apply_preferences(0, 1);
+    test.resize(320, 200);
+    test.window.invoke_show_options();
+    draw(&mut test);
+    inside(
+        &test,
+        &ui::popup_item(&test.window, "Cancel", AccessibleRole::Button),
+        "Options Cancel at Touch/font32",
+    );
+    assert!(enabled(&test, "Cancel"));
+
+    test.window.set_options_busy(true);
+    draw(&mut test);
+    assert!(enabled(&test, "Cancel"), "validation remains cancellable");
+    for label in ["Reset to defaults", "OK"] {
+        assert!(!enabled(&test, label), "validation must disable {label}");
+    }
+    ui::key(&test.window, Key::Escape);
+    draw(&mut test);
+    assert!(!ui::has_popup(&test.window));
+
+    test.window.invoke_show_options();
+    test.window.set_options_committing(true);
+    draw(&mut test);
+    assert!(
+        !enabled(&test, "Cancel"),
+        "an admitted save cannot be cancelled"
+    );
+    ui::key(&test.window, Key::Escape);
+    draw(&mut test);
+    assert!(ui::has_popup(&test.window), "saving keeps Options open");
+
+    test.window.set_options_committing(false);
+    draw(&mut test);
+    assert!(enabled(&test, "Cancel"));
+    inside(
+        &test,
+        &ui::popup_item(&test.window, "Cancel", AccessibleRole::Button),
+        "Options Cancel after save state clears",
+    );
+    ui::click_popup(&test.window, "Cancel", AccessibleRole::Button);
+    draw(&mut test);
+    assert!(
+        !ui::has_popup(&test.window),
+        "validation Cancel accepts pointer input"
+    );
 }
 
 #[test]

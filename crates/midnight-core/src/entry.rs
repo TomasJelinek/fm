@@ -1,4 +1,10 @@
-use std::{collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, time::SystemTime};
+use std::{
+    collections::HashMap,
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+    sync::Arc,
+    time::SystemTime,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntryId(pub u64);
@@ -43,8 +49,11 @@ pub struct Entry {
     /// Virtual identities never use `path`; it is empty for these entries.
     /// Native services must require `native_path()` rather than interpreting display names.
     pub virtual_node: Option<crate::ArchiveNode>,
+    pub network_node: Option<crate::NetworkNode>,
     /// Backend filename hint; usable only while a provider advertises this format.
     pub archive_association: Option<&'static crate::ArchiveAssociation>,
+    /// Literal custom suffix hints prepared during backend enumeration.
+    pub archive_extensions: crate::ArchiveExtensionHints,
     pub kind: EntryKind,
     pub metadata: EntryMetadata,
     pub display_name: String,
@@ -66,33 +75,32 @@ pub struct DirectoryIndex {
 
 impl DirectoryIndex {
     pub fn from_entries(entries: &[Entry]) -> Self {
-        let mut directory_bits = vec![0; entries.len().div_ceil(64)];
-        for (row, entry) in entries.iter().enumerate() {
-            if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-                directory_bits[row / 64] |= 1 << (row % 64);
+        Self::from_entry_refs(entries.iter())
+    }
+
+    pub(crate) fn from_entry_refs<'a>(entries: impl ExactSizeIterator<Item = &'a Entry>) -> Self {
+        let count = entries.len();
+        let mut index = Self {
+            by_id: HashMap::with_capacity(count),
+            by_path: HashMap::with_capacity(count),
+            directory_bits: vec![0; count.div_ceil(64)],
+            file_sizes: Vec::with_capacity(count),
+        };
+        for (row, entry) in entries.enumerate() {
+            index.by_id.insert(entry.id, row);
+            if let Some(path) = entry.native_path() {
+                index.by_path.insert(path.to_owned(), entry.id);
             }
+            if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+                index.directory_bits[row / 64] |= 1 << (row % 64);
+            }
+            index.file_sizes.push(
+                (entry.kind == EntryKind::File)
+                    .then_some(entry.metadata.size)
+                    .flatten(),
+            );
         }
-        Self {
-            by_id: entries
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| (entry.id, index))
-                .collect(),
-            by_path: entries
-                .iter()
-                .filter(|entry| entry.virtual_node.is_none())
-                .map(|entry| (entry.path.clone(), entry.id))
-                .collect(),
-            directory_bits,
-            file_sizes: entries
-                .iter()
-                .map(|entry| {
-                    (entry.kind == EntryKind::File)
-                        .then_some(entry.metadata.size)
-                        .flatten()
-                })
-                .collect(),
-        }
+        index
     }
     pub fn is_directory(&self, id: EntryId) -> bool {
         self.by_id
@@ -113,12 +121,19 @@ impl Entry {
         let archive_association = (kind == EntryKind::File)
             .then(|| crate::archive_association(&path))
             .flatten();
+        let archive_extensions = if kind == EntryKind::File {
+            crate::ArchiveExtensionHints::from_path(&path)
+        } else {
+            crate::ArchiveExtensionHints::default()
+        };
         Self {
             id,
             name,
             path,
             virtual_node: None,
+            network_node: None,
             archive_association,
+            archive_extensions,
             kind,
             metadata: EntryMetadata::default(),
             display_name,
@@ -130,11 +145,50 @@ impl Entry {
         entry.name = OsString::from(&node.display_name);
         entry.display_name = node.display_name.clone();
         entry.metadata.size = node.size;
+        if let Some(crate::ArchiveTimestamp::Utc {
+            seconds,
+            nanoseconds,
+        }) = node.modified
+            && nanoseconds < 1_000_000_000
+        {
+            entry.metadata.modified = if seconds >= 0 {
+                std::time::UNIX_EPOCH
+                    .checked_add(std::time::Duration::new(seconds as u64, nanoseconds))
+            } else {
+                std::time::UNIX_EPOCH
+                    .checked_sub(std::time::Duration::from_secs(seconds.unsigned_abs()))
+                    .and_then(|time| {
+                        time.checked_add(std::time::Duration::from_nanos(u64::from(nanoseconds)))
+                    })
+            };
+        }
         entry.virtual_node = Some(node);
         entry
     }
     pub fn native_path(&self) -> Option<&std::path::Path> {
-        self.virtual_node.is_none().then_some(self.path.as_path())
+        (self.virtual_node.is_none() && self.network_node.is_none()).then_some(self.path.as_path())
+    }
+
+    /// Borrow the original filename extension for presentation sorting. Archive raw names
+    /// are provider basenames, never host paths; opaque encodings have no Unicode extension.
+    pub(crate) fn filename_extension(&self) -> Option<&OsStr> {
+        if let Some(node) = &self.virtual_node {
+            let name = std::str::from_utf8(&node.raw_name).ok()?;
+            if name == ".." {
+                return None;
+            }
+            let (stem, extension) = name.rsplit_once('.')?;
+            return (!stem.is_empty()).then_some(OsStr::new(extension));
+        }
+        self.native_path()?.extension()
+    }
+
+    pub fn from_network(id: EntryId, node: crate::NetworkNode) -> Self {
+        let mut entry = Self::new(id, PathBuf::new(), EntryKind::Directory);
+        entry.name = OsString::from(&node.display);
+        entry.display_name = node.display.clone();
+        entry.network_node = Some(node);
+        entry
     }
 }
 

@@ -158,9 +158,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-thumbnail-sdk"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "54efedc97d6d31ebeaa5aabf721c20542ed9952e6f8985699d38d0b376b0c21f"
+checksum = "0ebdabaf8170df22e9839dd0bb9f6a4bd45c5b536c253144ddc0f95f5c610157"
 dependencies = [
  "midnight-thumbnail-api",
  "midnight-worker-sdk",
@@ -168,9 +168,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-worker-sdk"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "4bebb3875212b35f7bb1aa8c3e85b420dfcd62effba1a4879d421598e6a51ff0"
+checksum = "e152410939fc51a77d6234821fbed38fbfcb8664b43579cab91affc29a176e61"
 dependencies = [
  "libc",
  "windows-sys",

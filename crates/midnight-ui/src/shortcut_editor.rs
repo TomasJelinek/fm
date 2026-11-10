@@ -6,7 +6,7 @@ use std::{cell::RefCell, rc::Rc};
 
 pub(crate) fn capture(window: &MainWindow, event: &i_slint_core::input::KeyEvent) -> bool {
     let view = window.global::<KeyboardEditorView>();
-    if !view.get_capturing() {
+    if !window.get_options_open() || !view.get_capturing() {
         return false;
     }
     // The focused capture control records these keys and then moves focus itself.
@@ -25,7 +25,7 @@ pub(crate) fn capture(window: &MainWindow, event: &i_slint_core::input::KeyEvent
 
 pub(crate) fn capture_physical(window: &MainWindow, chord: &ShortcutChord) -> bool {
     let view = window.global::<KeyboardEditorView>();
-    if !view.get_capturing() {
+    if !window.get_options_open() || !view.get_capturing() {
         return false;
     }
     if !window.get_native_alt_gr() {
@@ -69,18 +69,7 @@ pub(crate) fn install(
             // A filtered-out command owns its tooltip: retire that popup before the
             // model changes, so delegate destruction need not close it reentrantly.
             // Close before borrowing Presenter too: focus/layout callbacks may read models.
-            let inner = i_slint_core::window::WindowInner::from_pub(window.window());
-            let tooltips = inner
-                .active_popups()
-                .iter()
-                .filter(|popup| {
-                    matches!(popup.window_kind, i_slint_core::window::WindowKind::ToolTip)
-                })
-                .map(|popup| popup.popup_id)
-                .collect::<Vec<_>>();
-            for tooltip in tooltips {
-                inner.close_popup(tooltip);
-            }
+            crate::tooltip::dismiss(window.window());
             search_state
                 .borrow_mut()
                 .filter_shortcut_commands(query.to_string());

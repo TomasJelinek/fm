@@ -10,6 +10,7 @@ use midnight_platform_common::LocalServices;
 use std::fs;
 use std::path::{Path, PathBuf};
 mod clipboard;
+mod clipboard_text;
 mod desktop;
 mod editor;
 mod file_clipboard;
@@ -26,12 +27,14 @@ mod metadata;
 mod mounts;
 mod mutation;
 mod open;
+mod path_picker;
 mod settings;
 mod shell_menu;
 #[allow(unsafe_code)]
 mod sort_keys;
 mod storage_kind;
 mod transfer;
+mod volume_information;
 mod watch;
 use mounts::mount_paths;
 
@@ -66,7 +69,20 @@ impl DirectoryService for LinuxFileSystem {
     }
 }
 
+impl midnight_core::NavigationFallbackService for LinuxFileSystem {
+    fn navigation_fallback_root(&self) -> Result<PathBuf, FsError> {
+        Ok(PathBuf::from("/"))
+    }
+}
+
 impl StorageService for LinuxFileSystem {
+    fn volume_information(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::VolumeInformation, FsError> {
+        volume_information::query(path, cancel)
+    }
     fn storage_kind(&self, path: &Path) -> Result<midnight_core::StorageKind, FsError> {
         Ok(storage_kind::detect(path))
     }

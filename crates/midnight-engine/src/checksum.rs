@@ -13,8 +13,12 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[path = "checksum_format.rs"]
+mod format;
 #[path = "checksum_manifest.rs"]
 mod manifest;
+#[path = "checksum_verify.rs"]
+mod verify;
 #[path = "checksum_worker.rs"]
 mod worker;
 pub use manifest::save_manifest;
@@ -22,9 +26,21 @@ pub use manifest::save_manifest;
 type Key = (ChecksumJobId, ChecksumGeneration);
 type Registry = Arc<Mutex<HashMap<Key, Cancellation>>>;
 struct Work {
-    request: ChecksumRequest,
+    request: Request,
     cancel: Cancellation,
     retention: Arc<ChecksumRetention>,
+}
+enum Request {
+    Calculate(ChecksumRequest),
+    Verify(ChecksumVerifyRequest),
+}
+impl Request {
+    fn key(&self) -> Key {
+        match self {
+            Self::Calculate(request) => (request.job, request.generation),
+            Self::Verify(request) => (request.job, request.generation),
+        }
+    }
 }
 struct Quota {
     _job: OwnedSemaphorePermit,
@@ -73,6 +89,19 @@ pub(super) fn reserve(bytes: usize, retained: usize) -> Result<Arc<ChecksumReten
         _job: job,
         _memory: memory,
     }))
+}
+
+pub(super) fn reserve_verification(
+    request: &ChecksumVerifyRequest,
+) -> Result<Arc<ChecksumRetention>, FsError> {
+    let bytes = request.validate().map_err(|message| {
+        worker::failure(&request.manifest, io::ErrorKind::InvalidInput, message)
+    })?;
+    // Parsing bounds encoded text and decoded/entry data independently. During
+    // calculation the original rows, comparison index and transformed rows share
+    // the existing conservative per-row charge. Three budgets cover overlap,
+    // while admitting a replacement beside a retained verification generation.
+    reserve(bytes, request.limits.max_retained_bytes * 3)
 }
 
 pub struct Controller {
@@ -127,15 +156,37 @@ impl Controller {
         cancel: Cancellation,
         retention: Arc<ChecksumRetention>,
     ) -> Result<(), FsError> {
+        self.admit(Request::Calculate(request), cancel, retention)
+    }
+    pub(super) fn verify_reserved(
+        &self,
+        request: ChecksumVerifyRequest,
+        cancel: Cancellation,
+        retention: Arc<ChecksumRetention>,
+    ) -> Result<(), FsError> {
+        self.admit(Request::Verify(request), cancel, retention)
+    }
+    #[cfg(test)]
+    #[allow(dead_code)] // Used by path-included native integration tests.
+    pub fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
+        let retention = reserve_verification(&request)?;
+        self.verify_reserved(request, self.stop.child(), retention)
+    }
+    fn admit(
+        &self,
+        request: Request,
+        cancel: Cancellation,
+        retention: Arc<ChecksumRetention>,
+    ) -> Result<(), FsError> {
         let fail = |kind, text| worker::failure(Path::new(""), kind, text);
-        let key = (request.job, request.generation);
+        let key = request.key();
         let mut registry = self
             .registry
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if registry
             .keys()
-            .any(|(job, generation)| *job == request.job && *generation >= request.generation)
+            .any(|(job, generation)| *job == key.0 && *generation >= key.1)
         {
             return Err(fail(
                 io::ErrorKind::AlreadyExists,
@@ -144,7 +195,7 @@ impl Controller {
         }
         // A recalculate starts only after the serial worker has cleaned up its predecessor.
         for ((job, _), old) in registry.iter() {
-            if *job == request.job {
+            if *job == key.0 {
                 old.cancel();
             }
         }
@@ -228,7 +279,7 @@ async fn run(
             Ok(None) => break,
             Err(_) => continue,
         };
-        let key = (work.request.job, work.request.generation);
+        let key = work.request.key();
         let permit = loop {
             if stop.is_cancelled() {
                 return;
@@ -249,13 +300,22 @@ async fn run(
             if !send(ChecksumUpdate::Started) {
                 work.cancel.cancel();
             }
-            worker::calculate(
-                work.request,
-                provider.as_ref(),
-                &work.cancel,
-                work.retention,
-                send,
-            )
+            match work.request {
+                Request::Calculate(request) => worker::calculate(
+                    request,
+                    provider.as_ref(),
+                    &work.cancel,
+                    work.retention,
+                    send,
+                ),
+                Request::Verify(request) => verify::verify(
+                    request,
+                    provider.as_ref(),
+                    &work.cancel,
+                    work.retention,
+                    send,
+                ),
+            }
         })
         .await;
         registry

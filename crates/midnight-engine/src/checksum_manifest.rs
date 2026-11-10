@@ -1,4 +1,5 @@
-//! GNU binary checksum export. Only explicit backend callers may encode/save.
+//! GNU binary checksum and SFV export. Only explicit backend callers may encode/save.
+use super::format::MAX_MANIFEST_BYTES;
 use super::worker::{failure, with_io};
 use midnight_core::*;
 use midnight_platform_common::transfer::{CopyPhase, VerifiedFileCopy};
@@ -8,8 +9,6 @@ use std::{
     path::{Component, Path},
     sync::{Arc, OnceLock},
 };
-
-const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 /// Save through exclusive native staging, sync and independent destination SHA-256 readback.
 /// Existing destinations fail explicitly (AlreadyExists); this first backend never overwrites.
@@ -73,7 +72,7 @@ pub fn save_manifest(
     })?;
     let device = directory.identity().device;
     if run.rows.iter().any(|row| {
-        row.digest(request.algorithm).is_some()
+        export_digest(row, request.algorithm).is_some()
             && !row
                 .identity
                 .is_some_and(|identity| identity.device == device)
@@ -173,7 +172,7 @@ pub(super) fn encode(
     let included = run
         .rows
         .iter()
-        .filter(|row| row.digest(request.algorithm).is_some())
+        .filter(|row| export_digest(row, request.algorithm).is_some())
         .count() as u64;
     let counts = ChecksumPartialAcknowledgement {
         included,
@@ -213,7 +212,7 @@ pub(super) fn encode(
                 "Manifest export cancelled.",
             ));
         }
-        let Some(digest) = row.digest(request.algorithm) else {
+        let Some(digest) = export_digest(row, request.algorithm) else {
             continue;
         };
         if digest.bytes.len() != request.algorithm.bytes() {
@@ -250,6 +249,19 @@ pub(super) fn encode(
             ));
         }
         let name = parts.join("/");
+        let is_sfv = request.algorithm == ChecksumAlgorithm::Crc32;
+        if is_sfv
+            && (name.contains(['\\', '\r', '\n', '\0'])
+                || name.trim_start().starts_with([';', '#'])
+                || name.starts_with(char::is_whitespace)
+                || name.ends_with([' ', '\t']))
+        {
+            return Err(failure(
+                &row.path,
+                io::ErrorKind::InvalidInput,
+                "This filename cannot be represented unambiguously in SFV format.",
+            ));
+        }
         let escaped = name.contains(['\\', '\r', '\n']);
         let encoded = if escaped {
             name.replace('\\', "\\\\")
@@ -258,12 +270,16 @@ pub(super) fn encode(
         } else {
             name
         };
-        let line = format!(
-            "{}{} *{}\n",
-            if escaped { "\\" } else { "" },
-            digest.hex(),
-            encoded
-        );
+        let line = if is_sfv {
+            format!("{encoded}  {}\n", digest.hex())
+        } else {
+            format!(
+                "{}{} *{}\n",
+                if escaped { "\\" } else { "" },
+                digest.hex(),
+                encoded
+            )
+        };
         let length = bytes
             .len()
             .checked_add(line.len())
@@ -284,7 +300,35 @@ pub(super) fn encode(
         })?;
         bytes.extend_from_slice(line.as_bytes());
     }
+    // Publication must not create a manifest that our verifier cannot read, or
+    // whose syntax would resolve to a different captured filename. This also
+    // applies the same entry, memory and alias limits before native staging.
+    let parsed = super::format::parse_manifest(&bytes, path, ChecksumLimits::default(), cancel)?;
+    let eligible = run
+        .rows
+        .iter()
+        .filter(|row| export_digest(row, request.algorithm).is_some());
+    if parsed.algorithm != request.algorithm
+        || parsed.entries.len() as u64 != included
+        || parsed.entries.iter().zip(eligible).any(|(entry, row)| {
+            entry.path != row.path
+                || export_digest(row, request.algorithm)
+                    .is_none_or(|digest| entry.digest != digest.bytes)
+        })
+    {
+        return Err(failure(
+            path,
+            io::ErrorKind::InvalidInput,
+            "Checksum filenames cannot round-trip unambiguously through the selected manifest format.",
+        ));
+    }
     Ok((bytes, counts))
+}
+
+fn export_digest(row: &ChecksumRow, algorithm: ChecksumAlgorithm) -> Option<&ChecksumDigest> {
+    (row.state == ChecksumRowState::Calculated)
+        .then(|| row.digest(algorithm))
+        .flatten()
 }
 
 struct ManifestBytes {

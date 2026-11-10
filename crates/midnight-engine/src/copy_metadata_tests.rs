@@ -18,6 +18,7 @@ async fn metadata_wrapper_cannot_downgrade_move_clipboard_to_ordinary_copy() {
         .controller
         .enqueue_metadata(MetadataTransferRequest {
             input: MetadataTransferInput::Clipboard(ClipboardMoveRequest {
+                verification: midnight_core::TransferVerification::default(),
                 id: OperationId(1),
                 clipboard: Arc::new(FileClipboard {
                     paths: vec![source.clone()],
@@ -38,11 +39,7 @@ async fn metadata_wrapper_cannot_downgrade_move_clipboard_to_ordinary_copy() {
 }
 #[tokio::test]
 async fn required_modified_time_copy_and_move_share_queue_and_preserve_exact_time() {
-    let intents: &[TransferIntent] = if cfg!(windows) {
-        &[TransferIntent::Copy, TransferIntent::RecoverableMove]
-    } else {
-        &[TransferIntent::Copy]
-    };
+    let intents: &[TransferIntent] = &[TransferIntent::Copy, TransferIntent::Move];
     for &intent in intents {
         let (_temp, parent) = protected_fixture();
         let source = parent.join("source 文档");
@@ -77,13 +74,11 @@ async fn required_modified_time_copy_and_move_share_queue_and_preserve_exact_tim
                 .unwrap(),
             expected()
         );
-        assert_eq!(
-            done.source_names_captured,
-            u64::from(intent == TransferIntent::RecoverableMove)
-        );
-        if intent == TransferIntent::RecoverableMove {
-            assert_eq!(done.source_files_removed, 1);
-            assert!(done.source_recoveries.is_empty());
+        assert_eq!(done.source_names_staged, 0);
+        if intent == TransferIntent::Move {
+            assert_eq!(done.source_files_removed, 0);
+            assert_eq!(done.native_entries_moved, 1);
+            assert!(done.source_residuals.is_empty());
             assert!(!source.exists());
         } else {
             assert!(source.exists());
@@ -100,7 +95,7 @@ async fn required_modified_time_mixed_batch_is_refused_before_any_publication_or
     fs::write(&source, b"original").unwrap();
     fs::create_dir(&folder).unwrap();
     fs::create_dir(&destination).unwrap();
-    for intent in [TransferIntent::Copy, TransferIntent::RecoverableMove] {
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
         let mut harness = Harness::native();
         harness
             .controller
@@ -117,7 +112,7 @@ async fn required_modified_time_mixed_batch_is_refused_before_any_publication_or
         let done = harness.terminal(1).await;
         assert!(done.failed > 0);
         assert_eq!(done.files_completed, 0);
-        assert_eq!(done.source_names_captured, 0);
+        assert_eq!(done.source_names_staged, 0);
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
         assert!(source.exists());
         harness.close().await;
@@ -191,7 +186,7 @@ mod windows {
         }
     }
     struct MetadataService {
-        native: midnight_platform::LocalFileSystem,
+        native: CrossDeviceService,
         changed: Arc<AtomicBool>,
     }
     impl TransferService for MetadataService {
@@ -245,7 +240,7 @@ mod windows {
             let status = Arc::new(Mutex::new(initial(&CopyInput::move_paths(request.clone()))));
             let changed = Arc::new(AtomicBool::new(false));
             let service = MetadataService {
-                native: midnight_platform::LocalFileSystem::new(None),
+                native: CrossDeviceService(midnight_platform::LocalFileSystem::new(None)),
                 changed: changed.clone(),
             };
             let mut job = worker::Job::prepare_move_with_metadata(
@@ -259,7 +254,7 @@ mod windows {
             for _ in 0..300 {
                 let progress = snapshot(&status);
                 if (!after_capture && progress.files_completed == 1)
-                    || (after_capture && progress.source_names_captured == 2)
+                    || (after_capture && progress.source_names_staged == 2)
                 {
                     changed.store(true, Ordering::SeqCst);
                 }
@@ -269,22 +264,11 @@ mod windows {
             }
             let done = job.finish();
             assert!(done.failed > 0, "{done:?}");
-            assert_eq!(
-                done.source_names_captured,
-                if after_capture { 2 } else { 1 }
-            );
+            assert_eq!(done.source_names_staged, if after_capture { 2 } else { 1 });
             assert_eq!(done.source_files_removed, 1);
-            if after_capture {
-                for recovery in &done.source_recoveries {
-                    assert_eq!(
-                        fs::read(&recovery.recovery.path).unwrap(),
-                        b"original bytes"
-                    );
-                }
-            } else {
-                assert!(!paths[0].exists());
-                assert_eq!(fs::read(&paths[1]).unwrap(), b"original bytes");
-            }
+            assert!(!paths[0].exists());
+            assert_eq!(fs::read(&paths[1]).unwrap(), b"original bytes");
+            assert!(done.source_residuals.is_empty(), "{done:?}");
         }
     }
 }

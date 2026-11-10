@@ -3,6 +3,11 @@ pub fn snapshot(pixels: &[slint::Rgb8Pixel], width: usize, height: usize, name: 
     let Some(directory) = std::env::var_os("MIDNIGHT_UI_RENDER_DIR") else {
         return;
     };
+    if directory.is_empty()
+        || std::env::var("MIDNIGHT_UI_RENDER_FILTER").is_ok_and(|filter| !name.contains(&filter))
+    {
+        return;
+    }
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
     let stride = (width * 3).next_multiple_of(4);

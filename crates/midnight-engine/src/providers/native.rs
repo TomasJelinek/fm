@@ -15,6 +15,10 @@ use std::{
 mod nodes;
 use nodes::NativeNodes;
 
+#[cfg(test)]
+#[path = "native_diagnostic_tests.rs"]
+mod diagnostic_tests;
+
 #[cfg(windows)]
 #[path = "native_codec/windows.rs"]
 mod codec;
@@ -35,6 +39,65 @@ pub type NativeCapture =
     Arc<dyn Fn(&Path, &Cancellation) -> Result<CapturedFile, ProviderError> + Send + Sync>;
 
 impl NativeProvider {
+    pub(crate) fn filesystem(&self) -> Arc<dyn FileSystem> {
+        self.filesystem.clone()
+    }
+    /// Admit one already completed backend listing without native enumeration or stat.
+    /// The first read consumes the snapshot; later root reads use this native mount.
+    pub(crate) fn capture_root(
+        &self,
+        path: &Path,
+        entries: &[midnight_core::Entry],
+        cancel: &Cancellation,
+    ) -> Result<OpenedLocation, ProviderError> {
+        super::root_seed::preflight(entries, cancel)?;
+        native_location(path)?;
+        let mut nodes = NativeNodes::default();
+        let root = nodes.bind(path.to_owned(), EntryKind::Directory)?;
+        let mut ids = std::collections::HashSet::new();
+        let mut paths = std::collections::HashSet::new();
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in entries {
+            check_cancel(cancel)?;
+            let actual = entry.native_path().ok_or(ProviderError::InvalidResponse(
+                "virtual entry in native root snapshot",
+            ))?;
+            if !actual.is_absolute()
+                || actual.parent() != Some(path)
+                || actual.as_os_str().as_encoded_bytes().contains(&0)
+                || actual.file_name().is_none_or(|name| name != entry.name)
+                || !ids.insert(entry.id)
+                || !paths.insert(actual)
+            {
+                return Err(ProviderError::InvalidResponse(
+                    "invalid native root snapshot",
+                ));
+            }
+            rows.push(ProviderEntry {
+                token: nodes.bind(actual.to_owned(), entry.kind)?,
+                raw_name: Arc::from(codec::encode(&entry.name)?),
+                display_name: entry.display_name.clone(),
+                kind: entry.kind,
+                metadata: entry.metadata.clone(),
+            });
+        }
+        let opened = OpenedLocation {
+            root,
+            mount: Arc::new(NativeMount {
+                filesystem: self.filesystem.clone(),
+                capture: self.capture.clone(),
+                locale: self.locale.clone(),
+                nodes: Mutex::new(nodes),
+            }),
+        };
+        super::root_seed::wrap(
+            opened,
+            rows,
+            super::root_seed::RootReadPolicy::NativeRefresh,
+            cancel,
+        )
+    }
+
     pub fn new(filesystem: Arc<dyn FileSystem>) -> Self {
         Self {
             filesystem,
@@ -203,7 +266,14 @@ impl MountedFilesystem for NativeMount {
         if let Some(error) = failure {
             return Err(error);
         }
-        result.map_err(|error| ProviderError::Failed(error.to_string()))?;
+        result.map_err(|error| {
+            // Display alone replaces invalid native path units and omits kind.
+            // Retain both in the backend description before tree summaries shorten it.
+            ProviderError::Failed(format!(
+                "{error}\nNative path: {:?}\nError kind: {:?}",
+                error.path, error.kind,
+            ))
+        })?;
         check_cancel(cancel)
     }
 
@@ -265,3 +335,7 @@ impl ContentSource for NativeContent {
 #[cfg(test)]
 #[path = "native_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "native_seed_tests.rs"]
+mod seed_tests;

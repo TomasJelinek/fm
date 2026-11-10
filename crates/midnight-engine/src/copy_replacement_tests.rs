@@ -127,6 +127,7 @@ fn verified_stage_survives_a_late_collision_and_explicit_replacement_or_rename()
             match job.step() {
                 worker::Step::Done => break,
                 worker::Step::Continue => assert!(step < 99),
+                worker::Step::Failure(failure) => panic!("unexpected copy failure: {failure:?}"),
                 worker::Step::Conflict(_) => panic!("unexpected second conflict"),
             }
         }
@@ -363,7 +364,16 @@ async fn source_destination_alias_cannot_authorize_replacement_or_merge() {
             choice: CopyChoice::ReplaceRecoverable { all: false },
         })
         .await;
-    assert_ne!(h.terminal(1).await.state, CopyOperationState::Completed);
+    // A forged unsupported action must leave the decision pending, never
+    // authorize an overwrite or silently terminate the user's job.
+    h.controller
+        .decide(CopyDecision {
+            id: conflict.id,
+            version: conflict.version,
+            choice: CopyChoice::Cancel,
+        })
+        .await;
+    assert_eq!(h.terminal(1).await.state, CopyOperationState::Cancelled);
     assert_eq!(fs::read(source).unwrap(), b"untouched");
     h.close().await;
 }

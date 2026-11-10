@@ -109,21 +109,28 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let seen = Rc::new(RefCell::new(Vec::new()));
     let received = seen.clone();
-    let bindings = ShortcutMap::new(&[
-        ShortcutBinding {
-            action: "viewer.find".into(),
-            keys: vec!["Ctrl+Digit9".into()],
-        },
-        ShortcutBinding {
-            action: "viewer.close".into(),
-            keys: vec!["Ctrl+K".into()],
-        },
-    ])
-    .unwrap();
+    let bindings = Rc::new(RefCell::new(
+        ShortcutMap::new(&[
+            ShortcutBinding {
+                action: "viewer.find".into(),
+                keys: vec!["Ctrl+Digit9".into()],
+            },
+            ShortcutBinding {
+                action: "viewer.close".into(),
+                keys: vec!["Ctrl+K".into()],
+            },
+        ])
+        .unwrap(),
+    ));
+    let live_bindings = bindings.clone();
     // Input routing does not depend on the asynchronous content-open result.
     let window = manager
         .open(
             ViewerLaunch {
+                associations: Default::default(),
+                tree: None,
+                generated: None,
+                preferences: Arc::new(Default::default()),
                 focused: path,
                 view: Arc::new(DirectoryIndex::from_entries(&entries)),
                 entries,
@@ -142,7 +149,8 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
             slint::LogicalSize::new(900.0, 600.0),
             Rc::new(move |chord, search| {
                 received.borrow_mut().push((chord.display(), search));
-                bindings
+                live_bindings
+                    .borrow()
                     .resolve(
                         chord,
                         if search {
@@ -181,6 +189,52 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     key(&window, " ");
     assert_eq!(window.get_query(), " ", "search keeps ordinary space input");
     assert_eq!(seen.borrow().last(), Some(&("Space".into(), true)));
+    *bindings.borrow_mut() = ShortcutMap::new(&[]).unwrap();
+    let searches = Rc::new(RefCell::new(Vec::new()));
+    let searched = searches.clone();
+    let weak = window.as_weak();
+    window.on_search(move |backwards| {
+        let window = weak.upgrade().unwrap();
+        searched
+            .borrow_mut()
+            .push((window.get_query().to_string(), backwards));
+    });
+    for mode in ["Text", "Binary", "Source", "Markdown"] {
+        window.set_modes(slint::ModelRc::new(slint::VecModel::from(vec![
+            mode.into(),
+        ])));
+        window.set_search_visible(false);
+        window.set_query("".into());
+        window.invoke_focus_content();
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 900);
+        });
+        window.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Control.into(),
+        });
+        key(&window, "f");
+        window.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Control.into(),
+        });
+        assert!(
+            window.get_search_visible(),
+            "default Ctrl+F opens Find in {mode}"
+        );
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 900);
+        });
+        key(&window, "needle café 世界");
+        assert_eq!(
+            window.get_query(),
+            "needle café 世界",
+            "Find owns typing in {mode}"
+        );
+        key(&window, Key::Return);
+        assert_eq!(
+            searches.borrow().last(),
+            Some(&("needle café 世界".into(), false))
+        );
+    }
     key(&window, Key::Escape);
     assert!(
         !window.window().is_visible(),

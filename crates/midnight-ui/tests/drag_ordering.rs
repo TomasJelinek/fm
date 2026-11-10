@@ -39,9 +39,12 @@ impl Harness {
         install(&ui.window, presenter.clone(), send.clone());
         presenter.borrow_mut().apply_with_sender(
             Event::DragDrop(DragDropEvent::DropAccepted {
+                drag: None,
                 token: DropToken(1),
                 pane: PaneId::Right,
                 item_count: 1,
+                intent: TransferIntent::Copy,
+                verification: None,
                 destination: Arc::new(path),
             }),
             send.as_ref(),
@@ -165,9 +168,12 @@ fn locally_cancelled_admissions_keep_only_the_bounded_terminal_job_history() {
         if token > 1 {
             h.presenter.borrow_mut().apply_with_sender(
                 Event::DragDrop(DragDropEvent::DropAccepted {
+                    drag: None,
                     token: DropToken(token),
                     pane: PaneId::Right,
                     item_count: 1,
+                    intent: TransferIntent::Copy,
+                    verification: None,
                     destination: Arc::new(std::env::temp_dir().join("drop ordering")),
                 }),
                 h.send.as_ref(),

@@ -17,7 +17,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
-use ui::{TestUi, chord, click, key};
+use ui::{TestUi, chord, click, key, pointer_button};
 
 #[test]
 fn drive_menu_copies_the_other_folder_with_period_or_mouse_after_panel_swap() {
@@ -137,22 +137,6 @@ fn path_parts(folder_prefix: &str) -> ModelRc<PathPartRow> {
             prefix: folder_prefix.into(),
         },
     ]))
-}
-
-fn pointer_button(
-    window: &MainWindow,
-    position: slint::LogicalPosition,
-    button: PointerEventButton,
-    pressed: bool,
-) {
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window.window().dispatch_event(if pressed {
-        WindowEvent::PointerPressed { position, button }
-    } else {
-        WindowEvent::PointerReleased { position, button }
-    });
 }
 
 #[test]

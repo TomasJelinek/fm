@@ -9,7 +9,10 @@ use i_slint_core::{
     window::{WindowInner, WindowKind},
 };
 use midnight_core::*;
-use midnight_ui::{ActionIcons, FileRow, MainWindow, Presenter, Theme, install, refresh};
+use midnight_ui::{
+    ActionIcons, FileRow, LocationRole, MainWindow, NavigationChoiceRow, Presenter, Theme, install,
+    refresh,
+};
 use slint::{
     ComponentHandle, Model, ModelRc, VecModel,
     platform::{
@@ -85,8 +88,20 @@ fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
     }
 }
 fn quick_position(window: &MainWindow) -> slint::LogicalPosition {
-    let hint = window.get_left_locations().row_data(0).unwrap().tooltip;
+    let hint = window
+        .get_left_locations()
+        .iter()
+        .find(|row| row.kind == LocationRole::Drive)
+        .expect("native drive shortcut")
+        .tooltip;
     ui::root_position(window, &hint, AccessibleRole::Button)
+}
+fn choice(window: &MainWindow, kind: LocationRole) -> NavigationChoiceRow {
+    window
+        .get_navigation_choices()
+        .iter()
+        .find(|row| row.kind == kind && row.identity != "other-panel")
+        .unwrap_or_else(|| panic!("missing navigation role: {kind:?}"))
 }
 fn popup_position(window: &MainWindow, label: &str) -> slint::LogicalPosition {
     fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
@@ -184,6 +199,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         },
     ]));
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             location("disk", LocationKind::Volume, root.clone()),
@@ -211,30 +227,60 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     };
     draw(&mut pixels, 1340);
     let choices = window.get_navigation_choices();
-    assert_eq!(
-        choices.row_count(),
-        6,
-        "five locations plus the other-panel action"
-    );
-    let other_panel = choices.row_data(5).unwrap();
-    assert_eq!(other_panel.identity, "other-panel");
+    let other_actions = choices
+        .iter()
+        .filter(|row| row.identity == "other-panel")
+        .collect::<Vec<_>>();
+    let [other_panel] = other_actions.as_slice() else {
+        panic!("exactly one other-panel action is required");
+    };
     assert_eq!(other_panel.label, ". As Other Panel");
+    assert_eq!(
+        choices.iter().last().unwrap().identity,
+        other_panel.identity
+    );
+    let system_choices = choices
+        .iter()
+        .filter(|row| row.identity != "other-panel")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        system_choices
+            .iter()
+            .map(|row| row.kind)
+            .collect::<Vec<_>>(),
+        [
+            LocationRole::Drive,
+            LocationRole::Network,
+            LocationRole::Home,
+            LocationRole::Desktop,
+            LocationRole::Documents,
+            LocationRole::Downloads,
+        ],
+        "Network follows native drives before each distinct special location"
+    );
     for locations in [window.get_left_locations(), window.get_right_locations()] {
         assert_eq!(
             locations.row_count(),
-            5,
+            system_choices.len(),
+            "both surfaces expose the same system targets"
+        );
+        assert_eq!(
+            locations
+                .iter()
+                .filter(|row| row.kind == LocationRole::Home)
+                .count(),
+            1,
             "synthetic Home is merged only once"
         );
-        for index in 0..locations.row_count() {
-            let choice = choices.row_data(index).unwrap();
-            let quick = locations.row_data(index).unwrap();
+        for (quick, choice) in locations.iter().zip(&system_choices) {
             assert_eq!(quick.identity, choice.identity);
+            assert_eq!(quick.kind, choice.kind);
             assert_eq!(quick.tooltip, choice.tooltip);
         }
     }
     assert_ne!(
-        choices.row_data(1).unwrap().identity,
-        choices.row_data(2).unwrap().identity,
+        choice(&window, LocationRole::Home).identity,
+        choice(&window, LocationRole::Desktop).identity,
         "Home and Desktop remain separate even when their raw target is identical"
     );
 
@@ -286,8 +332,8 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         quiet.iter().zip(&pixels).filter(|(a, b)| a != b).count() > 100,
         "quick drives must display an actual hover tooltip"
     );
-    let hint = window.get_left_locations().row_data(0).unwrap().tooltip;
-    assert!(hint.contains("Work 文档 & <plain>") && hint.contains("1.0 GB free"));
+    let hint = choice(&window, LocationRole::Drive).tooltip;
+    assert!(hint.contains("Work 文档 & <plain>") && hint.contains("1.0 GiB free"));
     let with_tooltip = pixels.clone();
     window.window().dispatch_event(WindowEvent::PointerMoved {
         position: slint::LogicalPosition::new(0.0, 0.0),
@@ -306,8 +352,17 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     // Every special alias can be picked from the same drive dropdown.
     open_picker(&window, PaneId::Left);
     draw(&mut pixels, 1340);
+    let downloads_choice = choice(&window, LocationRole::Downloads);
+    let following_rows = window
+        .get_navigation_choices()
+        .iter()
+        .skip_while(|row| row.identity != downloads_choice.identity)
+        .skip(1)
+        .count();
     key(&window, Key::End);
-    key(&window, Key::UpArrow); // Downloads precedes the final other-panel action.
+    for _ in 0..following_rows {
+        key(&window, Key::UpArrow);
+    }
     // Metadata refresh while open retains the pending semantic choice.
     presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
         volume_id: "disk".into(),
@@ -341,7 +396,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     open_picker(&window, PaneId::Right);
     draw(&mut pixels, 1340);
     let theme = window.global::<Theme>();
-    let home_label = window.get_navigation_choices().row_data(1).unwrap().label;
+    let home_label = choice(&window, LocationRole::Home).label;
     let home_row = popup_position(&window, &home_label);
     window
         .window()
@@ -413,14 +468,22 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         .borrow_mut()
         .apply(Event::VolumesUpdated(drives.clone()));
     refresh(&window, &presenter.borrow());
+    let canonical_drives = window
+        .get_navigation_choices()
+        .iter()
+        .filter(|row| row.kind == LocationRole::Drive)
+        .collect::<Vec<_>>();
+    let [first_drive, second_drive] = canonical_drives.as_slice() else {
+        panic!("both canonical native drives must remain present");
+    };
+    assert_ne!(first_drive.identity, second_drive.identity);
     assert_eq!(
-        window.get_navigation_choices().row_data(0).unwrap().label,
-        window.get_navigation_choices().row_data(1).unwrap().label,
+        first_drive.label, second_drive.label,
         "the real canonical rows must have identical visible text"
     );
     open_picker(&window, PaneId::Right);
     draw(&mut pixels, 1340);
-    let first_label = window.get_navigation_choices().row_data(0).unwrap().label;
+    let first_label = first_drive.label.clone();
     let first_row = popup_position(&window, &first_label);
     pointer(&window, first_row.x, first_row.y, true);
     let before = navigations(&commands);
@@ -482,11 +545,41 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
 
     // File and folder rows stay quiet on hover, including unfinished sizes.
     // Both panels retain the deliberate tooltips on their sort headers.
+    // Settle the gesture fixtures first: a pending native listing paints an
+    // indeterminate progress bar even when rows are installed directly below.
+    for pane in [PaneId::Left, PaneId::Right] {
+        let navigation = commands
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: actual,
+                    navigation,
+                    ..
+                }
+                | Command::Refresh {
+                    pane: actual,
+                    navigation,
+                    ..
+                } if *actual == pane => Some(*navigation),
+                _ => None,
+            })
+            .expect("the gesture fixtures queued a native navigation for each pane");
+        presenter.borrow_mut().apply(Event::ListingFinished {
+            pane,
+            navigation,
+            entries: Arc::from([]),
+            index: Arc::new(DirectoryIndex::default()),
+        });
+    }
+    refresh(&window, &presenter.borrow());
+    assert!(!window.get_left_loading() && !window.get_right_loading());
     let hover_rows = ModelRc::new(VecModel::from(vec![
         FileRow {
             identity: "hover-folder".into(),
             name: "Unfinished folder 文档".into(),
-            size: "≈1.0 KB".into(),
+            size: "≈1.0 KiB".into(),
             size_state: 1,
             size_hint: "Still counting; this size is not final.".into(),
             directory: true,
@@ -495,7 +588,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         FileRow {
             identity: "hover-file".into(),
             name: "Regular file 文档.txt".into(),
-            size: "1.0 KB".into(),
+            size: "1.0 KiB".into(),
             ..Default::default()
         },
     ]));
@@ -509,16 +602,33 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
             &format!("Sort by {column}"),
             AccessibleRole::Button,
         );
-        for (offset, file_top) in [
-            (0.0, window.get_left_list_top()),
+        for (offset, file_left, file_top, file_width, file_height) in [
+            (
+                0.0,
+                window.get_left_list_left(),
+                window.get_left_list_top(),
+                window.get_left_list_width(),
+                window.get_left_list_visible_height(),
+            ),
             (
                 window.get_right_list_left() - window.get_left_list_left(),
+                window.get_right_list_left(),
                 window.get_right_list_top(),
+                window.get_right_list_width(),
+                window.get_right_list_visible_height(),
             ),
         ] {
             let x = header.x + offset;
             for row in [0.5, 1.5] {
-                hover_targets.push((x, file_top + row * theme.get_row_height(), false));
+                let y = file_top + row * theme.get_row_height();
+                assert!(
+                    x >= file_left
+                        && x < file_left + file_width
+                        && y >= file_top
+                        && y < file_top + file_height,
+                    "{column} hover ({x}, {y}) must target the actual file viewport"
+                );
+                hover_targets.push((x, y, false));
             }
             hover_targets.push((x, header.y, true));
         }
@@ -542,7 +652,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         } else {
             assert_eq!(
                 changed, 0,
-                "file and folder rows must not display hover tooltips"
+                "file and folder rows must not display hover tooltips at ({hover_x}, {hover_y})"
             );
         }
         window.window().dispatch_event(WindowEvent::PointerMoved {
@@ -588,7 +698,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                     window.set_left_error(error.into());
                     draw(&mut pixels, width as usize);
                     assert_eq!(window.get_command_directory().as_str(), long);
-                    let footer = ui::root_item(&window, "Options", AccessibleRole::Button);
+                    let footer = ui::root_item(&window, "Jobs", AccessibleRole::Button);
                     assert_eq!(
                         window.get_command_bar_height(),
                         footer.geometry().height(),
@@ -615,11 +725,11 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
                     );
                     assert!(
                         window.get_command_input_width() > 300.0,
-                        "full cwd must leave useful editor width at {width}x{height}, density{density}/font{font}, error={error:?}: editor={}px, cwd={}px, natural_cwd={}px, options={}px, run={}px, history={}px",
+                        "full cwd must leave useful editor width at {width}x{height}, density{density}/font{font}, error={error:?}: editor={}px, cwd={}px, natural_cwd={}px, jobs={}px, run={}px, history={}px",
                         window.get_command_input_width(),
                         window.get_command_path_width(),
                         window.get_command_path_natural_width(),
-                        ui::root_item(&window, "Options", AccessibleRole::Button)
+                        ui::root_item(&window, "Jobs", AccessibleRole::Button)
                             .geometry()
                             .size
                             .width,
@@ -668,11 +778,11 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
         .dispatch_event(WindowEvent::PointerScrolled {
             position: slint::LogicalPosition::new(scroll_x, scroll_y),
             delta_x: 0.0,
-            delta_y: -120.0,
+            delta_y: 120.0,
         });
     draw(&mut pixels, 1040);
     assert!(
-        window.get_command_path_text_left() < path_left,
+        window.get_command_path_text_left() > path_left,
         "an ordinary mouse wheel pans an extreme cwd horizontally"
     );
     let before_drag = window.get_command_path_text_left();
@@ -704,7 +814,7 @@ fn native_choices_keep_gestures_tooltips_and_full_unicode_working_paths() {
     let viewport_right = window.get_command_path_left() + window.get_command_path_width();
     assert!(
         (text_right - (viewport_right - 4.0)).abs() <= 1.0,
-        "the complete Unicode tail remains reachable without an ellipsis or data cap"
+        "the complete Unicode tail remains reachable without truncating the stored path"
     );
     window.set_active_pane(1);
     draw(&mut pixels, 1040);

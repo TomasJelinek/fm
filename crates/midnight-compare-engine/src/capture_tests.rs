@@ -1,7 +1,7 @@
-use crate::{Frame, NativeCapture, Output, Service, Session};
+use crate::{FileChoice, Frame, Input, NativeCapture, Output, Service, Session};
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, FileCompareLaunch, FileCompareSource,
-    SelectionSnapshot, ViewerAppearance, ViewerGeometry,
+    ViewerAppearance, ViewerGeometry,
 };
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use std::{
@@ -82,6 +82,13 @@ fn launch(paths: &[PathBuf; 2]) -> FileCompareLaunch {
     }
 }
 
+fn unresolved() -> FileCompareLaunch {
+    FileCompareLaunch {
+        sources: Vec::new(),
+        disabled_plugins: Arc::from([]),
+    }
+}
+
 fn open(service: &Service, launch: FileCompareLaunch) -> Result<Session, String> {
     service.open(
         launch,
@@ -118,15 +125,14 @@ fn wait_for<T>(mut poll: impl FnMut() -> Option<T>) -> T {
 fn frame(session: &Session) -> Frame {
     wait_for(|| match session.mailbox.take() {
         Some(Output::Frame { frame, .. }) => Some(frame),
+        Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
         _ => None,
     })
 }
 
-fn failure(session: &Session) -> String {
+fn choice(session: &Session) -> FileChoice {
     wait_for(|| match session.mailbox.take() {
-        Some(Output::Status(message)) if message.contains("Installed provider unavailable") => {
-            Some(message)
-        }
+        Some(Output::ChooseFiles(choice)) => Some(choice),
         Some(Output::Frame { .. }) => panic!("Capture failure must not produce a frame"),
         _ => None,
     })
@@ -162,10 +168,9 @@ fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
     let entries: Arc<[Entry]> =
         vec![Entry::new(EntryId(7), paths[1].clone(), EntryKind::File)].into();
     let mut launch = launch(&paths);
-    let view = Arc::new(DirectoryIndex::from_entries(&entries));
-    launch.sources[1] = FileCompareSource::Selected {
-        selection: Arc::new(SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap()),
-        view,
+    launch.sources[1] = FileCompareSource::SameName {
+        directory: paths[1].parent().unwrap().to_path_buf(),
+        view: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,
     };
     let session = open(&service, launch).unwrap();
@@ -182,6 +187,32 @@ fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
         assert_ne!(*thread, std::thread::current().id());
         assert_eq!(*cancel, Arc::as_ptr(&session.cancelled).addr());
     }
+    session.close();
+}
+
+#[test]
+fn explicit_compare_submission_uses_the_injected_capture_for_both_choices() {
+    let root = fixture();
+    let paths = paths(root.path());
+    let expected = paths.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let capture: NativeCapture = Arc::new(move |path, _| {
+        if path == expected[0] {
+            memory(b"explicit first\n", &reads)
+        } else if path == expected[1] {
+            memory(b"explicit second\n", &reads)
+        } else {
+            Err("Unexpected provider identity".into())
+        }
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = Service::with_native_capture(runtime.handle().clone(), capture);
+    let session = open(&service, unresolved()).unwrap();
+    assert!(!choice(&session).is_error);
+    assert!(session.send(Input::Compare(paths)));
+    let frame = frame(&session);
+    assert!(frame.accessible_text.contains("explicit first"));
+    assert!(frame.accessible_text.contains("explicit second"));
     session.close();
 }
 
@@ -206,9 +237,15 @@ fn injected_rejection_on_either_side_never_falls_back_to_readable_native_files()
         });
         let service = Service::with_native_capture(runtime.handle().clone(), capture);
         let session = open(&service, launch(&paths)).unwrap();
-        let failure = failure(&session);
-        assert!(failure.contains("Installed provider unavailable"));
-        assert!(failure.contains(&paths[rejected].display().to_string()));
+        let choice = choice(&session);
+        assert!(choice.is_error);
+        assert_eq!(choice.paths, paths);
+        assert!(choice.message.contains("Installed provider unavailable"));
+        assert!(
+            choice
+                .message
+                .contains(if rejected == 0 { "File A" } else { "File B" })
+        );
         session.close();
     }
 }
@@ -251,18 +288,20 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
         session.mailbox.take();
         session.close();
         cancellation.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(
-            service.active.load(Ordering::Acquire),
-            1,
+        let other = open(&service, unresolved()).unwrap();
+        assert!(
+            open(&service, unresolved()).is_err(),
             "Capture still owns its slot"
         );
         release.send(()).unwrap();
-        wait_for(|| (service.active.load(Ordering::Acquire) == 0).then_some(()));
+        let next = wait_for(|| open(&service, unresolved()).ok());
         assert_eq!(calls.load(Ordering::Relaxed), blocked + 1);
         assert_eq!(reads.load(Ordering::Relaxed), 0);
         assert!(
             session.mailbox.take().is_none(),
             "Closed session published late output"
         );
+        other.close();
+        next.close();
     }
 }

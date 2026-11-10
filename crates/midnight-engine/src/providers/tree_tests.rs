@@ -2,6 +2,9 @@ use super::{tree::*, *};
 use midnight_core::ProviderId;
 use std::{collections::HashMap, num::NonZeroU32, sync::Mutex};
 
+#[path = "tree_failure_tests.rs"]
+mod failure_tests;
+
 #[derive(Default)]
 struct Graph(Mutex<HashMap<u64, Result<Vec<ProviderEntry>, ProviderError>>>);
 struct Provider(Arc<Graph>);

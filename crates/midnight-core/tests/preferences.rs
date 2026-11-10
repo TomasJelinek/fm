@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 fn bookmark() -> Bookmark {
     Bookmark {
+        archive: None,
         id: BookmarkId(1),
         name: "文档 e\u{301} 🧪".into(),
         path: std::env::current_dir().unwrap().join("字".repeat(40_000)),

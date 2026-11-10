@@ -37,7 +37,7 @@ fn checksum_choices_reject_empty_unknown_duplicate_and_cross_version_fields() {
     for invalid in [
         serde_json::json!([]),
         serde_json::json!(["sha256", "sha256"]),
-        serde_json::json!(["crc32"]),
+        serde_json::json!(["crc128"]),
         serde_json::json!(null),
         serde_json::json!([1]),
     ] {
@@ -54,4 +54,20 @@ fn checksum_choices_reject_empty_unknown_duplicate_and_cross_version_fields() {
     let mut stored = original;
     stored["version"] = serde_json::json!(15);
     assert!(decode_preferences(&serde_json::to_vec(&stored).unwrap()).is_err());
+}
+
+#[test]
+fn all_five_checksum_algorithms_roundtrip_including_sfv() {
+    let preferences = UserPreferences {
+        checksum_algorithms: ChecksumAlgorithms::all(),
+        ..UserPreferences::default()
+    };
+    let encoded = encode_preferences(preferences.clone()).unwrap();
+    assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
+    assert!(
+        preferences
+            .checksum_algorithms
+            .contains(ChecksumAlgorithm::Crc32)
+    );
+    assert_eq!(preferences.checksum_algorithms.iter().count(), 5);
 }

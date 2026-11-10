@@ -42,6 +42,37 @@ impl LocaleService for WindowsFileSystem {
         modified(value)
     }
 
+    fn format_archive_local_time(
+        &self,
+        value: midnight_core::ArchiveTimestamp,
+    ) -> Option<LocalizedDateTime> {
+        use midnight_core::ArchiveTimestamp;
+        if !value.is_valid() {
+            return None;
+        }
+        let ArchiveTimestamp::Local {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        } = value
+        else {
+            return None;
+        };
+        let calendar = SYSTEMTIME {
+            wYear: u16::try_from(year).ok()?,
+            wMonth: u16::from(month),
+            wDay: u16::from(day),
+            wHour: u16::from(hour),
+            wMinute: u16::from(minute),
+            wSecond: u16::from(second),
+            ..Default::default()
+        };
+        snapshot().ok()?.format(&calendar).ok()
+    }
+
     fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
         crate::sort_keys::key(collation_name()?, value).map_err(|error| {
             FsError::from_io("prepare Windows collation key", Path::new(""), error)

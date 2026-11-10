@@ -1,12 +1,51 @@
 //! Bounded metadata forms and conflict presentation; native work is sent to the engine.
 use super::*;
+use i_slint_core::{
+    accessibility::AccessibleStringProperty, item_tree::ParentItemTraversalMode,
+    items::AccessibleRole, window::WindowInner,
+};
 use std::cell::Cell;
+
+/// Close only transient controls owned by this dialog, before replacing fields.
+/// Accessible actions can switch topics while a ComboBox popup is still open.
+fn dismiss_controls(window: &MainWindow) {
+    crate::tooltip::dismiss(window.window());
+    let inner = WindowInner::from_pub(window.window());
+    let owned = inner
+        .active_popups()
+        .iter()
+        .filter(|popup| {
+            let mut ancestor = popup.parent_item.upgrade();
+            while let Some(item) = ancestor {
+                if item.accessible_role() == AccessibleRole::Groupbox
+                    && item
+                        .accessible_string_property(AccessibleStringProperty::Label)
+                        .is_some_and(|label| label == "Attributes, times and case")
+                {
+                    return true;
+                }
+                ancestor = item.parent_item(ParentItemTraversalMode::FindAllParents);
+            }
+            false
+        })
+        .map(|popup| popup.popup_id)
+        .collect::<Vec<_>>();
+    for id in owned.into_iter().rev() {
+        inner.close_popup(id);
+    }
+}
 
 pub(super) fn bind(
     window: &MainWindow,
     state: &Rc<RefCell<Presenter>>,
     send: &Rc<dyn Fn(Command) -> bool>,
 ) {
+    let weak = window.as_weak();
+    window.on_dismiss_metadata_hints(move || {
+        if let Some(window) = weak.upgrade() {
+            dismiss_controls(&window);
+        }
+    });
     window.set_metadata_rows(ModelRc::new(MetadataRows {
         presenter: state.clone(),
         revision: Cell::new(None),
@@ -14,9 +53,14 @@ pub(super) fn bind(
     }));
     macro_rules! callback {
         ($name:ident, |$p:ident, $s:ident $(, $arg:ident)*| $body:block) => {{
+            callback!($name, true, |$p, $s $(, $arg)*| $body);
+        }};
+        ($name:ident, $close_children:expr, |$p:ident, $s:ident $(, $arg:ident)*| $body:block) => {{
             let state = state.clone(); let send = send.clone(); let weak = window.as_weak();
             window.$name(move |$($arg),*| {
                 let Some(window) = weak.upgrade() else { return; };
+                if $close_children { dismiss_controls(&window); }
+                else { crate::tooltip::dismiss(window.window()); }
                 { let mut borrow = state.borrow_mut(); let $p = &mut *borrow; let $s = send.as_ref(); $body }
                 refresh_properties(&window, &state.borrow(), false);
             });
@@ -31,7 +75,7 @@ pub(super) fn bind(
             p.open_metadata(pane, case, s);
         }
     });
-    callback!(on_dirty_metadata, |p, _s, token| {
+    callback!(on_dirty_metadata, false, |p, _s, token| {
         p.dirty_metadata(token.as_str());
     });
     callback!(on_preview_metadata, |p, s, token, draft| {
@@ -50,6 +94,14 @@ pub(super) fn bind(
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let state = &presenter.metadata;
+    // The worker reply can replace the editing section while a field hint is
+    // open. Retire its transient children before changing the component tree.
+    if (!window.get_metadata_preview_current() && state.preview_current())
+        || window.get_metadata_token().as_str()
+            != state.id.map(|id| id.0.to_string()).unwrap_or_default()
+    {
+        dismiss_controls(window);
+    }
     window.set_metadata_start_case(state.start_case);
     window.set_metadata_revision(state.revision.to_string().into());
     window.set_metadata_error(state.error.as_str().into());

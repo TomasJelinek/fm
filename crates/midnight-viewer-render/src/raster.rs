@@ -10,6 +10,29 @@ pub struct Viewport {
     pub selection_color: [u8; 4],
 }
 
+impl Viewport {
+    pub(crate) fn translated(self, offset: [f32; 2]) -> Self {
+        Self {
+            origin: std::array::from_fn(|axis| {
+                stable_pixel(f64::from(self.origin[axis] - offset[axis])) as f32
+            }),
+            ..self
+        }
+    }
+}
+
+// A caret restored through different composite parents can leave sub-millipixel
+// cancellation error. Normalize final paint coordinates, including root borders,
+// without discarding meaningful fractional scrolling.
+pub(crate) fn stable_pixel(value: f64) -> f64 {
+    let pixel = value.round();
+    if (value - pixel).abs() < 1.0 / 1024.0 {
+        pixel
+    } else {
+        value
+    }
+}
+
 pub struct Raster {
     pub width: u32,
     pub height: u32,
@@ -17,9 +40,39 @@ pub struct Raster {
     pub rgba: Vec<u8>,
 }
 
+pub(crate) struct Fill {
+    pub rect: Rect,
+    pub color: [u8; 4],
+    pub radius: f32,
+}
+
 const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
 impl TextRenderer {
+    /// Paint a prepared annotation into an existing surface, without reshaping or
+    /// allocating another viewport. Annotation coordinates are physical pixels.
+    pub fn paint_over(
+        &mut self,
+        page: &TextPage,
+        raster: &mut Raster,
+        origin: [f32; 2],
+    ) -> Result<(), LayoutError> {
+        if origin.iter().any(|value| !value.is_finite()) {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        self.glyphs.paint(
+            page,
+            Viewport {
+                width: raster.width,
+                height: raster.height,
+                origin,
+                background: [0; 4],
+                selection_color: [0; 4],
+            },
+            raster,
+        )
+    }
+
     pub fn rasterize(
         &mut self,
         page: &TextPage,
@@ -45,6 +98,7 @@ impl TextRenderer {
         for pixel in raster.rgba.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&background);
         }
+        paint_backgrounds(page, viewport, &mut raster);
         if let Some(rectangles) = rectangles {
             for rect in rectangles {
                 raster.fill(rect, viewport.origin, viewport.selection_color);
@@ -56,17 +110,49 @@ impl TextRenderer {
 }
 
 impl Raster {
+    fn fill_rounded(&mut self, fill: &Fill, origin: [f32; 2]) {
+        if fill.radius <= 0.0 {
+            self.fill(fill.rect, origin, fill.color);
+            return;
+        }
+        let x0 = stable_pixel(fill.rect.x0 - f64::from(origin[0]));
+        let x1 = stable_pixel(fill.rect.x1 - f64::from(origin[0]));
+        let y0 = stable_pixel(fill.rect.y0 - f64::from(origin[1]));
+        let y1 = stable_pixel(fill.rect.y1 - f64::from(origin[1]));
+        let radius = f64::from(fill.radius)
+            .min((x1 - x0) / 2.0)
+            .min((y1 - y0) / 2.0);
+        let color = premultiply(fill.color);
+        for y in
+            y0.floor().max(0.0) as usize..y1.ceil().min(f64::from(self.height)).max(0.0) as usize
+        {
+            for x in
+                x0.floor().max(0.0) as usize..x1.ceil().min(f64::from(self.width)).max(0.0) as usize
+            {
+                let px = x as f64 + 0.5;
+                let py = y as f64 + 0.5;
+                let dx = (x0 + radius - px).max(0.0).max(px - x1 + radius);
+                let dy = (y0 + radius - py).max(0.0).max(py - y1 + radius);
+                let coverage = (radius + 0.5 - dx.hypot(dy)).clamp(0.0, 1.0);
+                self.blend(
+                    x,
+                    y,
+                    color.map(|channel| (f64::from(channel) * coverage).round() as u8),
+                );
+            }
+        }
+    }
     pub(crate) fn fill(&mut self, rect: Rect, origin: [f32; 2], color: [u8; 4]) {
-        let x0 = (rect.x0 - f64::from(origin[0]))
+        let x0 = stable_pixel(rect.x0 - f64::from(origin[0]))
             .floor()
             .clamp(0.0, f64::from(self.width)) as usize;
-        let x1 = (rect.x1 - f64::from(origin[0]))
+        let x1 = stable_pixel(rect.x1 - f64::from(origin[0]))
             .ceil()
             .clamp(0.0, f64::from(self.width)) as usize;
-        let y0 = (rect.y0 - f64::from(origin[1]))
+        let y0 = stable_pixel(rect.y0 - f64::from(origin[1]))
             .floor()
             .clamp(0.0, f64::from(self.height)) as usize;
-        let y1 = (rect.y1 - f64::from(origin[1]))
+        let y1 = stable_pixel(rect.y1 - f64::from(origin[1]))
             .ceil()
             .clamp(0.0, f64::from(self.height)) as usize;
         let color = premultiply(color);
@@ -84,6 +170,21 @@ impl Raster {
         for (target, source) in target.iter_mut().zip(color) {
             *target =
                 (u16::from(source) + (u16::from(*target) * remaining + 127) / 255).min(255) as u8;
+        }
+    }
+}
+
+fn paint_backgrounds(page: &TextPage, view: Viewport, raster: &mut Raster) {
+    if let Some(grid) = &page.composite {
+        for fill in &grid.backgrounds {
+            raster.fill_rounded(fill, view.origin);
+        }
+        for part in &grid.parts {
+            if part.origin[1] + part.page.height() >= view.origin[1]
+                && part.origin[1] <= view.origin[1] + view.height as f32
+            {
+                paint_backgrounds(&part.page, view.translated(part.origin), raster);
+            }
         }
     }
 }

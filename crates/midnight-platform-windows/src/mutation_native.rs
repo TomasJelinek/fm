@@ -355,7 +355,7 @@ pub(super) fn bounded_child_names(
     collect_child_names(directory, cancel, max_names, max_bytes, None)
 }
 
-pub(super) fn has_exact_child_name(
+pub(crate) fn has_exact_child_name(
     directory: &File,
     name: &OsStr,
     cancel: &Cancellation,

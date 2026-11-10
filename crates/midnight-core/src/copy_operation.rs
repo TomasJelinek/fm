@@ -4,6 +4,7 @@ use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct CopyRequest {
+    pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub clipboard: FileClipboard,
     pub destination: PathBuf,
@@ -12,6 +13,7 @@ pub struct CopyRequest {
 /// A confirmation retains shared raw clipboard paths; expansion/cloning stays on a worker.
 #[derive(Clone, Debug)]
 pub struct ClipboardMoveRequest {
+    pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub clipboard: Arc<FileClipboard>,
     pub destination: PathBuf,
@@ -20,6 +22,7 @@ pub struct ClipboardMoveRequest {
 /// F5 captures the shared selection and projection without expanding them on the UI thread.
 #[derive(Clone, Debug)]
 pub struct SelectedCopyRequest {
+    pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub files: crate::SelectedFiles,
     pub destination: PathBuf,
@@ -28,6 +31,7 @@ pub struct SelectedCopyRequest {
 /// F5 captures virtual identities without interpreting displayed archive paths.
 #[derive(Clone, Debug)]
 pub struct ArchiveCopyRequest {
+    pub verification: crate::TransferVerification,
     pub id: OperationId,
     pub location: crate::ArchiveLocation,
     pub entries: Arc<[crate::Entry]>,
@@ -76,15 +80,16 @@ pub enum TransferIntent {
     #[default]
     Copy,
     /// Each native regular-file source is removed only after its verified copy.
-    /// Partial errors retain remaining originals, possibly in private recovery.
-    RecoverableMove,
+    /// Pre-removal errors restore original names without replacing new winners.
+    Move,
 }
 
 #[derive(Clone, Debug)]
-pub struct MoveSourceRecovery {
+pub struct MoveSourceResidual {
     pub source: PathBuf,
-    pub recovery: crate::TransferRecovery,
-    /// True only when native identity matches the selected original root.
+    pub temporary: crate::TransferRecovery,
+    /// True only when this is the selected original left after failed restoration.
+    /// False can describe an empty/unknown temporary directory after cleanup failure.
     pub matched_source: bool,
 }
 
@@ -92,12 +97,18 @@ pub struct MoveSourceRecovery {
 pub struct CopyProgress {
     pub id: OperationId,
     pub intent: TransferIntent,
+    /// Immutable content-verification choice captured when this job was submitted.
+    /// Native rename does not read content regardless of this choice.
+    pub verification: crate::TransferVerification,
     pub state: CopyOperationState,
     pub phase: CopyOperationPhase,
     pub requested_roots: u64,
     /// Recursive totals remain unknown; these are observed counters, never estimates.
     pub files_completed: u64,
     pub directories_created: u64,
+    /// Actual native entry renames; a renamed directory counts once without
+    /// enumerating or estimating its descendants. No content bytes were copied.
+    pub native_entries_moved: u64,
     /// One skipped directory means its complete subtree was skipped without enumerating it.
     pub skipped: u64,
     pub failed: u64,
@@ -105,15 +116,21 @@ pub struct CopyProgress {
     pub verified_bytes: u64,
     /// Additional source and target bytes independently read by Move proof passes.
     pub validation_bytes: u64,
-    pub source_names_captured: u64,
+    /// Shared backend samples of writes and independent verification reads.
+    pub throughput: Arc<crate::OperationThroughput>,
+    /// Internal transient staging count; not a retained-data or completion count.
+    pub source_names_staged: u64,
     /// Actual source unlink or accepted normal Windows delete disposition.
     /// This is not a measured physical-space reclamation counter.
     pub source_files_removed: u64,
     pub source_delete_pending: u64,
+    /// Completed source namespace changes (unlink or native rename) whose parent
+    /// directory durability could not be confirmed by the native platform.
     pub source_removal_durability_unconfirmed: u64,
-    pub source_recovery_count: u64,
-    /// First16 exact raw source/recovery mappings; count above remains exact.
-    pub source_recoveries: Vec<MoveSourceRecovery>,
+    /// Exceptional failed restore/cleanup locations only. Normal staging is private.
+    pub source_residual_count: u64,
+    /// First16 exact raw source/residual mappings; count above remains exact.
+    pub source_residuals: Vec<MoveSourceResidual>,
     /// At most64 source parents to refresh after actual source namespace mutation.
     pub source_directories: Vec<PathBuf>,
     /// Exact number of retained recovery objects; display paths are bounded below.
@@ -138,22 +155,25 @@ impl CopyProgress {
         Self {
             id,
             intent,
+            verification: crate::TransferVerification::default(),
             state: CopyOperationState::Queued,
             phase: CopyOperationPhase::Planning,
             requested_roots,
             files_completed: 0,
             directories_created: 0,
+            native_entries_moved: 0,
             skipped: 0,
             failed: 0,
             copied_bytes: 0,
             verified_bytes: 0,
             validation_bytes: 0,
-            source_names_captured: 0,
+            throughput: Arc::default(),
+            source_names_staged: 0,
             source_files_removed: 0,
             source_delete_pending: 0,
             source_removal_durability_unconfirmed: 0,
-            source_recovery_count: 0,
-            source_recoveries: vec![],
+            source_residual_count: 0,
+            source_residuals: vec![],
             source_directories: vec![],
             recovery_count: 0,
             recovery_paths: vec![],
@@ -176,10 +196,41 @@ pub struct CopyConflict {
     pub can_merge: bool,
 }
 
+/// Failure categories also scope the user's Skip All choice within one operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CopyErrorStage {
+    Preparing,
+    Reading,
+    Writing,
+    Syncing,
+    Verifying,
+    Publishing,
+    Enumerating,
+    CreatingDirectory,
+    RemovingSource,
+    Cleanup,
+}
+
+/// A worker-owned pause, distinct from overwrite consent. Capabilities describe
+/// whether that exact phase can be retried or skipped without replaying a commit.
+#[derive(Clone, Debug)]
+pub struct CopyFailure {
+    pub id: OperationId,
+    pub version: u64,
+    pub error: crate::FsError,
+    pub source: Option<PathBuf>,
+    pub destination: PathBuf,
+    pub stage: CopyErrorStage,
+    pub can_retry: bool,
+    pub can_skip: bool,
+}
+
 /// Scope is this job only. Recoverable replacement is an explicit choice, never
 /// described as atomic conditional overwrite of a consented identity.
 #[derive(Clone, Debug)]
 pub enum CopyChoice {
+    Retry,
+    SkipAllErrors,
     Skip,
     SkipAll,
     Rename(OsString),
@@ -196,7 +247,21 @@ pub struct CopyDecision {
 }
 
 #[derive(Clone, Debug)]
+pub enum CompletedCopySource {
+    Tree(crate::TreeCopyOccurrence),
+    Native(PathBuf),
+    Archive(crate::VirtualEntryId),
+}
+
+#[derive(Clone, Debug)]
 pub enum CopyEvent {
     Progress(Arc<CopyProgress>),
     Conflict(Arc<CopyConflict>),
+    Failure(Arc<CopyFailure>),
+    /// One requested root completed, including all descendants, with no skips or errors.
+    /// Copy requires verified publication; Move also requires source removal.
+    RootCompleted {
+        id: OperationId,
+        source: CompletedCopySource,
+    },
 }

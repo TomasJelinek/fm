@@ -11,7 +11,12 @@ use tokio::{
     task::JoinSet,
 };
 #[cfg(test)]
+mod root_retirement_tests;
+#[cfg(test)]
+mod size_sort_tests;
+#[cfg(test)]
 mod tests;
+mod timestamps;
 
 /// Backend capture authority. An expected revision must be validated before returning content.
 pub type ArchiveCapture = Arc<
@@ -59,6 +64,7 @@ fn capture_source(
 
 pub(crate) struct Controller {
     capture: Option<ArchiveCapture>,
+    locale: Option<Arc<dyn LocaleService>>,
     catalog: Arc<OnceLock<Catalog>>,
     budget: Arc<Semaphore>,
     cancellations: [Cancellation; 2],
@@ -69,6 +75,7 @@ pub(crate) struct Controller {
 impl Controller {
     pub(crate) fn new(
         capture: Option<ArchiveCapture>,
+        locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         snapshots: Snapshots,
         tasks: &mut JoinSet<()>,
@@ -77,6 +84,7 @@ impl Controller {
         let ready = Arc::new(Notify::new());
         let result = Self {
             capture,
+            locale,
             catalog: catalog.clone(),
             budget: Arc::new(Semaphore::new(2)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
@@ -120,6 +128,7 @@ impl Controller {
         self.cancellations[pane.index()] = cancel.clone();
         let catalog = self.catalog.clone();
         let capture = self.capture.clone();
+        let locale = self.locale.clone();
         let ready = self.ready.clone();
         let snapshots = self.snapshots.clone();
         {
@@ -138,13 +147,16 @@ impl Controller {
                 }
                 notified.await;
             }
+            let worker_snapshots = snapshots.clone();
             let result = match permit {
                 Ok(permit) => tokio::task::spawn_blocking(move || {
                     let _permit = permit;
                     let location = match action {
-                        ArchiveAction::Open { path } => {
-                            let (package, format) =
-                                catalog.get().and_then(|c| c.choose(&path)).ok_or_else(|| {
+                        ArchiveAction::Open { path, format } => {
+                            let (package, format) = catalog
+                                .get()
+                                .and_then(|c| c.choose_format(format, None))
+                                .ok_or_else(|| {
                                     FsError::from_io(
                                         "open archive",
                                         &path,
@@ -175,19 +187,30 @@ impl Controller {
                         }
                         ArchiveAction::List(location) => location,
                     };
-                    let nodes = location
+                    let mount = location
                         .mount
                         .as_ref()
-                        .ok_or_else(|| error("Archive is unavailable"))?
-                        .list(location.directory, &cancel)?;
+                        .ok_or_else(|| error("Archive is unavailable"))?;
+                    mount.validate()?;
+                    let sizes =
+                        crate::archive_sizes::published::snapshot(&worker_snapshots, pane, mount);
+                    let nodes = mount.list(location.directory, &cancel)?;
                     let mut entries: Vec<_> = nodes.into_iter().map(Entry::from_archive).collect();
-                    sort_entries(&mut entries, sort);
+                    for entry in &mut entries {
+                        timestamps::localize(entry, locale.as_deref());
+                    }
+                    sort_entries_with_sizes(&mut entries, sort, |entry| {
+                        crate::archive_sizes::published::size(entry, sizes.as_deref())
+                    });
+                    mount.validate()?;
                     let index = Arc::new(DirectoryIndex::from_entries(&entries));
-                    Ok(ArchiveListing {
+                    let listing = ArchiveListing {
                         location,
                         entries: entries.into(),
                         index,
-                    })
+                    };
+                    remember_listing(&worker_snapshots, pane, navigation, &listing, &cancel);
+                    Ok(listing)
                 })
                 .await
                 .unwrap_or_else(|e| Err(error(e.to_string()))),
@@ -196,17 +219,20 @@ impl Controller {
             {
                 let mut states = snapshots.lock().unwrap_or_else(|e| e.into_inner());
                 let state = &mut states[pane.index()];
-                if state.archive_navigation == Some(navigation) {
-                    if let Ok(listing) = &result {
-                        state.archive = Some((navigation, listing.entries.clone()));
-                        state.committed = None;
-                        state.visible = None;
-                        state.pending = None;
-                    } else if restore_native_on_failure && state.archive.is_none() {
-                        // Opening a native archive failed: its original native pane remains.
-                        // Saved provider tabs remain unavailable, with native actions disabled.
-                        state.archive_navigation = None;
-                    }
+                if state.archive_navigation == Some(navigation)
+                    && result.is_err()
+                    && let Some(notify) = &state.tree_notify
+                {
+                    notify.notify(navigation);
+                }
+                if state.archive_navigation == Some(navigation)
+                    && result.is_err()
+                    && restore_native_on_failure
+                    && state.archive.is_none()
+                {
+                    // Opening a native archive failed: its original native pane remains.
+                    // Saved provider tabs remain unavailable, with native actions disabled.
+                    state.archive_navigation = None;
                 }
             }
             outbox
@@ -218,6 +244,31 @@ impl Controller {
                 .await;
         });
     }
+}
+
+/// Called inside the admitted blocking listing worker, which retains its permit
+/// until all displaced source handles have been retired outside the state lock.
+fn remember_listing(
+    snapshots: &Snapshots,
+    pane: PaneId,
+    navigation: NavigationId,
+    listing: &ArchiveListing,
+    cancel: &Cancellation,
+) {
+    let retired = {
+        let mut states = snapshots.lock().unwrap_or_else(|error| error.into_inner());
+        let state = &mut states[pane.index()];
+        if cancel.is_cancelled() || state.archive_navigation != Some(navigation) {
+            return;
+        }
+        let retired = state.remember_archive_tree_root(pane, navigation, listing);
+        state.archive = Some((navigation, listing.entries.clone()));
+        state.committed = None;
+        state.visible = None;
+        state.pending = None;
+        retired
+    };
+    drop(retired);
 }
 impl Drop for Controller {
     fn drop(&mut self) {
@@ -242,7 +293,10 @@ fn restore(
 ) -> Result<ArchiveLocation, FsError> {
     address.validate().map_err(error)?;
     let (package, format) = catalog
-        .and_then(|c| c.choose_provider(&address.container, Some(&address.provider)))
+        .and_then(|c| match address.format {
+            Some(format) => c.choose_format(format, Some(&address.provider)),
+            None => c.choose_provider(&address.container, Some(&address.provider)),
+        })
         .ok_or_else(|| {
             error("Saved archive filesystem plugin is unavailable; the tab address is retained")
         })?;
@@ -253,7 +307,7 @@ fn restore(
         cancel,
     )?;
     let mount = Mount::open_captured(package, format, &address.container, source, cancel)?;
-    // The authority validated the saved token, including complete supported legacy encodings.
+    // The capture authority validated the saved token, including supported legacy encodings.
     address.source_version = mount.address().source_version;
     let mut location = ArchiveLocation {
         mount: Some(mount.clone()),

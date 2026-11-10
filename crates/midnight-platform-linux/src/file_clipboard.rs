@@ -261,7 +261,7 @@ impl Files {
     }
 }
 
-fn wayland_read(format: &str) -> Result<Vec<u8>, FsError> {
+pub(crate) fn wayland_read(format: &str) -> Result<Vec<u8>, FsError> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use wl_clipboard_rs::paste::{self, ClipboardType, MimeType, Seat};
     let (mut pipe, _) = paste::get_contents(

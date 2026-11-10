@@ -38,6 +38,7 @@ impl ArchiveMount for MemoryMount {
 }
 fn node(id: u64, parent: u64, name: &[u8], kind: EntryKind) -> ArchiveNode {
     ArchiveNode {
+        modified: None,
         id: VirtualEntryId {
             mount: 77,
             entry: id,
@@ -59,10 +60,12 @@ fn input(mount: Arc<MemoryMount>, destination: &Path) -> ArchiveCopyRequest {
         .map(Entry::from_archive)
         .collect();
     ArchiveCopyRequest {
+        verification: midnight_core::TransferVerification::default(),
         id: OperationId(1),
         location: ArchiveLocation {
             mount: Some(mount),
             address: ArchiveAddress {
+                format: None,
                 provider: "fixture".into(),
                 container: destination.join("source.zip"),
                 source_version: vec![1],
@@ -105,6 +108,113 @@ fn mount(nodes: Vec<ArchiveNode>) -> Arc<MemoryMount> {
         payload: b"payload".to_vec(),
         changed: AtomicBool::new(false),
     })
+}
+
+#[tokio::test]
+async fn queued_archive_copy_preserves_sample_verification_choice() {
+    let temp = fixture();
+    let mut file = node(2, 1, b"file", EntryKind::File);
+    file.size = Some(400_000);
+    let archive = Arc::new(MemoryMount {
+        nodes: vec![file],
+        payload: vec![23; 400_000],
+        changed: AtomicBool::new(false),
+    });
+    let mut request = input(archive, temp.path());
+    request.verification = TransferVerification::SizeAndSamples;
+    let mut harness = Harness::native();
+    harness.controller.enqueue_archive(request).await;
+    let done = harness.terminal(1).await;
+    harness.close().await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.copied_bytes, 400_000);
+    assert_eq!(done.verification, TransferVerification::SizeAndSamples);
+    assert_eq!(done.verified_bytes, 3 * TRANSFER_SAMPLE_BYTES as u64);
+    assert_eq!(
+        fs::read(temp.path().join("file")).unwrap(),
+        vec![23; 400_000]
+    );
+}
+
+#[test]
+fn invalidated_archive_does_not_report_completed_root() {
+    let temp = fixture();
+    let mount = mount(vec![node(2, 1, b"file", EntryKind::File)]);
+    let input = input(mount.clone(), temp.path());
+    let cancel = Cancellation::default();
+    let roots = archive_source::resolve(&input, &cancel).unwrap();
+    let status = Arc::new(Mutex::new(initial(&input.clone().into())));
+    let service = midnight_platform::LocalFileSystem::new(None);
+    let mut job =
+        worker::Job::prepare_archive(temp.path().into(), roots, &service, cancel, status).unwrap();
+    mount.changed.store(true, Ordering::Release);
+    for _ in 0..100 {
+        let step = job.step();
+        assert!(job.take_completed_root().is_none());
+        if let worker::Step::Failure(ref failure) = step {
+            assert!(!failure.can_retry);
+            assert!(job.accept_decision(CopyDecision {
+                id: failure.id,
+                version: failure.version,
+                choice: CopyChoice::Skip,
+            }));
+        }
+        if matches!(step, worker::Step::Done) {
+            assert!(job.finish().failed > 0);
+            assert!(!temp.path().join("file").exists());
+            return;
+        }
+    }
+    panic!("failed archive did not finish");
+}
+
+#[tokio::test]
+async fn completed_archive_root_retains_provider_identity() {
+    let temp = fixture();
+    let archive = mount(vec![
+        node(2, 1, b"folder", EntryKind::Directory),
+        node(3, 2, b"child", EntryKind::File),
+        node(4, 1, b"file", EntryKind::File),
+    ]);
+    let mut h = Harness::native();
+    h.controller
+        .enqueue_archive(input(archive, temp.path()))
+        .await;
+    let mut completed = Vec::new();
+    loop {
+        match h.next().await {
+            CopyEvent::RootCompleted {
+                source: CompletedCopySource::Archive(id),
+                ..
+            } => completed.push(id),
+            CopyEvent::Progress(p) if p.state.is_terminal() => {
+                assert_eq!(p.state, CopyOperationState::Completed);
+                break;
+            }
+            CopyEvent::RootCompleted { .. } | CopyEvent::Conflict(_) => {
+                panic!("unexpected native identity/conflict")
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        completed,
+        vec![
+            VirtualEntryId {
+                mount: 77,
+                entry: 2
+            },
+            VirtualEntryId {
+                mount: 77,
+                entry: 4
+            }
+        ]
+    );
+    assert_eq!(
+        fs::read(temp.path().join("folder/child")).unwrap(),
+        b"payload"
+    );
+    h.close().await;
 }
 
 #[tokio::test]
@@ -230,4 +340,90 @@ async fn archive_copy_shares_admission_capacity_and_cancellation() {
     assert_eq!(h.terminal(2).await.state, CopyOperationState::Cancelled);
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     h.close().await;
+}
+
+#[derive(Debug)]
+struct ReidentifiedMount {
+    inner: Arc<MemoryMount>,
+    identity: u64,
+}
+impl ArchiveMount for ReidentifiedMount {
+    fn id(&self) -> u64 {
+        self.identity
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        self.inner.validate()
+    }
+    fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        self.inner.list(directory, cancel).map(|nodes| {
+            nodes
+                .into_iter()
+                .map(|mut node| {
+                    node.id.mount = self.identity;
+                    node
+                })
+                .collect()
+        })
+    }
+    fn read(
+        &self,
+        member: u64,
+        offset: u64,
+        length: u32,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u8>, FsError> {
+        self.inner.read(member, offset, length, cancel)
+    }
+}
+#[test]
+fn captured_archive_roots_share_budget_but_keep_full_mount_identity() {
+    let temp = fixture();
+    let first = mount(vec![node(2, 1, b"first", EntryKind::Directory)]);
+    let second = Arc::new(ReidentifiedMount {
+        inner: mount(vec![node(2, 1, b"second", EntryKind::Directory)]),
+        identity: 88,
+    });
+    let mut first_location = input(first, temp.path()).location;
+    let mut second_location = first_location.clone();
+    second_location.mount = Some(second.clone());
+    first_location.directory = 2;
+    second_location.directory = 2;
+    let first_node = first_location
+        .mount
+        .as_ref()
+        .unwrap()
+        .list(1, &Cancellation::default())
+        .unwrap()
+        .remove(0);
+    let second_node = second.list(1, &Cancellation::default()).unwrap().remove(0);
+    let first_target = crate::providers::ArchiveTarget {
+        location: first_location,
+        member: None,
+        original: Some(first_node),
+    };
+    let second_target = crate::providers::ArchiveTarget {
+        location: second_location,
+        member: None,
+        original: Some(second_node),
+    };
+    let budget = archive_source::traversal();
+    let first =
+        archive_source::captured_root(&first_target, budget.clone(), &Cancellation::default())
+            .unwrap();
+    let second =
+        archive_source::captured_root(&second_target, budget, &Cancellation::default()).unwrap();
+    assert_eq!(
+        first.virtual_identity(),
+        Some(VirtualEntryId {
+            mount: 77,
+            entry: 2
+        })
+    );
+    assert_eq!(
+        second.virtual_identity(),
+        Some(VirtualEntryId {
+            mount: 88,
+            entry: 2
+        })
+    );
 }

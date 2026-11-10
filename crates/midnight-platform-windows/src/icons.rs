@@ -31,7 +31,8 @@ use windows_sys::Win32::{
             SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetStockIconInfo,
             SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD, SIID_DRIVEFIXED,
             SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FIND,
-            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_RENAME, SIID_SETTINGS,
+            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_MYNETWORK, SIID_RENAME,
+            SIID_SETTINGS,
         },
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
@@ -185,7 +186,7 @@ fn action_stock_id(role: ActionIcon) -> Option<i32> {
         ActionIcon::NewFolder => Some(SIID_FOLDER),
         ActionIcon::NewFile => Some(SIID_DOCNOASSOC),
         ActionIcon::OpenPath => Some(SIID_FOLDEROPEN),
-        ActionIcon::Network => Some(SIID_DRIVENET),
+        ActionIcon::Network => Some(SIID_MYNETWORK),
         // Windows has no appropriate documented stock icon for these roles.
         ActionIcon::Back
         | ActionIcon::Forward
@@ -588,7 +589,7 @@ mod tests {
     fn semantic_actions_only_use_appropriate_documented_stock_icons() {
         assert_eq!(
             action_stock_id(midnight_core::ActionIcon::Network),
-            Some(SIID_DRIVENET)
+            Some(windows_sys::Win32::UI::Shell::SIID_MYNETWORK)
         );
         assert_eq!(
             action_stock_id(midnight_core::ActionIcon::Options),

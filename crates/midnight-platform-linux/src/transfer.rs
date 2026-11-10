@@ -16,10 +16,15 @@ use std::{
 };
 #[path = "transfer_destination.rs"]
 mod destination;
+#[cfg(test)]
+#[path = "transfer_drag_tests.rs"]
+mod drag_tests;
 #[path = "transfer_metadata.rs"]
 mod metadata;
 #[path = "transfer_move.rs"]
 mod move_source;
+#[path = "transfer_native_location.rs"]
+mod native_location;
 #[path = "transfer_source.rs"]
 mod source;
 #[path = "transfer_validation.rs"]
@@ -31,19 +36,40 @@ const DIRECTORY: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
 impl TransferService for crate::LinuxFileSystem {
+    fn native_drop_device(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<u64>, FsError> {
+        native_location::drop_device(path, cancel)
+    }
+    fn prepare_checksum_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        checked(cancel, path)?;
+        let path = absolute(path)?;
+        let file = File::from(
+            openat2(
+                CWD,
+                &path,
+                DIRECTORY | OFlags::NOFOLLOW,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            )
+            .map_err(|e| error(&path, e.into()))?,
+        );
+        Ok(Arc::new(destination::Directory::from_file(file, path)?))
+    }
     fn prepare_move_destination(
         &self,
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        let directory = self.prepare_transfer_destination(path, cancel)?;
-        if !directory.capabilities().recoverable_replacement {
-            return Err(unsupported(
-                path,
-                "Verified Move requires a qualified local destination. Choose Copy to retain the source.",
-            ));
-        }
-        Ok(directory)
+        // Native rename needs only destination metadata authority. The engine
+        // checks proof/replacement qualification before a cross-device fallback.
+        self.prepare_transfer_destination(path, cancel)
     }
     fn prepare_move_source(
         &self,

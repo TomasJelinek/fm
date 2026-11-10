@@ -122,23 +122,27 @@ fn focused_name_represents_parent_but_not_an_empty_root() {
 }
 
 #[test]
-fn drive_information_distinguishes_unavailable_space_from_zero_available_bytes() {
+fn drive_information_requests_fresh_backend_details_even_with_cached_capacity() {
     let base = test_root().join("nested");
     let mut p = Presenter::new(base.clone(), test_root());
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| {
+        matches!(command, Command::QueryVolumeInformation(_))
+    });
     let (_, body) = p.desktop.notice.as_ref().unwrap();
     assert!(body.contains(base.to_string_lossy().as_ref()));
-    assert!(body.contains("Unknown"));
+    assert!(body.contains("Reading native"));
     assert!(!body.contains("0 bytes"));
     p.panes[0].space = Some(SpaceInfo {
         available: 0,
         total: 1_234,
     });
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| {
+        matches!(command, Command::QueryVolumeInformation(_))
+    });
     let (_, body) = p.desktop.notice.as_ref().unwrap();
-    assert!(body.contains("0 bytes"));
-    assert!(body.contains("1234 bytes"));
-    assert!(!body.contains("Unknown"));
+    assert!(!body.contains("0 bytes"));
+    assert!(!body.contains("1234 bytes"));
+    assert!(body.contains("Reading native"));
 }
 
 #[test]
@@ -150,10 +154,10 @@ fn drive_information_uses_pending_path_and_space_without_stale_capacity() {
     });
     let pending = test_root().join("loading");
     let navigation = begin(&mut p, PaneId::Left, pending.to_str().unwrap());
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| matches!(command, Command::QueryVolumeInformation(request) if request.path == pending && request.navigation == navigation));
     let (_, body) = p.desktop.notice.as_ref().unwrap();
     assert!(body.contains(pending.to_string_lossy().as_ref()));
-    assert!(body.contains("Unknown"));
+    assert!(body.contains("Reading native"));
     assert!(!body.contains("99 bytes"));
     p.apply(Event::SpaceUpdated {
         pane: PaneId::Left,
@@ -163,9 +167,9 @@ fn drive_information_uses_pending_path_and_space_without_stale_capacity() {
             total: 42,
         },
     });
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| matches!(command, Command::QueryVolumeInformation(request) if request.path == pending && request.navigation == navigation));
     let (_, body) = p.desktop.notice.as_ref().unwrap();
-    assert!(body.contains("17 bytes"));
-    assert!(body.contains("42 bytes"));
+    assert!(!body.contains("17 bytes"));
+    assert!(!body.contains("42 bytes"));
     assert_eq!(p.panes[0].display_path(), pending);
 }

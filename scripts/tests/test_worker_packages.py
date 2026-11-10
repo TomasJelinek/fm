@@ -83,11 +83,45 @@ class WorkerPackages(unittest.TestCase):
         manifest = source / "archive/plugin.toml"
         original = manifest.read_text()
         for old, new in [('kind="filesystem-worker"', 'kind="viewer"'),
-                         (self.target, "wrong-target"), ('protocol=1', 'protocol=true'),
+                         (self.target, "wrong-target"), ('protocol=1', 'protocol=true'), ('protocol=1', 'protocol=3'),
                          ('entry_executable="archive-worker"', 'entry_executable="../worker"'),
                          ('formats=["zip","gzip","tar","tar-gzip","7z"]', 'formats=["rar"]')]:
             with self.subTest(new=new):
                 manifest.write_text(original.replace(old, new))
+                with self.assertRaises(ValueError):
+                    packaging.copy_filesystem_packages(self.stage, source, self.target)
+                self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_streaming_filesystem_protocol_two_preserves_manifest_and_executable(self):
+        source = self.filesystem()
+        manifest = source / "archive/plugin.toml"
+        manifest.write_text(manifest.read_text().replace("protocol=1", "protocol=2"))
+        inventory = packaging.copy_filesystem_packages(self.stage, source, self.target)
+        self.assertEqual(inventory[0]["kind"], "filesystem-worker")
+        self.assertIn("protocol=2", (self.stage / "filesystems/archive/plugin.toml").read_text())
+        self.assertEqual((self.stage / "filesystems/archive/archive-worker").read_bytes(), b"archive fixture")
+
+    def test_optional_stable_member_ids_are_preserved_with_boolean_type(self):
+        source = self.filesystem()
+        manifest = source / "archive/plugin.toml"
+        original = manifest.read_text()
+        for value in (True, False):
+            with self.subTest(value=value):
+                stage = self.root / f"release-{value}"
+                stage.mkdir()
+                manifest.write_text(original + f"stable_entry_ids={str(value).lower()}\n")
+                inventory = packaging.copy_filesystem_packages(stage, source, self.target)
+                self.assertIs(inventory[0]["stable_entry_ids"], value)
+                self.assertEqual((stage / "filesystems/archive/plugin.toml").read_bytes(),
+                                 manifest.read_bytes())
+
+    def test_non_boolean_stable_member_capability_fails_before_copy(self):
+        source = self.filesystem()
+        manifest = source / "archive/plugin.toml"
+        original = manifest.read_text()
+        for value in ("1", "0", '"true"', "[]"):
+            with self.subTest(value=value):
+                manifest.write_text(original + f"stable_entry_ids={value}\n")
                 with self.assertRaises(ValueError):
                     packaging.copy_filesystem_packages(self.stage, source, self.target)
                 self.assertEqual(list(self.stage.iterdir()), [])
@@ -118,13 +152,25 @@ class WorkerPackages(unittest.TestCase):
             (source / name).write_bytes(b"runtime")
         notices = source / "notices/ffmpeg-9.0.2"
         notices.mkdir()
-        for name in ("COPYING.LGPLv2.1", "configure-options.txt", "config.h", "config.mak"):
+        for name in ("COPYING.LGPLv2.1", "config.h", "config.mak"):
             (notices / name).write_text("Fixture attribution/configuration")
+        build_options = (b"FFmpeg 9.0.2\n--enable-shared\n--disable-static\n--disable-gpl\n"
+                         b"--disable-nonfree\n--disable-version3\n--disable-network\n"
+                         b"--enable-decoder=vp8,vp9,theora,ffv1,rawvideo\n")
+        (notices / "build-options.txt").write_bytes(build_options)
         with self.assertRaises(ValueError):
             packaging.copy_thumbnail_packages(self.stage, source, self.target)
         (notices / "ffmpeg-9.0.2.tar.xz").write_bytes(b"Matching source archive fixture")
+        (notices / "build-options.txt").unlink()
+        with self.assertRaises(ValueError):
+            packaging.copy_thumbnail_packages(self.stage, source, self.target)
+        self.assertEqual(list(self.stage.iterdir()), [])
+        (notices / "build-options.txt").write_bytes(build_options)
         result = packaging.copy_thumbnail_packages(self.stage, source, self.target)
         self.assertTrue(any(file["path"].endswith("ffmpeg-9.0.2.tar.xz") for file in result["files"]))
+        self.assertEqual(
+            (self.stage / "thumbnailers/notices/ffmpeg-9.0.2/build-options.txt").read_bytes(),
+            build_options)
 
     def test_worker_symlinks_and_missing_notices_are_rejected(self):
         source = self.filesystem()

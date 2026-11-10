@@ -73,6 +73,8 @@ pub(crate) fn compute_batched(
             let next = &next;
             let local_cancel = &local_cancel;
             scope.spawn(move || {
+                // Sequential roots on a lane share one lazily created private report.
+                let report = ReportLog::for_scan();
                 let source = BudgetedSource {
                     filesystem,
                     budget,
@@ -90,6 +92,7 @@ pub(crate) fn compute_batched(
                             local_cancel,
                             &mut |entry, size| send_progress(&progress, local_cancel, entry, size),
                             PENDING_PATH_BUDGET,
+                            &report,
                         )
                     {
                         break;
@@ -98,7 +101,7 @@ pub(crate) fn compute_batched(
             });
         }
         drop(progress);
-        while !cancel.is_cancelled() {
+        loop {
             match receiver.recv_timeout(WAIT_INTERVAL) {
                 Ok((entry, size)) => {
                     if !emit(entry, size) {
@@ -122,16 +125,14 @@ fn send_progress(
     entry: EntryId,
     size: FolderSize,
 ) -> bool {
+    let finished = size.finished || cancel.is_cancelled();
     let mut event = (entry, size);
     loop {
-        if cancel.is_cancelled() {
-            return false;
-        }
         match sender.try_send(event) {
             Ok(()) => return true,
             Err(mpsc::TrySendError::Disconnected(_)) => return false,
             // Optional running totals must never hold up a native iterator.
-            Err(mpsc::TrySendError::Full(_)) if !size.finished => return true,
+            Err(mpsc::TrySendError::Full(_)) if !finished => return true,
             Err(mpsc::TrySendError::Full(unsent)) => event = unsent,
         }
         // Final totals are sent after the directory permit has been released.

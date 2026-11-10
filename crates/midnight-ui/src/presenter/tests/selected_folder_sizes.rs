@@ -65,7 +65,7 @@ fn size_scan_waits_for_the_exact_pending_selection_revision() {
             navigation,
             revision: SelectionRevision(8),
             selection: selected,
-            deferred: false,
+            deferred: Default::default(),
         },
         &|command| {
             commands.borrow_mut().push(command);

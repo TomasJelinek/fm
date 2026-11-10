@@ -104,6 +104,33 @@ fn available(window: &MainWindow) -> bool {
             .iter()
             .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
 }
+
+/// Reuse selection geometry for drag targets. None rejects gutters/outside points;
+/// Some(None) represents empty content inside the receiving panel.
+pub(crate) fn drop_row_at(
+    window: &MainWindow,
+    presenter: &Presenter,
+    pane: PaneId,
+    point: (f32, f32),
+) -> Option<Option<usize>> {
+    let (layout, offset) = layout(window, presenter, pane);
+    let x = point.0 - layout.left - layout.content_x;
+    let y = point.1 - layout.top;
+    if ![x, y, offset].into_iter().all(f32::is_finite)
+        || x < 0.0
+        || x >= layout.grid.width
+        || y < 0.0
+        || y >= layout.height
+    {
+        return None;
+    }
+    let point = (x, y - offset);
+    layout
+        .grid
+        .row_at(point)
+        .map(Some)
+        .or_else(|| layout.grid.empty_at(point).then_some(None))
+}
 fn repaint(window: &MainWindow, presenter: &Rc<RefCell<Presenter>>, pane: PaneId) {
     let (model, first, end) = if pane == PaneId::Left {
         (

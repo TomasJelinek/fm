@@ -3,6 +3,7 @@
 //! parallel scheduler must positively identify both endpoints as local SSDs and
 //! share physical-device budgets; a fast endpoint cannot relax the other endpoint.
 use crate::Outbox;
+use crate::operation_throughput::{CADENCE, Tracker};
 use midnight_core::*;
 use std::{
     collections::HashMap,
@@ -12,7 +13,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
@@ -22,16 +23,31 @@ use tokio::{
 #[path = "copy_admission.rs"]
 mod admission;
 #[path = "archive_transfer.rs"]
-mod archive_source;
+pub(crate) mod archive_source;
+#[path = "copy_decisions.rs"]
+mod decisions;
 #[path = "copy_input.rs"]
 mod input;
+#[path = "copy_preparation.rs"]
+mod preparation;
+#[path = "copy_retirement.rs"]
+mod retirement;
+use decisions::{DecisionWaiter, prepare_job, retryable_error};
+use retirement::{WorkerOwned, retire};
 #[path = "copy_worker.rs"]
 mod worker;
 pub(crate) use admission::{Admission, Reservation};
 use input::CopyInput;
+pub(crate) fn check_move_bounds<'a>(
+    destination: &Path,
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> Result<(), FsError> {
+    worker::check_move_bounds(destination, paths)
+}
 type Status = Arc<Mutex<CopyProgress>>;
 type Registry = Arc<Mutex<HashMap<OperationId, Registered>>>;
 const MAX_JOBS: usize = 32;
+const MAX_ERROR_DETAILS: usize = 16;
 struct Registered {
     cancel: Cancellation,
     status: Status,
@@ -40,7 +56,7 @@ struct Registered {
 }
 struct Request {
     receipt: crate::copy_fence::Receipt,
-    input: Input,
+    input: WorkerOwned<Input>,
     // Rejected/aborted requests resolve and release payloads before returning capacity.
     _capacity: OwnedSemaphorePermit,
 }
@@ -115,27 +131,50 @@ impl Controller {
     pub(crate) async fn enqueue_metadata(&self, request: MetadataTransferRequest) {
         self.enqueue_input(CopyInput::metadata(request)).await;
     }
+    pub(crate) async fn enqueue_captured(&self, request: CapturedTransferRequest) {
+        self.enqueue_input(request.into()).await;
+    }
     pub(crate) async fn enqueue_archive(&self, request: ArchiveCopyRequest) {
         self.enqueue_input(request.into()).await;
     }
     async fn enqueue_input(&self, request: CopyInput) {
+        let request = WorkerOwned::new(request);
         let permit = match self.reserve() {
             Ok(permit) => permit,
             Err(error) => {
                 if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
+                    retire(request.into_inner()).await;
                     return;
                 }
-                publish(&self.outbox, rejected_progress(initial(&request), error)).await;
+                let progress = rejected_progress(initial(&request), error);
+                retire(request.into_inner()).await;
+                publish(&self.outbox, progress).await;
                 return;
             }
         };
-        self.enqueue_input_reserved(request, permit).await;
+        self.enqueue_input_reserved(request.into_inner(), permit)
+            .await;
     }
+    #[cfg(test)]
     pub(crate) async fn enqueue_reserved(&self, request: CopyRequest, capacity: Reservation) {
         self.enqueue_input_reserved(request.into(), capacity).await;
     }
+    pub(crate) async fn enqueue_drop_reserved(
+        &self,
+        request: CopyRequest,
+        intent: TransferIntent,
+        retention: Option<Arc<crate::drag_drop::Retention>>,
+        capacity: Reservation,
+    ) {
+        let mut input = CopyInput::from(request);
+        input.intent = intent;
+        input._retention = retention;
+        self.enqueue_input_reserved(input, capacity).await;
+    }
     async fn enqueue_input_reserved(&self, request: CopyInput, capacity: Reservation) {
+        let request = WorkerOwned::new(request);
         if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
+            retire(request.into_inner()).await;
             return;
         }
         let progress = initial(&request);
@@ -163,6 +202,7 @@ impl Controller {
             }
         });
         if let Some(error) = rejected {
+            retire(request.into_inner()).await;
             publish(&self.outbox, rejected_progress(progress, error)).await;
             return;
         }
@@ -193,20 +233,26 @@ impl Controller {
                 io::ErrorKind::WouldBlock,
                 "The copy queue is full (32 jobs).",
             );
+            retire(request.into_inner()).await;
             publish(&self.outbox, rejected_progress(progress, failure)).await;
             return;
         }
         publish(&self.outbox, progress.clone()).await;
-        if capacity
-            .send(Input {
-                command: request,
-                cancel,
-                status,
-                decisions: decision_receiver,
-                waiting,
-            })
-            .is_err()
-        {
+        if let Err(rejected) = capacity.send(Input {
+            command: request.into_inner(),
+            cancel,
+            status,
+            decisions: decision_receiver,
+            waiting,
+        }) {
+            let Request {
+                input,
+                receipt,
+                _capacity,
+            } = *rejected;
+            // Source destruction must finish before returning capacity or emitting
+            // a terminal result; unwrap the abort guard on this awaited path.
+            retire((input.into_inner(), receipt, _capacity)).await;
             self.registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -240,6 +286,7 @@ impl Controller {
                 return;
             }
             progress.state = CopyOperationState::CancelRequested;
+            crate::operation_throughput::stop(&mut progress.throughput);
             if self
                 .outbox
                 .sender
@@ -319,147 +366,158 @@ async fn run_job(
     } = request;
     let Some(_mutation) = acquire(mutation_gate, &input.cancel).await else {
         let progress = cancelled(&input.status);
+        retire(input.into_inner()).await;
         receipt.finish(&progress);
         return progress;
     };
-    let progress = run_input(input, service, outbox, io_budget).await;
+    let progress = run_input(input.into_inner(), service, outbox, io_budget).await;
     receipt.finish(&progress);
     progress
 }
 
 async fn run_input(
-    mut request: Input,
+    request: Input,
     service: Option<Arc<dyn TransferService>>,
     outbox: &Outbox,
     io_budget: &Arc<Semaphore>,
 ) -> CopyProgress {
+    let status = request.status.clone();
+    let throughput = Mutex::new(Tracker::default());
+    let pending = execute_input(request, service, outbox, io_budget, &throughput);
+    tokio::pin!(pending);
+    let mut timer = tokio::time::interval(CADENCE);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            progress = &mut pending => {
+                let mut progress = progress;
+                throughput.lock().unwrap_or_else(|e| e.into_inner()).copy(&mut progress);
+                return progress;
+            },
+            _ = timer.tick() => {
+                let progress = sample_throughput(&status, &throughput);
+                if let Some(progress) = progress
+                    && outbox.sender.try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress)))).is_ok()
+                {
+                    (outbox.wakeup)();
+                }
+            },
+        }
+    }
+}
+
+fn sample_throughput(status: &Status, throughput: &Mutex<Tracker>) -> Option<CopyProgress> {
+    let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = progress.throughput.clone();
+    throughput
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .copy(&mut progress);
+    (!Arc::ptr_eq(&previous, &progress.throughput)).then(|| progress.clone())
+}
+
+async fn execute_input(
+    request: Input,
+    service: Option<Arc<dyn TransferService>>,
+    outbox: &Outbox,
+    io_budget: &Arc<Semaphore>,
+    throughput: &Mutex<Tracker>,
+) -> CopyProgress {
+    let Input {
+        command,
+        cancel,
+        status,
+        mut decisions,
+        waiting,
+    } = request;
+    let command = WorkerOwned::new(command);
     let Some(service) = service else {
         let failure = error(
-            &request.command.destination,
+            &command.destination,
             io::ErrorKind::Unsupported,
             "Verified copying is unavailable for this filesystem.",
         );
-        return failed(&request.status, failure, &request.cancel);
+        let progress = failed(&status, failure, &cancel);
+        retire(command.into_inner()).await;
+        return progress;
     };
-    set_state(&request.status, CopyOperationState::Preparing);
-    publish(outbox, snapshot(&request.status)).await;
-    let Some(permit) = acquire(io_budget, &request.cancel).await else {
-        return cancelled(&request.status);
+    let mut waiter = DecisionWaiter {
+        status: &status,
+        cancel: &cancel,
+        waiting: &waiting,
+        decisions: &mut decisions,
+        outbox,
+        throughput,
     };
-    let status = request.status.clone();
-    let job_cancel = request.cancel.clone();
-    let command = request.command;
-    let prepared = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let metadata = command.metadata;
-        let command = command.resolve(&job_cancel)?;
-        match command {
-            input::Resolved::NativeMove(command) => {
-                status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .requested_roots = command.clipboard.paths.len() as u64;
-                worker::Job::prepare_move_with_metadata(
-                    command, &*service, job_cancel, status, metadata,
-                )
-            }
-            input::Resolved::Native(command) => {
-                status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .requested_roots = command.clipboard.paths.len() as u64;
-                worker::Job::prepare_with_metadata(command, &*service, job_cancel, status, metadata)
-            }
-            input::Resolved::Archive {
-                destination,
-                sources,
-            } => {
-                status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .requested_roots = sources.len() as u64;
-                worker::Job::prepare_archive(destination, sources, &*service, job_cancel, status)
-            }
-        }
-    })
-    .await;
-    let mut job = match prepared {
-        Ok(Ok(job)) => job,
-        Ok(Err(error)) => return failed(&request.status, error, &request.cancel),
-        Err(error) => return panicked(&request.status, error.to_string(), &request.cancel),
+    let mut job = match prepare_job(command.into_inner(), service, io_budget, &mut waiter).await {
+        Ok(job) => job,
+        Err(progress) => return *progress,
     };
     set_state(
-        &request.status,
-        if request.cancel.is_cancelled() {
+        &status,
+        if cancel.is_cancelled() {
             CopyOperationState::CancelRequested
         } else {
             CopyOperationState::Running
         },
     );
-    publish(outbox, snapshot(&request.status)).await;
-    let mut last = Instant::now();
+    sample_throughput(&status, throughput);
+    publish(outbox, snapshot(&status)).await;
     loop {
         // Cancellation cannot abort an OS call or relinquish its permit early.
-        let Some(permit) = acquire(io_budget, &request.cancel).await else {
+        let Some(permit) = acquire(io_budget, &cancel).await else {
             break;
         };
         let executed = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let step = job.step();
-            (job, step)
+            let completed = job.take_completed_root();
+            (job, step, completed)
         })
         .await;
-        let step;
-        (job, step) = match executed {
+        let (step, completed);
+        (job, step, completed) = match executed {
             Ok(result) => result,
-            Err(error) => return panicked(&request.status, error.to_string(), &request.cancel),
+            Err(error) => return panicked(&status, error.to_string(), &cancel),
         };
+        if let Some(source) = completed {
+            outbox
+                .send(Event::Copy(CopyEvent::RootCompleted {
+                    id: snapshot(&status).id,
+                    source,
+                }))
+                .await;
+        }
         match step {
             worker::Step::Done => break,
-            worker::Step::Continue => {
-                if last.elapsed() >= Duration::from_millis(250) {
-                    publish(outbox, snapshot(&request.status)).await;
-                    last = Instant::now();
-                }
-            }
+            worker::Step::Continue => {}
             worker::Step::Conflict(conflict) => {
-                set_state(&request.status, CopyOperationState::WaitingForDecision);
-                request.waiting.store(conflict.version, Ordering::Release);
-                publish(outbox, snapshot(&request.status)).await;
-                outbox
-                    .send(Event::Copy(CopyEvent::Conflict(conflict)))
+                waiter
+                    .wait(CopyEvent::Conflict(conflict), |decision| {
+                        job.accept_decision(decision)
+                    })
                     .await;
-                let mut timer = tokio::time::interval(Duration::from_millis(25));
-                loop {
-                    if request.cancel.is_cancelled() {
-                        break;
-                    }
-                    tokio::select! {
-                        decision = request.decisions.recv() => match decision {
-                            Some(decision) => if job.accept_decision(decision) { break; },
-                            None => { request.cancel.cancel(); break; },
-                        },
-                        _ = timer.tick() => {},
-                    }
-                }
-                request.waiting.store(0, Ordering::Release);
-                if !request.cancel.is_cancelled() {
-                    set_state(&request.status, CopyOperationState::Running);
-                }
+            }
+            worker::Step::Failure(failure) => {
+                waiter
+                    .wait(CopyEvent::Failure(failure), |decision| {
+                        job.accept_decision(decision)
+                    })
+                    .await;
             }
         }
     }
-    request.waiting.store(0, Ordering::Release);
+    waiting.store(0, Ordering::Release);
     // Cleanup must run despite cancellation and on a worker, holding I/O capacity.
     let permit = io_budget.clone().acquire_owned().await.ok();
     match tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        job.finish()
+        job.into_inner().finish()
     })
     .await
     {
         Ok(progress) => progress,
-        Err(error) => panicked(&request.status, error.to_string(), &request.cancel),
+        Err(error) => panicked(&status, error.to_string(), &cancel),
     }
 }
 
@@ -492,9 +550,26 @@ fn cancelled(status: &Status) -> CopyProgress {
 }
 fn failed(status: &Status, error: FsError, cancel: &Cancellation) -> CopyProgress {
     if cancel.is_cancelled() {
-        cancelled(status)
+        let mut progress = cancelled(status);
+        if error.kind != io::ErrorKind::Interrupted {
+            progress.message.push_str(&format!("\n{error}"));
+            retain_error(&mut progress, error, true);
+        }
+        progress
     } else {
         rejected_progress(snapshot(status), error)
+    }
+}
+
+fn retain_error(progress: &mut CopyProgress, error: FsError, critical: bool) {
+    progress.failed = progress.failed.saturating_add(1);
+    if progress.errors.len() >= MAX_ERROR_DETAILS && critical {
+        // The actionable current cleanup receipt takes priority over older
+        // diagnostics. The terminal message discloses omitted details.
+        progress.errors.remove(0);
+    }
+    if progress.errors.len() < MAX_ERROR_DETAILS {
+        progress.errors.push(error);
     }
 }
 fn panicked(status: &Status, message: String, cancel: &Cancellation) -> CopyProgress {
@@ -511,12 +586,14 @@ fn panicked(status: &Status, message: String, cancel: &Cancellation) -> CopyProg
 }
 
 fn initial(request: &CopyInput) -> CopyProgress {
-    CopyProgress::queued(
+    let mut progress = CopyProgress::queued(
         request.id,
         request.destination.clone(),
         request.requested_roots(),
         request.intent,
-    )
+    );
+    progress.verification = request.verification;
+    progress
 }
 
 #[cfg(test)]

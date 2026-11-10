@@ -252,6 +252,9 @@ impl IconKey {
         }
     }
     pub fn for_entry(entry: &Entry) -> Self {
+        if entry.network_node.is_some() {
+            return Self::action(ActionIcon::Network);
+        }
         Self {
             kind: match entry.kind {
                 EntryKind::Directory => IconKind::Folder,
@@ -326,6 +329,9 @@ pub struct NavigationLocation {
     pub drive_letter: Option<char>,
 }
 
+/// Shared display text for locale ordering of the virtual network entry point.
+pub const NETWORK_NEIGHBORHOOD_LABEL: &str = "Network Neighborhood";
+
 #[derive(Clone, Debug)]
 pub struct TerminalRequest {
     pub command: String,
@@ -356,12 +362,25 @@ pub enum DesktopActionResult {
         navigation: NavigationId,
         path: PathBuf,
     },
+    /// Explicit activation resolved a link to another native directory. `path`
+    /// remains the original request identity; `target` is the OS-resolved destination.
+    OpenDirectoryTarget {
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
+        target: PathBuf,
+    },
 }
 
 /// Native activation outcome. Directories stay inside the file manager;
 /// only explicitly activated regular files use desktop associations.
 pub enum OpenEntryResult {
     Directory,
+    /// A native directory link whose explicit activation requires navigating to
+    /// its validated target rather than enumerating the original alias.
+    DirectoryTarget {
+        path: PathBuf,
+    },
     File {
         process: Option<Box<dyn TerminalProcess>>,
     },
@@ -371,6 +390,10 @@ impl std::fmt::Debug for OpenEntryResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Directory => f.write_str("Directory"),
+            Self::DirectoryTarget { path } => f
+                .debug_struct("DirectoryTarget")
+                .field("path", path)
+                .finish(),
             Self::File { process } => f
                 .debug_struct("File")
                 .field("has_process", &process.is_some())
@@ -383,6 +406,13 @@ pub trait OpenService: Send + Sync + 'static {
     /// Inspect the target on a backend worker, following an explicitly activated
     /// link. Reject missing/special files and use literal native arguments only.
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError>;
+
+    /// Resolve an explicitly activated directory link without launching any
+    /// file association. Ordinary platforms keep the raw navigation path and
+    /// let directory enumeration validate it with the caller's permissions.
+    fn directory_destination(&self, path: &Path) -> Result<PathBuf, FsError> {
+        Ok(path.to_owned())
+    }
 }
 
 /// All native icon extraction and file decoding happen on a backend worker.
@@ -458,6 +488,18 @@ pub trait LocationService: Send + Sync + 'static {
 /// A thread-affine native clipboard owner. Create, use and drop it on one backend worker.
 pub trait ClipboardSession {
     fn copy_text(&mut self, text: &str) -> Result<(), FsError>;
+    /// Read strict Unicode text on this session's backend worker. Native adapters
+    /// bound the encoded input before allocation; undecodable text is an error.
+    fn read_text(&mut self) -> Result<String, FsError> {
+        Err(FsError::from_io(
+            "clipboard text",
+            Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Reading clipboard text is unavailable.",
+            ),
+        ))
+    }
     fn copy_files(&mut self, _files: &crate::FileClipboard) -> Result<(), FsError> {
         Err(unsupported_file_clipboard())
     }

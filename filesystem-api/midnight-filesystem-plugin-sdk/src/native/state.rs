@@ -24,6 +24,11 @@ pub(super) fn failure(code: ErrorCode) -> Failure {
             ErrorCode::Io => "Native filesystem I/O failed.",
             ErrorCode::StaleReference => "Native filesystem reference is no longer valid.",
             ErrorCode::Busy => "Native filesystem resource is still in use.",
+            ErrorCode::Unavailable => "The filesystem service is unavailable.",
+            ErrorCode::Offline => "The filesystem endpoint is offline.",
+            ErrorCode::AuthenticationRequired => "The endpoint requires authentication.",
+            ErrorCode::MountRequired => "The endpoint requires an explicit connection.",
+            ErrorCode::TimedOut => "The filesystem request timed out.",
         },
     )
 }

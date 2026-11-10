@@ -59,7 +59,7 @@ pub(crate) fn space(path: &Path) -> Result<SpaceInfo, FsError> {
     })
 }
 
-fn native_root(input: &[u16], output: &mut [u16]) -> io::Result<()> {
+pub(crate) fn native_root(input: &[u16], output: &mut [u16]) -> io::Result<()> {
     let length = native_length(output.len())?;
     // SAFETY: input is NUL-terminated, output is writable for exactly
     // length UTF-16 units, and both buffers live through the call.
@@ -89,7 +89,7 @@ fn query_label(
     Ok((!name.is_empty()).then(|| OsString::from_wide(&name)))
 }
 
-fn resolve_root(
+pub(crate) fn resolve_root(
     path: &Path,
     mut root_query: impl FnMut(&[u16], &mut [u16]) -> io::Result<()>,
 ) -> Result<Vec<u16>, FsError> {
@@ -112,7 +112,9 @@ fn resolve_root(
 }
 
 /// Buffer growth follows native insufficient-buffer errors, without a path cap.
-fn wide_buffer(mut query: impl FnMut(&mut [u16]) -> io::Result<()>) -> io::Result<Vec<u16>> {
+pub(crate) fn wide_buffer(
+    mut query: impl FnMut(&mut [u16]) -> io::Result<()>,
+) -> io::Result<Vec<u16>> {
     let mut buffer = vec![0; 64];
     loop {
         match query(&mut buffer) {

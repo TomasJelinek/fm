@@ -3,6 +3,7 @@ use super::*;
 fn preferences() -> UserPreferences {
     let root = std::env::current_dir().unwrap();
     let address = midnight_core::ArchiveAddress {
+        format: None,
         provider: "midnight.fs.archive".into(),
         container: root.join("日本語.zip"),
         source_version: vec![1, 2, 0, 255],
@@ -12,6 +13,7 @@ fn preferences() -> UserPreferences {
     preferences.tabs[0] = PaneTabPreferences {
         paths: vec![root],
         active: 0,
+        networks: Default::default(),
         archives: [(0, address)].into(),
     };
     preferences

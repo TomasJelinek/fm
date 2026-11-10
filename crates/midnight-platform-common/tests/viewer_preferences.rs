@@ -1,40 +1,78 @@
-use midnight_core::UserPreferences;
+//! Persist viewer options through the complete strict application settings codec.
+use midnight_core::*;
 use midnight_platform_common::settings::{decode_preferences, encode_preferences};
 
 #[test]
-fn disabled_plugins_roundtrip_and_older_preferences_enable_available_plugins() {
-    let preferences = UserPreferences {
+fn viewer_choices_survive_restart_without_losing_other_options() {
+    let mut expected = UserPreferences {
+        theme: PreferenceTheme::Dark,
         disabled_viewer_plugins: vec!["midnight.viewer.source".into()],
         ..Default::default()
     };
-    let bytes = encode_preferences(preferences.clone()).unwrap();
-    assert_eq!(decode_preferences(&bytes).unwrap(), preferences);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    legacy["version"] = 9.into();
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("disabled_viewer_plugins");
-    assert!(
-        decode_preferences(&serde_json::to_vec(&legacy).unwrap())
-            .unwrap()
-            .disabled_viewer_plugins
-            .is_empty()
-    );
+    for change in [
+        ViewerPreferenceChange::Wrap(true),
+        ViewerPreferenceChange::LineNumbers(false),
+        ViewerPreferenceChange::CaseSensitive(true),
+        ViewerPreferenceChange::FontFamily(ViewerFontKind::Text, "Noto Sans Mono 日本語".into()),
+        ViewerPreferenceChange::FontSize(ViewerFontKind::Text, 17),
+        ViewerPreferenceChange::FontSize(ViewerFontKind::Source, 18),
+        ViewerPreferenceChange::FontSize(ViewerFontKind::Markdown, 20),
+        ViewerPreferenceChange::MarkdownPreset(MarkdownPreset::Comfortable),
+        ViewerPreferenceChange::ImageZoom(ViewerZoomPreference::ActualPixels),
+        ViewerPreferenceChange::DocumentZoom(ViewerZoomPreference::ScaleBasisPoints(12500)),
+    ] {
+        expected.viewer.apply(&change).unwrap();
+    }
+    let bytes = encode_preferences(expected.clone()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["version"], 21);
+    assert_eq!(decode_preferences(&bytes).unwrap(), expected);
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(!text.contains("search_query") && !text.contains("document_contents"));
 }
 
 #[test]
-fn duplicate_invalid_or_oversized_plugin_preferences_are_rejected() {
-    for ids in [
-        vec!["a".into(), "a".into()],
-        vec!["bad/id".into()],
-        vec!["x".repeat(129)],
-        (0..65).map(|index| format!("viewer.{index}")).collect(),
+fn legacy_settings_get_viewer_defaults_and_new_values_cannot_be_downgraded() {
+    let old = encode_preferences(UserPreferences::default()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&old).unwrap();
+    assert_eq!(json["version"], 10);
+    assert!(json.get("viewer").is_none());
+    assert_eq!(
+        decode_preferences(&old).unwrap().viewer,
+        ViewerPreferences::default()
+    );
+
+    let mut value = UserPreferences::default();
+    value.viewer.wrap = true;
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(value).unwrap()).unwrap();
+    json["version"] = 20.into();
+    assert!(decode_preferences(&serde_json::to_vec(&json).unwrap()).is_err());
+    json["version"] = 21.into();
+    json.as_object_mut().unwrap().remove("viewer");
+    assert!(decode_preferences(&serde_json::to_vec(&json).unwrap()).is_err());
+}
+
+#[test]
+fn malformed_viewer_settings_fail_atomically() {
+    let mut value = UserPreferences::default();
+    value.viewer.wrap = true;
+    let base: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(value).unwrap()).unwrap();
+    for (field, invalid) in [
+        ("text_font", serde_json::json!({"family":"Mono","size":0})),
+        (
+            "image_zoom",
+            serde_json::json!({"mode":"scale","basis_points":0}),
+        ),
+        ("markdown_preset", serde_json::json!("unknown")),
+        ("search_query", serde_json::json!("must not be stored")),
     ] {
-        let preferences = UserPreferences {
-            disabled_viewer_plugins: ids,
-            ..Default::default()
-        };
-        assert!(encode_preferences(preferences).is_err());
+        let mut json = base.clone();
+        json["viewer"][field] = invalid;
+        assert!(
+            decode_preferences(&serde_json::to_vec(&json).unwrap()).is_err(),
+            "{field}"
+        );
     }
 }

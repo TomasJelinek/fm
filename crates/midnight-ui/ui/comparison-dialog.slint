@@ -1,8 +1,11 @@
-import { Button, ScrollView } from "std-widgets.slint";
-import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { ScrollView } from "std-widgets.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogHeader } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
 
 export struct ComparisonView {
     open: bool, busy: bool, error: string, summary: string,
@@ -17,8 +20,8 @@ export component CompareDirectoriesDialog inherits Rectangle {
     callback cancel();
     callback move-dialog(length, length);
     // Shrinking can clip the focused field and clear Slint's focus entirely.
-    changed width => { if root.width < 400px { close-button.focus(); } }
-    changed height => { if root.height < 350px { close-button.focus(); } }
+    changed width => { if root.width < 400px { footer.focus-dismiss(); } }
+    changed height => { if root.height < 350px { footer.focus-dismiss(); } }
     public function begin() {
         sizes.checked = root.model.by-size;
         times.checked = root.model.by-modified;
@@ -37,19 +40,26 @@ export component CompareDirectoriesDialog inherits Rectangle {
         VerticalLayout {
             padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 12px;
             DialogHeader { title: "Compare displayed directories"; compact: root.height < 280px;
+                fallback-icon: FallbackIcons.compare-directories;
+                close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             ScrollView {
                 min-height: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     spacing: 12px; alignment: start;
-                    Text { text: root.model.left-path + "\n" + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                    Text { text: "Metadata only · displayed files · no recursion"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                    sizes := HintedCheckBox {
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "First: " + root.model.left-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                        Text { text: "Second: " + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                    }
+                    Rectangle { height: 1px; background: Theme.frame; }
+                    Text { text: "Metadata only · displayed files · no recursion"; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+                    sizes := WrappingCheckBox {
                         text: "Compare file size"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are not read.";
                     }
-                    times := HintedCheckBox {
+                    times := WrappingCheckBox {
                         text: "Compare modification time"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Select the newer file, comparing whole seconds with the chosen tolerance.";
                     }
@@ -58,11 +68,11 @@ export component CompareDirectoriesDialog inherits Rectangle {
                         enabled: !root.model.busy; accessible-label: "Time tolerance in seconds"; min-height: Theme.control-height;
                         hint: "A whole number from 0 to 86400. A difference exactly equal to the tolerance counts as equal.";
                     }
-                    names := HintedCheckBox {
+                    names := WrappingCheckBox {
                         text: "Match names with exact case"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Turn off to use Unicode case folding. Ambiguous folded names are all selected; native filenames are never changed.";
                     }
-                    directories := HintedCheckBox {
+                    directories := WrappingCheckBox {
                         text: "Select unmatched directories"; enabled: !root.model.busy; min-height: Theme.control-height;
                         hint: "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
                     }
@@ -71,11 +81,14 @@ export component CompareDirectoriesDialog inherits Rectangle {
                     if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
                 }
             }
-            HorizontalLayout {
-                spacing: 12px;
-                Button { text: "Compare"; enabled: !root.model.busy; min-height: Theme.control-height;
+            footer := DialogFooter {
+                compact-height: root.height < 280px;
+                dismiss-text: root.model.busy ? "Cancel" : "Close";
+                dismiss => { root.cancel(); }
+                HintedActionButton { text: "Compare"; enabled: !root.model.busy; min-height: Theme.control-height;
+                    fallback-icon: FallbackIcons.compare-directories;
+                    hint: "Replace both selections with differences: files present on only one side, plus the larger or newer file for enabled criteria. No files are changed.";
                     clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked); } }
-                close-button := Button { text: root.model.busy ? "Cancel" : "Close"; min-height: Theme.control-height; clicked => { root.cancel(); } }
             }
         }
     }

@@ -135,6 +135,60 @@ fn rename_directory_with_delete_permission_does_not_require_listing() {
 }
 
 #[test]
+fn native_move_does_not_require_file_content_or_directory_listing_permissions() {
+    use midnight_core::{TransferNativeMoveOutcome, TransferService};
+    for directory in [false, true] {
+        let temp = fixture();
+        let source = temp.path().join("source");
+        if directory {
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("sentinel"), b"retained").unwrap();
+        } else {
+            fs::write(&source, b"retained").unwrap();
+        }
+        let target_parent = temp.path().join("target");
+        fs::create_dir(&target_parent).unwrap();
+        let target = target_parent.join("moved");
+        let mut acl = DeniedRead::new(&source);
+        acl.renamed_to(&target);
+        let denied = if directory {
+            fs::read_dir(&source).map(|_| ())
+        } else {
+            fs::read(&source).map(|_| ())
+        };
+        assert_eq!(denied.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        let cancel = Cancellation::default();
+        let filesystem = WindowsFileSystem::new(None);
+        let prepared = filesystem
+            .prepare_move_source(&source, &cancel)
+            .expect("rename preparation must not request content/list access");
+        let destination = filesystem
+            .prepare_move_destination(&target_parent, &cancel)
+            .unwrap();
+        assert!(matches!(
+            prepared
+                .capture
+                .try_native_move(destination.as_ref(), OsStr::new("moved"), None, &cancel)
+                .unwrap(),
+            TransferNativeMoveOutcome::Moved { .. }
+        ));
+        assert!(!source.exists());
+        drop(prepared);
+        drop(destination);
+        drop(acl);
+        assert_eq!(
+            fs::read(if directory {
+                target.join("sentinel")
+            } else {
+                target
+            })
+            .unwrap(),
+            b"retained"
+        );
+    }
+}
+
+#[test]
 fn permanent_leaf_and_recursive_delete_do_not_require_file_content_read() {
     for recursive in [false, true] {
         let temp = fixture();

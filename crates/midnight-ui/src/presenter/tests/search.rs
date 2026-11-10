@@ -117,7 +117,7 @@ fn filter_projects_display_and_selection_without_replacing_native_snapshot_or_sc
         navigation: NavigationId(p.panes[0].generation),
         revision: p.panes[0].selection_revision,
         selection: Arc::new(SelectionSnapshot::from_bits(found.index.clone(), vec![3]).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
     assert!(!p.panes[0].selected.contains_path(&source[1].path));
     p.change_search_query(PaneId::Left, "", &|_| true);

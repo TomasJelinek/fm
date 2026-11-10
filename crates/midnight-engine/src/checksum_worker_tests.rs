@@ -224,14 +224,14 @@ fn run(request: ChecksumRequest, provider: &Provider, cancel: &Cancellation) -> 
 }
 
 #[test]
-fn short_reads_and_interruption_feed_four_hashes_with_one_ordered_read_stream() {
+fn short_reads_and_interruption_feed_all_hashes_with_one_ordered_read_stream() {
     let provider = Provider::new(b"abcdefghijklm");
     provider.reads.interrupted.store(true, Ordering::SeqCst);
     let mut request = request();
     request.algorithms = ChecksumAlgorithms::all();
     let result = run(request, &provider, &Cancellation::default());
     assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
-    assert_eq!(result.rows[0].digests.len(), 4);
+    assert_eq!(result.rows[0].digests.len(), 5);
     assert_eq!(provider.reads.bytes.load(Ordering::SeqCst), 13);
     assert_eq!(provider.reads.calls.load(Ordering::SeqCst), 7); // EINTR, five short reads, EOF.
     assert_eq!(
@@ -245,6 +245,33 @@ fn short_reads_and_interruption_feed_four_hashes_with_one_ordered_read_stream() 
             .bytes,
         Sha256::digest(b"abcdefghijklm").to_vec()
     );
+}
+
+#[test]
+fn crc32_uses_sfv_byte_order_and_preserves_incremental_reads() {
+    for (input, expected) in [
+        (b"".as_slice(), "00000000"),
+        (b"abc".as_slice(), "352441c2"),
+        (b"123456789".as_slice(), "cbf43926"),
+    ] {
+        let provider = Provider::new(input);
+        let mut request = request();
+        request.algorithms = ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap();
+        let result = run(request, &provider, &Cancellation::default());
+        assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+        assert_eq!(result.rows[0].digests.len(), 1);
+        assert_eq!(
+            result.rows[0]
+                .digest(ChecksumAlgorithm::Crc32)
+                .unwrap()
+                .hex(),
+            expected
+        );
+        assert_eq!(
+            provider.reads.bytes.load(Ordering::SeqCst),
+            input.len() as u64
+        );
+    }
 }
 
 #[test]

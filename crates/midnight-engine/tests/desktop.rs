@@ -89,6 +89,11 @@ impl Drop for ReleaseOpen {
 }
 
 impl OpenService for Services {
+    fn directory_destination(&self, path: &Path) -> Result<PathBuf, FsError> {
+        assert_eq!(path, Path::new("resolved-link"));
+        Ok(std::env::current_dir().unwrap().join("resolved 文档"))
+    }
+
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
         self.opened.lock().unwrap().push(path.into());
         if path == Path::new("blocked-open") {
@@ -108,6 +113,11 @@ impl OpenService for Services {
         }
         if path == Path::new("linked-folder") {
             return Ok(OpenEntryResult::Directory);
+        }
+        if path == Path::new("resolved-link") {
+            return Ok(OpenEntryResult::DirectoryTarget {
+                path: std::env::current_dir().unwrap().join("resolved 文档"),
+            });
         }
         if path == Path::new("helper-error") || path == Path::new("helper-success") {
             // The trusted test harness is an opener stand-in; no desktop app or
@@ -326,9 +336,15 @@ async fn desktop_context_and_background_icons_never_launch_commands() {
     let (mut context, mut listed, mut folder_icon) = (false, false, false);
     while !(context && listed && folder_icon) {
         match next(&mut events).await {
-            Event::DesktopContext { shell, locations } => {
+            Event::DesktopContext {
+                shell, locations, ..
+            } => {
                 assert_eq!(shell, ShellFlavor::PowerShell);
-                assert_eq!(locations[0].path, Path::new("文档/🏠"));
+                let home = locations
+                    .iter()
+                    .find(|location| location.kind == LocationKind::Home)
+                    .unwrap();
+                assert_eq!(home.path, Path::new("文档/🏠"));
                 context = true;
             }
             Event::ListingFinished { entries, .. } => {
@@ -597,6 +613,59 @@ async fn linked_directory_is_internal_and_missing_file_is_a_contextual_error() {
             _ => {}
         }
     }
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn resolved_directory_target_keeps_the_original_activation_identity() {
+    let services = Arc::new(Services::default());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(16);
+    let task = tokio::spawn(
+        Engine::new(services.clone(), sender)
+            .with_desktop(services.clone())
+            .run(receiver),
+    );
+    commands
+        .send(Command::ResolveDirectoryLink {
+            request: DesktopRequestId(81),
+            pane: PaneId::Right,
+            navigation: NavigationId(42),
+            path: "resolved-link".into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let Event::DesktopActionFinished {
+            request: DesktopRequestId(81),
+            result,
+        } = next(&mut events).await
+        {
+            let DesktopActionResult::OpenDirectoryTarget {
+                pane,
+                navigation,
+                path,
+                target,
+            } = result.unwrap()
+            else {
+                panic!("missing resolved directory result");
+            };
+            assert_eq!(pane, PaneId::Right);
+            assert_eq!(navigation, NavigationId(42));
+            assert_eq!(path, Path::new("resolved-link"));
+            assert_eq!(
+                target,
+                std::env::current_dir().unwrap().join("resolved 文档")
+            );
+            break;
+        }
+    }
+    assert!(
+        services.opened.lock().unwrap().is_empty(),
+        "directory-only intent cannot launch associations"
+    );
     commands.send(Command::Shutdown).await.unwrap();
     drop(events);
     task.await.unwrap();

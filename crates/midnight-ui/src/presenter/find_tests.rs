@@ -87,6 +87,8 @@ fn result_validation_never_executes_and_cannot_retarget_a_new_search() {
         update: FindUpdate::Batch(
             vec![Arc::new(FindResult {
                 id: FindResultId(7),
+                duplicate_group: None,
+                duplicate_group_size: 0,
                 entry: entry.clone(),
             })]
             .into(),
@@ -127,6 +129,8 @@ fn result_validation_never_executes_and_cannot_retarget_a_new_search() {
         update: FindUpdate::Batch(
             vec![Arc::new(FindResult {
                 id: FindResultId(7),
+                duplicate_group: None,
+                duplicate_group_size: 0,
                 entry: entry.clone(),
             })]
             .into(),
@@ -158,6 +162,7 @@ fn invalid_root_and_query_edits_never_start_a_search_or_erase_captured_roots() {
         content: Some(FindContentQuery {
             text: String::new(),
             case_sensitive: false,
+            whole_words: false,
         }),
         ..Default::default()
     };
@@ -174,4 +179,131 @@ fn invalid_root_and_query_edits_never_start_a_search_or_erase_captured_roots() {
     p.stop_find(id, &|_| false);
     assert!(!p.finds.sessions[&id].stopping);
     assert!(p.finds.sessions[&id].running);
+}
+
+#[test]
+fn sampled_directory_never_revives_stopped_terminal_or_replaced_searches() {
+    let mut p = presenter();
+    let id = p.create_find(PaneId::Left).unwrap();
+    p.start_find(id, FindForm::default(), &|_| true);
+    let path = Arc::new(std::env::temp_dir().join("current 文档"));
+    let event = |generation| {
+        Event::Find(Box::new(FindEvent {
+            session: id,
+            generation: FindGeneration(generation),
+            update: FindUpdate::CurrentDirectory(path.clone()),
+        }))
+    };
+    p.apply(event(1));
+    assert_eq!(
+        p.finds.sessions[&id].current_directory.as_ref(),
+        Some(&path)
+    );
+    p.stop_find(id, &|_| true);
+    p.apply(event(1));
+    assert!(p.finds.sessions[&id].current_directory.is_none());
+    p.apply(Event::Find(Box::new(FindEvent {
+        session: id,
+        generation: FindGeneration(1),
+        update: FindUpdate::Finished(FindSummary {
+            completion: FindCompletion::Cancelled,
+            progress: FindProgress::default(),
+            reached_budgets: vec![],
+            diagnostics: vec![],
+        }),
+    })));
+    p.apply(event(1));
+    assert!(p.finds.sessions[&id].current_directory.is_none());
+    p.start_find(id, FindForm::default(), &|_| true);
+    p.apply(event(1));
+    assert!(p.finds.sessions[&id].current_directory.is_none());
+    p.apply(event(2));
+    assert_eq!(
+        p.finds.sessions[&id].current_directory.as_ref(),
+        Some(&path)
+    );
+}
+
+#[test]
+fn sort_queue_refusal_and_stale_revisions_preserve_the_last_accepted_order() {
+    let mut p = presenter();
+    let id = p.create_find(PaneId::Left).unwrap();
+    p.start_find(id, FindForm::default(), &|_| true);
+    p.sort_find(id, FindSortColumn::Size, &|_| false);
+    assert_eq!(p.finds.sessions[&id].sort, FindSortSpec::default());
+    p.sort_find(
+        id,
+        FindSortColumn::Size,
+        &|command| matches!(command,Command::SortFind(request) if request.revision==1),
+    );
+    assert_eq!(p.finds.sessions[&id].sort.column, FindSortColumn::Size);
+    let apply = |revision| {
+        Event::Find(Box::new(FindEvent {
+            session: id,
+            generation: FindGeneration(1),
+            update: FindUpdate::Sorted(Arc::new(FindOrder {
+                revision,
+                sort: FindSortSpec {
+                    column: FindSortColumn::Size,
+                    descending: false,
+                },
+                ids: vec![].into(),
+                positions: vec![].into(),
+            })),
+        }))
+    };
+    p.apply(apply(0));
+    assert!(p.finds.sessions[&id].order.is_none());
+    p.apply(apply(1));
+    assert_eq!(p.finds.sessions[&id].order.as_ref().unwrap().revision, 1);
+}
+
+#[test]
+fn duplicate_group_larger_than_a_normal_batch_is_retained_atomically_on_stop() {
+    let mut p = presenter();
+    let session = p.create_find(PaneId::Left).unwrap();
+    p.start_find(session, FindForm::default(), &|_| true);
+    let group: Vec<_> = (1..=100)
+        .map(|id| {
+            Arc::new(FindResult {
+                id: FindResultId(id),
+                duplicate_group: Some(1),
+                duplicate_group_size: 100,
+                entry: FindEntry {
+                    path: std::env::temp_dir().join(format!("duplicate-{id}.txt")),
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata::default(),
+                    identity: TransferIdentity {
+                        device: 1,
+                        object: [id as u8; 16],
+                    },
+                    revision: FindRevision([0; 6]),
+                },
+            })
+        })
+        .collect();
+    p.apply(Event::Find(Box::new(FindEvent {
+        session,
+        generation: FindGeneration(1),
+        update: FindUpdate::Batch(group.into()),
+    })));
+    p.stop_find(session, &|_| true);
+    p.apply(Event::Find(Box::new(FindEvent {
+        session,
+        generation: FindGeneration(1),
+        update: FindUpdate::Finished(FindSummary {
+            completion: FindCompletion::Cancelled,
+            progress: FindProgress::default(),
+            reached_budgets: vec![],
+            diagnostics: vec![],
+        }),
+    })));
+    let found = &p.finds.sessions[&session].results;
+    assert_eq!(found.len(), 100);
+    assert!(
+        found
+            .iter()
+            .all(|row| row.duplicate_group == Some(1) && row.duplicate_group_size == 100)
+    );
+    assert!(!p.finds.sessions[&session].running);
 }

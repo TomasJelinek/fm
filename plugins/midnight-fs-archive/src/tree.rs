@@ -29,9 +29,9 @@ impl Archive {
         raw: &[u8],
         display: &str,
         kind: Kind,
-        data: Option<Vec<u8>>,
+        data: Option<Content>,
         readable: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let raw = if kind == Kind::Directory {
             raw.strip_suffix(b"/").unwrap_or(raw)
         } else {
@@ -89,7 +89,7 @@ impl Archive {
             && kind == Kind::Directory
             && self.directories.contains_key(&(parent, name.to_vec()))
         {
-            return Ok(());
+            return Ok(self.directories[&(parent, name.to_vec())]);
         }
         let id = self.push(
             parent,
@@ -102,7 +102,7 @@ impl Archive {
         if safe && kind == Kind::Directory {
             self.directories.insert((parent, name.to_vec()), id);
         }
-        Ok(())
+        Ok(id)
     }
     fn push(
         &mut self,
@@ -110,7 +110,7 @@ impl Archive {
         name: &[u8],
         display: &str,
         kind: Kind,
-        data: Option<Vec<u8>>,
+        data: Option<Content>,
         readable: bool,
     ) -> Result<u64, Error> {
         self.names = self
@@ -120,7 +120,7 @@ impl Archive {
         if self.nodes.len() >= self.limits.max_entries || self.names > self.limits.max_names {
             return Err(Error::limit());
         }
-        let size = data.as_ref().map(|v| v.len() as u64);
+        let size = data.as_ref().map(|v| v.length);
         self.total = self
             .total
             .checked_add(size.unwrap_or(0))
@@ -141,6 +141,7 @@ impl Archive {
             kind,
             size,
             readable,
+            modified: None,
         });
         if let Some(data) = data {
             self.contents.insert(id, data);

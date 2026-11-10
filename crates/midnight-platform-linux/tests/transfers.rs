@@ -36,6 +36,28 @@ fn ready(source: &Path, directory: &Path) -> VerifiedFileCopy {
     copy
 }
 #[test]
+fn read_retry_seeks_retained_source_and_refuses_replaced_path() {
+    let temp = fixture();
+    let path = temp.path().join("retry-source");
+    fs::write(&path, b"abcdef").unwrap();
+    let cancel = Cancellation::default();
+    let mut source = LinuxFileSystem::new(None)
+        .prepare_transfer_source(&path, &cancel)
+        .unwrap();
+    assert!(source.supports_read_retry());
+    let mut bytes = [0; 4];
+    assert_eq!(source.read_chunk(&mut bytes, &cancel).unwrap(), 4);
+    source.retry_read_from(2, &cancel).unwrap();
+    assert_eq!(source.read_chunk(&mut bytes, &cancel).unwrap(), 4);
+    assert_eq!(&bytes, b"cdef");
+    assert!(source.retry_read_from(7, &cancel).is_err());
+    fs::rename(&path, temp.path().join("original")).unwrap();
+    fs::write(&path, b"winner").unwrap();
+    assert!(source.retry_read_from(0, &cancel).is_err());
+    assert_eq!(fs::read(path).unwrap(), b"winner");
+    assert_eq!(fs::read(temp.path().join("original")).unwrap(), b"abcdef");
+}
+#[test]
 fn verifies_and_publishes_raw_unix_name_without_deleting_source() {
     let temp = fixture();
     let source = temp

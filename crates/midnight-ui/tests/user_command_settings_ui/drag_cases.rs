@@ -31,7 +31,7 @@ fn outer_viewport(row: &ItemRc) -> ItemRc {
     panic!("settings list must be inside the Options content scroll viewport");
 }
 impl Harness {
-    fn save_count(&self) -> usize {
+    pub(super) fn save_count(&self) -> usize {
         self.commands
             .borrow()
             .iter()
@@ -106,25 +106,17 @@ fn reverse_drag_of_nonselected_command_keeps_its_identity_selected_and_buttons_a
     );
     assert_eq!(h.save_count(), 0, "preview must not persist an order");
     h.release_drag(end);
-    assert_eq!(h.save_count(), 1);
+    assert_eq!(h.save_count(), 0);
     assert_eq!(
-        h.latest()
-            .user_commands
-            .iter()
-            .map(|c| c.id.as_str())
-            .collect::<Vec<_>>(),
+        h.rows().iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
         ["two", "one"]
     );
     assert_eq!(view.get_draft().id, "two");
     h.action("Move Custom Command down");
     h.ui.draw();
-    assert_eq!(h.save_count(), 2);
+    assert_eq!(h.save_count(), 0);
     assert_eq!(
-        h.latest()
-            .user_commands
-            .iter()
-            .map(|c| c.id.as_str())
-            .collect::<Vec<_>>(),
+        h.rows().iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
         ["one", "two"]
     );
     assert_eq!(view.get_draft().id, "two");
@@ -133,7 +125,7 @@ fn reverse_drag_of_nonselected_command_keeps_its_identity_selected_and_buttons_a
     h.press_drag(start);
     h.move_drag(end);
     h.release_drag(end);
-    assert_eq!(h.save_count(), 2, "same-position drop is not a save");
+    assert_eq!(h.save_count(), 0, "all drops remain staged until OK");
     assert_eq!(
         view.get_draft().id,
         "one",
@@ -229,7 +221,7 @@ fn deleted_source_closed_options_and_reentrant_cancel_reject_late_drop_callbacks
     h.press_drag(start);
     h.move_drag(end);
     let token = view.get_drag_token();
-    h.action("Done");
+    h.action("Cancel");
     assert!(!view.get_drag_active());
     assert!(!view.invoke_drag_end(token, 2, true));
     h.release_drag(end);
@@ -241,13 +233,13 @@ fn deleted_source_closed_options_and_reentrant_cancel_reject_late_drop_callbacks
     h.ui.draw();
     assert_eq!(
         h.save_count(),
-        1,
-        "only the explicit delete transaction is persisted"
+        0,
+        "deletion from the command list remains staged until OK"
     );
-    assert_eq!(h.latest().user_commands[0].id.as_str(), "two");
+    assert_eq!(h.rows()[0].id.as_str(), "two");
     assert!(!view.invoke_drag_end(token, 1, true));
     h.release_drag(end);
-    assert_eq!(h.save_count(), 1);
+    assert_eq!(h.save_count(), 0);
 }
 
 #[test]
@@ -272,10 +264,9 @@ fn held_drag_autoscrolls_virtualized_rows_and_keyboard_selection_reveals_its_row
     }
     assert_eq!(h.save_count(), 0);
     h.release_drag(end);
-    assert_eq!(h.save_count(), 1);
-    let snapshot = h.latest();
+    assert_eq!(h.save_count(), 0);
+    let snapshot = h.rows();
     let position = snapshot
-        .user_commands
         .iter()
         .position(|c| c.id.as_str() == "one")
         .unwrap();
@@ -439,18 +430,22 @@ fn long_form_wheel_scroll_reveals_apply_for_a_real_pointer_click() {
         slint::platform::update_timers_and_animations();
         h.ui.draw();
     }
-    let apply = ui::popup_item(&h.ui.window, "Apply Custom Command", AccessibleRole::Button);
+    let apply = ui::popup_item(
+        &h.ui.window,
+        "Preview Custom Command",
+        AccessibleRole::Button,
+    );
     let apply = bounds(&apply);
     assert!(
         apply.1 >= clip.1 && apply.3 <= clip.3,
-        "wheel scrolling must reveal the whole Apply button"
+        "wheel scrolling must reveal the last form action"
     );
     // The pinned Fluent horizontal scrollbar overlays 14 logical pixels.
     assert!(
         apply.3 <= clip.3 - 14.0,
-        "Apply must also clear the scrollbar overlay"
+        "the form action must also clear the scrollbar overlay"
     );
-    ui::click_popup(&h.ui.window, "Apply Custom Command", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
     slint::platform::update_timers_and_animations();
     h.ui.draw();
     assert_eq!(h.save_count(), 1);

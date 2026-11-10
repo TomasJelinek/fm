@@ -13,7 +13,7 @@ fn install(root: &Path, worker: &Path, directory: &str) {
     #[cfg(target_os = "linux")]
     native::secure_test_executable(&package.join(filename));
     fs::write(package.join("plugin.toml"), format!(
-        "schema_version = 1\nid = \"midnight.fs.archive\"\nkind = \"filesystem-worker\"\nversion = \"0.1.0\"\nentry_executable = \"{filename}\"\ntarget = \"{}\"\nprotocol = 1\nformats = [\"gzip\", \"zip\", \"tar\", \"tar-gzip\", \"7z\"]\n",
+        "schema_version = 1\nid = \"midnight.fs.archive\"\nkind = \"filesystem-worker\"\nversion = \"0.1.0\"\nentry_executable = \"{filename}\"\ntarget = \"{}\"\nprotocol = 2\nstable_entry_ids = true\nformats = [\"gzip\", \"zip\", \"tar\", \"tar-gzip\", \"7z\"]\n",
         midnight_plugin_host::host_target())).unwrap();
 }
 
@@ -70,6 +70,27 @@ fn real_sandboxed_worker_lists_reads_and_rejects_cancellation() {
         mount.read(entries[0].id.entry, 1, 3, &cancel).unwrap(),
         b"ell"
     );
+    let revision = mount.address().source_version;
+    let identity = mount
+        .persistent_member_identity(entries[0].id.entry, &revision)
+        .unwrap()
+        .unwrap();
+    assert!(
+        mount
+            .persistent_member_identity(entries[0].id.entry, b"stale")
+            .is_err()
+    );
+    let reopened = Mount::open(package, format, &source, &cancel).unwrap();
+    assert_ne!(mount.id(), reopened.id());
+    assert_eq!(
+        reopened
+            .persistent_member_identity(entries[0].id.entry, &revision)
+            .unwrap()
+            .unwrap(),
+        identity
+    );
+    assert!(reopened.persistent_member_identity(0, &revision).is_err());
+    drop(reopened);
     drop(mount);
     install(root.path(), Path::new(&worker), "duplicate");
     assert!(Catalog::discover(root.path()).unwrap().packages.is_empty());

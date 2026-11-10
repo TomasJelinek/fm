@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -10,13 +13,60 @@ use i_slint_core::{
 };
 use midnight_core::*;
 use midnight_ui::{KeyboardEditorView, Presenter, install, refresh};
-use slint::{ComponentHandle, platform::Key};
+use slint::{
+    ComponentHandle, Model,
+    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Harness {
     ui: ui::TestUi,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
+}
+
+type NativeWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
+
+fn native_help_harness(bindings: &[(&str, &[&str])]) -> (Harness, NativeWindows) {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = midnight_ui::MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    midnight_ui::install_file_keys(&window);
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let native = windows.borrow()[0].clone();
+    let mut test = ui::TestUi {
+        window,
+        native,
+        pixels: Vec::new(),
+        width: 1340,
+        height: 820,
+    };
+    test.resize(1340, 820);
+    (Harness::with_ui(bindings, Vec::new(), test), windows)
+}
+
+fn native_help(
+    windows: &NativeWindows,
+    main: &midnight_ui::MainWindow,
+    snapshot: &str,
+) -> Rc<MinimalSoftwareWindow> {
+    assert_eq!(
+        windows.borrow().len(),
+        2,
+        "Help creates its own window adapter"
+    );
+    assert!(
+        !ui::has_popup(main),
+        "Help must not open a main-window popup"
+    );
+    let child = windows.borrow()[1].clone();
+    assert!(child.window().is_visible());
+    modeless::draw(&child, 740, 600, snapshot);
+    child
 }
 
 #[test]
@@ -142,6 +192,13 @@ fn preview_options_persist_choices_and_clear_cache_without_closing_settings() {
     h.draw();
     assert_eq!(clears.get(), 1);
     assert!(ui::has_popup(&h.ui.window));
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::SavePreferences { .. }))
+    );
+    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
     assert!(h.commands.borrow().iter().any(|command| matches!(command,
         Command::SavePreferences { preferences, .. }
             if !preferences.thumbnails_enabled && preferences.thumbnails_network
@@ -184,6 +241,13 @@ fn shortcut_editor_filters_commands_and_captures_without_dispatching_actions() {
     assert!(h.commands.borrow().is_empty());
     ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
     h.draw();
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::SavePreferences { .. }))
+    );
+    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
     let commands = h.commands.borrow();
     let saved = commands
         .iter()
@@ -192,7 +256,7 @@ fn shortcut_editor_filters_commands_and_captures_without_dispatching_actions() {
             Command::SavePreferences { preferences, .. } => Some(preferences),
             _ => None,
         })
-        .expect("Assign saves the validated map asynchronously");
+        .expect("OK saves the validated map asynchronously");
     let map = ShortcutMap::new(&saved.shortcuts).unwrap();
     assert_eq!(
         map.bindings("files.copy")
@@ -269,12 +333,12 @@ fn settings_navigation_and_footer_fit_both_densities_and_large_fonts() {
             h.ui.draw();
         }
         for topic in ["Appearance", "Keyboard"] {
-            ui::click_popup(&h.ui.window, topic, AccessibleRole::Button);
+            h.ui.options_topic(if topic == "Appearance" { 1 } else { 3 });
             for _ in 0..2 {
                 slint::platform::update_timers_and_animations();
                 h.ui.draw();
             }
-            let done = ui::popup_item(&h.ui.window, "Done", AccessibleRole::Button);
+            let done = ui::popup_item(&h.ui.window, "Cancel", AccessibleRole::Button);
             let rect = done.geometry();
             let position = done.map_to_native_window(rect.origin);
             assert!(position.x >= 0.0 && position.y >= 0.0);
@@ -289,7 +353,7 @@ fn settings_navigation_and_footer_fit_both_densities_and_large_fonts() {
 fn topic_arrow_navigation_moves_focus_with_selection() {
     let mut h = Harness::new(&[]);
     h.open_keyboard();
-    ui::click_popup(&h.ui.window, "Panel", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "General", AccessibleRole::Button);
     ui::key(&h.ui.window, Key::DownArrow);
     h.draw();
     assert_eq!(h.ui.window.get_options_topic_index(), 1);
@@ -299,12 +363,35 @@ fn topic_arrow_navigation_moves_focus_with_selection() {
 }
 
 impl Harness {
+    fn commit(&mut self) {
+        ui::click_popup(&self.ui.window, "OK", AccessibleRole::Button);
+        let revision = self
+            .commands
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::SavePreferences { revision, .. } => Some(*revision),
+                _ => None,
+            })
+            .unwrap();
+        self.presenter.borrow_mut().apply(Event::PreferencesSaved {
+            revision,
+            result: Ok(()),
+        });
+        refresh(&self.ui.window, &self.presenter.borrow());
+        self.draw();
+    }
     fn new(bindings: &[(&str, &[&str])]) -> Self {
         Self::with_bookmarks(bindings, Vec::new())
     }
 
     fn with_bookmarks(bindings: &[(&str, &[&str])], bookmarks: Vec<Bookmark>) -> Self {
         let ui = ui::TestUi::new();
+        Self::with_ui(bindings, bookmarks, ui)
+    }
+
+    fn with_ui(bindings: &[(&str, &[&str])], bookmarks: Vec<Bookmark>, ui: ui::TestUi) -> Self {
         let base = std::env::temp_dir().join("shortcut UI 文档");
         let presenter = Rc::new(RefCell::new(Presenter::new(
             base.clone(),
@@ -435,6 +522,7 @@ fn numbered_hot_paths_activate_from_both_popups_and_keep_the_origin_pane() {
     let mut h = Harness::with_bookmarks(
         &[],
         vec![Bookmark {
+            archive: None,
             id: BookmarkId(1),
             name: "Saved".into(),
             path: destination.clone(),
@@ -452,9 +540,13 @@ fn numbered_hot_paths_activate_from_both_popups_and_keep_the_origin_pane() {
     assert!(h.commands.borrow().iter().any(|command| matches!(command,
         Command::Navigate { pane: PaneId::Right, path, .. } if path == &destination)));
     h.commands.borrow_mut().clear();
+    // Hot Paths is shared and follows the active panel. Select its intended
+    // owner explicitly after the right panel's volume popup activated that pane.
+    h.ui.window.invoke_activate(0);
     h.draw();
     ui::click_root(&h.ui.window, "Hot Paths", AccessibleRole::Combobox);
     h.draw();
+    assert_eq!(h.ui.window.get_hot_path_popup_pane(), 0);
     ui::key(&h.ui.window, "0");
     assert!(!ui::has_popup(&h.ui.window));
     assert!(h.commands.borrow().iter().any(|command| matches!(command,
@@ -467,6 +559,7 @@ fn popup_hot_paths_honor_remapping_other_panel_and_unassigned_slots() {
     let mut h = Harness::with_bookmarks(
         &[("bookmark.open.1", &["Ctrl+Alt+Y"])],
         vec![Bookmark {
+            archive: None,
             id: BookmarkId(1),
             name: "Saved".into(),
             path: destination.clone(),
@@ -509,6 +602,7 @@ fn popup_hot_paths_reject_replaced_choices_and_preserve_volume_binding_priority(
     let mut h = Harness::with_bookmarks(
         &[("panel.as-other", &["Digit1"])],
         vec![Bookmark {
+            archive: None,
             id: BookmarkId(1),
             name: "Saved".into(),
             path: destination.clone(),
@@ -629,16 +723,22 @@ fn volume_popup_uses_configured_mnemonic_and_keeps_widget_escape() {
 
 #[test]
 fn global_help_binding_changes_without_stealing_editor_keys() {
-    let mut h = Harness::new(&[("app.help", &["Ctrl+Alt+H"])]);
+    let (mut h, windows) = native_help_harness(&[("app.help", &["Ctrl+Alt+H"])]);
     h.ui.window.invoke_set_command("editable".into(), 8);
     ui::key(&h.ui.window, Key::F1);
     assert!(
         !ui::has_popup(&h.ui.window),
         "old global key must be disabled"
     );
+    assert_eq!(
+        windows.borrow().len(),
+        1,
+        "old global key must not create Help"
+    );
     ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "h");
     h.draw();
-    assert!(ui::has_popup(&h.ui.window));
+    native_help(&windows, &h.ui.window, "keyboard-help-remapped-global");
+    assert_eq!(h.ui.window.get_command_text(), "editable");
 }
 
 #[test]
@@ -655,7 +755,7 @@ fn reassigned_clipboard_chords_remain_native_while_searching_filenames() {
         h.ui.window.get_keyboard_scope(),
         "File list outside filename search"
     );
-    ui::click_popup(&h.ui.window, "Done", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
     h.ui.window.invoke_focus_files();
     let mutations = Rc::new(RefCell::new(Vec::new()));
     let observed = mutations.clone();
@@ -681,7 +781,8 @@ fn reassigned_clipboard_chords_remain_native_while_searching_filenames() {
 
 #[test]
 fn unbound_physical_digits_cannot_fall_back_to_configured_logical_punctuation() {
-    let mut h = Harness::new(&[("bookmark.open.1", &[]), ("app.help", &["Ctrl+Plus"])]);
+    let (mut h, windows) =
+        native_help_harness(&[("bookmark.open.1", &[]), ("app.help", &["Ctrl+Plus"])]);
     h.ui.window.set_native_digit_event(true);
     ui::chord(&h.ui.window, &[Key::Control], "+");
     h.draw();
@@ -689,6 +790,7 @@ fn unbound_physical_digits_cannot_fall_back_to_configured_logical_punctuation() 
         !ui::has_popup(&h.ui.window),
         "unbound physical Digit1 cannot invoke logical Ctrl+Plus"
     );
+    assert_eq!(windows.borrow().len(), 1);
     h.ui.window.set_native_digit_event(false);
     h.ui.window.set_native_alt_gr(true);
     ui::chord(&h.ui.window, &[Key::Control], "+");
@@ -696,10 +798,11 @@ fn unbound_physical_digits_cannot_fall_back_to_configured_logical_punctuation() 
         !ui::has_popup(&h.ui.window),
         "AltGr cannot invoke a configured application key"
     );
+    assert_eq!(windows.borrow().len(), 1);
     h.ui.window.set_native_alt_gr(false);
     ui::chord(&h.ui.window, &[Key::Control], "+");
     h.draw();
-    assert!(ui::has_popup(&h.ui.window));
+    native_help(&windows, &h.ui.window, "keyboard-help-physical-digit");
 }
 
 #[test]
@@ -726,25 +829,19 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
     h.edit("Ctrl+Alt+Y");
     ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
     h.draw();
-    {
-        let sent = h.commands.borrow();
-        let saved = sent
+    assert!(
+        h.ui.window
+            .global::<KeyboardEditorView>()
+            .get_aliases()
             .iter()
-            .rev()
-            .find_map(|command| match command {
-                Command::SavePreferences { preferences, .. } => Some(preferences),
-                _ => None,
-            })
-            .expect("Assign must use asynchronous preference persistence");
-        assert_eq!(
-            ShortcutMap::new(&saved.shortcuts)
-                .unwrap()
-                .bindings("files.copy")
-                .unwrap()[1]
-                .display(),
-            "Ctrl+Alt+Y"
-        );
-    }
+            .any(|key| key == "Ctrl+Alt+Y")
+    );
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::SavePreferences { .. }))
+    );
     for label in [
         "Remove",
         "Remove",
@@ -755,7 +852,7 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
         ui::click_popup(&h.ui.window, label, AccessibleRole::Button);
         h.draw();
     }
-    ui::click_popup(&h.ui.window, "Done", AccessibleRole::Button);
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
     h.ui.window.invoke_focus_files();
     h.commands.borrow_mut().clear();
     ui::chord(&h.ui.window, &[Key::Control], "c");
@@ -767,7 +864,7 @@ fn keyboard_options_validate_apply_disable_and_restore_effective_bindings() {
 
 #[test]
 fn in_session_reassignment_updates_the_bottom_caption_and_rendered_help() {
-    let mut h = Harness::new(&[]);
+    let (mut h, windows) = native_help_harness(&[]);
     h.open_keyboard();
     h.select_action("files.rename");
     ui::click_popup(&h.ui.window, "Remove", AccessibleRole::Button);
@@ -775,23 +872,24 @@ fn in_session_reassignment_updates_the_bottom_caption_and_rendered_help() {
     h.edit("Ctrl+Alt+R");
     ui::click_popup(&h.ui.window, "Assign", AccessibleRole::Button);
     h.draw();
-    ui::click_popup(&h.ui.window, "Done", AccessibleRole::Button);
+    h.commit();
     h.draw();
     ui::root_item(&h.ui.window, "Ctrl+Alt+R Rename", AccessibleRole::Button);
     let root_text = ui::text_values(ItemRc::new_root(
         WindowInner::from_pub(h.ui.window.window()).component(),
     ));
     assert!(!root_text.iter().any(|text| text == "F2 Rename"));
+    assert!(!ui::has_popup(&h.ui.window), "OK closed Options");
+    assert_eq!(
+        h.ui.window.get_focused_pane(),
+        0,
+        "OK returns focus to the active panel"
+    );
     ui::key(&h.ui.window, Key::F1);
     h.draw();
-    let inner = WindowInner::from_pub(h.ui.window.window());
-    let popups = inner.active_popups();
-    let popup = popups
-        .iter()
-        .rev()
-        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
-        .unwrap();
-    let text = ui::text_values(ItemRc::new_root(popup.component.clone()))
+    let child = native_help(&windows, &h.ui.window, "keyboard-help-reassigned-rename");
+    let inner = WindowInner::from_pub(child.window());
+    let text = ui::text_values(ItemRc::new_root(inner.component()))
         .iter()
         .map(|text| text.as_str())
         .collect::<Vec<_>>()
@@ -815,6 +913,7 @@ fn restoring_unchanged_defaults_also_discards_the_unsaved_editor_draft() {
             .is_empty()
     );
     assert!(!h.ui.window.global::<KeyboardEditorView>().get_can_assign());
+    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
     let sent = h.commands.borrow();
     let saved = sent
         .iter()
@@ -823,7 +922,7 @@ fn restoring_unchanged_defaults_also_discards_the_unsaved_editor_draft() {
             Command::SavePreferences { preferences, .. } => Some(preferences),
             _ => None,
         })
-        .expect("Restore saves the default binding");
+        .expect("OK saves the restored default binding");
     assert_eq!(
         ShortcutMap::new(&saved.shortcuts)
             .unwrap()

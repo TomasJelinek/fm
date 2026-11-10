@@ -1,4 +1,4 @@
-//! Durable native hot paths. All persistence uses the existing settings worker.
+//! Durable native/archive hot paths. Persistence uses the existing settings worker.
 use super::*;
 
 impl Presenter {
@@ -6,7 +6,7 @@ impl Presenter {
         &self.preferences.values.bookmarks
     }
 
-    /// Save the pane's displayed raw native path, never the displayed path text.
+    /// Save the displayed typed location, never parse the visible path text.
     pub fn add_bookmark(
         &mut self,
         pane: PaneId,
@@ -14,20 +14,44 @@ impl Presenter {
         slot: Option<u8>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if !self.native_action_allowed(pane) {
+        if self.panes[pane.index()].network.is_some() || self.panes[pane.index()].network_request {
+            self.desktop.inform("Hot Path", "Open a shared folder to bookmark its native path. Network discovery locations are retained in tabs.".into());
             return false;
         }
-        let path = self.panes[pane.index()].display_path().to_owned();
+        let displayed = &self.panes[pane.index()];
+        let archive = displayed
+            .archive
+            .as_ref()
+            .map(|state| state.location.address.clone());
+        let path = archive
+            .as_ref()
+            .and_then(|address| address.container.parent())
+            .unwrap_or_else(|| displayed.display_path())
+            .to_owned();
         if slot.is_some_and(|slot| !(1..=10).contains(&slot)) {
             return false;
         }
         if let Some(existing) = self
             .bookmarks()
             .iter()
-            .find(|bookmark| bookmark.path == path)
+            .find(|bookmark| bookmark.matches_location(&path, archive.as_ref()))
         {
+            let id = existing.id;
+            // Re-adding a freshly opened revision refreshes the locator while
+            // keeping its identity, name and existing shortcut.
+            if existing.archive != archive {
+                let mut preferences = self.preferences.values.clone();
+                if let Some(saved) = preferences
+                    .bookmarks
+                    .iter_mut()
+                    .find(|saved| saved.id == id)
+                {
+                    saved.archive = archive;
+                }
+                self.update_preferences(preferences, send);
+            }
             return if slot.is_some() {
-                self.set_bookmark_slot(existing.id, slot, send)
+                self.set_bookmark_slot(id, slot, send)
             } else {
                 true
             };
@@ -52,6 +76,7 @@ impl Presenter {
             return false;
         };
         let bookmark = Bookmark {
+            archive,
             id,
             name,
             path,
@@ -86,7 +111,11 @@ impl Presenter {
         let Some(bookmark) = self.bookmarks().iter().find(|bookmark| bookmark.id == id) else {
             return false;
         };
-        self.navigate(pane, bookmark.path.clone(), None, send)
+        if let Some(address) = bookmark.archive.clone() {
+            self.open_archive_address(pane, address, send)
+        } else {
+            self.navigate(pane, bookmark.path.clone(), None, send)
+        }
     }
 
     pub fn remove_bookmark(&mut self, id: BookmarkId, send: &dyn Fn(Command) -> bool) -> bool {

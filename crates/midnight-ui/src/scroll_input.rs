@@ -266,6 +266,38 @@ fn observe(
     timer: &slint::Timer,
     event: &WindowEvent,
 ) -> bool {
+    // Winit's raw touch events have no public WindowEvent representation in the
+    // pinned Slint hook. Capture before its Flickable can defer child down.
+    if let WindowEvent::Touch(touch) = event {
+        // The pinned runtime turns a cancelled tap into Released then Exit.
+        // Invalidate before that synthetic release; clearing the snapshot would
+        // instead permit the child to capture the current live context.
+        if touch.phase == TouchPhase::Cancelled {
+            window.invoke_cancel_function_press();
+        }
+        if touch.phase == TouchPhase::Started && state.borrow().pressed.fingers.is_empty() {
+            let point = touch
+                .location
+                .to_logical::<f32>(f64::from(window.window().scale_factor()));
+            window.invoke_capture_function_press(point.x, point.y);
+        } else if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+            let weak = window.as_weak();
+            let state = state.clone();
+            // Keep the snapshot through the runtime's release/click dispatch.
+            // A newer press prevents an older deferred release from clearing it.
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if !state.borrow().pressed.active()
+                    && let Some(window) = weak.upgrade()
+                {
+                    window.invoke_release_function_press();
+                }
+            });
+        }
+    }
+    if matches!(event, WindowEvent::Focused(false) | WindowEvent::Destroyed) {
+        window.invoke_cancel_function_press();
+        window.invoke_release_function_press();
+    }
     if matches!(event, WindowEvent::RedrawRequested) {
         if !wheel_frame(window, state) {
             timer.stop();
@@ -347,6 +379,12 @@ pub(crate) fn install(window: &MainWindow) {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        if crate::dialog_host::dialog_input_blocked(window.window()) && is_dialog_input(event) {
+            timer.stop();
+            *state.borrow_mut() = InputState::default();
+            shortcuts = crate::native_shortcuts::ShortcutState::default();
+            return EventResult::PreventDefault;
+        }
         crate::drag_bridge::observe_native(&window, event);
         let replaced = observe(&window, &state, &timer, event);
         // This callback runs only for a real Winit adapter. Software-window
@@ -357,6 +395,28 @@ pub(crate) fn install(window: &MainWindow) {
         }
         EventResult::Propagate
     });
+}
+
+fn is_dialog_input(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::Ime(_)
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::Touch(_)
+            | WindowEvent::PinchGesture { .. }
+            | WindowEvent::PanGesture { .. }
+            | WindowEvent::RotationGesture { .. }
+            | WindowEvent::DoubleTapGesture { .. }
+            | WindowEvent::TouchpadPressure { .. }
+            | WindowEvent::DroppedFile(_)
+            | WindowEvent::HoveredFile(_)
+            | WindowEvent::CloseRequested
+    )
 }
 
 #[cfg(test)]
@@ -453,7 +513,7 @@ mod tests {
         assert!(state.active());
         let frame = state.wheel.tick(Duration::from_millis(16)).unwrap();
         assert!(frame.1 < 0.0 && frame.1 > -20.0);
-        for millis in [32, 48, 64, 80, 96, 112, 120] {
+        for millis in (2..=16).map(|frame| frame * 16) {
             state.wheel.tick(Duration::from_millis(millis));
         }
         assert!(!state.active());
@@ -521,8 +581,8 @@ mod tests {
         state.observe(&cursor(121.0, 201.0), 1.0, Duration::from_millis(1));
         assert!(state.wheel.active());
         assert_eq!(state.cursor, Some(PhysicalPosition::new(121.0, 201.0)));
-        let total: f32 = [16, 32, 48, 64, 80, 96, 112, 120]
-            .into_iter()
+        let total: f32 = (1..=16)
+            .map(|frame| frame * 16)
             .filter_map(|millis| state.wheel.tick(Duration::from_millis(millis)))
             .map(|(_, y)| y)
             .sum();

@@ -14,6 +14,44 @@ pub const BLOCK_QUOTE: u16 = 4;
 pub const BLOCK_RULE: u16 = 5;
 pub const BLOCK_LIST_ITEM: u16 = 6;
 pub const MAX_BLOCKS: usize = 512;
+pub const MAX_TABLE_COLUMNS: usize = 64;
+pub const MAX_TABLE_CELLS: usize = 4096;
+pub const TABLE_ALIGN_LEFT: u8 = 0;
+pub const TABLE_ALIGN_CENTER: u8 = 1;
+pub const TABLE_ALIGN_RIGHT: u8 = 2;
+
+/// A UTF-8 range in the containing block's decoded text.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct TextRange {
+    #[n(0)]
+    pub start: u32,
+    #[n(1)]
+    pub end: u32,
+}
+
+/// Cell ranges exclude the row's plain-text separators and may be empty.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct TableCell {
+    #[n(0)]
+    pub start: u32,
+    #[n(1)]
+    pub end: u32,
+    #[n(2)]
+    pub alignment: u8,
+}
+
+/// Adjacent annotated paragraph blocks form a table. Each remains independently
+/// bounded and anchored, allowing tables to continue across document pages.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cbor(map)]
+pub struct TableRow {
+    #[n(0)]
+    pub cells: Vec<TableCell>,
+    #[n(1)]
+    pub header: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 #[cbor(map)]
@@ -40,6 +78,12 @@ pub struct Block {
     pub text: TextPage,
     #[n(4)]
     pub links: Vec<Link>,
+    /// Additive metadata: older hosts display the paragraph's plain-text row.
+    #[n(5)]
+    pub table: Option<TableRow>,
+    /// Additive decoration ranges; legacy hosts safely omit the decoration.
+    #[n(6)]
+    pub strikethrough: Option<Vec<TextRange>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -89,6 +133,39 @@ impl Block {
                 },
         )?;
         limit(self.links.len() <= viewer::MAX_SPANS)?;
+        if let Some(row) = &self.table {
+            check(self.kind == BLOCK_PARAGRAPH)?;
+            limit((1..=MAX_TABLE_COLUMNS).contains(&row.cells.len()))?;
+            let mut previous_end = 0;
+            for cell in &row.cells {
+                check(
+                    cell.start >= previous_end
+                        && cell.alignment <= TABLE_ALIGN_RIGHT
+                        && self
+                            .text
+                            .text
+                            .get(cell.start as usize..cell.end as usize)
+                            .is_some(),
+                )?;
+                previous_end = cell.end;
+            }
+        }
+        if let Some(ranges) = &self.strikethrough {
+            limit(ranges.len() <= viewer::MAX_SPANS)?;
+            let mut previous_end = 0;
+            for range in ranges {
+                check(
+                    range.start >= previous_end
+                        && range.start < range.end
+                        && self
+                            .text
+                            .text
+                            .get(range.start as usize..range.end as usize)
+                            .is_some(),
+                )?;
+                previous_end = range.end;
+            }
+        }
         let mut end = 0;
         for link in &self.links {
             check(
@@ -115,6 +192,8 @@ struct Totals {
     anchors: usize,
     links: usize,
     targets: usize,
+    cells: usize,
+    decorations: usize,
 }
 
 impl Totals {
@@ -124,6 +203,8 @@ impl Totals {
         self.spans += block.text.spans.len();
         self.anchors += block.text.anchors.len();
         self.links += block.links.len();
+        self.cells += block.table.as_ref().map_or(0, |row| row.cells.len());
+        self.decorations += block.strikethrough.as_ref().map_or(0, Vec::len);
         self.targets += block
             .links
             .iter()
@@ -134,6 +215,8 @@ impl Totals {
                 && self.spans <= viewer::MAX_SPANS
                 && self.anchors <= viewer::MAX_ANCHORS
                 && self.links <= viewer::MAX_SPANS
+                && self.cells <= MAX_TABLE_CELLS
+                && self.decorations <= viewer::MAX_SPANS
                 && self.targets <= 64 * 1024,
         )
     }

@@ -1,11 +1,13 @@
 //! Fixed-slot modeless Find sessions. Native work and retained results stay bounded.
 use crate::{Outbox, find_worker};
+#[path = "find_order_task.rs"]
+mod sorting;
 use midnight_core::*;
 use std::{
     io,
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::{
     sync::{Semaphore, mpsc, watch},
@@ -21,18 +23,23 @@ pub(crate) struct Controller {
 }
 struct Slot {
     input: watch::Sender<Intent>,
+    sorts: watch::Sender<u64>,
     state: Arc<Mutex<State>>,
 }
 #[derive(Clone, Default)]
 struct Intent {
     request: Option<Arc<FindRequest>>,
     cancel: Cancellation,
+    accepted_at: Option<SystemTime>,
 }
 #[derive(Default)]
 struct State {
     owner: Option<(FindSessionId, FindGeneration)>,
     cancel: Cancellation,
     results: Vec<Arc<FindResult>>,
+    sort: FindSortSpec,
+    sort_revision: u64,
+    order_cancel: Cancellation,
 }
 struct Validation {
     request: FindValidationRequest,
@@ -43,6 +50,7 @@ struct Validation {
 impl Controller {
     pub(crate) fn new(
         service: Option<Arc<dyn FindService>>,
+        locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
@@ -51,7 +59,15 @@ impl Controller {
         let slots = (0..MAX_FIND_SESSIONS)
             .map(|_| {
                 let (input, receiver) = watch::channel(Intent::default());
+                let (sorts, sort_input) = watch::channel(0);
                 let state = Arc::new(Mutex::new(State::default()));
+                tasks.spawn(sorting::run(
+                    state.clone(),
+                    locale.clone(),
+                    outbox.clone(),
+                    sort_input,
+                    lifetime.clone(),
+                ));
                 tasks.spawn(run_slot(
                     service.clone(),
                     outbox.clone(),
@@ -59,8 +75,13 @@ impl Controller {
                     receiver,
                     budget.clone(),
                     lifetime.clone(),
+                    sorts.clone(),
                 ));
-                Slot { input, state }
+                Slot {
+                    input,
+                    sorts,
+                    state,
+                }
             })
             .collect();
         let (validations, receiver) = mpsc::channel(16);
@@ -139,6 +160,10 @@ impl Controller {
             return Ok(false);
         }
         state.cancel.cancel();
+        state.order_cancel.cancel();
+        state.sort = request.sort;
+        state.sort_revision = 0;
+        state.order_cancel = self.lifetime.child();
         let cancel = self.lifetime.child();
         state.owner = Some((request.session, request.generation));
         state.cancel = cancel.clone();
@@ -146,8 +171,29 @@ impl Controller {
         slot.input.send_replace(Intent {
             request: Some(Arc::new(request)),
             cancel,
+            accepted_at: Some(SystemTime::now()),
         });
+        slot.sorts
+            .send_modify(|version| *version = version.wrapping_add(1));
         Ok(true)
+    }
+
+    pub(crate) fn sort(&self, request: FindSortRequest) {
+        for slot in &self.slots {
+            let mut state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.owner == Some((request.session, request.generation))
+                && request.revision > state.sort_revision
+            {
+                state.sort = request.sort;
+                state.sort_revision = request.revision;
+                state.order_cancel.cancel();
+                state.order_cancel = self.lifetime.child();
+                drop(state);
+                slot.sorts
+                    .send_modify(|version| *version = version.wrapping_add(1));
+                return;
+            }
+        }
     }
 
     pub(crate) fn cancel(&self, session: FindSessionId, generation: FindGeneration) {
@@ -155,6 +201,7 @@ impl Controller {
             let state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.owner == Some((session, generation)) {
                 state.cancel.cancel();
+                state.order_cancel.cancel();
             }
         }
     }
@@ -163,6 +210,7 @@ impl Controller {
             let mut state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.owner.is_some_and(|(owner, _)| owner == session) {
                 state.cancel.cancel();
+                state.order_cancel.cancel();
                 state.owner = None;
                 state.results.clear();
                 slot.input.send_replace(Intent::default());
@@ -216,8 +264,13 @@ impl Controller {
         for slot in &self.slots {
             let mut state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             state.cancel.cancel();
+            state.order_cancel.cancel();
             state.owner = None;
             state.results.clear();
+            drop(state);
+            // Wake an idle sorter once for shutdown; it needs no permanent poll.
+            slot.sorts
+                .send_modify(|version| *version = version.wrapping_add(1));
         }
     }
 }
@@ -234,6 +287,7 @@ async fn run_slot(
     mut input: watch::Receiver<Intent>,
     budget: Arc<Semaphore>,
     lifetime: Cancellation,
+    sorts: watch::Sender<u64>,
 ) {
     while input.changed().await.is_ok() {
         let intent = input.borrow_and_update().clone();
@@ -247,6 +301,7 @@ async fn run_slot(
             continue;
         };
         let worker_request = request.clone();
+        let accepted_at = intent.accepted_at.unwrap_or_else(SystemTime::now);
         let worker_state = state.clone();
         let worker_outbox = outbox.clone();
         let cancel = intent.cancel.clone();
@@ -262,20 +317,52 @@ async fn run_slot(
             }
         };
         let summary = if let Some(permit) = permit {
-            tokio::task::spawn_blocking(move || {
+            let location = find_worker::CurrentDirectory::default();
+            let worker_location = location.clone();
+            let worker_sorts = sorts.clone();
+            let mut worker = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                find_worker::search(service.as_ref(), &worker_request, &cancel, &mut |update| {
-                    publish(
-                        &worker_outbox,
-                        &worker_state,
-                        &worker_request,
-                        update,
-                        &cancel,
-                    )
-                })
-            })
-            .await
-            .unwrap_or_else(|error| FindSummary {
+                find_worker::search_with_location(
+                    service.as_ref(),
+                    &worker_request,
+                    &cancel,
+                    &mut |update| {
+                        let batch = matches!(&update, FindUpdate::Batch(_));
+                        let accepted = publish(
+                            &worker_outbox,
+                            &worker_state,
+                            &worker_request,
+                            update,
+                            &cancel,
+                        );
+                        if accepted && batch {
+                            worker_sorts.send_modify(|version| *version = version.wrapping_add(1));
+                        }
+                        accepted
+                    },
+                    &worker_location,
+                    accepted_at,
+                )
+            });
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // first sample is at250ms, never an initial burst
+            let mut previous = None;
+            let mut published_at: Option<Instant> = None;
+            let joined = loop {
+                tokio::select! {
+                    result = &mut worker => break result,
+                    _ = tick.tick() => {
+                        if !intent.cancel.is_cancelled()
+                            && published_at.is_none_or(|last| last.elapsed() >= Duration::from_millis(250))
+                            && let Some(path) = location.get()
+                            && previous.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &path))
+                            && publish_location(&outbox, &state, &request, path.clone())
+                        { previous = Some(path); published_at = Some(Instant::now()); }
+                    }
+                }
+            };
+            joined.unwrap_or_else(|error| FindSummary {
                 completion: FindCompletion::Failed,
                 progress: FindProgress::default(),
                 reached_budgets: Vec::new(),
@@ -310,6 +397,29 @@ async fn run_slot(
         })
         .await;
     }
+}
+
+fn publish_location(
+    outbox: &Outbox,
+    state: &Mutex<State>,
+    request: &FindRequest,
+    path: Arc<std::path::PathBuf>,
+) -> bool {
+    let Ok(permit) = outbox.sender.try_reserve() else {
+        return false;
+    };
+    let state = state.lock().unwrap_or_else(|error| error.into_inner());
+    if state.owner != Some((request.session, request.generation)) || state.cancel.is_cancelled() {
+        return false;
+    }
+    permit.send(Event::Find(Box::new(FindEvent {
+        session: request.session,
+        generation: request.generation,
+        update: FindUpdate::CurrentDirectory(path),
+    })));
+    drop(state);
+    (outbox.wakeup)();
+    true
 }
 
 fn publish(

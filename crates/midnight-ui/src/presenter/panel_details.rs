@@ -11,13 +11,17 @@ pub(crate) struct PanelDetail {
 impl Presenter {
     pub(crate) fn panel_details(&self, pane: PaneId) -> Vec<PanelDetail> {
         let p = &self.panes[pane.index()];
+        if p.network_hides_rows() {
+            return Vec::new();
+        }
         let archive = p.archive_selection_summary();
         if archive.is_some()
-            || !p.selected.is_empty()
-            || !p.selection_preview.is_empty()
-            || p.selection_deferred
-            || p.selection_pending_bulk
-            || p.selection_rebase_pending
+            || (p.tree_view().is_none()
+                && (!p.selected.is_empty()
+                    || !p.selection_preview.is_empty()
+                    || p.selection_deferred.any()
+                    || p.selection_pending_bulk
+                    || p.selection_rebase_pending))
         {
             let (files, folders, file_bytes, pending) = archive.unwrap_or_else(|| {
                 (
@@ -25,7 +29,7 @@ impl Presenter {
                     p.selected.folder_count(),
                     p.selected.file_bytes(),
                     !p.selection_preview.is_empty()
-                        || p.selection_deferred
+                        || p.selection_deferred.any()
                         || p.selection_pending_bulk
                         || p.selection_rebase_pending
                         || p.selection_revision != p.selection_applied,
@@ -71,19 +75,13 @@ impl Presenter {
                     explanation: String::new(),
                 });
             }
-            if folders > 0 {
-                let value = if pending {
-                    "Folder size updating…".into()
-                } else if archive.is_some() {
-                    format!("Folder sizes unknown · {folders} unknown")
-                } else {
-                    p.selected_folder_sizes()
-                        .filter(|summary| summary.folders == folders)
-                        .map_or_else(
-                            || "Folder size updating…".into(),
-                            |summary| folder_summary(summary, &self.number_locale),
-                        )
-                };
+            if folders > 0
+                && !pending
+                && let Some(value) = p
+                    .selected_folder_sizes()
+                    .filter(|summary| summary.folders == folders)
+                    .and_then(|summary| folder_summary(summary, &self.number_locale))
+            {
                 details.push(PanelDetail {
                     identity: format!(
                         "detail:{}:folder-bytes:{}:{value}",
@@ -120,7 +118,7 @@ impl Presenter {
             .filter(|_| p.showing_stream())
             .unwrap_or(&entry.metadata);
         let size = match entry.kind {
-            EntryKind::Directory => p.folder_sizes.get(&entry.path).map(|size| {
+            EntryKind::Directory => p.folder_size(entry).map(|size| {
                 if size.finished && size.errors == 0 {
                     self.number_locale.format_u64(size.bytes)
                 } else {
@@ -196,34 +194,26 @@ impl Presenter {
     }
 }
 
-fn folder_summary(summary: SelectedFolderSizes, locale: &NumberLocale) -> String {
-    let mut value = if summary.complete == 0 {
-        format!("0 of {} folders complete", summary.folders)
-    } else {
+fn folder_summary(summary: SelectedFolderSizes, locale: &NumberLocale) -> Option<String> {
+    let mut parts = Vec::with_capacity(2);
+    if summary.complete > 0 {
         let bytes = summary.complete_bytes.map_or_else(
             || "Size overflow".into(),
             |bytes| format!("{} bytes", locale.format_u64(bytes)),
         );
-        format!(
+        parts.push(format!(
             "{bytes} in {} of {} folders",
             summary.complete, summary.folders
-        )
-    };
+        ));
+    }
     if summary.partial > 0 {
         let bytes = summary.partial_bytes.map_or_else(
             || "Partial size overflow".into(),
             |bytes| format!("≈ {} bytes", locale.format_u64(bytes)),
         );
-        value.push_str(&format!(" · {bytes} ({} partial)", summary.partial));
+        parts.push(format!("{bytes} ({} partial)", summary.partial));
     }
-    let unknown = summary
-        .folders
-        .saturating_sub(summary.complete)
-        .saturating_sub(summary.partial);
-    if unknown > 0 {
-        value.push_str(&format!(" · {unknown} unknown"));
-    }
-    value
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 #[cfg(test)]
@@ -263,7 +253,7 @@ mod tests {
         mixed[1].kind = EntryKind::Directory;
         let index = Arc::new(DirectoryIndex::from_entries(&mixed));
         p.panes[0].selected = Arc::new(SelectionSnapshot::from_bits(index, vec![3]).unwrap());
-        assert_eq!(p.panel_details(PaneId::Left).len(), 3);
+        assert_eq!(p.panel_details(PaneId::Left).len(), 2);
         assert!(
             p.panel_details(PaneId::Left)[1]
                 .value

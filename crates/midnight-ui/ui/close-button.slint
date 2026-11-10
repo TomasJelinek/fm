@@ -1,0 +1,40 @@
+import { Theme } from "theme.slint";
+
+// Square icon control: text-button padding cannot displace the close glyph.
+export component CloseButton inherits Rectangle {
+    in property <string> label: "Cancel dialog";
+    in property <string> hint: root.label;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: max(26px, Theme.control-height); height: self.width;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
+    background: area.has-hover && root.enabled ? Theme.hover : Theme.secondary-surface;
+    accessible-role: button; accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    Image {
+        source: @image-url("icons/close.svg");
+        width: min(root.width - 8px, root.height - 8px, max(12px, Theme.font-size));
+        height: self.width;
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        image-fit: contain; colorize: root.enabled ? Theme.text : Theme.muted-text;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                && (event.text == Key.Return || event.text == Key.Space) {
+                root.clicked(); return accept;
+            }
+            reject
+        }
+        area := TouchArea {
+            enabled: root.enabled;
+            clicked => { focus.focus(); root.clicked(); }
+        }
+    }
+}

@@ -41,6 +41,35 @@ fn long_unicode_cache_paths_are_not_truncated() {
 }
 
 #[test]
+fn private_buckets_are_lazy_and_accept_only_a_lowercase_hex_prefix() {
+    let root = directory();
+    let path = root.path().join("cache");
+    let store = PrivateStore::open(&path).unwrap();
+    assert!(store.bucket("ab", false).unwrap().is_none());
+    assert!(!path.join("ab").exists());
+    for invalid in ["", "a", "abc", "AB", "gg", "..", "a/b", "a\\b", "C:"] {
+        assert!(store.bucket(invalid, false).is_err());
+        assert!(store.bucket(invalid, true).is_err());
+    }
+    let name = format!("ab{}.mtc", "1".repeat(62));
+    let bucket = store.bucket("ab", true).unwrap().unwrap();
+    bucket.write(&name, b"sharded").unwrap();
+    assert_eq!(
+        std::fs::read(path.join("ab").join(&name)).unwrap(),
+        b"sharded"
+    );
+    drop(bucket);
+    let bucket = store.bucket("ab", false).unwrap().unwrap();
+    assert_eq!(bucket.read(&name, 16).unwrap().unwrap(), b"sharded");
+    assert_eq!(bucket.record(&name).unwrap().unwrap().bytes, 7);
+    assert_eq!(bucket.records().unwrap().len(), 1);
+    assert!(store.records().unwrap().is_empty());
+    assert!(!path.join("ab").join("store.lock").exists());
+    bucket.remove(&name).unwrap();
+    assert!(bucket.record(&name).unwrap().is_none());
+}
+
+#[test]
 fn independent_store_transactions_wait_for_the_current_owner() {
     let root = directory();
     let path = root.path().join("cache");

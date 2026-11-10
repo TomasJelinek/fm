@@ -14,7 +14,7 @@ version = "0.1.0"
 
 [[package]]
 name = "midnight-thumbnail-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "midnight-thumbnail-api",
  "midnight-worker-sdk",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-worker-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "windows-sys",

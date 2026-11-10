@@ -38,7 +38,7 @@ fn block_only_crc_is_verified_before_even_an_early_member_is_published() {
         content.metadata.blocks[0].has_crc = true;
         content.metadata.blocks[0].crc = 0x738f_fa0f;
         if corrupt {
-            content.source.get_mut()[37] ^= 1;
+            content.metadata.blocks[0].crc ^= 1;
             assert_eq!(archive.read(2, 0, 1).unwrap_err().code, ErrorCode::Corrupt);
             assert!(archive.contents.is_empty());
         } else {
@@ -55,22 +55,18 @@ fn short_decode_is_rejected_even_when_no_checksum_is_present() {
         file.has_crc = false;
     }
     content.metadata.blocks[0].has_crc = false;
-    content.source.get_mut().truncate(40);
+    content.source = std::io::BufReader::new(Box::new(Cursor::new(Vec::<u8>::new())));
     assert_eq!(archive.read(2, 0, 1).unwrap_err().code, ErrorCode::Corrupt);
     assert!(archive.contents.is_empty());
 }
 
 #[test]
-fn verified_solid_block_is_reused_for_other_members() {
+fn only_selected_member_is_retained_after_solid_block_verification() {
     let mut archive = solid();
     assert_eq!(archive.read(2, 0, 1).unwrap().0, b"f");
-    // Discarding the compressed buffer must not matter after the whole block was verified.
-    archive
-        .sevenzip_content
-        .as_mut()
-        .unwrap()
-        .source
-        .get_mut()
-        .clear();
-    assert_eq!(archive.read(3, 0, 5).unwrap().0, b"other");
+    // Only the selected member is retained; a sibling requires another block pass.
+    archive.sevenzip_content.as_mut().unwrap().source =
+        std::io::BufReader::new(Box::new(Cursor::new(Vec::<u8>::new())));
+    assert_eq!(archive.read(2, 0, 5).unwrap().0, b"first");
+    assert!(archive.read(3, 0, 5).is_err());
 }

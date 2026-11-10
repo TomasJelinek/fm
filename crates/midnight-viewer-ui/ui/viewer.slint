@@ -1,37 +1,7 @@
-import { Button, LineEdit, CheckBox, ComboBox, Palette } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox, ComboBox, SpinBox, Palette } from "std-widgets.slint";
 
-component PositionBar inherits Rectangle {
-    in property <float> position;
-    in property <color> accent;
-    in property <bool> horizontal;
-    in property <float> extent: 0.05;
-    callback seek(float);
-    background: #80808020;
-    min-width: horizontal ? 0px : 14px;
-    max-width: horizontal ? 1000000px : 14px;
-    min-height: horizontal ? 14px : 0px;
-    max-height: horizontal ? 14px : 1000000px;
-    thumb := Rectangle {
-        width: root.horizontal ? min(root.width, max(28px, root.width * root.extent)) : parent.width - 4px;
-        height: root.horizontal ? parent.height - 4px : min(root.height, max(28px, root.height * root.extent));
-        x: root.horizontal ? root.position * max(0px, root.width - self.width) : 2px;
-        y: root.horizontal ? 2px : root.position * max(0px, root.height - self.height);
-        background: root.accent; border-radius: 3px;
-    }
-    TouchArea {
-        function drag() {
-            root.seek(root.horizontal
-                ? clamp((self.mouse-x - thumb.width / 2) / max(1px, self.width - thumb.width), 0, 1)
-                : clamp((self.mouse-y - thumb.height / 2) / max(1px, self.height - thumb.height), 0, 1));
-        }
-        pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                self.drag();
-            }
-        }
-        moved => { if self.pressed { self.drag(); } }
-    }
-}
+import { PositionBar } from "viewer-position-bar.slint";
+export struct ViewerRasterTile { image: image, x: float, y: float, width: float, height: float }
 
 export component ViewerWindow inherits Window {
     title: root.caption;
@@ -40,19 +10,47 @@ export component ViewerWindow inherits Window {
     in property <string> caption: "Viewer — Midnight Explorer";
     in property <string> status: "Opening…";
     in property <image> surface;
+    in property <bool> tiled;
+    in property <[ViewerRasterTile]> image-tiles;
+    in property <float> tile-offset-x;
+    in property <float> tile-offset-y;
+    in property <int> tile-upload-count;
+    in property <string> position-context;
+    in property <bool> position-pending;
     in property <string> accessible-text;
     in property <color> foreground: #dddddd;
     in property <color> background-color: #202020;
     in property <color> accent: #8bb7ef;
     in property <float> position;
+    in property <float> displayed-position;
+    out property <float> displayed-vertical-position: root.displayed-position;
+    out property <float> vertical-thumb-position: vbar.shown-position;
+    out property <length> vertical-bar-left: vbar.absolute-position.x;
+    out property <length> vertical-bar-top: vbar.absolute-position.y;
+    out property <length> vertical-bar-width: vbar.width;
+    out property <length> vertical-bar-height: vbar.height;
     in property <float> vertical-extent: 1;
     in property <float> horizontal-position;
     in property <float> horizontal-extent: 1;
     in property <[string]> modes;
     in property <int> mode-index;
-    in property <bool> wrap-enabled;
+    in-out property <bool> wrap-enabled;
     in property <bool> wrap-available;
     in property <bool> image-mode;
+    in property <bool> web-mode;
+    in property <bool> web-network;
+    in property <bool> web-scripts;
+    in property <bool> source-mode;
+    in property <bool> markdown-mode;
+    in property <bool> font-available: true;
+    in-out property <bool> line-numbers: true;
+    in-out property <bool> typography-visible;
+    in-out property <string> viewer-font-family: "monospace";
+    in property <[string]> font-families: ["sans-serif", "serif", "monospace"];
+    in-out property <int> font-family-index: 2;
+    in-out property <int> viewer-font-size: 14;
+    in-out property <int> markdown-preset;
+    in property <bool> narrow-typography: root.compact;
     in property <float> zoom-percent: 100;
     in property <int> document-page;
     in property <int> document-pages;
@@ -60,11 +58,19 @@ export component ViewerWindow inherits Window {
     in property <string> ui-font-family;
     default-font-size: compact ? min(ui-font-size, 12px) : ui-font-size;
     default-font-family: ui-font-family;
+    // Keep compact controls readable at the minimum window size. Normal rows
+    // follow the selected UI font and the active native widget metrics.
+    private property <length> effective-ui-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
+    private property <length> control-height: max(max(28px, root.effective-ui-size + 14px), control-metrics.preferred-height);
+    private property <length> status-size: max(11px, root.effective-ui-size - 1px);
+    control-metrics := Button { visible: false; text: "Aa"; }
     in-out property <bool> search-visible;
     in-out property <string> query;
     in-out property <bool> case-sensitive;
     out property <length> content-width: canvas.width;
     out property <length> content-height: canvas.height;
+    out property <length> content-left: canvas.absolute-position.x;
+    out property <length> content-top: canvas.absolute-position.y;
     out property <bool> content-focused: content-focus.has-focus;
     callback input-key(KeyEvent, bool) -> bool;
     callback scroll(float, float);
@@ -74,11 +80,19 @@ export component ViewerWindow inherits Window {
     callback search(bool);
     callback change-mode(int);
     callback change-wrap(bool);
+    callback change-case-sensitive(bool);
+    callback change-line-numbers(bool);
+    callback change-font-family(string);
+    callback change-font-size(int);
+    callback change-markdown-preset(int);
     callback image-command(int);
     callback image-zoom(float, float, float);
     callback image-drag(float, float);
     callback document-turn(int);
+    callback web-policy(bool, bool);
     callback close-viewer();
+    callback deliver-output();
+    callback frame-presented();
     public function focus-search() { root.search-visible = true; search-edit.focus(); }
     public function focus-content() { content-focus.focus(); }
     public function apply-palette(light: bool) { Palette.color-scheme = light ? ColorScheme.light : ColorScheme.dark; }
@@ -96,15 +110,67 @@ export component ViewerWindow inherits Window {
             HorizontalLayout {
                 spacing: 4px;
                 visible: root.search-visible && !root.image-mode;
-                height: root.search-visible && !root.image-mode ? 30px : 0px;
+                height: root.search-visible && !root.image-mode ? max(30px, root.control-height) : 0px;
                 search-edit := LineEdit {
                     text <=> root.query;
                     placeholder-text: "Find in file";
                     accepted => { root.search(false); }
                 }
-                CheckBox { text: "Aa"; checked <=> root.case-sensitive; accessible-label: "Case sensitive"; }
+                CheckBox { text: "Aa"; checked <=> root.case-sensitive; accessible-label: "Case sensitive";
+                    toggled => { root.change-case-sensitive(self.checked); } }
                 Button { text: "Previous"; clicked => { root.search(true); } }
                 Button { text: "Next"; clicked => { root.search(false); } }
+            }
+            if root.web-mode: HorizontalLayout {
+                    spacing: 4px; height: max(32px, root.control-height);
+                    CheckBox { text: "Online"; checked: root.web-network; horizontal-stretch: 0;
+                        accessible-label: "Allow network for this document only";
+                        Tooltip { text: @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets. Turning Online off also disables JavaScript."); }
+                        toggled => { root.web-policy(self.checked, root.web-scripts && self.checked); content-focus.focus(); } }
+                    CheckBox { text: root.compact ? "JS" : "JavaScript"; checked: root.web-scripts; enabled: root.web-network; horizontal-stretch: 0;
+                        accessible-label: "Allow scripts to read and transmit this document";
+                        Tooltip { text: @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable."); }
+                        toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "−"; min-width: 36px; max-width: 36px;
+                        accessible-label: "Zoom HTML out";
+                        clicked => { root.image-command(3); content-focus.focus(); } }
+                    Text { text: "\{round(root.zoom-percent)}%"; color: root.foreground; vertical-alignment: center;
+                        horizontal-alignment: center; min-width: 52px; max-width: 52px; }
+                    Button { text: "+"; min-width: 36px; max-width: 36px;
+                        accessible-label: "Zoom HTML in";
+                        clicked => { root.image-command(2); content-focus.focus(); } }
+            }
+            if !root.image-mode && root.font-available && (root.typography-visible || root.markdown-mode || root.source-mode): HorizontalLayout {
+                spacing: 6px; height: max(32px, root.control-height);
+                if root.source-mode: CheckBox {
+                    text: "Lines"; checked <=> root.line-numbers;
+                    accessible-label: "Source line numbers";
+                    toggled => { root.change-line-numbers(self.checked); content-focus.focus(); }
+                }
+                if root.markdown-mode: ComboBox {
+                    model: ["GitHub", "Compact", "Comfortable"];
+                    min-width: root.narrow-typography ? 95px : 140px;
+                    max-width: root.narrow-typography ? 95px : 180px;
+                    current-index <=> root.markdown-preset;
+                    accessible-label: "Markdown presentation";
+                    // Keep the native popup's keyboard focus until it closes.
+                    selected(value) => { root.change-markdown-preset(self.current-index); }
+                }
+                if !root.narrow-typography: Text { text: "Font"; color: root.foreground; vertical-alignment: center; }
+                ComboBox {
+                    model: root.font-families;
+                    current-index <=> root.font-family-index;
+                    min-width: root.narrow-typography ? 90px : 150px; horizontal-stretch: 1;
+                    accessible-label: "Viewer font family";
+                    // Preserve the native popup's focus for keyboard selection.
+                    selected(value) => { root.change-font-family(value); }
+                }
+                if !root.narrow-typography: Text { text: "Size"; color: root.foreground; vertical-alignment: center; horizontal-stretch: 0; }
+                SpinBox { value <=> root.viewer-font-size; minimum: 8; maximum: 48;
+                    min-width: 85px; max-width: 90px;
+                    accessible-label: "Viewer font size";
+                    edited(value) => { root.change-font-size(value); } }
             }
             HorizontalLayout {
                 spacing: 2px;
@@ -114,13 +180,23 @@ export component ViewerWindow inherits Window {
                     accessible-role: text;
                     accessible-label: "File content";
                     accessible-value: root.accessible-text;
-                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; }
+                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.tiled; }
+                    for tile in root.image-tiles: Image {
+                        visible: root.tiled;
+                        source: tile.image;
+                        x: (tile.x - root.tile-offset-x) * parent.width;
+                        y: (tile.y - root.tile-offset-y) * parent.height;
+                        width: tile.width * parent.width;
+                        height: tile.height * parent.height;
+                        image-fit: fill;
+                    }
                     content-focus := FocusScope {}
                     TouchArea {
                         property <length> previous-x;
                         property <length> previous-y;
                         mouse-cursor: root.image-mode ? (self.pressed ? MouseCursor.grabbing : MouseCursor.grab) : MouseCursor.text;
                         pointer-event(event) => {
+                            if root.web-mode { return; }
                             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                                 content-focus.focus();
                                 self.previous-x = self.mouse-x;
@@ -128,13 +204,14 @@ export component ViewerWindow inherits Window {
                                 if !root.image-mode { root.select-point(self.mouse-x / 1px, self.mouse-y / 1px, event.modifiers.shift); }
                             }
                         }
-                        moved => { if self.pressed {
+                        moved => { if self.pressed && !root.web-mode {
                             if root.image-mode {
                                 root.image-drag((self.mouse-x - self.previous-x) / 1px, (self.mouse-y - self.previous-y) / 1px);
                                 self.previous-x = self.mouse-x; self.previous-y = self.mouse-y;
                             } else { root.select-point(self.mouse-x / 1px, self.mouse-y / 1px, true); }
                         } }
                         scroll-event(event) => {
+                            if root.web-mode { return accept; }
                             if root.image-mode && event.modifiers.control {
                                 root.image-zoom(event.delta-y / 1px, self.mouse-x / 1px, self.mouse-y / 1px);
                             } else { root.scroll(-event.delta-x / 1px, -event.delta-y / 1px); }
@@ -142,24 +219,32 @@ export component ViewerWindow inherits Window {
                         }
                     }
                 }
-                PositionBar { position: root.position; extent: root.vertical-extent; accent: root.accent;
-                    visible: root.vertical-extent < 1; min-width: root.vertical-extent < 1 ? 14px : 0px;
-                    max-width: root.vertical-extent < 1 ? 14px : 0px;
-                    seek(value) => { root.seek(value); } }
+                Rectangle {
+                    // New page widths and Fit/1:1 keep one physical viewport.
+                    // A newly necessary bar must not end a captured drag.
+                    min-width: 14px;
+                    max-width: 14px;
+                    vbar := PositionBar { width: parent.width; height: parent.height;
+                        context-key: root.position-context;
+                        position: root.position; extent: root.vertical-extent; accent: root.accent;
+                        visible: root.vertical-extent < 1;
+                        seek(value) => { root.seek(value); } }
+                }
             }
             HorizontalLayout {
-                height: root.horizontal-extent < 1 ? 16px : 0px;
-                visible: root.horizontal-extent < 1;
+                height: 16px;
                 PositionBar { horizontal: true; position: root.horizontal-position; extent: root.horizontal-extent;
+                    context-key: root.position-context;
+                    visible: root.horizontal-extent < 1;
                     accent: root.accent; seek(value) => { root.pan(value); } }
             }
-            if root.compact && root.image-mode: Text {
-                height: 18px; text: root.status; color: root.foreground;
-                font-size: 11px; overflow: elide;
+            if root.compact && (root.image-mode || root.source-mode): Text {
+                height: max(18px, root.status-size + 6px); text: root.status; color: root.foreground;
+                font-size: root.status-size; overflow: elide; vertical-alignment: center;
             }
             HorizontalLayout {
-                height: 28px;
-                Text { visible: !root.image-mode || !root.compact; min-width: 0px; max-width: root.image-mode && root.compact ? 0px : 1000000px; text: root.status; color: root.foreground; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                height: root.control-height;
+                Text { visible: !(root.image-mode || root.source-mode) || !root.compact; min-width: 0px; max-width: (root.image-mode || root.source-mode) && root.compact ? 0px : 1000000px; text: root.status; color: root.foreground; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                 if root.image-mode: HorizontalLayout {
                     spacing: 3px;
                     if root.document-page > 0: HorizontalLayout {
@@ -179,9 +264,14 @@ export component ViewerWindow inherits Window {
                     Text { text: "\{round(root.zoom-percent * 10) / 10}%"; color: root.foreground; vertical-alignment: center; }
                     Button { min-width: root.compact ? 26px : 0px; max-width: root.compact ? 26px : 1000000px; text: "+"; accessible-label: "Zoom image in"; clicked => { root.image-command(2); content-focus.focus(); } }
                 }
-                if !root.image-mode: CheckBox { text: "Wrap"; checked: root.wrap-enabled; enabled: root.wrap-available;
+                if !root.image-mode && !root.web-mode: CheckBox { text: "Wrap"; checked <=> root.wrap-enabled; enabled: root.wrap-available;
                     accessible-label: "Word wrap";
                     toggled => { root.change-wrap(self.checked); content-focus.focus(); } }
+                if !root.image-mode && root.font-available && !root.source-mode && !root.markdown-mode: Button {
+                    text: "Aa"; min-width: 30px; max-width: 38px;
+                    accessible-label: "Font and presentation";
+                    clicked => { root.typography-visible = !root.typography-visible; }
+                }
                 if !root.image-mode: ComboBox { model: root.modes; current-index: root.mode-index;
                     accessible-label: "Viewer mode"; width: 130px;
                     selected(value) => { root.change-mode(self.current-index); } }

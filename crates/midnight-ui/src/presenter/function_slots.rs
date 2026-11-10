@@ -37,7 +37,7 @@ fn label_icon<'a>(id: &str, label: &'a str) -> (&'a str, i32) {
         "panel.drive-info" => ("Drive info", 12),
         "files.attributes" => ("Attributes", 12),
         "files.case" => ("Case", 1),
-        "files.checksums" => ("Checksums", 12),
+        "files.checksums" => ("Checksums", 15),
         "sort.name" => ("Name", 13),
         "sort.extension" => ("Extension", 13),
         "sort.modified" => ("Modified", 13),
@@ -106,6 +106,7 @@ mod tests {
         assert!(cache.control_slot(1, true).action.is_empty());
         assert_eq!(cache.control_slot(7, false).action, "files.checksums");
         assert_eq!(cache.control_slot(7, false).label, "Checksums");
+        assert_eq!(cache.control_slot(7, false).icon, 15);
         assert!(cache.control_slot(10, false).action.is_empty());
         assert!(cache.control_slot(-1, false).action.is_empty());
         assert!(cache.control_slot(12, false).action.is_empty());

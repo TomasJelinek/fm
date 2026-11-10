@@ -53,6 +53,9 @@ if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
 powershell.exe -NoLogo -NoProfile -File scripts\build-native-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+powershell.exe -NoLogo -NoProfile -File scripts\build-network-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
 powershell.exe -NoLogo -NoProfile -File scripts\build-viewers.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build

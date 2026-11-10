@@ -46,12 +46,12 @@ impl Aggregate {
             ..Self::default()
         };
         for (path, size) in sizes {
-            aggregate.update(path, Some(*size));
+            aggregate.update(path, Some(size));
         }
         aggregate
     }
 
-    pub(crate) fn update(&mut self, path: &Path, size: Option<FolderSize>) -> bool {
+    pub(crate) fn update(&mut self, path: &Path, size: Option<&FolderSize>) -> bool {
         if !self.eligible.contains(path) {
             return false;
         }
@@ -133,7 +133,7 @@ mod tests {
     fn cache(values: &[(&str, FolderSize)]) -> HashMap<PathBuf, FolderSize> {
         values
             .iter()
-            .map(|(name, size)| (Path::new("active").join(name), *size))
+            .map(|(name, size)| (Path::new("active").join(name), size.clone()))
             .collect()
     }
 
@@ -187,11 +187,11 @@ mod tests {
                 ..Default::default()
             }
         );
-        assert!(totals.update(path, Some(size(5, false, 0))));
-        assert!(totals.update(path, Some(size(11, false, 0))));
+        assert!(totals.update(path, Some(&size(5, false, 0))));
+        assert!(totals.update(path, Some(&size(11, false, 0))));
         assert_eq!(totals.summary().partial_bytes, Some(11));
         assert_eq!(totals.summary().complete_bytes, Some(0));
-        assert!(totals.update(path, Some(size(13, true, 0))));
+        assert!(totals.update(path, Some(&size(13, true, 0))));
         assert_eq!(
             totals.summary(),
             Summary {
@@ -202,7 +202,7 @@ mod tests {
                 partial_bytes: Some(0),
             }
         );
-        assert!(!totals.update(path, Some(size(13, true, 0))));
+        assert!(!totals.update(path, Some(&size(13, true, 0))));
         assert!(totals.update(path, None));
         assert_eq!(totals.summary().complete, 0);
         assert_eq!(totals.summary().complete_bytes, Some(0));
@@ -250,9 +250,9 @@ mod tests {
             5,
         );
         let mut totals = Aggregate::new(selected, &entries, &HashMap::new());
-        assert!(!totals.update(Path::new("active/e\u{301}"), Some(size(999, true, 0))));
-        assert!(!totals.update(Path::new("active/文档.txt"), Some(size(999, true, 0))));
-        assert!(totals.update(Path::new("active/é"), Some(size(17, true, 0))));
+        assert!(!totals.update(Path::new("active/e\u{301}"), Some(&size(999, true, 0))));
+        assert!(!totals.update(Path::new("active/文档.txt"), Some(&size(999, true, 0))));
+        assert!(totals.update(Path::new("active/é"), Some(&size(17, true, 0))));
         assert_eq!(totals.summary().complete_bytes, Some(17));
         assert_eq!(totals.summary().complete, 1);
     }
@@ -276,10 +276,10 @@ mod tests {
         );
         assert_eq!(totals.summary().complete, 2);
         assert_eq!(totals.summary().complete_bytes, None);
-        assert!(totals.update(Path::new("active/other"), Some(size(0, true, 0))));
+        assert!(totals.update(Path::new("active/other"), Some(&size(0, true, 0))));
         assert_eq!(totals.summary().complete_bytes, Some(u64::MAX));
-        assert!(totals.update(Path::new("active/huge"), Some(size(u64::MAX, false, 0))));
-        assert!(totals.update(Path::new("active/other"), Some(size(1, false, 0))));
+        assert!(totals.update(Path::new("active/huge"), Some(&size(u64::MAX, false, 0))));
+        assert!(totals.update(Path::new("active/other"), Some(&size(1, false, 0))));
         assert_eq!(totals.summary().complete_bytes, Some(0));
         assert_eq!(totals.summary().partial_bytes, None);
     }

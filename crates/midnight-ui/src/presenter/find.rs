@@ -3,17 +3,23 @@ use super::*;
 
 pub(crate) struct FindForm {
     pub masks: String,
+    pub name_mode: FilterMode,
     pub recursive: bool,
     pub name_case: bool,
     pub content: Option<FindContentQuery>,
+    pub modified_within: Option<std::time::Duration>,
+    pub duplicates: bool,
 }
 impl Default for FindForm {
     fn default() -> Self {
         Self {
             masks: "*.*".into(),
+            name_mode: FilterMode::Masks,
             recursive: true,
             name_case: false,
             content: None,
+            modified_within: None,
+            duplicates: false,
         }
     }
 }
@@ -21,6 +27,10 @@ impl Default for FindForm {
 #[derive(Default)]
 pub(crate) struct FindState {
     pub sessions: HashMap<FindSessionId, FindSession>,
+    // Window refresh runs under an immutable Presenter borrow. Retain replaced
+    // row-order owners here until the normal backend reclamation drain, without
+    // borrowing the whole Presenter mutably from a synchronous Slint callback.
+    retired_orders: std::cell::RefCell<Vec<Arc<FindOrder>>>,
     next_session: u64,
     next_validation: u64,
 }
@@ -30,8 +40,13 @@ pub(crate) struct FindSession {
     pub roots: Vec<PathBuf>,
     pub generation: FindGeneration,
     pub results: Vec<Arc<FindResult>>,
+    pub order: Option<Arc<FindOrder>>,
+    pub sort: FindSortSpec,
+    pub sort_revision: u64,
+    pub current_directory: Option<Arc<PathBuf>>,
     pub running: bool,
     pub stopping: bool,
+    pub duplicates: bool,
     pub progress: FindProgress,
     pub summary: Option<FindSummary>,
     pub error: String,
@@ -39,6 +54,10 @@ pub(crate) struct FindSession {
 }
 
 impl FindState {
+    pub(super) fn take_retired_orders(&mut self) -> Vec<Arc<FindOrder>> {
+        std::mem::take(self.retired_orders.get_mut())
+    }
+
     fn session_mut(&mut self, id: &FindSessionId) -> Option<&mut FindSession> {
         let session = self.sessions.get_mut(id)?;
         session.revision = session.revision.wrapping_add(1);
@@ -47,6 +66,9 @@ impl FindState {
 }
 
 impl Presenter {
+    pub(crate) fn retire_find_order(&self, order: Arc<FindOrder>) {
+        self.finds.retired_orders.borrow_mut().push(order);
+    }
     pub(crate) fn create_find(&mut self, pane: PaneId) -> Option<FindSessionId> {
         if self.finds.sessions.len() >= MAX_FIND_SESSIONS {
             self.desktop.report(
@@ -69,8 +91,13 @@ impl Presenter {
                 roots: vec![self.panes[pane.index()].display_path().to_owned()],
                 generation: FindGeneration(0),
                 results: vec![],
+                order: None,
+                sort: FindSortSpec::default(),
+                sort_revision: 0,
+                current_directory: None,
                 running: false,
                 stopping: false,
+                duplicates: false,
                 progress: FindProgress::default(),
                 summary: None,
                 error: String::new(),
@@ -128,9 +155,13 @@ impl Presenter {
         };
         let mut request = FindRequest::new(id, generation, s.roots.clone());
         request.masks = form.masks;
+        request.name_mode = form.name_mode;
+        request.sort = s.sort;
         request.recursive = form.recursive;
         request.name_case_sensitive = form.name_case;
         request.content = form.content;
+        request.modified_within = form.modified_within;
+        request.duplicates = form.duplicates;
         if let Err(error) = request.validate() {
             s.error = error.into();
             return false;
@@ -141,13 +172,46 @@ impl Presenter {
         }
         s.generation = generation;
         s.running = true;
+        s.duplicates = form.duplicates;
         s.stopping = false;
         s.error.clear();
         s.pending = None;
         s.progress = FindProgress::default();
+        s.current_directory = None;
+        s.sort_revision = 0;
+        self.retired.push(Box::new(s.order.take()));
         self.retired.push(Box::new(mem::take(&mut s.results)));
         self.retired.push(Box::new(s.summary.take()));
         true
+    }
+
+    pub(crate) fn sort_find(
+        &mut self,
+        id: FindSessionId,
+        column: FindSortColumn,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(s) = self.finds.session_mut(&id) else {
+            return;
+        };
+        let Some(revision) = s.sort_revision.checked_add(1) else {
+            return;
+        };
+        let sort = FindSortSpec {
+            column,
+            descending: s.sort.column == column && !s.sort.descending,
+        };
+        if send(Command::SortFind(FindSortRequest {
+            session: id,
+            generation: s.generation,
+            revision,
+            sort,
+        })) {
+            s.sort_revision = revision;
+            s.sort = sort;
+        } else {
+            s.error = "Sort queue is busy. Try again.".into();
+        }
     }
 
     pub(crate) fn stop_find(&mut self, id: FindSessionId, send: &dyn Fn(Command) -> bool) {
@@ -162,6 +226,7 @@ impl Presenter {
             generation: s.generation,
         }) {
             s.stopping = true;
+            self.retired.push(Box::new(s.current_directory.take()));
             s.error.clear();
         } else {
             s.error = "Cancellation queue is busy. Try Stop again.".into();
@@ -280,18 +345,44 @@ impl Presenter {
         match event.update {
             FindUpdate::Started => {}
             FindUpdate::Batch(batch) => {
-                // Both boundaries enforce the protocol budget; at most 64 shared rows per event.
+                // Ordinary batches contain at most 64 rows. A verified duplicate
+                // group is atomic and can occupy the complete retained-row budget.
                 let remaining = FindLimits::default()
                     .max_results
                     .saturating_sub(s.results.len());
-                s.results.extend(batch.iter().take(remaining).cloned());
+                if batch.len() <= remaining {
+                    s.results.extend(batch.iter().cloned());
+                } else {
+                    s.error = "Search result batch exceeded the retained result limit.".into();
+                }
                 self.retired.push(Box::new(batch));
             }
             FindUpdate::Progress(progress) => s.progress = progress,
+            FindUpdate::CurrentDirectory(path) => {
+                if s.running && !s.stopping {
+                    self.retired
+                        .push(Box::new(s.current_directory.replace(path)));
+                } else {
+                    self.retired.push(Box::new(path));
+                }
+            }
+            FindUpdate::Sorted(order) => {
+                if order.revision == s.sort_revision && order.ids.len() == s.results.len() {
+                    self.retired.push(Box::new(s.order.replace(order)));
+                } else {
+                    self.retired.push(Box::new(order));
+                }
+            }
+            FindUpdate::SortFailed { revision, error } => {
+                if revision == s.sort_revision {
+                    s.error = error.to_string();
+                }
+            }
             FindUpdate::Finished(summary) => {
                 s.running = false;
                 s.stopping = false;
                 s.progress = summary.progress.clone();
+                self.retired.push(Box::new(s.current_directory.take()));
                 self.retired.push(Box::new(s.summary.replace(summary)));
             }
         }

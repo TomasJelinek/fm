@@ -3,6 +3,7 @@ import { Theme } from "theme.slint";
 
 // Shared native modeless tool-window theme, minimum size and Escape routing.
 export component ToolWindow inherits Window {
+    icon: @image-url("../../../assets/branding/midnight-explorer.png");
     preferred-width: 860px; preferred-height: 620px;
     min-width: 320px; min-height: 200px;
     background: Theme.window-background;
@@ -15,9 +16,9 @@ export component ToolWindow inherits Window {
         Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
     }
     scope := FocusScope {
-        min-width: 0px; min-height: 0px;
+        x: 0px; y: 0px; width: root.width; height: root.height;
         preferred-width: 0px; preferred-height: 0px;
-        capture-key-pressed(event) => {
+        key-pressed(event) => {
             if event.text == Key.Escape { root.request-close(); return accept; }
             reject
         }

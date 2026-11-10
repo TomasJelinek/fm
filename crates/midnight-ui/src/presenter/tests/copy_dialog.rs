@@ -17,6 +17,33 @@ fn loaded() -> (Presenter, PathBuf) {
     (p, root)
 }
 
+#[test]
+fn copy_and_move_confirmation_snapshot_the_committed_verification_policy() {
+    for moving in [false, true] {
+        for enabled in [false, true] {
+            let (mut p, root) = loaded();
+            p.preferences.values.copy_checksum_verification = enabled;
+            if moving {
+                p.request_move_dialog(PaneId::Left, &|_| true);
+            } else {
+                p.request_copy_dialog(PaneId::Left, &|_| true);
+            }
+            let token = p.copies.draft.as_ref().unwrap().token.clone();
+            let commands = RefCell::new(Vec::new());
+            p.confirm_copy_dialog(&token, root.join("target").to_str().unwrap(), &|command| {
+                commands.borrow_mut().push(command);
+                true
+            });
+            p.preferences.values.copy_checksum_verification = !enabled;
+            let expected = TransferVerification::from_checksum_enabled(enabled);
+            assert_eq!(p.copies.progress.last().unwrap().verification, expected);
+            assert!(commands.borrow().iter().any(|command| matches!(command,
+                Command::EnqueueSelectedCopy(request) | Command::EnqueueSelectedMove(request)
+                    if request.verification == expected)));
+        }
+    }
+}
+
 pub(in crate::presenter) fn assert_native_destination_is_preserved(name: std::ffi::OsString) {
     let (mut p, root) = loaded();
     let target = root.join(name);
@@ -99,7 +126,7 @@ fn copy_dialog_captures_selection_and_other_panel_path_before_selection_finishes
             navigation: request.navigation,
             revision: request.revision,
             selection: selection.clone(),
-            deferred: false,
+            deferred: Default::default(),
         },
         &send,
     );
@@ -190,7 +217,7 @@ fn f6_move_captures_selection_and_destination_and_confirms_once() {
     let (mut p, root) = loaded();
     p.request_move_dialog(PaneId::Left, &|_| panic!("Opening F6 performs no I/O"));
     let draft = p.copies.draft.as_ref().unwrap();
-    assert_eq!(draft.intent, TransferIntent::RecoverableMove);
+    assert_eq!(draft.intent, TransferIntent::Move);
     let token = draft.token.clone();
     let destination = draft.destination.clone();
     p.focus_display_row(PaneId::Left, 2);
@@ -210,7 +237,7 @@ fn f6_move_captures_selection_and_destination_and_confirms_once() {
     assert_eq!(request.files.fallback, Some(root.join("first.txt")));
     assert_eq!(
         p.copies.progress.last().unwrap().intent,
-        TransferIntent::RecoverableMove
+        TransferIntent::Move
     );
 }
 
@@ -257,7 +284,7 @@ fn clipboard_move_retains_shared_raw_paths_and_original_destination_after_busy_r
     assert!(p.copies.draft.is_none());
     assert_eq!(
         p.copies.progress.last().unwrap().intent,
-        TransferIntent::RecoverableMove
+        TransferIntent::Move
     );
 }
 
@@ -284,7 +311,7 @@ fn f6_waits_for_the_exact_pending_selection_revision() {
             navigation: request.navigation,
             revision: request.revision,
             selection: selection.clone(),
-            deferred: false,
+            deferred: Default::default(),
         },
         &send,
     );
@@ -294,7 +321,7 @@ fn f6_waits_for_the_exact_pending_selection_revision() {
         panic!("native selection");
     };
     assert!(Arc::ptr_eq(&files.selection, &selection));
-    assert_eq!(draft.intent, TransferIntent::RecoverableMove);
+    assert_eq!(draft.intent, TransferIntent::Move);
 }
 
 #[test]
@@ -352,7 +379,7 @@ fn required_modified_time_preserves_captured_copy_and_move_after_queue_retry() {
         assert_eq!(
             request.intent,
             if moving {
-                TransferIntent::RecoverableMove
+                TransferIntent::Move
             } else {
                 TransferIntent::Copy
             }
@@ -445,7 +472,7 @@ fn clipboard_required_metadata_retains_original_raw_payload_and_intent() {
             let Command::EnqueueTransferWithMetadata(request) = command else {
                 panic!("metadata command");
             };
-            assert_eq!(request.intent, TransferIntent::RecoverableMove);
+            assert_eq!(request.intent, TransferIntent::Move);
             assert_eq!(
                 request.metadata,
                 TransferMetadataPolicy::RequireModifiedTime
@@ -466,20 +493,23 @@ fn archive_required_metadata_refuses_forged_option_without_native_access() {
     let (mut p, root) = loaded();
     p.request_copy_dialog(PaneId::Left, &|_| true);
     let draft = p.copies.draft.as_mut().unwrap();
-    draft.input = crate::presenter::copy_dialog::CopyDraftInput::Archive(ArchiveCopyRequest {
-        id: OperationId(0),
-        location: ArchiveLocation::unavailable(ArchiveAddress {
-            provider: "fake.archive".into(),
-            container: root.join("source.zip"),
-            source_version: vec![1],
-            components: vec![],
-        }),
-        entries: Arc::from([]),
-        view: Arc::default(),
-        selected: Arc::default(),
-        fallback: Some(EntryId(2)),
-        destination: root.join("target"),
-    });
+    draft.input =
+        crate::presenter::copy_dialog::CopyDraftInput::Archive(Box::new(ArchiveCopyRequest {
+            verification: midnight_core::TransferVerification::default(),
+            id: OperationId(0),
+            location: ArchiveLocation::unavailable(ArchiveAddress {
+                format: None,
+                provider: "fake.archive".into(),
+                container: root.join("source.zip"),
+                source_version: vec![1],
+                components: vec![],
+            }),
+            entries: Arc::from([]),
+            view: Arc::default(),
+            selected: Arc::default(),
+            fallback: Some(EntryId(2)),
+            destination: root.join("target"),
+        }));
     assert!(!draft.metadata_available());
     let token = draft.token.clone();
     let target = draft.destination.clone();

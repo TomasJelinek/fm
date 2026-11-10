@@ -13,7 +13,7 @@ use std::{
 };
 
 static TEMPORARIES: AtomicU64 = AtomicU64::new(1);
-pub(super) struct Root {
+pub(crate) struct Root {
     directory: File,
 }
 pub(super) struct Temporary {
@@ -50,6 +50,9 @@ fn regular(file: File) -> io::Result<File> {
 }
 
 impl Root {
+    pub(crate) fn directory(&self) -> &File {
+        &self.directory
+    }
     pub fn open(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
             return Err(io::Error::other("Cache root must be absolute"));
@@ -95,6 +98,30 @@ impl Root {
             Mode::empty(),
         )?))
     }
+    pub fn bucket(&self, name: &str, create: bool) -> io::Result<Option<Self>> {
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+        let directory = match fs::openat(&self.directory, name, flags, Mode::empty()) {
+            Ok(directory) => directory,
+            Err(rustix::io::Errno::NOENT) if create => {
+                match fs::mkdirat(&self.directory, name, Mode::RUSR | Mode::WUSR | Mode::XUSR) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                fs::openat(&self.directory, name, flags, Mode::empty())?
+            }
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let directory = File::from(directory);
+        let metadata = directory.metadata()?;
+        if metadata.uid() != geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Cache bucket must be owned and mode 0700",
+            ));
+        }
+        Ok(Some(Self { directory }))
+    }
     pub fn lock_file(&self) -> io::Result<(File, bool)> {
         let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
         match fs::openat(
@@ -116,7 +143,7 @@ impl Root {
             Err(error) => Err(error.into()),
         }
     }
-    pub fn temporary(&self) -> io::Result<Temporary> {
+    pub(super) fn temporary(&self) -> io::Result<Temporary> {
         for _ in 0..16 {
             let name = format!(
                 "owned-{}-{}.tmp",
@@ -143,7 +170,7 @@ impl Root {
         }
         Err(io::Error::other("Cache temporary names exhausted"))
     }
-    pub fn publish(&self, mut temporary: Temporary, name: &str) -> io::Result<()> {
+    pub(super) fn publish(&self, mut temporary: Temporary, name: &str) -> io::Result<()> {
         let owned = temporary.file.metadata()?;
         let named = fs::statat(&self.directory, &temporary.name, AtFlags::SYMLINK_NOFOLLOW)?;
         if owned.ino() != named.st_ino || owned.dev() != named.st_dev {

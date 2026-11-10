@@ -11,18 +11,21 @@ use slint::{
     ComponentHandle,
     platform::{Key, PointerEventButton, WindowEvent},
 };
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 struct Harness {
     ui: ui::TestUi,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
     send: Rc<dyn Fn(Command) -> bool>,
-    right: PathBuf,
 }
 
 impl Harness {
     fn new() -> Self {
+        Self::with_targets(1)
+    }
+
+    fn with_targets(count: usize) -> Self {
         let mut ui = ui::TestUi::new();
         let left = std::env::temp_dir().join("drag source 文档");
         let right = std::env::temp_dir().join("drag target & $(literal)");
@@ -50,17 +53,28 @@ impl Harness {
                 })
                 .unwrap();
             let entries = if pane == PaneId::Left {
-                vec![Entry::new(
-                    EntryId(1),
-                    path.join("file 文档.bin"),
-                    EntryKind::File,
-                )]
+                vec![
+                    Entry::new(EntryId(1), path.join("file 文档.bin"), EntryKind::File),
+                    Entry::new(
+                        EntryId(3),
+                        path.join("local destination"),
+                        EntryKind::Directory,
+                    ),
+                ]
             } else {
-                vec![Entry::new(
-                    EntryId(2),
-                    path.join("hovered subfolder"),
-                    EntryKind::Directory,
-                )]
+                (0..count)
+                    .map(|index| {
+                        Entry::new(
+                            EntryId(index as u64 + 2),
+                            path.join(if index == 0 {
+                                "hovered subfolder".to_owned()
+                            } else {
+                                format!("Folder {index:03}")
+                            }),
+                            EntryKind::Directory,
+                        )
+                    })
+                    .collect()
             };
             presenter.borrow_mut().apply(Event::ListingFinished {
                 pane,
@@ -76,7 +90,6 @@ impl Harness {
             presenter,
             commands,
             send,
-            right,
         }
     }
 
@@ -160,7 +173,7 @@ impl Harness {
 }
 
 #[test]
-fn internal_fallback_highlights_the_panel_and_commits_only_its_native_directory() {
+fn internal_drop_highlights_the_exact_folder_and_captures_its_identity() {
     let mut h = Harness::new();
     let id = h.start();
     h.prepared(id);
@@ -171,11 +184,8 @@ fn internal_fallback_highlights_the_panel_and_commits_only_its_native_directory(
         });
     h.ui.draw();
     assert_eq!(h.ui.window.get_drag_hover_pane(), 1);
-    let highlight = ui::root_item(&h.ui.window, "Copy into this panel", AccessibleRole::Text);
-    assert!(
-        highlight.geometry().size.width > 300.0,
-        "feedback covers the list, not a folder row"
-    );
+    assert_eq!(h.ui.window.get_drag_hover_row(), 1);
+    assert!(h.ui.window.get_drag_label().contains("hovered subfolder"));
     render::snapshot(&h.ui, "drag-copy-target");
     h.release();
     assert!(!h.ui.window.get_drag_active());
@@ -183,21 +193,23 @@ fn internal_fallback_highlights_the_panel_and_commits_only_its_native_directory(
     let drops: Vec<_> = commands
         .iter()
         .filter_map(|command| match command {
-            Command::InternalDrop {
-                id: actual,
-                target,
-                targets_revision,
-            } => {
-                assert_eq!(*actual, id);
-                assert!(*targets_revision > 0);
-                Some(target)
+            Command::InternalDrop(request) => {
+                assert_eq!(request.id, id);
+                assert_eq!(request.intent, InternalDropIntent::Auto);
+                Some(&request.destination)
             }
             _ => None,
         })
         .collect();
     assert_eq!(drops.len(), 1);
-    assert_eq!(drops[0].pane, PaneId::Right);
-    assert_eq!(*drops[0].directory, h.right);
+    assert!(matches!(
+        drops[0],
+        InternalDropDestination::PanelEntry {
+            pane: PaneId::Right,
+            entry: EntryId(2),
+            ..
+        }
+    ));
     assert!(
         !commands
             .iter()
@@ -218,10 +230,12 @@ fn release_escape_and_navigation_cannot_be_revived_by_late_preparation() {
         h.prepared(id);
         h.release();
         assert!(!h.ui.window.get_drag_active());
-        assert!(!h.commands.borrow().iter().any(|command| matches!(
-            command,
-            Command::StartDrag(_) | Command::InternalDrop { .. }
-        )));
+        assert!(
+            !h.commands
+                .borrow()
+                .iter()
+                .any(|command| matches!(command, Command::StartDrag(_) | Command::InternalDrop(_)))
+        );
         assert!(h.commands.borrow().iter().any(|command| matches!(command,
             Command::CancelDrag(actual) if *actual == id)));
     }
@@ -312,6 +326,224 @@ fn touch_scrolling_and_right_button_movement_never_prepare_file_drags() {
                 .borrow()
                 .iter()
                 .any(|command| matches!(command, Command::PrepareDrag { .. }))
+        );
+    }
+}
+
+#[test]
+fn folder_drops_request_volume_default_or_explicit_modifiers_and_reject_link_requests() {
+    let mut h = Harness::new();
+    for (control, shift, link, expected) in [
+        (false, false, false, Some(InternalDropIntent::Auto)),
+        (true, false, false, Some(InternalDropIntent::Copy)),
+        (false, true, false, Some(InternalDropIntent::Move)),
+        (true, true, false, None),
+        (false, false, true, None),
+    ] {
+        let id = h.start();
+        h.prepared(id);
+        let modifiers: Vec<_> = [
+            (control, Key::Control),
+            (shift, Key::Shift),
+            (link, Key::Alt),
+        ]
+        .into_iter()
+        .filter_map(|(held, key)| held.then_some(key))
+        .collect();
+        for key in &modifiers {
+            h.ui.window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed {
+                    text: (*key).into(),
+                });
+        }
+        let position =
+            ui::root_position(&h.ui.window, "local destination", AccessibleRole::ListItem);
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        h.ui.draw();
+        assert_eq!(
+            h.ui.window.get_drag_hover_pane(),
+            if expected.is_some() { 0 } else { -1 }
+        );
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        for key in modifiers.iter().rev() {
+            h.ui.window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased {
+                    text: (*key).into(),
+                });
+        }
+        let commands = h.commands.borrow();
+        let drop = commands.iter().find_map(|command| match command {
+            Command::InternalDrop(request) if request.id == id => Some(request),
+            _ => None,
+        });
+        assert_eq!(drop.map(|request| request.intent), expected);
+        if let Some(request) = drop {
+            assert!(matches!(
+                request.destination,
+                InternalDropDestination::PanelEntry {
+                    pane: PaneId::Left,
+                    entry: EntryId(3),
+                    ..
+                }
+            ));
+        }
+    }
+}
+
+#[test]
+fn folder_targets_follow_actual_scrolled_cells_in_details_brief_and_thumbnail_modes() {
+    use slint::Model;
+    let mut h = Harness::with_targets(100);
+    for mode in [0, 1, 2] {
+        h.ui.window.set_right_view_mode(mode);
+        h.ui.window.invoke_scroll_selection(1, 100000.0);
+        h.ui.draw();
+        for offset in [0.0, -100.0] {
+            h.ui.window.invoke_scroll_selection(1, offset);
+            h.ui.draw();
+            let first = h.ui.window.get_right_visible_row_start().max(1);
+            let last = h.ui.window.get_right_visible_row_end();
+            let mut checked = 0;
+            let id = h.start();
+            h.prepared(id);
+            for row in first..last.min(first + 20) {
+                let item = h.ui.window.get_right_rows().row_data(row as usize).unwrap();
+                // Brief view's bounding row range also spans cells in other columns
+                // that are not instantiated at this vertical scroll offset.
+                let Some(position) =
+                    ui::try_root_position(&h.ui.window, &item.name, AccessibleRole::ListItem)
+                else {
+                    continue;
+                };
+                let top = h.ui.window.get_right_list_top();
+                if position.y < top || position.y >= top + h.ui.window.get_right_list_height() {
+                    continue;
+                }
+                h.ui.window
+                    .window()
+                    .dispatch_event(WindowEvent::PointerMoved { position });
+                h.ui.draw();
+                assert_eq!(
+                    h.ui.window.get_drag_hover_row(),
+                    row,
+                    "mode {mode}, scroll {offset}"
+                );
+                assert!(h.ui.window.get_drag_label().contains(item.name.as_str()));
+                checked += 1;
+            }
+            assert!(checked > 0);
+            ui::key(&h.ui.window, Key::Escape);
+            h.ui.window
+                .window()
+                .dispatch_event(WindowEvent::PointerReleased {
+                    position: slint::LogicalPosition::new(0.0, 0.0),
+                    button: PointerEventButton::Left,
+                });
+            assert!(!h.commands.borrow().iter().any(
+                |command| matches!(command, Command::InternalDrop(request) if request.id == id)
+            ));
+        }
+    }
+}
+
+#[test]
+fn scrolling_during_a_stationary_drag_drops_on_the_newly_visible_folder() {
+    use slint::Model;
+    let mut h = Harness::with_targets(100);
+    for mode in [0, 1, 2] {
+        h.ui.window.set_right_view_mode(mode);
+        h.ui.window.invoke_scroll_selection(1, 100000.0);
+        h.ui.draw();
+        let id = h.start();
+        h.prepared(id);
+        let position = h.target();
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        h.ui.draw();
+        assert!(h.ui.window.get_drag_label().contains("hovered subfolder"));
+
+        let next_row = if mode == 2 {
+            1 + h.ui.window.get_right_view_columns()
+        } else {
+            2
+        };
+        let next =
+            h.ui.window
+                .get_right_rows()
+                .row_data(next_row as usize)
+                .unwrap();
+        h.ui.window
+            .invoke_scroll_selection(1, -h.ui.window.get_right_view_row_height());
+        h.ui.draw();
+        let next_position = ui::root_position(&h.ui.window, &next.name, AccessibleRole::ListItem);
+        assert!((next_position.x - position.x).abs() < 1.0);
+        assert!((next_position.y - position.y).abs() < 1.0);
+        // No pointer-moved event follows scrolling. Release must read the live layout,
+        // not the last highlighted folder or a row cached before the scroll.
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        let commands = h.commands.borrow();
+        let request = commands.iter().find_map(|command| match command {
+            Command::InternalDrop(request) if request.id == id => Some(request),
+            _ => None,
+        });
+        assert!(matches!(
+            &request.expect("stationary drag still drops into the visible folder").destination,
+            InternalDropDestination::PanelEntry {
+                pane: PaneId::Right,
+                entry,
+                ..
+            } if *entry == EntryId(next_row as u64 + 1)
+        ));
+    }
+}
+
+#[test]
+fn parent_file_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
+    let mut h = Harness::new();
+    for kind in 0..3 {
+        let id = h.start();
+        h.prepared(id);
+        let position = match kind {
+            0 => slint::LogicalPosition::new(
+                h.ui.window.get_right_list_left() + 70.0,
+                h.ui.window.get_right_list_top() + h.ui.window.get_right_view_row_height() / 2.0,
+            ),
+            1 => ui::root_position(&h.ui.window, "file 文档.bin", AccessibleRole::ListItem),
+            _ => slint::LogicalPosition::new(
+                h.ui.window.get_right_list_left() + h.ui.window.get_right_list_width() - 2.0,
+                h.ui.window.get_right_list_top() + 20.0,
+            ),
+        };
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        h.ui.draw();
+        assert_eq!(h.ui.window.get_drag_hover_pane(), -1);
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        assert!(
+            !h.commands.borrow().iter().any(
+                |command| matches!(command, Command::InternalDrop(request) if request.id == id)
+            )
         );
     }
 }

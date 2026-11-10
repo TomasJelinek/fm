@@ -34,6 +34,8 @@ fn document() -> DocumentPage {
             length: 6,
         },
         blocks: vec![Block {
+            table: None,
+            strikethrough: None,
             kind: BLOCK_HEADING,
             depth: 0,
             heading_level: 2,
@@ -151,5 +153,119 @@ fn binary_page_metadata_never_requests_oversized_or_wrapped_content() {
         }
         .validate()
         .is_err()
+    );
+}
+
+// Encode the additive metadata explicitly so this also exercises the wire boundary.
+fn encoded_table_cell(start: u32, end: u32, alignment: u8) -> Vec<u8> {
+    let page = document();
+    let block = &page.blocks[0];
+    let mut encoder = minicbor::Encoder::new(Vec::new());
+    encoder.map(5).unwrap().u8(0).unwrap().u64(1).unwrap();
+    encoder.u8(1).unwrap().encode(&page.source).unwrap();
+    encoder.u8(2).unwrap().array(1).unwrap().map(6).unwrap();
+    encoder.u8(0).unwrap().u16(BLOCK_PARAGRAPH).unwrap();
+    encoder.u8(1).unwrap().u8(0).unwrap();
+    encoder.u8(2).unwrap().u8(0).unwrap();
+    encoder.u8(3).unwrap().encode(&block.text).unwrap();
+    encoder.u8(4).unwrap().array(0).unwrap();
+    encoder.u8(5).unwrap().map(2).unwrap();
+    encoder.u8(0).unwrap().array(1).unwrap().map(3).unwrap();
+    encoder.u8(0).unwrap().u32(start).unwrap();
+    encoder.u8(1).unwrap().u32(end).unwrap();
+    encoder.u8(2).unwrap().u8(alignment).unwrap();
+    encoder.u8(1).unwrap().bool(true).unwrap();
+    encoder.u8(3).unwrap().bool(false).unwrap();
+    encoder.u8(4).unwrap().bool(false).unwrap();
+    encoder.into_writer()
+}
+
+#[test]
+fn table_metadata_rejects_invalid_utf8_ranges_and_alignment_at_wire_boundary() {
+    assert!(codec::decode::<DocumentPage>(&encoded_table_cell(0, 6, 0)).is_ok());
+    for (start, end, alignment) in [(1, 6, 0), (0, 7, 0), (6, 0, 0), (0, 6, 255)] {
+        assert!(
+            codec::decode::<DocumentPage>(&encoded_table_cell(start, end, alignment)).is_err(),
+            "invalid table cell {start}..{end} with alignment {alignment} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn table_and_decoration_metadata_remain_optional_and_bounded() {
+    let mut page = codec::decode::<DocumentPage>(&encoded_table_cell(0, 6, 0)).unwrap();
+    assert_eq!(page.blocks[0].table.as_ref().unwrap().cells[0].end, 6);
+    assert!(page.blocks[0].strikethrough.is_none());
+    page.blocks[0].strikethrough = Some(vec![TextRange { start: 0, end: 6 }]);
+    assert_eq!(
+        codec::decode::<DocumentPage>(&codec::encode(&page).unwrap()).unwrap(),
+        page
+    );
+    for ranges in [
+        vec![TextRange { start: 1, end: 6 }],
+        vec![TextRange { start: 0, end: 0 }],
+        vec![
+            TextRange { start: 0, end: 6 },
+            TextRange { start: 3, end: 6 },
+        ],
+    ] {
+        let mut invalid = page.clone();
+        invalid.blocks[0].strikethrough = Some(ranges);
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = page.clone();
+    invalid.blocks[0].table.as_mut().unwrap().cells = vec![
+        TableCell {
+            start: 0,
+            end: 0,
+            alignment: TABLE_ALIGN_LEFT,
+        };
+        MAX_TABLE_COLUMNS + 1
+    ];
+    assert!(invalid.validate().is_err());
+    let mut invalid = page.clone();
+    invalid.blocks[0]
+        .table
+        .as_mut()
+        .unwrap()
+        .cells
+        .push(TableCell {
+            start: 3,
+            end: 6,
+            alignment: TABLE_ALIGN_LEFT,
+        });
+    assert!(
+        invalid.validate().is_err(),
+        "overlapping cells must be rejected"
+    );
+    let mut invalid = page.clone();
+    invalid.blocks[0].kind = BLOCK_CODE;
+    assert!(invalid.validate().is_err());
+    let mut invalid = page.clone();
+    invalid.blocks[0].strikethrough = Some(vec![TextRange { start: 0, end: 6 }; MAX_SPANS + 1]);
+    assert!(invalid.validate().is_err());
+    let mut block = page.blocks[0].clone();
+    block.table.as_mut().unwrap().cells = vec![
+        TableCell {
+            start: 0,
+            end: 0,
+            alignment: TABLE_ALIGN_LEFT,
+        };
+        MAX_TABLE_COLUMNS
+    ];
+    page.blocks = (0..65)
+        .map(|index| {
+            let mut block = block.clone();
+            block.text.source.offset = 100 + index * 6;
+            for anchor in &mut block.text.anchors {
+                anchor.source_offset += index * 6;
+            }
+            block
+        })
+        .collect();
+    page.source.length = 65 * 6;
+    assert!(
+        page.validate().is_err(),
+        "all rows share the page cell budget"
     );
 }

@@ -12,11 +12,16 @@ use std::{
 };
 
 mod archive_associations;
+mod archive_extensions;
 mod checksums;
+mod file_list;
 mod user_commands;
+mod viewer_associations;
+mod viewers;
 use user_commands::StoredUserCommand;
 mod filename_colors;
 use archive_associations::StoredArchiveAssociations;
+use archive_extensions::StoredArchiveExtensions;
 use filename_colors::StoredFilenameColor;
 mod window_geometry;
 use window_geometry::StoredWindowGeometry;
@@ -25,18 +30,38 @@ use native_path::NativePath;
 #[cfg(test)]
 mod archives_tests;
 #[cfg(test)]
+mod file_list_tests;
+#[cfg(test)]
 mod previews_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 18;
+const CURRENT_PREFERENCES_VERSION: u32 = 28;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    viewer_associations: Option<viewer_associations::StoredAssociations>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    file_list: Option<file_list::StoredFileListPreferences>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    thumbnail_size: Option<u16>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -60,6 +85,12 @@ struct StoredPreferences {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    panel_split_basis_points: Option<u16>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     filename_colors: Option<Vec<StoredFilenameColor>>,
     #[serde(
         default,
@@ -72,9 +103,21 @@ struct StoredPreferences {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    archive_custom_extensions: Option<StoredArchiveExtensions>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     previews: Option<StoredPreviews>,
     #[serde(default, deserialize_with = "present")]
     disabled_viewer_plugins: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    viewer: Option<viewers::StoredViewerPreferences>,
     #[serde(default, deserialize_with = "present")]
     editor: Option<StoredEditor>,
     theme: String,
@@ -95,6 +138,12 @@ struct StoredPreferences {
     size_display: Option<String>,
     #[serde(default, deserialize_with = "present")]
     remember_command_history: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    copy_checksum_verification: Option<bool>,
     #[serde(default, deserialize_with = "present")]
     command_history: Option<Vec<StoredCommandHistory>>,
     #[serde(default, deserialize_with = "present")]
@@ -162,6 +211,39 @@ struct StoredPaneTabs {
     active: usize,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     archives: std::collections::BTreeMap<usize, StoredArchiveAddress>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    networks: std::collections::BTreeMap<usize, StoredNetworkAddress>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredNetworkAddress {
+    version: u32,
+    provider: String,
+    opaque: Vec<u8>,
+    display: String,
+}
+impl StoredNetworkAddress {
+    fn into_address(self) -> io::Result<midnight_core::NetworkAddress> {
+        if self.version != 1 {
+            return Err(invalid("Unsupported network address version"));
+        }
+        let address = midnight_core::NetworkAddress {
+            provider: self.provider,
+            opaque: self.opaque.into(),
+            display: self.display,
+        };
+        address.validate().map_err(invalid)?;
+        Ok(address)
+    }
+    fn from_address(address: midnight_core::NetworkAddress) -> Self {
+        Self {
+            version: 1,
+            provider: address.provider,
+            opaque: address.opaque.to_vec(),
+            display: address.display,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -169,17 +251,29 @@ struct StoredPaneTabs {
 struct StoredArchiveAddress {
     version: u32,
     provider: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    format: Option<String>,
     container: NativePath,
     source_version: Vec<u8>,
     components: Vec<Vec<u8>>,
 }
 impl StoredArchiveAddress {
     fn into_address(self) -> io::Result<midnight_core::ArchiveAddress> {
-        if self.version != 1 {
-            return Err(invalid("unsupported archive address version"));
-        }
+        let format = match (self.version, self.format) {
+            (1, None) => None,
+            (2, Some(id)) => Some(
+                midnight_core::ArchiveFormat::from_id(&id)
+                    .ok_or_else(|| invalid("unknown archive address decoder"))?,
+            ),
+            _ => return Err(invalid("unsupported archive address version or decoder")),
+        };
         let address = midnight_core::ArchiveAddress {
             provider: self.provider,
+            format,
             container: self.container.into_path()?,
             source_version: self.source_version,
             components: self.components,
@@ -189,8 +283,9 @@ impl StoredArchiveAddress {
     }
     fn from_address(address: midnight_core::ArchiveAddress) -> Self {
         Self {
-            version: 1,
+            version: if address.format.is_some() { 2 } else { 1 },
             provider: address.provider,
+            format: address.format.map(|format| format.id().to_owned()),
             container: NativePath::from_path(address.container),
             source_version: address.source_version,
             components: address.components,
@@ -211,6 +306,12 @@ struct StoredBookmark {
     id: u64,
     name: String,
     path: NativePath,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    archive: Option<StoredArchiveAddress>,
     slot: Option<u8>,
 }
 
@@ -235,6 +336,29 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     let stored: StoredPreferences = serde_json::from_slice(bytes).map_err(invalid)?;
     if !(1..=CURRENT_PREFERENCES_VERSION).contains(&stored.version) {
         return Err(invalid("unsupported preferences version"));
+    }
+    let thumbnail_size = match (stored.version, stored.thumbnail_size) {
+        (1..=24, None) => midnight_core::DEFAULT_THUMBNAIL_SIZE,
+        (25..=CURRENT_PREFERENCES_VERSION, Some(size)) => size,
+        _ => return Err(invalid("missing or unexpected thumbnail size")),
+    };
+    if stored.version < 20
+        && (stored
+            .tabs
+            .iter()
+            .flatten()
+            .flat_map(|tabs| tabs.archives.values())
+            .any(|address| address.format.is_some())
+            || stored
+                .bookmarks
+                .iter()
+                .flatten()
+                .filter_map(|bookmark| bookmark.archive.as_ref())
+                .any(|address| address.format.is_some()))
+    {
+        return Err(invalid(
+            "explicit archive decoders require preferences version 20",
+        ));
     }
     if stored.version < 11
         && stored
@@ -291,10 +415,17 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         (3..=CURRENT_PREFERENCES_VERSION, Some(bookmarks)) => bookmarks
             .into_iter()
             .map(|bookmark| {
+                if stored.version < 19 && bookmark.archive.is_some() {
+                    return Err(invalid("archive bookmarks require preferences version 19"));
+                }
                 Ok(Bookmark {
                     id: BookmarkId(bookmark.id),
                     name: bookmark.name,
                     path: bookmark.path.into_path()?,
+                    archive: bookmark
+                        .archive
+                        .map(StoredArchiveAddress::into_address)
+                        .transpose()?,
                     slot: bookmark.slot,
                 })
             })
@@ -367,7 +498,15 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         (1..=5, None) => Default::default(),
         (6..=CURRENT_PREFERENCES_VERSION, Some(tabs)) => {
             let convert = |tabs: StoredPaneTabs| -> io::Result<PaneTabPreferences> {
+                if stored.version < 24 && !tabs.networks.is_empty() {
+                    return Err(invalid("Network tabs require preferences version 24"));
+                }
                 Ok(PaneTabPreferences {
+                    networks: tabs
+                        .networks
+                        .into_iter()
+                        .map(|(index, address)| Ok((index, address.into_address()?)))
+                        .collect::<io::Result<_>>()?,
                     archives: tabs
                         .archives
                         .into_iter()
@@ -442,18 +581,39 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         _ => return Err(invalid("missing or unexpected window geometry")),
     };
     let mut preferences = UserPreferences {
+        copy_checksum_verification: match (stored.version, stored.copy_checksum_verification) {
+            (1..=27, None) => true,
+            (28, Some(enabled)) => enabled,
+            _ => {
+                return Err(invalid(
+                    "missing or unexpected copy verification preference",
+                ));
+            }
+        },
+        file_list: file_list::decode(stored.version, stored.file_list)?,
+        viewer_associations: viewer_associations::decode(
+            stored.version,
+            stored.viewer_associations,
+        )?,
         user_commands: user_commands::decode(stored.version, stored.user_commands)?.into(),
         checksum_algorithms: checksums::decode(stored.version, stored.checksum_algorithms)?,
         window_geometry,
+        panel_split_basis_points: match (stored.version, stored.panel_split_basis_points) {
+            (1..=22, None) => midnight_core::DEFAULT_PANEL_SPLIT_BASIS_POINTS,
+            (23..=CURRENT_PREFERENCES_VERSION, Some(ratio)) => ratio,
+            _ => return Err(invalid("missing or unexpected panel split ratio")),
+        },
         filename_colors: match (stored.version, stored.filename_colors) {
             (1..=13, None) => midnight_core::default_filename_colors(),
             (14..=CURRENT_PREFERENCES_VERSION, Some(rules))
                 if rules.len() <= midnight_core::MAX_FILENAME_COLOR_RULES =>
             {
-                rules
-                    .into_iter()
-                    .map(StoredFilenameColor::into_rule)
-                    .collect::<io::Result<Vec<_>>>()?
+                filename_colors::migrate_presets(
+                    rules
+                        .into_iter()
+                        .map(StoredFilenameColor::into_rule)
+                        .collect::<io::Result<Vec<_>>>()?,
+                )
             }
             _ => {
                 return Err(invalid(
@@ -472,10 +632,27 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
                 ));
             }
         },
+        archive_custom_extensions: match (stored.version, stored.archive_custom_extensions) {
+            (_, None) => Default::default(),
+            (20..=CURRENT_PREFERENCES_VERSION, Some(extensions)) => extensions.0,
+            _ => {
+                return Err(invalid(
+                    "custom archive extensions require preferences version 20",
+                ));
+            }
+        },
         disabled_viewer_plugins: match (stored.version, stored.disabled_viewer_plugins) {
             (1..=9, None) => Vec::new(),
             (10..=CURRENT_PREFERENCES_VERSION, Some(ids)) => ids,
             _ => return Err(invalid("missing or unexpected viewer plugin preferences")),
+        },
+        viewer: match (stored.version, stored.viewer) {
+            (1..=20, None) => Default::default(),
+            (21..=CURRENT_PREFERENCES_VERSION, Some(viewer)) => {
+                viewer.validate_version(stored.version)?;
+                viewer.try_into()?
+            }
+            _ => return Err(invalid("missing or unexpected viewer preferences")),
         },
         editor,
         theme,
@@ -493,6 +670,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         panel_view_modes,
         thumbnails_enabled,
         thumbnails_network,
+        thumbnail_size,
         shortcuts,
         panel_filters,
     };
@@ -509,12 +687,48 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         crate::filter::CompiledPanelFilter::new(filter).map_err(|error| invalid(error.message))?;
     }
     // An explicit empty list must survive restart; omitted legacy rules mean presets.
+    let verification_choices = !preferences.copy_checksum_verification;
+    let association_choices = verification_choices
+        || *preferences.viewer_associations != midnight_core::ViewerAssociations::default();
+    let file_list_choices = association_choices
+        || preferences.file_list != midnight_core::FileListPreferences::default();
+    let thumbnail_choices =
+        file_list_choices || preferences.thumbnail_size != midnight_core::DEFAULT_THUMBNAIL_SIZE;
+    let network_choices = preferences
+        .tabs
+        .iter()
+        .any(|tabs| !tabs.networks.is_empty());
+    let split_choices = thumbnail_choices
+        || network_choices
+        || preferences.panel_split_basis_points != midnight_core::DEFAULT_PANEL_SPLIT_BASIS_POINTS;
+    let viewer_choices =
+        split_choices || preferences.viewer != midnight_core::ViewerPreferences::default();
     let geometry_choices = preferences.window_geometry.is_some();
     let expression_choices = preferences
         .panel_filters
         .iter()
         .any(|filter| filter.mode == midnight_core::FilterMode::Expression);
-    let command_choices = expression_choices || !preferences.user_commands.is_empty();
+    let archive_bookmarks = preferences
+        .bookmarks
+        .iter()
+        .any(|bookmark| bookmark.archive.is_some());
+    let typed_archive_choices = !preferences.archive_custom_extensions.is_empty()
+        || preferences
+            .tabs
+            .iter()
+            .flat_map(|tabs| tabs.archives.values())
+            .chain(
+                preferences
+                    .bookmarks
+                    .iter()
+                    .filter_map(|bookmark| bookmark.archive.as_ref()),
+            )
+            .any(|address| address.format.is_some());
+    let command_choices = viewer_choices
+        || expression_choices
+        || archive_bookmarks
+        || typed_archive_choices
+        || !preferences.user_commands.is_empty();
     let checksum_choices =
         preferences.checksum_algorithms != midnight_core::ChecksumAlgorithms::default();
     let color_choices = command_choices
@@ -525,6 +739,11 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
+        copy_checksum_verification: verification_choices.then_some(false),
+        viewer_associations: association_choices
+            .then(|| preferences.viewer_associations.as_ref().into()),
+        file_list: file_list_choices.then(|| preferences.file_list.into()),
+        thumbnail_size: thumbnail_choices.then_some(preferences.thumbnail_size),
         user_commands: command_choices.then(|| {
             preferences
                 .user_commands
@@ -536,6 +755,7 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         checksum_algorithms: (checksum_choices || command_choices)
             .then(|| checksums::encode(preferences.checksum_algorithms)),
         window_geometry: preferences.window_geometry.map(StoredWindowGeometry::from),
+        panel_split_basis_points: split_choices.then_some(preferences.panel_split_basis_points),
         filename_colors: color_choices.then(|| {
             preferences
                 .filename_colors
@@ -547,7 +767,35 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         archive_association_overrides: archive_choices.then_some(StoredArchiveAssociations(
             preferences.archive_association_overrides,
         )),
-        version: if expression_choices {
+        archive_custom_extensions: (!preferences.archive_custom_extensions.is_empty()).then_some(
+            StoredArchiveExtensions(preferences.archive_custom_extensions),
+        ),
+        viewer: viewer_choices
+            .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
+            .transpose()?,
+        version: if verification_choices {
+            28
+        } else if association_choices {
+            27
+        } else if file_list_choices {
+            26
+        } else if thumbnail_choices {
+            25
+        } else if network_choices {
+            24
+        } else if split_choices {
+            23
+        } else if preferences.viewer.comparison_font
+            != midnight_core::ViewerPreferences::default().comparison_font
+        {
+            22
+        } else if viewer_choices {
+            21
+        } else if typed_archive_choices {
+            20
+        } else if archive_bookmarks {
+            19
+        } else if expression_choices {
             18
         } else if command_choices {
             17
@@ -612,6 +860,11 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         })),
         tabs: Some(preferences.tabs.map(|tabs| {
             StoredPaneTabs {
+                networks: tabs
+                    .networks
+                    .into_iter()
+                    .map(|(index, address)| (index, StoredNetworkAddress::from_address(address)))
+                    .collect(),
                 archives: tabs
                     .archives
                     .into_iter()
@@ -655,6 +908,7 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
                     id: bookmark.id.0,
                     name: bookmark.name,
                     path: NativePath::from_path(bookmark.path),
+                    archive: bookmark.archive.map(StoredArchiveAddress::from_address),
                     slot: bookmark.slot,
                 })
                 .collect(),
@@ -804,6 +1058,7 @@ mod tests {
         assert_eq!(
             decoded.bookmarks[0],
             Bookmark {
+                archive: None,
                 id: BookmarkId(7),
                 name: "Original name".into(),
                 path,
@@ -839,6 +1094,7 @@ mod tests {
             .join("x".repeat(70_000));
         let preferences = UserPreferences {
             bookmarks: vec![Bookmark {
+                archive: None,
                 id: BookmarkId(u64::MAX),
                 name: "資料 e\u{301} 🧪".into(),
                 path: path.clone(),
@@ -909,6 +1165,7 @@ mod tests {
     fn aggregate_storage_limit_rejects_oversized_paths_without_truncating_them() {
         let preferences = UserPreferences {
             bookmarks: vec![Bookmark {
+                archive: None,
                 id: BookmarkId(1),
                 name: "Large".into(),
                 path: std::env::temp_dir().join("x".repeat(MAX_PREFERENCES_BYTES)),

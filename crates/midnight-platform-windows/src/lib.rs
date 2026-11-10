@@ -10,6 +10,7 @@ use midnight_platform_common::LocalServices;
 use std::io;
 use std::path::{Path, PathBuf};
 mod clipboard;
+mod clipboard_text;
 mod desktop;
 mod editor;
 mod file_clipboard;
@@ -27,9 +28,11 @@ mod locale;
 mod locations;
 mod metadata;
 mod mutation;
+mod navigation_fallback;
 mod network;
 mod onedrive_locations;
 mod open;
+mod path_picker;
 mod settings;
 mod shell_menu;
 mod sort_keys;
@@ -37,6 +40,7 @@ mod storage_kind;
 mod terminal_process;
 mod transfer;
 mod volume_details;
+mod volume_information;
 mod watch;
 mod window_geometry;
 pub use window_geometry::monitor_work_area;
@@ -87,6 +91,13 @@ impl DirectoryService for WindowsFileSystem {
 }
 
 impl StorageService for WindowsFileSystem {
+    fn volume_information(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::VolumeInformation, FsError> {
+        volume_information::query(path, cancel)
+    }
     fn storage_kind(&self, path: &Path) -> Result<midnight_core::StorageKind, FsError> {
         Ok(storage_kind::detect(path))
     }

@@ -13,6 +13,7 @@ const MAX_PACKAGES: usize = 256;
 #[derive(Clone, Debug)]
 pub struct PluginInfo {
     pub id: String,
+    pub name: Option<String>,
     pub version: String,
     pub description: String,
     pub models: Vec<String>,
@@ -35,6 +36,8 @@ struct Manifest {
     id: String,
     kind: String,
     version: String,
+    #[serde(default)]
+    name: Option<String>,
     entry_library: String,
     target: String,
     abi_major: u16,
@@ -141,10 +144,12 @@ fn require(valid: bool, message: &str) -> Result<(), Error> {
 }
 
 fn native_package(path: &Path) -> Result<Option<PluginInfo>, Error> {
-    if path.join("image-viewer.json").try_exists()? {
+    let image = path.join("image-viewer.json").try_exists()?;
+    let web = path.join("web-viewer.json").try_exists()?;
+    if image || web {
         require(
-            !path.join("plugin.toml").try_exists()?,
-            "A package cannot contain both native and image-worker viewer manifests",
+            !(image && web) && !path.join("plugin.toml").try_exists()?,
+            "Ambiguous viewer package: both native and worker manifests, or multiple worker manifests",
         )?;
         // Its manifest, code and dependencies are validated by the process viewer host.
         return Ok(None);
@@ -200,7 +205,10 @@ fn package(path: &Path) -> Result<PluginInfo, Error> {
     require(
         !manifest.version.is_empty()
             && manifest.version.len() <= 64
-            && manifest.description.len() <= 4096,
+            && manifest.description.len() <= 4096
+            && manifest.name.as_ref().is_none_or(|name| {
+                !name.trim().is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
+            }),
         "Invalid metadata",
     )?;
     let name = &manifest.entry_library;
@@ -285,6 +293,7 @@ fn package(path: &Path) -> Result<PluginInfo, Error> {
     crate::package_trust::check(path)?;
     Ok(PluginInfo {
         id: manifest.id,
+        name: manifest.name,
         version: manifest.version,
         description: manifest.description,
         models: manifest.models,

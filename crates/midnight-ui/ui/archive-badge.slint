@@ -1,14 +1,22 @@
 import { Theme } from "theme.slint";
 
-// Muted corner chevron: discoverable without covering the associated artwork.
+// Original compact zipper: a conventional archive cue, without a filled badge.
 export component ArchiveBadge inherits Rectangle {
     // No opaque tile: selection and the host icon remain visible underneath.
     background: transparent;
     accessible-role: none;
+    private property <string> zipper: "M 2 1 L 4 1 M 4 3 L 6 3 M 2 5 L 4 5 M 4 7 L 6 7 M 2.5 9 L 5.5 9 L 5.5 12 L 2.5 12 Z";
+    // A narrow contour keeps the teeth readable over arbitrary system artwork.
     Path {
-        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-        viewbox-width: 12; viewbox-height: 12;
-        commands: "M 4 2 L 8 6 L 4 10";
-        stroke: Theme.secondary-text; stroke-width: 1.25px;
+        width: parent.width; height: parent.height;
+        viewbox-width: 8; viewbox-height: 14;
+        commands: root.zipper;
+        stroke: Theme.pane-background; stroke-width: 2.5px;
+    }
+    Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: 8; viewbox-height: 14;
+        commands: root.zipper;
+        stroke: Theme.secondary-text; stroke-width: 1px;
     }
 }

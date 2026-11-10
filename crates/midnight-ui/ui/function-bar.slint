@@ -4,6 +4,7 @@ import { FunctionSlot } from "function-models.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { ScrollView } from "std-widgets.slint";
+import { ActionAvailability } from "action-availability.slint";
 
 export component FunctionBar inherits Rectangle {
     private property <image> no-native-icon;
@@ -11,29 +12,29 @@ export component FunctionBar inherits Rectangle {
     in property <bool> control-layer;
     in property <bool> network-available;
     in property <bool> native-filesystem: true;
+    in property <bool> can-measure-folders: root.native-filesystem;
     in property <bool> searching;
     in property <int> pane;
     in property <bool> compact;
     in property <bool> can-target-cursor;
     in property <bool> can-target-selection;
     callback action(string, int);
-    callback options();
     callback jobs();
     private property <[string]> normal-actions: ["app.help", "files.rename", "files.view", "files.edit", "files.copy-to", "files.move-to", "files.create-directory", "files.trash", "app.user-menu", "app.main-menu", "network.connect", "network.disconnect"];
     private property <[string]> pressed-actions;
     private property <int> pressed-pane;
     private property <bool> pointer-snapshot;
+    private property <bool> press-cancelled;
     pure function enabled-action(action: string) -> bool {
-        return action != "" && (!action.starts-with("network.") || root.network-available)
-            && ((action == "files.rename" || action == "files.view" || action == "files.view-basic" || action == "files.edit") ? root.can-target-cursor : true)
-            && ((action == "files.copy-to" || action == "files.move-to" || action == "files.copy" || action == "files.cut" || action == "files.trash" || action == "files.delete" || action == "files.attributes" || action == "files.case") ? root.can-target-selection : true)
-            && (root.native-filesystem || !action.starts-with("files.") || action == "files.view" || action == "files.view-basic" || action == "files.copy-to");
+        return ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
+            root.can-target-selection, root.network-available, root.can-measure-folders);
     }
     pure function capture-action(index: int) -> string {
         let action = root.control-layer ? ShortcutHints.control(index, root.searching).action : root.normal-actions[index];
         return root.enabled-action(action) ? action : "";
     }
     public function capture-press(x: length, y: length) {
+        root.press-cancelled = false;
         root.pointer-snapshot = x >= root.absolute-position.x && x < root.absolute-position.x + keys.width
             && y >= root.absolute-position.y && y < root.absolute-position.y + root.height;
         if root.pointer-snapshot {
@@ -45,13 +46,14 @@ export component FunctionBar inherits Rectangle {
         }
     }
     public function release-press() { root.pointer-snapshot = false; }
-    private property <length> cell-width: max(root.compact ? 36px : 0px, (root.width - 52px) / 14);
+    public function cancel-press() { root.press-cancelled = true; }
+    private property <length> cell-width: max(root.compact ? 36px : 0px, (root.width - 48px) / 13);
     private property <length> key-width: max(Theme.touch ? 44px : 40px, root.cell-width);
     height: root.compact ? min(32px, Theme.bottom-height) : Theme.bottom-height;
     min-width: 0px;
     keys := ScrollView {
         x: 0px; y: 0px;
-        width: max(0px, root.width - 2 * (root.cell-width + 4px)); height: root.height;
+        width: max(0px, root.width - root.cell-width - 4px); height: root.height;
         horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
         mouse-drag-pan-enabled: true;
         content-width: max(self.visible-width, 12 * root.key-width + 44px);
@@ -69,13 +71,14 @@ export component FunctionBar inherits Rectangle {
                 action-id: root.control-layer ? self.control.action : self.normal-action;
                 pane: root.pane;
                 pointer-snapshot: root.pointer-snapshot;
+                press-cancelled: root.press-cancelled;
                 snapshot-action: root.pressed-actions[index]; snapshot-pane: root.pressed-pane;
                 native-icon: self.icon-role == 0 ? root.icons.help : self.icon-role == 1 ? root.icons.rename
                     : self.icon-role == 2 ? root.icons.view : self.icon-role == 3 ? root.icons.edit
                     : self.icon-role == 4 ? root.icons.copy : self.icon-role == 5 ? root.icons.move-item
                     : self.icon-role == 6 ? root.icons.new-folder : self.icon-role == 7 ? root.icons.delete
                     : self.icon-role == 8 ? root.icons.user-menu : self.icon-role == 10 || self.icon-role == 11 ? root.icons.network
-                    : self.icon-role == 12 ? root.no-native-icon : self.icon-role == 13 ? root.icons.sort-ascending
+                    : self.icon-role == 12 || self.icon-role == 15 ? root.no-native-icon : self.icon-role == 13 ? root.icons.sort-ascending
                     : self.icon-role == 14 ? root.icons.refresh : root.icons.menu;
                 fallback-icon: self.icon-role == 0 ? FallbackIcons.help : self.icon-role == 1 ? FallbackIcons.rename
                     : self.icon-role == 2 ? FallbackIcons.view : self.icon-role == 3 ? FallbackIcons.edit
@@ -83,7 +86,7 @@ export component FunctionBar inherits Rectangle {
                     : self.icon-role == 6 ? FallbackIcons.new-folder : self.icon-role == 7 ? FallbackIcons.delete
                     : self.icon-role == 8 ? FallbackIcons.user-menu : self.icon-role == 10 || self.icon-role == 11 ? FallbackIcons.network
                     : self.icon-role == 12 ? FallbackIcons.attributes : self.icon-role == 13 ? FallbackIcons.sort-ascending
-                    : self.icon-role == 14 ? FallbackIcons.refresh : FallbackIcons.menu;
+                    : self.icon-role == 14 ? FallbackIcons.refresh : self.icon-role == 15 ? FallbackIcons.checksums : FallbackIcons.menu;
                 text: root.control-layer ? (self.control.action == "" ? "Ctrl+F" + (index + 1) : self.control.key + " " + self.control.label)
                     : ShortcutHints.caption(label, self.normal-action);
                 caption: root.control-layer && self.control.action != "" ? "F" + (index + 1) + " " + self.control.label : self.text;
@@ -92,21 +95,15 @@ export component FunctionBar inherits Rectangle {
                     : ShortcutHints.key(self.normal-action) == "" ? label : ShortcutHints.key(self.normal-action);
                 enabled: root.enabled-action(self.action-id);
                 hint: root.control-layer ? (self.control.action == "" ? "Ctrl+F" + (index + 1) + " is unassigned. Configure it in Options → Keyboard." : self.control.hint)
-                    : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 4 ? " · copy selection with checksum verification in the background" : index == 5 ? " · move up to 64 files after verification; originals remain in recovery" : index == 6 ? " · create a folder or nested relative path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : " · system network drive dialog");
+                    : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 4 ? " · copy selection with checksum verification in the background" : index == 5 ? " · move up to 64 files; verify each destination before removing its source" : index == 6 ? " · create a folder or nested path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : " · system network drive dialog");
                 activated(action, pane) => { root.action(action, pane); }
             }
         }
     }
     FunctionButton {
         min-width: 0px; width: root.cell-width; height: root.height;
-        x: root.width - 2 * root.cell-width - 4px;
-        native-icon: root.icons.options; fallback-icon: FallbackIcons.options; text: "Options";
-        hint: "Panel, appearance, command history, keyboard, editor and plugin preferences.";
-        clicked => { root.options(); }
-    }
-    FunctionButton {
-        min-width: 0px; width: root.cell-width; height: root.height;
         x: root.width - root.cell-width;
+        press-cancelled: root.press-cancelled;
         native-icon: root.icons.menu; fallback-icon: FallbackIcons.menu; text: "Jobs";
         hint: "Operation queue, progress and cancellation.";
         clicked => { root.jobs(); }

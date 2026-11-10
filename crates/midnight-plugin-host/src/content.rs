@@ -12,6 +12,12 @@ use std::{
 
 static REVISIONS: AtomicU64 = AtomicU64::new(1);
 
+/// Optional relative-content capability captured with directory/mount authority.
+/// Implementations enforce no-follow containment against held objects. Never part of a plugin ABI.
+pub trait ContentResources: Send + Sync + std::fmt::Debug {
+    fn capture(&self, segments: &[String]) -> Result<CapturedFile, Error>;
+}
+
 /// Host-owned content provider. Plugins receive the ordinary bounded reader ABI,
 /// never this trait, a native path, or the provider implementation.
 pub trait ContentSource: Send + Sync + std::fmt::Debug {
@@ -47,6 +53,7 @@ pub struct CapturedFile {
     source_version: Vec<u8>,
     source_length: u64,
     revision: u64,
+    resources: Option<Arc<dyn ContentResources>>,
 }
 pub(crate) enum Reader {
     Native {
@@ -61,6 +68,13 @@ pub(crate) enum Reader {
 }
 
 impl CapturedFile {
+    pub fn with_resources(mut self, resources: Arc<dyn ContentResources>) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+    pub fn resources(&self) -> Option<Arc<dyn ContentResources>> {
+        self.resources.clone()
+    }
     /// Backend only. Opens briefly to obtain stable native identity, then closes.
     pub fn capture(path: &Path) -> Result<Self, Error> {
         if !path.is_absolute() {
@@ -78,6 +92,7 @@ impl CapturedFile {
             source_version: Vec::new(),
             source_length: 0,
             revision,
+            resources: None,
         })
     }
     pub fn path(&self) -> &Path {
@@ -181,6 +196,7 @@ impl CapturedFile {
             source_version,
             source_length,
             revision,
+            resources: None,
         })
     }
 }

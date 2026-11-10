@@ -11,7 +11,7 @@ license = "MIT"
 description = "Independent restricted image viewer for Midnight Explorer"
 
 [dependencies]
-midnight-image-viewer-sdk = { version = "=0.2.0", registry = "midnight" }
+midnight-image-viewer-sdk = { version = "=0.3.0", registry = "midnight" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 moxcms = "=0.8.1"
 

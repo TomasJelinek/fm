@@ -50,6 +50,7 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
         }),
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });
@@ -84,14 +85,14 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
     window.window().dispatch_event(WindowEvent::KeyReleased {
         text: Key::Control.into(),
     });
-    let literal_draft = "echo \"folder & echo INJECTED\"";
+    let literal_draft = format!("echo folder & echo INJECTED{}", std::path::MAIN_SEPARATOR);
     assert_eq!(window.get_command_text().as_str(), literal_draft);
     let cursor = window.get_command_cursor();
     window.invoke_terminal_changed(1);
     assert_eq!(
         window.get_terminal_index(),
         0,
-        "a PS literal containing & cannot be reinterpreted by cmd"
+        "a draft containing shell syntax keeps its original interpreter"
     );
     assert_eq!(window.get_command_text().as_str(), literal_draft);
     assert_eq!(window.get_command_cursor(), cursor);
@@ -118,7 +119,7 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
         result: Ok(DesktopActionResult::TerminalStarted {
             process_id: 1,
             history: CommandHistoryEntry {
-                command: literal_draft.into(),
+                command: literal_draft,
                 shell: ShellFlavor::PowerShell,
             },
         }),

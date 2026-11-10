@@ -16,8 +16,20 @@ use tokio::{sync::mpsc, task::JoinSet};
 type Pending = Arc<Mutex<HashMap<DropToken, Accepted>>>;
 type Hover = Arc<Mutex<Option<(u64, Option<PaneId>)>>>;
 struct Accepted {
-    request: FileDropRequest,
+    files: FileClipboard,
+    destination: Arc<std::path::PathBuf>,
+    intent: TransferIntent,
+    verification: Option<TransferVerification>,
     permit: copy_operations::Reservation,
+    retention: Option<Arc<Retention>>,
+}
+
+/// Keep provider registrations and capture capacity through normal job cleanup.
+/// Pending rejection and final retirement run on backend workers.
+pub(crate) struct Retention {
+    _source: Option<Arc<dyn CapturedClipboardFiles>>,
+    _target: Option<Arc<dyn CapturedDropDirectory>>,
+    pub(crate) completions: Arc<HashMap<std::path::PathBuf, TreeCopyOccurrence>>,
 }
 
 struct Sink {
@@ -57,6 +69,7 @@ impl FileDropSink for Sink {
             let snapshots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
             let state = &snapshots[request.target.pane.index()];
             if state.pending.is_some()
+                || !state.has_native_view()
                 || !state
                     .visible
                     .as_ref()
@@ -97,11 +110,24 @@ impl FileDropSink for Sink {
         );
         let event = DragDropEvent::DropAccepted {
             token,
+            drag: None,
             pane: request.target.pane,
             item_count: request.files.paths.len(),
             destination: request.target.directory.clone(),
+            intent: TransferIntent::Copy,
+            verification: None,
         };
-        pending.insert(token, Accepted { request, permit });
+        pending.insert(
+            token,
+            Accepted {
+                files: request.files,
+                destination: request.target.directory,
+                intent: TransferIntent::Copy,
+                verification: None,
+                permit,
+                retention: None,
+            },
+        );
         if self.events.try_send(event).is_err() {
             pending.remove(&token);
             return Err(error(
@@ -192,7 +218,9 @@ fn current_source(
         .visible
         .as_ref()
         .or(state.committed.as_ref())
-        .filter(|source| state.pending.is_none() && source.navigation == navigation)
+        .filter(|source| {
+            state.pending.is_none() && state.has_native_view() && source.navigation == navigation
+        })
         .ok_or_else(|| {
             error(
                 io::ErrorKind::InvalidInput,
@@ -213,20 +241,29 @@ struct Source {
     navigation: NavigationId,
     cancel: Cancellation,
     files: Option<Arc<FileClipboard>>,
+    captured: Option<Arc<dyn CapturedClipboardFiles>>,
     running: bool,
+    released: bool,
 }
 struct Prepare {
     id: DragId,
     pane: PaneId,
     navigation: NavigationId,
-    files: SelectedFiles,
+    files: PrepareFiles,
     cancel: Cancellation,
+}
+enum PrepareFiles {
+    Flat(SelectedFiles),
+    Captured(Arc<dyn CapturedClipboardFiles>),
 }
 #[derive(Default)]
 struct State {
     host: Option<Host>,
     source: Option<Source>,
     prepare: Option<Prepare>,
+    internal: Option<internal::Work>,
+    pending_internal: Option<InternalDropRequest>,
+    retired: Vec<Box<dyn Send>>,
     highest_drag: u64,
     highest_host: u64,
 }
@@ -235,7 +272,32 @@ struct Start {
     id: DragId,
     host: u64,
     files: Arc<FileClipboard>,
+    captured: Option<Arc<dyn CapturedClipboardFiles>>,
     cancel: Cancellation,
+}
+
+#[path = "drag_drop_internal.rs"]
+mod internal;
+
+impl State {
+    fn clear_source(&mut self) -> Option<bool> {
+        let running = self.source.take().map(|source| {
+            source.cancel.cancel();
+            let running = source.running;
+            self.retired.push(Box::new(source));
+            running
+        });
+        if let Some(prepare) = self.prepare.take() {
+            self.retired.push(Box::new(prepare));
+        }
+        if let Some(work) = self.internal.take() {
+            self.retired.push(Box::new(work));
+        }
+        if let Some(pending) = self.pending_internal.take() {
+            self.retired.push(Box::new(pending));
+        }
+        running
+    }
 }
 
 pub(crate) struct Controller {
@@ -247,14 +309,26 @@ pub(crate) struct Controller {
     hover: Hover,
     cancel: Cancellation,
     service: Option<Arc<dyn FileDragDropService>>,
+    transfers: Option<Arc<dyn TransferService>>,
     events: mpsc::Sender<DragDropEvent>,
     native: Option<mpsc::Sender<Start>>,
     prepare: Option<std::sync::mpsc::SyncSender<()>>,
 }
 
 impl Controller {
+    pub(crate) async fn prepare_captured(
+        &self,
+        id: DragId,
+        pane: PaneId,
+        navigation: NavigationId,
+        source: Arc<dyn CapturedClipboardFiles>,
+    ) {
+        self.prepare_kind(id, pane, navigation, PrepareFiles::Captured(source))
+            .await;
+    }
     pub(crate) fn new(
         service: Option<Arc<dyn FileDragDropService>>,
+        transfers: Option<Arc<dyn TransferService>>,
         snapshots: Snapshots,
         capacity: copy_operations::Admission,
         outbox: Outbox,
@@ -273,6 +347,7 @@ impl Controller {
             hover,
             cancel,
             service,
+            transfers,
             events,
             native: None,
             prepare: None,
@@ -293,10 +368,7 @@ impl Controller {
             if let Some(old) = state.host.take() {
                 old.host.lifetime.cancel();
             }
-            if let Some(source) = state.source.take() {
-                source.cancel.cancel();
-            }
-            state.prepare = None;
+            state.clear_source();
             state.highest_host = host.generation;
             state.host = Some(Host {
                 host: host.clone(),
@@ -344,10 +416,7 @@ impl Controller {
                 host.host.lifetime.cancel();
                 host.sink.hover(None);
             }
-            if let Some(source) = state.source.take() {
-                source.cancel.cancel();
-            }
-            state.prepare = None;
+            state.clear_source();
         }
     }
 
@@ -358,31 +427,66 @@ impl Controller {
         navigation: NavigationId,
         files: SelectedFiles,
     ) {
+        self.prepare_kind(id, pane, navigation, PrepareFiles::Flat(files))
+            .await;
+    }
+    async fn retire_backlog(&self) {
+        let retired = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (state.retired.len() >= 8).then(|| std::mem::take(&mut state.retired))
+        };
+        if let Some(retired) = retired {
+            // One awaited fallback bounds retirement even if the coalescing resolver
+            // is inside a non-cancellable provider call. Never drop providers here.
+            let _ = tokio::task::spawn_blocking(move || drop(retired)).await;
+        }
+    }
+    fn wake_prepare(&self) {
+        if let Some(sender) = &self.prepare {
+            let _ = sender.try_send(());
+        }
+    }
+    async fn prepare_kind(
+        &self,
+        id: DragId,
+        pane: PaneId,
+        navigation: NavigationId,
+        files: PrepareFiles,
+    ) {
+        self.retire_backlog().await;
+        let mut files = Some(files);
         let accepted = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if id.0 == 0 || id.0 <= state.highest_drag {
+                state.retired.push(Box::new(files.take()));
+                self.wake_prepare();
                 return;
             }
             state.highest_drag = id.0;
-            if let Some(source) = state.source.take() {
-                source.cancel.cancel();
-            }
-            state.prepare = None;
+            state.clear_source();
             if state
                 .host
                 .as_ref()
                 .is_none_or(|host| host.host.lifetime.is_cancelled())
             {
+                state.retired.push(Box::new(files.take()));
                 false
             } else {
                 let cancel = self.cancel.child();
+                let files = files.take().expect("single preparation input");
+                let captured = match &files {
+                    PrepareFiles::Captured(source) => Some(source.clone()),
+                    PrepareFiles::Flat(_) => None,
+                };
                 state.source = Some(Source {
                     id,
                     pane,
                     navigation,
                     cancel: cancel.clone(),
                     files: None,
+                    captured,
                     running: false,
+                    released: false,
                 });
                 state.prepare = Some(Prepare {
                     id,
@@ -394,11 +498,8 @@ impl Controller {
                 true
             }
         };
-        if accepted {
-            if let Some(sender) = &self.prepare {
-                let _ = sender.try_send(());
-            }
-        } else {
+        self.wake_prepare();
+        if !accepted {
             self.failed(
                 Some(id),
                 error(
@@ -422,7 +523,10 @@ impl Controller {
                 .source
                 .as_mut()
                 .filter(|source| {
-                    source.id == id && !source.running && !source.cancel.is_cancelled()
+                    source.id == id
+                        && !source.running
+                        && !source.released
+                        && !source.cancel.is_cancelled()
                 })
                 .and_then(|source| {
                     let host = host?;
@@ -434,6 +538,7 @@ impl Controller {
                         id,
                         host,
                         files,
+                        captured: source.captured.clone(),
                         cancel: source.cancel.clone(),
                     })
                 })
@@ -463,62 +568,11 @@ impl Controller {
         }
     }
 
-    pub(crate) async fn internal(&self, id: DragId, target: FileDropTarget, revision: u64) {
-        let prepared = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state
-                .source
-                .as_ref()
-                .filter(|source| {
-                    source.id == id && !source.running && !source.cancel.is_cancelled()
-                })
-                .and_then(|source| {
-                    Some((
-                        source.files.clone()?,
-                        state.host.as_ref()?.sink.clone(),
-                        source.pane,
-                        source.navigation,
-                    ))
-                })
-        };
-        let result = match prepared {
-            Some((files, sink, pane, navigation)) => {
-                let valid = {
-                    let snapshots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
-                    current_source(&snapshots[pane.index()], navigation).map(|_| ())
-                };
-                valid.and_then(|()| {
-                    sink.try_accept(FileDropRequest {
-                        files: (*files).clone(),
-                        target,
-                        targets_revision: revision,
-                    })
-                })
-            }
-            None => Err(error(
-                io::ErrorKind::InvalidInput,
-                "The internal drag is no longer current.",
-            )),
-        };
-        match result {
-            Ok(()) => {
-                self.clear_source(id);
-                let _ = self
-                    .events
-                    .send(DragDropEvent::Finished {
-                        id,
-                        outcome: DragFinish::Copied,
-                    })
-                    .await;
-            }
-            Err(error) => self.failed(Some(id), error).await,
-        }
-    }
-
     pub(crate) async fn accept(
         &self,
         token: DropToken,
         id: OperationId,
+        verification: midnight_core::TransferVerification,
         copies: &copy_operations::Controller,
     ) {
         let accepted = self
@@ -527,23 +581,36 @@ impl Controller {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&token);
         if let Some(accepted) = accepted {
+            let request = CopyRequest {
+                verification: accepted.verification.unwrap_or(verification),
+                id,
+                clipboard: accepted.files,
+                destination: (*accepted.destination).clone(),
+            };
             copies
-                .enqueue_reserved(
-                    CopyRequest {
-                        id,
-                        clipboard: accepted.request.files,
-                        destination: (*accepted.request.target.directory).clone(),
-                    },
+                .enqueue_drop_reserved(
+                    request,
+                    accepted.intent,
+                    accepted.retention,
                     accepted.permit,
                 )
                 .await;
         }
     }
     pub(crate) fn reject(&self, token: DropToken) {
-        self.pending
+        let accepted = self
+            .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&token);
+        if let Some(accepted) = accepted {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retired
+                .push(Box::new(accepted));
+            self.wake_prepare();
+        }
     }
     pub(crate) async fn cancel(&self, id: DragId) {
         let running = self.clear_source(id);
@@ -560,10 +627,9 @@ impl Controller {
     fn clear_source(&self, id: DragId) -> Option<bool> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.source.as_ref().is_some_and(|source| source.id == id) {
-            let source = state.source.take().unwrap();
-            source.cancel.cancel();
-            state.prepare = None;
-            Some(source.running)
+            let running = state.clear_source();
+            self.wake_prepare();
+            running
         } else {
             None
         }
@@ -572,19 +638,21 @@ impl Controller {
         let _ = self.events.send(DragDropEvent::Failed { id, error }).await;
     }
     pub(crate) fn shutdown(&self) {
-        self.cancel.cancel();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(host) = state.host.take() {
             host.host.lifetime.cancel();
         }
-        if let Some(source) = state.source.take() {
-            source.cancel.cancel();
+        state.clear_source();
+        let pending = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
+        if !pending.is_empty() {
+            state.retired.push(Box::new(pending));
         }
-        state.prepare = None;
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.cancel.cancel();
+        self.wake_prepare();
+        if self.prepare.is_none() && !state.retired.is_empty() {
+            let retired = std::mem::take(&mut state.retired);
+            tokio::task::spawn_blocking(move || drop(retired));
+        }
     }
 }
 impl Drop for Controller {
@@ -600,11 +668,25 @@ fn prepare_worker(
     events: mpsc::Sender<DragDropEvent>,
     cancel: Cancellation,
 ) {
-    while !cancel.is_cancelled() {
+    loop {
+        let retired = std::mem::take(&mut state.lock().unwrap_or_else(|e| e.into_inner()).retired);
+        drop(retired);
+        if cancel.is_cancelled() {
+            break;
+        }
         if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
             signal.recv_timeout(Duration::from_millis(25))
         {
             break;
+        }
+        let work = state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .internal
+            .take();
+        if let Some(work) = work {
+            internal::execute(work, &state, &snapshots, &events, &cancel);
+            continue;
         }
         let Some(request) = state
             .lock()
@@ -614,13 +696,40 @@ fn prepare_worker(
         else {
             continue;
         };
-        let result = resolve_source(
-            &snapshots,
-            request.pane,
-            request.navigation,
-            &request.files,
-            &request.cancel,
-        );
+        let result = match &request.files {
+            PrepareFiles::Flat(files) => resolve_source(
+                &snapshots,
+                request.pane,
+                request.navigation,
+                files,
+                &request.cancel,
+            ),
+            PrepareFiles::Captured(source) => (|| {
+                current_source(
+                    &snapshots.lock().unwrap_or_else(|e| e.into_inner())[request.pane.index()],
+                    request.navigation,
+                )?;
+                if source.intent() != FileClipboardIntent::Copy {
+                    return Err(error(
+                        io::ErrorKind::InvalidInput,
+                        "A drag source must retain a Copy offer.",
+                    ));
+                }
+                let files = source.resolve(&request.cancel)?;
+                files.validate()?;
+                if files.intent != FileClipboardIntent::Copy {
+                    return Err(error(
+                        io::ErrorKind::InvalidInput,
+                        "The captured drag offer changed.",
+                    ));
+                }
+                current_source(
+                    &snapshots.lock().unwrap_or_else(|e| e.into_inner())[request.pane.index()],
+                    request.navigation,
+                )?;
+                Ok(files)
+            })(),
+        };
         if request.cancel.is_cancelled() {
             continue;
         }
@@ -649,13 +758,21 @@ fn prepare_worker(
                         item_count,
                     }
                 }
-                Err(error) => DragDropEvent::Failed {
-                    id: Some(request.id),
-                    error,
-                },
+                Err(error) => {
+                    state.clear_source();
+                    DragDropEvent::Failed {
+                        id: Some(request.id),
+                        error,
+                    }
+                }
             }
         };
-        send_worker_event(&events, event, &request.cancel);
+        let delivery_cancel = if matches!(&event, DragDropEvent::Failed { .. }) {
+            &cancel
+        } else {
+            &request.cancel
+        };
+        send_worker_event(&events, event, delivery_cancel);
     }
 }
 
@@ -711,3 +828,7 @@ mod actor;
 #[cfg(test)]
 #[path = "drag_drop_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "drag_drop_device_tests.rs"]
+mod device_tests;

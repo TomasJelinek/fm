@@ -105,6 +105,7 @@ async fn queued_delete_waits_for_every_earlier_copy_before_removing_its_source()
         entered: entered.clone(),
         released: released.clone(),
         prepared: Arc::new(AtomicUsize::new(0)),
+        read_before_block: false,
     })));
     h.controller.enqueue(request(1, &[first], &target)).await;
     tokio::time::timeout(Duration::from_secs(4), entered.notified())

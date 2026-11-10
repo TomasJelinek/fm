@@ -60,7 +60,12 @@ fn source(length: Option<u64>) -> (Arc<Source>, CapturedFile) {
 }
 fn package(root: &Path) -> Package {
     Package {
+        name: None,
+        directory: root.to_owned(),
+        protocol: midnight_filesystem_api::Protocol::V1,
         id: "midnight.fs.archive".into(),
+        version: "0.1.0".into(),
+        stable_entry_ids: true,
         executable: root.join("must-not-spawn.exe"),
         formats: vec![Format::Gzip],
     }
@@ -133,4 +138,12 @@ fn real_worker_uses_pathless_content_and_retains_exact_native_locator() {
     source.changed.store(true, Ordering::Release);
     assert!(mount.list(1, &cancel).is_err());
     assert!(mount.read(entries[0].id.entry, 0, 1, &cancel).is_err());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while mount.staging_present() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !mount.staging_present(),
+        "source change must release stale private storage while mount is still retained"
+    );
 }

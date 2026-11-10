@@ -1,11 +1,23 @@
 import { Button, ComboBox, ListView, ScrollView } from "std-widgets.slint";
-import { HintedCheckBox, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { PathText } from "path-text.slint";
+import { CompactPicker } from "controls.slint";
+import { FallbackIcons } from "action-icons.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { ToolWindow } from "tool-window.slint";
+import { FindResults, FindRow } from "find-results.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { FindAdvanced } from "find-advanced.slint";
 
-export struct FindRow { token: string, name: string, path: string, size: string, modified: string, directory: bool }
-export struct FindDraft { masks: string, recursive: bool, name-case: bool, content-enabled: bool, content: string, content-case: bool }
+export { FindRow }
+export struct FindDraft {
+    masks: string, mode: int, recursive: bool, name-case: bool,
+    content-enabled: bool, content: string, content-case: bool, whole-words: bool,
+    modified-enabled: bool, modified-seconds: int, duplicates: bool,
+}
 
 export component FindWindow inherits ToolWindow {
     callback close-session();
@@ -14,29 +26,32 @@ export component FindWindow inherits ToolWindow {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
     title: "Find files · Midnight Explorer";
+    preferred-width: 780px; preferred-height: 560px;
+    icon: FallbackIcons.find;
     in property <[FindRow]> rows;
     in property <[string]> roots;
+    private property <int> selected-root;
+    changed roots => { root.selected-root = max(0, min(root.selected-root, root.roots.length - 1)); }
     in property <bool> running;
     in property <bool> stopping;
+    in property <bool> duplicate-results;
     in property <string> progress;
+    in property <string> current-directory;
+    in property <int> sort-column;
+    in property <bool> sort-descending;
+    callback sort(int);
     in property <string> error;
     in property <string> details;
     in property <bool> attention;
+    private property <bool> narrow: root.width < max(620px, Theme.font-size * 30);
+    private property <bool> inline-status: root.height >= 360px
+        || (!root.show-details && Theme.font-size <= 20px);
     in-out property <int> selected-row: -1;
     in-out property <bool> show-details;
+    private property <bool> show-advanced;
     // Hiding the query editor must not leave the native window without a key
     // recipient: Escape remains available while Details replaces that editor.
     changed show-details => { root.focus-content(); }
-    private property <length> result-height: max(48px, Theme.font-size * 3 + 8px);
-    changed selected-row => {
-        if root.selected-row >= 0 {
-            if root.selected-row * root.result-height < -results.content-y {
-                results.content-y = -root.selected-row * root.result-height;
-            } else if (root.selected-row + 1) * root.result-height > -results.content-y + results.visible-height {
-                results.content-y = results.visible-height - (root.selected-row + 1) * root.result-height;
-            }
-        }
-    }
     callback search(FindDraft);
     callback stop();
     callback add-root(string);
@@ -50,57 +65,109 @@ export component FindWindow inherits ToolWindow {
     callback copy-details();
     public function begin() { masks.focus(); }
     public function submit() {
-        root.search({masks: masks.text, recursive: recursive.checked, name-case: names.checked,
-            content-enabled: content-enabled.checked, content: content.text, content-case: content-case.checked});
+        if root.running || !advanced.valid { return; }
+        root.search({masks: masks.text, mode: mode.current-index, recursive: recursive.checked, name-case: names.checked,
+            content-enabled: content-enabled.checked, content: content.text, content-case: content-case.checked,
+            whole-words: advanced.whole-words, modified-enabled: advanced.modified-enabled,
+            modified-seconds: advanced.modified-seconds, duplicates: advanced.duplicates});
     }
     Rectangle {
         min-width: 0px; min-height: 0px;
         preferred-width: 0px; preferred-height: 0px;
         VerticalLayout {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
-            padding: root.height < 360px ? 6px : 12px; spacing: 6px;
+            padding: root.height < 360px ? 4px : 12px; spacing: root.height < 360px ? 3px : 6px;
             Rectangle {
-                height: min(root.height * 0.44, 270px);
+                // Compact running searches give their disabled query area to
+                // results. The instantiated editor/draft remains unchanged.
+                height: root.height < 360px && root.running && !root.show-details ? 0px
+                    : root.height < 360px ? max(Theme.control-height + 8px, root.height * 0.32)
+                    : min(root.height * 0.55, Theme.control-height * 8 + 90px);
+                clip: true;
               ScrollView {
                 visible: !root.show-details;
                 horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
                 VerticalLayout {
-                    padding-right: 8px; spacing: 6px; alignment: start;
-                    Text { text: "Search folders"; color: Theme.strong-text; font-weight: 600; }
-                    HorizontalLayout {
+                    padding-right: FluentScrollMetrics.overlay-size; spacing: 6px; alignment: start;
+                    masks := HintedLineEdit { text: "*.*"; enabled: !root.running; accessible-label: "File name masks";
+                        min-width: 0px; min-height: Theme.control-height;
+                        hint: mode.current-index == 2 ? "Typed metadata predicate, never a script. Example: kind = file and size >= 1MiB. Unknown metadata does not match comparisons."
+                            : mode.current-index == 1 ? "Bounded regular expression over the native filename."
+                            : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
+                        accepted => { root.submit(); } }
+                    GridLayout {
                         spacing: 6px;
-                        roots := ComboBox { model: root.roots; enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
-                            accessible-label: "Search folders"; }
+                        Text { row: 0; col: 0; text: "Match"; color: Theme.text; vertical-alignment: center; }
+                        mode := ComboBox { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                            model: ["Masks", "Regex", "Expression"]; enabled: !root.running;
+                            accessible-label: "Find match mode"; horizontal-stretch: 1; min-width: 0px; }
+                    }
+                    Text { text: "Search folders" + (root.roots.length > 1 ? " (" + root.roots.length + ")" : ""); color: Theme.strong-text; font-weight: 600; }
+                    GridLayout {
+                        spacing: 6px;
+                        roots := CompactPicker {
+                            row: 0; col: 0;
+                            model: root.roots; path-labels: true;
+                            enabled: !root.running; horizontal-stretch: 1; minimum-control-width: 0px;
+                            current-index: root.roots.length > 0 ? root.selected-root : -1;
+                            label: self.current-index >= 0 ? root.roots[self.current-index] : "";
+                            accessible-name: "Search folders";
+                            selected(index) => { root.selected-root = index; }
+                        }
                         Button { text: "Remove"; enabled: !root.running && root.roots.length > 0;
+                            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                             clicked => { root.remove-root(roots.current-index); } }
                     }
-                    HorizontalLayout {
+                    GridLayout {
                         spacing: 6px;
-                        new-root := HintedLineEdit { enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
-                            accessible-label: "Add absolute search folder";
-                            placeholder-text: "Absolute folder path";
-                            hint: "Add another native folder. Existing roots retain their original native path, including names that cannot be typed here.";
-                            accepted => { root.add-root(self.text); } }
-                        Button { text: "Add"; enabled: !root.running && new-root.text != "";
-                            clicked => { root.add-root(new-root.text); } }
-                    }
-                    Text { text: "File name masks"; color: Theme.text; }
-                    masks := HintedLineEdit { text: "*.*"; enabled: !root.running; accessible-label: "File name masks";
-                        hint: "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
-                        accepted => { root.submit(); } }
-                    HorizontalLayout {
-                        recursive := HintedCheckBox { text: "Subfolders"; checked: true; enabled: !root.running;
+                        recursive := WrappingCheckBox { row: 0; col: 0; text: "Subfolders"; checked: true; enabled: !root.running;
                             hint: "Recurse into ordinary folders. Links, junctions and mount boundaries are excluded and counted."; }
-                        names := HintedCheckBox { text: "Match name case"; enabled: !root.running; }
+                        names := WrappingCheckBox { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                            text: "Match name case"; enabled: !root.running; }
                     }
-                    content-enabled := HintedCheckBox { text: "Containing text"; enabled: !root.running;
-                        hint: "Search literal text in UTF-8 files, optionally with a BOM. Unsupported encodings are reported, not silently skipped."; }
-                    HorizontalLayout {
+                    content-enabled := WrappingCheckBox { text: "Containing text"; enabled: !root.running;
+                        hint: "Search literal text in UTF-8, or BOM-marked UTF-16 files. Unsupported encodings are reported, not silently skipped."; }
+                    GridLayout {
                         spacing: 6px;
                         content := HintedLineEdit { enabled: !root.running && content-enabled.checked; min-width: 0px; horizontal-stretch: 1;
+                            row: 0; col: 0;
                             accessible-label: "Text to find"; hint: "Literal text, read incrementally on a backend worker.";
                             accepted => { root.submit(); } }
-                        content-case := HintedCheckBox { text: "Match case"; enabled: !root.running && content-enabled.checked; }
+                        content-case := WrappingCheckBox { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                            text: "Match case"; enabled: !root.running && content-enabled.checked; }
+                    }
+                    Button {
+                        text: root.show-advanced ? "Fewer options" : "More options";
+                        clicked => { root.show-advanced = !root.show-advanced; }
+                    }
+                    if !root.show-advanced && advanced.summary != "": Text {
+                        text: advanced.summary;
+                        color: advanced.valid ? Theme.secondary-text : Theme.error-text;
+                        font-size: Theme.small-font; wrap: word-wrap;
+                    }
+                    advanced := FindAdvanced {
+                        visible: root.show-advanced;
+                        height: root.show-advanced ? self.preferred-height : 0px;
+                        enabled: !root.running; narrow: root.narrow;
+                        content-enabled: content-enabled.checked;
+                        submit => { root.submit(); }
+                    }
+                    Rectangle {
+                        visible: root.show-advanced;
+                        height: root.show-advanced ? extra-roots.preferred-height : 0px;
+                        extra-roots := GridLayout {
+                            spacing: 6px;
+                            new-root := HintedLineEdit { enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
+                                row: 0; col: 0;
+                                accessible-label: "Add absolute search folder";
+                                placeholder-text: "Add an absolute folder path";
+                                hint: "Add another native folder. Existing roots retain their original native path, including names that cannot be typed here.";
+                                accepted => { root.add-root(self.text); } }
+                            Button { text: "Add"; enabled: !root.running && new-root.text != "";
+                                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                                clicked => { root.add-root(new-root.text); } }
+                        }
                     }
                     if root.error != "": ErrorNotice { text: root.error; }
                 }
@@ -108,8 +175,14 @@ export component FindWindow inherits ToolWindow {
               if root.show-details: ScrollView {
                 horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
-                    padding-right: 8px; spacing: 6px; alignment: start;
+                    padding-right: FluentScrollMetrics.overlay-size; spacing: 6px; alignment: start;
                     if root.error != "": ErrorNotice { text: root.error; }
+                    if root.height < 360px && root.current-directory != "": Text {
+                        text: root.current-directory; color: Theme.secondary-text; wrap: char-wrap;
+                    }
+                    if root.height < 360px && root.progress != "": Text {
+                        text: root.progress; color: Theme.secondary-text; wrap: word-wrap;
+                    }
                     Text { text: root.details; color: Theme.secondary-text; wrap: word-wrap; }
                 }
               }
@@ -117,50 +190,30 @@ export component FindWindow inherits ToolWindow {
             Rectangle {
                 vertical-stretch: 1; min-height: 20px; clip: true;
                 background: Theme.pane-background; border-color: Theme.frame; border-width: 1px;
-                results-focus := FocusScope {
-                    key-pressed(event) => {
-                        if event.text == Key.DownArrow { root.selected-row = min(root.rows.length - 1, root.selected-row + 1); return accept; }
-                        if event.text == Key.UpArrow { root.selected-row = max(0, root.selected-row - 1); return accept; }
-                        if event.text == Key.Home { root.selected-row = root.rows.length > 0 ? 0 : -1; return accept; }
-                        if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
-                        if event.text == Key.Return { root.reveal-selected(); return accept; }
-                        reject
-                    }
-                    results := ListView {
-                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                        horizontal-scrollbar-policy: always-off;
-                        accessible-label: "Find results";
-                        accessible-item-count: root.rows.length;
-                        for row[index] in root.rows: Rectangle {
-                            width: results.visible-width; height: root.result-height;
-                            background: root.selected-row == index ? Theme.cursor-background : mod(index, 2) == 1 ? Theme.alternate-row : Theme.pane-background;
-                            border-width: root.selected-row == index ? 1px : 0px; border-color: Theme.cursor-edge;
-                            accessible-role: list-item;
-                            accessible-label: row.name + "\n" + row.path + "\n" + row.size + "\n" + row.modified;
-                            accessible-item-selectable: true;
-                            accessible-item-selected: root.selected-row == index;
-                            accessible-item-index: index;
-                            accessible-action-default => { root.selected-row = index; results-focus.focus(); }
-                            VerticalLayout {
-                                padding: 5px; spacing: 2px;
-                                HorizontalLayout {
-                                    Text { text: row.name; color: row.directory ? Theme.directory-text : Theme.text; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
-                                    Text { text: row.size; color: Theme.secondary-text; font-size: Theme.small-font; }
-                                }
-                                Text { text: row.path; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
-                                if root.width >= 600px: Text { text: row.modified; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
-                            }
-                            TouchArea {
-                                clicked => { root.selected-row = index; results-focus.focus(); }
-                                double-clicked => { root.selected-row = index; root.reveal(row.token); }
-                            }
-                        }
-                    }
+                results := FindResults {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    rows: root.rows; selected-row <=> root.selected-row;
+                    duplicates: root.duplicate-results;
+                    show-header: root.rows.length > 0
+                        || self.height >= Theme.column-height + Theme.font-size + 8px;
+                    sort-column: root.sort-column; descending: root.sort-descending;
+                    sort(column) => { root.sort(column); }
+                    reveal(token) => { root.reveal(token); }
                 }
-                if root.rows.length == 0: Text { text: root.running ? "Searching…" : "No results"; color: Theme.muted-text;
-                    horizontal-alignment: center; vertical-alignment: center; }
+                if root.rows.length == 0: Text {
+                    x: 1px; y: results.header-height + 1px;
+                    width: max(0px, parent.width - 2px);
+                    height: max(0px, parent.height - self.y - 1px);
+                    visible: self.height >= Theme.font-size + 4px;
+                    text: root.running ? "Searching…" : "No results"; color: Theme.muted-text;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
             }
-            HorizontalLayout {
+            if root.current-directory != "" && root.inline-status: PathText {
+                text: root.current-directory; foreground: Theme.secondary-text;
+                font-size: Theme.small-font; height: max(18px, Theme.small-font + 4px);
+            }
+            if root.progress != "" && root.inline-status: HorizontalLayout {
                 spacing: 4px; height: max(18px, Theme.small-font + 4px);
                 if root.attention: Rectangle {
                     width: 18px; border-radius: 9px; background: Theme.error-text;
@@ -170,15 +223,17 @@ export component FindWindow inherits ToolWindow {
                 Text { text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
                     font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
             }
-            HorizontalLayout {
-                spacing: 4px;
-                Button { text: root.running ? "Stop" : "Find"; enabled: !root.stopping;
+            DialogFooter {
+                compact-height: root.height < 350px;
+                dismiss-text: "Close";
+                dismiss-hint: "Close this Find window and cancel its search (Escape).";
+                dismiss => { root.close-session(); }
+                Button { text: root.running ? "Stop" : "Find"; enabled: !root.stopping && (root.running || advanced.valid);
                     clicked => { if root.running { root.stop(); } else { root.submit(); } } }
                 Button { text: root.show-details ? "Copy" : "Go to file"; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
                     clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
                 Button { text: root.show-details ? "Query" : "Details"; clicked => { root.show-details = !root.show-details; } }
                 if root.width >= 600px: Button { text: "Copy details"; clicked => { root.copy-details(); } }
-                Button { text: "Close"; clicked => { root.close-session(); } }
             }
         }
     }

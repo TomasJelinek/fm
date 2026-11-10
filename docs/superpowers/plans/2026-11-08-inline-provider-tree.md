@@ -83,6 +83,25 @@ filesystem and archive adapters, Slint virtualized panel rows. No new dependency
 
 ## Execution ledger
 
+- 2026-11-08: Implemented worker-owned selection and atomic view/selection
+  publication in Session. Added root migration, selection revision/seed fencing,
+  range modifiers, archive identities, folder-link inversion, sort/collapse/filter
+  rebasing and failed-reprojection coverage. Independent review found conflicting
+  equal-revision root seeds; causal regressions cover both seeded and initial-empty
+  publications, now rejected without replacing the published selection. Production
+  controller/root-ready/global protocol and presenter/action integration remain
+  unchecked; these primitives do not complete task 2 or TREE-01.
+
+- 2026-11-08, resumed goal: production panels still have no Tree command/event
+  routing. The existing Session/projection and scope-bound core protocol are
+  prerequisites, not a shipped tree. Continue task 2 with a worker-owned selection
+  state and atomic view/selection publications, then root-ready controller and
+  presenter/disclosure integration. Selection must use occurrence IDs, reject
+  foreign/equal-stamp cloned views, retain root selection only through exact
+  captured indices, exclude context rows and preserve file-only Ctrl+I semantics.
+  Branch collapse/filter changes rebase selection before publication. No native
+  mutation immediate-parent check may be relaxed to accept descendant captions.
+
 - 2026-11-08: Existing provider registry has stable mount/node identities but flat
   production `Entry`/selection routes. TREE-01 is missing. Implementing task1 is
   a dependency step, not completion of the requested visible panel behavior.

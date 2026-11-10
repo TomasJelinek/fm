@@ -75,12 +75,20 @@ impl Controller {
 fn source_matches(snapshots: &Snapshots, request: &SearchRequest) -> bool {
     let snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
     let state = &snapshots[request.pane.index()];
+    if state.network_navigation == Some(request.navigation)
+        && state.network.as_ref().is_some_and(|(navigation, entries)| {
+            *navigation == request.navigation && Arc::ptr_eq(entries, &request.source)
+        })
+    {
+        return true;
+    }
     if state.archive.as_ref().is_some_and(|(navigation, entries)| {
         *navigation == request.navigation && Arc::ptr_eq(entries, &request.source)
     }) {
         return true;
     }
     state.pending.is_none()
+        && state.has_native_view()
         && [&state.visible, &state.committed]
             .into_iter()
             .flatten()
@@ -207,17 +215,11 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
         let display_prefix_end = if query.is_empty() {
             0
         } else {
-            // A replacement character in the label must never identify a different
-            // native name. Unrepresentable names remain in the unfiltered snapshot.
-            let Some(name) = entry.name.to_str() else {
-                continue;
-            };
-            let end = match prefix_end(name, &query, cancelled) {
+            match entry_prefix_end(entry, &query, cancelled) {
                 Ok(Some(end)) => end,
                 Ok(None) => continue,
                 Err(()) => return Computation::Cancelled,
-            };
-            if entry.display_name == name { end } else { 0 }
+            }
         };
         if !append_entry(&mut index, entry, matches.len()) {
             return ambiguous_projection(request);
@@ -288,6 +290,23 @@ fn ambiguous_projection(request: &SearchRequest) -> Computation {
             "Directory identities are ambiguous.",
         ),
     ))
+}
+
+/// Match original Unicode names against an already folded prefix. A decorated caption
+/// may report a match but cannot borrow an original-name byte range for highlighting.
+pub(crate) fn entry_prefix_end(
+    entry: &Entry,
+    query: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<usize>, ()> {
+    let name = if let Some(node) = &entry.virtual_node {
+        std::str::from_utf8(&node.raw_name).ok()
+    } else {
+        entry.name.to_str()
+    };
+    let Some(name) = name else { return Ok(None) };
+    prefix_end(name, query, cancelled)
+        .map(|matched| matched.map(|end| if entry.display_name == name { end } else { 0 }))
 }
 
 fn prefix_end(name: &str, query: &str, cancelled: &dyn Fn() -> bool) -> Result<Option<usize>, ()> {

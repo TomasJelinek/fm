@@ -1,4 +1,4 @@
-//! Physical digit chords are resolved by the same catalog as logical UI keys.
+//! Physical number-row and modified bracket chords use the shared shortcut catalog.
 use midnight_core::ShortcutChord;
 use slint::winit_030::winit::{
     event::{ElementState, WindowEvent},
@@ -38,7 +38,7 @@ pub struct ShortcutState {
 }
 
 impl ShortcutState {
-    /// Observe native modifier/key edges and dispatch physical digit shortcuts.
+    /// Observe native modifier/key edges and dispatch physical digit/bracket shortcuts.
     /// Returns whether the native event was consumed by a shortcut.
     pub fn handle(
         &mut self,
@@ -148,11 +148,26 @@ impl ShortcutState {
         if input.repeat || input.synthetic || self.right_alt {
             return decision;
         }
-        let Some(digit) = digit else {
-            return decision;
+        let key = match (digit, input.physical) {
+            (Some(digit), _) => format!("Digit{digit}"),
+            // These are the configured bracket key positions even when Shift or
+            // a different keyboard layout changes their text. Plain/AltGr input
+            // stays with the editor; no action is hardcoded into this adapter.
+            (None, PhysicalKey::Code(code))
+                if self.modifiers.intersects(
+                    ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SUPER,
+                ) =>
+            {
+                match code {
+                    KeyCode::BracketLeft => "BracketLeft".into(),
+                    KeyCode::BracketRight => "BracketRight".into(),
+                    _ => return decision,
+                }
+            }
+            _ => return decision,
         };
         let chord = ShortcutChord {
-            key: format!("Digit{digit}"),
+            key,
             control: self.modifiers.control_key(),
             alt: self.modifiers.alt_key(),
             shift: self.modifiers.shift_key(),
@@ -195,6 +210,114 @@ mod tests {
             repeat: false,
             synthetic: false,
         }
+    }
+
+    #[test]
+    fn physical_brackets_insert_each_panel_path_on_us_and_czech_layouts() {
+        let map = ShortcutMap::new(&[]).unwrap();
+        for (code, text, action) in [
+            (KeyCode::BracketLeft, "[", "command.insert-left-path"),
+            (KeyCode::BracketLeft, "{", "command.insert-left-path"),
+            (KeyCode::BracketLeft, "ú", "command.insert-left-path"),
+            (KeyCode::BracketRight, "]", "command.insert-right-path"),
+            (KeyCode::BracketRight, "}", "command.insert-right-path"),
+            (KeyCode::BracketRight, ")", "command.insert-right-path"),
+        ] {
+            for context in [ShortcutContext::Files, ShortcutContext::Command] {
+                for modifiers in [
+                    ModifiersState::CONTROL,
+                    ModifiersState::CONTROL | ModifiersState::SHIFT,
+                ] {
+                    let mut state = ShortcutState {
+                        modifiers,
+                        ..Default::default()
+                    };
+                    let mut resolved = None;
+                    let result = state.key(input(code, text), |chord| {
+                        resolved = map
+                            .resolve(&chord, context)
+                            .map(|action| action.id.as_str());
+                        resolved.is_some()
+                    });
+                    assert_eq!(
+                        resolved,
+                        Some(action),
+                        "{code:?}, {text}, {context:?}, {modifiers:?}"
+                    );
+                    assert!(result.consumed);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn physical_brackets_honor_overrides_and_leave_plain_text_and_altgr_to_the_editor() {
+        let map = ShortcutMap::new(&[
+            ShortcutBinding {
+                action: "command.insert-left-path".into(),
+                keys: vec![],
+            },
+            ShortcutBinding {
+                action: "command.insert-right-path".into(),
+                keys: vec!["Ctrl+BracketLeft".into()],
+            },
+        ])
+        .unwrap();
+        let mut state = ShortcutState {
+            modifiers: ModifiersState::CONTROL,
+            ..Default::default()
+        };
+        let mut resolved = None;
+        assert!(
+            state
+                .key(input(KeyCode::BracketLeft, "ú"), |chord| {
+                    resolved = map
+                        .resolve(&chord, ShortcutContext::Command)
+                        .map(|action| action.id.as_str());
+                    resolved.is_some()
+                })
+                .consumed
+        );
+        assert_eq!(resolved, Some("command.insert-right-path"));
+        let mut release = input(KeyCode::BracketLeft, "ú");
+        release.state = ElementState::Released;
+        assert!(
+            state
+                .key(release, |_| panic!("release must not insert again"))
+                .consumed
+        );
+        assert!(
+            !state
+                .key(input(KeyCode::BracketRight, ")"), |chord| map
+                    .resolve(&chord, ShortcutContext::Command)
+                    .is_some())
+                .consumed
+        );
+        for modifiers in [ModifiersState::empty(), ModifiersState::SHIFT] {
+            let mut state = ShortcutState {
+                modifiers,
+                ..Default::default()
+            };
+            assert!(
+                !state
+                    .key(input(KeyCode::BracketLeft, "ú"), |_| panic!(
+                        "typing is not a shortcut"
+                    ))
+                    .consumed
+            );
+        }
+        let mut state = ShortcutState {
+            modifiers: ModifiersState::CONTROL | ModifiersState::ALT,
+            right_alt: true,
+            ..Default::default()
+        };
+        assert!(
+            !state
+                .key(input(KeyCode::BracketRight, "]"), |_| panic!(
+                    "AltGr belongs to the editor"
+                ))
+                .consumed
+        );
     }
 
     #[test]

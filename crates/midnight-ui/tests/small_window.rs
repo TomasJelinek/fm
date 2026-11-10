@@ -1,6 +1,8 @@
 //! Actual control geometry and actions at the compact window minimum.
 #[path = "support/render.rs"]
 mod render;
+#[path = "support/toolbar.rs"]
+mod toolbar;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -57,14 +59,11 @@ fn inside(test: &ui::TestUi, item: &ItemRc) {
         test.height
     );
 }
-fn main_geometry(test: &ui::TestUi) {
-    for name in [
-        "Left panel view mode",
-        "Left panel sort",
-        "Right panel view mode",
-        "Right panel sort",
-        "Hot Paths",
-    ] {
+fn main_geometry(test: &mut ui::TestUi) {
+    for name in ["Left panel view mode", "Left panel sort", "Hot Paths"] {
+        if name == "Hot Paths" {
+            toolbar::reveal(test, name, AccessibleRole::Combobox);
+        }
         inside(
             test,
             &ui::root_item(&test.window, name, AccessibleRole::Combobox),
@@ -76,6 +75,9 @@ fn main_geometry(test: &ui::TestUi) {
         "Jobs",
         "Panel splitter",
     ] {
+        if name == "Add current path to Hot Paths" {
+            toolbar::reveal(test, name, AccessibleRole::Button);
+        }
         inside(
             test,
             &ui::root_item(&test.window, name, AccessibleRole::Button),
@@ -92,6 +94,7 @@ fn main_geometry(test: &ui::TestUi) {
             let rect = item.geometry();
             let origin = item.map_to_native_window(rect.origin);
             item.is_visible()
+                && origin.y >= test.window.get_left_pane_top()
                 && origin.y < test.window.get_left_path_top()
                 && rect.height() <= test.window.global::<Theme>().get_control_height() + 1.0
         })
@@ -136,7 +139,8 @@ fn compact_mouse_window_keeps_toolbars_splitter_command_and_dialog_actions_reach
         name: "Very long filename 世界.txt".into(),
         identity: "one".into(),
         size: "1 234 567".into(),
-        modified: "2026-11-07 12:00".into(),
+        modified_date: "2026-11-07".into(),
+        modified_time: "12:00".into(),
         ..Default::default()
     }]));
     test.window.set_left_rows(rows.clone().into());
@@ -148,7 +152,7 @@ fn compact_mouse_window_keeps_toolbars_splitter_command_and_dialog_actions_reach
     for width in [640, 800] {
         test.resize(width, 360);
         assert_eq!(test.window.get_effective_minimum_height(), 200.0);
-        main_geometry(&test);
+        main_geometry(&mut test);
         assert_eq!(test.window.get_command_prompt(), format!("{path}>"));
         assert!(
             test.window.get_command_path_content_width() > test.window.get_command_path_width()
@@ -172,10 +176,10 @@ fn compact_mouse_window_keeps_toolbars_splitter_command_and_dialog_actions_reach
         test.draw();
         inside(
             &test,
-            &ui::popup_item(&test.window, "Done", AccessibleRole::Button),
+            &ui::popup_item(&test.window, "Cancel", AccessibleRole::Button),
         );
         render::snapshot(&test, &format!("small-options-{width}"));
-        ui::click_popup(&test.window, "Done", AccessibleRole::Button);
+        ui::click_popup(&test.window, "Cancel", AccessibleRole::Button);
         test.draw();
         test.window.set_operations(
             Rc::new(VecModel::from(vec![OperationRow {
@@ -190,7 +194,7 @@ fn compact_mouse_window_keeps_toolbars_splitter_command_and_dialog_actions_reach
         );
         ui::click_root(&test.window, "Jobs", AccessibleRole::Button);
         test.draw();
-        for action in ["Copy details", "Cancel", "Resolve", "Close"] {
+        for action in ["Copy details", "Cancel job", "Resolve", "Close"] {
             inside(
                 &test,
                 &ui::popup_item(&test.window, action, AccessibleRole::Button),
@@ -292,7 +296,7 @@ fn exact_320_by_200_minimum_survives_density_fonts_and_recovers_both_panels() {
             &test,
             &ui::root_item(&test.window, "left file.txt", AccessibleRole::ListItem),
         );
-        assert!(test.window.get_left_list_top() < 60.0);
+        assert!(test.window.get_left_list_top() < 100.0);
         assert!(
             test.window.get_left_list_top() + test.window.get_left_list_visible_height()
                 <= test.window.get_left_pane_top() + test.window.get_left_pane_height() + 0.5
@@ -316,13 +320,13 @@ fn exact_320_by_200_minimum_survives_density_fonts_and_recovers_both_panels() {
         test.draw();
         inside(
             &test,
-            &ui::popup_item(&test.window, "Done", AccessibleRole::Button),
+            &ui::popup_item(&test.window, "Cancel", AccessibleRole::Button),
         );
         render::snapshot(
             &test,
             &format!("small-options-density-{density}-font-{font}"),
         );
-        ui::click_popup(&test.window, "Done", AccessibleRole::Button);
+        ui::click_popup(&test.window, "Cancel", AccessibleRole::Button);
         test.draw();
         ui::click_root(&test.window, "Jobs", AccessibleRole::Button);
         test.draw();
@@ -335,7 +339,7 @@ fn exact_320_by_200_minimum_survives_density_fonts_and_recovers_both_panels() {
         test.draw();
         test.resize(1340, 820);
         assert!(!test.window.get_compact_window());
-        main_geometry(&test);
+        main_geometry(&mut test);
     }
 }
 
@@ -391,7 +395,7 @@ fn all_function_slots_keep_captions_in_both_layers_after_remapping() {
             assert_eq!(keys.len(), 12, "Every function slot remains present");
             assert!(
                 keys[0].map_to_native_window(keys[0].geometry().origin).x <= 12.0,
-                "The function strip must start at the left edge without centering under Options"
+                "The function strip must start at the left edge without centering under Jobs"
             );
             for (index, item) in keys.iter().enumerate() {
                 assert!(!label(item).is_empty());
@@ -430,11 +434,11 @@ fn all_function_slots_keep_captions_in_both_layers_after_remapping() {
                 test.draw();
                 let last = &keys[11];
                 let last_origin = last.map_to_native_window(last.geometry().origin);
-                let options = ui::root_item(&test.window, "Options", AccessibleRole::Button);
-                let options_origin = options.map_to_native_window(options.geometry().origin);
+                let jobs = ui::root_item(&test.window, "Jobs", AccessibleRole::Button);
+                let jobs_origin = jobs.map_to_native_window(jobs.geometry().origin);
                 assert!(
-                    last_origin.x + last.geometry().width() <= options_origin.x,
-                    "Scrolled final key must remain clear of the fixed Options button"
+                    last_origin.x + last.geometry().width() <= jobs_origin.x,
+                    "Scrolled final key must remain clear of the fixed Jobs button"
                 );
                 inside(
                     &test,
@@ -563,7 +567,7 @@ fn footer_disables_parent_targets_but_allows_a_real_selection() {
         navigation,
         revision,
         selection: Arc::new(SelectionSnapshot::from_bits(index, vec![1]).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
     refresh(&test.window, &presenter.borrow());
     test.window.invoke_row_click(0, 0, false, false);

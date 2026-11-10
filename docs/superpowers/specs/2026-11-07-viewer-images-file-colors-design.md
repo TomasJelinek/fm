@@ -5,6 +5,11 @@ This extends the user's approved plugin/viewer architecture and the explicit
 plugin workspaces/tests, Unicode identities, security and free-dependency policy
 remain mandatory. The implementation choices below are engineering decisions.
 
+The later [panel/viewer follow-ups](2026-11-07-panel-viewer-followups.md) add
+viewport-driven loading/performance, source line numbers (default on) and logical
+line/column status, and GitHub/Compact/Comfortable Markdown presets. They are
+accepted requirements; their implementation state is tracked separately.
+
 ## Text and binary viewing
 
 The basic viewer retains explicit Text and Binary modes. Binary displays offset,
@@ -44,7 +49,8 @@ never patches application sources. Missing/invalid packages expose no image feat
 
 Ctrl+F12 already supports persistent per-panel masks and bounded Rust regexes.
 Semicolon-separated inclusion masks and `|` exclusions are supported; directories
-stay visible. A metadata expression language is not implemented by this request.
+stay visible in those two modes. The later metadata Expression implementation
+also evaluates folders; see [the current syntax](../../developer/METADATA_FILTERS.md).
 
 Add Options > Colors with ordered enabled rules using the same mask/regex syntax,
 case option and backend compiler. First matching rule wins. Set a base foreground
@@ -54,6 +60,11 @@ focus cues and readable contrast. Show all four variants in a preview, without
 requiring four independent user configurations. Default rules are empty so existing
 folder/file theme distinctions remain. Rules target file names in all panel views;
 parent navigation, progress/error colors and native identity remain unchanged.
+
+Color swatches open a movable, resizable modal popup above Options. HSV/RGB
+controls and presets scroll; Use color and Cancel stay fixed. Escape/X cancel
+only the chooser. Accepting a color stages the rule; the outer Options OK/Cancel
+controls persistence. See [the settings transaction](2026-11-08-options-transaction.md).
 
 Rules have explicit count/expression bounds, strict persistent decoding and safe
 late-settings merging. Invalid expressions do not replace active rules. Matching

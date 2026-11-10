@@ -1,11 +1,109 @@
 # Midnight Explorer — dvoupanelový souborový manažer v Rustu
 
-Datum: 4. listopadu 2026; doplněno 7. listopadu 2026
+Datum: 4. listopadu 2026; doplněno 9. listopadu 2026
+
+Přetahování souborů rozšiřuje [návrh folder-drop](2026-11-10-folder-drag-and-native-handoff.md):
+cílem může být složka přímo v panelu i zachycená nativní větev stromu. Výchozí
+akce podle Průzkumníka je přesun na stejném svazku, jinak kopie; Ctrl vynutí
+kopii a Shift přesun. Zjištění svazku i veškeré operace provádí backend.
+
+Aktualizace 10. listopadu: [ověřování přenosů a nativní Move](2026-11-10-transfer-verification-and-native-move.md).
+V Nastavení → General je výchozí úplná kontrola SHA-256; po výslovném vypnutí
+se kontroluje délka a první/prostřední/poslední blok po 64 KiB. Soubory do 192 KiB
+se porovnají celé. Každá úloha si volbu uchová, včetně přenosů ze schránky,
+drag/drop, stromu a archivu. Přesun na stejném svazku používá nativní rename bez
+čtení či hashování obsahu. Toto nahrazuje starší bezvýjimečné požadavky SHA-256
+a kopírování při každém Move níže. Grafy uchovávají průběh celé operace;
+nativní rename se měří v položkách/s, nikoli ve vymyšlených přenesených bajtech.
+
+Navazující [Make File List](2026-11-09-make-file-list-design.md) přidává export
+výběru podle Salamanderu přes Ctrl+M: šablony, historii, proměnné, schránku,
+interní viewer a ověřené uložení/připojení k souboru. Práce běží v backendu nad
+neměnným výběrem; pozdější navigace nemění exportované položky.
+
+[Asociace viewerů](2026-11-09-viewer-associations.md) jsou uživatelské nastavení
+podle ID pluginu: vlastní přípony, návrat k manifestu a pořadí pro konflikty.
+Platí pro textové i izolované obrazové/PDF viewery; Alt+F3 zachovává Basic.
+
+Markdown počítá rozpočet stránky podle sémantických řádků, nejen znaků LF.
+Zobrazení a index bezpečných bodů používají jeden průchod parserem. Každá neměnná
+relace uchovává nejvýše 16 posledních stránek a 1 MiB jejich sémantických dat,
+takže návrat na uloženou stránku nečte a neparsuje zdroj znovu. Vzdálený skok bez
+známého kontextu stále používá omezený doslovný náhled; nejde o úplný index souboru.
+GitHub styl má vlastní rozvržení bloků: neutrální nadpisy, pravidla pod H1/H2,
+podbarvené bloky kódu, odsazené citace a seznamy a tabulky se střídáním řádků.
+Volba uživatelského písma zůstává zachována. Compact/Comfortable a textové viewery
+nepřebírají tyto dekorace.
 
 Stav: průběžný návrh produktu Midnight Explorer 0.1. Aktuální rozšíření operací,
 ovládání a pluginů níže mají přednost před historickými etapami tohoto dokumentu.
 Pořadí přijatých navazujících implementací zachycuje
 [plán etap](../plans/2026-11-05-follow-up-stages.md); samotný návrh neznamená hotovou funkci.
+
+Nejnovější závazné [úpravy panelů, viewerů a dialogů](2026-11-07-panel-viewer-followups.md)
+zahrnují Hot Paths uvnitř archivů (`archiv.zip@cesta`), viditelný filtr panelu,
+Find s Masks/Regex/Expression a jednořádkovými výsledky, známé velikosti složek
+bez hlášky „unknown“, podrobné informace o disku, Markdown GitHub/Compact/Comfortable
+a čísla řádků s pozicí ve source vieweru. Výslovně ruší režim „Move with recovery“
+a požadují skutečná přesunutelná/resizovatelná okna dialogů mimo hlavní okno.
+[Stav funkcí](../../FEATURE_STATUS.md) a [backlog](../../IMPLEMENTATION_BACKLOG.md)
+oddělují hotové funkce od rozpracovaných oprav a dosud neověřeného nasazení.
+
+[Společná horní lišta](2026-11-08-shared-toolbar-design.md) nahrazuje dvě stejné
+panelové lišty a používá kontext aktivního panelu. Obsahuje také kontrolní součty,
+velikosti složek a vlastnosti; disky, cesty a karty zůstávají u každého panelu.
+Rozbalené nabídky zachycují panel a generaci umístění, aby přepnutí nemohlo změnit
+cíl již zahájeného vstupu. Úzká okna lištu posouvají vodorovně. Při nedostatku
+výšky jsou vlastní příkazy dostupné z tlačítka ve společné liště.
+
+Navazující [požadavky na providery, výkon a použitelnost](../plans/2026-11-09-provider-performance-usability.md)
+mají vlastní průběžný seznam ověření. Filtr patří do každého panelu bezprostředně
+vlevo od View, Network Neighborhood do jeho lišty disků. Zkrácené cesty musí
+viditelně obsahovat tři tečky `...`; plná hodnota zůstává autoritou pro operace.
+Chybu v panelu lze zavřít nebo kompletně zkopírovat přes backend do schránky.
+
+Procházení archivu samo nerozbaluje soubory. Až výslovné čtení obsahu pro viewer
+nebo kopírování může vyžadovat rozbalení člena. Obecné diskové odkládání ukládá
+ověřený obsah do soukromého dočasného souboru, ze kterého lze číst rozsahy;
+nevyžaduje celý rozbalený soubor v RAM ani zvláštní JPEG implementaci.
+Aktuální [návrh streamování archivů](2026-11-09-archive-streaming-design.md)
+ruší pevné limity velikosti souboru při zachování integrity, rušení operace,
+omezené pracovní paměti a kontroly chyb zápisu včetně zaplněného disku.
+
+Velikosti složek v archivu počítá backend pouze z metadat: Ctrl+Shift+S měří
+vybrané složky, nebo všechny bezprostřední složky, pokud výběr neexistuje.
+Výběr obsahující pouze soubory nezpůsobí výpočet všech složek. Space měří
+aktuální složku a posune kurzor. Změna řazení nebo procházení stejného archivu
+výpočet neruší; výsledky mají identitu mountu a položky, nikoli dočasnou cestu.
+Panel zobrazuje průběh nejvýše čtyřikrát za sekundu a stavový řádek přidává známé
+součty vybraných složek. Změna zdrojového archivu výsledky zneplatní.
+Výběr rozbalených větví stromu vyžaduje samostatné napojení stromových identit;
+dokončené napojení plochého seznamu tuto funkci samo nezajišťuje.
+
+Porovnání souborů bez výběru v protějším panelu vyhledá stejný přesný nativní
+název v jeho viditelném seznamu. Výslovně označený protějšek má přednost;
+nesouvisející soubor pod kurzorem není náhradním kandidátem.
+
+Aktuální [ovládání source a Markdown vieweru](../../developer/VIEWER_PRESENTATION.md)
+zahrnuje výchozí číslování řádků, skutečnou logickou pozici, písma a profily
+GitHub/Compact/Comfortable. Indexování vzdálených pozic nesmí blokovat zobrazení;
+číslování se nezapočítává do kopírovaného textu. PDF při přechodu na jinou stránku
+zachová přesnou ruční úroveň zoomu, zatímco Fit přepočítá podle rozměrů nové stránky.
+Každé nové PDF se otevře v režimu Fit window, který malé stránky i zvětší.
+Typografické ovládání Markdownu je v jednom responzivním řádku.
+[Ověření ovládání](../../verification/2026-11-08-viewer-controls.md) odděluje
+testy skutečných oken od restartových kontrol. Následné
+[měření latence](../../verification/2026-11-08-viewer-latency.md) prokázalo skrytý
+softwarový fallback; Windows nyní vybírá skutečné WGPU/DX12 a debug sestavení
+optimalizuje i kritické smyčky softwarového rendereru.
+
+Nativní Browse/Stat/Storage a čtení pro F3 nyní používají samostatné Windows/Linux
+filesystem knihovny přes [veřejné API](../../developer/NATIVE_FILESYSTEM_API.md).
+Chybějící plugin nesmí aktivovat skrytý vestavěný fallback. Převod ostatních operací,
+watcherů a obecných identit providerů zůstává samostatnou částí migrace.
+Rekurzivní obyčejný Move odstraňuje každý soubor ihned po ověření a prázdné zdrojové
+složky až po jejich obsahu; Skip ponechá příslušné předky. Platí explicitní
+[platformní a metadatové hranice](../../verification/2026-11-08-recursive-move.md).
 
 [Nový prázdný soubor](2026-11-05-empty-file-design.md): tlačítko v panelu a Shift+F4,
 dialog názvu, výhradní vytvoření na backendu bez přepsání existujícího souboru.
@@ -16,7 +114,7 @@ a Markdown. F3 vybírá plugin podle přípony, Alt+F3 žádá základní textov
 Pluginy zůstávají v jednom Git repozitáři, každý ve vlastním projektu/testech.
 Aktuální hranice a testy popisuje [ověření viewerů](../../verification/viewer-implementation.md)
 a [developer dokumentace API](../../developer/README.md). Filesystem pluginy
-a migrace nativního filesystemu zůstávají navazující etapou.
+a zbývající migrace nativních operací pokračují podle aktuálního backlogu.
 
 Aktuální drobná rozšíření: [unikátní číslované Hot Paths](2026-11-06-unique-numbered-hot-paths.md)
 se správou zkratek bez zavření dialogu; [souhrn potvrzení mazání](2026-11-06-delete-summary.md)
@@ -30,6 +128,11 @@ Další implementované úpravy: [F7 pro absolutní i relativní cesty](2026-11-
 [aktivace panelu kliknutím](2026-11-06-panel-activation.md),
 [přehlednější atributy a časy](2026-11-06-metadata-dialog-refinement.md)
 a [sjednocené zobrazení chyb](2026-11-06-error-presentation-design.md).
+
+Dialog atributů používá [jednosloupcové rozložení](2026-11-08-compact-attributes.md)
+a jedno společné „Include subfolders“ nad spodními tlačítky, mimo posuvný obsah
+záložek. Volba platí pro atributy, časy i změnu velikosti písmen názvu současně;
+přepnutí záložky nemění její hodnotu ani umístění.
 
 [Kontrolní součty na Ctrl+F8](2026-11-06-checksums-design.md) mají backend a
 samostatné nemodální okno: MD5/SHA-1 pro kompatibilitu, výchozí SHA-256 a volitelné
@@ -75,7 +178,7 @@ Požadavky uživatele:
 - Dodatečně potvrzeno: veřejný Rust Style Guide a Rust API Guidelines, `rustfmt` s cílem 100 znaků na řádek, pevný limit ručně psaného zdrojového souboru **100 KB = 100 000 bajtů**. Podrobnosti a výjimky pro generovaný kód jsou v `CODE_STYLE.md`.
 - Dodatečně potvrzeno: multiselekce, dávkové kopírování vybraného seznamu s průběhem a společná fronta kopírování/přesunu/mazání. Další operaci lze neblokujícím způsobem zadat během běhu jiné úlohy; zpracování nesmí zmrazit UI.
 - Dodatečně potvrzeno: úplná spodní lišta F1–F10, příkazový editor se spouštěním výslovně zadaných příkazů v systémovém terminálu, Ctrl+[ / Ctrl+] vloží cestu levého/pravého panelu, Alt+Enter zobrazí vlastnosti, řádek `..`, systémové ikony a samostatná lišta disků/speciálních umístění nad každým panelem. Windows podporuje Shift+písmeno disku pouze při zaměření seznamu souborů.
-- Dodatečně potvrzeno: Ctrl+Shift+S počítá velikosti všech složek aktivního panelu na pozadí; druhý stisk výpočet ruší. Aktivní panel je vizuálně zvýrazněný. Průběžné/neúplné velikosti se odlišují od dokončených výsledků. Odkazy se při výpočtu nepřecházejí; výsledek je živý součet logických délek, nikoli atomický snapshot.
+- Dodatečně potvrzeno: Ctrl+Shift+S počítá na pozadí vybrané složky aktivního panelu, nebo všechny složky, když výběr neexistuje; druhý stisk výpočet ruší. Aktivní panel je vizuálně zvýrazněný. Průběžné/neúplné velikosti se odlišují od dokončených výsledků. Odkazy se při výpočtu nepřecházejí; výsledek je živý součet logických délek, nikoli atomický snapshot.
 - Aktuální etapu rozšiřuje [návrh operací a ovládání](2026-11-05-rename-delete-scroll-design.md): rename/delete/F7, fronta, F11/F12, editace cesty, trvalé karty, locale a režimy panelů/náhledy. Má přednost před staršími read-only omezeními níže.
 - Dodatečně potvrzeno: oba viditelné panely sledují změny souborového systému přes samostatné platformní rozhraní. Události se sloučí: obnova po 1 sekundě klidu, nejpozději po 3 sekundách souvislého proudu změn. Periodická kontrola po 15 sekundách zachytí chybějící notifikace, zejména síťových disků. Registrace watcherů, porovnání i obnova dat běží na backendu; výběr, kurzor, scroll a rozepsaný příkaz se zachovají.
 - Dodatečně potvrzeno: odstranit horní řádek s názvem aplikace/About, aby neubíral místo panelům. Přidat uživatelské nastavení s výběrem původního modrého, neutrálního tmavého a světlého tématu. Nabídnout kompaktní rozestupy pro desktop/myš a větší rozestupy a dotykové cíle pro touchscreen. Odkaz About zůstane v menu; Options bude u příkazového řádku a v menu.
@@ -245,8 +348,10 @@ před zápisem dat; konkrétní nepodporované rozlišení cíle se může zjist
 ověření dat, před publikováním daného souboru. Dřívější dokončené cíle zůstanou;
 chyba daného souboru zabrání jeho smazání a zastaví další přesun. Časové kontroly pouze
 doplňují úplné hashe a nové nativní revize; publikovaný cíl se nikdy neopravuje,
-aby se skryla změna. Dřívější dokončené přesuny zůstávají dokončené; chyba po
-záchytu ponechá nedokončený originál v recovery. Otevřené čtecí handly mohou
+aby se skryla změna. Dřívější dokončené přesuny zůstávají dokončené; při chybě
+zůstane dosud nesmazaný zdroj zachován. Požadovaný běžný přesun nepoužívá
+zdrojové recovery složky ani volbu „Move with recovery“; starší implementace se
+nahrazuje podle nejnovějšího dodatku výše. Otevřené čtecí handly mohou
 odložit fyzické uvolnění místa; přesný počet uvolněných bajtů se neslibuje.
 
 Ostatní časy, atributy, práva, ACL, xattrs, proudy, metadata adresářů a zachování
@@ -636,8 +741,8 @@ Provedené testy nejsou náhradou za dosud neprovedená měření či nasazení 
 | Backspace / dvojklik na `..` | Navigace k rodiči; `..` není skutečný soubor ani součást výběru |
 | Space / Insert | Multivýběr a posun kurzoru; Space navíc počítá velikost skutečné složky na pozadí |
 | Alt+Left / Alt+Right, Ctrl+R | Historie / nový výpis aktivního umístění |
-| Kliknutí na záhlaví Name/Size/Modified | První volba sloupce vzestupně; opakované kliknutí přepíná asc/desc; šipka ukazuje směr |
-| Ctrl+Shift+S | Výpočet všech složek aktivního panelu bez ohledu na výběr; opakování ruší |
+| Kliknutí na záhlaví Name/Ext/Size/Modified | První volba kritéria vzestupně; opakované kliknutí přepíná asc/desc; šipka ukazuje směr. Ext řadí podle přípony stejným backendovým příkazem jako nabídka Extension a Ctrl+F4. Name a Ext sdílejí oblast názvu; řádky zachovávají celý název souboru. Kliknutí aktivuje příslušný panel. |
+| Ctrl+Shift+S | Výpočet vybraných složek, nebo všech složek bez výběru; opakování ruší. Podporuje nativní složky a připravený seznam archivu. |
 | Alt+Enter, také Ctrl+Alt+Enter | Vlastnosti vybraných položek, jinak skutečné položky pod kurzorem; samotné `..` nic nespouští |
 | Ctrl+[ / Ctrl+] | Vloží celou cestu levého/pravého panelu jako samostatný bezpečně citovaný argument |
 | Enter / Run v příkazovém editoru | Explicitně zadaný příkaz spustí v externím systémovém terminálu, cwd se zachytí při zadání |
@@ -657,16 +762,13 @@ Windows používá důvěryhodné absolutní systémové cesty pro PowerShell i 
 PowerShell předává Unicode přes `-EncodedCommand`; cmd přes přesný Unicode
 command line s vypnutým AutoRun a delayed expansion. Linux spouští podporované
 systémové terminály se samostatnými argumenty shellu; sudo pouze při výslovně
-zvoleném Elevated režimu. Názvy vložené aplikací se nesestavují do kódu. Nejednoznačné
-místo uvnitř uvozovek, interpolace nebo jiné nepodporované shellové konstrukce
-se při vkládání odmítne bez změny rozepsaného příkazu. Vložení nikdy samo nic
-nespustí; záměrný uživatelský `eval` může argumenty znovu interpretovat.
+zvoleném Elevated režimu. Podle upřesnění uživatele z 7. listopadu 2026 se názvy
+a cesty vkládají jako přesný text bez přidaných uvozovek, escapování a oddělovacích
+mezer. Skutečné mezery v názvu zůstávají. Vložení je pouze editace; celý příkaz
+interpretuje zvolený shell až po explicitním Enter/Run. Řídicí znaky a názvy,
+které nelze přesně reprezentovat, se odmítnou bez ztrátové náhrady.
 
-Cmd nepodporuje libovolný bezpečný procentní literál stejným způsobem jako
-PowerShell. Cesta obsahující `%`, uvozovku, newline nebo vyžadující citování
-a končící zpětným lomítkem se pro vložení do cmd výslovně odmítne s možností
-zvolit PowerShell; její identita se nezkracuje ani
-tiše nepřepisuje. Cmd také nesmí potichu změnit UNC pracovní adresář na lokální:
+Cmd také nesmí potichu změnit UNC pracovní adresář na lokální:
 nepodporované cwd vrátí chybu s doporučením PowerShellu.
 
 Sudo komunikuje s heslem přímo v externím terminálu, nikdy přes UI nebo `-S`.
@@ -783,7 +885,13 @@ tlačítek a padding. Jedna sada metrik řídí render i výpočty scrollu/revea
 testů; kód nesmí předpokládat pevnou výšku po přepnutí hustoty. Změna tématu ani
 hustoty nesmí měnit aktuální cesty, výběr, operace nebo rozepsaný příkaz.
 
-Okamžitý náhled je čistá UI operace. Perzistence je realizační volba backendu:
+Okamžitý náhled je čistá UI operace. Options používá **OK / Cancel**:
+OK ověří změny na všech stránkách, uloží je asynchronně a zavře okno až po
+úspěšném zápisu. Cancel, Escape a křížek zahodí celou rozpracovanou relaci včetně
+náhledu tématu, fontů, hustoty a již přiřazených klávesových zkratek. Při chybě
+zůstane dialog otevřený. Automatické ukládání polohy, karet a historie nesmí
+uložit nepotvrzené náhledy. Podrobnosti a souběhy popisuje
+[transakce nastavení](2026-11-08-options-transaction.md). Perzistence běží v backendu:
 `SettingsService` ukládá typované `UserPreferences` ve verzovaném souboru
 (v3; migrace v1/v2). Windows použije uživatelské LocalAppData, Linux absolutní XDG_CONFIG_HOME
 nebo ~/.config; platformní rozhodnutí zůstávají v oddělených OS souborech.
@@ -983,10 +1091,10 @@ tlačítka disků mají46px s krátkým `C:`, speciální místa24px ikonové c�
 popiskem v tooltipu; při dotyku zůstávají celé názvy. Rozbalovací šipka je SVG,
 aby nezávisela na dostupnosti symbolu v systémovém fontu.
 
-Options nastavuje `close-policy: close-on-click-outside`, protože výchozí
-`close-on-click` Slintu zavírá popup i po kliknutí uvnitř. Test skutečných vstupů
-musí projít změnou Dark→Touch→Light, dalším ovládáním, Escape, novým otevřením
-a Done; samotné zavolání callbacku nebo screenshot toto chování neověřuje.
+Options nastavuje `close-policy: no-auto-close`: kliknutí uvnitř ani mimo dialog
+nesmí zahodit nebo uložit změny. Test skutečných vstupů musí projít náhledem
+Dark→Touch→Light, OK s potvrzením backendu, zrušením přes Cancel/Escape/křížek
+a novým otevřením. Samotné zavolání callbacku nebo screenshot to neověřuje.
 
 Tlačítka disků zůstávají krátká. Tooltip obsahuje na Windows skutečný název
 svazku a volné místo; Linux a budoucí macOS nepotřebují umělé písmeno nebo název
@@ -1063,7 +1171,8 @@ upřesňuje [podrobný návrh](2026-11-04-navigation-and-appearance-design.md), 
 testů, ukládání nastavení a omezení této etapy.
 
 Zkratky výběru: Ctrl+A vybrat vše, Ctrl+D zrušit výběr a Ctrl+I invertovat výběr
-aktivního panelu. Hromadné výpočty běží v backendu; UI čte sdílený neměnný
+pouze souborů aktivního panelu (také uvnitř archivu). Výběr složek a odkazů na
+složky zůstává beze změny. Hromadné výpočty běží v backendu; UI čte sdílený neměnný
 bitový snapshot a potvrzuje odpovídající kontext a revizi výběru. Editory si
 zachovají běžné Ctrl+A pro text. Úplná aktuální mapa je v
 [KEYBOARD_SHORTCUTS.md](../../KEYBOARD_SHORTCUTS.md).
@@ -1124,16 +1233,11 @@ Podrobnosti malého okna a jeho testů jsou v [ověření](../../verification/sm
 Podrobnosti a ověřovací scénáře stanoví
 [návrh systémových ovladačů a celé cesty](2026-11-04-native-controls-and-full-path-design.md).
 
-Vkládání cest a jmen do příkazového editoru nepřidává obalující apostrofy.
-Jednoduché Unicode cesty zůstanou bez uvozovek, ostatní používají dvojité
-uvozovky a přesné escapování daného shellu. PowerShell musí chránit také
-číselná jména a všechny podporované typografické uvozovky; POSIX chrání
-expanze, zpětná lomítka a substituce. CMD odmítne nejednoznačné procentní
-expanze, uvozovky, konce řádků a citovanou cestu končící zpětným lomítkem.
-Přesná identita Unicode se ověřuje také skutečnými parsery shellů.
-Pravidla vycházejí z [dokumentace PowerShellu](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules),
-[POSIX citování v Bash](https://www.gnu.org/software/bash/manual/html_node/Double-Quotes.html)
-a [Windows CRT argv pravidel](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments?view=msvc-170).
+Vkládání cest a jmen do příkazového editoru nepřidává uvozovky, escapování ani
+oddělovací mezery. Jde o přesnou editaci textu, nikoli vytvoření chráněného
+shellového argumentu. Pravidla ukládání nastavení, výběru barev/souborů,
+responzivních dialogů a navazující optimalizace viewerů doplňuje
+[ergonomie dialogů](../../developer/DIALOG_ERGONOMICS.md).
 
 ## 30. Hledání psaním, tooltipy a atribut komprese
 
@@ -1217,12 +1321,19 @@ Space/Insert, Hot Paths, Options a výstupů pod `_build` jsou soustředěné v
 [rozšíření panelů](2026-11-05-panel-navigation-details-design.md).
 Novější [trvalé karty a nastavení v6](2026-11-05-tab-session-extension.md) přidávají
 obnovu karet, režimů panelů a bezpečnou migraci nastavení při přejmenování produktu.
-[Síťový filesystem](2026-11-05-network-filesystem-design.md) bude samostatný
-API-only plugin pro dostupná zařízení/služby/sdílení. Zjišťování celé sítě zatím
-není implementované; dostupnost nelze zaručit pro zařízení blokující discovery.
+[Síťový filesystem](2026-11-05-network-filesystem-design.md) má samostatný
+API-only plugin pro dostupná zařízení/služby/sdílení: Windows WNet/MPR a Linux
+GIO/GVfs mají oddělené adaptéry. Panel nabízí Network, postupné výsledky, cache,
+ruční cíle a výslovné předání share nativnímu filesystemu. Dostupnost nelze
+zaručit pro zařízení blokující discovery; reálná SMB/FUSE interoperabilita ještě
+vyžaduje řízenou kvalifikaci. macOS dostane vlastní adaptér později.
 
 [Nové ovládání a layout](2026-11-05-panel-interaction-layout-design.md) definuje
 Ctrl+Tab/Ctrl+U, splitter, karty, výběr, terminál, atributy, Light a F3/Alt+F3.
+Poměr šířek panelů se ukládá mezi relacemi, nezávisle na velikosti okna a DPI.
+Ukládá se po dokončení přetažení nebo klávesové úpravy; dvojklik uloží rozdělení
+50:50. Dočasné zvětšení panelu Ctrl+F11 tento poměr nepřepisuje. Obnova proběhne
+spolu s nastavením před prvním vykreslením; zápis zajišťuje asynchronní backend.
 
 ## 33. Nový název a navazující implementace
 
@@ -1282,8 +1393,10 @@ Ctrl+F10 porovnává viditelné adresáře na backendu podle velikosti a změnov
 novější soubory. Shoda metadat neznamená shodu obsahu. Rozšíření o porovnání
 obsahu a rekurzi zůstává další etapou. Zrušený nebo zastaralý výsledek nemění
 výběr. Ctrl+F12 nastavuje samostatný uložený filtr panelu: Masks/Regex ponechávají
-složky viditelné, Expression vyhodnocuje typovaná metadata i u složek. Ctrl+F11 zvětšuje aktivní panel, ponechá
-aktivační pruh druhého a při vypnutí obnoví původní poměr šířek.
+složky viditelné, Expression vyhodnocuje typovaná metadata i u složek. Ctrl+F11
+rozšíří aktivní panel na celou plochu obou panelů; druhý panel, jeho aktivační pruh
+i dělič zcela skryje bez rezervovaného místa. Tab přepíná viditelný panel,
+další Ctrl+F11 obnoví původní poměr šířek. Modely obou panelů zůstávají zachované.
 
 Ctrl+F2 otevírá společný editor atributů, časů a velikosti písmen; Ctrl+F7 tentýž
 editor se zapnutou změnou písmen. Výchozí stav ostatních polí je „beze změny“.
@@ -1467,7 +1580,12 @@ Public API/SDK, testy a plugin zůstávají samostatnými Cargo projekty; viz
 [API obrazového vieweru](../../developer/IMAGE_VIEWER_API.md).
 
 Options → Colors obsahuje pořadí pravidel masek/regexu, jednu základní barvu
-písma a volitelné pozadí. Stav focus/selection se odvozuje automaticky s kontrolou
+písma a volitelné pozadí. Barevný vzorek otevírá samostatný přesouvatelný a
+zvětšitelný popup nad Options; HSV/RGB ovladače a paleta se posouvají, zatímco
+Use color a Cancel zůstávají dostupné i při 320 × 200. Escape a křížek zruší pouze
+picker; výběr se ukládá až přes OK v Options. Podrobnosti jsou v
+[návrhu transakce nastavení](2026-11-08-options-transaction.md).
+Stav focus/selection se odvozuje automaticky s kontrolou
 kontrastu; čtyři stavy jsou vidět v náhledu. Vyhodnocení probíhá na backendu proti
 neměnnému snapshotu. Ctrl+F12 vedle masek a regexu nabízí Expression nad jménem,
 velikostí běžného souboru, časem změny, druhem a hlášenými nativními atributy.
@@ -1515,10 +1633,20 @@ obrazového protokolu. Stránky přepínají tlačítka nebo Ctrl+PageUp/Down; z
 posuv, Escape a Space navazují na stávající viewer. PDF nespouští skripty ani
 externí odkazy; nekompatibilní dokument skončí s chybou, nikoli tichým úspěchem.
 
-Ctrl+Shift+C porovná dva vybrané nativní soubory, jinak jeden vybraný/zaměřený
-soubor z každého panelu. Text používá `similar` s limitem vstupu a času; obrázky
+Textový porovnávač má [vlastní výběr neproporcionálního písma](2026-11-08-comparator-font.md)
+v liště. Výchozí je dostupné Consolas, jinak systémové monospace; uživatelská
+volba se ukládá samostatně a nemění písmo aplikace ani viewerů.
+
+Ctrl+Shift+C porovná dva vybrané nativní soubory v aktivním panelu. Jinak použije
+jeho vybraný/zaměřený soubor a výslovný výběr v protějším panelu, nebo jeho jediný
+viditelný protějšek se stejným nativním názvem. Nelze-li dvojici určit, nabídne
+**File A / File B**, každé s **Browse…**, a **Compare / Cancel**. Známý soubor
+zůstane předvyplněný na své straně; chybnou cestu lze opravit ve stejném okně.
+Formulář je dostupný i bez cílové položky v panelu. Přijímá absolutní cesty bez
+shellové interpretace; systémový picker i validace běží na backendu.
+Escape/křížek ruší okno i případný picker. Text používá `similar` s limitem vstupu a času; obrázky
 sdílejí izolovaný dekodér se zobrazením Side-by-Side, Swipe a Onion Skin.
-Výpočet i rasterizace běží mimo UI. Nejednoznačný výběr se odmítne. PDF se
+Výpočet i rasterizace běží mimo UI. Nejednoznačný výběr vyžádá ruční dvojici. PDF se
 nevydává za jednosnímkový obrázek k porovnání celého dokumentu.
 
 Výchozí barevná pravidla rozlišují zdrojový kód, spustitelné soubory, obrázky,
@@ -1550,6 +1678,13 @@ znepřístupnit zavření ani ztratit rozepsané hodnoty. Editor atributů, čas
 velikosti písmen má vlastní SVG ikonu dokumentu s hodinami; nadbytečný spodní
 seznam náhledu souborů byl odstraněn. Validace požadovaných změn a následné
 potvrzení přes připravené identity zůstávají na backendu.
+
+Výběr atributů používá pět kompaktních třístavových ovladačů s viditelným stavem
+Ponechat/Nastavit/Zrušit místo patnácti tlačítek. Podle dostupné šířky a fontu
+jsou atributy ve dvou nebo jednom sloupci; výchozí dialog míří na 640 × 440 px.
+Přechod na kontrolu změn, zpět a mezi tématy nejprve bezpečně uzavře tooltipy
+odstraňovaných ovladačů. Kontrola beze změn je platná, ale nikdy nepovolí zápis.
+Podrobnosti: [kompaktní editor atributů](2026-11-08-compact-attributes.md).
 
 Nastavení v15 ukládá fyzickou pozici vnějšího rámu, fyzickou velikost klientské
 oblasti, normální rozměry před maximalizací a identifikaci monitoru. Změny se
@@ -1612,3 +1747,460 @@ s panely a paletu počítá jednou na stránku. Při scrollování již cachovan
 nevyžadují opakované vytváření fontového scaleru. Okamžitá odezva při stránkování
 a u extrémně dlouhých řádků zůstává samostatným cílem výkonnostního ověření.
 Viz [testy a měření](../../verification/2026-11-07-status-and-viewer-readability.md).
+
+### Rozbalovací větve v panelu — backendový mezikrok 8. listopadu
+
+Každá větev má vlastní neměnnou identitu výskytu a zachycený kontext filesystemu.
+Pozice řádku ani zobrazený název nesmějí určovat cíl souborové operace. Backend
+odděluje požadavek na načtení od instalace výsledku: sbalení větve, výměna mountu
+nebo navigace zneplatní opožděný výsledek. Rušení neuvolní kapacitu workeru,
+dokud skutečné volání neskončí. Stav neznámý, načítání, prázdná větev a chyba
+zůstává odlišný; `+` značí známé potomky, `-` rozbalení.
+
+Implementovaný model podporuje nezávislé větve a připojení explicitně otevřeného
+archivu bez převodu člena archivu na falešnou nativní cestu. Zachovává soubory
+v kořenovém seznamu a z podsložek vkládá pouze složky. Limity modelu nesmějí
+omezit běžné zobrazení kořenového seznamu ani délku filesystemové cesty.
+
+Panely nyní model používají pro nativní a archivní větve, výběr, navigaci,
+řazení sourozenců, prefixové hledání a filtry s kontextem předků. Výpočet velikostí
+také zachycuje typované cíle: označené složky, bez výběru všechny zobrazené složky
+včetně potomků rozbalených větví (i mimo aktuální výřez při scrollování),
+a při Space pouze původní složku pod kurzorem. Výsledky se publikují nejvýše
+čtyřikrát za sekundu pro panel a samy nepřerovnávají řádky. Změna výběru, řazení
+nebo filtru přijatý výpočet neruší; navigace ano. Rušený worker drží kapacitu až
+do skutečného návratu. Archivní výpočet čte metadata bez rozbalování obsahu.
+
+Ctrl+Shift+S zachytí rozsah při přijetí požadavku. Nezahrnuje skryté či sbalené
+potomky, pomocné předky filtru ani junctiony. Změna velikosti okna nebo scroll
+rozsah neovlivní. Při existujícím výběru stále počítá pouze označené složky;
+samotný výběr souborů nespustí výpočet všech složek. Toto rozšíření neovlivňuje
+Ctrl+A, které nadále označuje pouze položky nejvyšší úrovně panelu.
+
+Další konzumenti bezpečných cílů operací a produkční připojování vnořených
+kontejnerů zůstávají nedokončené. Nativní změnové události a ruční refresh nyní
+zachovávají přijatý strom; sledování archivních větví zůstává samostatnou etapou.
+Kontrakt a přesný stav ověření jsou v
+[API větví](../../developer/INLINE_TREES.md) a
+[produkčním napojení](../../developer/TREE_PANEL.md), včetně
+[výpočtu velikostí](../../verification/2026-11-10-tree-folder-sizes.md).
+
+### Zjednodušení ovládání — 8. listopadu
+
+Společná horní lišta ponechává akce pro aktivní panel. Volba zobrazení a řazení
+se vrací na diskovou lištu každého panelu; ve velmi malém okně sdílí řádek s cestou.
+Otevřený výběr zůstává svázaný se svým panelem a při změně jeho adresáře se zruší.
+
+Options je ozubené kolo na pravém konci horní lišty. Vpravo vedle něj je původní
+ikona měsíce, která otevírá About s názvem a verzí aplikace. Obě tlačítka zůstávají
+pevná i při posouvání ostatních nástrojů. Spodní lišta obsahuje F1–F12 a Jobs.
+
+Dialog filtru nemá samostatný checkbox zapnutí. OK ověří a použije výraz,
+Cancel zahodí rozpracovanou změnu a Show all vypne dosavadní filtr. Stejnou
+okamžitou akci má křížek v indikátoru filtru. Poslední výraz a režim zůstávají
+zapamatované; opožděné ověření nesmí vypnutý filtr obnovit.
+
+V nastavení archivů mají vestavěné přípony checkboxy, vlastní přípony křížek
+pro odstranění. Malé + na konci seznamu otevře vstup pro další příponu.
+Vlastní přípony i + jsou zarovnané vlevo s vestavěným seznamem; nesmějí se
+automaticky centrovat podle šířky formuláře. Dlouhé přípony se zalamují.
+Úpravy zůstávají součástí společného potvrzení OK/Cancel v Options.
+
+Ikony příkazů používají původní SVG kresby s omezenými barevnými akcenty a
+variantami pro světlé a tmavé pozadí. Nativní systémové ikony si zachovávají
+barvy. Schválená ikona komprimovaného archivu se nemění. Moderní návrhové
+reference a kroky jsou v [plánu úprav](../plans/2026-11-08-ui-polish.md).
+
+### Přehlednější kontrolní součty — 8. listopadu
+
+Modeless okno Checksums upřednostňuje tabulku výsledků. Má stránky Results,
+Options, Save manifest, Details a Verify file; v úzkém okně je přepíná jeden rozbalovací
+seznam. Nastavení algoritmů a rekurze nezabírá místo nad výsledky a během práce
+je uzamčené. Tabulka zobrazuje zvolený algoritmus; název, počet bytů a stav jsou
+před hashem, takže chyby nejsou schované za několika dlouhými kontrolními součty.
+Šířka hashe se měří podle skutečného monospace fontu a celé hodnoty lze posouvat.
+
+Copy pojmenovává zvolený algoritmus. Ctrl+C kopíruje jeho hodnotu, Ctrl+Shift+C
+celý řádek; místní nabídka zachovává všechny vypočtené algoritmy. Save manifest
+otevře samostatný formulář, Save jej odešle až s cílem a případným výslovným
+souhlasem s částečnými výsledky. Nový výpočet souhlas zruší, změna stránky ne.
+Close je stále dostupné, chyby mají ikonu a křížek. Okno zůstává měnitelné od
+320×200 a vyšší fonty používají posouvání obsahu. Podrobnosti:
+[návrh UI](2026-11-08-checksum-polish-design.md).
+
+Kontrolní součty lze ukládat i ověřovat ve všech pěti formátech checksum pluginu
+Salamanderu: SFV/CRC32, MD5, SHA-1, SHA-256 a SHA-512. Save manifest nabízí formát
+s odpovídající příponou a systémový dialog pro cíl. Verify file umožňuje vybrat
+manifest; explicitní Verify spustí kontrolu na backendu. Vedle GNU seznamů načítá
+také BSD zápis, komentáře a samotný hash v souboru s odpovídající příponou.
+Výsledky odlišují shodu, rozdíl, chybějící soubor a chybu čtení. Zrušení zachová
+hotové výsledky. Parser a nativní čtecí handly brání úniku mimo složku manifestu,
+průchodu odkazy i záměně načítaného souboru; nevalidní Unicode se tiše nepřevádí.
+Přesné formáty, limity a rozhraní: [checksum API](../../developer/CHECKSUMS.md).
+
+### Průběžné odznačování kopírování a přesunu (8. listopadu 2026)
+
+Každá úspěšně dokončená vybraná položka se průběžně odznačí. Kopie musí být
+ověřená SHA-256 čtením cíle a zveřejněná; přesun musí navíc dokončit odstranění
+zdroje. Složka se odznačí až po dokončení celého podstromu. Přeskočené, chybné
+a nedokončené položky po zrušení zůstanou označené. Kurzor se neposouvá.
+Backend předává potvrzení jednotlivých kořenových položek nezávisle na čítači
+průběhu; UI posílá malé dávky změn výběru zpět výběrovému workeru. Obnova seznamu
+zachovává identitu podle neztrátové cesty, archivy podle mount/entry ID. Změna
+složky či karty odděluje nový výběr od opožděných potvrzení původní úlohy.
+Podrobnosti a testy: [transfer selection](../../verification/2026-11-08-transfer-selection.md).
+
+### První zobrazení a obnova nedostupných cest (8. listopadu 2026)
+
+Hlavní okno zůstává skryté, dokud backend nedokončí načtení nastavení a UI
+neaplikuje uložený motiv, písmo a hustotu. Nativní okno se připraví skryté,
+obnoví uložený monitor, polohu, velikost a stav a teprve potom se zobrazí.
+Odpojený monitor se nahrazuje primárním podle existujícího pravidla dostupné
+pracovní plochy. Chyba nastavení otevře aplikaci s výchozími hodnotami a chybou;
+nepovoluje jejich automatické uložení přes nečitelné nastavení.
+
+Nelze-li otevřít nativní cestu, backend postupně zkouší její skutečné nadřazené
+adresy až ke kořeni. Pokud není dostupný ani ten, použije `/` na Linuxu nebo
+kořen disku obsahujícího instalaci Windows. Neúspěšný poslední kořen skončí
+chybou, nikoli další smyčkou. Každý další pokus má novou generaci navigace;
+novější ruční navigace se opožděným výsledkem nepřepíše. Neúspěšné cesty se
+nepřidávají do historie. Poskytovatelské/archivní identity se tiše nepřevádějí
+na nativní cesty. Veškeré čtení a dotazy na kořen OS zůstávají v backendu.
+
+Záhlaví dialogů mají ikony podle významu a společné čtvercové tlačítko zavření
+s geometricky centrovaným vektorovým křížkem. Hot Paths má samostatné,
+nepřekrývající se oblasti hvězdy a rozbalovací šipky. Save manifest otevírá
+přímo systémový dialog pro výběr cílového souboru; ruční editace cesty není
+mezistupněm. Pravidla explicitního potvrzení neúplných výsledků, nového souboru
+bez tichého přepsání a ověření zápisu zůstávají zachována.
+
+Ověření: [atributy a ovládací prvky](../../verification/2026-11-08-metadata-review.md),
+[první snímek](../../verification/2026-11-08-startup-first-frame.md),
+[obnova cesty](../../verification/2026-11-08-navigation-fallback.md).
+
+### Chyby přenosu a zavírání průběhu (8. listopadu 2026)
+
+Copy/Move při obnovitelné I/O chybě pozastaví úlohu a podle skutečných možností
+backendu nabídne Retry, Skip, Skip all this error type a Cancel. Platí i pro
+nedostupný cíl, plný disk a selhání čtení, zápisu či synchronizace. Čekání neblokuje
+UI ani I/O worker; zachovává pořadí mutací ve frontě. Každé rozhodnutí patří
+konkrétní úloze a verzi a nemůže nahradit souhlas s přepsáním souboru.
+
+Retry zachovává identitu otevřeného zdroje a cíle i rozpracovaný blok. Cíl vždy
+projde úplným SHA-256 readbackem. Chyba odstranění zdroje při Move neopakuje kopii:
+před novým pokusem o odstranění znovu ověří již uložený cíl a držený zdroj.
+Chyba enumerace složky se nesmí považovat za konec seznamu. Přeskočení zachová
+zdroj i potřebné nadřazené složky. Změna identity, neshoda kontrolního součtu
+nebo nejistý výsledek publikace nepovoluje nebezpečné opakování.
+
+Po úspěchu se zavře pouze automaticky otevřený průběh. Ručně otevřené Jobs zůstane
+otevřené; záznamy se uzavřením okna nemažou. Chyby a zrušené či přeskočené úlohy
+zůstávají viditelné. Escape/Decide later odloží rozhodnutí do Jobs → Resolve.
+Podrobnosti, omezení a porovnání se Salamanderem:
+[návrh obnovy přenosu](2026-11-08-transfer-errors-design.md),
+[API přenosů](../../developer/TRANSFERS.md).
+
+### Klávesové procházení rozdílů a plynulé porovnání obrázků (8. listopadu 2026)
+
+Komparátor má nastavitelné akce pro další, předchozí, první a poslední textový
+rozdíl. F7/Shift+F7 zůstává zachované; výchozí aliasy Alt+Down/Up,
+Alt+Right/Left, N/P a Alt+Home/End vycházejí z komparátoru Salamanderu.
+Skok zarovná změněný řádek v obou pohledech, na krajích nepřetáčí a rychlá
+opakování kláves neztrácí slučováním vstupů. Přenastavení nahradí všechny
+výchozí aliasy; editační pole si ponechávají své klávesy. Přehled:
+[klávesové zkratky](../../KEYBOARD_SHORTCUTS.md).
+
+Režimy Swipe a Onion Skin skládá renderer ze dvou uchovaných obrazů pomocí
+ořezu a průhlednosti. Pohyb dělicí čáry nebo změna opacity již nevyvolává
+přepočet a přenos celého RGBA snímku. Dekódování, vzorkování a příprava
+průhledného pozadí zůstávají v backendu a izolovaných image workerech.
+Cache uchovává rozložení vedle sebe a společné překrytí; první použití
+rozložení stále vyžaduje vzorkování, další přepnutí je znovu využijí.
+Změna velikosti, zoom nebo posun cache zneplatní. Lichá šířka dává pravé
+polovině jeden fyzický pixel navíc při stejném měřítku a počátku.
+
+Posuvník označuje Divider nebo Right opacity a ukazuje procento. Jeho řádek
+nemění výšku plátna mezi režimy. Paměťový kompromis tvoří nejvýše tři plátna
+vzorkovaných dat a tři plátna obrazů rendereru; při limitu čtyř megapixelů
+je to 48 MiB na každé straně mimo dekodéry a přechodné/GPU alokace.
+Postup měření, skutečné testy a omezení:
+[ověření komparátoru](../../verification/2026-11-08-comparator-navigation-and-images.md).
+
+### Markdown tabulky a výběr písma (8. listopadu 2026)
+
+Markdown viewer nabízí seznam nainstalovaných rodin písem, velikost a dosavadní
+profily GitHub / Compact / Comfortable v jednom kompaktním řádku. Výběr se ukládá
+odděleně od písma textového a zdrojového vieweru. Seznam připravuje a cachuje
+backend z databáze rendereru; UI pouze zobrazuje model a odesílá změny.
+
+Samostatný Markdown plugin podporuje GitHub pipe tabulky, zaškrtávací seznamy
+a přeškrtnutí. Tabulky předává veřejným API jako omezené řádky a buňky se
+zarovnáním, záhlavím a přesnými odkazy do zdrojových dat. Host na workeru vytváří
+skutečné sloupce s rámečky a zalamováním buněk. Na úzkém okně zůstává minimální
+čitelná šířka sloupce a je dostupný vodorovný posuvník. Změna písma nebo profilu
+přepočítá již načtenou stránku bez opětovného čtení celého souboru.
+
+Kód má pevnou šířku znaků nezávisle na písmu odstavců. Hledání, výběr a kopírování
+pracují s viditelným textem a zachovávají zdrojové souřadnice. Nová metadata jsou
+volitelná; starší host zobrazí prostý text řádků. Limity parseru, 64 sloupců,
+stránkování a bezpečný textový fallback zůstávají explicitní. Obrázky používají
+alternativní text, HTML je neaktivní; matematika, diagramy a vzdálené zdroje se
+nevykonávají ani automaticky nestahují. Podrobnosti:
+[prezentace viewerů](../../developer/VIEWER_PRESENTATION.md).
+
+### Zpětná vazba panelů a reset nastavení (9. listopadu 2026)
+
+Chyby využívají dostupnou šířku panelu, kopírování je vlevo dole a zavření vpravo
+nahoře. Network ihned ukáže požadovanou lokaci s indikací načítání; indikace platí
+i pro pomalý nativní disk a obnovu existujícího výpisu. Barvy souborů mají viditelný
+seznam priorit. Reset všech stránek Options zachová karty, historii, oblíbené cesty
+a vlastní příkazy; potvrzuje se přes OK a Cancel ho vrátí včetně motivu.
+Fyzické klávesy Ctrl+[ / Ctrl+] a jejich Shift varianty respektují nastavení
+zkratek i lokalizovanou klávesnici. Podrobnosti a ověření popisuje
+[navazující návrh](2026-11-09-panel-options-polish.md).
+
+### Velikost náhledů a rozdělená cache (9. listopadu 2026)
+
+Options → Previews nabízí velikosti náhledů 48 až 256 logických pixelů;
+výchozí hodnota je 72. Změna má náhled v obou panelech a respektuje OK, Cancel
+a Reset. Větší velikost nezneplatní celou cache: jen nedostatečné snímky se
+postupně nahradí, přičemž dosavadní náhled zůstane viditelný. Větší uložený
+snímek lze použít pro menší velikost.
+
+Disková cache používá adresáře podle prvních dvou hexadecimálních znaků hashe,
+například `v1/ab/<hash>.mtc`. Vznikají až při zápisu; stará plochá cache zůstává
+čitelná. Společné limity, úklid a bezpečnostní kontroly platí přes všechny
+adresáře i oba formáty. Podrobnosti:
+[velikost náhledů a cache](2026-11-09-thumbnail-size-and-cache.md).
+
+### Výběr všeho a samostatný výběr souborů (9. listopadu 2026)
+
+Ctrl+A označí všechny zobrazené soubory i složky v aktivním panelu, včetně
+directory links/junctions. Samostatná akce `selection.files` / Select files only
+má výchozí zkratku Ctrl+Shift+A na běžné klávesnici a nahradí výběr pouze
+zobrazenými nesložkovými položkami; dříve označené složky odznačí. Položka `..`
+a pomocné neoznačitelné řádky stromu nejsou nikdy součástí výběru. Platí to také
+pro filtrované seznamy, archivy a rozbalené větve. Ctrl+I nadále invertuje pouze
+soubory a označení složek zachová.
+
+Obě akce jsou ve F10 → Selection a lze je přemapovat v Options → Keyboard.
+Existující uživatelské mapování má přednost před novou výchozí zkratkou.
+Pole pro zadávání textu si ponechávají vlastní chování Ctrl+A. UI poskytne
+okamžitou zpětnou vazbu; backend zpracuje neměnné snapshoty a postupně
+načítané seznamy bez blokování UI. Rozlišení akcí navazuje na Salamander
+`src/mainwnd3.cpp` (`CM_ACTIVESELECTALL`, `CM_ACTIVEINVERTSEL`) a `src/menu4.cpp`,
+ale nová zkratka nevyžaduje numerickou klávesnici.
+
+### HTML viewer s Chromium (9. listopadu 2026)
+
+HTML, HTM a XHTML otevírá F3 v samostatném volitelném CEF pluginu, jehož obraz
+se zobrazuje uvnitř běžného viewer okna. Přípony a prioritu lze změnit v Options →
+Plugins. Alt+F3 dál vynutí jednoduchý text. Plugin má vlastní Cargo projekt,
+závislosti, testy a veřejný protokol; nesdílí privátní Rust typy aplikace.
+
+Backend spravuje Chromium procesy, čtení a zachycené relativní prostředky z disku
+i archivu; UI zobrazuje snímky a předává vstup. Výchozí režim je offline bez
+JavaScriptu. Online režim zruší oprávnění k lokálním přílohám a vytvoří nový
+kontext; JavaScript vyžaduje jeho výslovné zapnutí. Escape zavře viewer, Ctrl+F
+hledá, zoom mění rozložení stránky. Mezerník v editačním poli zůstává textem.
+
+CEF je v odděleném runtime balíčku, nezvětšuje hlavní EXE o Chromium knihovny.
+Windows implementace prošla testem skutečného viewer okna. Linux má samostatný
+launcher s cgroup omezením, ale nativní Chromium vykreslení ještě není ověřené.
+Podrobnosti: [návrh](2026-11-09-html-viewer-design.md),
+[veřejné API a bezpečnost](../../developer/WEB_VIEWER_API.md).
+
+### Viewery při rozbalených větvích panelu (10. listopadu 2026)
+
+F3 a Alt+F3 zůstávají dostupné pro běžné soubory hlavního výpisu i po rozbalení
+složek. UI předá neměnnou projekci a identitu řádku; backend sestaví pořadí
+viditelných souborů z ověřených vazeb na původní výpis. Mezerník tak respektuje
+filtr a řazení zachycené při otevření vieweru. Pozdější navigace panelu jeho zdroj
+nezmění. Nativní soubory dál čte nativní provider, členy archivu původní mount
+s identitou člena a rodiče, včetně relativních prostředků HTML. Rozbalené větve
+obsahují pouze složky; jejich zobrazovací cesty neopravňují k otevření souboru.
+Připojení budoucích kontejnerů a dalších operací vyžaduje vlastní typované cíle.
+Chování přechodu mezi soubory vychází ze Salamanderu `src/viewer3.cpp`,
+`CM_NEXTFILE` / `GetNextFileNameForViewer`; zachycené pořadí je zde neměnné.
+
+### Kopírování z rozbalených větví (10. listopadu 2026)
+
+F5 zachytí označené řádky stromu včetně vnořených nativních a archivních složek.
+Bez označení použije běžný řádek pod kurzorem; `..` a kontextové předky filtru
+vyloučí. Backend před dialogem zachytí neměnný výběr a registrace providerů.
+Pozdější navigace nezmění zdroje otevřeného návrhu. Potvrzení vstoupí do běžné
+fronty a použije existující staging, rozhodování o konfliktech a úplné ověření
+zápisu SHA-256. Zachycený seznam není snapshot obsahu disku.
+
+Úspěšně dokončené kořenové položky se průběžně odznačují podle původní identity
+výskytu a session. Změny výběru a projekce se zpracují v pořadí; opožděné dokončení
+nesmí ovlivnit jinou složku. Clipboard a destruktivní operace vyžadují vlastní
+navazující implementaci; F6 rozšiřuje následující kontrakt. Podrobný [návrh](2026-11-10-tree-copy-design.md),
+[kontrakt](../../developer/TREE_PANEL.md#copy-from-expanded-panels) a
+[ověření](../../verification/2026-11-10-tree-copy.md) uvádějí limity a aktuální stav.
+
+### Přesun ze stromu a obnova po přenosu (10. listopadu 2026)
+
+F6 zachytí nativní výběr se stejnou identitou jako F5, ale s neměnným záměrem
+Move. Archivní a smíšené providery odmítne před přípravou. Použije běžný přesun:
+každý zdrojový soubor odstraní až po nezávislém ověření cíle, prázdné složky
+odstraňuje od potomků k rodičům. Přeskočené či chybové položky zůstávají označené;
+pozdější chyba nevrací dříve dokončené soubory.
+
+Dokončení Copy/Move, včetně chyby nebo zrušení, vyvolá obnovu kořene a již načtených
+nativních větví obou stromových panelů. Backend zachová identitu session,
+rozbalení, výběr, filtr a řazení; nepřenačítá celý panel do plochého režimu.
+Zahrne i načtené sbalené větve, ale neotevírá dosud nenačtené složky ani cizí
+archivní mounty. Čtení a použití výsledku chrání stejná brána jako zápisové
+operace. Chyba čtení ponechá poslední známý výpis s diagnostikou.
+
+Nové soubory kořene získají samostatný backendový snapshot pro F3 a Enter;
+původní snapshot zůstává neměnnou autoritou pro přijetí session. Opožděné výsledky
+nesmí změnit jinou navigaci. Stejnou údržbu nyní používá nativní ruční refresh
+a změnové události kořene i rozbalených větví. Podrobnosti:
+[přesun](2026-11-10-tree-move-design.md),
+[obnova](2026-11-10-tree-transfer-reconciliation.md),
+[sledování změn](2026-11-10-tree-watch-design.md).
+
+Každý panel má jednu nativní skupinu nejvýše 32 nesestupných sledování, včetně
+kořene. Ostatní způsobilé větve kontroluje backend postupně a spravedlivě pomocí
+metadat. Události slučuje po sekundě klidu, nejdéle tři sekundy; pomalé čtení či
+plná výstupní fronta mohou přidat další čekání. Periodická kontrola a opakování
+chyby mají interval 15 sekund. Cíle pocházejí z přesně potvrzené projekce a drží
+provider, nikdy se neodvozují z textu zobrazené cesty. Nová navigace okamžitě
+zneplatní stará oznámení; fyzické uvolnění běží na backendu po návratu čtení.
+
+### Zarovnání odkazů a chyb výpočtu velikosti (10. listopadu 2026)
+
+Detailní a stručný panel rezervují stejný prostor pro rozbalovací ovládání i u
+souborů a junctionů bez tlačítka. Jejich ikony a názvy se zarovnají s běžnými
+složkami. Systémový `Documents and Settings` se nadále zobrazuje jako odkaz;
+automatický výpočet nesleduje jeho cíl `C:\Users` ani ho nezapočítává podruhé.
+
+Ikona chyby čtení stojí těsně vedle částečné velikosti. Roztažení sloupce nesmí
+oddělit ikonu od čísla. Probíhající či zrušený výpočet sám o sobě není chybou;
+neúplná čísla zůstávají odlišená od dokončených hodnot. Podrobnosti a aktuální
+rozsah ověření uvádí [záznam kontroly rozložení](../../verification/2026-11-10-panel-row-alignment.md).
+
+### Nastavení a potvrzovací ovládání (10. listopadu 2026)
+
+Stránka General (dříve Panel) zahrnuje sekce Panels a Command line: zapamatování posledních 100
+unikátních příkazů a vymazání historie. Samostatná stránka Command se odstraní
+z bočního seznamu i z přepínače na úzkém okně. Historie zůstává součástí
+rozpracovaného nastavení: OK uloží změny, Cancel obnoví původní hodnoty.
+
+Všechny editory argumentů používají stejný výběrový seznam s malými tlačítky
+`+`, `−`, `↑`, `↓` u jeho nadpisu. Hodnota vybraného argumentu se upravuje
+samostatně. Pořadí, prázdné argumenty, mezery a Unicode zůstanou přesně zachované;
+nejde o parsování textu příkazového shellu. Stejný vzor platí pro externí editor
+i vlastní příkazy. Podrobnosti stanoví
+[plán sjednocení ovládání](../plans/2026-11-10-settings-controls.md).
+
+Copy, Move a Delete mají jako výchozí tlačítko provedení potvrzené operace.
+U Copy/Move zůstává prvotní fokus v editaci cíle, Enter operaci potvrdí;
+u mazání je fokus přímo na potvrzení. Escape, křížek a explicitně zvolené
+Cancel nadále ruší dialog. Prázdný cíl nelze potvrdit a samotné zobrazení okna
+nikdy neodesílá operaci. Trvalé smazání má stále odlišné výslovné potvrzení.
+
+Ikony souborů **i složek** s atributem Hidden nebo System mají 50% neprůhlednost.
+Text názvu, stavové informace a označení zůstávají plně čitelné. Rozhodují
+metadata příslušného filesystemu, nikoli odhad podle názvu nebo drahé čtení
+obsahu. Neznámé atributy nemají za následek zeslabení ikony.
+
+Hlavičky detailního seznamu používají stejnou šířku jako řádky, včetně rezervy
+pro posuvník. Hodnoty Size končí na společné pravé hraně. Datum změny (Modified)
+a čas (Time) mají samostatné sloupce s pevnými společnými hranami; UI použije
+oddělená lokalizovaná pole z backendu, nikdy nerozděluje formátovaný text podle
+mezer. Oba časové sloupce řadí podle původního úplného času změny.
+
+Aktualizované zkratky výběru: Ctrl+A i Ctrl+Shift+A označí všechny soubory
+a složky hlavní úrovně panelu. Ctrl+I invertuje jen soubory, Ctrl+Shift+I
+invertuje soubory i složky hlavní úrovně. Řádek `..` nikdy není cílem výběru.
+Samostatná akce pro výběr pouze souborů zůstává v menu a lze jí přiřadit vlastní
+zkratku. Výslovná uživatelská přemapování mají nad novými výchozími zkratkami přednost.
+
+### Podrobnosti výstrah v panelech
+
+Každá červená nebo žlutá výstraha v panelu má tooltip s konkrétním důvodem.
+Kliknutí otevře úplnou diagnostiku; nemění výběr a neotevírá ani znovu nenačítá
+označenou složku. Panel se aktivuje stejně jako při kliknutí na jeho ostatní
+ovládací prvky. Platí to v detailním, stručném i náhledovém zobrazení, pro chyby
+rozbalení stromu i pro chybové oznámení pod seznamem. Tooltip zůstává posunutý
+mimo kurzor; běžné názvy souborů tooltip nadále nemají.
+
+Žlutá výstraha u částečné velikosti znamená skutečně přeskočené nebo nečitelné
+položky. Pouhé zrušení výpočtu ji nevytvoří. Výpočet pokračuje přes čitelné části
+a report obsahuje přesné cesty, operace a důvody. Reporty jsou soukromé dočasné
+soubory vytvářené backendem, nikoli neomezené seznamy chyb v paměti. Otevřený
+report je neměnný snímek; další výpočet ani změna adresáře jeho obsah nezmění.
+Čtení, zapisování i konečné uvolnění reportů probíhá mimo UI vlákno. Když nelze
+uložit všechny podrobnosti, report výslovně ukáže počet chybějících záznamů.
+
+Úplné reporty se otevírají v základním textovém vieweru s hledáním a kopírováním.
+Krátké panelové chyby lze otevřít také ve stávajícím dialogu s tlačítkem pro
+kopírování. Název reportu je pouze popisek a nikdy se nepoužije jako cesta k
+otevření souboru. Stisk a uvolnění myši musí patřit stejnému řádku i reportu;
+převázání virtualizovaného řádku nebo nový výpočet gesto zruší.
+
+Zkrácený text panelové chyby a její úplný report mají společnou identitu výskytu.
+Nová chyba se stejným krátkým textem nesmí otevřít starý report ani změnit cíl
+rozpracovaného kliknutí. Kopírování úplných podrobností používá backendový zdroj,
+ne zkrácený popisek panelu. Kontrakt popisuje
+[Panel diagnostics](../../developer/PANEL_DIAGNOSTICS.md).
+
+### Jednotky velikosti a menu řazení
+
+Přehledné velikosti používají binární násobky 1024 s přesnými názvy KiB, MiB,
+GiB a TiB. Například 1 MiB je 1 048 576 bajtů; MB by znamenalo 1 000 000 bajtů.
+Počet bajtů a desetinný oddělovač se nadále formátují podle locale. Označení je
+stejné pro panelové velikosti, volné místo, informace o disku a Copy/Move.
+V menu řazení odděluje čára volbu Reverse order od výběru sloupce. Směr zůstává
+samostatnou vlastností stejného řazení a oddělovač nemění indexy jeho položek.
+
+### Textové viewery a soubory o velikosti 10 GB
+
+Základní textový/binární viewer, zdrojový viewer včetně JSON a textový dokumentový
+viewer smějí pro zobrazení načítat pouze omezený úsek kolem viewportu s malým
+přednačtením. Velikost souboru nesmí určovat velikost alokace. První zobrazení ani
+skok posuvníkem nesmí čekat na přečtení, parsování či indexování celého souboru.
+Stejně se omezuje skrytá práce kvůli číslům řádků: vzdálený skok nesmí spustit
+pročtení gigabajtů předchozího obsahu pouze kvůli údaji Ln/Col. Pokud nelze přesné
+souřadnice zjistit levně z dostupného úseku nebo checkpointu, zobrazí se bajtová
+pozice a nedostupné číslo řádku se nevymýšlí. Návrat do známé oblasti souřadnice
+znovu zpřístupní.
+
+Výslovně spuštěné hledání může postupně projít celý soubor, ale používá omezené
+bloky a podporuje zrušení. Změna souboru během čtení dál podléhá kontrole identity
+a revize. Člena komprimovaného archivu může být nutné nejprve rozbalit na soukromý
+diskový spool pro náhodný přístup; nesmí se kvůli tomu celý držet v RAM a čas
+dekomprese se nesmí vydávat za latenci běžného lokálního seeku.
+
+Výkonnostní cíl je první použitelný snímek v řádu milisekund i pro 10GB lokální
+soubor. Měření odděluje studené otevření/plugin/font inicializaci od opakovaného
+posunu; uvádí přečtené bajty a paměť nezávislou na délce souboru. Testy mají
+obsahovat skutečný vzdálený seek, dlouhé řádky, Unicode a virtuální i řídký 10GB
+soubor. Číselný časový slib závisí na naměřeném úložišti a prostředí.
+
+### Graf rychlosti Copy, Move a Delete
+
+Detail vybrané úlohy v Jobs i automaticky otevřený průběh obsahují společný graf
+rychlosti inspirovaný Průzkumníkem Windows. Copy/Move zobrazují skutečně zapsané
+bajty/s a samostatnou křivku ověřovacích čtení, včetně dodatečných kontrol Move.
+Jednotky jsou KiB/s, MiB/s atd. Delete zobrazuje zpracované položky/s včetně
+ohlášených adresářů; systémový koš může hlásit pouze kořenové vybrané položky.
+Kvůli grafu se nespouští další rekurzivní počítání velikostí.
+
+Backend měří monotónním časem nejvýše čtyřikrát za sekundu a uchovává nejvýše
+240 intervalů za celou operaci od začátku. Při zaplnění sousední intervaly sloučí
+a zvětší také interval pro budoucí měření; uchová původní časové hranice a maxima
+každé křivky. Časová osa se průběžně stlačuje, svislé měřítko zahrnuje i starší
+špičky a zvětší se při novém maximu. Maxima různých křivek ve sloučeném intervalu
+nemusela nastat současně. Aktuální rychlost v popisku zůstává skutečně naměřenou
+rychlostí posledního intervalu. Čekání, zrušení a dokončení zobrazují nulovou
+aktuální rychlost; již běžící systémové volání může po žádosti o zrušení dokončit
+skutečnou práci, která se do historie stále započítá. Dokončený graf zůstává
+součástí existujícího záznamu Jobs v aktuální relaci. Krátká operace má viditelný
+bod i bez celého měřicího intervalu. Graf není procentem dokončení ani měřením
+fyzické propustnosti disku. UI pouze formátuje omezené vzorky a přizpůsobuje graf
+tématu a velikosti okna; nemění bezpečnostní ani kontrolní podmínky operací.
+Podrobnosti: [návrh grafu](2026-11-10-operation-speed-chart-design.md).

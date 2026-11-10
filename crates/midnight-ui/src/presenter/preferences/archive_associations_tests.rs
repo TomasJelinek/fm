@@ -111,3 +111,85 @@ fn toggling_document_browsing_applies_immediately_and_saves_without_restart() {
     presenter.set_archive_association_enabled("DOCX", true, &|_| panic!("unknown choice"));
     assert_eq!(presenter.preferences.revision, revision);
 }
+
+#[test]
+fn custom_associations_capture_exact_decoder_and_keep_capability_gating() {
+    let mut presenter = Presenter::new("left".into(), "right".into());
+    let mut saved = UserPreferences::default();
+    saved
+        .archive_custom_extensions
+        .insert("existing".into(), ArchiveFormat::Tar);
+    assert!(
+        presenter
+            .add_archive_extension("early", ArchiveFormat::Zip, &|_| panic!())
+            .is_err()
+    );
+    presenter.preferences_loaded(Ok(saved));
+    let saves = RefCell::new(Vec::new());
+    let send = |command| {
+        if let Command::SavePreferences { preferences, .. } = command {
+            saves.borrow_mut().push(*preferences);
+        }
+        true
+    };
+    for (index, format) in midnight_core::ARCHIVE_FORMATS.iter().copied().enumerate() {
+        let extension = format!("custom{index}");
+        presenter
+            .add_archive_extension(&extension, format, &send)
+            .unwrap();
+        let entry = Entry::new(
+            EntryId(1),
+            format!("文档.{}", extension.to_uppercase()).into(),
+            EntryKind::File,
+        );
+        presenter.archive_formats.clear();
+        assert!(!presenter.can_browse_archive(&entry));
+        presenter.archive_formats = vec![format];
+        assert_eq!(presenter.browsable_archive_format(&entry), Some(format));
+        for kind in [
+            EntryKind::Directory,
+            EntryKind::DirectoryLink,
+            EntryKind::Symlink,
+            EntryKind::Other,
+        ] {
+            assert!(!presenter.can_browse_archive(&Entry::new(
+                EntryId(2),
+                entry.path.clone(),
+                kind
+            )));
+        }
+    }
+    for invalid in [".DOCX", "CUSTOM0", "*.zip", "../zip"] {
+        let before = presenter.preferences.values.clone();
+        assert!(
+            presenter
+                .add_archive_extension(invalid, ArchiveFormat::Zstd, &send)
+                .is_err()
+        );
+        assert_eq!(presenter.preferences.values, before);
+    }
+    presenter.remove_archive_extension("custom0", ArchiveFormat::Tar, &send);
+    assert!(
+        presenter
+            .preferences
+            .values
+            .archive_custom_extensions
+            .contains_key("custom0")
+    );
+    presenter.remove_archive_extension("custom0", ArchiveFormat::Zip, &send);
+    assert!(
+        !presenter
+            .preferences
+            .values
+            .archive_custom_extensions
+            .contains_key("custom0")
+    );
+    assert_eq!(
+        presenter.preferences.values.archive_custom_extensions["existing"],
+        ArchiveFormat::Tar
+    );
+    assert_eq!(
+        saves.borrow().last().unwrap(),
+        &presenter.preferences.values
+    );
+}

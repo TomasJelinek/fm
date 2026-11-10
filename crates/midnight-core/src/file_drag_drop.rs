@@ -1,5 +1,9 @@
-//! Copy-only native drag/drop contracts. Paths and admission stay on the backend.
-use crate::{Cancellation, FileClipboard, FileClipboardIntent, FsError, NavigationId, PaneId};
+//! Backend-owned drag/drop paths and admission. Native incoming drops are Copy-only;
+//! Windows outgoing supports receiver-owned Copy/Move, while Linux outgoing is Copy-only.
+use crate::{
+    Cancellation, FileClipboard, FileClipboardIntent, FsError, NavigationId, PaneId,
+    TransferIntent, TransferVerification,
+};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -11,6 +15,51 @@ pub struct DragId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DropToken(pub u64);
+
+/// An internal drop identifies an acknowledged model occurrence, never a display path.
+#[derive(Clone, Debug)]
+pub enum InternalDropDestination {
+    PaneRoot {
+        pane: PaneId,
+        navigation: NavigationId,
+    },
+    PanelEntry {
+        pane: PaneId,
+        navigation: NavigationId,
+        entry: crate::EntryId,
+    },
+    TreeOccurrence {
+        view: Arc<crate::TreeProjection>,
+        row: crate::TreeRowId,
+        request: crate::TreeRequestId,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct InternalDropRequest {
+    pub id: DragId,
+    pub destination: InternalDropDestination,
+    pub intent: InternalDropIntent,
+    pub verification: crate::TransferVerification,
+}
+
+/// Modifier choice for an internal drag. Auto moves only when every source and
+/// destination has the same known native device; unknown or mixed devices copy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InternalDropIntent {
+    #[default]
+    Auto,
+    Copy,
+    Move,
+}
+
+/// Provider-retained authority for one ordinary native folder. Resolve and release
+/// final ownership only on backend workers. Navigation revokes an unfinished capture.
+pub trait CapturedDropDirectory: std::fmt::Debug + Send + Sync {
+    fn stamp(&self) -> crate::TreeViewStamp;
+    fn row(&self) -> crate::TreeRowId;
+    fn resolve(&self, cancel: &Cancellation) -> Result<PathBuf, FsError>;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeDragWindow {
@@ -129,6 +178,15 @@ impl FileDropRequest {
 pub enum DragFinish {
     /// Target accepted the copy offer. The target application owns its eventual operation.
     Copied,
+    /// Internal Move was admitted, or a native target reported optimized Move.
+    /// Native feedback is not content verification or source-deletion authority.
+    Moved,
+    /// A native target requested unoptimized Move cleanup without trustworthy
+    /// deletion authority. The source is retained; the target may hold a copy.
+    SourceRetained,
+    /// The target accepted a native drop without trustworthy completion feedback.
+    /// Neither source retention nor a completed Move can be asserted.
+    Unconfirmed,
     Cancelled,
     Unavailable,
 }
@@ -153,9 +211,14 @@ pub enum DragDropEvent {
     },
     DropAccepted {
         token: DropToken,
+        /// The exact internal source gesture; absent for native external drops.
+        drag: Option<DragId>,
         pane: PaneId,
         item_count: usize,
         destination: Arc<PathBuf>,
+        intent: TransferIntent,
+        /// Internal drops freeze this at release; external drops choose it at admission.
+        verification: Option<TransferVerification>,
     },
     Failed {
         id: Option<DragId>,
@@ -185,7 +248,10 @@ pub trait FileDragDropService: Send + Sync + 'static {
 pub trait FileDragDropSession {
     fn service_pending(&mut self) -> Result<(), FsError>;
     /// May run a modal native message loop on this worker. Cancellation and target snapshots
-    /// remain observable during that loop. Only Copy may be offered, never Move or Link.
+    /// remain observable during that loop. Windows may offer Copy|Move; Linux outgoing
+    /// transport offers Copy only. Link is unsupported. The receiver owns external work;
+    /// completion feedback never authorizes this source to delete files. Returned outcomes
+    /// report receiver feedback, not independent verification of its filesystem operations.
     fn start_drag(
         &mut self,
         files: &FileClipboard,

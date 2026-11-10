@@ -3,7 +3,6 @@ use std::{
     ffi::OsString,
     io,
     path::{Component, Path},
-    time::Instant,
 };
 
 pub(super) struct Job {
@@ -29,6 +28,7 @@ pub(super) fn initial(request: &PrepareOperation) -> OperationProgress {
         completed: 0,
         failed: 0,
         processed_entries: 0,
+        throughput: Arc::default(),
         current_path: None,
         message: String::new(),
         errors: vec![],
@@ -275,7 +275,6 @@ impl Job {
             return super::metadata::execute(self, outbox);
         }
         let mut progress = self.progress();
-        let mut last = Instant::now();
         let count = progress.total as usize;
         for index in 0..count {
             if self.cancel.is_cancelled() {
@@ -287,6 +286,7 @@ impl Job {
                 .map(|target| target.item().path.clone())
                 .unwrap_or_else(|| progress.source_directory.clone());
             progress.current_path = Some(path);
+            self.store_progress(&mut progress);
             let result = match progress.kind {
                 MutationKind::CreateFile => self
                     .directory
@@ -310,25 +310,11 @@ impl Job {
                     .delete(mode, &self.cancel, &mut |path| {
                         progress.processed_entries += 1;
                         progress.current_path = Some(path.to_owned());
-                        if last.elapsed() >= Duration::from_millis(250) {
-                            progress.state = if self.cancel.is_cancelled() {
-                                OperationState::CancelRequested
-                            } else {
-                                OperationState::Running
-                            };
-                            *self.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                                progress.clone();
-                            if outbox
-                                .sender
-                                .try_send(Event::Operation(OperationEvent::Progress(Arc::new(
-                                    progress.clone(),
-                                ))))
-                                .is_ok()
-                            {
-                                (outbox.wakeup)();
-                            }
-                            last = Instant::now();
-                        }
+                        // Publish counters to the timer even if the next native call stalls.
+                        // Only the timer builds and sends bounded display snapshots.
+                        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+                        status.processed_entries = progress.processed_entries;
+                        status.current_path = progress.current_path.clone();
                     })
                     .map(|()| None),
                 MutationKind::EditMetadata => unreachable!("metadata jobs use their typed worker"),
@@ -348,7 +334,7 @@ impl Job {
                     }
                 }
             }
-            *self.status.lock().unwrap_or_else(|e| e.into_inner()) = progress.clone();
+            self.store_progress(&mut progress);
         }
         progress.state = if progress.completed == progress.total {
             OperationState::Completed
@@ -371,5 +357,14 @@ impl Job {
                 .push_str("\nSome changes were already completed and have not been undone.");
         }
         progress
+    }
+
+    fn store_progress(&self, progress: &mut OperationProgress) {
+        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        progress.throughput = status.throughput.clone();
+        if self.cancel.is_cancelled() {
+            progress.state = OperationState::CancelRequested;
+        }
+        *status = progress.clone();
     }
 }

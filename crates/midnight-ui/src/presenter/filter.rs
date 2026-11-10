@@ -1,6 +1,11 @@
 //! Validate drafts on the backend before applying and saving per-panel filters.
 use super::*;
 
+enum Target {
+    Flat(u64),
+    Tree(TreeRootSnapshot, TreeSessionId),
+}
+
 pub(crate) struct FilterDialogState {
     pub(crate) open: bool,
     pub(crate) pane: PaneId,
@@ -10,6 +15,7 @@ pub(crate) struct FilterDialogState {
     next: u64,
     pending: Option<u64>,
     ready: Option<FilterValidationRequest>,
+    target: Option<Target>,
 }
 
 impl Default for FilterDialogState {
@@ -23,15 +29,69 @@ impl Default for FilterDialogState {
             next: 0,
             pending: None,
             ready: None,
+            target: None,
         }
     }
 }
 
 impl Presenter {
+    /// Disable the applied filter without discarding its reusable expression.
+    pub(crate) fn clear_panel_filter(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.filter_dialog.open && self.filter_dialog.pane == pane {
+            self.cancel_panel_filter();
+        }
+        let p = &mut self.panes[pane.index()];
+        if p.tree_view().is_some() {
+            if p.tree.options.is_pending() {
+                p.set_error(
+                    "Tree update is busy. Wait for it to finish, then try again.",
+                    &mut self.retired,
+                );
+                return;
+            }
+            if !p.search.panel_filter.enabled {
+                return;
+            }
+            let mut filter = p.search.panel_filter.clone();
+            filter.enabled = false;
+            let options = TreeProjectionOptions {
+                sort: p.sort,
+                filter,
+                search: p.tree_search_options(),
+            };
+            self.request_tree_options(pane, options, tree_options::Origin::FilterClear, send);
+            return;
+        }
+        if !self.preferences.values.panel_filters[pane.index()].enabled {
+            return;
+        }
+        let mut preferences = self.preferences.values.clone();
+        preferences.panel_filters[pane.index()].enabled = false;
+        self.update_preferences(preferences, send);
+    }
+
     pub(crate) fn open_panel_filter(&mut self, pane: PaneId) {
+        let p = &mut self.panes[pane.index()];
+        if p.tree.options.is_pending() {
+            p.set_error(
+                "Tree update is busy. Wait for it to finish, then try again.",
+                &mut self.retired,
+            );
+            return;
+        }
+        let target = p.tree_view().map_or(Target::Flat(p.generation), |view| {
+            Target::Tree(view.root.clone(), view.stamp.session)
+        });
+        self.retired
+            .push(Box::new(self.filter_dialog.target.replace(target)));
         self.filter_dialog.open = true;
         self.filter_dialog.pane = pane;
-        self.filter_dialog.draft = self.preferences.values.panel_filters[pane.index()].clone();
+        self.filter_dialog.draft = p
+            .tree
+            .options
+            .draft()
+            .unwrap_or(&self.preferences.values.panel_filters[pane.index()])
+            .clone();
         self.filter_dialog.error.clear();
         self.filter_dialog.busy = false;
         self.filter_dialog.pending = None;
@@ -66,7 +126,7 @@ impl Presenter {
             self.filter_dialog.pending = Some(id);
             self.filter_dialog.busy = true;
         } else {
-            self.filter_dialog.error = "The command queue is busy. Try Apply again.".into();
+            self.filter_dialog.error = "The command queue is busy. Try OK again.".into();
         }
     }
 
@@ -75,6 +135,8 @@ impl Presenter {
         self.filter_dialog.busy = false;
         self.filter_dialog.pending = None;
         self.filter_dialog.ready = None;
+        self.retired
+            .push(Box::new(self.filter_dialog.target.take()));
     }
 
     pub(super) fn apply_filter_event(&mut self, event: Event) -> Option<Event> {
@@ -107,10 +169,43 @@ impl Presenter {
 
     pub fn flush_filters(&mut self, send: &dyn Fn(Command) -> bool) {
         if let Some(request) = self.filter_dialog.ready.take() {
+            let p = &self.panes[request.pane.index()];
+            let current = match &self.filter_dialog.target {
+                Some(Target::Tree(root, session)) => p.tree_view().is_some_and(|view| {
+                    view.root.same_snapshot(root) && view.stamp.session == *session
+                }),
+                Some(Target::Flat(generation)) => {
+                    p.generation == *generation && p.tree_view().is_none()
+                }
+                None => false,
+            };
+            if !current || p.loading {
+                self.filter_dialog.error =
+                    "The panel changed. Reopen the filter for the current folder.".into();
+                return;
+            }
+            if p.tree_view().is_some() {
+                let options = TreeProjectionOptions {
+                    sort: p.sort,
+                    filter: request.filter,
+                    search: p.tree_search_options(),
+                };
+                if self.request_tree_options(
+                    request.pane,
+                    options,
+                    tree_options::Origin::FilterApply,
+                    send,
+                ) {
+                    self.cancel_panel_filter();
+                } else {
+                    self.filter_dialog.error = self.panes[request.pane.index()].error.clone();
+                }
+                return;
+            }
             let mut preferences = self.preferences.values.clone();
             preferences.panel_filters[request.pane.index()] = request.filter;
             self.update_preferences(preferences, send);
-            self.filter_dialog.open = false;
+            self.cancel_panel_filter();
         }
     }
 }

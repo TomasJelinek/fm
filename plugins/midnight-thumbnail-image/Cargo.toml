@@ -9,7 +9,7 @@ rust-version = "1.99"
 publish = false
 
 [dependencies]
-midnight-thumbnail-sdk = { version = "=0.1.0", registry = "midnight" }
+midnight-thumbnail-sdk = { version = "=0.2.0", registry = "midnight" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 moxcms = "=0.8.1"
 

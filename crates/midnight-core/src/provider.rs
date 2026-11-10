@@ -141,6 +141,17 @@ pub trait DirectoryService: Send + Sync + 'static {
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError>;
 }
 
+/// Native navigation recovery policy; query only on a backend worker.
+/// This returns an address, never permission to bypass the installed filesystem provider.
+pub trait NavigationFallbackService: Send + Sync + 'static {
+    /// Returns `/` on Linux or the drive root containing Windows itself.
+    /// The result must be an absolute root, preserving the native path encoding.
+    ///
+    /// # Errors
+    /// Returns a contextual error when the operating system root cannot be determined.
+    fn navigation_fallback_root(&self) -> Result<PathBuf, FsError>;
+}
+
 /// Blocking discovery of navigable roots, independent of capacity queries.
 pub trait VolumeService: Send + Sync + 'static {
     /// Lists roots without waiting for storage-capacity lookups on individual volumes.

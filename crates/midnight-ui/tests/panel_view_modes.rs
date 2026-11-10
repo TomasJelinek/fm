@@ -1,4 +1,6 @@
 //! Exercise mode changes through the actual picker and virtualized file cells.
+#[path = "support/toolbar.rs"]
+mod toolbar;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -44,7 +46,7 @@ impl Model for Rows {
             )
             .into(),
             size: "123 B".into(),
-            modified: "2026-11-05".into(),
+            modified_date: "2026-11-05".into(),
             icon: self.icon.clone(),
             selected: index == 1,
             cursor: index == 0,
@@ -76,11 +78,9 @@ fn largest_icon(item: ItemRc) -> f32 {
 }
 
 fn choose(ui: &mut ui::TestUi, pane: &str, mode: &str) {
-    ui::click_root(
-        &ui.window,
-        &format!("{pane} panel view mode"),
-        AccessibleRole::Combobox,
-    );
+    ui.window.set_active_pane(i32::from(pane == "Right"));
+    let label = format!("{pane} panel view mode");
+    ui::click_root(&ui.window, &label, AccessibleRole::Combobox);
     ui.draw();
     ui::click_popup(&ui.window, mode, AccessibleRole::Button);
     ui.draw();
@@ -237,13 +237,16 @@ fn independent_modes_preserve_file_identity_and_virtualize_column_and_icon_layou
     ui.window.set_density_index(1);
     ui.window.set_panel_ratio(0.0);
     ui.draw();
-    let pane_left = ui.window.get_left_list_left();
-    let pane_right = pane_left + ui.window.get_left_list_width();
+    let pane_left = 0.0;
+    let pane_right = ui.width as f32;
     for (label, role) in [
         ("New empty file (Shift+F4)", AccessibleRole::Button),
         ("Left panel view mode", AccessibleRole::Combobox),
         ("Left panel sort", AccessibleRole::Combobox),
     ] {
+        if role == AccessibleRole::Button {
+            toolbar::reveal(&mut ui, label, role);
+        }
         let item = ui::root_item(&ui.window, label, role);
         let (x, _) = origin(&item);
         assert!(
@@ -256,6 +259,7 @@ fn independent_modes_preserve_file_identity_and_virtualize_column_and_icon_layou
     let capture = mutations.clone();
     ui.window
         .on_mutation(move |pane, action| capture.borrow_mut().push((pane, action)));
+    toolbar::reveal(&mut ui, "New empty file (Shift+F4)", AccessibleRole::Button);
     ui::click_root(
         &ui.window,
         "New empty file (Shift+F4)",

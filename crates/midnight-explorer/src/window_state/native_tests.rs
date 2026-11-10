@@ -50,9 +50,7 @@ fn native_maximized_restore_keeps_normal_bounds_and_repeated_capture_has_no_drif
         );
         let presenter = Rc::new(RefCell::new(presenter));
         let state = Rc::new(RefCell::new(State::default()));
-        state
-            .borrow_mut()
-            .sample(&window, &mut presenter.borrow_mut(), &|_| true, false);
+        state.borrow_mut().restore(&window, &presenter.borrow());
         let weak = window.as_weak();
         slint::Timer::single_shot(Duration::from_millis(400), move || {
             let window = weak.upgrade().unwrap();

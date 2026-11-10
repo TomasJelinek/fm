@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tree_tests.rs"]
+mod tree_tests;
+
 #[test]
 fn polling_fingerprint_includes_native_attributes_and_unix_permissions() {
     let entry = Entry::new(EntryId(1), "root/file".into(), EntryKind::File);
@@ -153,6 +156,8 @@ struct Files {
     blocked_path: Option<PathBuf>,
     blocked: Notify,
     release: std::sync::atomic::AtomicBool,
+    ignore_cancel: bool,
+    metadata_failed: AtomicBool,
 }
 
 impl Files {
@@ -212,7 +217,9 @@ impl DirectoryService for Files {
     ) -> Result<(), FsError> {
         if self.blocked_path.as_deref() == Some(path) {
             self.blocked.notify_one();
-            while !cancel.is_cancelled() && !self.release.load(Ordering::SeqCst) {
+            while (self.ignore_cancel || !cancel.is_cancelled())
+                && !self.release.load(Ordering::SeqCst)
+            {
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
@@ -234,6 +241,13 @@ impl DirectoryService for Files {
     }
 
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
+        if self.metadata_failed.load(Ordering::SeqCst) {
+            return Err(FsError::from_io(
+                "test metadata",
+                path,
+                io::ErrorKind::PermissionDenied.into(),
+            ));
+        }
         self.directories
             .lock()
             .unwrap()

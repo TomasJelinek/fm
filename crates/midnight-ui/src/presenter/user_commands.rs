@@ -24,6 +24,22 @@ pub(crate) struct LaunchJob {
     pub(crate) error: Option<FsError>,
     pub(crate) summary: Option<UserCommandSummary>,
     pub(crate) preview: Option<Arc<UserCommandPreview>>,
+    pub(crate) settings_preview: Option<SettingsPreviewOrigin>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SettingsPreviewOrigin {
+    token: String,
+    edit_revision: u64,
+    preview_revision: u64,
+}
+
+impl SettingsPreviewOrigin {
+    pub(crate) fn matches(&self, state: &user_command_settings::State) -> bool {
+        self.token == state.token()
+            && self.edit_revision == state.edit_revision
+            && self.preview_revision == state.preview_revision
+    }
 }
 
 #[derive(Clone)]
@@ -31,9 +47,18 @@ pub(super) struct CommandCapture {
     request: UserCommandRequest,
     name: String,
     preview_only: bool,
+    pub(super) settings_preview: Option<SettingsPreviewOrigin>,
 }
 
 impl Presenter {
+    pub(crate) fn current_settings_command_preview(&self) -> Option<&LaunchJob> {
+        self.command_launches.jobs.iter().rev().find(|job| {
+            job.settings_preview
+                .as_ref()
+                .is_some_and(|origin| origin.matches(&self.user_command_settings))
+        })
+    }
+
     pub(crate) fn request_user_command(
         &mut self,
         pane: PaneId,
@@ -46,6 +71,7 @@ impl Presenter {
             self.preferences.values.user_commands.clone(),
             id,
             preview_only,
+            None,
             send,
         )
     }
@@ -57,7 +83,16 @@ impl Presenter {
         id: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        self.capture_user_command(pane, configuration, id, true, send)
+        self.user_command_settings.preview_revision = self
+            .user_command_settings
+            .preview_revision
+            .saturating_add(1);
+        let origin = SettingsPreviewOrigin {
+            token: self.user_command_settings.token(),
+            edit_revision: self.user_command_settings.edit_revision,
+            preview_revision: self.user_command_settings.preview_revision,
+        };
+        self.capture_user_command(pane, configuration, id, true, Some(origin), send)
     }
 
     fn capture_user_command(
@@ -66,6 +101,7 @@ impl Presenter {
         configuration: Arc<Vec<UserCommand>>,
         id: &str,
         preview_only: bool,
+        settings_preview: Option<SettingsPreviewOrigin>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         // An unsaved editor draft can be the configuration's last owner. Keep
@@ -88,7 +124,8 @@ impl Presenter {
             .count()
             >= 32
         {
-            self.desktop.report(
+            self.report_user_command_error(
+                settings_preview.as_ref(),
                 "Custom Commands",
                 "The launch queue is full. Wait for a launch to finish or cancel a queued launch."
                     .into(),
@@ -102,7 +139,8 @@ impl Presenter {
         let p = &self.panes[pane.index()];
         let other = &self.panes[pane.other().index()];
         if p.loading || p.search_view_waiting() {
-            self.desktop.report(
+            self.report_user_command_error(
+                settings_preview.as_ref(),
                 "Custom Commands",
                 "Wait for the current panel listing to finish.".into(),
             );
@@ -127,6 +165,7 @@ impl Presenter {
                 context,
             },
             preview_only,
+            settings_preview,
         };
         if p.native_capabilities() {
             self.request_selection_action(
@@ -154,7 +193,12 @@ impl Presenter {
         files: Option<SelectedFiles>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if self.operations.closing {
+        if self.operations.closing
+            || capture
+                .settings_preview
+                .as_ref()
+                .is_some_and(|origin| !origin.matches(&self.user_command_settings))
+        {
             self.retired.push(Box::new((capture, files)));
             return false;
         }
@@ -166,12 +210,13 @@ impl Presenter {
             .count()
             >= 32
         {
-            self.retired.push(Box::new((capture, files)));
-            self.desktop.report(
+            self.report_user_command_error(
+                capture.settings_preview.as_ref(),
                 "Custom Commands",
                 "The launch queue filled while selection was loading. Try the command again."
                     .into(),
             );
+            self.retired.push(Box::new((capture, files)));
             return false;
         }
         if let Some(files) = &files {
@@ -204,6 +249,7 @@ impl Presenter {
             error: None,
             summary: None,
             preview: None,
+            settings_preview: capture.settings_preview,
         };
         let command = if capture.preview_only {
             Command::PreviewUserCommand(Box::new(capture.request))
@@ -211,6 +257,9 @@ impl Presenter {
             Command::ExecuteUserCommand(Box::new(capture.request))
         };
         if send(command) {
+            if job.settings_preview.is_some() {
+                self.user_command_settings.clear_status();
+            }
             self.command_launches.preview_ready = None;
             self.command_toolbar.invalidate_preview();
             self.command_launches.preview_requested = job.preview_only.then_some(job.id);
@@ -224,11 +273,28 @@ impl Presenter {
             self.trim_command_history();
             true
         } else {
-            self.desktop.report(
+            self.report_user_command_error(
+                job.settings_preview.as_ref(),
                 "Custom Commands",
                 "Request queue is busy. The command was not submitted.".into(),
             );
             false
+        }
+    }
+
+    pub(super) fn report_user_command_error(
+        &mut self,
+        origin: Option<&SettingsPreviewOrigin>,
+        title: &str,
+        message: String,
+    ) {
+        if let Some(origin) = origin {
+            if origin.matches(&self.user_command_settings) {
+                self.user_command_settings.status.clear();
+                self.user_command_settings.fail(message);
+            }
+        } else {
+            self.desktop.report(title, message);
         }
     }
 
@@ -270,6 +336,7 @@ impl Presenter {
             self.retired.push(Box::new(event));
             return None;
         };
+        let mut failure = None;
         match event.update {
             UserCommandUpdate::Queued => {
                 job.accepted = true;
@@ -295,7 +362,8 @@ impl Presenter {
                     error: None,
                 });
                 if self.command_launches.preview_requested == Some(job.id) {
-                    self.command_launches.preview_ready = Some(job.id);
+                    self.command_launches.preview_ready =
+                        job.settings_preview.is_none().then_some(job.id);
                     if let Some(old) = job.preview.replace(preview) {
                         self.retired.push(Box::new(old));
                     }
@@ -310,10 +378,10 @@ impl Presenter {
                     job.state = "Not launched";
                     job.error = Some(error.clone());
                 }
-                self.desktop.report(
+                failure = Some((
                     "Custom Command not accepted",
                     crate::error_presentation::describe(&error),
-                );
+                ));
             }
             UserCommandUpdate::Finished(summary) => {
                 job.finished = true;
@@ -329,7 +397,7 @@ impl Presenter {
                 };
                 job.error = summary.error.clone();
                 if let Some(error) = &summary.error {
-                    self.desktop.report(
+                    failure = Some((
                         "Custom Command needs attention",
                         format!(
                             "{}\n\n{} processes started · {} not started\n\n{}",
@@ -338,10 +406,23 @@ impl Presenter {
                             self.number_locale.format_u64(summary.not_started),
                             crate::error_presentation::describe(error)
                         ),
-                    );
+                    ));
                 }
                 job.summary = Some(summary);
             }
+        }
+        if job.finished
+            && (job.error.is_some()
+                || job
+                    .summary
+                    .as_ref()
+                    .is_some_and(|summary| summary.cancelled))
+        {
+            self.copies.automatic_jobs.retain_attention();
+        }
+        if let Some((title, message)) = failure {
+            let origin = job.settings_preview.clone();
+            self.report_user_command_error(origin.as_ref(), title, message);
         }
         self.trim_command_history();
         None

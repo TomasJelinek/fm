@@ -238,7 +238,7 @@ def copy_worker_files(stage, source_root, prefix, files, executables):
     return inventory, digest
 
 
-def copy_filesystem_packages(stage, source, target, require_native=False):
+def copy_filesystem_packages(stage, source, target, require_native=False, require_network=False):
     source = worker_input(stage, source)
     packages, identities = [], set()
     entries = sorted(source.iterdir())
@@ -249,15 +249,17 @@ def copy_filesystem_packages(stage, source, target, require_native=False):
         files = plain_tree(package)
         manifest = read_worker_manifest(package / "plugin.toml", tomllib.loads)
         worker_identity(manifest, identities)
-        if manifest.get("kind") == "filesystem-native":
-            library = native_filesystem_manifest(manifest, package, files, target)
+        if manifest.get("kind") in ("filesystem-native", "filesystem-network"):
+            library = library_filesystem_manifest(manifest, package, files, target)
             packages.append((package, manifest, files, library))
             continue
         formats = manifest.get("formats")
-        if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
+        if (set(manifest) not in (fields, fields | {"stable_entry_ids"})
+                or type(manifest.get("stable_entry_ids", False)) is not bool
+                or type(manifest.get("schema_version")) is not int
                 or manifest["schema_version"] != 1 or manifest.get("kind") != "filesystem-worker"
                 or manifest.get("target") != target or type(manifest.get("protocol")) is not int
-                or manifest["protocol"] != 1 or not isinstance(formats, list) or not 1 <= len(formats) <= 16
+                or manifest["protocol"] not in (1, 2) or not isinstance(formats, list) or not 1 <= len(formats) <= 16
                 or any(value not in ("zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz",
                                      "bzip2", "tar-bzip2", "zstd", "tar-zstd") for value in formats)):
             raise ValueError("Incompatible filesystem worker manifest")
@@ -269,6 +271,9 @@ def copy_filesystem_packages(stage, source, target, require_native=False):
     native_count = sum(manifest["kind"] == "filesystem-native" for _, manifest, _, _ in packages)
     if native_count > 1 or (require_native and native_count != 1):
         raise ValueError("Release requires exactly one native filesystem provider for its platform")
+    network_count = sum(manifest["kind"] == "filesystem-network" for _, manifest, _, _ in packages)
+    if network_count > 1 or (require_network and network_count != 1):
+        raise ValueError("Release requires exactly one network filesystem provider for its platform")
     inventory = []
     for package, manifest, files, executable in packages:
         standalone = {package / executable} if manifest["kind"] == "filesystem-worker" else set()
@@ -278,33 +283,36 @@ def copy_filesystem_packages(stage, source, target, require_native=False):
     return inventory
 
 
-def native_filesystem_manifest(manifest, package, files, target):
+def library_filesystem_manifest(manifest, package, files, target):
     fields = {"schema_version", "id", "kind", "version", "entry_library", "target", "protocol",
               "abi_major", "minimum_host_minor", "capabilities", "address_encoding"}
-    supported = {"browse", "read", "stat", "volumes", "storage", "native-address", "volume-details"}
+    network = manifest["kind"] == "filesystem-network"
+    supported = ({"browse", "stat", "volumes", "activate", "refresh", "resolve-text"} if network else
+                 {"browse", "read", "stat", "volumes", "storage", "native-address", "volume-details"})
     capabilities = manifest.get("capabilities")
     version = manifest.get("version")
-    encoding = "windows-utf16le" if "windows" in target else "unix-bytes"
+    encoding = "opaque" if network else "windows-utf16le" if "windows" in target else "unix-bytes"
+    required = supported if network else {"native-address"}
     if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
             or manifest["schema_version"] != 1 or manifest.get("target") != target
             or not isinstance(version, str) or not 1 <= len(version.encode("utf-8")) <= 64
             or type(manifest.get("protocol")) is not int or manifest["protocol"] != 1
             or type(manifest.get("abi_major")) is not int or manifest["abi_major"] != 1
             or type(manifest.get("minimum_host_minor")) is not int
-            or not 0 <= manifest["minimum_host_minor"] <= 1
+            or manifest["minimum_host_minor"] not in ((2,) if network else (0, 1))
             or manifest.get("address_encoding") != encoding
             or not isinstance(capabilities, list) or not 1 <= len(capabilities) <= len(supported)
             or any(not isinstance(value, str) or value not in supported for value in capabilities)
-            or len(set(capabilities)) != len(capabilities) or "native-address" not in capabilities):
-        raise ValueError("Incompatible native filesystem manifest")
+            or len(set(capabilities)) != len(capabilities) or not required.issubset(capabilities)):
+        raise ValueError("Incompatible library filesystem manifest")
     library = manifest.get("entry_library")
     if not isinstance(library, str):
-        raise ValueError("Native filesystem entry must be a library filename")
+        raise ValueError("Filesystem entry must be a library filename")
     portable_component(library)
     suffix = ".dll" if "windows" in target else ".so"
     if (not library.endswith(suffix) or package / library not in files
             or package / "THIRD-PARTY.md" not in files):
-        raise ValueError("Native filesystem package lacks its library or embedded notices")
+        raise ValueError("Filesystem package lacks its library or embedded notices")
     return library
 
 
@@ -344,7 +352,7 @@ def copy_thumbnail_packages(stage, source, target):
     if any(source / name in files for name in ffmpeg):
         required = [source / name for name in ffmpeg]
         required.extend(source / "notices/ffmpeg-9.0.2" / name for name in (
-            "ffmpeg-9.0.2.tar.xz", "COPYING.LGPLv2.1", "configure-options.txt", "config.h", "config.mak"))
+            "ffmpeg-9.0.2.tar.xz", "COPYING.LGPLv2.1", "build-options.txt", "config.h", "config.mak"))
         if any(path not in files for path in required):
             raise ValueError("Incomplete FFmpeg runtime, corresponding source or build notices")
     copied, digest = copy_worker_files(stage, source, "thumbnailers", files, executables)
@@ -522,7 +530,8 @@ def main():
                                   args.target, required_ids=REQUIRED_VIEWERS)
     filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
     thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
-    filesystems = copy_filesystem_packages(stage, filesystem_root, args.target, require_native=True)
+    filesystems = copy_filesystem_packages(stage, filesystem_root, args.target,
+                                          require_native=True, require_network=True)
     thumbnails = copy_thumbnail_packages(stage, thumbnail_root, args.target) if (
         args.thumbnailers_root or thumbnail_root.exists()) else {"providers": [], "files": []}
     worker_files = [file for package in filesystems for file in package["files"]] + thumbnails["files"]

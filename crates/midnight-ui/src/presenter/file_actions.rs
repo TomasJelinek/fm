@@ -33,13 +33,22 @@ struct CapturedMenu {
 pub(crate) struct FileActionsState {
     menu: Option<CapturedMenu>,
     clipboard_read: Option<(DesktopRequestId, PathBuf)>,
+    pub(super) tree_clipboard: Option<tree_clipboard::Pending>,
 }
 
 impl Presenter {
     pub(crate) fn copy_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_clipboard(pane, FileClipboardIntent::Copy, send);
+            return;
+        }
         self.request_selection_action(pane, selection_actions::SelectionIntent::Copy, send);
     }
     pub(crate) fn cut_files(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_clipboard(pane, FileClipboardIntent::Move, send);
+            return;
+        }
         if !self.panes[pane.index()].native_capabilities() {
             self.desktop.report(
                 "Cut unavailable",
@@ -94,6 +103,9 @@ impl Presenter {
         anchor: MenuAnchor,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.tree_action_allowed(pane) {
+            return;
+        }
         if !self.native_action_allowed(pane) {
             return;
         }
@@ -292,8 +304,15 @@ impl Presenter {
     ) {
         match action {
             0 => match menu.context.kind {
-                EntryKind::Directory | EntryKind::DirectoryLink => {
+                EntryKind::Directory => {
                     self.navigate(menu.context.pane, menu.context.focused.clone(), None, send);
+                }
+                EntryKind::DirectoryLink => {
+                    self.open_native_directory(
+                        menu.context.pane,
+                        menu.context.focused.clone(),
+                        send,
+                    );
                 }
                 EntryKind::File | EntryKind::Symlink => {
                     self.open_native_entry(menu.context.pane, menu.context.focused.clone(), send);
@@ -433,6 +452,7 @@ impl Presenter {
     }
 
     pub(super) fn retire_file_actions(&mut self) {
+        self.cancel_tree_clipboard(None);
         self.retired
             .push(Box::new(mem::take(&mut self.file_actions)));
     }

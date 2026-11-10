@@ -1,0 +1,7 @@
+import { ToolWindow } from "tool-window.slint";
+import { DialogWindowStyle } from "dialog-frame.slint";
+
+// Native titlebars own movement, resizing and the window close action.
+export component DialogWindow inherits ToolWindow {
+    init => { DialogWindowStyle.native-titlebar = true; }
+}

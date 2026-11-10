@@ -13,7 +13,7 @@ mod discovery;
 pub use discovery::{Diagnostic, PluginInfo, host_target};
 mod content;
 mod text_detection;
-pub use content::{CapturedFile, ContentSource};
+pub use content::{CapturedFile, ContentResources, ContentSource};
 #[cfg(windows)]
 #[path = "installation_windows.rs"]
 mod installation;
@@ -48,9 +48,15 @@ pub fn validate_plugin_path(path: &std::path::Path) -> Result<(), Error> {
     }
     Ok(())
 }
+/// Validate every local dependency of an installed executable package before launch.
+/// No filename extension exemption is made for resources or dependent native libraries.
+pub fn validate_plugin_package(directory: &std::path::Path) -> Result<(), Error> {
+    package_trust::check(directory)
+}
 mod events;
 pub use events::{EventKind, HostEvent};
 mod session;
+mod wake;
 pub use session::Session;
 mod callbacks;
 mod dispatch;

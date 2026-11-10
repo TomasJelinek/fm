@@ -1,9 +1,29 @@
-import { LineEdit, TextEdit } from "std-widgets.slint";
-import { HintedActionButton } from "hinted-inputs.slint";
+import { Button } from "std-widgets.slint";
+import { HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
+import { ArgumentEditor } from "argument-editor.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+
+export struct EditorOptionsDraft { executable: string, arguments: string, use-default: bool }
+export global EditorOptionsView {
+    in-out property <EditorOptionsDraft> draft;
+    in property <[string]> argument-rows;
+    in property <string> revision;
+    in property <string> default-label;
+    in-out property <bool> dirty;
+    in property <bool> busy;
+    in property <string> error;
+    callback edit(EditorOptionsDraft);
+    callback argument(int, int, string);
+    callback browse();
+    callback save();
+    callback discard();
+}
 
 export component EditorOptions inherits VerticalLayout {
+    in property <bool> narrow;
+    // Kept as a compatibility surface for the containing Options component.
     in property <string> default-label;
     in property <string> executable;
     in property <string> arguments;
@@ -11,39 +31,49 @@ export component EditorOptions inherits VerticalLayout {
     in property <string> error;
     callback apply(string, string);
     callback restore();
-    spacing: 8px; alignment: start;
-    init => { program.text = root.executable; args.text = root.arguments; }
-    changed executable => { program.text = root.executable; }
-    changed arguments => { args.text = root.arguments; }
-    changed revision => { program.text = root.executable; args.text = root.arguments; }
-    Text {
-        text: "Default editor: " + root.default-label;
-        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    spacing: 10px; alignment: start;
+    Text { text: "External editor"; color: Theme.strong-text; font-size: Theme.font-size; }
+    WrappingCheckBox {
+        text: "Use the system default editor"; checked <=> EditorOptionsView.draft.use-default;
+        hint: "F4 opens the focused file in your system's graphical editor.";
+        toggled => { EditorOptionsView.edit(EditorOptionsView.draft); }
     }
-    Text { text: "Executable (absolute path)"; color: Theme.text; font-size: Theme.font-size; }
-    program := LineEdit {
-        accessible-label: "Editor executable"; font-size: Theme.font-size;
-        placeholder-text: "Use the default editor";
+    if EditorOptionsView.draft.use-default : Text {
+        text: EditorOptionsView.default-label; color: Theme.secondary-text;
+        font-size: Theme.small-font; wrap: word-wrap;
     }
-    Text { text: "Arguments (JSON list)"; color: Theme.text; font-size: Theme.font-size; }
-    args := TextEdit {
-        accessible-label: "Editor arguments"; font-size: Theme.font-size;
-        height: max(54px, Theme.font-size * 2.8); wrap: no-wrap;
-    }
-    Text {
-        text: "Example: [\"--\", \"{file}\"]. Each item is passed literally. {file} must be a complete item. F4 edits the focused file.";
-        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
-    }
-    if root.error != "" : ErrorNotice { text: root.error; }
-    HorizontalLayout {
-        spacing: 8px;
-        HintedActionButton {
-            text: "Apply editor"; hint: "Validate and save this editor executable and its literal argument list.";
-            clicked => { root.apply(program.text, args.text); }
+    if !EditorOptionsView.draft.use-default : VerticalLayout {
+        spacing: 6px; alignment: start;
+        Text { text: "Editor executable"; color: Theme.text; font-size: Theme.font-size; }
+        GridLayout {
+            spacing: 6px;
+            HintedLineEdit {
+                row: 0; col: 0;
+                text <=> EditorOptionsView.draft.executable; accessible-label: "Editor executable";
+                hint: "Choose a program or enter its complete path."; min-width: 0px; horizontal-stretch: 1;
+                edited => { EditorOptionsView.edit(EditorOptionsView.draft); }
+            }
+            Button { text: "Browse…"; accessible-label: "Browse editor executable";
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                enabled: !EditorOptionsView.busy; clicked => { EditorOptionsView.browse(); } }
         }
+        ArgumentEditor {
+            narrow: root.narrow;
+            values: EditorOptionsView.argument-rows; label-prefix: "Editor";
+            enabled: !EditorOptionsView.busy;
+            edit(row, text) => { EditorOptionsView.argument(0, row, text); }
+            add(text) => { EditorOptionsView.argument(1, 0, text); }
+            remove(row) => { EditorOptionsView.argument(2, row, ""); }
+            move(row, direction) => { EditorOptionsView.argument(direction < 0 ? -1 : 3, row, ""); }
+        }
+    }
+    if EditorOptionsView.error != "" : ErrorNotice { text: EditorOptionsView.error; }
+    HorizontalLayout {
+        alignment: start;
         HintedActionButton {
-            text: "Use default editor"; hint: "Remove the custom executable and use the platform's default graphical editor.";
-            clicked => { root.restore(); }
+            text: "Discard changes"; accessible-label: "Discard editor changes";
+            hint: "Discard the editor draft. Options OK saves changes; Cancel restores them.";
+            enabled: EditorOptionsView.dirty; clicked => { EditorOptionsView.discard(); }
         }
     }
 }

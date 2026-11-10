@@ -1,16 +1,18 @@
 use super::*;
 
-fn settle_generated_fixture(path: &Path) {
-    // Fresh BMPs in native acceptance runs can acquire a metadata-only revision shortly
+pub(super) fn settle_generated_fixture(path: &Path) {
+    // Fresh fixtures in native acceptance runs can acquire a metadata-only revision shortly
     // after creation. Wait before capturing, never relax the production revision checks.
     let started = Instant::now();
     let mut quiet = Instant::now();
     let mut previous = midnight_plugin_host::CapturedFile::capture(path)
         .unwrap()
         .stable_version();
-    while quiet.elapsed() < Duration::from_millis(500) {
+    // On managed desktops the file scanner may update extended attributes several
+    // seconds after creation. This delay belongs only to generated test fixtures.
+    while started.elapsed() < Duration::from_secs(8) || quiet.elapsed() < Duration::from_secs(2) {
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(30),
             "generated image fixture did not settle"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -58,11 +60,13 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         .build()
         .unwrap();
     let service = Service {
+        web: Arc::new(Mutex::new(Some(Arc::from([])))),
         handle: executor.handle().clone(),
         capture: crate::capture::native(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
         images: Arc::new(Mutex::new(Some(providers.into()))),
         windows: Arc::new(AtomicUsize::new(0)),
+        fonts: Default::default(),
     };
     let files = tempfile::tempdir().unwrap();
     std::fs::write(files.path().join("first.BMP"), bitmap()).unwrap();
@@ -88,7 +92,25 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
     );
     assert_eq!(fitted.mode, midnight_core::VIEWER_MODE_IMAGE);
     assert!(!fitted.wrap_available);
-    assert_eq!(&fitted.pixels[..4], &[0; 4], "letterbox is transparent");
+    assert!(fitted.pixels.is_empty());
+    let tiles = fitted.tiles.as_ref().unwrap();
+    let letterbox = tiles
+        .iter()
+        .find(|tile| {
+            tile.position[0] <= 0.0
+                && tile.position[1] <= 0.0
+                && tile.position[0] + tile.width as f32 > 0.0
+                && tile.position[1] + tile.height as f32 > 0.0
+        })
+        .unwrap();
+    let at = ((-letterbox.position[1]) as usize * letterbox.width as usize
+        + (-letterbox.position[0]) as usize)
+        * 4;
+    assert_eq!(
+        &letterbox.pixels.rgba()[at..at + 4],
+        &[0; 4],
+        "letterbox is transparent"
+    );
     session.send(ViewerInput::Image {
         frame: fitted.revision,
         input: midnight_core::ViewerImageInput::ActualPixels,
@@ -147,8 +169,21 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         frame: zoomed.revision,
         input: midnight_core::ViewerImageInput::ActualPixels,
     });
-    session.send(ViewerInput::Pan(0.0));
-    let unchanged = frame(&session, |frame| frame.revision > cycled.revision);
+    let captured = cycled.image.as_ref().unwrap();
+    session.send(ViewerInput::Image {
+        frame: cycled.revision,
+        input: midnight_core::ViewerImageInput::PanTo {
+            surface: captured.surface,
+            sequence: 1,
+            origin: captured.origin,
+        },
+    });
+    let unchanged = frame(&session, |frame| {
+        frame
+            .image
+            .as_ref()
+            .is_some_and(|image| image.pan_sequence == 1)
+    });
     assert_eq!(
         unchanged.image.as_ref().unwrap().zoom,
         0.5,

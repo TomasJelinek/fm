@@ -47,6 +47,12 @@ pub(super) fn stages(
 ) -> Result<HashMap<TransferIdentity, Box<dyn StagedTransferFile>>, FsError> {
     let mut stages: HashMap<_, Box<dyn StagedTransferFile>> = HashMap::new();
     for source in roots {
+        if source.entry().item.kind == EntryKind::Directory
+            && metadata == TransferMetadataPolicy::ContentOnly
+        {
+            continue;
+        }
+        let mut cleanup_failure: Option<FsError> = None;
         let result = (|| {
             let mut stage = if metadata == TransferMetadataPolicy::ContentOnly {
                 destination.stage_file(cancel)?
@@ -67,12 +73,8 @@ pub(super) fn stages(
                     Ok(())
                 }
             });
-            if let Err(mut failure) = probe {
-                if let Err(cleanup) = stage.cleanup() {
-                    failure
-                        .message
-                        .push_str(&format!("\nStage cleanup requires attention: {cleanup}"));
-                }
+            if let Err(failure) = probe {
+                cleanup_failure = stage.cleanup().err();
                 return Err(failure);
             }
             Ok(stage)
@@ -81,15 +83,27 @@ pub(super) fn stages(
             Ok(stage) => {
                 stages.insert(source.entry().identity, stage);
             }
-            Err(mut failure) => {
+            Err(failure) => {
                 for stage in stages.values_mut() {
                     if let Err(cleanup) = stage.cleanup() {
-                        failure
-                            .message
-                            .push_str(&format!("\nStage cleanup requires attention: {cleanup}"));
+                        if let Some(first) = &mut cleanup_failure {
+                            first.message.push_str(&format!("\n{cleanup}"));
+                        } else {
+                            cleanup_failure = Some(cleanup);
+                        }
                     }
                 }
-                return Err(failure);
+                return Err(match cleanup_failure {
+                    Some(mut cleanup) => {
+                        // Preserve the first residual's native classification and
+                        // path; a real refusal must not look like plain cancellation.
+                        cleanup
+                            .message
+                            .push_str(&format!("\nInitial operation failed: {failure}"));
+                        cleanup
+                    }
+                    None => failure,
+                });
             }
         }
     }

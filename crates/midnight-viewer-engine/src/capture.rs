@@ -37,6 +37,16 @@ pub(crate) fn prepare_with(
     closed: &Arc<AtomicBool>,
     capture: crate::NativeCapture,
 ) -> Result<Order, String> {
+    let normalized;
+    let launch = if launch.tree.is_some() {
+        normalized = crate::capture_tree::normalize(launch, closed)?;
+        &normalized
+    } else {
+        launch
+    };
+    if launch.generated.is_some() {
+        return crate::capture_generated::prepare(launch, closed);
+    }
     if launch.archive.is_some() {
         return crate::capture_archive::prepare(launch, closed);
     }

@@ -8,6 +8,12 @@ impl Presenter {
         operation: SelectionOperation,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].tree_view().is_some() {
+            return self.send_tree_selection(pane, TreeSelectionAction::Bulk(operation), send);
+        }
+        if self.panes[pane.index()].network.is_some() || self.panes[pane.index()].network_request {
+            return false;
+        }
         if self.panes[pane.index()].archive.is_some() {
             return self.archive_bulk_selection(
                 pane,
@@ -27,6 +33,9 @@ impl Presenter {
         action: SelectionAction,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if !self.panes[pane.index()].native_capabilities() {
+            return false;
+        }
         if self.panes[pane.index()].archive.is_some() {
             return false;
         }
@@ -37,12 +46,15 @@ impl Presenter {
         }
         let p = &mut self.panes[pane.index()];
         let Some(revision) = p.selection_revision.0.checked_add(1).map(SelectionRevision) else {
-            p.error = "Selection request identities are exhausted.".into();
+            p.set_error(
+                "Selection request identities are exhausted.",
+                &mut self.retired,
+            );
             return false;
         };
         let rebase = matches!(&action, SelectionAction::Rebase);
         if !rebase && p.selection_preview.len() == selection_preview::PREVIEW_CAPACITY {
-            p.error = "Selection queue is busy. Try again.".into();
+            p.set_error("Selection queue is busy. Try again.", &mut self.retired);
             return false;
         }
         let preview = (!rebase)
@@ -64,9 +76,12 @@ impl Presenter {
             false
         };
         let pending_bulk = match &action {
-            SelectionAction::Bulk(SelectionOperation::All | SelectionOperation::Invert) => {
-                Some(true)
-            }
+            SelectionAction::Bulk(
+                SelectionOperation::All
+                | SelectionOperation::FilesOnly
+                | SelectionOperation::Invert
+                | SelectionOperation::InvertAll,
+            ) => Some(true),
             SelectionAction::Bulk(SelectionOperation::Clear) => Some(false),
             _ => None,
         };
@@ -90,7 +105,7 @@ impl Presenter {
             restore: p.selection_restore.clone(),
         };
         if !send(Command::Selection(request)) {
-            p.error = "Selection queue is busy. Try again.".into();
+            p.set_error("Selection queue is busy. Try again.", &mut self.retired);
             return false;
         }
         p.selection_revision = revision;
@@ -112,8 +127,12 @@ impl Presenter {
 
     /// Retry internal rebases after bounded command-channel backpressure.
     pub fn flush_selection(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_trees(send);
+        self.flush_copy_selection(send);
+        self.flush_tree_refresh(send);
         for pane in [PaneId::Left, PaneId::Right] {
-            if self.panes[pane.index()].selection_rebase_pending
+            if self.panes[pane.index()].tree_view().is_none()
+                && self.panes[pane.index()].selection_rebase_pending
                 && !self.panes[pane.index()].loading
                 && !self.panes[pane.index()].search_view_waiting()
                 && self.send_selection(pane, SelectionAction::Rebase, send)
@@ -122,6 +141,7 @@ impl Presenter {
             }
         }
         self.flush_selection_sizes(send);
+        self.flush_file_list(send);
     }
 
     pub(super) fn selection_navigation_accepted(
@@ -137,11 +157,12 @@ impl Presenter {
             p.selection_anchor = None;
             p.selection_anchor_id = None;
         }
-        p.selection_context = if path == p.path && p.successful_generation.is_some() {
-            p.selection_committed_context
-        } else {
-            navigation
-        };
+        p.selection_context =
+            if p.archive.is_none() && path == p.path && p.successful_generation.is_some() {
+                p.selection_committed_context
+            } else {
+                navigation
+            };
         p.selection_revision = SelectionRevision(0);
         p.selection_applied = SelectionRevision(0);
         p.selection_resolved = SelectionRevision(0);
@@ -150,7 +171,7 @@ impl Presenter {
         p.selection_pending_bulk = false;
         p.selection_dirty = false;
         p.selection_rebase_pending = false;
-        p.selection_deferred = false;
+        p.selection_deferred = SelectionDefaults::NONE;
     }
 
     pub(super) fn apply_selection_event(&mut self, event: Event) -> Option<Event> {
@@ -162,6 +183,7 @@ impl Presenter {
                 selection,
                 deferred,
             } => {
+                self.copy_selection_result(pane, navigation, revision, true);
                 let p = &mut self.panes[pane.index()];
                 if navigation.0 == p.generation
                     && revision <= p.selection_revision
@@ -176,7 +198,7 @@ impl Presenter {
                         .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
                     p.selection_deferred = deferred;
-                    if !deferred && !p.showing_stream() {
+                    if !deferred.any() && !p.showing_stream() {
                         p.selection_pending_bulk = false;
                     }
                 } else {
@@ -190,6 +212,7 @@ impl Presenter {
                 revision,
                 error,
             } => {
+                self.copy_selection_result(pane, navigation, revision, false);
                 let p = &mut self.panes[pane.index()];
                 if navigation.0 == p.generation
                     && revision <= p.selection_revision
@@ -199,7 +222,10 @@ impl Presenter {
                     p.selection_preview
                         .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
-                    p.error = crate::error_presentation::describe(&error);
+                    p.set_error(
+                        crate::error_presentation::describe(&error),
+                        &mut self.retired,
+                    );
                     p.selection_rebase_pending = true;
                 }
                 None

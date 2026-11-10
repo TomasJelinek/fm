@@ -1,4 +1,4 @@
-//! Retained file receipts. No byte buffer is retained per receipt.
+//! Retained file receipts. Quick mode retains at most192 KiB of source evidence.
 use super::*;
 use midnight_core::TransferReadGuard;
 
@@ -17,6 +17,7 @@ pub struct VerifiedFileProof {
     stage: Box<dyn StagedTransferFile>,
     identity: TransferIdentity,
     digest: [u8; 32],
+    edges: Option<Edges>,
     length: u64,
     phase: FileProofPhase,
     guard: Option<Box<dyn TransferReadGuard>>,
@@ -47,6 +48,7 @@ impl VerifiedFileCopy {
             stage: self.stage,
             identity,
             digest: self.source_hash.finalize().into(),
+            edges: self.edges,
             length: self.copied,
             phase: FileProofPhase::Ready,
             guard: None,
@@ -61,7 +63,7 @@ impl VerifiedFileCopy {
 }
 
 impl VerifiedFileProof {
-    /// Fresh source and destination revisions from the completed independent hash
+    /// Fresh source and destination revisions from the completed selected-policy
     /// pass, plus exact published binding and required metadata. This is a per-file
     /// removal gate, not a snapshot or permission to remove another file.
     pub fn revalidate_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
@@ -69,7 +71,7 @@ impl VerifiedFileProof {
         if self.phase != FileProofPhase::Complete {
             return Err(failure(
                 path,
-                "source removal requires a completed hash pass",
+                "source removal requires a completed verification pass",
             ));
         }
         let _permit = io_permit(cancel, path)?;
@@ -95,7 +97,7 @@ impl VerifiedFileProof {
         self.validation_bytes
     }
     /// Recheck only the exact final name binding. This supplements, never replaces,
-    /// a complete independently hashed validation pass.
+    /// a completed independent validation pass under the immutable job policy.
     pub fn revalidate_publication(&self, cancel: &Cancellation) -> Result<(), FsError> {
         let path = &self.source.entry().item.path;
         check_cancel(cancel, path)?;
@@ -192,16 +194,56 @@ impl VerifiedFileProof {
         ) {
             return Err(failure(&path, "proof has no active validation read"));
         }
+        let sampled = self.edges.is_some();
+        let (offset, maximum) = if sampled {
+            Edges::range(self.length, self.read, buffer.len())
+        } else {
+            (self.read, buffer.len())
+        };
         let count = {
             let _permit = io_permit(cancel, &path)?;
-            if self.phase == FileProofPhase::Source {
-                self.source.read_chunk(buffer, cancel)?
+            if sampled {
+                let length = if self.phase == FileProofPhase::Source {
+                    self.source.seek_for_validation(offset, cancel)?
+                } else {
+                    if self
+                        .stage
+                        .seek(SeekFrom::Start(offset))
+                        .map_err(|e| io_error(&path, e))?
+                        != offset
+                    {
+                        return Err(failure(&path, "published file verification seek failed"));
+                    }
+                    self.stage.len()?
+                };
+                if length != self.length {
+                    return Err(failure(
+                        &path,
+                        "retained file length changed after publication",
+                    ));
+                }
+            }
+            if maximum == 0 {
+                0
+            } else if self.phase == FileProofPhase::Source {
+                self.source.read_chunk(&mut buffer[..maximum], cancel)?
             } else {
-                self.stage.read(buffer).map_err(|e| io_error(&path, e))?
+                self.stage
+                    .read(&mut buffer[..maximum])
+                    .map_err(|e| io_error(&path, e))?
             }
         };
-        if count > buffer.len() {
+        if count > maximum {
             return Err(failure(&path, "provider returned an invalid read length"));
+        }
+        if let Some(edges) = &self.edges
+            && ((count == 0 && maximum != 0)
+                || !edges.matches(self.length, self.read, &buffer[..count]))
+        {
+            return Err(failure(
+                &path,
+                "retained first/middle/last block changed after publication",
+            ));
         }
         if count != 0 {
             self.read = self
@@ -215,7 +257,9 @@ impl VerifiedFileProof {
             if self.read > self.length {
                 return Err(failure(&path, "retained file grew after publication"));
             }
-            self.hash.update(&buffer[..count]);
+            if !sampled {
+                self.hash.update(&buffer[..count]);
+            }
             return Ok(self.phase);
         }
         {
@@ -231,7 +275,13 @@ impl VerifiedFileProof {
                 return Err(failure(&path, "published destination identity changed"));
             }
         }
-        if self.read != self.length || <[u8; 32]>::from(self.hash.clone().finalize()) != self.digest
+        if self.read
+            != if sampled {
+                Edges::checked_length(self.length)
+            } else {
+                self.length
+            }
+            || (!sampled && <[u8; 32]>::from(self.hash.clone().finalize()) != self.digest)
         {
             return Err(failure(
                 &path,

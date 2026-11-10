@@ -122,6 +122,7 @@ impl ArchiveMount for FakeMount {
 
 fn node(mount: u64, entry: u64, parent: u64, kind: EntryKind) -> ArchiveNode {
     ArchiveNode {
+        modified: None,
         id: midnight_core::VirtualEntryId { mount, entry },
         parent,
         raw_name: Arc::from([0xff, entry as u8]),
@@ -162,6 +163,7 @@ fn fixture(id: u64, directory: u64) -> (ArchiveLocation, Arc<State>) {
                 state: state.clone(),
             })),
             address: ArchiveAddress {
+                format: None,
                 provider: "fake.archive".into(),
                 container,
                 source_version: vec![9, 8, 7],
@@ -180,6 +182,9 @@ fn fixture(id: u64, directory: u64) -> (ArchiveLocation, Arc<State>) {
 
 #[path = "archive_target_tests.rs"]
 mod targets;
+
+#[path = "archive_seed_tests.rs"]
+mod seeds;
 
 fn listing(mount: &dyn MountedFilesystem, root: &NodeToken) -> Vec<super::super::ProviderEntry> {
     let mut rows = Vec::new();

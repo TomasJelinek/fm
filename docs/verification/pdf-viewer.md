@@ -68,3 +68,51 @@ build wrappers now explicitly remove originally absent variables. Sequential
 cached image/PDF release builds pass with `CARGO_TARGET_DIR` initially absent,
 all six saved environment variables compare equal before/after each call, and a
 separate invocation preserves an explicitly supplied target directory.
+
+## Page zoom retention — 8 November 2026
+
+Page navigation previously constructed a new camera in Fit mode, discarding the
+manual zoom. The host now changes page dimensions in the existing camera,
+retaining its exact scale and mode. Scrolling starts at the new page's top;
+dimensions smaller than the viewport remain centered. Fit recomputes its scale
+for each page. The PDF plugin, its public API and its independent tests are unchanged.
+
+The host regression uses an authored two-page PDF with distinct dimensions and
+colors, rendered by the real separately installed PDF worker. Before the fix it
+failed on the first page change: 100% became 16%. After the fix it passes forward
+and backward navigation at 100%, fractional enlarged/reduced zoom, and Fit. Pixel
+checks confirm the target page is actually rendered. This test belongs to the
+host because page navigation and camera policy belong to the host.
+
+The engine unit suite passes 60 tests, including exact-scale retention, smaller
+pages, reset/clamped origins and adaptive Fit; 3 native tests are ignored by the
+default gate. The new PDF native test was then explicitly run and passed against
+the trusted installed PDF worker on Windows. Logs: `_build/goal/pdf-page-zoom/`
+(`red.log`, `unit.log`, `green-native.log`).
+
+Strict engine Clippy (`--all-targets -- -D warnings`), workspace formatting,
+source-size limits (1167 files) and whitespace checks pass. The debug application
+rebuilt and passed native startup with its registered private plugin runtime,
+exit 0 and empty stderr; the saved-preferences hash stayed unchanged.
+`_build/debug/me.exe` SHA-256:
+`FD6A2FE8C6B64E761DEB9BE9A26E3541E07C4498EA71FB614A3268912F6F2231`.
+Build/startup evidence is alongside the test logs (`build.log`, `clippy.log`,
+`app-acceptance.txt`, `deploy.log`, `app-native.{out,err}.log`).
+
+The subsequent [viewer-controls integration](2026-11-08-viewer-controls.md)
+supersedes this executable with debug SHA-256
+`951653FD8802C9A91BE2F42743A7475296C0F9883A4A631870A0B1470C4FFF7C`.
+The same real-PDF page/zoom regression passed again against the new protected
+runtime, including exact fractional zoom in both directions and adaptive Fit.
+The integrated application starts with exit 0 and unchanged user preferences.
+Evidence: `_build/goal/viewer-controls-completion/pdf-page-zoom-installed.log`
+and `app-acceptance.txt`.
+
+The current page-navigation test was repeated against protected runtime
+`MidnightExplorer-20261108-064756-80106a72` and passed (one real-PDF test,
+8.60 seconds). The first attempt exposed a test-fixture race: its old 500 ms
+quiet window ended before the managed desktop scanner changed source metadata.
+The generated-fixture helper now waits at least eight seconds and two quiet
+seconds, with a 30-second deadline, matching the application acceptance harness.
+This delay is test-only; production capture/read revision validation is unchanged.
+Logs: `_build/goal/pdf-page-zoom/recheck-fixture-revision-red.log` and `recheck.log`.

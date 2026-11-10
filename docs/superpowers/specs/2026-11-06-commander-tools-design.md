@@ -26,6 +26,25 @@ The local reference is `D:/experiments/salamander-main/src/`: `salamand.rc:63`,
 
 ## Comparison
 
+The top action toolbar in each panel exposes **Compare files** (Ctrl+Shift+C)
+and **Compare directories** (Ctrl+F10), with distinct document/folder comparison
+icons also reused in F10. Tooltips show the configured bindings. Clicking first
+activates the owning panel and dispatches the existing comparison command.
+File comparison requires a real native target; the parent row alone cannot be
+compared. Two files may come from the active panel, or one from each panel.
+Directory comparison requires both panels to be native and does not require a
+selection. Toolbar sizing accommodates both buttons in narrow panels and Touch.
+
+The directory dialog follows Salamander's `IDD_COMPAREDIRS` in
+`src/lang/lang.rc` and `CCompareDirsDialog` in `src/dialogs6.cpp`: independent
+size/time criteria and optional selection of directories present on only one
+side. It labels both paths, uses the folder comparison icon, and states that
+the current comparison covers displayed metadata without recursion. The Compare
+tooltip explains replacement of both selections and selection of larger/newer
+files. Escape, Close and X cancel; errors preserve the criteria draft.
+Salamander's attribute/content/recursive and ignore-mask options are not yet
+implemented here; do not show controls that imply they work.
+
 Implement comparison of the two displayed directories by file size and modified
 time, both enabled by default. Match exact native names; provide explicit
 case-insensitive matching without using locale sort keys as identities. Ambiguous
@@ -76,10 +95,14 @@ must agree. Ctrl+F8 is blank unless assigned. Clear modifier state on release an
 focus loss; AltGr must not masquerade as Ctrl. Capture the displayed action and
 pane on mouse press so a modifier release cannot retarget a pending click.
 
-Zoom retains both panel models and the previous split ratio, maximizes the active
-panel and leaves an inactive-panel activation rail. Switching panels transfers
-zoom. Toggling again restores the previous ratio; centering the splitter exits
-zoom. Preserve these semantics after swapping panels and resizing the window.
+Zoom retains both panel models and the previous split ratio. The active panel
+fills the entire panels area; the other panel, activation rail and splitter
+are completely hidden and reserve no width. Tab transfers zoom to the other
+panel. Toggling again restores the previous ratio. The ordinary two-panel
+splitter can then be dragged or double-clicked to center it. Preserve these
+semantics after swapping panels and resizing the window. At compact window
+sizes, the activation rail remains available only when explicit zoom is off.
+Zoom must not persist a replacement split ratio or publish a hidden drop target.
 
 ## Attributes, timestamps and case
 

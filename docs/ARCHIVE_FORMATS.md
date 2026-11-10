@@ -1,15 +1,43 @@
 # Archive formats and panel associations
 
 Enter or a left double-click opens an enabled archive association as a folder only
-when a trusted, compatible filesystem worker advertises its decoder. An entrance-arrow
+when a trusted, compatible filesystem worker advertises its decoder. A small zipper
 badge marks these files in Detailed, Brief and Thumbnails views, alongside the host icon.
 The badge is a handler hint, not a claim that the contents have already been validated.
 No file-content probing or archive indexing happens in the UI or during badge rendering.
-Browsable archives use a small, muted corner chevron without an opaque background:
-7 × 8 logical pixels in Detailed/Brief views and 10 × 10 in Thumbnails. The
+Browsable archives use a small, muted corner zipper without an opaque background:
+8 × 12 logical pixels in Detailed/Brief views and 10 × 17 in Thumbnails. The
 associated file icon and selection remain visible, and row sizes do not change.
+The fallback archive icon already includes a zipper and receives no duplicate overlay.
 
-Options → Archives lists every known association with a checkbox. A saved override
+## Opening and reading archives
+
+Archive indexing and decoding run in the restricted background worker. ZIP and
+7z open by indexing their metadata, without decompressing file payloads. A 7z
+compressed header still needs decoding at Open. The first ZIP member read checks
+its entire decoded content; the first 7z read checks the entire containing solid
+block before returning any bytes. Completed blocks are retained for later reads
+within the same mount. Damage to an unrelated 7z block is reported when that
+block is read, not while browsing intact metadata. Listing is not a full integrity
+test of the archive.
+
+TAR keeps one backing buffer and indexes validated member ranges rather than
+copying every file into a second buffer. Compressed TAR must still decode its
+outer sequential stream before indexing; the decoded backing buffer is reused.
+The host currently transfers the complete compressed source into the worker, so
+source I/O and first worker startup remain part of opening time. These changes
+do not remove resource limits, source revision validation or sandbox isolation.
+Copy-out still independently verifies destination bytes with SHA-256; archive
+CRC checks do not replace that verification.
+See the [measured opening results](verification/2026-11-08-archive-opening-performance.md)
+for the fixture sizes, cold-start limitation and regression coverage.
+
+## Associations
+
+Options → Archives has a format chooser for ZIP, 7-Zip, TAR, GZIP, XZ, Bzip2,
+Zstandard and each supported compressed TAR family. Each format shows its built-in
+association checkboxes and a separate custom-extension list with Add and Remove.
+A saved override
 changes panel activation and the badge immediately; it does not register an operating
 system association. Missing settings retain the defaults below. Unchecked documents,
 media, applications and installers open through the existing native Open action.
@@ -22,6 +50,33 @@ entries reject the settings document rather than silently changing an associatio
 When no overrides exist, the writer retains the oldest schema needed by the other
 saved settings. Changes made before startup settings finish loading take precedence
 for the edited extension while preserving unrelated saved choices.
+
+Custom extensions accept one literal suffix at a time, with an optional leading
+dot. Unicode case folding makes `.BACKUP`, `.backup` and equivalent Unicode case
+spellings match; composed and decomposed Unicode remain distinct. Compound suffixes
+such as `backup.tar` match before shorter suffixes. A disabled built-in compound
+suffix blocks a shorter enabled match. Raw native filenames and paths are never
+rewritten; valid Unicode suffixes also work after undecodable native basenames.
+No UI callback opens files or probes content. Backend enumeration prepares the
+folded suffix hint, and the worker still validates the actual archive bytes.
+
+Assignments are globally unique, and every built-in suffix remains reserved even
+when its checkbox is off. A conflict with a built-in offers **Show built-in checkbox**;
+other conflicts name the assigned decoder. Invalid input retains the draft. Drafts
+also survive switching formats and closing/reopening Options. Add is available
+after initial settings loading; accepted additions/removals save immediately.
+Suffixes permit Unicode, letters, digits, dots, `-`, `_` and `+`; empty components,
+spaces, path separators, wildcards and command syntax are rejected. The collection
+is bounded to 256 extensions, each at most 256 UTF-8 bytes after case folding.
+These are settings limits and do not impose a native path-length limit.
+
+Schema 20 stores custom suffixes with stable decoder identifiers. Strict decoding
+rejects unknown decoders, duplicate/noncanonical suffixes and built-in collisions.
+Earlier settings migrate with an empty custom list. New saved archive addresses
+use address version 2 and retain the exact decoder, so removing a custom suffix
+does not invalidate an existing archive tab or Hot Path. Legacy address version 1
+continues using built-in suffix inference. Adding an extension cannot install,
+trust or enable a missing decoder, and does not change OS associations.
 
 ## ZIP containers
 
@@ -67,6 +122,12 @@ application payloads; the ZIP worker rejects those instead of executing them.
 | TAR | `.tar` |
 | GZIP single stream | `.gz`, `.gzip` |
 | Gzipped TAR | `.tar.gz`, `.tgz` |
+| XZ single stream | `.xz` |
+| XZ-compressed TAR | `.tar.xz`, `.txz` |
+| Bzip2 single stream | `.bz2` |
+| Bzip2-compressed TAR | `.tar.bz2`, `.tbz2`, `.tbz` |
+| Zstandard single stream | `.zst` |
+| Zstandard-compressed TAR | `.tar.zst`, `.tzst` |
 
 Compound `.tar.gz` is recognized before `.gz`. Provider discovery reports actual
 supported families; installing only a TAR provider does not enable ZIP badges.
@@ -74,10 +135,22 @@ supported families; installing only a TAR provider does not enable ZIP badges.
 ## Current operation limits
 
 The independent archive worker currently supports browsing, sorting/filtering,
-selection and F3 member reads. **F5 copy out / extraction, copy into an archive and
-Move are not implemented.** Native F5 and clipboard transfer queues remain separate
-from archive member reads. Future extraction must use the same bounded queue,
-progress, conflict policy, safe destination traversal and verified publication.
+selection and F3 member reads. **F5 copy out / extraction is implemented** through
+the bounded background transfer queue, with progress, conflict handling, safe
+destination traversal and independent SHA-256 destination readback. See the
+[archive-copy evidence](verification/2026-11-07-archive-copy.md).
+Copying into an archive and moving archive members are not implemented.
+
+Archive Hot Paths persist typed container/provider/member locations and the exact
+decoder, and display `archive.zip@path` with native separators. The display string
+is never parsed to reconstruct an operation target. Duplicate detection compares
+the archive location independently of its captured source revision. Re-adding a
+location refreshes that revision while retaining its shortcut slot. If the archive
+has changed since capture, navigation reports that change; reopen the archive and
+add the Hot Path again to capture its new revision. Missing providers remain an
+explicit unavailable location, with native file operations disabled. Core/codec
+and presenter tests cover this implementation; final integrated UI qualification
+is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-followups.md#archive-hot-paths).
 
 ZIP support is currently Stored/Deflate without passwords; other codecs, encrypted
 Office containers, DRM and corrupt archives may fail explicitly. Source/member
@@ -93,4 +166,5 @@ family and captured source bytes, not UI settings or native paths.
 Salamander reference reviewed: `src/dialogsp.cpp` (`CCfgPageArchivesAssoc`) keeps
 panel archive associations separate from external file-opening associations;
 `src/pack3.cpp` persists the panel extension list. Midnight Explorer uses the
-requested per-extension checkboxes and native-path-safe Rust representation.
+requested per-extension checkboxes, format selection and custom Add/Remove controls
+with native-path-safe Rust representation. No reference code or assets were copied.

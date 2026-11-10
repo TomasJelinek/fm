@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 #[cfg(all(test, windows))]
 mod native_tests;
 mod policy;
+#[cfg(all(test, windows))]
+mod startup_native_tests;
 
 const POLL: Duration = Duration::from_millis(100);
 const IDLE: Duration = Duration::from_millis(600);
@@ -72,9 +74,41 @@ impl WindowState {
                 .sample(window, presenter, &|_| false, true);
         }
     }
+
+    pub(crate) fn restore(&self, window: &MainWindow, presenter: &Presenter) {
+        if self.enabled {
+            self.state.borrow_mut().restore(window, presenter);
+        }
+    }
 }
 
 impl State {
+    fn restore(&mut self, window: &MainWindow, presenter: &Presenter) {
+        if self.initialized || !presenter.window_geometry_ready() {
+            return;
+        }
+        self.initialized = true;
+        if let Some(saved) = presenter.window_geometry() {
+            let (displays, decoration) = displays(window);
+            let restored = policy::restore(saved, &displays, decoration);
+            let bounds = restored.normal;
+            window
+                .window()
+                .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
+            window.window().set_maximized(restored.maximized);
+            window.window().set_fullscreen(restored.fullscreen);
+            if &restored != saved {
+                let now = Instant::now();
+                self.changed_at = Some(now);
+                self.dirty_since = Some(now);
+            }
+            self.last = Some(restored);
+        }
+    }
+
     fn sample(
         &mut self,
         window: &MainWindow,
@@ -82,34 +116,8 @@ impl State {
         send: &dyn Fn(Command) -> bool,
         closing: bool,
     ) {
-        if !presenter.window_geometry_ready() {
+        if !self.initialized || !presenter.window_geometry_ready() {
             return;
-        }
-        if !self.initialized {
-            if closing {
-                return;
-            }
-            self.initialized = true;
-            if let Some(saved) = presenter.window_geometry() {
-                let (displays, decoration) = displays(window);
-                let restored = policy::restore(saved, &displays, decoration);
-                let bounds = restored.normal;
-                window
-                    .window()
-                    .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
-                window
-                    .window()
-                    .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
-                window.window().set_maximized(restored.maximized);
-                window.window().set_fullscreen(restored.fullscreen);
-                if &restored != saved {
-                    let now = Instant::now();
-                    self.changed_at = Some(now);
-                    self.dirty_since = Some(now);
-                }
-                self.last = Some(restored);
-                return;
-            }
         }
         let Some(geometry) = capture(window, self.last.as_ref())
             .or_else(|| closing.then(|| self.last.clone()).flatten())

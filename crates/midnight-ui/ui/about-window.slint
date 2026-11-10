@@ -1,0 +1,22 @@
+import { DialogWindow } from "dialog-window.slint";
+import { AboutDialog } from "about-dialog.slint";
+
+export component AboutWindow inherits DialogWindow {
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    title: "About Midnight Explorer";
+    preferred-width: 400px; preferred-height: 260px;
+    in property <string> application-version;
+    in property <image> application-icon: @image-url("../../../assets/branding/midnight-explorer.png");
+    in property <image> close-icon;
+    AboutDialog {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        preferred-width: 0px; preferred-height: 0px;
+        application-version: root.application-version;
+        application-icon: root.application-icon; close-icon: root.close-icon;
+        close => { root.request-dismiss(); }
+    }
+}

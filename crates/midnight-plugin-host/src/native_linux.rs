@@ -2,14 +2,14 @@
 use crate::{Error, api::abi};
 use std::{
     ffi::CString,
-    fs::{File, OpenOptions},
+    fs::File,
     io,
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, OpenOptionsExt},
-    },
+    os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::Path,
 };
+#[path = "native_linux_files.rs"]
+mod files;
+pub(crate) use files::open_read;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Snapshot {
@@ -32,19 +32,6 @@ impl Snapshot {
         }
         bytes
     }
-}
-pub(crate) fn open_read(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Viewer needs a regular file",
-        ));
-    }
-    Ok(file)
 }
 pub(crate) fn snapshot(file: &File) -> io::Result<Snapshot> {
     let m = file.metadata()?;

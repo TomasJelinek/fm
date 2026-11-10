@@ -1,6 +1,6 @@
 //! Archive members are content leases; native paths are never reconstructed.
-use midnight_core::{ArchiveMount, Cancellation, ViewerLaunch};
-use midnight_plugin_host::{CapturedFile, ContentSource, Error};
+use midnight_core::{ArchiveMount, Cancellation, EntryKind, ViewerLaunch};
+use midnight_plugin_host::{CapturedFile, ContentResources, ContentSource, Error};
 use std::{
     path::PathBuf,
     sync::{
@@ -15,10 +15,87 @@ use std::{
 struct Member {
     mount: Arc<dyn ArchiveMount>,
     entry: u64,
+    parent: u64,
     length: u64,
     name: String,
     version: Vec<u8>,
     closed: Arc<AtomicBool>,
+}
+fn capture_member(source: Arc<Member>) -> Result<CapturedFile, Error> {
+    let captured = CapturedFile::from_source(source.clone())?;
+    Ok(captured.with_resources(Arc::new(Resources { main: source })))
+}
+
+#[derive(Debug)]
+struct Resources {
+    main: Arc<Member>,
+}
+
+impl ContentResources for Resources {
+    fn capture(&self, segments: &[String]) -> Result<CapturedFile, Error> {
+        crate::content_resources::validate_segments(segments)?;
+        self.main.validate()?;
+        if self.main.parent == 0 {
+            return Err(Error("Archive resource scope unavailable".into()));
+        }
+        let mut directory = self.main.parent;
+        let mut visited = vec![directory];
+        for (index, segment) in segments.iter().enumerate() {
+            self.main.validate()?;
+            let entries = self
+                .main
+                .mount
+                .list(directory, &Cancellation::default())
+                .map_err(|_| Error("Archive resource listing unavailable".into()))?;
+            if entries.len() > 16_384
+                || entries.iter().any(|node| {
+                    node.id.mount != self.main.mount.id()
+                        || node.id.entry == 0
+                        || node.parent != directory
+                })
+            {
+                return Err(Error(
+                    "Invalid or oversized archive resource listing".into(),
+                ));
+            }
+            let mut matches = entries
+                .iter()
+                .filter(|node| node.raw_name.as_ref() == segment.as_bytes());
+            let node = matches
+                .next()
+                .ok_or_else(|| Error("Archive resource not found".into()))?;
+            if matches.next().is_some() || visited.contains(&node.id.entry) {
+                return Err(Error("Ambiguous or cyclic archive resource".into()));
+            }
+            if index + 1 == segments.len() {
+                if node.kind != EntryKind::File || !node.readable {
+                    return Err(Error(
+                        "Archive resource is not a readable regular member".into(),
+                    ));
+                }
+                self.main.validate()?;
+                return CapturedFile::from_source(Arc::new(Member {
+                    mount: self.main.mount.clone(),
+                    entry: node.id.entry,
+                    parent: directory,
+                    length: node
+                        .size
+                        .ok_or_else(|| Error("Archive resource length unavailable".into()))?,
+                    name: segment.clone(),
+                    version: self.main.version.clone(),
+                    closed: self.main.closed.clone(),
+                }));
+            }
+            if node.kind != EntryKind::Directory {
+                return Err(Error(
+                    "Archive resource ancestor is not an ordinary directory".into(),
+                ));
+            }
+            directory = node.id.entry;
+            visited.push(directory);
+        }
+        Err(Error("Empty archive resource path".into()))
+    }
 }
 impl ContentSource for Member {
     fn length(&self) -> u64 {
@@ -79,6 +156,7 @@ pub(crate) fn prepare(
         let source = Arc::new(Member {
             mount: archive.mount.clone(),
             entry: node.id.entry,
+            parent: node.parent,
             length: node.size.ok_or("Archive member size unavailable")?,
             name: node.display_name.clone(),
             version: archive.source_version.clone(),
@@ -88,8 +166,7 @@ pub(crate) fn prepare(
         files.push((PathBuf::from(&node.display_name), None));
         sources.push(source);
     }
-    files[current].1 =
-        Some(CapturedFile::from_source(sources[current].clone()).map_err(|e| e.to_string()));
+    files[current].1 = Some(capture_member(sources[current].clone()).map_err(|e| e.to_string()));
     let (sender, ready) = mpsc::sync_channel(16);
     let closed = closed.clone();
     tokio::runtime::Handle::try_current()
@@ -100,8 +177,7 @@ pub(crate) fn prepare(
                     return;
                 }
                 let index = (current + step) % sources.len();
-                let result =
-                    CapturedFile::from_source(sources[index].clone()).map_err(|e| e.to_string());
+                let result = capture_member(sources[index].clone()).map_err(|e| e.to_string());
                 let mut event = (index, result);
                 loop {
                     if closed.load(Ordering::Acquire) {
@@ -122,6 +198,10 @@ pub(crate) fn prepare(
         ready,
     })
 }
+
+#[cfg(test)]
+#[path = "archive_resources_tests.rs"]
+mod resource_tests;
 
 #[cfg(test)]
 mod tests {
@@ -167,6 +247,7 @@ mod tests {
         let entries: Arc<[Entry]> = (2..=3)
             .map(|entry| {
                 Entry::from_archive(ArchiveNode {
+                    modified: None,
                     id: VirtualEntryId { mount: 8, entry },
                     parent: 1,
                     raw_name: b"same.txt".as_slice().into(),
@@ -179,6 +260,10 @@ mod tests {
             .collect::<Vec<_>>()
             .into();
         let launch = ViewerLaunch {
+            associations: Default::default(),
+            tree: None,
+            generated: None,
+            preferences: Arc::new(Default::default()),
             archive: Some(ArchiveViewer {
                 mount: mount.clone(),
                 source_version: vec![1, 2, 3],
@@ -206,5 +291,122 @@ mod tests {
         mount.changed.store(true, Ordering::Release);
         assert!(first.read_at(0, 5).is_err());
         closed.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use midnight_core::*;
+    #[derive(Debug)]
+    struct Mount;
+    impl ArchiveMount for Mount {
+        fn id(&self) -> u64 {
+            8
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            panic!("Tree normalization must not read a newly opened folder")
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            Ok(())
+        }
+        fn read(&self, entry: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            Ok(vec![entry as u8])
+        }
+    }
+    #[tokio::test]
+    async fn archive_tree_retains_member_identity_and_skips_unrelated_unreadable_files() {
+        let entries: Arc<[Entry]> = (2..=4)
+            .map(|entry| {
+                Entry::from_archive(ArchiveNode {
+                    modified: None,
+                    id: VirtualEntryId { mount: 8, entry },
+                    parent: 7,
+                    raw_name: Arc::from([entry as u8, 255]),
+                    display_name: "same.txt".into(),
+                    kind: EntryKind::File,
+                    size: Some(1),
+                    readable: entry != 4,
+                })
+            })
+            .collect();
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        let rows = [2usize, 1, 0]
+            .into_iter()
+            .enumerate()
+            .map(|(position, original)| {
+                let mut entry = entries[original].clone();
+                entry.id = EntryId(position as u64 + 20);
+                TreeDisplayRow {
+                    id: TreeRowId(entry.id.0),
+                    entry,
+                    parent: None,
+                    depth: 0,
+                    disclosure: TreeDisclosure::None,
+                    expanded: false,
+                    selectable: true,
+                    navigable: false,
+                    context_only: false,
+                    error: None,
+                    error_details: None,
+                    original_root_entry: Some(entries[original].id),
+                    prefix_end: 0,
+                    search_match: false,
+                }
+            })
+            .collect();
+        let view = Arc::new(
+            TreeProjection::new(
+                TreeRootSnapshot {
+                    pane: PaneId::Left,
+                    navigation: NavigationId(1),
+                    entries: entries.clone(),
+                    index: index.clone(),
+                },
+                TreeViewStamp {
+                    pane: PaneId::Left,
+                    navigation: NavigationId(1),
+                    session: TreeSessionId(1),
+                    revision: TreeRevision(1),
+                },
+                TreeLayoutRevision(1),
+                rows,
+            )
+            .unwrap(),
+        );
+        let mut launch = ViewerLaunch {
+            associations: Default::default(),
+            generated: None,
+            preferences: Default::default(),
+            tree: Some(TreeViewer {
+                view,
+                focused: TreeRowId(22),
+            }),
+            archive: Some(ArchiveViewer {
+                mount: Arc::new(Mount),
+                source_version: vec![19],
+                focused: VirtualEntryId { mount: 8, entry: 2 },
+            }),
+            entries,
+            view: index,
+            focused: PathBuf::new(),
+            basic: false,
+            disabled_plugins: Arc::from([]),
+        };
+        let closed = Arc::new(AtomicBool::new(false));
+        let capture: crate::NativeCapture =
+            Arc::new(|_, _| panic!("archive must not invoke native capture"));
+        let order = crate::capture::prepare_with(&launch, &closed, capture.clone()).unwrap();
+        assert_eq!(order.files.len(), 2);
+        assert_eq!(order.current, 1);
+        let first = order.files[1].1.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(first.read_at(0, 1).unwrap(), [2]);
+        assert!(first.path().as_os_str().is_empty());
+        let (next, other) = order.ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(next, 0);
+        assert_eq!(other.unwrap().read_at(0, 1).unwrap(), [3]);
+        launch.tree.as_mut().unwrap().focused = TreeRowId(20);
+        launch.archive.as_mut().unwrap().focused.entry = 4;
+        assert!(crate::capture::prepare_with(&launch, &closed, capture).is_err());
     }
 }

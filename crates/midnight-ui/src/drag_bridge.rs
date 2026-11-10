@@ -16,15 +16,30 @@ use std::{
 #[path = "drag_input_native.rs"]
 mod native;
 
-type DragVisual = (Option<Phase>, usize, Option<PaneId>);
+type DragVisual = (
+    Option<Phase>,
+    usize,
+    Option<PaneId>,
+    i32,
+    InternalDropIntent,
+    slint::SharedString,
+);
+
+struct Target {
+    destination: InternalDropDestination,
+    pane: PaneId,
+    row: i32,
+    name: slint::SharedString,
+}
 
 struct Bridge {
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
     targets: SharedDropTargets,
     cursor: Cell<slint::LogicalPosition>,
+    modifiers: Cell<(bool, bool, bool)>,
     handoff: Cell<bool>,
-    visual: Cell<Option<DragVisual>>,
+    visual: RefCell<Option<DragVisual>>,
     lifetime: RefCell<Option<(u64, Cancellation)>>,
     timer: slint::Timer,
 }
@@ -113,16 +128,54 @@ impl Bridge {
         }
     }
     fn update(&self, window: &MainWindow, p: &Presenter) {
+        let active = p.drag_drop.lifecycle.active;
+        let target = active
+            .filter(|g| g.phase == Phase::Ready)
+            .and_then(|_| self.target(window, p));
+        let hover = if active.is_some_and(|g| g.phase != Phase::Native) {
+            target.as_ref().map(|target| target.pane)
+        } else {
+            p.drag_drop.hover
+        };
+        let row = target.as_ref().map_or(-1, |target| target.row);
+        let intent = self.intent();
         let visual = (
-            p.drag_drop.lifecycle.active.map(|g| g.phase),
+            active.map(|g| g.phase),
             p.drag_drop.item_count,
-            p.drag_drop.hover,
+            hover,
+            row,
+            intent,
+            target
+                .as_ref()
+                .map_or_else(Default::default, |target| target.name.clone()),
         );
-        if self.visual.replace(Some(visual)) != Some(visual) {
+        if self.visual.borrow().as_ref() != Some(&visual) {
+            *self.visual.borrow_mut() = Some(visual);
             refresh(window, p);
+            window.set_drag_hover_pane(hover.map_or(-1, |pane| pane.index() as i32));
+            window.set_drag_hover_row(row);
+            let action = match intent {
+                InternalDropIntent::Auto => "Drop",
+                InternalDropIntent::Move => "Move",
+                InternalDropIntent::Copy => "Copy",
+            };
+            let destination = target
+                .as_ref()
+                .filter(|target| target.row >= 0)
+                .map_or("this panel", |target| target.name.as_str());
+            window.set_drag_label(if active.is_none() {
+                "Copy into this panel".into()
+            } else {
+                format!(
+                    "{action} {} item(s) into {destination}",
+                    p.drag_drop.item_count
+                )
+                .into()
+            });
         }
     }
     fn publish(&self, window: &MainWindow) {
+        let rectangles = rectangles(window);
         let Ok(mut p) = self.presenter.try_borrow_mut() else {
             return;
         };
@@ -130,21 +183,58 @@ impl Bridge {
             p.attach_drag_host(host, self.send.as_ref());
         }
         self.remember_host(&p);
-        p.publish_drag_targets(rectangles(window));
+        p.publish_drag_targets(rectangles);
         p.flush_drag_commands(self.send.as_ref());
     }
 
-    fn target(&self, window: &MainWindow) -> Option<(FileDropTarget, u64)> {
+    fn target(&self, window: &MainWindow, p: &Presenter) -> Option<Target> {
+        // Ctrl+Shift requests a link in native shells. We do not silently copy/move it.
+        let (control, shift, link) = self.modifiers.get();
+        if link || (control && shift) {
+            return None;
+        }
         let cursor = self.cursor.get();
         let scale = window.window().scale_factor();
-        let targets = self.targets.lock().unwrap_or_else(|e| e.into_inner());
-        targets
-            .target_at(
-                targets.host_generation,
-                (cursor.x * scale).floor() as i32,
-                (cursor.y * scale).floor() as i32,
-            )
-            .map(|target| (target, targets.revision))
+        let index = rectangles(window).iter().position(|rect| {
+            rect.is_some_and(|rect| {
+                let x = cursor.x * scale;
+                let y = cursor.y * scale;
+                x >= rect.x as f32
+                    && x < rect.x as f32 + rect.width as f32
+                    && y >= rect.y as f32
+                    && y < rect.y as f32 + rect.height as f32
+            })
+        })?;
+        let pane = pane(index as i32);
+        let row = crate::selection_bridge::drop_row_at(window, p, pane, (cursor.x, cursor.y))?;
+        let panel = &p.panes[pane.index()];
+        let displayed = row
+            .and_then(|row| row.checked_sub(panel.parent_offset()))
+            .and_then(|row| panel.display_entry(row));
+        if row.is_some() && displayed.is_none() {
+            return None;
+        }
+        let identity = displayed.map(|entry| panel.row_identity(entry));
+        let destination = p.preview_internal_drag_target(pane, row.zip(identity.as_deref()))?;
+        Some(Target {
+            destination,
+            pane,
+            row: row.map_or(-1, |row| row as i32),
+            name: displayed.map_or_else(Default::default, |entry| {
+                entry.name.to_string_lossy().as_ref().into()
+            }),
+        })
+    }
+
+    fn intent(&self) -> InternalDropIntent {
+        let (control, shift, _) = self.modifiers.get();
+        if control {
+            InternalDropIntent::Copy
+        } else if shift {
+            InternalDropIntent::Move
+        } else {
+            InternalDropIntent::Auto
+        }
     }
 
     fn moved(&self, window: &MainWindow, x: f32, y: f32) {
@@ -153,6 +243,9 @@ impl Bridge {
         }
         self.cursor.set(slint::LogicalPosition::new(x, y));
         self.publish(window);
+        let target = self
+            .target(window, &self.presenter.borrow())
+            .map(|target| target.pane);
         let mut p = self.presenter.borrow_mut();
         if p.drag_drop
             .lifecycle
@@ -164,9 +257,10 @@ impl Bridge {
                 .lifecycle
                 .active
                 .filter(|g| g.phase == Phase::Ready)
-                .and_then(|_| self.target(window).map(|(target, _)| target.pane));
+                .and(target);
         }
-        self.update(window, &p);
+        drop(p);
+        self.update(window, &self.presenter.borrow());
     }
 
     fn released(&self, window: &MainWindow, x: f32, y: f32) {
@@ -175,10 +269,20 @@ impl Bridge {
         }
         self.cursor.set(slint::LogicalPosition::new(x, y));
         self.publish(window);
-        let target = self.target(window);
+        let (target, intent) = {
+            let p = self.presenter.borrow();
+            let target = self.target(window, &p);
+            let intent = self.intent();
+            (target, intent)
+        };
         let mut p = self.presenter.borrow_mut();
-        p.release_file_drag(target, self.send.as_ref());
-        self.update(window, &p);
+        p.release_file_drag(
+            target.map(|target| target.destination),
+            intent,
+            self.send.as_ref(),
+        );
+        drop(p);
+        self.update(window, &self.presenter.borrow());
     }
 
     fn cancel(&self, window: &MainWindow, force: bool) -> bool {
@@ -194,7 +298,8 @@ impl Bridge {
         if active {
             p.cancel_file_drag(self.send.as_ref());
         }
-        self.update(window, &p);
+        drop(p);
+        self.update(window, &self.presenter.borrow());
         active
     }
 
@@ -204,7 +309,14 @@ impl Bridge {
             let Ok(presenter) = self.presenter.try_borrow() else {
                 return;
             };
-            presenter.drag_native_ready()
+            let cursor = self.cursor.get();
+            let size = window
+                .window()
+                .size()
+                .to_logical(window.window().scale_factor());
+            (cursor.x < 0.0 || cursor.y < 0.0 || cursor.x >= size.width || cursor.y >= size.height)
+                .then(|| presenter.drag_native_ready())
+                .flatten()
         };
         if let Some(id) = id {
             let armed = self.presenter.borrow_mut().arm_native_drag(id);
@@ -247,8 +359,9 @@ pub(crate) fn install(
         send,
         targets: targets.clone(),
         cursor: Cell::new(slint::LogicalPosition::new(-1.0, -1.0)),
+        modifiers: Cell::new((false, false, false)),
         handoff: Cell::new(false),
-        visual: Cell::new(None),
+        visual: RefCell::new(None),
         lifetime: RefCell::new(None),
         timer: slint::Timer::default(),
     });
@@ -284,6 +397,16 @@ pub(crate) fn install(
     window.on_drag_moved(move |x, y| {
         if let Some(window) = weak.upgrade() {
             state.moved(&window, x, y);
+        }
+    });
+    let weak = window.as_weak();
+    let state = bridge.clone();
+    window.on_drag_modifiers(move |control, shift, link| {
+        state.modifiers.set((control, shift, link));
+        if let Some(window) = weak.upgrade()
+            && let Ok(p) = state.presenter.try_borrow()
+        {
+            state.update(&window, &p);
         }
     });
     let weak = window.as_weak();
@@ -329,12 +452,10 @@ pub(crate) fn install(
 pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     let active = p.drag_drop.lifecycle.active;
     window.set_drag_active(active.is_some());
-    window.set_drag_hover_pane(p.drag_drop.hover.map_or(-1, |pane| pane.index() as i32));
-    window.set_drag_label(if active.is_some() && p.drag_drop.item_count > 0 {
-        format!("Copy {} item(s) here", p.drag_drop.item_count).into()
-    } else {
-        "Copy here".into()
-    });
+    if active.is_none() && p.drag_drop.hover.is_none() {
+        window.set_drag_hover_pane(-1);
+        window.set_drag_hover_row(-1);
+    }
 }
 
 /// The shared software/native event observer runs after normal Slint dispatch.
@@ -362,6 +483,14 @@ pub(crate) fn observe_native(
 ) {
     use slint::winit_030::winit::event::{ElementState, WindowEvent};
     match event {
+        WindowEvent::ModifiersChanged(modifiers) => {
+            let state = modifiers.state();
+            window.invoke_drag_modifiers(
+                state.control_key(),
+                state.shift_key(),
+                state.alt_key() || state.super_key(),
+            );
+        }
         WindowEvent::Resized(_)
         | WindowEvent::Moved(_)
         | WindowEvent::ScaleFactorChanged { .. }

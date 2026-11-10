@@ -10,6 +10,9 @@ use midnight_plugin_sdk::{
 use std::{collections::BTreeMap, sync::Arc};
 
 const READ_BYTES: u64 = 32768;
+// Coordinates are optional viewport metadata, never permission to index a file.
+// Sequential visits can extend exact checkpoints without an unbounded read chain.
+const MAX_LOOKUP_BYTES: u64 = 256 * 1024;
 const MAX_CHECKPOINTS: usize = 256;
 
 #[derive(Clone, Copy)]
@@ -68,6 +71,7 @@ struct Scan {
     target: u64,
     offset: u64,
     position: Coordinate,
+    remaining: u64,
     _permit: Box<dyn FnOnce() + Send>,
 }
 
@@ -87,6 +91,10 @@ pub(crate) fn start(
     let bom = lock(&session.metadata).bom;
     let target = request.source_anchor.max(bom);
     let (offset, position) = lock(&session.positions).before(target, bom);
+    if target.saturating_sub(offset) > MAX_LOOKUP_BYTES {
+        let _ = context.complete();
+        return;
+    }
     step(
         context,
         Scan {
@@ -94,6 +102,7 @@ pub(crate) fn start(
             target,
             offset,
             position,
+            remaining: MAX_LOOKUP_BYTES,
             _permit: permit,
         },
     );
@@ -107,17 +116,26 @@ fn step(context: Context, mut scan: Scan) {
         finish(context, &scan);
         return;
     }
+    if scan.remaining == 0 {
+        let _ = context.complete();
+        return;
+    }
     // Four bytes beyond a target disambiguate UTF-8, surrogate pairs and CRLF.
     let count = scan
         .target
         .saturating_sub(scan.offset)
         .saturating_add(4)
         .min(READ_BYTES)
+        .min(scan.remaining)
         .min(u64::MAX - scan.offset) as u32;
     if count == 0 {
         let _ = context.fail(abi::INVALID, "Position exceeds source address range");
         return;
     }
+    // Reserve the entire bounded gather, including lookahead and any bytes the
+    // decoder may leave for the next step. Short replies fill this same gather;
+    // their unreturned suffix is not charged twice, but decoded overlap is.
+    scan.remaining -= u64::from(count);
     plugin::read(
         context,
         scan.session.clone(),
@@ -167,6 +185,11 @@ fn step(context: Context, mut scan: Scan) {
                     finish(context, &scan);
                     return;
                 }
+            }
+            if scan.remaining == 0 {
+                lock(&scan.session.positions).record(scan.offset, scan.position);
+                let _ = context.complete();
+                return;
             }
             if decoded.consumed == 0 || (eof && decoded.consumed == data.len()) {
                 let _ = context.fail(abi::INVALID, "Position was not reached in captured source");

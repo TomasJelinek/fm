@@ -2,9 +2,12 @@ use super::*;
 use std::{
     collections::VecDeque,
     ffi::{OsStr, OsString},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     mem::{offset_of, size_of},
-    os::windows::{ffi::OsStringExt, io::AsRawHandle},
+    os::windows::{
+        ffi::OsStringExt,
+        io::{AsRawHandle, FromRawHandle},
+    },
     path::PathBuf,
 };
 use windows_sys::{
@@ -19,9 +22,11 @@ pub(super) struct Source {
     parent_identity: TransferIdentity,
     name: OsString,
     file: Arc<File>,
+    readable: Option<File>,
     stamp: (u64, u64, u64),
     names: VecDeque<OsString>,
     ended: bool,
+    move_enabled: bool,
 }
 impl Source {
     pub(super) fn open(
@@ -75,10 +80,9 @@ impl Source {
         };
         // Denying write and delete sharing makes ordinary concurrent writers/renamers
         // fail rather than produce a mixed stream. Existing incompatible handles fail here.
-        let access = FILE_READ_DATA
-            | FILE_READ_ATTRIBUTES
+        let access = FILE_READ_ATTRIBUTES
             | SYNCHRONIZE
-            | if move_root { DELETE } else { 0 }
+            | if move_root { DELETE } else { FILE_READ_DATA }
             | if snapshot.item.kind == EntryKind::Directory {
                 FILE_TRAVERSE
             } else {
@@ -104,18 +108,21 @@ impl Source {
             parent_identity,
             name: name.to_owned(),
             file: Arc::new(file),
+            readable: None,
             stamp,
             names: VecDeque::new(),
             ended: false,
+            move_enabled: move_root,
         })
     }
     fn fill_names(&mut self) -> Result<(), FsError> {
+        self.ensure_readable()?;
         let path = &self.entry.item.path;
         let mut buffer = vec![0u64; 8192];
         // SAFETY: an aligned, writable 64 KiB buffer and a live directory handle.
         if unsafe {
             GetFileInformationByHandleEx(
-                self.file.as_raw_handle(),
+                self.read_file().as_raw_handle(),
                 FileIdBothDirectoryInfo,
                 buffer.as_mut_ptr().cast(),
                 (buffer.len() * 8) as u32,
@@ -166,6 +173,47 @@ impl Source {
     }
 }
 impl TransferSource for Source {
+    fn open_child(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.revalidate(cancel)?;
+        if self.entry.item.kind != EntryKind::Directory {
+            return Err(invalid(
+                &self.entry.item.path,
+                "named child requires a directory",
+            ));
+        }
+        Self::open(
+            self.file.clone(),
+            self.entry.item.path.clone(),
+            name,
+            cancel,
+        )
+        .map(|source| Box::new(source) as Box<dyn TransferSource>)
+    }
+    fn next_move_child(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::PreparedTransferMove>, FsError> {
+        if !self.move_enabled {
+            return Err(unsupported(
+                &self.entry.item.path,
+                "Copy sources have no Move authority",
+            ));
+        }
+        self.next_name(cancel)?
+            .map(|name| {
+                super::move_source::prepare_child(
+                    self.file.clone(),
+                    self.entry.item.path.clone(),
+                    &name,
+                    cancel,
+                )
+            })
+            .transpose()
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,
@@ -189,7 +237,34 @@ impl TransferSource for Source {
                 "only regular files support retained validation",
             ));
         }
-        super::validation::rewind(&self.file, &self.entry.item.path, cancel)
+        checked(cancel, &self.entry.item.path)?;
+        self.ensure_readable()?;
+        super::validation::rewind(self.read_file(), &self.entry.item.path, cancel)
+    }
+    fn seek_for_validation(&mut self, offset: u64, cancel: &Cancellation) -> Result<u64, FsError> {
+        checked(cancel, &self.entry.item.path)?;
+        self.ensure_readable()?;
+        let file = self.read_file();
+        let length = file
+            .metadata()
+            .map_err(|e| error(&self.entry.item.path, e))?
+            .len();
+        if offset > length {
+            return Err(invalid(
+                &self.entry.item.path,
+                "validation offset exceeds retained file length",
+            ));
+        }
+        let reached = (&*file)
+            .seek(SeekFrom::Start(offset))
+            .map_err(|e| error(&self.entry.item.path, e))?;
+        if reached != offset {
+            return Err(invalid(
+                &self.entry.item.path,
+                "validation seek did not reach requested offset",
+            ));
+        }
+        Ok(length)
     }
     fn entry(&self) -> &TransferEntry {
         &self.entry
@@ -233,27 +308,108 @@ impl TransferSource for Source {
                 "directory content is not a byte stream",
             ));
         }
-        (&*self.file)
+        self.ensure_readable()?;
+        self.read_file()
             .read(buffer)
             .map_err(|e| error(&self.entry.item.path, e))
+    }
+    fn supports_read_retry(&self) -> bool {
+        self.entry.item.kind == EntryKind::File
+    }
+    fn retry_read_from(&mut self, offset: u64, cancel: &Cancellation) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        if !self.supports_read_retry()
+            || self
+                .entry
+                .item
+                .metadata
+                .size
+                .is_none_or(|size| offset > size)
+        {
+            return Err(invalid(
+                &self.entry.item.path,
+                "invalid source retry offset",
+            ));
+        }
+        self.ensure_readable()?;
+        self.read_file()
+            .seek(SeekFrom::Start(offset))
+            .map_err(|e| error(&self.entry.item.path, e))?;
+        self.revalidate(cancel)
     }
     fn next_child(
         &mut self,
         cancel: &Cancellation,
     ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        self.next_name(cancel)?
+            .map(|name| {
+                Self::open(
+                    self.file.clone(),
+                    self.entry.item.path.clone(),
+                    &name,
+                    cancel,
+                )
+                .map(|source| Box::new(source) as Box<dyn TransferSource>)
+            })
+            .transpose()
+    }
+}
+impl Source {
+    fn read_file(&self) -> &File {
+        self.readable.as_ref().unwrap_or(&self.file)
+    }
+
+    fn ensure_readable(&mut self) -> Result<(), FsError> {
+        if !self.move_enabled || self.readable.is_some() {
+            return Ok(());
+        }
+        if self.entry.item.kind == EntryKind::Directory {
+            let held = native::open_relative(
+                &self.parent,
+                &self.name,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_DIRECTORY_FILE,
+            )
+            .map_err(|e| error(&self.entry.item.path, e))?;
+            if identity(&held, &self.entry.item.path)? != self.entry.identity {
+                return Err(invalid(
+                    &self.entry.item.path,
+                    "directory changed before listing upgrade",
+                ));
+            }
+            self.readable = Some(held);
+            return Ok(());
+        }
+        // Upgrade the retained object only when copying or enumerating a merge.
+        // The original DELETE pin excludes writers/renamers; this read handle
+        // permits that existing DELETE access without requesting it again.
+        // SAFETY: retained live file; the OS performs new access/sharing checks.
+        let handle = unsafe {
+            ReOpenFile(
+                self.file.as_raw_handle(),
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            )
+        };
+        if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return Err(error(&self.entry.item.path, io::Error::last_os_error()));
+        }
+        // SAFETY: successful ReOpenFile transfers one owned handle to the exact retained object.
+        self.readable = Some(unsafe { File::from_raw_handle(handle) });
+        Ok(())
+    }
+
+    fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<OsString>, FsError> {
         self.revalidate(cancel)?;
         if self.entry.item.kind != EntryKind::Directory {
             return Err(invalid(&self.entry.item.path, "source is not a directory"));
         }
         loop {
             if let Some(name) = self.names.pop_front() {
-                return Self::open(
-                    self.file.clone(),
-                    self.entry.item.path.clone(),
-                    &name,
-                    cancel,
-                )
-                .map(|child| Some(Box::new(child) as Box<dyn TransferSource>));
+                return Ok(Some(name));
             }
             if self.ended {
                 return Ok(None);

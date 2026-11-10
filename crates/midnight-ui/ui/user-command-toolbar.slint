@@ -99,6 +99,7 @@ export component UserCommandToolbar inherits Rectangle {
                         && self.absolute-position.x < bar.absolute-position.x + bar.visible-width;
                     // Revision changes must reannounce unchanged visible geometry.
                     private property <string> visible-token: command.revision + ":" + command.identity;
+                    init => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
                     changed showing-icon => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
                     changed visible-token => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
                     execute(id, revision) => { root.execute(id, revision); }

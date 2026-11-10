@@ -1,4 +1,4 @@
-use crate::{Limits, Worker};
+use crate::{ResourcePolicy, Worker};
 use std::{
     fs::File,
     io,
@@ -23,7 +23,7 @@ impl Drop for Process {
     }
 }
 
-pub(super) fn spawn(executable: &Path, _: Limits) -> io::Result<Worker> {
+pub(super) fn spawn(executable: &Path, _: ResourcePolicy) -> io::Result<Worker> {
     // The trusted SDK locks down before acknowledging startup or accepting any untrusted bytes.
     let mut child = Command::new(executable)
         .env_clear()

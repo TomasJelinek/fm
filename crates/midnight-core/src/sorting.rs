@@ -18,6 +18,15 @@ pub(crate) struct EntryCollationKeys {
     extension: Option<Arc<[u8]>>,
 }
 
+impl EntryCollationKeys {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.name
+            .as_ref()
+            .map_or(0, Vec::capacity)
+            .saturating_add(self.extension.as_ref().map_or(0, |key| key.len()))
+    }
+}
+
 /// Fill immutable per-entry keys once per captured listing. Cloned entries keep
 /// them for subsequent re-sorts. Providers must retain the same session locale.
 pub fn prepare_sort_keys(
@@ -32,7 +41,7 @@ pub fn prepare_sort_keys(
             continue;
         }
         let name = key(locale, &entry.name, entry, cancel)?;
-        let extension = if let Some(extension) = entry.path.extension() {
+        let extension = if let Some(extension) = entry.filename_extension() {
             if let Some(cached) = extensions.get(extension) {
                 cached.clone()
             } else {
@@ -100,7 +109,10 @@ fn direction(order: Ordering, descending: bool) -> Ordering {
     if descending { order.reverse() } else { order }
 }
 
-fn collated(
+/// Compare captured native text keys without OS calls or allocations. Text for
+/// which the locale supplied no key stays after keyed text in either direction;
+/// two unavailable keys use their lossless native text as the fallback.
+pub fn compare_collated_text(
     left: Option<&[u8]>,
     left_raw: &OsStr,
     right: Option<&[u8]>,
@@ -116,7 +128,7 @@ fn collated(
 }
 
 fn name_order(left: &Entry, right: &Entry, descending: bool) -> Ordering {
-    collated(
+    compare_collated_text(
         left.collation
             .as_ref()
             .and_then(|keys| keys.name.as_deref()),
@@ -142,6 +154,16 @@ fn optional<T: Ord>(left: Option<T>, right: Option<T>, descending: bool) -> Orde
 /// Sort only immutable keys. Native-equivalent names use raw names and stable IDs
 /// as ascending deterministic ties. Missing metadata/extensions stay last.
 pub fn sort_entries(entries: &mut [Entry], sort: SortSpec) {
+    sort_entries_with_sizes(entries, sort, |entry| entry.metadata.size);
+}
+
+/// Use immutable calculated sizes without replacing provider metadata. The lookup
+/// must be stable for this call and do no I/O; all other ordering rules are shared.
+pub fn sort_entries_with_sizes(
+    entries: &mut [Entry],
+    sort: SortSpec,
+    size: impl Fn(&Entry) -> Option<u64>,
+) {
     entries.sort_unstable_by(|left, right| {
         let is_folder = |kind| matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink);
         let directories = is_folder(right.kind).cmp(&is_folder(left.kind));
@@ -150,14 +172,14 @@ pub fn sort_entries(entries: &mut [Entry], sort: SortSpec) {
         }
         let primary = match sort.column {
             SortColumn::Name => name_order(left, right, sort.descending),
-            SortColumn::Size => optional(left.metadata.size, right.metadata.size, sort.descending),
+            SortColumn::Size => optional(size(left), size(right), sort.descending),
             SortColumn::Modified => optional(
                 left.metadata.modified,
                 right.metadata.modified,
                 sort.descending,
             ),
-            SortColumn::Type => match (left.path.extension(), right.path.extension()) {
-                (Some(left_ext), Some(right_ext)) => collated(
+            SortColumn::Type => match (left.filename_extension(), right.filename_extension()) {
+                (Some(left_ext), Some(right_ext)) => compare_collated_text(
                     left.collation
                         .as_ref()
                         .and_then(|keys| keys.extension.as_deref()),

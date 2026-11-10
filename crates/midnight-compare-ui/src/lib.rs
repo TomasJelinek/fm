@@ -1,5 +1,8 @@
 //! Presentation and short input callbacks only. The comparator service owns file work.
 #![deny(unsafe_code)]
+mod file_choice;
+mod fonts;
+mod images;
 use midnight_compare_engine::{ImageMode, Input, Output, Service, Session};
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
@@ -20,10 +23,13 @@ pub use generated::ComparatorWindow;
 pub use midnight_ui_input::WindowPlacement;
 
 pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
+pub type FontListener = Rc<dyn Fn(String)>;
 
 pub struct ComparatorWindows {
     service: Service,
     windows: RefCell<Vec<Rc<OpenWindow>>>,
+    picker_owner: file_choice::PickerOwner,
+    font_listener: Rc<RefCell<Option<FontListener>>>,
 }
 struct OpenWindow {
     window: ComparatorWindow,
@@ -33,14 +39,20 @@ struct OpenWindow {
     geometry: Cell<(u32, u32, u32)>,
     geometry_revision: Cell<u64>,
     pending: RefCell<Vec<Input>>,
+    choice_paths: RefCell<[std::path::PathBuf; 2]>,
+    fonts: RefCell<Option<midnight_compare_engine::FontChoices>>,
+    requested_font: RefCell<Option<String>>,
+    surfaces: RefCell<images::Surfaces>,
 }
 impl OpenWindow {
     fn send(&self, input: Input) {
         let mut pending = self.pending.borrow_mut();
-        if let Some(old) = pending
-            .iter_mut()
-            .find(|old| std::mem::discriminant(*old) == std::mem::discriminant(&input))
-        {
+        if let Some(old) = pending.last_mut().filter(|old| {
+            !matches!(
+                input,
+                Input::Difference { .. } | Input::DifferenceEdge { .. } | Input::Zoom(_)
+            ) && std::mem::discriminant(*old) == std::mem::discriminant(&input)
+        }) {
             if let (Input::Scroll { x, y }, Input::Scroll { x: new_x, y: new_y }) =
                 (&mut *old, &input)
             {
@@ -49,7 +61,7 @@ impl OpenWindow {
             } else {
                 *old = input;
             }
-        } else {
+        } else if pending.len() < 64 {
             pending.push(input);
         }
     }
@@ -58,6 +70,9 @@ impl OpenWindow {
             self.session.close();
             self.timer.stop();
             self.window.set_surface(slint::Image::default());
+            self.window.set_left_surface(slint::Image::default());
+            self.window.set_right_surface(slint::Image::default());
+            *self.surfaces.borrow_mut() = images::Surfaces::default();
             self.window.set_accessible_text("".into());
             let _ = self.window.hide();
         }
@@ -69,7 +84,21 @@ impl ComparatorWindows {
         Self {
             service,
             windows: RefCell::new(Vec::new()),
+            picker_owner: |_| midnight_core::PathPickerOwner::None,
+            font_listener: Rc::new(RefCell::new(None)),
         }
+    }
+    /// Persist an explicitly chosen family through the application's preferences backend.
+    pub fn set_font_listener(&self, listener: FontListener) {
+        *self.font_listener.borrow_mut() = Some(listener);
+    }
+    /// Reuse the host's platform-specific window identity without performing native I/O here.
+    pub fn with_picker_owner(
+        mut self,
+        owner: fn(&slint::Window) -> midnight_core::PathPickerOwner,
+    ) -> Self {
+        self.picker_owner = owner;
+        self
     }
     pub fn open(
         &self,
@@ -90,6 +119,9 @@ impl ComparatorWindows {
         window.set_foreground(color(appearance.foreground));
         window.set_background_color(color(appearance.background));
         window.set_accent(color(appearance.accent));
+        window.set_ui_font_size(appearance.font_size);
+        window.set_ui_font_family(appearance.family.as_str().into());
+        window.set_picker_available(self.service.has_path_picker());
         window.invoke_apply_palette(
             appearance.background[..3]
                 .iter()
@@ -114,8 +146,14 @@ impl ComparatorWindows {
             geometry: Cell::new((0, 0, 0)),
             geometry_revision: Cell::new(0),
             pending: RefCell::new(Vec::new()),
+            choice_paths: RefCell::new(Default::default()),
+            fonts: RefCell::new(None),
+            requested_font: RefCell::new(None),
+            surfaces: RefCell::new(images::Surfaces::default()),
         });
         bind(&open, keys);
+        fonts::bind(&open, self.font_listener.clone());
+        file_choice::bind(&open, self.picker_owner);
         let weak = Rc::downgrade(&open);
         let service = self.service.clone();
         open.timer
@@ -147,12 +185,22 @@ impl ComparatorWindows {
                         revision,
                     ));
                 }
-                open.pending
-                    .borrow_mut()
-                    .retain(|input| !open.session.send(input.clone()));
+                let mut pending = open.pending.borrow_mut();
+                let sent = pending
+                    .iter()
+                    .take_while(|input| open.session.send((*input).clone()))
+                    .count();
+                pending.drain(..sent);
+                drop(pending);
                 if let Some(output) = open.session.mailbox.take() {
                     match &output {
                         Output::Frame { frame, names } => {
+                            fonts::present(&open, frame.fonts.as_ref());
+                            if window.get_choosing_files() {
+                                window.set_choosing_files(false);
+                                window.set_choice_busy(false);
+                                window.invoke_focus_content();
+                            }
                             window.set_frame_revision(frame.geometry_revision as i32);
                             window.set_rendered_mode(match frame.mode {
                                 Some(ImageMode::SideBySide) => 0,
@@ -166,15 +214,24 @@ impl ComparatorWindows {
                             window.set_position(frame.position as f32);
                             window.set_status(frame.status.as_str().into());
                             window.set_accessible_text(frame.accessible_text.as_str().into());
-                            let pixels =
-                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                    &frame.pixels,
-                                    frame.width,
-                                    frame.height,
+                            if let Some(layers) = &frame.layers {
+                                open.surfaces.borrow_mut().present(
+                                    window,
+                                    layers,
+                                    frame.mode == Some(ImageMode::SideBySide),
                                 );
-                            window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
+                            } else {
+                                let pixels =
+                                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                        &frame.pixels,
+                                        frame.width,
+                                        frame.height,
+                                    );
+                                window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
+                            }
                         }
                         Output::Status(message) => window.set_status(message.as_str().into()),
+                        Output::ChooseFiles(choice) => open.show_file_choice(choice),
                     }
                     service.retire(output);
                 }
@@ -237,8 +294,10 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
     });
     let weak = Rc::downgrade(open);
     open.window.on_change_amount(move |value| {
-        if let Some(open) = weak.upgrade() {
-            open.send(Input::Amount(value.into()));
+        if let Some(open) = weak.upgrade()
+            && value.is_finite()
+        {
+            open.window.set_amount(value.clamp(0.0, 1.0));
         }
     });
     let weak = Rc::downgrade(open);
@@ -292,6 +351,10 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
 }
 
 fn key(open: &OpenWindow, action: &str) -> bool {
+    // File fields own editing/navigation keys, even if mapped globally for the viewer.
+    if open.window.get_choosing_files() && action != "viewer.close" {
+        return false;
+    }
     let input = match action {
         "viewer.close" => {
             open.close();
@@ -299,6 +362,8 @@ fn key(open: &OpenWindow, action: &str) -> bool {
         }
         "compare.next-difference" => Input::Difference { backwards: false },
         "compare.previous-difference" => Input::Difference { backwards: true },
+        "compare.first-difference" => Input::DifferenceEdge { last: false },
+        "compare.last-difference" => Input::DifferenceEdge { last: true },
         "viewer.first" => Input::Seek(0.0),
         "viewer.last" => Input::Seek(1.0),
         "viewer.up" => Input::Scroll { x: 0.0, y: 24.0 },

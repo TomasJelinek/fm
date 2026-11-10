@@ -1,5 +1,6 @@
 schema_version = 1
 id = "midnight.viewer.source"
+name = "Source viewer"
 kind = "viewer"
 version = "0.1.0"
 entry_library = "midnight_viewer_source.dll"
@@ -11,4 +12,4 @@ models = ["text-page.v1"]
 modes = ["source", "text"]
 extensions = ["rs", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "py", "pyw", "sh", "bash", "zsh", "json", "toml", "java", "cs", "go", "swift", "kt", "kts", "rb", "sql", "yaml", "yml"]
 priority = 50
-description = "Bounded source highlighting: 17 documented lexical syntax profiles"
+description = "Syntax highlighting for Rust, C, C++, JavaScript, TypeScript, Python, POSIX shell/Bash/Zsh, JSON, TOML, Java, C#, Go, Swift, Kotlin, Ruby, SQL and YAML (17 lexical profiles)."

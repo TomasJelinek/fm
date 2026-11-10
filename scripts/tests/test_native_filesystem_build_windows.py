@@ -10,6 +10,8 @@ import unittest
 
 @unittest.skipUnless(os.name == "nt", "Windows native build helper")
 class NativeFilesystemBuildWindows(unittest.TestCase):
+    provider = "native"
+
     def setUp(self):
         repository = Path(__file__).resolve().parents[2]
         temporary = repository / "_build/tmp"
@@ -18,32 +20,41 @@ class NativeFilesystemBuildWindows(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "scripts").mkdir()
-        self.script = self.root / "scripts/build-native-filesystem.ps1"
-        shutil.copyfile(repository / "scripts/build-native-filesystem.ps1", self.script)
+        helper = f"build-{self.provider}-filesystem.ps1"
+        self.script = self.root / "scripts" / helper
+        shutil.copyfile(repository / "scripts" / helper, self.script)
+        shutil.copyfile(repository / "scripts/build-filesystem-package.ps1",
+                        self.root / "scripts/build-filesystem-package.ps1")
         (self.root / "scripts/cargo.ps1").write_text(
             '$arguments = @($args)\n'
             'ConvertTo-Json -InputObject $arguments -Compress | '
             'Add-Content -LiteralPath $env:NATIVE_TEST_LOG\n'
             'exit ([int]$env:NATIVE_TEST_EXIT)\n')
-        self.plugin = self.root / "plugins/midnight-filesystem-native-windows"
+        suffix = "-windows" if self.provider == "native" else ""
+        self.plugin = self.root / f"plugins/midnight-filesystem-{self.provider}{suffix}"
         self.plugin.mkdir(parents=True)
-        for name in ("plugin.toml", "README.md", "THIRD-PARTY.md"):
+        for name in (("plugin.toml" if self.provider == "native" else "plugin.windows.toml"),
+                     "README.md", "THIRD-PARTY.md"):
             (self.plugin / name).write_text("new " + name)
-        self.build = self.root / "_build/native-filesystems/windows"
+        self.build = self.root / f"_build/{self.provider}-filesystems/windows"
+        library = f"midnight_filesystem_{self.provider}{suffix.replace('-', '_')}.dll"
         for profile in ("debug", "release"):
             (self.build / profile).mkdir(parents=True)
-            (self.build / profile / "midnight_filesystem_native_windows.dll").write_bytes(b"new DLL")
+            (self.build / profile / library).write_bytes(b"new DLL")
         self.application = self.root / "application"
-        self.package = self.application / "filesystems/native.windows"
+        self.package = self.application / f"filesystems/{self.provider}.windows"
         self.package.mkdir(parents=True)
-        self.library = self.package / "midnight_filesystem_native_windows.dll"
+        self.library = self.package / library
         self.library.write_bytes(b"old DLL")
         for name in ("plugin.toml", "README.md", "THIRD-PARTY.md"):
             (self.package / name).write_text("old " + name)
         (self.package / "unrelated-user-file").write_bytes(b"retain")
         self.log = self.root / "calls.jsonl"
         self.environment = dict(os.environ, NATIVE_TEST_LOG=str(self.log), NATIVE_TEST_EXIT="0")
-        self.environment.pop("MIDNIGHT_NATIVE_FILESYSTEM_OFFLINE", None)
+        for name in (f"MIDNIGHT_{self.provider.upper()}_FILESYSTEM_OFFLINE",
+                     f"MIDNIGHT_{self.provider.upper()}_FILESYSTEM_BUILD_ROOT",
+                     f"MIDNIGHT_TEST_{self.provider.upper()}_FILESYSTEM"):
+            self.environment.pop(name, None)
 
     def run_build(self, *options):
         return subprocess.run(

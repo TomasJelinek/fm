@@ -48,7 +48,11 @@ delete the entire `_build` directory; rebuilding is coordinated by the root task
 
 The status bar keeps selected regular-file bytes separate from directory totals.
 For selected directories, it shows the sum and count of completed, error-free
-measurements, plus explicit counts for partial and unknown measurements. Partial
+measurements and explicitly approximate partial measurements when available.
+The later UI correction removes `unknown`/`N unknown` messages and omits a size
+field when none of the selected folders has a measurement; it does not replace
+missing data with zero or launch a scan implicitly. Internal unknown counts remain
+available for aggregation and validation. Partial
 bytes, if shown, are labelled estimates and never added to an exact total. A
 directory link remains unknown because scans intentionally do not follow it.
 An unknown file length and an aggregate exceeding `u64` remain explicitly unknown.

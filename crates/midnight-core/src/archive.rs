@@ -7,6 +7,8 @@ use std::sync::Arc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveAddress {
     pub provider: String,
+    /// Exact decoder for new addresses; legacy addresses infer only built-in suffixes.
+    pub format: Option<crate::ArchiveFormat>,
     pub container: std::path::PathBuf,
     pub source_version: Vec<u8>,
     pub components: Vec<Vec<u8>>,
@@ -51,6 +53,53 @@ pub struct VirtualEntryId {
     pub entry: u64,
 }
 
+/// Archive timestamps retain whether the format supplied a timezone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveTimestamp {
+    Utc {
+        seconds: i64,
+        nanoseconds: u32,
+    },
+    Local {
+        year: i32,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    },
+}
+impl ArchiveTimestamp {
+    pub fn is_valid(self) -> bool {
+        match self {
+            Self::Utc { nanoseconds, .. } => nanoseconds < 1_000_000_000,
+            Self::Local {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+            } => {
+                let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                let days = match month {
+                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                    4 | 6 | 9 | 11 => 30,
+                    2 if leap => 29,
+                    2 => 28,
+                    _ => 0,
+                };
+                (1..=9999).contains(&year)
+                    && day > 0
+                    && day <= days
+                    && hour < 24
+                    && minute < 60
+                    && second < 60
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ArchiveNode {
     pub id: VirtualEntryId,
@@ -60,6 +109,7 @@ pub struct ArchiveNode {
     pub kind: EntryKind,
     pub size: Option<u64>,
     pub readable: bool,
+    pub modified: Option<ArchiveTimestamp>,
 }
 
 /// Host-owned session; only backend workers call these methods.
@@ -74,6 +124,25 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError>;
     fn validate(&self) -> Result<(), FsError>;
+
+    /// Backend-only native container locator held by this mount. This is not a member path.
+    /// Revalidate the mount before using it for storage policy; absent for non-native sources.
+    fn native_container_locator(&self) -> Option<&std::path::Path> {
+        None
+    }
+
+    /// Backend-only persistent-cache authority for one member of this exact source revision.
+    /// A supported identity includes the container, source revision, provider implementation
+    /// version, format and member discriminator, and survives reopening the same archive.
+    /// Session IDs and display names are insufficient. Implementations validate the expected
+    /// source revision before returning an identity. Older providers grant no such authority.
+    fn persistent_member_identity(
+        &self,
+        _entry: u64,
+        _expected_source_version: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -130,7 +199,10 @@ impl ArchiveLocation {
 
 #[derive(Clone, Debug)]
 pub enum ArchiveAction {
-    Open { path: std::path::PathBuf },
+    Open {
+        path: std::path::PathBuf,
+        format: crate::ArchiveFormat,
+    },
     List(ArchiveLocation),
 }
 
@@ -144,6 +216,7 @@ pub struct ArchiveListing {
 #[derive(Clone, Debug)]
 pub enum ArchiveSelectionAction {
     Toggle(crate::EntryId),
+    Remove(Arc<std::collections::HashSet<crate::EntryId>>),
     Bulk(crate::SelectionOperation),
     Range {
         first: usize,

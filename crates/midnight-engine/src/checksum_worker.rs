@@ -447,6 +447,7 @@ struct Hashers {
     sha1: Option<Sha1>,
     sha256: Option<Sha256>,
     sha512: Option<Sha512>,
+    crc32: Option<crc32fast::Hasher>,
 }
 impl Hashers {
     fn new(algorithms: ChecksumAlgorithms) -> Self {
@@ -459,6 +460,9 @@ impl Hashers {
             sha512: algorithms
                 .contains(ChecksumAlgorithm::Sha512)
                 .then(Sha512::new),
+            crc32: algorithms
+                .contains(ChecksumAlgorithm::Crc32)
+                .then(crc32fast::Hasher::new),
         }
     }
     fn update(&mut self, bytes: &[u8]) {
@@ -472,6 +476,9 @@ impl Hashers {
             hash.update(bytes);
         }
         if let Some(hash) = &mut self.sha512 {
+            hash.update(bytes);
+        }
+        if let Some(hash) = &mut self.crc32 {
             hash.update(bytes);
         }
     }
@@ -499,6 +506,12 @@ impl Hashers {
             result.push(ChecksumDigest {
                 algorithm: ChecksumAlgorithm::Sha512,
                 bytes: hash.finalize().to_vec(),
+            });
+        }
+        if let Some(hash) = self.crc32 {
+            result.push(ChecksumDigest {
+                algorithm: ChecksumAlgorithm::Crc32,
+                bytes: hash.finalize().to_be_bytes().to_vec(),
             });
         }
         result

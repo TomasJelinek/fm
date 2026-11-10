@@ -1,0 +1,32 @@
+// Resize gestures retain window coordinates while the body moves underneath
+// the pointer. The frame owns size/position policy; this item owns input only.
+export component DialogResizeEdge inherits TouchArea {
+    in property <int> horizontal;
+    in property <int> vertical;
+    callback begin(int, int);
+    callback resize-by(length, length);
+    callback finish();
+    private property <length> anchor-x;
+    private property <length> anchor-y;
+    private property <bool> dragging;
+    mouse-cursor: root.horizontal == 0 ? ns-resize
+        : root.vertical == 0 ? ew-resize
+        : root.horizontal == root.vertical ? nwse-resize : nesw-resize;
+    pointer-event(event) => {
+        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+            root.anchor-x = self.absolute-position.x + self.mouse-x;
+            root.anchor-y = self.absolute-position.y + self.mouse-y;
+            root.dragging = true;
+            root.begin(root.horizontal, root.vertical);
+        } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+            root.dragging = false;
+            root.finish();
+        }
+    }
+    moved => {
+        if self.pressed && root.dragging {
+            root.resize-by(self.absolute-position.x + self.mouse-x - root.anchor-x,
+                self.absolute-position.y + self.mouse-y - root.anchor-y);
+        }
+    }
+}

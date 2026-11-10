@@ -1,5 +1,5 @@
 use midnight_core::{ArchiveFormat, archive_format};
-use midnight_filesystem_api::Format;
+use midnight_filesystem_api::{Format, Protocol};
 use midnight_plugin_host::{CapturedFile, validate_plugin_path};
 use serde::Deserialize;
 use std::{
@@ -11,7 +11,13 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Package {
     pub id: String,
+    pub name: Option<String>,
+    pub directory: PathBuf,
+    pub version: String,
+    /// Provider promises deterministic member IDs for identical source, format and version.
+    pub stable_entry_ids: bool,
     pub executable: PathBuf,
+    pub protocol: Protocol,
     pub(crate) formats: Vec<Format>,
 }
 #[derive(Default, Debug)]
@@ -26,6 +32,10 @@ struct Manifest {
     id: String,
     kind: String,
     version: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    stable_entry_ids: bool,
     entry_executable: String,
     target: String,
     protocol: u32,
@@ -107,7 +117,16 @@ impl Catalog {
         path: &Path,
         provider: Option<&str>,
     ) -> Option<(&Package, Format)> {
-        let format = match archive_format(path)? {
+        self.choose_format(archive_format(path)?, provider)
+    }
+
+    /// Explicit host decoder selection still requires a trusted worker advertisement.
+    pub fn choose_format(
+        &self,
+        format: ArchiveFormat,
+        provider: Option<&str>,
+    ) -> Option<(&Package, Format)> {
+        let format = match format {
             ArchiveFormat::Zip => Format::Zip,
             ArchiveFormat::Tar => Format::Tar,
             ArchiveFormat::Gzip => Format::Gzip,
@@ -138,16 +157,23 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
     let bytes = source.read_at(0, 16 * 1024).map_err(io::Error::other)?;
     let text = String::from_utf8(bytes).map_err(io::Error::other)?;
     let kind: toml::Value = toml::from_str(&text).map_err(io::Error::other)?;
-    if kind.get("kind").and_then(toml::Value::as_str) == Some("filesystem-native") {
+    if matches!(
+        kind.get("kind").and_then(toml::Value::as_str),
+        Some("filesystem-native" | "filesystem-network")
+    ) {
         // The native host owns validation/loading of its independently versioned ABI.
         return Ok(None);
     }
     let m: Manifest = toml::from_str(&text).map_err(io::Error::other)?;
     if m.schema_version != 1
-        || m.protocol != 1
+        || !matches!(m.protocol, 1 | 2)
         || m.kind != "filesystem-worker"
         || m.target != midnight_plugin_host::host_target()
         || m.version.is_empty()
+        || m.version.len() > 128
+        || m.name.as_ref().is_some_and(|name| {
+            name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control)
+        })
         || m.id.is_empty()
         || m.id.len() > 128
         || !m
@@ -185,6 +211,11 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
     CapturedFile::capture(&executable).map_err(io::Error::other)?;
     Ok(Some(Package {
         id: m.id,
+        name: m.name,
+        directory: path.to_owned(),
+        version: m.version,
+        stable_entry_ids: m.stable_entry_ids,
+        protocol: Protocol::try_from(m.protocol as u16)?,
         executable,
         formats,
     }))
@@ -193,6 +224,37 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filesystem_friendly_name_metadata_is_optional_and_validated() {
+        let legacy = format!(
+            "schema_version=1\nid='archive.test'\nkind='filesystem-worker'\nversion='0.1.0'\nentry_executable='archive'\ntarget='{}'\nprotocol=2\nformats=['zip']\n",
+            midnight_plugin_host::host_target()
+        );
+        assert!(toml::from_str::<Manifest>(&legacy).is_ok());
+        assert!(
+            toml::from_str::<Manifest>(&format!("{legacy}name='Archive filesystem'\n")).is_ok()
+        );
+    }
+
+    #[test]
+    fn older_manifests_do_not_grant_persistent_member_identity() {
+        let manifest = r#"
+schema_version = 1
+id = "archive.fixture"
+kind = "filesystem-worker"
+version = "1.2.3"
+entry_executable = "archive"
+target = "fixture-target"
+protocol = 2
+formats = ["zip"]
+"#;
+        let old: Manifest = toml::from_str(manifest).unwrap();
+        assert!(!old.stable_entry_ids);
+        let advertised: Manifest =
+            toml::from_str(&format!("{manifest}\nstable_entry_ids = true\n")).unwrap();
+        assert!(advertised.stable_entry_ids);
+    }
 
     #[test]
     fn zip_containers_route_to_installed_zip_provider() {
@@ -245,6 +307,24 @@ mod tests {
             catalog.choose(Path::new("package.tar")).unwrap().1,
             Format::Tar
         );
+        assert_eq!(
+            catalog
+                .choose_format(ArchiveFormat::Tar, Some("fixture"))
+                .unwrap()
+                .1,
+            Format::Tar
+        );
+        assert!(catalog.choose_format(ArchiveFormat::Zip, None).is_none());
+        assert!(
+            catalog
+                .choose_format(ArchiveFormat::Tar, Some("other"))
+                .is_none()
+        );
+        assert!(
+            Catalog::default()
+                .choose_format(ArchiveFormat::Tar, None)
+                .is_none()
+        );
     }
 
     #[test]
@@ -268,7 +348,12 @@ mod tests {
     pub(super) fn catalog() -> Catalog {
         Catalog {
             packages: vec![Package {
+                name: None,
+                directory: PathBuf::new(),
+                protocol: Protocol::V1,
                 id: "fixture".into(),
+                version: "1".into(),
+                stable_entry_ids: false,
                 executable: PathBuf::new(),
                 formats: vec![Format::Zip, Format::Tar, Format::TarGzip, Format::Gzip],
             }],

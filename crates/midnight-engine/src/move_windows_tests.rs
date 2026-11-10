@@ -6,7 +6,7 @@ fn prepare_move(
 ) -> (worker::Job, Status) {
     let request = request(1, sources, destination);
     let status = Arc::new(Mutex::new(initial(&CopyInput::move_paths(request.clone()))));
-    let service = midnight_platform::LocalFileSystem::new(None);
+    let service = CrossDeviceService(midnight_platform::LocalFileSystem::new(None));
     let job = worker::Job::prepare_move(request, &service, cancel, status.clone()).unwrap();
     (job, status)
 }
@@ -16,6 +16,7 @@ fn drive(job: &mut worker::Job) {
         match job.step() {
             worker::Step::Continue => {}
             worker::Step::Done => return,
+            worker::Step::Failure(failure) => decide_failure(job, &failure),
             worker::Step::Conflict(value) => panic!("unexpected conflict: {value:?}"),
         }
     }
@@ -43,31 +44,61 @@ fn move_removes_each_original_only_after_its_file_publishes_and_validates() {
         }
     }
     assert_eq!(snapshot(&status).files_completed, 1);
-    assert_eq!(snapshot(&status).source_names_captured, 0);
+    assert_eq!(snapshot(&status).source_names_staged, 0);
     drive(&mut job);
     let done = job.finish();
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
-    assert_eq!(done.intent, TransferIntent::RecoverableMove);
-    assert_eq!(done.source_names_captured, 2);
-    assert_eq!(done.source_recovery_count, 0);
+    assert_eq!(done.intent, TransferIntent::Move);
+    assert_eq!(done.source_names_staged, 2);
+    assert_eq!(done.source_residual_count, 0);
     assert_eq!(done.source_files_removed, 2);
     assert_eq!(done.validation_bytes, 4_800_000);
     assert!(paths.iter().all(|path| !path.exists()));
-    assert!(done.source_recoveries.is_empty());
+    assert!(done.source_residuals.is_empty());
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 2); // seed + destination, no stages
 }
 
 #[test]
-fn move_rejects_mixed_roots_and_proof_budget_before_any_publication() {
+fn ordinary_move_preserves_long_and_raw_utf16_names_without_leaving_source_stages() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let (_temp, parent) = protected_fixture();
+    let raw = std::ffi::OsString::from_wide(&[0x0072, 0x0061, 0x0077, 0x002d, 0xd800, 0x0041]);
+    let paths = [parent.join("文".repeat(200)), parent.join(raw)];
+    assert!(paths[0].as_os_str().encode_wide().count() > 260);
+    let destination = parent.join("destination");
+    fs::create_dir(&destination).unwrap();
+    for path in &paths {
+        fs::write(path, b"original multilingual bytes").unwrap();
+    }
+    let (mut job, _) = prepare_move(&paths, &destination, Cancellation::default());
+    drive(&mut job);
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.source_files_removed, 2);
+    assert_eq!(done.source_residual_count, 0);
+    for path in &paths {
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read(destination.join(path.file_name().unwrap())).unwrap(),
+            b"original multilingual bytes"
+        );
+    }
+    assert_eq!(fs::read_dir(parent).unwrap().count(), 2);
+}
+
+#[test]
+fn move_rejects_overlapping_roots_and_proof_budget_before_any_publication() {
     let (_temp, parent) = protected_fixture();
     let file = parent.join("file");
     let directory = parent.join("directory");
     let destination = parent.join("destination");
     fs::write(&file, b"original").unwrap();
     fs::create_dir(&directory).unwrap();
+    fs::create_dir(directory.join("nested")).unwrap();
     fs::create_dir(&destination).unwrap();
     let service = midnight_platform::LocalFileSystem::new(None);
     for paths in [
-        vec![file.clone(), directory.clone()],
+        vec![directory.clone(), directory.join("nested")],
         vec![file.clone(); 65],
     ] {
         let request = request(1, &paths, &destination);
@@ -104,6 +135,7 @@ fn move_skip_retains_that_file_and_cancel_keeps_unfinished_sources() {
                     choice: CopyChoice::Skip
                 })),
                 worker::Step::Done => break,
+                worker::Step::Failure(failure) => decide_failure(&mut job, &failure),
                 worker::Step::Continue => {
                     if !skip && snapshot(&status).phase == CopyOperationPhase::ValidatingBeforeMove
                     {
@@ -143,11 +175,11 @@ fn move_cannot_replace_an_earlier_proof_from_the_same_batch() {
         }
     }
     drive(&mut job);
-    assert_eq!(job.finish().source_names_captured, 2);
+    assert_eq!(job.finish().source_names_staged, 2);
 }
 
 #[test]
-fn move_cancel_after_first_capture_retains_that_original_and_leaves_remaining_names() {
+fn move_cancel_after_first_capture_restores_that_original_and_leaves_remaining_names() {
     let (_temp, parent) = protected_fixture();
     let paths = [parent.join("first"), parent.join("second")];
     let destination = parent.join("destination");
@@ -159,7 +191,7 @@ fn move_cancel_after_first_capture_retains_that_original_and_leaves_remaining_na
     let (mut job, status) = prepare_move(&paths, &destination, cancel.clone());
     for _ in 0..1000 {
         assert!(matches!(job.step(), worker::Step::Continue));
-        if snapshot(&status).source_names_captured == 1 {
+        if snapshot(&status).source_names_staged == 1 {
             cancel.cancel();
             break;
         }
@@ -167,13 +199,11 @@ fn move_cancel_after_first_capture_retains_that_original_and_leaves_remaining_na
     drive(&mut job);
     let done = job.finish();
     assert_eq!(done.state, CopyOperationState::Cancelled);
-    assert_eq!(done.source_names_captured, 1);
-    assert!(!paths[0].exists());
+    assert_eq!(done.source_names_staged, 1);
+    assert_eq!(fs::read(&paths[0]).unwrap(), b"original");
     assert!(paths[1].exists());
-    assert_eq!(
-        fs::read(&done.source_recoveries[0].recovery.path).unwrap(),
-        b"original"
-    );
+    assert!(done.source_residuals.is_empty(), "{done:?}");
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 4); // seed, two sources, destination
     assert!(!destination.join("second").exists());
 }
 
@@ -193,15 +223,16 @@ fn move_accepts_64_pinned_files_without_retaining_64_byte_buffers() {
         match job.step() {
             worker::Step::Done => break,
             worker::Step::Continue => {}
+            worker::Step::Failure(failure) => decide_failure(&mut job, &failure),
             worker::Step::Conflict(value) => panic!("unexpected conflict {value:?}"),
         }
     }
     let done = job.finish();
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
-    assert_eq!(done.source_names_captured, 64);
-    assert_eq!(done.source_recovery_count, 0);
+    assert_eq!(done.source_names_staged, 64);
+    assert_eq!(done.source_residual_count, 0);
     assert_eq!(done.source_files_removed, 64);
-    assert_eq!(done.source_recoveries.len(), 0);
+    assert_eq!(done.source_residuals.len(), 0);
     assert_eq!(done.source_directories, vec![parent]);
     assert!(paths.iter().all(|path| !path.exists()));
 }
@@ -237,7 +268,7 @@ impl TransferSource for ReadFailure {
         self.0.next_child(cancel)
     }
 }
-struct FailSecondSource(midnight_platform::LocalFileSystem);
+struct FailSecondSource(CrossDeviceService);
 impl TransferService for FailSecondSource {
     fn prepare_move_source(
         &self,
@@ -284,7 +315,9 @@ fn move_second_file_read_failure_keeps_first_completed_move_and_second_original(
     }
     let request = request(1, &paths, &destination);
     let status = Arc::new(Mutex::new(initial(&CopyInput::move_paths(request.clone()))));
-    let service = FailSecondSource(midnight_platform::LocalFileSystem::new(None));
+    let service = FailSecondSource(CrossDeviceService(midnight_platform::LocalFileSystem::new(
+        None,
+    )));
     let mut job =
         worker::Job::prepare_move(request, &service, Cancellation::default(), status).unwrap();
     drive(&mut job);
@@ -304,7 +337,7 @@ fn move_second_file_read_failure_keeps_first_completed_move_and_second_original(
 }
 
 #[tokio::test]
-async fn shared_clipboard_move_uses_the_same_verified_queue_and_recovery_policy() {
+async fn shared_clipboard_move_uses_native_rename_without_content_verification() {
     let (_temp, parent) = protected_fixture();
     let source = parent.join("clipboard source 文档");
     let destination = parent.join("destination");
@@ -318,6 +351,7 @@ async fn shared_clipboard_move_uses_the_same_verified_queue_and_recovery_policy(
     harness
         .controller
         .enqueue_clipboard_move(ClipboardMoveRequest {
+            verification: midnight_core::TransferVerification::default(),
             id: OperationId(1),
             clipboard: clipboard.clone(),
             destination: destination.clone(),
@@ -325,11 +359,16 @@ async fn shared_clipboard_move_uses_the_same_verified_queue_and_recovery_policy(
         .await;
     let done = harness.terminal(1).await;
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
-    assert_eq!(done.intent, TransferIntent::RecoverableMove);
-    assert_eq!(done.source_names_captured, 1);
+    assert_eq!(done.intent, TransferIntent::Move);
+    assert_eq!(done.source_names_staged, 0);
     assert!(!source.exists());
-    assert_eq!(done.source_files_removed, 1);
-    assert!(done.source_recoveries.is_empty());
+    assert_eq!(done.source_files_removed, 0);
+    assert_eq!(done.native_entries_moved, 1);
+    assert_eq!(
+        done.copied_bytes + done.verified_bytes + done.validation_bytes,
+        0
+    );
+    assert!(done.source_residuals.is_empty());
     assert_eq!(
         fs::read(destination.join("clipboard source 文档")).unwrap(),
         b"original"
@@ -374,12 +413,12 @@ fn move_removes_this_verified_source_before_copying_next_and_cancel_keeps_remain
     let done = job.finish();
     assert_eq!(done.state, CopyOperationState::Cancelled);
     assert_eq!(done.source_files_removed, 1);
-    assert_eq!(done.source_recovery_count, 0);
+    assert_eq!(done.source_residual_count, 0);
     assert_eq!(fs::read(&paths[1]).unwrap(), b"original");
 }
 
 #[test]
-fn late_native_source_metadata_edit_after_capture_retains_original_and_stops_next_copy() {
+fn late_native_source_metadata_edit_after_capture_restores_original_and_stops_next_copy() {
     let (_temp, parent) = protected_fixture();
     let paths = [parent.join("first"), parent.join("second")];
     let destination = parent.join("destination");
@@ -390,22 +429,135 @@ fn late_native_source_metadata_edit_after_capture_retains_original_and_stops_nex
     let (mut job, status) = prepare_move(&paths, &destination, Cancellation::default());
     for _ in 0..1000 {
         assert!(matches!(job.step(), worker::Step::Continue));
-        if snapshot(&status).source_names_captured == 1 {
+        if snapshot(&status).source_names_staged == 1 {
             break;
         }
     }
-    let recovery = snapshot(&status).source_recoveries[0].recovery.path.clone();
+    let recovery = fs::read_dir(&parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".midnight-move-")
+        })
+        .unwrap()
+        .join("first");
     let original_permissions = fs::metadata(&recovery).unwrap().permissions();
     let mut readonly = original_permissions.clone();
     readonly.set_readonly(true);
     fs::set_permissions(&recovery, readonly).unwrap();
+    let mut refused_removal = false;
+    for _ in 0..1000 {
+        match job.step() {
+            worker::Step::Continue => {}
+            worker::Step::Done => break,
+            worker::Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+            worker::Step::Failure(failure) => {
+                refused_removal = true;
+                assert!(
+                    !failure.can_retry,
+                    "changed source metadata must not be retried"
+                );
+                assert!(job.accept_decision(CopyDecision {
+                    id: failure.id,
+                    version: failure.version,
+                    choice: CopyChoice::Cancel,
+                }));
+            }
+        }
+    }
+    assert!(refused_removal);
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Cancelled);
+    assert_eq!(done.source_files_removed, 0);
+    assert_eq!(done.source_residual_count, 0);
+    assert_eq!(fs::read(&paths[0]).unwrap(), b"original");
+    fs::set_permissions(&paths[0], original_permissions).unwrap();
+    assert_eq!(fs::read(&paths[1]).unwrap(), b"original");
+    assert!(!destination.join("second").exists());
+}
+
+#[test]
+fn cancellation_restore_conflict_reports_exact_residual_without_touching_new_winner() {
+    let (_temp, parent) = protected_fixture();
+    let paths = [parent.join("first"), parent.join("second")];
+    let destination = parent.join("destination");
+    fs::create_dir(&destination).unwrap();
+    for path in &paths {
+        fs::write(path, b"original").unwrap();
+    }
+    let cancel = Cancellation::default();
+    let (mut job, status) = prepare_move(&paths, &destination, cancel.clone());
+    for _ in 0..1000 {
+        assert!(matches!(job.step(), worker::Step::Continue));
+        if snapshot(&status).source_names_staged == 1 {
+            break;
+        }
+    }
+    assert_eq!(snapshot(&status).source_names_staged, 1);
+    fs::write(&paths[0], b"new winner").unwrap();
+    cancel.cancel();
     drive(&mut job);
     let done = job.finish();
-    assert_eq!(done.state, CopyOperationState::CompletedWithErrors);
     assert_eq!(done.source_files_removed, 0);
-    assert_eq!(done.source_recovery_count, 1);
-    assert_eq!(fs::read(&recovery).unwrap(), b"original");
-    fs::set_permissions(recovery, original_permissions).unwrap();
+    assert_eq!(done.source_residual_count, 1);
+    let residual = &done.source_residuals[0];
+    assert_eq!(residual.source, paths[0]);
+    assert!(residual.matched_source);
+    assert_eq!(fs::read(&residual.temporary.path).unwrap(), b"original");
+    assert_eq!(fs::read(&paths[0]).unwrap(), b"new winner");
+    assert_eq!(fs::read(&paths[1]).unwrap(), b"original");
+    assert!(!destination.join("second").exists());
+}
+
+#[test]
+fn post_removal_cleanup_failure_reports_residual_and_never_deletes_unexpected_children() {
+    let (_temp, parent) = protected_fixture();
+    let paths = [parent.join("first"), parent.join("second")];
+    let destination = parent.join("destination");
+    fs::create_dir(&destination).unwrap();
+    for path in &paths {
+        fs::write(path, b"original").unwrap();
+    }
+    let (mut job, status) = prepare_move(&paths, &destination, Cancellation::default());
+    for _ in 0..1000 {
+        assert!(matches!(job.step(), worker::Step::Continue));
+        if snapshot(&status).source_names_staged == 1 {
+            break;
+        }
+    }
+    let stage = fs::read_dir(&parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".midnight-move-")
+        })
+        .unwrap();
+    fs::write(stage.join("unexpected"), b"preserve this child").unwrap();
+    drive(&mut job);
+    let done = job.finish();
+    assert_eq!(
+        done.state,
+        CopyOperationState::CompletedWithErrors,
+        "{done:?}"
+    );
+    assert_eq!(
+        done.source_files_removed, 1,
+        "removal already happened, never claim rollback"
+    );
+    assert_eq!(done.source_residual_count, 1);
+    assert_eq!(done.source_residuals[0].temporary.path, stage);
+    assert!(!done.source_residuals[0].matched_source);
+    assert!(!paths[0].exists());
+    assert_eq!(
+        fs::read(stage.join("unexpected")).unwrap(),
+        b"preserve this child"
+    );
     assert_eq!(fs::read(&paths[1]).unwrap(), b"original");
     assert!(!destination.join("second").exists());
 }

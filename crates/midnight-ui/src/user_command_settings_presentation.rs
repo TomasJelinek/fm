@@ -10,6 +10,9 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     let view = window.global::<UserCommandSettingsView>();
     let state = &p.user_command_settings;
+    view.set_busy(p.settings_picker.busy());
+    view.set_error(state.error.as_str().into());
+    refresh_preview(&view, p, window.get_options_open());
     let commands = &p.preferences.values.user_commands;
     let revision = format!(
         "{}:{}:{}:{:p}",
@@ -20,6 +23,14 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     );
     if view.get_revision() == revision {
         return;
+    }
+    if let Some(form) = p.user_command_settings_form()
+        && let Ok(arguments) = serde_json::from_str::<Vec<String>>(&form.arguments)
+    {
+        view.set_argument_rows(crate::argument_rows::sync(
+            view.get_argument_rows(),
+            &arguments,
+        ));
     }
     view.set_ready(p.user_command_settings_available());
     view.set_configuration_revision(p.user_command_drag_revision().to_string().into());
@@ -94,6 +105,35 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
         view.set_rows_revision(rows_revision.into());
     }
     view.set_revision(revision.into());
+}
+
+fn refresh_preview(view: &UserCommandSettingsView<'_>, p: &Presenter, visible: bool) {
+    let job = visible
+        .then(|| p.current_settings_command_preview())
+        .flatten();
+    let revision = job.map_or_else(String::new, |job| {
+        format!(
+            "{}:{}:{}:{}",
+            job.id.0,
+            job.state,
+            job.preview.is_some(),
+            job.error.is_some()
+        )
+    });
+    if view.get_preview_revision() == revision {
+        return;
+    }
+    let mut text = String::new();
+    if let Some(job) = job {
+        if let Some(preview) = &job.preview {
+            crate::user_command_presentation::append_preview(&mut text, preview);
+        } else if job.error.is_none() {
+            text = format!("{}...", job.state);
+        }
+    }
+    view.set_preview_text(text.trim_start().into());
+    view.set_preview_failed(job.is_some_and(|job| job.error.is_some()));
+    view.set_preview_revision(revision.into());
 }
 
 pub(crate) fn install(
@@ -180,6 +220,9 @@ pub(crate) fn install(
     bind!(on_edit_started, false, |p, _send, token| {
         p.mark_user_command_setting_dirty(token.as_str());
     });
+    bind!(on_draft_edited, false, |p, _send, token, form| {
+        p.remember_user_command_form(token.as_str(), from_view(form));
+    });
     bind!(on_validate, false, |p, _send, token, form| {
         p.validate_user_command_setting(token.as_str(), &from_view(form));
     });
@@ -191,6 +234,89 @@ pub(crate) fn install(
     });
     bind!(on_move, true, |p, send, token, step| {
         p.move_user_command_setting(token.as_str(), step, send);
+    });
+    let weak = window.as_weak();
+    let context_state = state.clone();
+    let context_send = send.clone();
+    window
+        .global::<UserCommandSettingsView>()
+        .on_picker_context(move |page| {
+            if let Ok(mut state) = context_state.try_borrow_mut() {
+                state.settings_picker_context(page, context_send.as_ref());
+            } else {
+                let state = context_state.clone();
+                let send = context_send.clone();
+                let weak = weak.clone();
+                slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                    if let Some(window) = weak.upgrade() {
+                        let page = if window.get_options_open() {
+                            window.get_options_topic_index()
+                        } else {
+                            -1
+                        };
+                        state
+                            .borrow_mut()
+                            .settings_picker_context(page, send.as_ref());
+                    }
+                });
+            }
+        });
+    let weak = window.as_weak();
+    let selected = state.clone();
+    window
+        .global::<UserCommandSettingsView>()
+        .on_argument(move |operation, row, text| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let token = selected.borrow().user_command_settings.token();
+            selected
+                .borrow_mut()
+                .edit_user_command_argument(&token, operation, row, text.as_str());
+            let form = selected.borrow().user_command_settings_form();
+            if let Some(form) = form {
+                window
+                    .global::<UserCommandSettingsView>()
+                    .set_draft(to_view(form));
+            }
+            refresh(&window, &selected.borrow());
+        });
+    let weak = window.as_weak();
+    let selected = state.clone();
+    let sender = send.clone();
+    window
+        .global::<UserCommandSettingsView>()
+        .on_browse(move |field| {
+            use crate::presenter::settings_picker::Target;
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let target = match field {
+                0 => Target::CommandProgram,
+                1 => Target::WorkingDirectory,
+                2 => Target::CommandIcon,
+                _ => return,
+            };
+            let owner = crate::picker_window::owner(&window);
+            selected
+                .borrow_mut()
+                .request_settings_picker(target, owner, sender.as_ref());
+            crate::refresh(&window, &selected.borrow());
+            crate::settings_picker_presentation::wake(&window, &selected, sender.clone());
+        });
+    let weak = window.as_weak();
+    let selected = state.clone();
+    let sender = send.clone();
+    window.global::<UserCommandSettingsView>().on_save(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let form = from_view(window.global::<UserCommandSettingsView>().get_draft());
+        let token = selected.borrow().user_command_settings.token();
+        selected
+            .borrow_mut()
+            .apply_user_command_setting(&token, &form, sender.as_ref());
+        crate::refresh(&window, &selected.borrow());
     });
     let weak = window.as_weak();
     let selected = state.clone();
@@ -208,6 +334,9 @@ pub(crate) fn install(
                 variable,
             );
             if accepted {
+                selected
+                    .borrow_mut()
+                    .remember_user_command_form(token.as_str(), form.clone());
                 window
                     .global::<UserCommandSettingsView>()
                     .set_draft(to_view(form));

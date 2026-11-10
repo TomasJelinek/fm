@@ -13,6 +13,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
 
+#[path = "transfer_preservation.rs"]
+mod preservation;
 #[path = "transfer_recovery.rs"]
 pub(super) mod recovery;
 
@@ -23,6 +25,9 @@ pub(super) struct Directory {
     identity: TransferIdentity,
 }
 impl Directory {
+    pub(in crate::transfer) fn native_file(&self) -> &File {
+        &self.file
+    }
     pub(super) fn from_file(file: File, path: PathBuf) -> Result<Self, FsError> {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
@@ -35,6 +40,15 @@ impl Directory {
     }
 }
 impl TransferDirectory for Directory {
+    fn open_read_child(
+        &self,
+        name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.revalidate(cancel)?;
+        super::source::Source::open(self.file.clone(), self.path.clone(), name, cancel)
+            .map(|source| Box::new(source) as Box<dyn TransferSource>)
+    }
     fn path(&self) -> &Path {
         &self.path
     }
@@ -47,6 +61,9 @@ impl TransferDirectory for Directory {
             conditional_overwrite: false,
             recoverable_replacement: recovery::supported(self),
         }
+    }
+    fn supports_native_move_replacement(&self, source: TransferIdentity) -> bool {
+        source.device == self.identity.device && recovery::supported(self)
     }
     fn prepare_target(
         &self,
@@ -71,8 +88,30 @@ impl TransferDirectory for Directory {
         cancel: &Cancellation,
     ) -> Result<Box<dyn StagedTransferFile>, FsError> {
         let mut stage = self.stage_file(cancel)?;
-        stage.prepare_replacement(name, expected, policy, cancel)?;
+        initialize_stage(stage.as_mut(), |stage| {
+            stage.prepare_replacement(name, expected, policy, cancel)
+        })?;
         Ok(stage)
+    }
+    fn stage_file_preserving_target(
+        &self,
+        name: &OsStr,
+        expected: Arc<dyn TransferTarget>,
+        policy: TransferReplacementPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        let preserved = preservation::Snapshot::capture(self, name, expected.as_ref(), cancel)?;
+        let mut stage = self.create_stage(false, Some(preserved), cancel)?;
+        initialize_stage(&mut stage, |stage| {
+            stage
+                .preserved
+                .as_ref()
+                .ok_or_else(|| invalid(&stage.path, "missing metadata"))?
+                .initialize(&stage.file, &stage.path)?;
+            expected.revalidate(cancel)?;
+            stage.prepare_replacement(name, expected, policy, cancel)
+        })?;
+        Ok(Box::new(stage))
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
@@ -164,33 +203,59 @@ impl Directory {
         metadata: bool,
         cancel: &Cancellation,
     ) -> Result<Box<dyn StagedTransferFile>, FsError> {
-        self.revalidate(cancel)?;
-        for _ in 0..16 {
-            checked(cancel, &self.path)?;
-            let mut random = [0u8; 16];
+        self.create_stage(metadata, None, cancel)
+            .map(|stage| Box::new(stage) as Box<dyn StagedTransferFile>)
+    }
+    fn create_stage(
+        &self,
+        metadata: bool,
+        preserved: Option<preservation::Snapshot>,
+        cancel: &Cancellation,
+    ) -> Result<Stage, FsError> {
+        self.create_stage_named(metadata, preserved, cancel, || {
+            let mut random = [0u8; 8];
             getrandom::fill(&mut random)
                 .map_err(|e| error(&self.path, io::Error::other(e.to_string())))?;
             let suffix = random
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
-            let name = OsString::from(format!(".midnight-copy-{suffix}"));
+            Ok(OsString::from(format!(".me-{suffix}")))
+        })
+    }
+
+    fn create_stage_named(
+        &self,
+        metadata: bool,
+        preserved: Option<preservation::Snapshot>,
+        cancel: &Cancellation,
+        mut next_name: impl FnMut() -> Result<OsString, FsError>,
+    ) -> Result<Stage, FsError> {
+        self.revalidate(cancel)?;
+        for _ in 0..16 {
+            checked(cancel, &self.path)?;
+            let name = next_name()?;
             let path = self.path.join(&name);
-            match native::open_relative(
-                &self.file,
-                &name,
-                FILE_READ_DATA
-                    | FILE_WRITE_DATA
-                    | FILE_READ_ATTRIBUTES
-                    | DELETE
-                    | SYNCHRONIZE
-                    | if metadata { FILE_WRITE_ATTRIBUTES } else { 0 },
-                FILE_SHARE_READ,
-                FILE_CREATE,
-                FILE_NON_DIRECTORY_FILE,
-            ) {
+            let created = if preserved.is_some() {
+                recovery::create_private_file(&self.file, &name)
+            } else {
+                native::open_relative(
+                    &self.file,
+                    &name,
+                    FILE_READ_DATA
+                        | FILE_WRITE_DATA
+                        | FILE_READ_ATTRIBUTES
+                        | DELETE
+                        | SYNCHRONIZE
+                        | if metadata { FILE_WRITE_ATTRIBUTES } else { 0 },
+                    FILE_SHARE_READ,
+                    FILE_CREATE,
+                    FILE_NON_DIRECTORY_FILE,
+                )
+            };
+            match created {
                 Ok(file) => {
-                    return Ok(Box::new(Stage {
+                    return Ok(Stage {
                         file,
                         directory: self.clone(),
                         published: false,
@@ -199,7 +264,8 @@ impl Directory {
                         path,
                         replacement: None,
                         metadata,
-                    }));
+                        preserved,
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(error(&path, e)),
@@ -215,8 +281,13 @@ impl Directory {
     }
 }
 
+#[cfg(test)]
+#[path = "transfer_stage_tests.rs"]
+mod stage_tests;
+
 struct Stage {
     metadata: bool,
+    preserved: Option<preservation::Snapshot>,
     file: File,
     directory: Directory,
     published: bool,
@@ -224,6 +295,25 @@ struct Stage {
     cleaned: bool,
     path: PathBuf,
     replacement: Option<recovery::Replacement>,
+}
+
+/// Construction failures still own an unpublished stage. Preserve both the primary
+/// error and any exact-path cleanup refusal; Drop is only a final best-effort retry.
+fn initialize_stage<T: StagedTransferFile + ?Sized>(
+    stage: &mut T,
+    initialize: impl FnOnce(&mut T) -> Result<(), FsError>,
+) -> Result<(), FsError> {
+    initialize(stage).map_err(|failure| {
+        if let Err(mut cleanup) = stage.cleanup() {
+            // Preserve the native cleanup kind and residual path: an Interrupted
+            // setup error must not hide this refusal as ordinary cancellation.
+            cleanup
+                .message
+                .push_str(&format!("; stage initialization failed: {failure}"));
+            return cleanup;
+        }
+        failure
+    })
 }
 impl Read for Stage {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -304,10 +394,17 @@ impl StagedTransferFile for Stage {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<TransferPublication, FsError> {
+        if let Some(snapshot) = &self.preserved {
+            snapshot.verify(&self.file, &self.path)?;
+        }
         self.replace(name, cancel, || {})
     }
     fn sync(&mut self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
+        if let Some(snapshot) = &self.preserved {
+            snapshot.apply_attributes(&self.file, &self.path)?;
+            snapshot.verify(&self.file, &self.path)?;
+        }
         self.file.sync_all().map_err(|e| error(&self.path, e))
     }
     fn len(&self) -> Result<u64, FsError> {

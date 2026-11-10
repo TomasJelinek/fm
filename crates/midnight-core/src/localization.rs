@@ -69,6 +69,15 @@ pub trait LocaleService: Send + Sync {
         None
     }
 
+    /// Format a timezone-unspecified archive calendar without shifting its fields.
+    /// Only `ArchiveTimestamp::Local` is accepted. Run on a backend worker.
+    fn format_archive_local_time(
+        &self,
+        _value: crate::ArchiveTimestamp,
+    ) -> Option<LocalizedDateTime> {
+        None
+    }
+
     /// Produce an opaque, lexicographically comparable key using one immutable
     /// session locale. Call only on a backend worker, never in a sort comparator.
     /// None preserves an unrepresentable native name through deterministic raw

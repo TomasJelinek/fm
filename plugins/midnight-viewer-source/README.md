@@ -51,6 +51,15 @@ Opened; the host then requests its first viewport. All reads use owned SDK
 continuations. Short reads continue until the requested bounded slice or EOF.
 Close discards session state; the host owns closing the content reader lease.
 
+Optional Locate requests never build a whole-file line index. They use the nearest
+exact checkpoint and a cumulative 256 KiB read budget, including boundary lookahead
+and decoder overlap. Each bounded read gather reserves its entire requested range;
+short replies fill the same reserved range. If the target is too distant or the
+budget runs out, the request completes without a TextPosition. The host displays
+unknown coordinates for that page and can retry after navigating elsewhere.
+Returning near an exact checkpoint can recover line/column values. Explicit
+search remains a separate cancellable streaming operation.
+
 UTF-8 and BOM UTF-16 LE/BE, surrogate pairs, malformed units, CR/LF/CRLF and
 control pictures are supported. No terminal escape interpretation occurs.
 Offsets use checked u64 arithmetic. Every displayed scalar boundary has an

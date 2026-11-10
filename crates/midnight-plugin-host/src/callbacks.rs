@@ -266,7 +266,14 @@ unsafe extern "C" fn service(id: u64, request: *const abi::Request) -> abi::Stat
 unsafe extern "C" fn cancelled(id: u64, request: u64) -> u32 {
     u32::from(context(id).is_none_or(|bridge| bridge.shared.cancelled(request)))
 }
-unsafe extern "C" fn notify(_: u64) { /* Dispatcher has a bounded 2 ms poll; never reenter plugin/UI. */
+unsafe extern "C" fn notify(id: u64) {
+    let _ = boundary(|| {
+        let Some(bridge) = context(id) else {
+            return abi::UNKNOWN_HANDLE;
+        };
+        bridge.shared.dispatcher.notify();
+        abi::OK
+    });
 }
 unsafe extern "C" fn retain(id: u64, buffer: u64) -> abi::Status {
     boundary(|| {

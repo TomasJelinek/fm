@@ -1,6 +1,11 @@
 """Regression checks for the documentation inventory, using synthetic Cargo graphs."""
+import csv
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 
@@ -46,6 +51,47 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["targets"], ["Linux", "Windows"])
         self.assertEqual([row["version"] for row in rows], ["1.0.0", "2.0.0"])
+
+    def test_cli_reads_both_darwin_captures_only_for_native_macos(self):
+        temporary = SCRIPT.parent.parent / "_build/tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as directory:
+            captures = Path(directory) / "captures"
+            captures.mkdir()
+            output = Path(directory) / "inventory"
+
+            def capture(scope, target, dependencies):
+                root = package(f"fixture-{scope}", source=None)
+                metadata = graph(root, dependencies, {root["name"]: dependencies})
+                path = captures / f"{scope}-{target}.json"
+                path.write_text(json.dumps(metadata), encoding="utf-8")
+                path.with_suffix(".tree").write_text(
+                    "".join(f'{item["name"]} v{item["version"]}\n'
+                            for item in [root, *dependencies]), encoding="utf-8")
+
+            for scope in self.module.SCOPES:
+                if scope == "native-macos":
+                    continue
+                dependencies = [package("app-only")] if scope == "app" else []
+                for target in ("x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"):
+                    capture(scope, target, dependencies)
+            for target in ("x86_64-apple-darwin", "aarch64-apple-darwin"):
+                capture("native-macos", target, [package("libc", "0.2.191")])
+
+            command = [sys.executable, "-B", str(SCRIPT), "--metadata-dir", str(captures),
+                       "--output-dir", str(output)]
+            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            with (output / "cargo-licenses.csv").open(encoding="utf-8", newline="") as stream:
+                rows = {row["name"]: row for row in csv.DictReader(stream)}
+            self.assertEqual(set(rows), {"app-only", "libc"})
+            self.assertEqual(rows["libc"]["scopes"], "native-macos")
+            self.assertEqual(rows["libc"]["targets"], "macOS arm64; macOS x86-64")
+            self.assertEqual(rows["libc"]["direct_by"], "fixture-native-macos")
+            self.assertEqual(rows["app-only"]["targets"], "Linux; Windows")
+            checked = subprocess.run([*command, "--check"], capture_output=True,
+                                     text=True, check=False)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_cargo_tree_excludes_metadata_feature_union_only_dependencies(self):
         root = package("app", source=None)

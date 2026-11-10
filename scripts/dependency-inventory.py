@@ -24,9 +24,13 @@ SCOPES = {
     "filesystem-api": "filesystem-api/Cargo.toml",
     "native-windows": "plugins/midnight-filesystem-native-windows/Cargo.toml",
     "native-linux": "plugins/midnight-filesystem-native-linux/Cargo.toml",
+    "native-macos": "plugins/midnight-filesystem-native-macos/Cargo.toml",
+    "network": "plugins/midnight-filesystem-network/Cargo.toml",
     "worker-api": "worker-api/Cargo.toml",
     "thumbnail-api": "thumbnail-api/Cargo.toml",
     "image-viewer-api": "image-viewer-api/Cargo.toml",
+    "web-viewer-api": "web-viewer-api/Cargo.toml",
+    "html-viewer": "plugins/midnight-viewer-html/Cargo.toml",
     "image-viewer": "plugins/midnight-viewer-image/Cargo.toml",
     "pdf-viewer": "plugins/midnight-viewer-pdf/Cargo.toml",
     "archive": "plugins/midnight-fs-archive/Cargo.toml",
@@ -34,6 +38,10 @@ SCOPES = {
     "thumbnail-video": "plugins/midnight-thumbnail-video/Cargo.toml",
 }
 TARGETS = {"x86_64-pc-windows-msvc": "Windows", "x86_64-unknown-linux-gnu": "Linux"}
+SCOPE_TARGETS = {
+    "native-macos": {"x86_64-apple-darwin": "macOS x86-64",
+                     "aarch64-apple-darwin": "macOS arm64"},
+}
 
 
 def identity(package):
@@ -122,15 +130,18 @@ def render(rows):
                 f"{len(rows)} third-party package/version/source records; "
                 f'{len({row["name"] for row in rows})} distinct crate names.', "",
                 "Includes normal, build and development/test dependencies selected by Cargo tree",
-                f"for {len(SCOPES)} workspaces on Windows x64 and Linux x86-64. This is a development",
+                f"across {len(SCOPES)} workspaces. Existing workspaces retain Windows x64/Linux x86-64",
+                "captures; only `native-macos` uses macOS x86-64/arm64 captures. This does not",
+                "establish macOS application support or native runtime qualification. This is a development",
                 "inventory, not a claim that every entry is linked into the release executable.",
                 "Unused metadata feature-union/lockfile entries and project-owned crates are excluded.", "",
                 "`app` = application workspace; `api` = public API/SDK and its tools;",
                 "`basic`, `source`, `markdown` = independent viewer plugins;",
                 "`conformance` = independent viewer ABI test fixture;",
-                "`native-windows`, `native-linux` = independent native filesystem plugins;",
-                "`filesystem-api`, `worker-api`, `thumbnail-api`, `image-viewer-api` = public worker protocols/SDK;",
-                "`archive`, `thumbnail-image`, `thumbnail-video`, `image-viewer` = independent filesystem/media plugins.", "",
+                "`native-windows`, `native-linux`, `native-macos` = independent native filesystem plugins;",
+                "`network` = independent Windows/Linux Network Neighborhood filesystem plugin;",
+                "`filesystem-api`, `worker-api`, `thumbnail-api`, `image-viewer-api`, `web-viewer-api` = public protocols/SDK;",
+                "`archive`, `thumbnail-image`, `thumbnail-video`, `image-viewer`, `html-viewer` = independent filesystem/media plugins.", "",
                 "Licenses are exact upstream Cargo declarations, not automatic legal approval.",
                 "`OR` gives alternatives; `AND` requires combined terms. Legacy slash syntax is",
                 "retained verbatim. See [policy](../DEPENDENCY_POLICY.md) and",
@@ -139,10 +150,11 @@ def render(rows):
                 "These links identify the maintained manifests/locks. Captures must be refreshed",
                 "after dependency or feature changes; `--check` compares tables with supplied",
                 "captures and does not prove that old captures match today's source files.", "",
-                "| Manifest | Lockfile |", "| --- | --- |"]
-    for manifest in SCOPES.values():
+                "| Manifest | Lockfile | Captured targets |", "| --- | --- | --- |"]
+    for scope, manifest in SCOPES.items():
         lock = Path(manifest).with_name("Cargo.lock").as_posix()
-        preamble.append(f"| [{manifest}](../../{manifest}) | [{lock}](../../{lock}) |")
+        targets = ", ".join(SCOPE_TARGETS.get(scope, TARGETS).values())
+        preamble.append(f"| [{manifest}](../../{manifest}) | [{lock}](../../{lock}) | {targets} |")
     preamble += ["", "## Complete list", "",
                  "| Library | Version | Declared license | Workspaces | Targets | Direct |",
                  "| --- | --- | --- | --- | --- | --- |"]
@@ -186,7 +198,7 @@ def main():
     release = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(release)
     for scope in SCOPES:
-        for triple, target in TARGETS.items():
+        for triple, target in SCOPE_TARGETS.get(scope, TARGETS).items():
             path = args.metadata_dir / f"{scope}-{triple}.json"
             captures[scope, target] = json.loads(path.read_text(encoding="utf-8-sig"))
             tree = path.with_suffix(".tree").read_text(encoding="utf-8-sig")

@@ -1,6 +1,29 @@
 use super::*;
 use std::cell::RefCell;
 
+#[test]
+fn clearing_filter_preserves_expression_and_rejects_pending_validation() {
+    let mut p = presenter();
+    p.preferences.values.panel_filters[0] = PanelFilter {
+        enabled: true,
+        expression: "*.rs".into(),
+        ..Default::default()
+    };
+    p.open_panel_filter(PaneId::Left);
+    let request = submit(&mut p, "kind = file");
+    p.clear_panel_filter(PaneId::Left, &|_| true);
+    assert!(!p.filter_dialog.open);
+    assert!(!p.preferences.values.panel_filters[0].enabled);
+    assert_eq!(p.preferences.values.panel_filters[0].expression, "*.rs");
+    p.apply(Event::PanelFilterValidated {
+        request,
+        result: Ok(()),
+        diagnostic: None,
+    });
+    p.flush_filters(&|_| panic!("cleared filter must not be restored"));
+    assert!(!p.preferences.values.panel_filters[0].enabled);
+}
+
 fn presenter() -> Presenter {
     let root = std::env::temp_dir().join("metadata filter 文档");
     let mut p = Presenter::new(root.clone(), root);

@@ -4,6 +4,10 @@ This supplements the [design](../superpowers/specs/2026-11-06-file-drag-drop-des
 and [security contract](../../SECURITY.md#file-drag-and-drop). Native protocol tests
 are distinct from UI gesture tests and from verified-copy integrity tests.
 
+The 2026-11-06 results below describe the original Copy-only transport. Current
+folder targets and Windows outgoing Move evidence are recorded in the
+[2026-11-10 qualification](#2026-11-10-folder-targets-and-windows-shell-move).
+
 ## Reproducing native Linux checks
 
 Install the README build prerequisites plus `xvfb` and `xauth`. Run from the repo
@@ -112,6 +116,77 @@ Logs include `_build/qa/clean-rebuild/windows-final-ui-tests.log` and
 
 The fresh release build, graphics backend diagnosis and startup memory observation
 are recorded in [the rebuild checkpoint](2026-11-06-themes-and-commander-tools.md#clean-release-and-requirements-checkpoint).
-Native Wayland external transport, legacy X11 clients without proxy support,
-Move/Link operations and another application's copy integrity are outside the
-implemented transport contract; internal panel copying remains available.
+At that historical checkpoint, native Wayland external transport, legacy X11
+clients without proxy support, Move/Link operations and another application's
+copy integrity were outside the implemented transport contract.
+
+## 2026-11-10 folder targets and Windows Shell Move
+
+Backend/native and integrated component qualification is complete for this slice.
+The final Windows debug application was built, deployed and passed native startup/
+UI smoke tests; [the artifact record](2026-11-10-staging-cleanup.md#debug-executable-and-startup)
+contains its exact hash and installation paths. This does not replace the separate
+final-app-to-Explorer physical-input qualification described below.
+
+Twelve integrated drag tests passed across `drag_drop`, `drag_integration` and
+`drag_ordering`, including exact folder targets in all panel layouts, stale
+capture/completion handling and a stationary pointer after scrolling. The same
+run passed nine Copy-error, nine transactional Options and three Jobs integration
+tests (33 total). The final UI library gate passed 786 tests. These component and
+backend checks do not claim an unperformed end-to-end desktop gesture.
+
+Windows outgoing offers now permit Copy|Move. Actual Shell `IDropTarget` tests
+passed two opt-in cases containing four real transfers, each with a Unicode file
+and a nested directory:
+
+- Same actual volume: default Move and Ctrl-Copy.
+- Distinct D: and C: volumes: default Copy and Shift-Move.
+
+Every transfer checks destination payloads and source removal/preservation.
+Fixtures are uniquely owned temporary directories; the C: fixture is removed
+after the test. No existing user files or clipboard contents are used. The Shell
+target, rather than this application, performs external moves. On this Windows
+build, optimized Move returned `DROPEFFECT_NONE` with performed/logical Move
+feedback; Copy returned Copy for all three values. Completion handling must not
+interpret the returned effect alone as proof of filesystem state.
+
+Three ordinary feedback tests pass: bounded DWORD round-trip and invalid-value
+refusal, `STGMEDIUM` ownership for successful/failed `SetData`, and retained source
+bytes after unoptimized Move feedback. A generic target that requests source
+deletion receives `SourceRetained`; absent/inconsistent completion is
+`Unconfirmed`. Positive results are receiver reports, not independently verified
+external operations. Feedback handling performs no source deletion.
+
+The real input-thread to backend-STA test also passes success/cancel/success. It
+uses physical input limited to owned windows, restores cursor/foreground state,
+and observes production `QueryContinueDrag` state without manufacturing a held
+button. The original failure produced no continuation callbacks; scoped input
+queue attachment fixes this boundary. This is separate from an end-to-end drag
+from the final Slint application into a running Explorer window, which remains
+part of pending integration qualification.
+
+Final Windows platform library: **162 passed, 11 opt-in tests ignored**.
+The two Shell cases and one real handoff case were then explicitly run and passed.
+Strict `midnight-platform-windows --all-targets` Clippy with `-D warnings` passed.
+The metadata-only device-hint regression also passes: it observes actual volume
+identity without acquiring Delete/content-read authority, even while a no-delete
+sharing pin refuses ordinary Move preparation.
+
+Evidence under `_build/qa/native-drag/`: `outgoing-red.log`, `shell-red.log`,
+`device-red.log`, `outgoing-green.log`, `platform-green.log`,
+`shell-final-green.log`, `handoff-final-green.log`, and `clippy-final.log`.
+The initial device fixture's metadata-only sharing assumption was corrected
+before its behavioral RED; the final RED is missing device identity, not a
+fixture assertion failure.
+
+Internal drops use backend volume evidence: same-volume Move, otherwise Copy,
+with unknown/mixed volumes conservatively Copy; Ctrl/Shift force Copy/Move.
+Same-volume native rename reads no content or hashes. Copied data uses full
+SHA-256 by default or explicitly selected size plus first/middle/last 64 KiB
+samples (whole files up to 192 KiB). Native incoming transport remains Copy-only
+on both platforms. Linux outgoing X11/XWayland remains Copy-only; external native
+Wayland and Link remain unsupported. No dependency or hash algorithm was added.
+
+Protocol references: [Shell optimized moves](https://learn.microsoft.com/en-us/windows/win32/shell/datascenarios#handling-optimized-move-operations),
+[logical performed effect](https://learn.microsoft.com/en-us/windows/win32/shell/clipboard#cfstr_logicalperformeddropeffect),
+and [`IDataObject::SetData` ownership](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-idataobject-setdata).

@@ -1,6 +1,189 @@
 use midnight_core::*;
 
 #[test]
+fn selection_shortcuts_distinguish_top_level_all_and_two_inversion_scopes() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    for context in [ShortcutContext::Files, ShortcutContext::Search] {
+        for (key, expected) in [
+            ("Ctrl+A", "selection.all"),
+            ("Ctrl+Shift+A", "selection.all"),
+            ("Ctrl+I", "selection.invert"),
+            ("Ctrl+Shift+I", "selection.invert-all"),
+        ] {
+            assert_eq!(
+                action(&map, key, context).as_deref(),
+                Some(expected),
+                "{key}"
+            );
+        }
+    }
+    assert!(map.bindings("selection.files").unwrap().is_empty());
+    for context in [
+        ShortcutContext::Command,
+        ShortcutContext::Other,
+        ShortcutContext::Viewer,
+    ] {
+        assert_eq!(action(&map, "Ctrl+Shift+A", context), None);
+        assert_eq!(action(&map, "Ctrl+Shift+I", context), None);
+    }
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "selection.files".into(),
+        keys: vec!["Ctrl+Shift+J".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&map, "Ctrl+Shift+A", ShortcutContext::Files).as_deref(),
+        Some("selection.all")
+    );
+    assert_eq!(
+        action(&map, "Ctrl+Shift+J", ShortcutContext::Files).as_deref(),
+        Some("selection.files")
+    );
+    let legacy = ShortcutMap::new(&[ShortcutBinding {
+        action: "files.rename".into(),
+        keys: vec!["Ctrl+Shift+A".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&legacy, "Ctrl+Shift+A", ShortcutContext::Files).as_deref(),
+        Some("files.rename")
+    );
+}
+
+#[test]
+fn selection_new_default_aliases_preserve_explicit_assignments_and_hints() {
+    let bindings = [
+        ShortcutBinding {
+            action: "selection.files".into(),
+            keys: vec!["Ctrl+Shift+A".into()],
+        },
+        ShortcutBinding {
+            action: "files.rename".into(),
+            keys: vec!["Ctrl+Shift+I".into()],
+        },
+    ];
+    let map = ShortcutMap::new(&bindings).unwrap();
+    assert_eq!(
+        action(&map, "Ctrl+Shift+A", ShortcutContext::Files).as_deref(),
+        Some("selection.files")
+    );
+    assert_eq!(
+        action(&map, "Ctrl+Shift+I", ShortcutContext::Files).as_deref(),
+        Some("files.rename")
+    );
+    assert_eq!(
+        map.bindings("selection.all")
+            .unwrap()
+            .iter()
+            .map(ShortcutChord::display)
+            .collect::<Vec<_>>(),
+        ["Ctrl+A"]
+    );
+    assert!(map.bindings("selection.invert-all").unwrap().is_empty());
+    assert!(
+        ShortcutMap::new(&[
+            bindings[0].clone(),
+            ShortcutBinding {
+                action: "files.rename".into(),
+                keys: vec!["Ctrl+Shift+A".into()]
+            },
+        ])
+        .is_err(),
+        "two explicit assignments must still conflict"
+    );
+}
+
+#[test]
+fn comparison_navigation_defaults_are_configurable_and_leave_editors_and_search_alone() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    for (chord, expected) in [
+        ("Alt+Down", "compare.next-difference"),
+        ("Alt+Right", "compare.next-difference"),
+        ("N", "compare.next-difference"),
+        ("F7", "compare.next-difference"),
+        ("Alt+Up", "compare.previous-difference"),
+        ("Alt+Left", "compare.previous-difference"),
+        ("P", "compare.previous-difference"),
+        ("Shift+F7", "compare.previous-difference"),
+        ("Alt+Home", "compare.first-difference"),
+        ("Alt+End", "compare.last-difference"),
+    ] {
+        assert_eq!(
+            action(&map, chord, ShortcutContext::Viewer).as_deref(),
+            Some(expected)
+        );
+        assert_eq!(action(&map, chord, ShortcutContext::ViewerSearch), None);
+    }
+    assert_eq!(
+        action(&map, "F3", ShortcutContext::Viewer).as_deref(),
+        Some("viewer.find-next")
+    );
+    assert_eq!(
+        action(&map, "Down", ShortcutContext::Viewer).as_deref(),
+        Some("viewer.down")
+    );
+    let map = ShortcutMap::new(&[
+        ShortcutBinding {
+            action: "compare.next-difference".into(),
+            keys: vec!["Ctrl+J".into()],
+        },
+        ShortcutBinding {
+            action: "compare.first-difference".into(),
+            keys: vec![],
+        },
+    ])
+    .unwrap();
+    for chord in ["F7", "Alt+Down", "Alt+Right", "N", "Alt+Home"] {
+        assert_eq!(action(&map, chord, ShortcutContext::Viewer), None);
+    }
+    assert_eq!(
+        action(&map, "Ctrl+J", ShortcutContext::Viewer).as_deref(),
+        Some("compare.next-difference")
+    );
+}
+
+#[test]
+fn control_f_finds_files_or_viewer_content_in_the_appropriate_context() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    for context in [ShortcutContext::Files, ShortcutContext::Search] {
+        assert_eq!(
+            action(&map, "Ctrl+F", context).as_deref(),
+            Some("files.find")
+        );
+        assert_eq!(
+            action(&map, "Alt+F7", context).as_deref(),
+            Some("files.find")
+        );
+    }
+    assert_eq!(
+        action(&map, "Ctrl+F", ShortcutContext::Viewer).as_deref(),
+        Some("viewer.find")
+    );
+    assert_eq!(action(&map, "Ctrl+F", ShortcutContext::Command), None);
+    assert_eq!(action(&map, "Ctrl+F", ShortcutContext::Other), None);
+
+    let reassigned = ShortcutMap::new(&[ShortcutBinding {
+        action: "files.rename".into(),
+        keys: vec!["Ctrl+F".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        action(&reassigned, "Ctrl+F", ShortcutContext::Files).as_deref(),
+        Some("files.rename")
+    );
+    assert_eq!(
+        action(&reassigned, "Ctrl+F", ShortcutContext::Viewer).as_deref(),
+        Some("viewer.find")
+    );
+    let disabled = ShortcutMap::new(&[ShortcutBinding {
+        action: "files.find".into(),
+        keys: vec![],
+    }])
+    .unwrap();
+    assert_eq!(action(&disabled, "Ctrl+F", ShortcutContext::Files), None);
+}
+
+#[test]
 fn bare_hot_path_digits_are_configurable_and_never_steal_editor_text() {
     let map = ShortcutMap::new(&[]).unwrap();
     for (key, id) in [("1", "bookmark.open.1"), ("0", "bookmark.open.10")] {
@@ -622,5 +805,25 @@ fn reassigned_file_actions_preserve_clipboard_keys_in_filename_search() {
     assert_eq!(
         action(&map, "Shift+Delete", ShortcutContext::Search),
         Some("files.delete".into())
+    );
+}
+#[test]
+fn make_file_list_uses_configurable_control_m_without_stealing_editor_input() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    assert_eq!(
+        action(&map, "Ctrl+M", ShortcutContext::Files).as_deref(),
+        Some("files.make-list")
+    );
+    assert_eq!(action(&map, "Ctrl+M", ShortcutContext::Command), None);
+    assert_eq!(action(&map, "Ctrl+M", ShortcutContext::Viewer), None);
+    let custom = ShortcutMap::new(&[ShortcutBinding {
+        action: "files.make-list".into(),
+        keys: vec!["Ctrl+Shift+M".into()],
+    }])
+    .unwrap();
+    assert_eq!(action(&custom, "Ctrl+M", ShortcutContext::Files), None);
+    assert_eq!(
+        action(&custom, "Ctrl+Shift+M", ShortcutContext::Files).as_deref(),
+        Some("files.make-list")
     );
 }

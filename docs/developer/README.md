@@ -22,6 +22,17 @@ restricted processes. See the [filesystem API](FILESYSTEM_API.md) and
 [worker/thumbnail SDK](WORKER_SDK.md) and [image viewer API](IMAGE_VIEWER_API.md);
 they do not change the released viewer ABI.
 
+The [interactive web viewer API](WEB_VIEWER_API.md) is a separate bounded process
+contract for the optional Chromium HTML provider. It carries owned frames and
+input, with captured resource capabilities and explicit document permissions.
+It neither extends the semantic C ABI nor weakens the image decoder sandbox.
+
+The internal [viewer scrolling contract](VIEWER_SCROLLING.md) describes immediate
+pointer feedback, bounded position queues, content acknowledgements and native
+latency measurement. These UI/engine messages are not part of the plugin ABI.
+The [file comparison contract](FILE_COMPARISON.md) describes automatic panel
+pairing, manual File A / File B choice, native picking and cancellation.
+
 Application contributors working on copy and archive extraction should also read
 the internal [native transfer contract](TRANSFERS.md). Its Rust capabilities are
 not part of the external plugin ABI.
@@ -31,11 +42,17 @@ The [filesystem migration map](FILESYSTEM_MIGRATION.md) and
 Browse/Read adapters and remaining native-plugin cutover. Internal Rust traits
 are not an alternative public plugin dependency.
 
+The [Network Neighborhood contract](NETWORK_FILESYSTEM.md) describes the independent
+Windows/Linux discovery plugin, explicit share activation, opaque saved tabs,
+bounded background enumeration and the separate later macOS adapter.
+
 The internal [recursive Find contract](FIND.md) documents bounded sessions,
 native content traversal, modeless UI ownership and safe result navigation.
 The [checksum contract](CHECKSUMS.md) describes captured calculation, results,
 export and cancellation. [Panel selection](SELECTION.md) documents immutable
 selection provenance and rectangle input across native and archive views.
+The [Make File List service](MAKE_FILE_LIST.md) exports immutable listing metadata,
+uses verified output staging and passes private generated content to the viewer.
 The [Custom Commands contract](USER_COMMANDS.md) covers native argv/templates,
 captured configuration, previews, process ownership and cancellation. These
 application services remain separate from independently developed plugin APIs.
@@ -185,8 +202,10 @@ service traits; `midnight-engine` coordinates backend work; `midnight-plugin-hos
 adapts native plugins; `midnight-ui`/`midnight-viewer-ui` render UI; and
 `midnight-platform` selects the Windows/Linux platform implementation. Common
 settings, native path persistence, fonts and local services live in
-`midnight-platform-common`. Local browsing still uses those built-in adapters;
-it has not been converted into the planned dynamic native filesystem provider.
+`midnight-platform-common`. Local panel Browse/Stat/Storage and native F3 capture
+now use `midnight-native-filesystem-host` and independently loaded per-OS native
+libraries. Other explicit native services still use the platform adapters; see
+[native API and remaining migration boundaries](NATIVE_FILESYSTEM_API.md).
 
 These are internal Rust APIs that may change with the application. A public
 viewer must not import them, even when a useful helper appears reusable. Propose

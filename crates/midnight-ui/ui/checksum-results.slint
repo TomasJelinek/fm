@@ -1,46 +1,63 @@
 import { Button, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { PathText } from "path-text.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
 export struct ChecksumDisplayRow {
     token: string, name: string, path: string, status: string, bytes: string,
-    digests: string, sha256: string, sha512: string, md5: string, sha1: string,
-    calculated: bool, error: bool,
+    digests: string, sha256: string, sha512: string, md5: string, sha1: string, crc32: string,
+    calculated: bool, verified: bool, error: bool,
 }
 
 component Columns inherits HorizontalLayout {
     in property <ChecksumDisplayRow> entry;
     in property <[bool]> algorithms;
+    in property <int> output-algorithm;
+    in property <length> hash-width;
     in property <bool> header;
+    in property <bool> compact;
     padding-left: 8px; padding-right: 8px; spacing: 12px;
     VerticalLayout {
-        width: Theme.small-font * 24; spacing: 0px; alignment: center;
+        width: Theme.small-font * 16; spacing: 0px; alignment: center;
         Text { text: root.header ? "File / folder" : root.entry.name;
             color: root.entry.error ? Theme.error-text : Theme.text;
             font-size: Theme.small-font; font-weight: root.header ? 600 : 400; overflow: elide; }
-        if !root.header: Text { text: root.entry.path; color: Theme.secondary-text;
-            font-size: Theme.small-font; overflow: elide; }
+        if !root.header && !root.compact: PathText { text: root.entry.path; foreground: Theme.secondary-text;
+            font-size: Theme.small-font; }
     }
-    Text { text: root.header ? "Bytes read" : root.entry.bytes; width: Theme.small-font * 11;
+    Text { text: root.header ? "Bytes read" : root.entry.bytes; width: Theme.small-font * 8;
         color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
         horizontal-alignment: right; vertical-alignment: center; }
-    for enabled[index] in root.algorithms: Rectangle {
-        visible: enabled;
-        width: enabled ? Theme.small-font * (index == 1 ? 83 : index == 0 ? 43 : index == 2 ? 22 : 27) : 0px;
+    HorizontalLayout {
+        width: Theme.small-font * 11; spacing: 5px; cross-axis-alignment: center;
+        if !root.header && (root.entry.verified || root.entry.error): Image {
+            width: min(16px, Theme.small-font + 4px); height: self.width;
+            source: root.entry.error ? @image-url("icons/close.svg") : @image-url("icons/check.svg");
+            colorize: root.entry.error ? (Theme.light ? #b91c1c : #ff8a8a)
+                : (Theme.light ? #167d3f : #6ee7a1);
+            image-fit: contain;
+            accessible-label: (root.entry.error ? "Failed: " : "Passed: ") + root.entry.name;
+        }
+        Text { text: root.header ? "Status" : root.entry.status;
+            min-width: 0px; horizontal-stretch: 1;
+            color: root.entry.error ? Theme.error-text : Theme.secondary-text;
+            font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
+    }
+    if root.algorithms[root.output-algorithm]: Rectangle {
+        width: root.hash-width;
         Text {
-            text: root.header ? ["SHA-256", "SHA-512", "MD5", "SHA-1"][index]
-                : [root.entry.sha256, root.entry.sha512, root.entry.md5, root.entry.sha1][index];
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            text: root.header ? ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm]
+                : [root.entry.sha256, root.entry.sha512, root.entry.md5, root.entry.sha1, root.entry.crc32][root.output-algorithm];
             color: Theme.text; font-size: Theme.small-font;
             font-family: root.header ? Theme.font-family : "monospace";
             vertical-alignment: center; overflow: elide;
         }
     }
-    Text { text: root.header ? "Status" : root.entry.status; width: Theme.small-font * 22;
-        color: root.entry.error ? Theme.error-text : Theme.secondary-text;
-        font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
 }
 
-// Like Salamander's checksum list: stable filename/size/hash columns with a
-// synchronized header, plus a context menu for each calculated algorithm.
+// Result-first table with the chosen full hash. Other calculated algorithms
+// remain available in the output selector and the captured-row context menu.
 export component ChecksumResults inherits FocusScope {
     in property <length> surface-width;
     in property <length> surface-height;
@@ -48,14 +65,18 @@ export component ChecksumResults inherits FocusScope {
     in property <[bool]> algorithms;
     in property <string> generation-token;
     in property <int> output-algorithm;
-    in property <bool> copy-full-row;
     in-out property <int> selected-row: -1;
     callback copy-result(string, int, bool);
-    private property <length> row-height: Theme.small-font * 2 + 12px;
-    private property <length> table-width: Theme.small-font * (57
-        + (root.algorithms[0] ? 43 : 0) + (root.algorithms[1] ? 83 : 0)
-        + (root.algorithms[2] ? 22 : 0) + (root.algorithms[3] ? 27 : 0))
-        + 16px + (2 + (root.algorithms[0] ? 1 : 0) + (root.algorithms[1] ? 1 : 0) + (root.algorithms[2] ? 1 : 0) + (root.algorithms[3] ? 1 : 0)) * 12px;
+    private property <bool> compact-rows: root.height < Theme.column-height + (Theme.small-font * 2 + 12px) * 2;
+    private property <length> row-height: root.compact-rows ? Theme.small-font + 4px : Theme.small-font * 2 + 12px;
+    // Keep a complete result plus scrollbar available before allocating a header.
+    private property <length> header-height: root.height >= Theme.column-height + root.row-height + FluentScrollMetrics.overlay-size ? Theme.column-height : 0px;
+    hash-metrics := Text { visible: false; text: "00000000"; font-family: "monospace"; font-size: Theme.small-font; }
+    private property <length> hash-width: hash-metrics.preferred-width
+        * (root.output-algorithm == 1 ? 16 : root.output-algorithm == 0 ? 8 : root.output-algorithm == 2 ? 4 : root.output-algorithm == 3 ? 5 : 1) + 8px;
+    private property <length> table-width: Theme.small-font * 35 + 16px + 24px
+        + (root.algorithms[root.output-algorithm] ? root.hash-width + 12px : 0px);
+    changed output-algorithm => { list.content-x = 0px; }
     private property <string> menu-token;
     private property <length> menu-x;
     private property <length> menu-y;
@@ -89,12 +110,14 @@ export component ChecksumResults inherits FocusScope {
         if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
         if event.modifiers.shift && event.text == Key.F10 {
             root.open-menu(root.selected-row, 12px,
-                Theme.column-height + (root.selected-row + 1) * root.row-height + list.content-y);
+                root.header-height + (root.selected-row + 1) * root.row-height + list.content-y);
             return accept;
         }
         if event.modifiers.control && (event.text == "c" || event.text == "C") {
             if root.selected-row >= 0 && root.selected-row < root.rows.length && root.rows[root.selected-row].calculated {
-                root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, root.copy-full-row);
+                if event.modifiers.shift || root.algorithms[root.output-algorithm] {
+                    root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, event.modifiers.shift);
+                }
             }
             return accept;
         }
@@ -102,12 +125,13 @@ export component ChecksumResults inherits FocusScope {
     }
     Rectangle {
         x: 0px; y: 0px; width: parent.width;
-        height: Theme.column-height; clip: true; background: Theme.header;
+        height: root.header-height; visible: root.header-height > 0px; clip: true; background: Theme.header;
         Columns { x: list.content-x; width: list.content-width; height: parent.height;
-            algorithms: root.algorithms; header: true; }
+            algorithms: root.algorithms; output-algorithm: root.output-algorithm;
+            hash-width: root.hash-width; header: true; }
     }
     list := ListView {
-        y: Theme.column-height; width: parent.width; height: max(0px, parent.height - self.y);
+        y: root.header-height; width: parent.width; height: max(0px, parent.height - self.y);
         content-width: max(self.visible-width, root.table-width);
         accessible-role: AccessibleRole.list; accessible-label: "Checksum results";
         accessible-item-count: root.rows.length;
@@ -123,7 +147,8 @@ export component ChecksumResults inherits FocusScope {
             accessible-item-selected: root.selected-row == index;
             accessible-item-index: index;
             accessible-action-default => { root.select-row(index); }
-            Columns { entry: row; algorithms: root.algorithms; }
+            Columns { entry: row; algorithms: root.algorithms;
+                output-algorithm: root.output-algorithm; hash-width: root.hash-width; compact: root.compact-rows; }
             TouchArea {
                 private property <string> pressed-token;
                 pointer-event(event) => {
@@ -143,16 +168,16 @@ export component ChecksumResults inherits FocusScope {
     menu := PopupWindow {
         x: clamp(root.absolute-position.x + root.menu-x, 4px, max(4px, root.surface-width - self.width - 4px)) - root.absolute-position.x;
         y: clamp(root.absolute-position.y + root.menu-y, 4px, max(4px, root.surface-height - self.height - 4px)) - root.absolute-position.y;
-        width: min(240px, root.surface-width - 8px); height: min(root.surface-height - 8px, 5 * Theme.control-height + 20px);
+        width: min(240px, root.surface-width - 8px); height: min(root.surface-height - 8px, 6 * Theme.control-height + 20px);
         close-policy: close-on-click-outside;
         Rectangle {
             background: Theme.surface; border-width: 1px; border-color: Theme.active-frame;
             ListView {
                 x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
                 horizontal-scrollbar-policy: always-off;
-                for label[index] in ["SHA-256", "SHA-512", "MD5", "SHA-1", "full row"]: Button {
-                    text: "Copy " + label; enabled: index == 4 || root.algorithms[index];
-                    clicked => { root.copy-menu(index == 4 ? root.output-algorithm : index, index == 4); }
+                for label[index] in ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32", "full row"]: Button {
+                    text: "Copy " + label; enabled: index == 5 || root.algorithms[index];
+                    clicked => { root.copy-menu(index == 5 ? root.output-algorithm : index, index == 5); }
                 }
             }
         }

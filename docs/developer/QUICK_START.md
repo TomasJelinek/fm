@@ -135,6 +135,7 @@ Linux uses the native executable and `libmy_viewer.so`. A minimal manifest is:
 ```toml
 schema_version = 1
 id = "example.viewer.mine"
+name = "My text viewer"
 kind = "viewer"
 version = "0.1.0"
 entry_library = "my_viewer.dll"
@@ -146,7 +147,7 @@ models = ["text-page.v1"]
 modes = ["text"]
 extensions = ["mytext"]
 priority = 0
-description = "My text format viewer"
+description = "Displays files in my text format."
 ```
 
 Set Linux `target` to `x86_64-unknown-linux-gnu` and `entry_library` to the actual
@@ -161,6 +162,7 @@ and library rather than checking legal completeness.
 | Whole manifest | UTF-8 TOML, at most 64 KiB; discovery inspects at most 256 directory entries under `viewers/` |
 | `schema_version`, `kind` | Exactly `1`, `"viewer"` |
 | `id` | Nonempty, at most 128 bytes; ASCII letters/digits, `.`, `-`, `_` |
+| `name` | Optional short presentation name; at most 128 UTF-8 bytes, nonblank and without control characters |
 | `version` / `description` | Version nonempty and at most 64 bytes; description at most 4096 bytes |
 | `entry_library` | Nonempty basename, at most 255 bytes; no `/`, `\`, `:`, NUL, `.`/`..`, trailing dot or space |
 | `target` | Exact running host target; Windows/Linux x64 are validated platforms |
@@ -176,6 +178,17 @@ defaults. If modes are omitted, text/binary/document modes are derived from the
 models; Source must be declared explicitly. An empty extension list plus Text mode
 declares a generic fallback, so use format-specific extensions for a tutorial or
 specialized plugin. Present unknown required services/models are refused.
+
+`name` is separate from `description`: the Plugins list uses a short title, while
+selected details explain supported formats/profiles. An omitted name keeps older
+manifests valid and receives a readable fallback; descriptions are not promoted to
+titles. The application may append viewer to a publisher title for consistency.
+Neither text field changes descriptor identity, extension matching or priority.
+
+Each viewer directory has exactly one transport manifest: native `plugin.toml`,
+`image-viewer.json` or `web-viewer.json`. The matching host validates that package;
+a web-only package is not a failed native viewer. Mixed transports and malformed
+packages remain diagnostics. Discovery does not load or start their code.
 
 Stop the application before replacing a package, install into its actual
 executable-relative `viewers/` directory and restart. The plugin options dialog

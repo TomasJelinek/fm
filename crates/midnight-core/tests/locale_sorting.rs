@@ -245,3 +245,178 @@ fn generated_key_resource_limit_reports_the_exact_entry_without_truncation() {
     assert_eq!(error.path, original);
     assert_eq!(entries[0].path, original);
 }
+
+fn archive_entry(id: u64, raw_name: &[u8], caption: &str, kind: EntryKind) -> Entry {
+    Entry::from_archive(ArchiveNode {
+        id: VirtualEntryId {
+            mount: 77,
+            entry: id,
+        },
+        parent: 1,
+        raw_name: raw_name.into(),
+        display_name: caption.into(),
+        kind,
+        size: None,
+        modified: None,
+        readable: kind == EntryKind::File,
+    })
+}
+
+fn ids(entries: &[Entry]) -> Vec<u64> {
+    entries.iter().map(|entry| entry.id.0).collect()
+}
+
+#[test]
+fn archive_extension_sort_uses_raw_unicode_names_even_with_duplicate_captions_and_empty_paths() {
+    for prepared in [false, true] {
+        let locale = Weights::new();
+        let mut entries = vec![
+            archive_entry(10, b"z.h", "same.caption", EntryKind::File),
+            archive_entry(20, "東京.ch".as_bytes(), "same.caption", EntryKind::File),
+            archive_entry(30, b"a.i", "same.caption", EntryKind::File),
+            archive_entry(40, b"opaque-\xff.h", "same.caption", EntryKind::File),
+            archive_entry(50, b"missing", "same.caption", EntryKind::File),
+            archive_entry(60, b"folder.i", "same.caption", EntryKind::Directory),
+            archive_entry(70, "m.é".as_bytes(), "same.caption", EntryKind::File),
+        ];
+        if prepared {
+            prepare_sort_keys(&mut entries, &locale, &Cancellation::default()).unwrap();
+        }
+        let calls = locale.calls.load(Ordering::Relaxed);
+        for descending in [false, true] {
+            sort_entries(
+                &mut entries,
+                SortSpec {
+                    column: SortColumn::Type,
+                    descending,
+                },
+            );
+            let expected = match (prepared, descending) {
+                (false, false) => [60, 20, 10, 30, 70, 40, 50],
+                (false, true) => [60, 70, 30, 10, 20, 40, 50],
+                (true, false) => [60, 10, 20, 30, 70, 40, 50],
+                (true, true) => [60, 70, 30, 20, 10, 40, 50],
+            };
+            assert_eq!(
+                ids(&entries),
+                expected,
+                "prepared={prepared}, descending={descending}"
+            );
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| entry.path.as_os_str().is_empty())
+            );
+            let unicode = entries
+                .iter()
+                .find(|entry| entry.id == EntryId(20))
+                .unwrap();
+            assert_eq!(
+                &*unicode.virtual_node.as_ref().unwrap().raw_name,
+                "東京.ch".as_bytes()
+            );
+        }
+        assert_eq!(
+            locale.calls.load(Ordering::Relaxed),
+            calls,
+            "comparators use captured keys only"
+        );
+    }
+}
+
+#[test]
+fn archive_dotfiles_and_trailing_dots_keep_native_extension_ordering_rules() {
+    for descending in [false, true] {
+        let mut entries = [
+            (1, ".hidden"),
+            (2, "noext"),
+            (3, "trailing."),
+            (4, ".hidden.txt"),
+            (5, "many.parts.ch"),
+            (6, "."),
+            (7, ".."),
+            (8, "dot..name"),
+            (9, "東京.é"),
+            (10, "..."),
+        ]
+        .into_iter()
+        .map(|(id, name)| archive_entry(id, name.as_bytes(), name, EntryKind::File))
+        .collect::<Vec<_>>();
+        sort_entries(
+            &mut entries,
+            SortSpec {
+                column: SortColumn::Type,
+                descending,
+            },
+        );
+        assert_eq!(
+            ids(&entries),
+            if descending {
+                [9, 4, 8, 5, 10, 3, 6, 7, 1, 2]
+            } else {
+                [10, 3, 5, 8, 4, 9, 6, 7, 1, 2]
+            }
+        );
+    }
+}
+
+#[test]
+fn archive_equal_extensions_use_captured_name_weights_then_stable_identity_ties() {
+    let locale = Weights::new();
+    for descending in [false, true] {
+        let mut entries = vec![
+            archive_entry(5, b"raw-z.h", "i", EntryKind::File),
+            archive_entry(3, b"raw-a.h", "ch", EntryKind::File),
+            archive_entry(2, b"raw-b.h", "h", EntryKind::File),
+            archive_entry(1, b"raw-c.h", "ch", EntryKind::File),
+        ];
+        prepare_sort_keys(&mut entries, &locale, &Cancellation::default()).unwrap();
+        sort_entries(
+            &mut entries,
+            SortSpec {
+                column: SortColumn::Type,
+                descending,
+            },
+        );
+        assert_eq!(ids(&entries), [2, 1, 3, 5]);
+    }
+}
+
+#[test]
+fn native_raw_extensions_keep_unavailable_locale_keys_last_in_both_directions() {
+    let mut invalid_extension = std::ffi::OsString::from("entry.");
+    invalid_extension.push(native_fixture::invalid_name());
+    let mut invalid_basename = native_fixture::invalid_name();
+    invalid_basename.push(".ch");
+    for descending in [false, true] {
+        let mut entries = vec![
+            Entry::new(
+                EntryId(1),
+                PathBuf::from("root").join(&invalid_extension),
+                EntryKind::File,
+            ),
+            entry(2, "visible.h", EntryKind::File),
+            Entry::new(
+                EntryId(3),
+                PathBuf::from("root").join(&invalid_basename),
+                EntryKind::File,
+            ),
+        ];
+        for entry in &mut entries {
+            entry.display_name = "caption.i".into();
+        }
+        prepare_sort_keys(&mut entries, &Weights::new(), &Cancellation::default()).unwrap();
+        sort_entries(
+            &mut entries,
+            SortSpec {
+                column: SortColumn::Type,
+                descending,
+            },
+        );
+        assert_eq!(
+            ids(&entries),
+            if descending { [3, 2, 1] } else { [2, 3, 1] }
+        );
+        assert_eq!(entries[2].name, invalid_extension);
+    }
+}

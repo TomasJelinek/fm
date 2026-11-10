@@ -5,7 +5,7 @@ use std::io;
 pub(super) fn decode(version: u32, names: Option<Vec<String>>) -> io::Result<ChecksumAlgorithms> {
     match (version, names) {
         (1..=15, None) => Ok(ChecksumAlgorithms::default()),
-        (16.., Some(names)) if (1..=4).contains(&names.len()) => {
+        (16.., Some(names)) if (1..=5).contains(&names.len()) => {
             let mut algorithms = Vec::with_capacity(names.len());
             for name in names {
                 let algorithm = match name.as_str() {
@@ -13,6 +13,7 @@ pub(super) fn decode(version: u32, names: Option<Vec<String>>) -> io::Result<Che
                     "sha1" => ChecksumAlgorithm::Sha1,
                     "sha256" => ChecksumAlgorithm::Sha256,
                     "sha512" => ChecksumAlgorithm::Sha512,
+                    "crc32" => ChecksumAlgorithm::Crc32,
                     _ => return Err(super::invalid("unknown checksum algorithm")),
                 };
                 if algorithms.contains(&algorithm) {
@@ -37,6 +38,7 @@ pub(super) fn encode(algorithms: ChecksumAlgorithms) -> Vec<String> {
                 ChecksumAlgorithm::Sha1 => "sha1",
                 ChecksumAlgorithm::Sha256 => "sha256",
                 ChecksumAlgorithm::Sha512 => "sha512",
+                ChecksumAlgorithm::Crc32 => "crc32",
             }
             .to_owned()
         })

@@ -173,8 +173,8 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     if let Some(rows) = model.as_any().downcast_ref::<Rows>() {
         rows.refresh(p);
     }
-    // Update this after ordinary job rows in the host refresh, using its deferred
-    // show callback so a settings editor can finish closing before Jobs appears.
+    // Only previews requested outside Options reach this deferred Jobs callback.
+    // Settings previews stay with their originating form.
     if let Some(id) = p
         .command_launches
         .preview_ready
@@ -211,10 +211,11 @@ impl Presenter {
                 }
                 Some(ThumbnailTarget {
                     identity: command_icon_identity(&revision, command.id.as_str()),
-                    path: path.clone(),
+                    content: crate::ThumbnailContent::Native(path.clone()),
                     selected: false,
                     hovered: false,
                     confirmed_ssd: false,
+                    edge: 96,
                 })
             })
             .take(MAX_USER_COMMANDS)
@@ -272,12 +273,13 @@ pub(crate) fn job_rows(p: &Presenter) -> Vec<OperationRow> {
                 progress: if job.finished { 1.0 } else { 0.0 },
                 icon: p.desktop.image(&IconKey::action(ActionIcon::Run)),
                 kind: 6,
+                speed_chart: Default::default(),
             }
         })
         .collect()
 }
 
-fn append_preview(detail: &mut String, preview: &UserCommandPreview) {
+pub(crate) fn append_preview(detail: &mut String, preview: &UserCommandPreview) {
     detail.push_str(concat!(
         "\n\nPreview only — no process was started by this request.",
         "\nArguments are separate native values, not a shell command string."
@@ -335,7 +337,7 @@ fn shortened(value: &str) -> std::borrow::Cow<'_, str> {
         value.into()
     } else {
         format!(
-            "{}… [display truncated]",
+            "{}... [display truncated]",
             &value[..value.floor_char_boundary(256)]
         )
         .into()

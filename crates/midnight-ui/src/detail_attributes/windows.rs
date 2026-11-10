@@ -1,5 +1,13 @@
 use midnight_core::EntryMetadata;
 
+/// Presentation of actual backend metadata, independent of names and selection.
+pub(crate) fn dim_icon(metadata: &EntryMetadata) -> bool {
+    const HIDDEN_OR_SYSTEM: u32 = 0x2 | 0x4;
+    metadata
+        .native_attributes
+        .is_some_and(|attributes| attributes & HIDDEN_OR_SYSTEM != 0)
+}
+
 // Conventional attrib letters where available; other flags have distinct letters.
 // The tooltip explains every present flag, including context-dependent Windows bits.
 const FLAGS: &[(u32, char, &str)] = &[

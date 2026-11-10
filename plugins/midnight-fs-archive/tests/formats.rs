@@ -111,13 +111,9 @@ fn sevenzip_solid_members_are_read_once_then_addressed_independently() {
     assert!(Archive::open(Format::SevenZip, bytes[..20].to_vec(), Limits::default()).is_err());
 }
 #[test]
-fn high_expansion_ratio_is_rejected_before_publication() {
+fn high_expansion_ratio_is_supported_without_an_artificial_size_ceiling() {
     let bytes = gzip(&vec![0; 128 * 1024]);
-    assert_eq!(
-        Archive::open(Format::Gzip, bytes, Limits::default())
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::Limit
-    );
+    let mut archive = Archive::open(Format::Gzip, bytes, Limits::default()).unwrap();
+    assert_eq!(archive.list(1, 0).unwrap()[0].size, Some(128 * 1024));
+    assert_eq!(archive.read(2, 128 * 1024 - 1, 1).unwrap().0, [0]);
 }

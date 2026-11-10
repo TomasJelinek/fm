@@ -47,6 +47,7 @@ fn source_requests_and_opaque_directory_members_round_trip() {
         Message::Entries {
             request: 10,
             entries: vec![Node {
+                modified: None,
                 id: 7,
                 parent: 1,
                 name: b"\xff.txt".to_vec(),

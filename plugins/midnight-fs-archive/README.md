@@ -20,25 +20,56 @@ and NUL names are not readable or extractable. Duplicate member names have
 independent opaque IDs. GZIP's untrusted FNAME never controls its synthetic member
 name, which is `content`.
 
+The package advertises `stable_entry_ids = true`: reopening identical source bytes
+with the same format and implementation version assigns the same member IDs.
+Indexing follows archive order; implicit directories are inserted on first encounter,
+and duplicate file names receive distinct IDs. Hash-map iteration never assigns IDs.
+Changes to this indexing contract require a package version change. The host combines
+that version, provider, format, captured container identity/revision and member ID
+before authorizing persistent thumbnail reuse. Older packages without the capability
+remain browsable but do not grant persistent member-preview cache authority.
+
 ZIP and 7z mounting index metadata without decompressing file bodies. ZIP's first
 read decodes and verifies that complete member. A 7z first read decodes only the
 requested compression block, serially, and checks all its member lengths and
 available member/block CRCs before publishing any bytes. Solid-block siblings
-share that verified cache; unrelated blocks remain compressed. Corrupt payloads
+are drained for integrity, while only the requested member is staged; unrelated blocks remain compressed. Corrupt payloads
 can therefore be listed but fail when read, just as with ZIP.
-TAR indexes checked ranges in one immutable backing buffer, without copying file
-payloads. Compressed TAR must still decode and validate its complete outer stream
-to discover all headers; it then uses the same range index. Standalone compressed
-streams retain their fully verified decoded content. Limits: 64 MiB input,
-64 MiB member, 128 MiB decoded aggregate, 100,000 entries, 8 MiB names, expansion
-ratio 200. Declared 7z sizes are checked when mounting, before deferred decoding;
-actual decoded sizes are checked again before cache publication. Exceeding limits
-returns Limit. There is no disk extraction,
-archive writing, password support, RAR codec or nested mounting in this release.
+TAR indexes checked u64 ranges without reading its file payloads. Selected members
+stream directly into private host-owned TEMP files through protocol 2. Compressed
+TAR must decode and validate its complete outer stream into one private scratch
+file to discover headers; member leases reuse checked ranges of that verified file.
+Standalone compressed streams use the same verified scratch storage. No complete
+encoded archive or decoded member is retained in the production worker's RAM.
+
+There are no artificial source, member, aggregate disk or expansion-ratio byte
+ceilings. Available storage and native file-offset ranges limit content length;
+disk-full, short writes and flush failures discard staging and fail the request.
+Metadata remains bounded to 100,000 entries and 8 MiB of names; 7z's raw next-header
+allocation is bounded to 64 MiB. The pinned 7z decoder has no public decoded-header
+allocation hook, so compressed-header allocation remains subject to process memory
+containment. Decoded member lengths and all available checksums must match before
+sealing/publication. There is no archive writing, password support, RAR codec or
+nested mounting in this release.
 XZ dictionaries and Zstandard windows are bounded to 64 MiB; BZIP2 uses its format's
 bounded block sizes. Concatenated stream members are supported. Zstandard frame
 checksums are verified explicitly when present. Checksums never replace the host's
 SHA-256 destination readback when copying out.
+
+The host keeps a bounded count of sealed content leases, revalidates the captured
+source on every read, and releases files on backend cleanup. The decoder receives
+only session IDs and bounded byte messages, never TEMP paths or native handles.
+Cancellation ends the worker and rolls back unpublished storage. A 20-second idle
+watchdog is renewed by completed bounded I/O and actual decoded-byte progress;
+archive decoding opts out of an aggregate CPU deadline. A blocked OS I/O call can
+delay its owning backend's cleanup until that call returns.
+
+Thumbnail viewport cancellation does not cancel an admitted read on this shared
+browsing mount. A ZIP member or solid 7z block may finish complete staging and CRC
+verification after the thumbnail decoder's ten-second timeout or cancellation.
+The thumbnail worker retains its slot until that read drains, suppresses stale
+publication, and leaves the mount available for navigation. Progress can renew the
+idle watchdog; it is not a hard twenty-second completion deadline.
 
 Build and test using `scripts/build.ps1` or `scripts/build.sh`, with Cargo/Rust and
 Python 3 on PATH, providing an offline

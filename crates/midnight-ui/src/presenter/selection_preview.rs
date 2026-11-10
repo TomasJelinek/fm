@@ -34,7 +34,11 @@ impl PendingSelection {
         } else {
             None
         };
-        let view = (!matches!(action, SelectionAction::Toggle(_))).then(|| ViewKey::of(pane));
+        let view = (!matches!(
+            action,
+            SelectionAction::Toggle(_) | SelectionAction::Remove(_)
+        ))
+        .then(|| ViewKey::of(pane));
         Self {
             revision,
             action,
@@ -68,13 +72,16 @@ impl Pane {
     }
     /// Constant directory work: a single path lookup and at most 32 tiny intents.
     pub(crate) fn selection_visible(&self, entry: &Entry) -> bool {
+        if let Some(selected) = self.tree_selection_visible(entry) {
+            return selected;
+        }
         // A deferred All/Invert result records explicit exceptions in its basis.
         // Paths absent from that basis use the worker's acknowledged default until
         // the complete-view rebase arrives, including rows appended meanwhile.
         let mut selected = self.archive.as_ref().map_or_else(
             || {
                 self.selected.contains_path(&entry.path)
-                    || (self.selection_deferred
+                    || (self.selection_deferred.selects(entry.kind)
                         && !self.selected.basis().by_path.contains_key(&entry.path))
             },
             |archive| archive.selected.contains(&entry.id),
@@ -85,12 +92,12 @@ impl Pane {
             }
             match &pending.action {
                 SelectionAction::Toggle(path) if *path == entry.path => selected = !selected,
+                SelectionAction::Remove(paths) if paths.contains(&entry.path) => selected = false,
                 SelectionAction::Bulk(operation) => {
-                    selected = match operation {
-                        SelectionOperation::All => true,
-                        SelectionOperation::Clear => false,
-                        SelectionOperation::Invert => !selected,
-                    }
+                    selected = operation.selects(
+                        matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink),
+                        selected,
+                    );
                 }
                 SelectionAction::Range { additive, .. } => {
                     let position = if self.showing_stream() {
@@ -130,6 +137,14 @@ impl Presenter {
         shift: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.select_tree_row(pane, row, control, shift, send);
+            return;
+        }
+        if self.panes[pane.index()].network.is_some() {
+            self.focus_display_row(pane, row);
+            return;
+        }
         if self.panes[pane.index()].archive.is_some() {
             self.archive_select_row(pane, row, control, shift, send);
             return;

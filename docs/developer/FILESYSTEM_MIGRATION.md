@@ -1,35 +1,49 @@
 # Filesystem migration inventory
 
-## Native application cutover, 2026-11-09
-
-Production composition now supplies `InstalledProvider` for panel browsing,
-metadata, folder-size traversal and storage queries. Native viewer, comparison,
-thumbnail and archive-container reads share injected provider capture; missing
-providers fail without a built-in content fallback. Archive restore validates
-the saved source revision through that same authority. Existing desktop, watch,
-mutation, transfer and other explicit platform services remain separate.
-
-The public API/SDK and independent native packages are already committed. The
-application candidate preserves those interfaces and the existing archive worker
-protocol. See [scope and verification status](../verification/2026-11-09-native-application-cutover.md).
-This is not completion of generic provider actions, inline trees, nested archives
-or the full VFS migration. The following dated inventory records the earlier
-composition and the remaining migration boundaries.
-
-## Original M0 source inventory
-
-Read-only M0 source review, 2026-11-07. This records the production composition
+Historical read-only M0 source review, 2026-11-07. This records the production composition
 before the internal M1 registry is connected. Concurrent new `vfs_*` and
 `engine/providers/` modules do not by themselves change that composition. No
 Cargo, application launch, filesystem mutation, network discovery or performance
 measurement was run for this inventory.
+
+The 8 November cutover supersedes the Browse/Stat/Storage and native F3 rows:
+production composition now injects `midnight-native-filesystem-host::InstalledProvider`
+and its captured-content callback. These routes require the independent native
+Windows/Linux package; they do not fall back to built-in file access. Rich volume
+details and conservative SSD hints use optional public ABI1.1 capabilities. See
+[the native API](NATIVE_FILESYSTEM_API.md) and
+[cutover plan](../superpowers/plans/2026-11-08-native-filesystem-host.md).
+The native comparison and thumbnail capture routes now also use that same
+InstalledProvider through `midnight-explorer/src/native_content.rs`. Both comparator
+inputs, including manually chosen paths, and image/video/custom-icon thumbnail
+sources are captured on backend workers; injected-provider failure never falls
+back to a direct native opener. Thumbnail cancellation reaches provider capture
+and is checked before returning cached frames. The bounded native reader cache is
+shared with F3. See [media capture evidence](../verification/2026-11-08-native-media-capture.md).
+The other consumer rows remain migration work, including watches, mutations,
+transfers, Find and generic provider identities. The
+historical comparison/thumbnail rows below describe the superseded M0 composition.
+
+The 9 November archive-container composition now uses an explicit `ArchiveCapture`
+callback for both new mounts and saved-tab restoration. The host's `open_captured`
+keeps the original native locator separate from its pathless content lease; only
+the lease authorizes reads. The standalone `Mount::open` remains for embedding and
+probes, but production Engine navigation has no direct opener or missing-provider
+fallback. Native-host `capture_matching` accepts complete matching v1 metadata
+under the current or supported legacy platform prefix. Successful restoration
+stores the current token; changed, malformed, foreign or unknown tokens fail closed.
+Windows and Linux implementations remain separate. Mount/read/source budgets are
+unchanged. See [implementation and qualification plan](../superpowers/plans/2026-11-09-archive-native-capture.md).
+This implements native archive-container capture, not nested-archive or generic
+remote mount capability. Deployment awaits qualification of the capture-cache
+overhead found by the production-route performance probe.
 
 The migration sequence is in
 [`_build/goal/vfs/integration-plan.md`](../../_build/goal/vfs/integration-plan.md).
 The durable delivery boundaries are [VFS-01, TREE-01 and NET-01](../IMPLEMENTATION_BACKLOG.md).
 [SECURITY.md](../../SECURITY.md) remains the operation contract.
 
-## Current authority and dependency map
+## Historical M0 authority and dependency map
 
 [`midnight-explorer/src/main.rs`](../../crates/midnight-explorer/src/main.rs)
 constructs one `LocalFileSystem`. The
@@ -73,7 +87,7 @@ operations. Their existence does not justify a hidden host-native fallback for
 provider-owned user files. Conversely, native migration should not break Options
 or plugin discovery when the native filesystem package is missing.
 
-## Archive support is implemented; generic native plugins are not
+## Historical M0 archive and native API boundary
 
 The public [`filesystem-api/PROTOCOL.md`](../../filesystem-api/PROTOCOL.md) defines
 the working read-only archive worker protocol: Open with an advertised format and
@@ -97,6 +111,12 @@ field on `Entry` provides generic Resolve/Stat/Watch/native actions/mutations.
 Existing viewers and archive workers must remain compatible while a new public
 filesystem service family, SDK, headers and independent conformance package are
 introduced.
+
+The native Browse/Read API, SDK, header and per-OS packages now exist separately
+under `filesystem-api/` and `plugins/midnight-filesystem-native-*`; they do not
+repurpose the viewer kind constant. Their production cutover is described at the
+top of this historical inventory. Generic provider mutation/watch and all-consumer
+identity migration remain outstanding.
 
 ## Invariants and contracts still required
 

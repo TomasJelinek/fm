@@ -14,16 +14,6 @@ pub(crate) fn viewport(position: f64, length: u64) -> (u64, bool) {
     }
 }
 
-pub(crate) fn page_direction(origin: f32, delta: f32, maximum: f32) -> i8 {
-    if delta > 0.0 && origin >= maximum {
-        1
-    } else if delta < 0.0 && origin <= 0.0 {
-        -1
-    } else {
-        0
-    }
-}
-
 /// Provisional byte-based extent until a complete file line index exists.
 pub(crate) fn scroll_metrics(
     start: u64,
@@ -85,13 +75,5 @@ mod tests {
         let (position, extent) = scroll_metrics(0, 1000, 2000, 2000.0, 200.0, 200.0);
         assert!(position > 0.0);
         assert_eq!(extent, 0.05);
-    }
-
-    #[test]
-    fn page_crossing_requires_reaching_the_edge_before_the_gesture() {
-        assert_eq!(page_direction(600.0, 300.0, 700.0), 0);
-        assert_eq!(page_direction(700.0, 300.0, 700.0), 1);
-        assert_eq!(page_direction(100.0, -300.0, 700.0), 0);
-        assert_eq!(page_direction(0.0, -300.0, 700.0), -1);
     }
 }

@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -5,12 +8,105 @@ mod ui;
 
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
-use slint::{ComponentHandle, platform::Key};
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
     sync::Arc,
 };
+
+type NativeWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
+
+fn multi_window_ui() -> (ui::TestUi, NativeWindows) {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = midnight_ui::MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    midnight_ui::install_file_keys(&window);
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let native = windows.borrow()[0].clone();
+    let mut test = ui::TestUi {
+        window,
+        native,
+        pixels: Vec::new(),
+        width: 1340,
+        height: 820,
+    };
+    test.resize(1340, 820);
+    (test, windows)
+}
+
+fn dismiss_native_notice(windows: &NativeWindows) {
+    let child = windows.borrow().last().unwrap().clone();
+    assert!(child.window().is_visible());
+    child.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    child.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert!(!child.window().is_visible());
+}
+
+#[test]
+fn copy_confirmation_shows_the_complete_source_above_the_destination() {
+    use i_slint_core::items::AccessibleRole;
+    let mut test = ui::TestUi::new();
+    let body = "checksums.sha256\n\nFrom\nD:\\downloads\\119115";
+    test.window.set_copy_draft_body(body.into());
+    test.window.set_copy_draft_destination("D:\\temp".into());
+    test.window.set_copy_draft_metadata_enabled(true);
+    for (density, font) in [(0, 13), (1, 15), (0, 22)] {
+        test.window.invoke_apply_preferences(3, density);
+        test.window.invoke_apply_fonts("".into(), font, font);
+        test.window.set_copy_draft_token("layout".into());
+        test.window.invoke_show_copy_draft();
+        test.draw();
+        render::snapshot(&test, &format!("copy-source-{density}-{font}"));
+        let source = ui::root_item(&test.window, body, AccessibleRole::Text);
+        let label = ui::root_item(&test.window, "Destination folder", AccessibleRole::Text);
+        let source_rect = source.geometry();
+        let source_top = source.map_to_native_window(source_rect.origin).y;
+        let label_top = label.map_to_native_window(label.geometry().origin).y;
+        assert!(
+            source_top + source_rect.size.height <= label_top,
+            "Source path is clipped beneath the destination label: bottom={}, label={label_top}, font={font}, density={density}",
+            source_top + source_rect.size.height
+        );
+        let input = ui::root_item(
+            &test.window,
+            "Destination folder",
+            AccessibleRole::TextInput,
+        );
+        assert!(
+            input.geometry().size.height < font as f32 * 3.0,
+            "Destination must stay single-line"
+        );
+        ui::key(&test.window, Key::Escape);
+    }
+    test.window.invoke_apply_preferences(3, 0);
+    test.window.invoke_apply_fonts("".into(), 13, 15);
+    test.resize(320, 200);
+    render::snapshot(&test, "copy-source-compact");
+    for (label, role) in [
+        ("Destination folder", AccessibleRole::TextInput),
+        ("Cancel", AccessibleRole::Button),
+        ("Copy", AccessibleRole::Button),
+    ] {
+        let position = ui::root_position(&test.window, label, role);
+        assert!(
+            (0.0..320.0).contains(&position.x) && (0.0..200.0).contains(&position.y),
+            "{label} must remain reachable in a small window: {position:?}"
+        );
+    }
+    test.window.hide().unwrap();
+}
 
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
@@ -84,6 +180,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
         index: Arc::default(),
     });
     let entries: Arc<[Entry]> = vec![Entry::from_archive(ArchiveNode {
+        modified: None,
         id: VirtualEntryId {
             mount: 42,
             entry: 2,
@@ -103,6 +200,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
             location: ArchiveLocation {
                 mount: Some(Arc::new(NoIoArchive)),
                 address: ArchiveAddress {
+                    format: None,
                     provider: "fake.archive".into(),
                     container: root.join("source.zip"),
                     source_version: vec![1],
@@ -157,7 +255,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
 }
 
 fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
-    let mut ui = ui::TestUi::new();
+    let (mut ui, windows) = multi_window_ui();
     let base = std::env::temp_dir().join("copy dialog 文档");
     let state = Rc::new(RefCell::new(Presenter::new(
         base.clone(),
@@ -214,17 +312,17 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         assert!(
             ui.window
                 .get_copy_draft_body()
-                .starts_with("Up to 64 regular files")
+                .starts_with("Same-volume items are renamed.")
         );
         assert!(
             ui.window
                 .get_copy_draft_body()
-                .contains("before the next file is copied")
+                .contains("verified before each source is removed")
         );
         assert!(
             ui.window
                 .get_copy_draft_body()
-                .contains("Up to 64 regular files")
+                .contains("Verification: full SHA-256.")
         );
     }
     assert!(commands.borrow().is_empty());
@@ -301,10 +399,15 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     accepting.set(false);
     ui::key(&ui.window, Key::Return);
     ui.draw();
-    assert!(ui::has_popup(&ui.window), "admission error notice");
+    assert_eq!(
+        windows.borrow().len(),
+        2,
+        "admission error has a native notice"
+    );
+    assert!(ui.window.get_dialog_input_blocked());
     assert!(!ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
-    ui::key(&ui.window, Key::Escape);
+    dismiss_native_notice(&windows);
     ui.draw();
     assert!(!ui::has_popup(&ui.window));
     // An unrelated asynchronous notice also must not discard the edited target.
@@ -312,7 +415,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui.window
         .set_message_generation(ui.window.get_message_generation() + 1);
     ui.draw();
-    ui::key(&ui.window, Key::Escape);
+    dismiss_native_notice(&windows);
     accepting.set(true);
     ui::key(&ui.window, Key::Return);
     ui.draw();
@@ -329,7 +432,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         assert_eq!(
             request.intent,
             if moving {
-                TransferIntent::RecoverableMove
+                TransferIntent::Move
             } else {
                 TransferIntent::Copy
             }

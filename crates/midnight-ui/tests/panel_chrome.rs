@@ -26,7 +26,7 @@ fn settle(test: &mut ui::TestUi) {
 }
 
 #[test]
-fn toolbar_to_drive_gap_matches_drive_to_path_gap() {
+fn shared_toolbar_precedes_separate_drive_and_path_rows_without_large_gaps() {
     let mut test = ui::TestUi::new();
     for density in [0, 1] {
         for font in [11, 32] {
@@ -35,8 +35,8 @@ fn toolbar_to_drive_gap_matches_drive_to_path_gap() {
             settle(&mut test);
             let (_, top_y, _, top_height) = bounds(&ui::root_item(
                 &test.window,
-                "Left panel sort",
-                AccessibleRole::Combobox,
+                "Checksums",
+                AccessibleRole::Button,
             ));
             let (_, drive_y, _, drive_height) = bounds(&ui::root_item(
                 &test.window,
@@ -46,7 +46,7 @@ fn toolbar_to_drive_gap_matches_drive_to_path_gap() {
             let upper = drive_y - top_y - top_height;
             let lower = test.window.get_left_path_top() - drive_y - drive_height;
             assert!(
-                (upper - lower).abs() <= 0.5 && upper <= 8.5,
+                (0.0..=24.0).contains(&upper) && (0.0..=8.5).contains(&lower),
                 "density={density} font={font}: toolbar→drive={upper}, drive→path={lower}"
             );
         }

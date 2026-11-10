@@ -33,7 +33,9 @@ pub(super) fn folder_size(
         } else {
             2
         };
-        let reason = if value.errors > 0 {
+        let reason = if let Some(report) = &value.warnings {
+            report.summary().tooltip.to_string()
+        } else if value.errors > 0 {
             format!(
                 "partial result: {} errors; the number is not final.",
                 value.errors
@@ -113,7 +115,7 @@ mod tests {
         );
         assert_eq!(
             file_size(1024, SizeDisplay::Readable, &NumberLocale::default()),
-            "1.0 KB"
+            "1.0 KiB"
         );
         assert_eq!(
             file_size(1024, SizeDisplay::Bytes, &NumberLocale::default()),
@@ -163,7 +165,7 @@ mod tests {
             file_size(u64::MAX, SizeDisplay::Bytes, &locale),
             "18\u{a0}446\u{a0}744\u{a0}073\u{a0}709\u{a0}551\u{a0}615"
         );
-        assert_eq!(file_size(1536, SizeDisplay::Readable, &locale), "1,5 KB");
+        assert_eq!(file_size(1536, SizeDisplay::Readable, &locale), "1,5 KiB");
         let partial = FolderSize {
             bytes: 12345,
             ..Default::default()

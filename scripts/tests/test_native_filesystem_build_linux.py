@@ -10,6 +10,8 @@ import unittest
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux native publication")
 class NativeFilesystemBuildLinux(unittest.TestCase):
+    provider = "native"
+
     def setUp(self):
         repository = Path(__file__).resolve().parents[2]
         temporary = repository / "_build/tmp"
@@ -18,20 +20,26 @@ class NativeFilesystemBuildLinux(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "scripts").mkdir()
-        self.script = self.root / "scripts/build-native-filesystem.sh"
-        shutil.copyfile(repository / "scripts/build-native-filesystem.sh", self.script)
-        self.plugin = self.root / "plugins/midnight-filesystem-native-linux"
+        helper = f"build-{self.provider}-filesystem.sh"
+        self.script = self.root / "scripts" / helper
+        shutil.copyfile(repository / "scripts" / helper, self.script)
+        shutil.copyfile(repository / "scripts/build-filesystem-package.sh",
+                        self.root / "scripts/build-filesystem-package.sh")
+        suffix = "-linux" if self.provider == "native" else ""
+        self.plugin = self.root / f"plugins/midnight-filesystem-{self.provider}{suffix}"
         self.plugin.mkdir(parents=True)
-        for name in ("plugin.toml", "README.md", "THIRD-PARTY.md"):
-            (self.plugin / name).write_text("new " + name)
-        self.build = self.root / "_build/native-filesystems/linux"
+        self.manifest = "plugin.toml" if self.provider == "native" else "plugin.linux.toml"
+        for name in (self.manifest, "README.md", "THIRD-PARTY.md"):
+            (self.plugin / name).write_text("new " + ("plugin.toml" if name == self.manifest else name))
+        self.build = self.root / f"_build/{self.provider}-filesystems/linux"
+        library = f"libmidnight_filesystem_{self.provider}{suffix.replace('-', '_')}.so"
         for profile in ("debug", "release"):
             (self.build / profile).mkdir(parents=True)
-            (self.build / profile / "libmidnight_filesystem_native_linux.so").write_bytes(b"new library bytes")
+            (self.build / profile / library).write_bytes(b"new library bytes")
         self.application = self.root / "application"
-        self.package = self.application / "filesystems/native.linux"
+        self.package = self.application / f"filesystems/{self.provider}.linux"
         self.package.mkdir(parents=True)
-        self.library = self.package / "libmidnight_filesystem_native_linux.so"
+        self.library = self.package / library
         self.library.write_bytes(b"original mapped library")
         for name in ("plugin.toml", "README.md", "THIRD-PARTY.md"):
             (self.package / name).write_text("old " + name)
@@ -46,8 +54,9 @@ class NativeFilesystemBuildLinux(unittest.TestCase):
         self.log = self.root / "cargo-arguments"
         self.environment = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                                 NATIVE_TEST_LOG=str(self.log), NATIVE_TEST_EXIT="0")
-        for name in ("CARGO_TARGET_DIR", "MIDNIGHT_NATIVE_FILESYSTEM_BUILD_ROOT",
-                     "MIDNIGHT_TEST_NATIVE_FILESYSTEM", "MIDNIGHT_NATIVE_FILESYSTEM_OFFLINE"):
+        for name in ("CARGO_TARGET_DIR", f"MIDNIGHT_{self.provider.upper()}_FILESYSTEM_BUILD_ROOT",
+                     f"MIDNIGHT_TEST_{self.provider.upper()}_FILESYSTEM",
+                     f"MIDNIGHT_{self.provider.upper()}_FILESYSTEM_OFFLINE"):
             self.environment.pop(name, None)
 
     def run_build(self, profile="debug"):
@@ -79,8 +88,8 @@ class NativeFilesystemBuildLinux(unittest.TestCase):
         self.assertEqual({path.name: path.read_bytes() for path in self.package.iterdir()}, before)
 
     def test_release_tests_and_build_receive_locked_offline_manifest_arguments(self):
-        self.environment.update(MIDNIGHT_TEST_NATIVE_FILESYSTEM="1",
-                                MIDNIGHT_NATIVE_FILESYSTEM_OFFLINE="1")
+        self.environment[f"MIDNIGHT_TEST_{self.provider.upper()}_FILESYSTEM"] = "1"
+        self.environment[f"MIDNIGHT_{self.provider.upper()}_FILESYSTEM_OFFLINE"] = "1"
         result = self.run_build("release")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.log.read_text().split("--end--\n")
@@ -90,7 +99,8 @@ class NativeFilesystemBuildLinux(unittest.TestCase):
                                                 str(self.plugin / "Cargo.toml"), "--offline", "--release"])
 
     def test_failed_tests_skip_build_and_preserve_previous_package(self):
-        self.environment.update(MIDNIGHT_TEST_NATIVE_FILESYSTEM="1", NATIVE_TEST_EXIT="42")
+        self.environment[f"MIDNIGHT_TEST_{self.provider.upper()}_FILESYSTEM"] = "1"
+        self.environment["NATIVE_TEST_EXIT"] = "42"
         before = {path.name: path.read_bytes() for path in self.package.iterdir()}
         result = self.run_build()
         self.assertEqual(result.returncode, 42, result.stdout + result.stderr)

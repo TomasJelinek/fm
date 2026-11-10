@@ -19,3 +19,18 @@ fn unpaired_native_utf16_is_refused_without_replacement_characters() {
         io::ErrorKind::InvalidData
     );
 }
+
+#[test]
+fn escaped_literal_backslashes_from_unix_cannot_silently_select_windows_subdirectories() {
+    let (_, request) = fixture("file");
+    let bytes = format!("\\{} *literal\\\\name\n", "0".repeat(64));
+    assert!(
+        super::super::super::format::parse_manifest(
+            bytes.as_bytes(),
+            &request.destination,
+            ChecksumLimits::default(),
+            &Cancellation::default()
+        )
+        .is_err()
+    );
+}

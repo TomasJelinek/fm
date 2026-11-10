@@ -3,25 +3,44 @@
 
 mod capture;
 mod capture_archive;
+mod capture_generated;
+mod capture_tree;
+mod content_resources;
+pub use content_resources::captured_directory_resources;
 #[cfg(test)]
 mod capture_tests;
+#[cfg(test)]
+mod font_catalog_tests;
 mod image_geometry;
 mod image_input;
 mod image_pixels;
+mod image_scene;
+mod image_tiles;
 mod image_view;
 mod image_worker;
+mod input_queue;
 mod interaction;
+mod mailbox;
 mod navigation;
+#[cfg(test)]
+mod opening_retirement_tests;
 mod page;
+mod position_ack;
+mod preferences;
+mod routing;
 mod search_cursor;
 #[cfg(test)]
 mod tests;
+mod viewport;
 mod worker;
 
-use midnight_core::{ViewerAppearance, ViewerGeometry, ViewerInput, ViewerLaunch, ViewerOutput};
+use midnight_core::{
+    ViewerAppearance, ViewerGeometry, ViewerInput, ViewerLaunch, ViewerOutput,
+    ViewerPreferenceChange, ViewerPreferences,
+};
 use midnight_plugin_host::Runtime;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, SyncSender},
 };
@@ -33,35 +52,7 @@ pub type NativeCapture = Arc<
         + Send
         + Sync,
 >;
-
-/// Latest-frame mailbox: a slow UI cannot accumulate raster images.
-pub struct Mailbox {
-    output: Mutex<Vec<ViewerOutput>>,
-}
-
-impl Mailbox {
-    pub fn take(&self) -> Vec<ViewerOutput> {
-        std::mem::take(&mut *self.output.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    fn put(&self, output: ViewerOutput) {
-        let mut pending = self.output.lock().unwrap_or_else(|e| e.into_inner());
-        // Release replaced buffers here, on the backend worker.
-        match &output {
-            ViewerOutput::Frame(_) => pending.retain(|old| !matches!(old, ViewerOutput::Frame(_))),
-            ViewerOutput::Status(_) => {
-                pending.retain(|old| !matches!(old, ViewerOutput::Status(_)))
-            }
-            ViewerOutput::Closed => pending.clear(),
-            ViewerOutput::CopyText(_) => {
-                pending.retain(|old| !matches!(old, ViewerOutput::CopyText(_)))
-            }
-        }
-        if pending.len() < 8 {
-            pending.push(output);
-        }
-    }
-}
+pub use mailbox::Mailbox;
 
 #[derive(Clone)]
 pub struct Service {
@@ -69,13 +60,18 @@ pub struct Service {
     capture: NativeCapture,
     runtime: Arc<Mutex<Option<Arc<Runtime>>>>,
     images: Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>,
+    web: Arc<Mutex<Option<Arc<[midnight_web_viewer_host::Provider]>>>>,
     windows: Arc<AtomicUsize>,
+    fonts: Arc<OnceLock<Arc<[String]>>>,
 }
 
 pub struct WindowSession {
-    sender: SyncSender<ViewerInput>,
+    sender: SyncSender<worker::Message>,
+    positions: input_queue::PositionQueue,
     closed: Arc<AtomicBool>,
     pub mailbox: Arc<Mailbox>,
+    preferences: Arc<preferences::Preferences>,
+    fonts: Arc<OnceLock<Arc<[String]>>>,
 }
 
 struct WindowPermit(Arc<AtomicUsize>);
@@ -86,13 +82,52 @@ impl Drop for WindowPermit {
 }
 
 impl WindowSession {
+    /// Cached installed family names. Discovery runs on the session's backend worker.
+    /// `None` means discovery is pending or the session closed before it completed.
+    pub fn font_families(&self) -> Option<Arc<[String]>> {
+        self.fonts.get().cloned()
+    }
+
+    /// Bounded config-only acceptance. Never takes a render/decode lock or does I/O.
+    /// Callers may save the returned accepted change before hiding the surface.
+    pub fn change_preferences(&self, change: &ViewerPreferenceChange) -> Result<bool, String> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err("Viewer is closed.".into());
+        }
+        let changed = self.preferences.change(change)?;
+        if changed {
+            let _ = self.sender.try_send(worker::Message::Ready);
+        }
+        Ok(changed)
+    }
+
+    /// Restore accepted application state without emitting user-change notifications.
+    pub fn restore_preferences(&self, value: Arc<ViewerPreferences>) -> Result<bool, String> {
+        let changed = self.preferences.restore(value)?;
+        if changed {
+            let _ = self.sender.try_send(worker::Message::Ready);
+        }
+        Ok(changed)
+    }
+
+    pub fn preferences(&self) -> Arc<ViewerPreferences> {
+        self.preferences.snapshot().1
+    }
+
     pub fn send(&self, input: ViewerInput) -> bool {
-        self.sender.try_send(input).is_ok()
+        !self.closed.load(Ordering::Acquire)
+            && self
+                .positions
+                .enqueue(input, |message| self.sender.try_send(message).is_ok())
     }
 
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        let _ = self.sender.try_send(ViewerInput::Close);
+        self.mailbox
+            .finish_open(Err("Viewer closed before displaying content.".into()));
+        let _ = self
+            .sender
+            .try_send(worker::Message::Input(ViewerInput::Close));
     }
 }
 
@@ -116,7 +151,9 @@ impl Service {
             capture,
             runtime: Arc::new(Mutex::new(None)),
             images: Arc::new(Mutex::new(None)),
+            web: Arc::new(Mutex::new(None)),
             windows: Arc::new(AtomicUsize::new(0)),
+            fonts: Arc::new(OnceLock::new()),
         }
     }
 
@@ -126,17 +163,25 @@ impl Service {
         appearance: ViewerAppearance,
         geometry: ViewerGeometry,
     ) -> Result<WindowSession, String> {
-        self.windows
+        if let Err(error) = launch.preferences.validate() {
+            self.retire(launch);
+            return Err(error.to_owned());
+        }
+        let preferences = Arc::new(preferences::Preferences::new(launch.preferences.clone()));
+        let worker_preferences = preferences.clone();
+        if self
+            .windows
             .try_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
                 (count < 4).then_some(count + 1)
             })
-            .map_err(|_| {
-                "Close a viewer before opening another (maximum four windows).".to_owned()
-            })?;
+            .is_err()
+        {
+            self.retire(launch);
+            return Err("Close a viewer before opening another (maximum four windows).".into());
+        }
         let (sender, receiver) = mpsc::sync_channel(64);
-        let mailbox = Arc::new(Mailbox {
-            output: Mutex::new(Vec::new()),
-        });
+        let wakes = sender.clone();
+        let mailbox = Arc::new(Mailbox::default());
         let closed = Arc::new(AtomicBool::new(false));
         let service = self.clone();
         let output = mailbox.clone();
@@ -144,6 +189,12 @@ impl Service {
         self.handle.spawn_blocking(move || {
             let _permit = WindowPermit(service.windows.clone());
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if service.fonts.get().is_none()
+                    && let Some(names) =
+                        midnight_viewer_render::installed_families(|| stop.load(Ordering::Acquire))
+                {
+                    let _ = service.fonts.set(names);
+                }
                 let runtime = {
                     let mut loaded = service.runtime.lock().unwrap_or_else(|e| e.into_inner());
                     if loaded.is_none() {
@@ -173,11 +224,31 @@ impl Service {
                     }
                     loaded.as_ref().unwrap().clone()
                 };
+                let web = {
+                    let mut loaded = service
+                        .web
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    if loaded.is_none() {
+                        let executable = midnight_plugin_host::installed_executable()
+                            .map_err(|error| error.to_string())?;
+                        *loaded = Some(
+                            midnight_web_viewer_host::discover_with_diagnostics(&executable)
+                                .map(|discovery| discovery.providers)
+                                .unwrap_or_default()
+                                .into(),
+                        );
+                    }
+                    loaded.as_ref().unwrap().clone()
+                };
                 worker::run(
                     worker::Services {
                         runtime,
                         images,
+                        web,
                         capture: service.capture.clone(),
+                        wake: Arc::new(move || wakes.try_send(worker::Message::Ready).is_ok()),
+                        preferences: worker_preferences,
                     },
                     launch,
                     appearance,
@@ -189,13 +260,17 @@ impl Service {
             }))
             .unwrap_or_else(|_| Err("Viewer backend stopped after an internal error.".into()));
             if let Err(message) = result {
+                output.finish_open(Err(message.clone()));
                 output.put(ViewerOutput::Status(message));
             }
         });
         Ok(WindowSession {
             sender,
+            positions: Default::default(),
             closed,
             mailbox,
+            preferences,
+            fonts: self.fonts.clone(),
         })
     }
 

@@ -34,6 +34,7 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
         FileKey::CompareFiles => window.invoke_compare_files(pane),
         FileKey::Find => window.invoke_find_files(pane),
         FileKey::Checksums => window.invoke_calculate_checksums(pane),
+        FileKey::MakeFileList => window.invoke_make_file_list(pane),
         FileKey::UserCommand(id) => {
             window.invoke_execute_user_command(id.as_str().into(), "".into())
         }
@@ -58,7 +59,13 @@ pub(crate) fn dispatch_window(window: &MainWindow, pane: i32, action: WindowActi
         }
     };
     match action {
-        A::OtherPanel => window.invoke_commit_volume_shortcut(pane),
+        A::OtherPanel => {
+            if window.get_volume_popup_pane() >= 0 {
+                window.invoke_commit_volume_shortcut(pane);
+            } else {
+                window.invoke_navigation_choice(pane, "other-panel".into());
+            }
+        }
         A::SwapPanels => window.invoke_swap_panels(),
         A::NewTab => window.invoke_tab_new(pane),
         A::CloseTab => window.invoke_tab_close_active(pane),
@@ -97,6 +104,15 @@ pub(crate) fn dispatch_window(window: &MainWindow, pane: i32, action: WindowActi
         A::Help => window.invoke_show_app_menu(0),
         A::UserMenu => window.invoke_show_app_menu(1),
         A::MainMenu => window.invoke_show_app_menu(2),
+        A::Options => window.invoke_show_options(),
+        A::Jobs => window.invoke_show_operations(),
+        A::About => window.invoke_show_about(),
+        A::CustomCommands => {
+            window.set_options_topic_index(9);
+            window.invoke_show_options();
+        }
+        A::Bookmarks => window.invoke_show_bookmarks(pane),
+        A::ViewMode(mode) => window.invoke_change_view_mode(pane, mode),
         A::Exit => window.invoke_exit(),
         A::Network(disconnect) => {
             if window.get_network_available() {

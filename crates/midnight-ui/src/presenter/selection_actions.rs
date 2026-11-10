@@ -22,7 +22,7 @@ impl SelectionIntent {
             Self::Copy => "Copy",
             Self::Cut => "Cut",
             Self::CopyDialog(context) => {
-                if context.intent == TransferIntent::RecoverableMove {
+                if context.intent == TransferIntent::Move {
                     "Move to folder"
                 } else {
                     "Copy to folder"
@@ -54,22 +54,24 @@ impl Presenter {
         intent: SelectionIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if !self.native_action_allowed(pane) {
+        if !self.tree_action_allowed(pane) || !self.native_action_allowed(pane) {
             return;
         }
         if !self.panes[pane.index()].search_allows_activation() {
             return;
         }
         if self.selection_actions[pane.index()].is_some() {
-            self.desktop.report(
+            self.report_selection_action_error(
+                &intent,
                 "Selection action waiting",
                 "An action is already waiting for selection.".into(),
             );
             return;
         }
         let p = &self.panes[pane.index()];
-        if p.selection_pending_bulk || p.selection_deferred || p.selection_rebase_pending {
-            self.desktop.report(
+        if p.selection_pending_bulk || p.selection_deferred.any() || p.selection_rebase_pending {
+            self.report_selection_action_error(
+                &intent,
                 "Selection still loading",
                 format!(
                     "Wait for the folder listing and selection to finish before {}.",
@@ -214,9 +216,10 @@ impl Presenter {
                 let pending = self.selection_actions[slot]
                     .take()
                     .expect("matched selection action");
-                if *deferred {
+                if deferred.any() {
                     self.desktop.requests.remove(&pending.request);
-                    self.desktop.report(
+                    self.report_selection_action_error(
+                        &pending.intent,
                         "Selection still loading",
                         "Try the action after selection finishes.".into(),
                     );
@@ -248,19 +251,45 @@ impl Presenter {
                     pending.navigation == *navigation && pending.revision <= *revision
                 }) =>
             {
-                self.cancel_selection_actions(*pane);
-                self.desktop.report(
+                let pending = self.selection_actions[pane.index()]
+                    .take()
+                    .expect("matched selection action");
+                self.desktop.requests.remove(&pending.request);
+                self.report_selection_action_error(
+                    &pending.intent,
                     "Selection action cancelled",
                     "Selection could not finish. Try the action again.".into(),
                 );
+                self.retired.push(Box::new(pending));
             }
             _ => {}
+        }
+    }
+
+    fn report_selection_action_error(
+        &mut self,
+        intent: &SelectionIntent,
+        title: &str,
+        message: String,
+    ) {
+        if let SelectionIntent::UserCommand(capture) = intent {
+            self.report_user_command_error(capture.settings_preview.as_ref(), title, message);
+        } else {
+            self.desktop.report(title, message);
         }
     }
 
     pub(super) fn cancel_selection_actions(&mut self, pane: PaneId) {
         if let Some(pending) = self.selection_actions[pane.index()].take() {
             self.desktop.requests.remove(&pending.request);
+            if let SelectionIntent::UserCommand(capture) = &pending.intent
+                && capture
+                    .settings_preview
+                    .as_ref()
+                    .is_some_and(|origin| origin.matches(&self.user_command_settings))
+            {
+                self.user_command_settings.clear_status();
+            }
             self.retired.push(Box::new(pending));
         }
     }

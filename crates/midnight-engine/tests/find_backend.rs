@@ -9,9 +9,32 @@ use std::{
     sync::Arc,
 };
 
+fn worker_search(
+    service: &dyn FindService,
+    request: &FindRequest,
+    cancel: &Cancellation,
+    emit: &mut dyn FnMut(FindUpdate) -> bool,
+) -> FindSummary {
+    let location = find_worker::CurrentDirectory::default();
+    let summary = find_worker::search_with_location(
+        service,
+        request,
+        cancel,
+        emit,
+        &location,
+        std::time::SystemTime::now(),
+    );
+    assert!(
+        location
+            .get()
+            .is_none_or(|path| path.as_os_str().as_encoded_bytes().len() <= 1024 * 1024)
+    );
+    summary
+}
+
 fn execute(request: &FindRequest) -> (FindSummary, Vec<Arc<FindResult>>) {
     let mut results = Vec::new();
-    let summary = find_worker::search(
+    let summary = worker_search(
         &LocalFileSystem::new(None),
         request,
         &Cancellation::default(),
@@ -34,6 +57,64 @@ fn names(results: &[Arc<FindResult>]) -> Vec<PathBuf> {
         .collect();
     paths.sort();
     paths
+}
+
+#[test]
+fn wildcard_search_accepts_long_attachment_style_roots_without_content_queries() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary
+        .path()
+        .join("Attachments")
+        .join("ooa-f42904ca-f324-4174-9491-2a49c75c6b4c")
+        .join("ab71df72c4608dcdcd654370c8ef2f7f543140c45f2c8be1c623a9684fec2404")
+        .join("long-native-folder-".repeat(8));
+    assert!(root.as_os_str().as_encoded_bytes().len() > 260);
+    fs::create_dir_all(root.join("nested")).unwrap();
+    let expected = [root.join("top.txt"), root.join("nested/deep.dat")];
+    for path in &expected {
+        fs::write(path, []).unwrap();
+    }
+    let query = request(vec![root]);
+    assert_eq!(query.masks, "*.*");
+    assert!(query.recursive);
+    assert!(query.content.is_none());
+    let (summary, results) = execute(&query);
+    assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");
+    let files: Vec<_> = results
+        .iter()
+        .filter(|result| result.entry.kind == EntryKind::File)
+        .map(|result| result.entry.path.clone())
+        .collect();
+    assert_eq!(files.len(), 2);
+    for path in expected {
+        assert!(files.contains(&path));
+    }
+}
+
+#[test]
+fn regex_and_typed_expression_filter_captured_metadata_without_pruning_traversal() {
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = temporary.path().join("nonmatching-directory");
+    fs::create_dir(&directory).unwrap();
+    let deep = directory.join("deep.txt");
+    fs::write(&deep, b"large enough").unwrap();
+    fs::write(temporary.path().join("small.txt"), b"x").unwrap();
+    let mut query = request(vec![temporary.path().to_owned()]);
+    query.name_mode = FilterMode::Regex;
+    query.masks = r"^deep\.txt$".into();
+    let (summary, results) = execute(&query);
+    assert_eq!(summary.completion, FindCompletion::Completed);
+    assert_eq!(names(&results).as_slice(), std::slice::from_ref(&deep));
+    query.name_mode = FilterMode::Expression;
+    query.masks = "kind = file and size >= 4B".into();
+    let (summary, results) = execute(&query);
+    assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");
+    assert_eq!(names(&results), [deep]);
+    query.masks = "size > unknownFunction()".into();
+    let (summary, results) = execute(&query);
+    assert_eq!(summary.completion, FindCompletion::Failed);
+    assert!(results.is_empty());
+    assert_eq!(summary.progress.errors, 1);
 }
 
 #[test]
@@ -84,6 +165,7 @@ fn strict_utf8_bom_unicode_folding_and_matches_crossing_chunks() {
     query.content = Some(FindContentQuery {
         text: "STRASSE 文档".into(),
         case_sensitive: false,
+        whole_words: false,
     });
     let (summary, results) = execute(&query);
     assert_eq!(names(&results), vec![path]);
@@ -129,6 +211,7 @@ fn result_node_depth_retention_and_content_limits_report_incomplete() {
     query.content = Some(FindContentQuery {
         text: "needle".into(),
         case_sensitive: true,
+        whole_words: false,
     });
     let (summary, results) = execute(&query);
     assert!(results.is_empty());
@@ -162,11 +245,11 @@ fn cancellation_and_refused_output_stop_without_complete_claims() {
     let query = request(vec![temporary.path().to_owned()]);
     let cancel = Cancellation::default();
     cancel.cancel();
-    let summary = find_worker::search(&LocalFileSystem::new(None), &query, &cancel, &mut |_| {
+    let summary = worker_search(&LocalFileSystem::new(None), &query, &cancel, &mut |_| {
         panic!("Cancelled search emitted output")
     });
     assert_eq!(summary.completion, FindCompletion::Cancelled);
-    let summary = find_worker::search(
+    let summary = worker_search(
         &LocalFileSystem::new(None),
         &query,
         &Cancellation::default(),
@@ -269,7 +352,7 @@ fn permission_failures_are_counted_while_diagnostics_remain_bounded() {
         }
     }
     let query = request(vec![std::env::current_dir().unwrap()]);
-    let summary = find_worker::search(
+    let summary = worker_search(
         &DeniedService,
         &query,
         &Cancellation::default(),

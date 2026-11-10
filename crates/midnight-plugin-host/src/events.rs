@@ -17,6 +17,7 @@ pub enum EventKind {
     },
     DocumentPage(document::DocumentPage),
     SearchMatch(messages::SearchMatch),
+    TextPosition(viewer::TextPosition),
     Progress(messages::Progress),
     Completed,
     Cancelled,
@@ -36,6 +37,12 @@ impl EventKind {
                         .map(|block| {
                             text_heap(&block.text)
                                 + block.links.capacity() * size_of::<document::Link>()
+                                + block.table.as_ref().map_or(0, |row| {
+                                    row.cells.capacity() * size_of::<document::TableCell>()
+                                })
+                                + block.strikethrough.as_ref().map_or(0, |ranges| {
+                                    ranges.capacity() * size_of::<document::TextRange>()
+                                })
                                 + block
                                     .links
                                     .iter()

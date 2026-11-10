@@ -9,8 +9,8 @@ rust-version = "1.99"
 publish = false
 
 [dependencies]
-midnight-filesystem-api = { version = "=0.2.0", registry = "midnight" }
-midnight-worker-sdk = { version = "=0.1.0", registry = "midnight" }
+midnight-filesystem-api = { version = "=0.3.0", registry = "midnight" }
+midnight-worker-sdk = { version = "=0.2.0", registry = "midnight" }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 tar = { version = "=0.4.46", default-features = false }

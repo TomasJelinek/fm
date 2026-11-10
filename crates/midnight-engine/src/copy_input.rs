@@ -2,13 +2,28 @@
 use super::*;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 enum Sources {
     Paths(FileClipboard),
     SharedPaths(Arc<FileClipboard>),
     Selection(SelectedFiles),
-    Archive(ArchiveCopyRequest),
+    Archive(Box<ArchiveCopyRequest>),
+    Captured(Arc<dyn CapturedTransferSources>),
 }
 
+impl From<CapturedTransferRequest> for CopyInput {
+    fn from(request: CapturedTransferRequest) -> Self {
+        Self {
+            id: request.id,
+            destination: request.destination,
+            intent: request.sources.intent(),
+            metadata: request.metadata,
+            verification: request.verification,
+            _retention: None,
+            sources: Sources::Captured(request.sources),
+        }
+    }
+}
 impl From<ArchiveCopyRequest> for CopyInput {
     fn from(request: ArchiveCopyRequest) -> Self {
         Self {
@@ -16,7 +31,9 @@ impl From<ArchiveCopyRequest> for CopyInput {
             destination: request.destination.clone(),
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
-            sources: Sources::Archive(request),
+            verification: request.verification,
+            _retention: None,
+            sources: Sources::Archive(Box::new(request)),
         }
     }
 }
@@ -24,18 +41,27 @@ impl From<ArchiveCopyRequest> for CopyInput {
 pub(super) enum Resolved {
     Native(CopyRequest),
     NativeMove(CopyRequest),
+    Captured {
+        destination: PathBuf,
+        sources: PreparedCapturedTransfer,
+    },
     Archive {
         destination: PathBuf,
         sources: std::collections::VecDeque<Box<dyn TransferSource>>,
     },
 }
 
+#[derive(Clone)]
 pub(super) struct CopyInput {
     pub(super) id: OperationId,
     pub(super) destination: PathBuf,
     pub(super) intent: TransferIntent,
     pub(super) metadata: TransferMetadataPolicy,
+    pub(super) verification: TransferVerification,
     sources: Sources,
+    // Preparation retains failed/retried admission and hands successful ownership
+    // to Job. WorkerOwned keeps cancellation destruction off UI.
+    pub(super) _retention: Option<Arc<crate::drag_drop::Retention>>,
 }
 
 impl From<CopyRequest> for CopyInput {
@@ -45,6 +71,8 @@ impl From<CopyRequest> for CopyInput {
             destination: request.destination,
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
+            verification: request.verification,
+            _retention: None,
             sources: Sources::Paths(request.clipboard),
         }
     }
@@ -57,6 +85,8 @@ impl From<SelectedCopyRequest> for CopyInput {
             destination: request.destination,
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
+            verification: request.verification,
+            _retention: None,
             sources: Sources::Selection(request.files),
         }
     }
@@ -77,25 +107,28 @@ impl CopyInput {
         Self {
             id: request.id,
             destination: request.destination,
-            intent: TransferIntent::RecoverableMove,
+            intent: TransferIntent::Move,
             metadata: TransferMetadataPolicy::ContentOnly,
+            verification: request.verification,
+            _retention: None,
             sources: Sources::SharedPaths(request.clipboard),
         }
     }
     pub(super) fn move_paths(request: CopyRequest) -> Self {
         Self {
-            intent: TransferIntent::RecoverableMove,
+            intent: TransferIntent::Move,
             ..request.into()
         }
     }
     pub(super) fn move_selection(request: SelectedCopyRequest) -> Self {
         Self {
-            intent: TransferIntent::RecoverableMove,
+            intent: TransferIntent::Move,
             ..request.into()
         }
     }
     pub(super) fn requested_roots(&self) -> u64 {
         match &self.sources {
+            Sources::Captured(sources) => sources.root_count() as u64,
             Sources::Paths(files) => files.paths.len() as u64,
             Sources::SharedPaths(files) => files.paths.len() as u64,
             Sources::Selection(files) => files
@@ -131,8 +164,62 @@ impl CopyInput {
     }
 
     /// Called only by blocking preparation, inside the existing queue reservation.
-    pub(super) fn resolve(self, cancel: &Cancellation) -> Result<Resolved, FsError> {
+    pub(super) fn resolve(
+        self,
+        service: &dyn TransferService,
+        cancel: &Cancellation,
+    ) -> Result<Resolved, FsError> {
         let clipboard = match self.sources {
+            Sources::Captured(sources) => {
+                if self.metadata != TransferMetadataPolicy::ContentOnly
+                    && !sources.metadata_available()
+                {
+                    return Err(error(
+                        &self.destination,
+                        io::ErrorKind::Unsupported,
+                        "Required modified time is unavailable for these sources.",
+                    ));
+                }
+                let expected = sources.root_count();
+                if sources.intent() != self.intent {
+                    return Err(error(
+                        &self.destination,
+                        io::ErrorKind::InvalidData,
+                        "Captured transfer intent changed.",
+                    ));
+                }
+                let prepared = sources.prepare(service, cancel)?;
+                let count = match &prepared {
+                    PreparedCapturedTransfer::Copy(roots)
+                        if self.intent == TransferIntent::Copy =>
+                    {
+                        roots.len()
+                    }
+                    PreparedCapturedTransfer::Move(roots)
+                        if self.intent == TransferIntent::Move =>
+                    {
+                        roots.len()
+                    }
+                    _ => {
+                        return Err(error(
+                            &self.destination,
+                            io::ErrorKind::InvalidData,
+                            "Prepared transfer authority differs from captured intent.",
+                        ));
+                    }
+                };
+                if count == 0 || count != expected {
+                    return Err(error(
+                        &self.destination,
+                        io::ErrorKind::InvalidData,
+                        "Prepared transfer root count differs from capture.",
+                    ));
+                }
+                return Ok(Resolved::Captured {
+                    destination: self.destination,
+                    sources: prepared,
+                });
+            }
             Sources::Paths(files) => files,
             Sources::SharedPaths(files) => Arc::unwrap_or_clone(files),
             Sources::Selection(files) => FileClipboard {
@@ -154,11 +241,12 @@ impl CopyInput {
         };
         clipboard.validate()?;
         let request = CopyRequest {
+            verification: self.verification,
             id: self.id,
             clipboard,
             destination: self.destination,
         };
-        Ok(if self.intent == TransferIntent::RecoverableMove {
+        Ok(if self.intent == TransferIntent::Move {
             Resolved::NativeMove(request)
         } else {
             Resolved::Native(request)

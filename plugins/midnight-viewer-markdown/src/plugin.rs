@@ -160,6 +160,10 @@ impl Viewer for Plugin {
                         return;
                     }
                 };
+                if let Some((page, plain)) = paging::cached(&session, &viewport) {
+                    paging::send_page(context, &page, plain);
+                    return;
+                }
                 let (offset, count, anchor) = paging::plan(&session, &viewport);
                 let next = session.clone();
                 read(

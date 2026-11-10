@@ -233,9 +233,30 @@ enum Transform {
     Invert,
 }
 
+impl Transform {
+    fn apply(self, selected: bool) -> bool {
+        match self {
+            Self::Identity => selected,
+            Self::All => true,
+            Self::None => false,
+            Self::Invert => !selected,
+        }
+    }
+
+    fn inverted(self) -> Self {
+        match self {
+            Self::Identity => Self::Invert,
+            Self::Invert => Self::Identity,
+            Self::All => Self::None,
+            Self::None => Self::All,
+        }
+    }
+}
+
 struct Deferred {
     base: Arc<SelectionSnapshot>,
-    transform: Transform,
+    files: Transform,
+    folders: Transform,
     toggles: HashSet<PathBuf>,
     directories: HashSet<PathBuf>,
 }
@@ -244,7 +265,7 @@ impl State {
     fn apply(
         &mut self,
         request: &SelectionRequest,
-    ) -> Result<Option<(Arc<SelectionSnapshot>, bool)>, &'static str> {
+    ) -> Result<Option<(Arc<SelectionSnapshot>, SelectionDefaults)>, &'static str> {
         self.apply_with_stream(request, None)
     }
 
@@ -252,7 +273,7 @@ impl State {
         &mut self,
         request: &SelectionRequest,
         stream: Option<Arc<DirectoryIndex>>,
-    ) -> Result<Option<(Arc<SelectionSnapshot>, bool)>, &'static str> {
+    ) -> Result<Option<(Arc<SelectionSnapshot>, SelectionDefaults)>, &'static str> {
         if request.navigation < self.navigation
             || (request.navigation == self.navigation && request.revision <= self.revision)
         {
@@ -320,25 +341,21 @@ impl State {
             let mut bits = self.current.bits().to_vec();
             match &request.action {
                 SelectionAction::Bulk(operation) => match operation {
-                    SelectionOperation::All => {
-                        bits.fill(u64::MAX);
-                        let count = self.current.basis().by_id.len();
-                        if !count.is_multiple_of(64)
-                            && let Some(last) = bits.last_mut()
-                        {
-                            *last &= (1u64 << (count % 64)) - 1;
+                    SelectionOperation::All => bits.fill(u64::MAX),
+                    SelectionOperation::FilesOnly => {
+                        for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
+                            *word = !directories;
                         }
                     }
                     SelectionOperation::Clear => bits.fill(0),
                     SelectionOperation::Invert => {
+                        for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
+                            *word ^= !directories;
+                        }
+                    }
+                    SelectionOperation::InvertAll => {
                         for word in &mut bits {
                             *word = !*word;
-                        }
-                        let count = self.current.basis().by_id.len();
-                        if !count.is_multiple_of(64)
-                            && let Some(last) = bits.last_mut()
-                        {
-                            *last &= (1u64 << (count % 64)) - 1;
                         }
                     }
                 },
@@ -346,6 +363,15 @@ impl State {
                     if let Some(position) = view.by_path.get(path).and_then(|id| view.by_id.get(id))
                     {
                         bits[position / 64] ^= 1u64 << (position % 64);
+                    }
+                }
+                SelectionAction::Remove(paths) => {
+                    for path in paths.iter() {
+                        if let Some(position) =
+                            view.by_path.get(path).and_then(|id| view.by_id.get(id))
+                        {
+                            bits[position / 64] &= !(1u64 << (position % 64));
+                        }
                     }
                 }
                 SelectionAction::Range {
@@ -390,32 +416,45 @@ impl State {
                 }
                 SelectionAction::Rebase => {}
             }
+            let count = self.current.basis().by_id.len();
+            if !count.is_multiple_of(64)
+                && let Some(last) = bits.last_mut()
+            {
+                *last &= (1u64 << (count % 64)) - 1;
+            }
             self.current = Arc::new(self.current.with_bits(bits)?);
-            Ok(Some((self.current.clone(), false)))
+            Ok(Some((self.current.clone(), SelectionDefaults::NONE)))
         } else {
             let deferred = self.deferred.get_or_insert_with(|| Deferred {
                 base: self.current.clone(),
-                transform: Transform::Identity,
+                files: Transform::Identity,
+                folders: Transform::Identity,
                 toggles: HashSet::new(),
                 directories: HashSet::new(),
             });
             match &request.action {
                 SelectionAction::Bulk(operation) => match operation {
                     SelectionOperation::All => {
-                        deferred.transform = Transform::All;
+                        deferred.files = Transform::All;
+                        deferred.folders = Transform::All;
+                        deferred.toggles.clear();
+                    }
+                    SelectionOperation::FilesOnly => {
+                        deferred.files = Transform::All;
+                        deferred.folders = Transform::None;
                         deferred.toggles.clear();
                     }
                     SelectionOperation::Clear => {
-                        deferred.transform = Transform::None;
+                        deferred.files = Transform::None;
+                        deferred.folders = Transform::None;
                         deferred.toggles.clear();
                     }
                     SelectionOperation::Invert => {
-                        deferred.transform = match deferred.transform {
-                            Transform::Identity => Transform::Invert,
-                            Transform::Invert => Transform::Identity,
-                            Transform::All => Transform::None,
-                            Transform::None => Transform::All,
-                        };
+                        deferred.files = deferred.files.inverted();
+                    }
+                    SelectionOperation::InvertAll => {
+                        deferred.files = deferred.files.inverted();
+                        deferred.folders = deferred.folders.inverted();
                     }
                 },
                 SelectionAction::Toggle(path) => {
@@ -446,16 +485,17 @@ impl State {
                         return Err("Range endpoints no longer belong to the streamed view");
                     };
                     if !additive {
-                        deferred.transform = Transform::None;
+                        deferred.files = Transform::None;
+                        deferred.folders = Transform::None;
                         deferred.toggles.clear();
                     }
                     for (path, id) in &view.by_path {
                         if (anchor.min(target)..=anchor.max(target)).contains(&view.by_id[id]) {
-                            if !deferred.contains(path) && !deferred.toggles.remove(path) {
-                                deferred.toggles.insert(path.clone());
-                            }
                             if view.is_directory(*id) {
                                 deferred.directories.insert(path.clone());
+                            }
+                            if !deferred.contains(path) && !deferred.toggles.remove(path) {
+                                deferred.toggles.insert(path.clone());
                             }
                         }
                     }
@@ -463,23 +503,43 @@ impl State {
                 SelectionAction::Ranges { .. } => {
                     return Err("Selection rectangles require a complete immutable view");
                 }
+                SelectionAction::Remove(paths) => {
+                    for path in paths.iter() {
+                        if deferred.contains(path) && !deferred.toggles.remove(path) {
+                            deferred.toggles.insert(path.clone());
+                        }
+                    }
+                }
                 SelectionAction::Rebase => {}
             }
             self.current = deferred.rebase(stream.unwrap_or_else(|| deferred.subset()))?;
-            let pending = matches!(deferred.transform, Transform::All | Transform::Invert);
+            let pending = SelectionDefaults {
+                files: deferred.files.apply(false),
+                directories: deferred.folders.apply(false),
+            };
             Ok(Some((self.current.clone(), pending)))
         }
     }
 }
 
 impl Deferred {
+    fn is_directory(&self, path: &std::path::Path) -> bool {
+        self.directories.contains(path)
+            || self
+                .base
+                .basis()
+                .by_path
+                .get(path)
+                .is_some_and(|id| self.base.basis().is_directory(*id))
+    }
+
+    fn selected(&self, path: &std::path::Path, directory: bool) -> bool {
+        let transform = if directory { self.folders } else { self.files };
+        transform.apply(self.base.contains_path(path)) ^ self.toggles.contains(path)
+    }
+
     fn contains(&self, path: &std::path::Path) -> bool {
-        (match self.transform {
-            Transform::Identity => self.base.contains_path(path),
-            Transform::Invert => !self.base.contains_path(path),
-            Transform::All => true,
-            Transform::None => false,
-        }) ^ self.toggles.contains(path)
+        self.selected(path, self.is_directory(path))
     }
     fn subset(&self) -> Arc<DirectoryIndex> {
         let mut paths: HashSet<_> = self.base.basis().by_path.keys().cloned().collect();
@@ -489,14 +549,7 @@ impl Deferred {
         let mut directory_bits = vec![0; paths.len().div_ceil(64)];
         for (position, path) in paths.into_iter().enumerate() {
             let id = EntryId(position as u64);
-            if self.directories.contains(&path)
-                || self
-                    .base
-                    .basis()
-                    .by_path
-                    .get(&path)
-                    .is_some_and(|id| self.base.basis().is_directory(*id))
-            {
+            if self.is_directory(&path) {
                 directory_bits[position / 64] |= 1 << (position % 64);
             }
             by_id.insert(id, position);
@@ -515,12 +568,7 @@ impl Deferred {
             SelectionSnapshot::from_bits(view.clone(), vec![0; view.by_id.len().div_ceil(64)])?;
         let mut bits = blank.bits().to_vec();
         for (path, id) in &view.by_path {
-            let selected = match self.transform {
-                Transform::Identity => self.base.contains_path(path),
-                Transform::Invert => !self.base.contains_path(path),
-                Transform::All => true,
-                Transform::None => false,
-            } ^ self.toggles.contains(path);
+            let selected = self.selected(path, view.is_directory(*id));
             if selected {
                 let position = view.by_id[id];
                 bits[position / 64] |= 1u64 << (position % 64);
@@ -539,7 +587,8 @@ fn rebase(
     }
     Deferred {
         base: snapshot.clone(),
-        transform: Transform::Identity,
+        files: Transform::Identity,
+        folders: Transform::Identity,
         toggles: HashSet::new(),
         directories: HashSet::new(),
     }
@@ -650,7 +699,7 @@ pub(crate) fn prepare_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{path::Path, time::Duration};
 
     fn view(names: &[&str]) -> Arc<DirectoryIndex> {
         Arc::new(DirectoryIndex::from_entries(
@@ -668,7 +717,7 @@ mod tests {
         ))
     }
 
-    fn request(
+    pub(super) fn request(
         revision: u64,
         view: Option<Arc<DirectoryIndex>>,
         action: SelectionAction,
@@ -693,6 +742,40 @@ mod tests {
 
     fn apply(state: &mut State, request: SelectionRequest) -> Arc<SelectionSnapshot> {
         state.apply(&request).unwrap().unwrap().0
+    }
+
+    #[test]
+    fn completion_removal_is_idempotent_and_survives_stream_rebase() {
+        for streaming in [false, true] {
+            let index = view(&["a", "文档", "c"]);
+            let mut state = State::default();
+            let initial = (!streaming).then(|| index.clone());
+            apply(
+                &mut state,
+                request(
+                    1,
+                    initial.clone(),
+                    SelectionAction::Bulk(SelectionOperation::All),
+                ),
+            );
+            let removed: Arc<HashSet<PathBuf>> =
+                Arc::new([PathBuf::from("文档")].into_iter().collect());
+            for revision in [2, 3] {
+                apply(
+                    &mut state,
+                    request(
+                        revision,
+                        initial.clone(),
+                        SelectionAction::Remove(removed.clone()),
+                    ),
+                );
+            }
+            let result = apply(&mut state, request(4, Some(index), SelectionAction::Rebase));
+            assert!(result.contains_path(Path::new("a")));
+            assert!(!result.contains_path(Path::new("文档")));
+            assert!(result.contains_path(Path::new("c")));
+            assert_eq!(result.len(), 2);
+        }
     }
 
     #[test]
@@ -1453,7 +1536,7 @@ mod tests {
         else {
             panic!("streamed selection result")
         };
-        assert!(!deferred);
+        assert!(!deferred.any());
         assert_eq!((selection.file_count(), selection.folder_count()), (1, 1));
         assert!(!selection.contains_path(std::path::Path::new("root/m")));
         let sorted = vec![entries[1].clone(), entries[2].clone(), entries[0].clone()];
@@ -1497,7 +1580,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(partial.len(), 2);
-        assert!(pending);
+        assert!(pending.any());
         let complete = apply(
             &mut state,
             request(3, Some(view(&["b", "later", "a"])), SelectionAction::Rebase),
@@ -1505,3 +1588,7 @@ mod tests {
         assert_eq!(complete.len(), 3);
     }
 }
+
+#[cfg(test)]
+#[path = "selection_invert_tests.rs"]
+mod invert_tests;

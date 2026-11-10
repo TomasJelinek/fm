@@ -23,7 +23,7 @@ fn find_text(item: ItemRc, value: &str) -> Option<ItemRc> {
             item.downcast::<ComplexText>()
                 .map(|t| t.as_pin_ref().text())
         });
-    if text.is_some_and(|text| text == value) {
+    if item.is_visible() && text.is_some_and(|text| text == value) {
         return Some(item);
     }
     let mut child = item.first_child();
@@ -148,7 +148,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
         "F2".into(),
     ])));
     editor.set_scope("File list and filename search".into());
-    for scheme in 0..9 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
             test.window.invoke_apply_preferences(scheme, density);
             test.window.invoke_apply_fonts("".into(), font, font);
@@ -245,7 +245,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
             test.window.set_copy_token("".into());
             test.window.invoke_show_operations();
             test.draw();
-            for label in ["Cancel", "Resolve", "Close"] {
+            for label in ["Cancel job", "Resolve", "Close"] {
                 inside(&test, popup_button(&test, label), label);
                 assert!(
                     popup_button(&test, label).geometry().height() <= 100.0,
@@ -268,10 +268,10 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
             }
             ui::click_popup(&test.window, "Close", AccessibleRole::Button);
             test.window.invoke_show_options();
-            for topic in 0..7 {
+            for topic in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
                 test.window.set_options_topic_index(topic);
                 test.draw();
-                inside(&test, popup_button(&test, "Done"), "Options Done");
+                inside(&test, popup_button(&test, "Cancel"), "Options Done");
                 if topic == 3 {
                     inside(
                         &test,
@@ -293,7 +293,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
                     snapshot(&test, &format!("{label}-options-{topic}"));
                 }
             }
-            ui::click_popup(&test.window, "Done", AccessibleRole::Button);
+            ui::click_popup(&test.window, "Cancel", AccessibleRole::Button);
         }
     }
     test.window.hide().unwrap();

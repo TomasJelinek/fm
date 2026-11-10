@@ -18,9 +18,9 @@ use windows::{
         System::{
             Com::IDataObject,
             Ole::{
-                DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE, DoDragDrop, IDropSource,
-                IDropSource_Impl, IDropTarget, IDropTarget_Impl, OleInitialize, OleUninitialize,
-                RegisterDragDrop, RevokeDragDrop,
+                DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, DoDragDrop,
+                IDropSource, IDropSource_Impl, IDropTarget, IDropTarget_Impl, OleInitialize,
+                OleUninitialize, RegisterDragDrop, RevokeDragDrop,
             },
             SystemServices::MODIFIERKEYS_FLAGS,
         },
@@ -42,7 +42,9 @@ use windows_sys::Win32::{
 mod data;
 #[path = "file_drag_drop_input.rs"]
 mod input;
-use data::{make_data, read_files};
+#[cfg(test)]
+use data::make_data;
+use data::read_files;
 
 // This input query has no side effects and does not depend on the actor's message history.
 #[link(name = "user32")]
@@ -171,29 +173,36 @@ impl FileDragDropSession for Session {
         {
             return Ok(DragFinish::Cancelled);
         }
-        let data = make_data(files)?;
+        let (data, feedback) = data::make_offer(files)?;
         let source: IDropSource = Source {
             cancel: cancel.clone(),
             lifetime: self.host.lifetime.clone(),
         }
         .into();
         let timer = Timer::new(cancel.clone(), self.host.lifetime.clone())?;
+        let input_queue = input::InputQueue::attach(&self.host)?;
         let mut effect = DROPEFFECT_NONE;
         // SAFETY: both interfaces were created on this STA and live throughout the modal call.
-        // Only COPY is offered; no native source cleanup is ever performed.
-        let result = unsafe { DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect) };
+        // Shell targets choose Copy/Move from volumes and modifiers. Only the target may
+        // move files: completion feedback never authorizes native source cleanup here.
+        let result = unsafe { DoDragDrop(&data, &source, outgoing_effects(), &mut effect) };
+        drop(input_queue);
         drop(timer);
         self.sink.hover(None);
         if result == DRAGDROP_S_CANCEL {
             return Ok(DragFinish::Cancelled);
         }
         result.ok().map_err(error)?;
-        Ok(if result == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY {
-            DragFinish::Copied
+        Ok(if result == DRAGDROP_S_DROP {
+            feedback.get().finish(effect)
         } else {
-            DragFinish::Cancelled
+            DragFinish::Unconfirmed
         })
     }
+}
+
+fn outgoing_effects() -> DROPEFFECT {
+    DROPEFFECT_COPY | DROPEFFECT_MOVE
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -470,6 +479,8 @@ struct Source {
 }
 impl IDropSource_Impl for Source_Impl {
     fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+        #[cfg(test)]
+        handoff_tests::observe(keys.0);
         continue_drag(escape.as_bool(), keys.0, &self.cancel, &self.lifetime)
     }
     fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
@@ -494,11 +505,17 @@ fn continue_drag(
 }
 
 #[cfg(test)]
+#[path = "file_drag_drop_handoff_tests.rs"]
+mod handoff_tests;
+#[cfg(test)]
 #[path = "file_drag_drop_modal_tests.rs"]
 mod modal_tests;
 #[cfg(test)]
 #[path = "file_drag_drop_native_tests.rs"]
 mod native_tests;
+#[cfg(test)]
+#[path = "file_drag_drop_shell_tests.rs"]
+mod shell_tests;
 #[cfg(test)]
 #[path = "file_drag_drop_tests.rs"]
 mod tests;

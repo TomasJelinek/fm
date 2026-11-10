@@ -28,8 +28,10 @@ fn installed_ui() -> (ui::TestUi, Rc<RefCell<Presenter>>) {
 }
 
 #[test]
-fn clicking_an_inactive_toolbar_activates_its_panel_and_keeps_the_menu_open() {
+fn panel_sort_activates_its_own_panel_and_keeps_the_menu_open() {
     let (mut ui, _) = installed_ui();
+    ui.window.invoke_activate(0);
+    ui.draw();
     ui::click_root(&ui.window, "Right panel sort", AccessibleRole::Combobox);
     ui.draw();
     assert_eq!(ui.window.get_active_pane(), 1);
@@ -150,15 +152,19 @@ fn popup_splitter_and_command_clicks_do_not_activate_underlying_panels() {
 }
 
 #[test]
-fn inactive_drive_view_and_hot_path_pickers_keep_their_own_input() {
+fn per_panel_drive_and_shared_view_hot_path_pickers_keep_their_input() {
     let (mut ui, _) = installed_ui();
-    for label in ["Drive or volume", "Left panel view mode", "Hot Paths"] {
+    for label in ["Drive or volume", "Right panel view mode", "Hot Paths"] {
         ui.window.invoke_activate(1);
         ui.window.invoke_focus_files();
         ui.draw();
         ui::click_root(&ui.window, label, AccessibleRole::Combobox);
         ui.draw();
-        assert_eq!(ui.window.get_active_pane(), 0, "{label}");
+        assert_eq!(
+            ui.window.get_active_pane(),
+            if label == "Drive or volume" { 0 } else { 1 },
+            "{label}"
+        );
         assert!(ui::has_popup(&ui.window), "{label}");
         ui::key(&ui.window, Key::DownArrow);
         assert!(ui::has_popup(&ui.window), "{label} retains keyboard input");
@@ -197,7 +203,7 @@ fn panel_ownership_follows_swapped_resized_and_zoomed_layouts() {
     ui.draw();
     ui::click(&ui.window, 600.0, ui.window.get_left_list_top() + 80.0);
     assert_eq!(ui.window.get_active_pane(), 0);
-    ui::click_root(&ui.window, "Activate right panel", AccessibleRole::Button);
+    ui::key(&ui.window, slint::platform::Key::Tab);
     assert_eq!(ui.window.get_active_pane(), 1);
     assert!(ui.window.get_panel_zoomed());
     ui.window.hide().unwrap();

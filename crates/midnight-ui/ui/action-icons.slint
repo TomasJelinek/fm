@@ -41,9 +41,14 @@ export struct ActionIcons {
     sort-descending: image,
 }
 
-// Embedded, monochrome fallbacks are used only when a semantic host icon is absent.
+// Original fallbacks are used only when a semantic host icon is absent.
+// Colored command artwork has separate neutral outlines for light/dark themes.
 export global FallbackIcons {
-    out property <image> find: @image-url("icons/find.svg");
+    out property <image> checksums: Theme.light ? @image-url("icons/checksums.svg") : @image-url("icons/checksums-dark.svg");
+    out property <image> compare-files: Theme.light ? @image-url("icons/compare-files.svg") : @image-url("icons/compare-files-dark.svg");
+    out property <image> compare-directories: Theme.light ? @image-url("icons/compare-directories.svg") : @image-url("icons/compare-directories-dark.svg");
+    out property <image> filter: Theme.light ? @image-url("icons/filter.svg") : @image-url("icons/filter-dark.svg");
+    out property <image> find: Theme.light ? @image-url("icons/find.svg") : @image-url("icons/find-dark.svg");
     out property <image> drive: @image-url("icons/drive.svg");
     out property <image> network: @image-url("icons/network.svg");
     out property <image> home: @image-url("icons/home.svg");
@@ -55,22 +60,23 @@ export global FallbackIcons {
     out property <image> parent: @image-url("icons/parent.svg");
     out property <image> refresh: @image-url("icons/refresh.svg");
     out property <image> open-path: @image-url("icons/open-path.svg");
-    out property <image> bookmarks: @image-url("icons/star.svg");
+    out property <image> bookmarks: Theme.light ? @image-url("icons/star.svg") : @image-url("icons/star-dark.svg");
     out property <image> terminal: @image-url("icons/terminal.svg");
-    out property <image> options: @image-url("icons/settings.svg");
+    out property <image> options: Theme.light ? @image-url("icons/settings.svg") : @image-url("icons/settings-dark.svg");
     out property <image> run: @image-url("icons/run.svg");
     out property <image> tab-add: @image-url("icons/add.svg");
     out property <image> close-tab: @image-url("icons/close.svg");
     out property <image> remove-bookmark: @image-url("icons/close.svg");
-    out property <image> add-bookmark: @image-url("icons/bookmark-add.svg");
-    out property <image> help: @image-url("icons/help.svg");
+    out property <image> add-bookmark: Theme.light ? @image-url("icons/bookmark-add.svg") : @image-url("icons/bookmark-add-dark.svg");
+    out property <image> help: Theme.light ? @image-url("icons/help.svg") : @image-url("icons/help-dark.svg");
     out property <image> rename: @image-url("icons/rename.svg");
-    out property <image> view: @image-url("icons/view.svg");
+    out property <image> view: Theme.light ? @image-url("icons/view.svg") : @image-url("icons/view-dark.svg");
     out property <image> edit: @image-url("icons/edit.svg");
-    out property <image> copy: @image-url("icons/copy.svg");
-    out property <image> move-item: @image-url("icons/move.svg");
+    out property <image> copy: Theme.light ? @image-url("icons/copy.svg") : @image-url("icons/copy-dark.svg");
+    out property <image> move-item: Theme.light ? @image-url("icons/move.svg") : @image-url("icons/move-dark.svg");
     out property <image> new-folder: @image-url("icons/folder-add.svg");
     out property <image> new-file: @image-url("icons/file-add.svg");
+    out property <image> make-file-list: @image-url("icons/file-list.svg");
     out property <image> delete: @image-url("icons/delete.svg");
     out property <image> user-menu: @image-url("icons/user-menu.svg");
     out property <image> menu: @image-url("icons/menu.svg");
@@ -78,12 +84,18 @@ export global FallbackIcons {
     out property <image> done: @image-url("icons/done.svg");
     out property <image> close: @image-url("icons/close.svg");
     out property <image> properties: @image-url("icons/properties.svg");
-    out property <image> attributes: @image-url("icons/attributes.svg");
-    out property <image> folder-sizes: @image-url("icons/folder-sizes.svg");
+    out property <image> attributes: Theme.light ? @image-url("icons/attributes.svg") : @image-url("icons/attributes-dark.svg");
+    out property <image> folder-sizes: Theme.light ? @image-url("icons/folder-sizes.svg") : @image-url("icons/folder-sizes-dark.svg");
     out property <image> about: @image-url("icons/about.svg");
     out property <image> exit: @image-url("icons/exit.svg");
     out property <image> sort-ascending: @image-url("icons/sort-ascending.svg");
     out property <image> sort-descending: @image-url("icons/sort-descending.svg");
+    pure public function is-colored(icon: image) -> bool {
+        return icon == FallbackIcons.checksums || icon == FallbackIcons.compare-files || icon == FallbackIcons.compare-directories
+            || icon == FallbackIcons.filter || icon == FallbackIcons.find || icon == FallbackIcons.bookmarks || icon == FallbackIcons.options
+            || icon == FallbackIcons.add-bookmark || icon == FallbackIcons.help || icon == FallbackIcons.view || icon == FallbackIcons.copy
+            || icon == FallbackIcons.move-item || icon == FallbackIcons.attributes || icon == FallbackIcons.folder-sizes || icon == FallbackIcons.make-file-list;
+    }
 }
 
 export component NativeActionImage inherits Image {
@@ -93,7 +105,9 @@ export component NativeActionImage inherits Image {
     private property <bool> native-available: native-icon.width > 0 && native-icon.height > 0;
     source: root.native-available ? root.native-icon : root.fallback-icon;
     // Transparent is Slint's uncolored-image default; host RGB and alpha survive.
-    colorize: root.native-available ? transparent : root.action-enabled ? Theme.text : Theme.muted-text;
+    colorize: root.native-available || (root.action-enabled && FallbackIcons.is-colored(root.fallback-icon))
+        ? transparent : root.action-enabled ? Theme.text : Theme.muted-text;
+    opacity: root.native-available && !root.action-enabled ? 0.45 : 1;
     image-fit: contain;
 }
 
@@ -103,7 +117,7 @@ export component ActionButton inherits Button {
     private property <bool> native-available: native-icon.width > 0 && native-icon.height > 0;
     icon: root.native-available ? root.native-icon : root.fallback-icon;
     icon-size: Theme.icon-size;
-    colorize-icon: !root.native-available;
+    colorize-icon: !root.native-available && (!root.enabled || !FallbackIcons.is-colored(root.fallback-icon));
 }
 
 export component LocationImage inherits NativeActionImage {

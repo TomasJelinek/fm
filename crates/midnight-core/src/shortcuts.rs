@@ -448,16 +448,27 @@ impl ShortcutMap {
                         | "files.find"
                         | "files.checksums"
                         | "files.compare"
+                        | "selection.files"
+                        | "selection.invert-all"
+                        | "files.make-list"
                         | "viewer.document-next"
                         | "viewer.document-previous"
                         | "compare.next-difference"
                         | "compare.previous-difference"
-                ) || (definition.id.starts_with("bookmark.open.")
-                    && !chord.control
+                        | "compare.first-difference"
+                        | "compare.last-difference"
+                ) || (definition.id == "selection.all"
+                    && chord.control
+                    && chord.shift
                     && !chord.alt
-                    && !chord.shift
                     && !chord.meta
-                    && chord.key.starts_with("Digit"));
+                    && chord.key == "A")
+                    || (definition.id.starts_with("bookmark.open.")
+                        && !chord.control
+                        && !chord.alt
+                        && !chord.shift
+                        && !chord.meta
+                        && chord.key.starts_with("Digit"));
                 if !replacements.contains_key(definition.id.as_str())
                     && added_default
                     && explicit_keys.get(&chord).is_some_and(|assigned| {

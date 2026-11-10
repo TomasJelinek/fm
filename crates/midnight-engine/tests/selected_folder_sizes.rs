@@ -419,6 +419,7 @@ async fn reject_native_scan_in_archive(single: bool) {
             navigation: NavigationId(2),
             sort: SortSpec::default(),
             action: ArchiveAction::List(ArchiveLocation::unavailable(ArchiveAddress {
+                format: None,
                 provider: "nonexistent-test-provider".into(),
                 container: std::env::current_dir().unwrap().join("absent-fixture.zip"),
                 source_version: vec![1],

@@ -1,7 +1,7 @@
 //! Installed app composition, using actual independent native and viewer packages.
 use midnight_core::{
     DirectoryIndex, Entry, EntryId, EntryKind, ViewerAppearance, ViewerFrame, ViewerGeometry,
-    ViewerInput, ViewerLaunch, ViewerOutput,
+    ViewerImageInput, ViewerInput, ViewerLaunch, ViewerOutput,
 };
 use midnight_native_filesystem_host::InstalledProvider;
 use std::{
@@ -23,9 +23,13 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
         .map(|(index, name)| Entry::new(EntryId(index as u64), root.join(name), EntryKind::File))
         .collect();
     ViewerLaunch {
+        associations: Default::default(),
+        tree: None,
+        generated: None,
         focused: entries[0].path.clone(),
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,
+        preferences: Arc::default(),
         archive: None,
         basic,
         disabled_plugins: Arc::from([]),
@@ -70,6 +74,100 @@ fn wait_text(session: &midnight_viewer_engine::WindowSession, expected: &str) {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("No native-plugin content {expected:?}: {messages:?}");
+}
+
+/// Render the exact immutable tree order through real installed native/text plugins.
+#[test]
+#[ignore = "run inside protected runtime with native/viewer packages and fixtures"]
+fn tree_viewer_uses_native_provider_and_cycles_only_visible_root_files() {
+    use midnight_core::{
+        NavigationId, PaneId, TreeDisclosure, TreeDisplayRow, TreeLayoutRevision, TreeProjection,
+        TreeRevision, TreeRootSnapshot, TreeRowId, TreeSessionId, TreeViewStamp, TreeViewer,
+    };
+    let root = PathBuf::from(std::env::var_os("MIDNIGHT_APP_NATIVE_TEST_FILES").unwrap());
+    let mut launch = launch(
+        &root,
+        &["first 文档.txt", "second.txt", "hidden-missing.txt"],
+        true,
+    );
+    let mut entries = launch.entries.to_vec();
+    entries.push(Entry::new(
+        EntryId(3),
+        root.join("folder"),
+        EntryKind::Directory,
+    ));
+    launch.entries = entries.into();
+    launch.view = Arc::new(DirectoryIndex::from_entries(&launch.entries));
+    let root_snapshot = TreeRootSnapshot {
+        pane: PaneId::Left,
+        navigation: NavigationId(1),
+        entries: launch.entries.clone(),
+        index: launch.view.clone(),
+    };
+    let make_row = |id: u64, original: Option<usize>, nested: bool| {
+        let mut entry = original.map_or_else(
+            || Entry::new(EntryId(id), root.join("folder/child"), EntryKind::Directory),
+            |index| launch.entries[index].clone(),
+        );
+        entry.id = EntryId(id);
+        TreeDisplayRow {
+            id: TreeRowId(id),
+            entry,
+            parent: nested.then_some(TreeRowId(10)),
+            depth: usize::from(nested),
+            disclosure: if id == 10 {
+                TreeDisclosure::Expanded
+            } else {
+                TreeDisclosure::None
+            },
+            expanded: id == 10,
+            selectable: true,
+            navigable: original == Some(3) || nested,
+            context_only: false,
+            error: None,
+            error_details: None,
+            original_root_entry: original.map(|index| launch.entries[index].id),
+            prefix_end: 0,
+            search_match: false,
+        }
+    };
+    let projection = Arc::new(
+        TreeProjection::new(
+            root_snapshot,
+            TreeViewStamp {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                session: TreeSessionId(1),
+                revision: TreeRevision(1),
+            },
+            TreeLayoutRevision(1),
+            vec![
+                make_row(10, Some(3), false),
+                make_row(11, None, true),
+                make_row(12, Some(1), false),
+                make_row(13, Some(0), false),
+            ],
+        )
+        .unwrap(),
+    );
+    launch.tree = Some(TreeViewer {
+        view: projection,
+        focused: TreeRowId(13),
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let native = Arc::new(InstalledProvider::from_installation(installation(), None));
+    let service = super::service(runtime.handle(), native);
+    let session = open(&service, launch);
+    wait_text(&session, "First native provider content");
+    assert!(session.send(ViewerInput::NextFile));
+    wait_text(&session, "Second native provider content");
+    assert!(session.send(ViewerInput::NextFile));
+    wait_text(&session, "First native provider content");
+    session.close();
 }
 
 #[test]
@@ -148,11 +246,14 @@ fn wait_frame(
     while Instant::now() < deadline {
         for output in session.mailbox.take() {
             match output {
-                ViewerOutput::Frame(frame) if predicate(&frame) => return frame,
+                ViewerOutput::Frame(frame) if predicate(&frame) => return *frame,
                 ViewerOutput::Frame(frame) => {
                     last_frame = Some((frame.mode, frame.caption, frame.status));
                 }
                 ViewerOutput::Status(message) => status = message,
+                ViewerOutput::ImageUnavailable { message, .. } => {
+                    panic!("{expected}: image/document unavailable: {message}");
+                }
                 ViewerOutput::Closed => panic!("{expected}: viewer closed: {status}"),
                 _ => {}
             }
@@ -321,7 +422,7 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
         ),
     );
     let source = wait_frame(&session, "Source first page", |frame| {
-        frame.mode == 2 && frame.accessible_text.contains("native row 0001 α😀")
+        frame.mode == 2 && frame.status.starts_with("Ln 1, Col 1")
     });
     assert!(source.accessible_text.contains("native row 0001 α😀"));
     assert!(source.image.is_none());
@@ -332,9 +433,7 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
         case_sensitive: true,
     }));
     let found = wait_frame(&session, "Source exact search progress", |frame| {
-        frame.mode == 2
-            && frame.revision > source.revision
-            && frame.accessible_text.starts_with("row 0200")
+        frame.mode == 2 && frame.status.starts_with("Ln 200, Col ")
     });
     assert!(found.revision > source.revision);
     assert!(found.position > source.position);
@@ -355,25 +454,50 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
     assert!(markdown.image.is_none());
 
     assert!(session.send(ViewerInput::NextFile));
-    let image = wait_frame(&session, "decoded bitmap pixels", |frame| {
-        frame.caption.contains("image.bmp") && frame.image.is_some() && !frame.pixels.is_empty()
+    let image = wait_frame(&session, "decoded bitmap tiles", |frame| {
+        frame.caption.contains("image.bmp")
+            && frame.tiles.as_ref().is_some_and(|tiles| !tiles.is_empty())
     });
     let info = image.image.as_ref().unwrap();
     assert_eq!(image.mode, midnight_core::VIEWER_MODE_IMAGE);
     assert_eq!((info.width, info.height, info.page), (64, 32, 0));
-    assert!(
-        image
-            .pixels
+    assert!(image.tiles.as_ref().unwrap().iter().any(|tile| {
+        tile.validate().unwrap();
+        tile.pixels
+            .rgba()
             .as_chunks::<4>()
             .0
             .contains(&[32, 144, 224, 255])
-    );
+    }));
 
     assert!(session.send(ViewerInput::NextFile));
-    let pdf = wait_frame(&session, "PDF first page", |frame| {
+    let mut pdf = wait_frame(&session, "PDF first page", |frame| {
         frame.caption.contains("pages.pdf")
             && frame.image.as_ref().is_some_and(|image| image.page == 1)
     });
     assert_pdf_page(&pdf, 1);
+    assert!(session.send(ViewerInput::Image {
+        frame: pdf.revision,
+        input: ViewerImageInput::ActualPixels,
+    }));
+    pdf = wait_frame(&session, "PDF manual zoom", |frame| {
+        frame
+            .image
+            .as_ref()
+            .is_some_and(|image| image.page == 1 && !image.fitted && image.zoom == 1.0)
+    });
+    for (delta, page) in [(1, 2), (-1, 1)] {
+        assert!(session.send(ViewerInput::DocumentPage {
+            frame: pdf.revision,
+            delta
+        }));
+        pdf = wait_frame(&session, "PDF page navigation at manual zoom", |frame| {
+            frame.revision > pdf.revision
+                && frame.image.as_ref().is_some_and(|image| image.page == page)
+        });
+        assert_pdf_page(&pdf, page);
+        assert_eq!(pdf.image.as_ref().unwrap().zoom, 1.0);
+        assert!(!pdf.image.as_ref().unwrap().fitted);
+    }
     session.close();
 }

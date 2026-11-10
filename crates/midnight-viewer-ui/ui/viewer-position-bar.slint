@@ -1,0 +1,63 @@
+export component PositionBar inherits Rectangle {
+    in property <float> position;
+    in property <color> accent;
+    in property <bool> horizontal;
+    in property <float> extent: 0.05;
+    in property <string> context-key;
+    private property <bool> dragging;
+    private property <float> drag-position;
+    private property <length> grab-offset;
+    private property <length> drag-thumb-length;
+    private property <length> drag-track-length;
+    private property <length> track-length: root.horizontal ? root.width : root.height;
+    private property <length> thumb-length: root.dragging ? root.drag-thumb-length
+        : min(root.track-length, max(28px, root.track-length * clamp(root.extent, 0, 1)));
+    out property <float> shown-position: root.dragging ? root.drag-position : clamp(root.position, 0, 1);
+    callback seek(float);
+    changed width => { root.dragging = false; }
+    changed height => { root.dragging = false; }
+    changed context-key => { root.dragging = false; }
+    changed visible => { if !root.visible { root.dragging = false; } }
+    background: #80808020;
+    min-width: horizontal ? 0px : 14px;
+    max-width: horizontal ? 1000000px : 14px;
+    min-height: horizontal ? 14px : 0px;
+    max-height: horizontal ? 14px : 1000000px;
+    thumb := Rectangle {
+        width: root.horizontal ? root.thumb-length : max(0px, parent.width - 4px);
+        height: root.horizontal ? max(0px, parent.height - 4px) : root.thumb-length;
+        x: root.horizontal ? root.shown-position * max(0px, root.width - self.width) : 2px;
+        y: root.horizontal ? 2px : root.shown-position * max(0px, root.height - self.height);
+        background: root.accent; border-radius: 3px;
+    }
+    TouchArea {
+        function drag() {
+            let position = clamp(((root.horizontal ? self.mouse-x : self.mouse-y) - root.grab-offset)
+                / max(1px, root.drag-track-length - root.drag-thumb-length), 0, 1);
+            if position != root.drag-position {
+                root.drag-position = position;
+                root.seek(position);
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                let pointer = root.horizontal ? self.mouse-x : self.mouse-y;
+                let start = root.horizontal ? thumb.x : thumb.y;
+                root.drag-track-length = root.track-length;
+                root.drag-thumb-length = root.thumb-length;
+                let on-thumb = pointer >= start && pointer <= start + root.thumb-length;
+                root.grab-offset = on-thumb
+                    ? pointer - start : root.thumb-length / 2;
+                root.drag-position = root.shown-position;
+                root.dragging = true;
+                if !on-thumb { self.drag(); }
+            }
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left && root.dragging {
+                self.drag();
+                root.dragging = false;
+            }
+            if event.kind == PointerEventKind.cancel { root.dragging = false; }
+        }
+        moved => { if root.dragging && self.pressed { self.drag(); } }
+    }
+}

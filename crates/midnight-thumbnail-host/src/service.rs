@@ -1,6 +1,6 @@
 //! Bounded backend orchestration. UI snapshots contain identities and source factories, never I/O.
 use crate::{
-    cache::{Cache, DEFAULT_DISK_BYTES, Key},
+    cache::{Cache, CachedFrame, DEFAULT_DISK_BYTES, Key, resolution_edge},
     decode::{self, Source},
     providers::{self, Provider},
     scheduler::{Item, Scheduler, Work},
@@ -73,7 +73,7 @@ impl Source for FrozenSource {
     }
 }
 type Renderer = Arc<
-    dyn Fn(&Target, &Provider, Work, &Mutex<Cache>, &AtomicBool) -> io::Result<Arc<Frame>>
+    dyn Fn(&Target, &Provider, Work, &Mutex<Cache>, &AtomicBool) -> io::Result<CachedFrame>
         + Send
         + Sync,
 >;
@@ -91,6 +91,8 @@ fn cache_failure(error: io::Error) -> io::Error {
 #[derive(Clone)]
 pub struct Target {
     pub token: u64,
+    /// Requested physical edge, bounded by the existing worker protocol.
+    pub edge: u32,
     pub identity: Vec<u8>,
     pub extension: String,
     pub selected: bool,
@@ -104,10 +106,13 @@ pub struct View {
 pub struct Ready {
     pub generation: u64,
     pub token: u64,
+    /// Decode coverage, independent of the source's actual pixel dimensions.
+    pub edge: u32,
     pub frame: Arc<Frame>,
 }
 struct Mailbox {
     next: Option<View>,
+    retries: HashMap<(u64, u64, u8), (Work, u32)>,
     stopped: bool,
     clear_cache: bool,
     notice: Option<String>,
@@ -135,6 +140,7 @@ impl Service {
     ) -> Self {
         let mailbox = Arc::new(Mutex::new(Mailbox {
             next: None,
+            retries: HashMap::new(),
             stopped: false,
             clear_cache: false,
             notice: None,
@@ -142,8 +148,9 @@ impl Service {
         let (ready_tx, ready) = mpsc::sync_channel(4);
         let input = mailbox.clone();
         let thread = thread::spawn(move || {
-            // The presentation layer can retain 256 * 6 * 96² RGBA bytes (~54 MiB).
-            // Leave room for bounded replies and this 4 MiB warm cache within 64 MiB.
+            // Presentation enforces its 54 MiB pixel budget independently of resolution.
+            // Four replies at the protocol's 512² RGBA bound and this 4 MiB warm cache
+            // leave bounded headroom; source captures remain owned by admitted workers.
             let initialized = (|| {
                 let (executable, cache) = locations()?;
                 let providers = providers::discover(&executable)?;
@@ -175,17 +182,51 @@ impl Service {
         }
     }
     pub fn set_view(&self, view: View) -> bool {
-        if view.targets.len() > 256 {
+        if view.targets.len() > 256
+            || view
+                .targets
+                .iter()
+                .any(|target| target.edge == 0 || target.edge > midnight_thumbnail_api::MAX_EDGE)
+        {
             return false;
         }
-        self.mailbox
+        let mut mailbox = self
+            .mailbox
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .next = Some(view);
+            .unwrap_or_else(|error| error.into_inner());
+        if mailbox.stopped {
+            return false;
+        }
+        mailbox.next = Some(view);
         true
     }
     pub fn poll(&self) -> Option<Ready> {
         self.ready.try_recv().ok()
+    }
+    /// Requeue a rejected upload only after presentation capacity or the view changes.
+    /// No pixels are retained here; the worker reuses its validated cache entry.
+    pub fn retry_delivery(&self, work: Work, retained_edge: u32) -> bool {
+        if work.frame >= midnight_thumbnail_api::MAX_ANIMATION_FRAMES
+            || work.edge == 0
+            || work.edge > midnight_thumbnail_api::MAX_EDGE
+            || retained_edge >= work.edge
+        {
+            return false;
+        }
+        let mut mailbox = self
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let key = (work.generation, work.token, work.frame);
+        if mailbox.stopped
+            || (mailbox.retries.len()
+                >= 256 * usize::from(midnight_thumbnail_api::MAX_ANIMATION_FRAMES)
+                && !mailbox.retries.contains_key(&key))
+        {
+            return false;
+        }
+        mailbox.retries.insert(key, (work, retained_edge));
+        true
     }
     pub fn clear_cache(&self) {
         self.mailbox
@@ -250,7 +291,7 @@ impl Drop for Service {
 }
 struct Completion {
     work: Work,
-    result: io::Result<Arc<Frame>>,
+    result: io::Result<CachedFrame>,
 }
 fn run(
     input: Arc<Mutex<Mailbox>>,
@@ -269,11 +310,11 @@ fn run(
     let mut generation = 0;
     let mut cache_error_reported = false;
     loop {
-        let view = {
+        let (view, retries) = {
             let mut mailbox = input.lock().unwrap_or_else(|error| error.into_inner());
             stopped |= mailbox.stopped;
             clearing |= std::mem::take(&mut mailbox.clear_cache);
-            mailbox.next.take()
+            (mailbox.next.take(), std::mem::take(&mut mailbox.retries))
         };
         if let Some(view) = view {
             if generation != view.generation {
@@ -299,6 +340,7 @@ fn run(
                     .clone();
                 items.push(Item {
                     token: target.token,
+                    edge: target.edge,
                     video: provider.manifest.video,
                     selected: target.selected,
                     hovered: target.hovered,
@@ -309,12 +351,16 @@ fn run(
             for (work, cancel, _) in active.values() {
                 if work.generation != view.generation
                     || targets.get(&work.token).is_none_or(|(target, _)| {
-                        work.frame > 0 && !target.selected && !target.hovered
+                        work.edge < target.edge
+                            || (work.frame > 0 && !target.selected && !target.hovered)
                     })
                 {
                     cancel.store(true, Ordering::Release);
                 }
             }
+        }
+        for (_, (work, retained_edge)) in retries {
+            scheduler.retry_delivery(work, retained_edge);
         }
         if stopped || clearing {
             for (_, cancel, _) in active.values() {
@@ -347,17 +393,21 @@ fn run(
                 scheduler.abandon(completion.work);
                 false
             } else {
-                scheduler.complete(completion.work, completion.result.is_ok())
+                scheduler.complete_with_coverage(
+                    completion.work,
+                    completion.result.as_ref().ok().map(|frame| frame.edge),
+                )
             };
             if accepted
                 && !stopped
                 && !clearing
-                && let Ok(frame) = completion.result
+                && let Ok(result) = completion.result
             {
                 let mut ready = Ready {
                     generation: completion.work.generation,
                     token: completion.work.token,
-                    frame,
+                    edge: result.edge,
+                    frame: result.frame,
                 };
                 loop {
                     match output.try_send(ready) {
@@ -402,6 +452,7 @@ fn run(
                     .values()
                     .map(|(target, provider)| Item {
                         token: target.token,
+                        edge: target.edge,
                         video: provider.manifest.video,
                         selected: target.selected,
                         hovered: target.hovered,
@@ -438,7 +489,7 @@ fn render(
     work: Work,
     cache: &Mutex<Cache>,
     cancel: &AtomicBool,
-) -> io::Result<Arc<Frame>> {
+) -> io::Result<CachedFrame> {
     let source = {
         let budget = midnight_work_budget::shared_io();
         let _permit = budget
@@ -452,18 +503,19 @@ fn render(
     // Keep native paths or future authenticated provider addresses out of cache record plaintext.
     // The complete source revision remains in the key and is independently revalidated on every hit.
     let opaque_identity = blake3::hash(&target.identity);
+    let edge = resolution_edge(work.edge);
     let key = Key::new(
         &provider.manifest.id,
         opaque_identity.as_bytes(),
         &*source,
-        (96, 96),
+        (edge, edge),
         &provider.manifest.version,
         work.frame,
     )?;
     if let Some(frame) = cache
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .get(&key, &*source)
+        .get_covering(&key, &*source)
         .map_err(cache_failure)?
     {
         check_cancel(cancel)?;
@@ -478,8 +530,8 @@ fn render(
         Request {
             id: work.token,
             source_length: source.length(),
-            width: 96,
-            height: 96,
+            width: edge,
+            height: edge,
             frame: work.frame,
         },
         cancel,
@@ -492,6 +544,7 @@ fn render(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .put(&key, &*source, frame)
+        .map(|frame| CachedFrame { frame, edge })
         .map_err(cache_failure)
 }
 
@@ -515,3 +568,7 @@ mod tests;
 #[cfg(test)]
 #[path = "service_capture_tests.rs"]
 mod capture_tests;
+
+#[cfg(test)]
+#[path = "service_archive_tests.rs"]
+mod archive_tests;

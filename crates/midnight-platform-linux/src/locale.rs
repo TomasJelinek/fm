@@ -152,6 +152,39 @@ impl LocaleService for LinuxFileSystem {
         modified(value)
     }
 
+    fn format_archive_local_time(
+        &self,
+        value: midnight_core::ArchiveTimestamp,
+    ) -> Option<LocalizedDateTime> {
+        use midnight_core::ArchiveTimestamp;
+        if !value.is_valid() {
+            return None;
+        }
+        let ArchiveTimestamp::Local {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        } = value
+        else {
+            return None;
+        };
+        // SAFETY: zero is valid for every tm field; populate a validated calendar.
+        let mut calendar: libc::tm = unsafe { std::mem::zeroed() };
+        calendar.tm_year = year - 1900;
+        calendar.tm_mon = i32::from(month) - 1;
+        calendar.tm_mday = i32::from(day);
+        calendar.tm_hour = i32::from(hour);
+        calendar.tm_min = i32::from(minute);
+        calendar.tm_sec = i32::from(second);
+        // SAFETY: live writable tm; GNU timegm fills weekday/year-day without
+        // changing the process timezone. Its return value is not a source timestamp.
+        unsafe { libc::timegm(&mut calendar) };
+        format_calendar(&calendar)
+    }
+
     fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
         crate::sort_keys::key(value)
     }
@@ -184,11 +217,15 @@ pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
     if unsafe { libc::localtime_r(&seconds, &mut calendar) }.is_null() {
         return None;
     }
+    format_calendar(&calendar)
+}
+
+fn format_calendar(calendar: &libc::tm) -> Option<LocalizedDateTime> {
     CURRENT.with(|value| {
         let locale = &value.as_ref().ok()?.time;
         Some(LocalizedDateTime {
-            date: locale.format(&calendar, c"%x")?,
-            time: locale.format(&calendar, c"%X")?,
+            date: locale.format(calendar, c"%x")?,
+            time: locale.format(calendar, c"%X")?,
         })
     })
 }

@@ -1,5 +1,8 @@
 use crate::glyph_cache::{GlyphCache, GlyphKey};
-use crate::{LayoutError, Raster, TextPage, Viewport, raster::premultiply};
+use crate::{
+    LayoutError, Raster, TextPage, Viewport,
+    raster::{premultiply, stable_pixel},
+};
 use parley::PositionedLayoutItem;
 use std::collections::HashMap;
 use swash::{
@@ -25,12 +28,46 @@ impl GlyphPainter {
         view: Viewport,
         raster: &mut Raster,
     ) -> Result<(), LayoutError> {
+        if let Some(grid) = &page.composite {
+            for rect in &grid.borders {
+                raster.fill(*rect, view.origin, grid.border_color);
+            }
+            for part in &grid.parts {
+                if part.origin[1] + part.page.height() < view.origin[1]
+                    || part.origin[1] > view.origin[1] + view.height as f32
+                {
+                    continue;
+                }
+                self.paint(&part.page, view.translated(part.origin), raster)?;
+            }
+            return Ok(());
+        }
         for line in page.layout.lines() {
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
                 };
                 let run = glyph_run.run();
+                if let Some(decoration) = &glyph_run.style().strikethrough {
+                    let y = glyph_run.baseline()
+                        - decoration
+                            .offset
+                            .unwrap_or(run.metrics().strikethrough_offset);
+                    let height = decoration
+                        .size
+                        .unwrap_or(run.metrics().strikethrough_size)
+                        .max(1.0);
+                    raster.fill(
+                        crate::Rect {
+                            x0: f64::from(glyph_run.offset()),
+                            y0: f64::from(y),
+                            x1: f64::from(glyph_run.offset() + glyph_run.advance()),
+                            y1: f64::from(y + height),
+                        },
+                        view.origin,
+                        decoration.brush,
+                    );
+                }
                 if let Some(decoration) = &glyph_run.style().underline {
                     let y = glyph_run.baseline()
                         - decoration.offset.unwrap_or(run.metrics().underline_offset);
@@ -60,18 +97,23 @@ impl GlyphPainter {
                 let synthesis = run.synthesis();
                 for glyph in glyph_run.positioned_glyphs() {
                     let id = u16::try_from(glyph.id).map_err(|_| LayoutError::InvalidFont)?;
+                    // Raster phase belongs to the final screen position. A
+                    // source-page rebase must not change an overlapping glyph.
+                    let x = stable_pixel(f64::from(glyph.x) - f64::from(view.origin[0]));
+                    let y = stable_pixel(f64::from(glyph.y) - f64::from(view.origin[1]));
+                    let fraction = [(x - x.floor()) as f32, (y - y.floor()) as f32];
                     let key = GlyphKey {
                         font: font_id,
                         size: run.font_size().to_bits(),
                         coordinates: run.normalized_coords().to_vec(),
                         glyph: id,
-                        fraction: [glyph.x.fract().to_bits(), glyph.y.fract().to_bits()],
+                        fraction: fraction.map(f32::to_bits),
                         color: glyph_run.style().brush,
                         embolden: synthesis.embolden(),
                         skew: synthesis.skew().unwrap_or(0.0).to_bits(),
                     };
-                    let x = f64::from(glyph.x.floor()) - f64::from(view.origin[0]);
-                    let y = f64::from(glyph.y.floor()) - f64::from(view.origin[1]);
+                    let x = x.floor();
+                    let y = y.floor();
                     if let Some(image) = self.cache.get(&key) {
                         if let Some(image) = image {
                             paint_image(raster, image, x, y, key.color);
@@ -100,7 +142,7 @@ impl GlyphPainter {
                         Source::Outline,
                         Source::Bitmap(StrikeWith::BestFit),
                     ]);
-                    render.offset(Vector::new(glyph.x.fract(), -glyph.y.fract()));
+                    render.offset(Vector::new(fraction[0], -fraction[1]));
                     render.default_color(glyph_run.style().brush);
                     if synthesis.embolden() {
                         render.embolden(run.font_size() * 0.02);

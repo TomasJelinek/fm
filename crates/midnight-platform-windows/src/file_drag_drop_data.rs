@@ -1,6 +1,6 @@
 //! Bounded Unicode CF_HDROP offering/reading. No clipboard or filesystem calls.
 use super::*;
-use std::mem::ManuallyDrop;
+use std::{mem::ManuallyDrop, rc::Rc};
 use windows::{
     Win32::{
         Foundation::{
@@ -19,10 +19,47 @@ use windows::{
 };
 use windows_sys::Win32::{
     Foundation::GlobalFree,
+    System::DataExchange::RegisterClipboardFormatW,
     System::Memory::{
         GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
     },
 };
+
+#[derive(Clone, Copy, Default, Debug)]
+pub(super) struct Feedback {
+    performed: Option<u32>,
+    logical: Option<u32>,
+}
+impl Feedback {
+    pub(super) fn finish(self, effect: DROPEFFECT) -> DragFinish {
+        // These are receiver reports, never authority to delete a source. Conventional
+        // MOVE asks the source to delete its copy; this application deliberately refuses.
+        if effect.0 == 2 && self.performed == Some(2) {
+            return DragFinish::SourceRetained;
+        }
+        match (self.performed, self.logical, effect.0) {
+            (Some(2), Some(2), 0 | 1) => DragFinish::Moved,
+            (Some(0), Some(2) | None, _) | (None, Some(2), _) => DragFinish::Moved,
+            (Some(1), Some(1) | None, _) | (None, Some(1), _) => DragFinish::Copied,
+            (None, None, 1) => DragFinish::Copied,
+            _ => DragFinish::Unconfirmed,
+        }
+    }
+}
+
+fn feedback_formats() -> Result<[u16; 2], FsError> {
+    // Registered names are fixed OS protocol identifiers; no target-controlled allocation.
+    let ids = unsafe {
+        [
+            RegisterClipboardFormatW(w!("Performed DropEffect").as_ptr()),
+            RegisterClipboardFormatW(w!("Logical Performed DropEffect").as_ptr()),
+        ]
+    };
+    if ids.contains(&0) {
+        return Err(error(io::Error::last_os_error()));
+    }
+    Ok(ids.map(|id| id as u16))
+}
 
 fn format() -> FORMATETC {
     FORMATETC {
@@ -39,21 +76,34 @@ pub(super) fn supports_files(data: &IDataObject) -> bool {
     unsafe { data.QueryGetData(&format()).is_ok() }
 }
 
+#[cfg(test)]
 pub(super) fn make_data(files: &FileClipboard) -> Result<IDataObject, FsError> {
+    make_offer(files).map(|(data, _)| data)
+}
+
+pub(super) fn make_offer(
+    files: &FileClipboard,
+) -> Result<(IDataObject, Rc<Cell<Feedback>>), FsError> {
     if files.intent != FileClipboardIntent::Copy {
         return Err(error("Only copy file offers are supported."));
     }
     let bytes = crate::file_clipboard::encode_hdrop(files)?;
-    Ok(Data {
+    let feedback = Rc::new(Cell::new(Feedback::default()));
+    let data = Data {
         bytes: bytes.into(),
+        formats: feedback_formats()?,
+        feedback: feedback.clone(),
     }
-    .into())
+    .into();
+    Ok((data, feedback))
 }
 
 #[cfg(test)]
 pub(super) fn malformed_offer(bytes: Vec<u8>) -> IDataObject {
     Data {
         bytes: bytes.into(),
+        formats: feedback_formats().unwrap(),
+        feedback: Rc::default(),
     }
     .into()
 }
@@ -61,51 +111,40 @@ pub(super) fn malformed_offer(bytes: Vec<u8>) -> IDataObject {
 #[implement(IDataObject, Agile = false)]
 struct Data {
     bytes: Arc<[u8]>,
+    formats: [u16; 2],
+    feedback: Rc<Cell<Feedback>>,
 }
 impl IDataObject_Impl for Data_Impl {
     fn GetData(&self, requested: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
         self.QueryGetData(requested).ok()?;
-        // SAFETY: the native allocation is bounded by the prevalidated encoded file list.
-        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, self.bytes.len()) };
-        if memory.is_null() {
-            return Err(windows::core::Error::from_thread());
+        let id = unsafe { (*requested).cfFormat };
+        if id != CF_HDROP.0 {
+            let feedback = self.feedback.get();
+            let value = if id == self.formats[0] {
+                feedback.performed
+            } else {
+                feedback.logical
+            };
+            return medium_bytes(
+                &value
+                    .ok_or_else(|| windows::core::Error::from(DV_E_FORMATETC))?
+                    .to_le_bytes(),
+            );
         }
-        let pointer = unsafe { GlobalLock(memory) };
-        if pointer.is_null() {
-            let failure = windows::core::Error::from_thread();
-            unsafe {
-                GlobalFree(memory);
-            }
-            return Err(failure);
-        }
-        unsafe {
-            ptr::copy_nonoverlapping(self.bytes.as_ptr(), pointer.cast(), self.bytes.len());
-            GlobalUnlock(memory);
-        }
-        // The caller owns this HGLOBAL and releases it through ReleaseStgMedium.
-        Ok(STGMEDIUM {
-            tymed: TYMED_HGLOBAL.0 as u32,
-            u: STGMEDIUM_0 {
-                hGlobal: HGLOBAL(memory),
-            },
-            pUnkForRelease: ManuallyDrop::new(None),
-        })
+        medium_bytes(&self.bytes)
     }
     fn GetDataHere(&self, _: *const FORMATETC, _: *mut STGMEDIUM) -> windows::core::Result<()> {
         Err(E_NOTIMPL.into())
     }
     fn QueryGetData(&self, requested: *const FORMATETC) -> HRESULT {
-        // SAFETY: COM callers provide a borrowed FORMATETC or null. No pointed-to target-device
-        // memory is read; target-specific representations are unsupported.
         let Some(requested) = (unsafe { requested.as_ref() }) else {
             return E_POINTER;
         };
-        if requested.cfFormat == CF_HDROP.0
-            && requested.ptd.is_null()
-            && requested.dwAspect == DVASPECT_CONTENT.0
-            && requested.lindex == -1
-            && requested.tymed & TYMED_HGLOBAL.0 as u32 != 0
-        {
+        let feedback = self.feedback.get();
+        let available = requested.cfFormat == CF_HDROP.0
+            || (requested.cfFormat == self.formats[0] && feedback.performed.is_some())
+            || (requested.cfFormat == self.formats[1] && feedback.logical.is_some());
+        if available && valid_format(requested) {
             HRESULT(0)
         } else {
             DV_E_FORMATETC
@@ -121,11 +160,54 @@ impl IDataObject_Impl for Data_Impl {
     }
     fn SetData(
         &self,
-        _: *const FORMATETC,
-        _: *const STGMEDIUM,
-        _: BOOL,
+        requested: *const FORMATETC,
+        medium: *const STGMEDIUM,
+        release: BOOL,
     ) -> windows::core::Result<()> {
-        Err(E_NOTIMPL.into())
+        // COM provides borrowed descriptors. Copy only a bounded DWORD; never retain target
+        // pointers or use completion feedback to perform filesystem operations.
+        let (Some(requested), Some(medium)) =
+            (unsafe { requested.as_ref() }, unsafe { medium.as_ref() })
+        else {
+            return Err(E_POINTER.into());
+        };
+        if !valid_format(requested)
+            || !self.formats.contains(&requested.cfFormat)
+            || medium.tymed != TYMED_HGLOBAL.0 as u32
+        {
+            return Err(DV_E_FORMATETC.into());
+        }
+        let memory = unsafe { medium.u.hGlobal.0 };
+        if memory.is_null() || !(4..=64).contains(&unsafe { GlobalSize(memory) }) {
+            return Err(DV_E_FORMATETC.into());
+        }
+        let pointer = unsafe { GlobalLock(memory) };
+        if pointer.is_null() {
+            return Err(windows::core::Error::from_thread());
+        }
+        let value = unsafe { pointer.cast::<u32>().read_unaligned() };
+        unsafe {
+            GlobalUnlock(memory);
+        }
+        if !matches!(value, 0..=2) {
+            return Err(DV_E_FORMATETC.into());
+        }
+        let mut feedback = self.feedback.get();
+        if requested.cfFormat == self.formats[0] {
+            feedback.performed = Some(value);
+        } else {
+            feedback.logical = Some(value);
+        }
+        self.feedback.set(feedback);
+        if release.as_bool() {
+            // On success only, fRelease transfers ownership. Release a shallow descriptor
+            // copy: its ManuallyDrop COM field must not be cloned or released a second time.
+            let mut owned = unsafe { ptr::read(medium) };
+            unsafe {
+                ReleaseStgMedium(&mut owned);
+            }
+        }
+        Ok(())
     }
     fn EnumFormatEtc(&self, direction: u32) -> windows::core::Result<IEnumFORMATETC> {
         if direction != DATADIR_GET.0 as u32 {
@@ -149,6 +231,40 @@ impl IDataObject_Impl for Data_Impl {
     }
 }
 
+fn valid_format(requested: &FORMATETC) -> bool {
+    requested.ptd.is_null()
+        && requested.dwAspect == DVASPECT_CONTENT.0
+        && requested.lindex == -1
+        && requested.tymed & TYMED_HGLOBAL.0 as u32 != 0
+}
+
+fn medium_bytes(bytes: &[u8]) -> windows::core::Result<STGMEDIUM> {
+    // SAFETY: the native allocation is bounded by the prevalidated encoded file list.
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes.len()) };
+    if memory.is_null() {
+        return Err(windows::core::Error::from_thread());
+    }
+    let pointer = unsafe { GlobalLock(memory) };
+    if pointer.is_null() {
+        let failure = windows::core::Error::from_thread();
+        unsafe {
+            GlobalFree(memory);
+        }
+        return Err(failure);
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.cast(), bytes.len());
+        GlobalUnlock(memory);
+    }
+    // The caller owns this HGLOBAL and releases it through ReleaseStgMedium.
+    Ok(STGMEDIUM {
+        tymed: TYMED_HGLOBAL.0 as u32,
+        u: STGMEDIUM_0 {
+            hGlobal: HGLOBAL(memory),
+        },
+        pUnkForRelease: ManuallyDrop::new(None),
+    })
+}
 struct Medium(STGMEDIUM);
 impl Drop for Medium {
     fn drop(&mut self) {

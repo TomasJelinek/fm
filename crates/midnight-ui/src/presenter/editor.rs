@@ -6,6 +6,8 @@ pub(crate) struct EditorState {
     pub(crate) default_label: String,
     pub(crate) error: String,
     pub(crate) revision: u64,
+    pub(crate) draft: Option<super::editor_draft::Draft>,
+    pub(crate) dirty: bool,
     pending: bool,
 }
 
@@ -74,6 +76,9 @@ impl Presenter {
             return;
         }
         self.editor.error.clear();
+        self.editor.draft = None;
+        self.editor.dirty = false;
+        self.editor.revision = self.editor.revision.saturating_add(1);
         self.preferences.edited.editor = true;
         let mut preferences = self.preferences.values.clone();
         preferences.editor = editor;
@@ -82,6 +87,8 @@ impl Presenter {
 
     pub(crate) fn restore_editor(&mut self, send: &dyn Fn(Command) -> bool) {
         self.editor.error.clear();
+        self.editor.draft = None;
+        self.editor.dirty = false;
         self.editor.revision = self.editor.revision.wrapping_add(1);
         self.preferences.edited.editor = true;
         let mut preferences = self.preferences.values.clone();
@@ -90,6 +97,9 @@ impl Presenter {
     }
 
     pub(crate) fn edit_file(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if !self.tree_action_allowed(pane) {
+            return;
+        }
         if !self.native_action_allowed(pane) {
             return;
         }

@@ -94,42 +94,66 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         Command::ConfirmOperation { id, new_name: Some(name) } if *id == request.id && name == "new.txt")));
     assert!(ui.window.get_operation_token().is_empty());
 
-    commands.borrow_mut().clear();
-    chord(&ui.window, &[Key::Shift], Key::Delete);
-    assert!(commands.borrow().iter().any(|command| matches!(command,
-        Command::PrepareOperation(request) if request.kind == MutationKind::Delete(DeleteMode::Permanent))));
-    let deletion = commands
-        .borrow()
-        .iter()
-        .find_map(|command| match command {
-            Command::PrepareOperation(request) => Some(request.clone()),
-            _ => None,
-        })
-        .unwrap();
-    state
-        .borrow_mut()
-        .apply(Event::Operation(OperationEvent::Preview(Arc::new(
-            OperationPreview {
-                id: deletion.id,
-                kind: deletion.kind,
-                files: 1,
-                folders: 0,
-                file_bytes: None,
-                sample: vec![],
-            },
-        ))));
-    refresh(&ui.window, &state.borrow());
-    ui.draw();
-    assert!(ui.window.get_operation_dangerous());
-    key(&ui.window, Key::Return); // Destructive confirmation defaults to Cancel.
-    assert!(commands.borrow().iter().any(|command| matches!(command,
-        Command::CancelOperation(id) if *id == deletion.id)));
-    assert!(
-        !commands
+    for (delete_key, permanent) in [
+        (Key::Delete, true),
+        (Key::F8, true),
+        (Key::Delete, false),
+        (Key::F8, false),
+    ] {
+        commands.borrow_mut().clear();
+        ui.window.invoke_focus_files();
+        chord(
+            &ui.window,
+            if permanent { &[Key::Shift] } else { &[] },
+            delete_key,
+        );
+        let expected_mode = if permanent {
+            DeleteMode::Permanent
+        } else {
+            DeleteMode::Trash
+        };
+        assert!(
+            commands.borrow().iter().any(|command| matches!(command,
+        Command::PrepareOperation(request) if request.kind == MutationKind::Delete(expected_mode)))
+        );
+        let deletion = commands
             .borrow()
             .iter()
-            .any(|command| matches!(command, Command::ConfirmOperation { .. }))
-    );
+            .find_map(|command| match command {
+                Command::PrepareOperation(request) => Some(request.clone()),
+                _ => None,
+            })
+            .unwrap();
+        state
+            .borrow_mut()
+            .apply(Event::Operation(OperationEvent::Preview(Arc::new(
+                OperationPreview {
+                    id: deletion.id,
+                    kind: deletion.kind,
+                    files: 1,
+                    folders: 0,
+                    file_bytes: None,
+                    sample: vec![],
+                },
+            ))));
+        refresh(&ui.window, &state.borrow());
+        ui.draw();
+        assert_eq!(ui.window.get_operation_dangerous(), permanent);
+        // Merely displaying the confirmation must never perform the operation.
+        assert!(!commands.borrow().iter().any(|command| matches!(
+            command,
+            Command::ConfirmOperation { .. } | Command::CancelOperation(_)
+        )));
+        key(&ui.window, Key::Return);
+        assert!(commands.borrow().iter().any(|command| matches!(command,
+        Command::ConfirmOperation { id, new_name: None } if *id == deletion.id)));
+        assert!(
+            !commands
+                .borrow()
+                .iter()
+                .any(|command| matches!(command, Command::CancelOperation(_)))
+        );
+    }
     ui.window.invoke_focus_command();
     commands.borrow_mut().clear();
     key(&ui.window, Key::Delete);

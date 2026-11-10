@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 
 #[path = "operation_summary_tests.rs"]
 mod summary;
+#[path = "delete_throughput_tests.rs"]
+mod throughput;
 
 #[derive(Default)]
 struct Calls {
@@ -22,6 +24,8 @@ struct Calls {
     directories: Mutex<Vec<(PathBuf, PathBuf)>>,
     deleted: Mutex<Vec<(PathBuf, DeleteMode)>>,
     blocked: std::sync::atomic::AtomicBool,
+    complete_after_cancel: std::sync::atomic::AtomicBool,
+    blocked_after_progress: std::sync::atomic::AtomicBool,
     fail_after_progress: std::sync::atomic::AtomicBool,
     cleanup_blocked: std::sync::atomic::AtomicBool,
     cleanup_entered: tokio::sync::Notify,
@@ -115,10 +119,12 @@ impl PreparedMutation for FakeTarget {
             .unwrap()
             .push((self.item.path.clone(), mode));
         self.calls.entered.notify_one();
-        while self.calls.blocked.load(Ordering::Acquire) && !cancel.is_cancelled() {
+        while self.calls.blocked.load(Ordering::Acquire)
+            && (!cancel.is_cancelled() || self.calls.complete_after_cancel.load(Ordering::Acquire))
+        {
             std::thread::park_timeout(Duration::from_millis(5));
         }
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() && !self.calls.complete_after_cancel.load(Ordering::Acquire) {
             return Err(FsError::from_io(
                 "delete",
                 &self.item.path,
@@ -126,6 +132,9 @@ impl PreparedMutation for FakeTarget {
             ));
         }
         progress(&self.item.path);
+        while self.calls.blocked_after_progress.load(Ordering::Acquire) && !cancel.is_cancelled() {
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
         if self.calls.fail_after_progress.load(Ordering::Acquire) {
             return Err(FsError::from_io(
                 "delete",
@@ -163,6 +172,8 @@ impl Harness {
         let snapshots = Arc::new(Mutex::new([
             SnapshotState {
                 archive: None,
+                network: None,
+                network_navigation: None,
                 archive_navigation: None,
                 visible: Some(CommittedSnapshot {
                     navigation: source.navigation,
@@ -232,6 +243,10 @@ impl Harness {
 }
 impl Drop for Harness {
     fn drop(&mut self) {
+        self.calls.blocked.store(false, Ordering::Release);
+        self.calls
+            .blocked_after_progress
+            .store(false, Ordering::Release);
         self.calls.cleanup_blocked.store(false, Ordering::Release);
         self.controller.shutdown();
         self.tasks.abort_all();
@@ -276,6 +291,48 @@ async fn cancelled_confirmation_never_mutates_and_stale_snapshot_is_rejected() {
     h.controller.prepare(h.request.clone()).await;
     assert_eq!(h.finished().await.state, OperationState::Failed);
     assert!(h.calls.deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn virtual_views_never_prepare_mutations_against_retained_temp_paths() {
+    for kind in [
+        MutationKind::CreateFile,
+        MutationKind::CreateDirectory,
+        MutationKind::Rename,
+        MutationKind::EditMetadata,
+        MutationKind::Delete(DeleteMode::Trash),
+        MutationKind::Delete(DeleteMode::Permanent),
+    ] {
+        for state in 0..4 {
+            let mut h = Harness::new(kind);
+            {
+                let mut snapshots = h.controller.snapshots.lock().unwrap();
+                let snapshot = &mut snapshots[0];
+                match state {
+                    0 => snapshot.archive_navigation = Some(NavigationId(2)),
+                    1 => snapshot.archive = Some((NavigationId(2), Arc::from([]))),
+                    2 => snapshot.network_navigation = Some(NavigationId(2)),
+                    3 => snapshot.network = Some((NavigationId(2), Arc::from([]))),
+                    _ => unreachable!(),
+                }
+                // The old TEMP snapshot is deliberately retained and still exactly
+                // matches the request. Provider authority must override that match.
+            }
+            h.controller.prepare(h.request.clone()).await;
+            assert_eq!(
+                h.finished().await.state,
+                OperationState::Failed,
+                "{kind:?}/{state}"
+            );
+            h.controller.confirm(h.request.id, None).await;
+            assert_eq!(
+                h.calls.prepared.load(Ordering::Relaxed),
+                0,
+                "{kind:?}/{state}"
+            );
+            assert!(h.calls.deleted.lock().unwrap().is_empty());
+        }
+    }
 }
 
 #[tokio::test]

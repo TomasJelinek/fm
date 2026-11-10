@@ -41,6 +41,7 @@ missing optional values.
 | `REQUEST_SEARCH` (3) | `Search` | `0: query String`, `1: source_anchor u64`, `2: backwards bool`, `3: case_sensitive bool` |
 | `REQUEST_CLOSE` (4) | No typed close model | Empty payload is allowed; session/generation are in the envelope |
 | `REQUEST_SERVICE_REPLY` (5) | `ReadReply` | `0: revision u64`, `1: offset u64`, `2: bytes u32`, `3: eof bool`, `4: status u32` |
+| `REQUEST_LOCATE` (6) | `Locate` | Optional source coordinates; `0: source_anchor u64`; may complete without a position |
 | `SERVICE_READ_AT` (1001) | `ReadAt` | `0: reader u64`, `1: revision u64`, `2: offset u64`, `3: length u32` |
 | `SERVICE_CLOSE_READER` (1002) | `CloseReader` | `0: reader u64` |
 
@@ -69,6 +70,15 @@ semantics belong to the plugin, so document case matching, encoding and backward
 search behavior; do not claim full Unicode case folding from a lowercase-only
 implementation. Read and search progress must remain cancellable.
 
+Text/code viewport work is demand-driven. The basic, source and Markdown plugins
+read only bounded visible windows plus decoding/parser context; first view and
+random seeks do not authorize scanning an unindexed prefix or allocating a
+whole-file buffer/map. Explicit search can traverse the source in cancellable
+bounded chunks. Optional [Locate](../../api/SOURCE_POSITION.md) may complete without
+a coordinate when its bounded work budget is exhausted; hosts retain this absence
+for the current page rather than repeatedly requesting it or permanently disabling
+coordinates for later pages. See the [10 GB qualification](../verification/2026-11-10-large-text-viewers.md).
+
 ## Events
 
 | ABI kind | Payload | Fields / interpretation |
@@ -79,6 +89,7 @@ implementation. Read and search progress must remain cancellable.
 | `EVENT_DOCUMENT_PAGE` (4) | `DocumentPage` | Document mode; semantic blocks |
 | `EVENT_SEARCH_MATCH` (5) | `SearchMatch` | `0: source SourceRange`, `1: preview String`; source length is nonzero |
 | `EVENT_PROGRESS` (6) | `Progress` | `0: completed u64`, `1: total ?u64`, `2: phase u16`; completed cannot exceed known total |
+| `EVENT_TEXT_POSITION` (7) | `TextPosition` | Optional exact source coordinates; see [source positions](../../api/SOURCE_POSITION.md) |
 | `EVENT_COMPLETED` (100) | Empty | Successful terminal for this request |
 | `EVENT_CANCELLED` (101) | Empty | Cancelled terminal for this request |
 | `EVENT_FAILED` (102) | `Failure` | `0: code u32`, `1: message String`; failed terminal |
@@ -175,7 +186,8 @@ including positions beyond 4 GiB.
 `DocumentPage` fields are `0: revision u64`, `1: source SourceRange`,
 `2: blocks Vec<Block>`, `3: has_before bool`, `4: has_after bool`.
 Each `Block` has `0: kind u16`, `1: depth u8`, `2: heading_level u8`,
-`3: text TextPage`, `4: links Vec<Link>`.
+`3: text TextPage`, `4: links Vec<Link>`, `5: table ?TableRow`,
+`6: strikethrough ?Vec<TextRange>`.
 
 Block kinds are paragraph (1), heading (2), code (3), quote (4), rule (5), and
 list item (6), exported as `BLOCK_*` constants. Depth is at most 16. Headings have
@@ -183,6 +195,39 @@ level 1 through 6; other blocks require heading level 0. Block text revisions mu
 equal the document revision. Their ordered source ranges cannot overlap and must
 fit inside the document range; gaps for syntax markers are allowed. Every block's
 text still obeys all TextPage span/anchor rules.
+
+Table rows retain paragraph kind (1) and add optional `TableRow` metadata:
+`0: cells Vec<TableCell>`, `1: header bool`. Each `TableCell` has
+`0: start u32`, `1: end u32`, `2: alignment u8`. Alignment values are left (0),
+center (1), and right (2), exported as `TABLE_ALIGN_*`. Cell ranges use decoded
+UTF-8 byte offsets in their containing block's `TextPage.text`; they are ordered,
+nonoverlapping and may be empty. Plain-text separators, normally tabs between
+cells, remain outside the cell ranges. Only paragraph blocks may carry table
+metadata. A row has 1 through 64 cells, and a document page has at most 4096 cells
+in total. Adjacent rows with a consistent column count form a table; a header
+starts a new table. The host shares column positions, wraps cell text, applies
+alignment and draws borders. Narrow viewports keep readable column widths and
+allow horizontal scrolling.
+
+`TextRange` has `0: start u32`, `1: end u32`. Strikethrough ranges are nonempty,
+ordered, disjoint UTF-8 boundaries in their block text, with at most 4096 ranges
+per block and across the page. They may overlap ordinary style spans, so bold,
+italic and code styling remain available on struck text. Strikethrough does not
+use another `Span.flags` bit; bits outside the existing three remain invalid.
+
+Both optional block fields extend `document-blocks.v1` without changing the C
+ABI. Hosts that predate them skip the fields after bounded wire validation and
+display the paragraph's readable text, without table geometry or strikethrough.
+Plugins must therefore retain complete text and exact source anchors independently
+of the optional metadata. Paging or cropping adjusts cell and decoration offsets
+at valid UTF-8/source boundaries and preserves column slots, including empty
+cells. A table can span bounded pages; no whole-document load is required.
+
+Host queue accounting charges decoded vector/string capacity, including table
+cell vectors and strikethrough vectors, in addition to block storage, text,
+anchors, spans, links and link targets. Compact CBOR size does not replace these
+retained-allocation charges. The existing page, wire and transport limits all
+continue to apply.
 
 `Link` has `0: start u32`, `1: end u32`, `2: target String`. Link ranges are ordered,
 nonempty, disjoint UTF-8 boundaries in their block text. Targets are bounded and
@@ -212,6 +257,8 @@ maximum can exceed the overall item/byte budget and fail encoding.
 | Document page | At most 512 blocks |
 | Document block depth / heading level | Depth at most 16; heading 1 through 6 |
 | Document totals across blocks | 256 KiB text, 4096 spans, 16,384 anchors, 4096 links, 64 KiB target bytes |
+| Table cells | 1 through 64 per annotated paragraph; at most 4096 across the page |
+| Strikethrough ranges | At most 4096 per block and across the page; ordered, nonempty, disjoint UTF-8 ranges |
 | Links per block | At most 4096, also subject to page totals |
 | Individual link target | 1 through 8192 bytes; no control characters |
 

@@ -1,5 +1,12 @@
 # Checksums for selected files: Ctrl+F8
 
+**8 November extension:** the current implementation adds SFV/CRC32 export and
+verification from SFV/MD5/SHA-1/SHA-256/SHA-512 files, including GNU/BSD records
+and hash-only sidecars. Native Open/Save dialogs and a Verify file page share the
+existing modeless window. The older exclusions of CRC32/import below are historical
+milestone scope; the [current API](../../developer/CHECKSUMS.md) supersedes them.
+See the [implementation plan](../plans/2026-11-08-checksum-files.md).
+
 Date: 6 November 2026. **Implementation update, 7 November:** the native backend
 and actor are implemented and verified; modeless UI integration and qualification
 are in progress. See [the current API contract](../../developer/CHECKSUMS.md)

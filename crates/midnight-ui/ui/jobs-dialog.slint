@@ -3,13 +3,14 @@ import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { ErrorGlyph } from "error-notice.slint";
-import { DialogText } from "dialog-text.slint";
 import { DialogHeader } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { OperationSpeedChart, SpeedChartData } from "operation-speed-chart.slint";
 
 export struct OperationRow {
     identity: string, title: string, detail: string, summary: string, state: string,
     cancellable: bool, attention: bool, failed: bool, active: bool,
-    determinate: bool, progress: float, icon: image, kind: int
+    determinate: bool, progress: float, icon: image, kind: int, speed-chart: SpeedChartData
 }
 
 export global JobsView {
@@ -83,69 +84,92 @@ export component OperationsBody inherits Rectangle {
             padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 12px;
             DialogHeader {
                 title: "Jobs"; compact: root.compact; text-size: Theme.font-size * 1.25;
+                fallback-icon: FallbackIcons.folder-sizes;
+                close-label: "Close dialog"; close => { root.close(); }
                 detail: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations";
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             Rectangle { height: 1px; background: Theme.frame; }
-            list-frame := Rectangle {
-                height: root.compact ? max(24px, root.height * 0.25) : min(root.height * 0.36, max(130px, Theme.control-height * 4));
-                background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
-                list-focus := FocusScope {
-                    key-pressed(event) => {
-                        if root.rows.length == 0 { return reject; }
-                        if event.text == Key.DownArrow || event.text == Key.UpArrow {
-                            let next = clamp(root.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, root.rows.length - 1);
-                            root.selected-identity = root.rows[next].identity;
-                            let top = next * max(Theme.control-height * 1.7, Theme.font-size * 3.5);
-                            if top < -jobs.content-y { jobs.content-y = -top; }
-                            else if top + Theme.font-size * 3.5 > -jobs.content-y + jobs.visible-height {
-                                jobs.content-y = min(0px, jobs.visible-height - top - max(Theme.control-height * 1.7, Theme.font-size * 3.5));
+            ScrollView {
+                min-width: 0px; min-height: 0px; vertical-stretch: 1;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                changed content-y => {
+                    // A fully clipped focus target cannot receive Escape in
+                    // Slint. Keep dismissal focused once the list scrolls away.
+                    if list-focus.has-focus && list-frame.absolute-position.y + list-frame.height
+                        <= self.absolute-position.y { footer.focus-dismiss(); }
+                }
+                VerticalLayout {
+                    padding-right: 8px; spacing: root.compact ? 6px : 12px; alignment: start;
+                    list-frame := Rectangle {
+                        height: max(Theme.control-height * 1.7, Theme.font-size * 3.5)
+                            * clamp(root.rows.length, 1, root.compact ? 1 : 3) + 2px;
+                        background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
+                        list-focus := FocusScope {
+                            key-pressed(event) => {
+                                if root.rows.length == 0 { return reject; }
+                                if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                                    let next = clamp(root.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, root.rows.length - 1);
+                                    root.selected-identity = root.rows[next].identity;
+                                    let top = next * max(Theme.control-height * 1.7, Theme.font-size * 3.5);
+                                    if top < -jobs.content-y { jobs.content-y = -top; }
+                                    else if top + Theme.font-size * 3.5 > -jobs.content-y + jobs.visible-height {
+                                        jobs.content-y = min(0px, jobs.visible-height - top - max(Theme.control-height * 1.7, Theme.font-size * 3.5));
+                                    }
+                                    return accept;
+                                }
+                                reject
                             }
-                            return accept;
+                            jobs := ListView {
+                                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                                horizontal-scrollbar-policy: always-off;
+                                for job in root.rows : JobRow {
+                                    job: job; selected: job.identity == root.selected.identity; width: jobs.visible-width;
+                                    select => { list-focus.focus(); root.selected-identity = job.identity; }
+                                }
+                            }
                         }
-                        reject
-                    }
-                    jobs := ListView {
-                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                        horizontal-scrollbar-policy: always-off;
-                        for job in root.rows : JobRow {
-                            job: job; selected: job.identity == root.selected.identity; width: jobs.visible-width;
-                            select => { list-focus.focus(); root.selected-identity = job.identity; }
+                        if root.rows.length == 0 : Text {
+                            text: "No background operations"; color: Theme.secondary-text; font-size: Theme.font-size;
+                            horizontal-alignment: center; vertical-alignment: center;
                         }
                     }
-                }
-                if root.rows.length == 0 : Text {
-                    text: "No background operations"; color: Theme.secondary-text; font-size: Theme.font-size;
-                    horizontal-alignment: center; vertical-alignment: center;
-                }
-            }
-            if !root.compact : HorizontalLayout {
-                spacing: 10px; cross-axis-alignment: center;
-                if root.selected.failed : ErrorGlyph { }
-                Text { text: root.selected.title; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
-                Text { text: root.selected.state; color: root.selected.failed ? Theme.error-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
-            }
-            if root.selected.determinate : Rectangle {
-                height: 6px; border-radius: 3px; background: Theme.secondary-surface;
-                Rectangle { width: parent.width * clamp(root.selected.progress, 0, 1); border-radius: 3px; background: Theme.active-frame; }
-            }
-            DialogText { text: root.selected.detail; vertical-stretch: 1; min-height: 0px; }
-            Rectangle { height: 1px; background: Theme.frame; }
-            HorizontalLayout {
-                spacing: 8px;
-                ScrollView {
-                    horizontal-stretch: 1; min-width: 0px;
-                    height: max(32px, Theme.control-height + (root.width < 500px ? 12px : 0px), copy-details-button.preferred-height);
-                    vertical-scrollbar-policy: always-off;
-                    horizontal-scrollbar-policy: as-needed;
                     HorizontalLayout {
-                    spacing: 8px;
-                copy-details-button := HintedActionButton { text: "Copy details"; enabled: root.selected-index >= 0; hint: "Copy the selected job's full details and retained errors."; clicked => { root.copy-details(root.selected.identity); } }
-                HintedActionButton { text: "Cancel"; enabled: root.selected.cancellable; hint: "Request cancellation of this job. Completed changes are retained."; clicked => { root.cancel(root.selected.identity); } }
-                if root.selected.attention : HintedActionButton { text: "Resolve"; hint: "Review the decision needed by this job."; clicked => { root.resolve(root.selected.identity); } }
+                        spacing: 10px; cross-axis-alignment: center;
+                        if root.selected.failed : ErrorGlyph { }
+                        Text { text: root.selected.title; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                        Text { text: root.selected.state; color: root.selected.failed ? Theme.error-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+                    }
+                    if root.selected.determinate : Rectangle {
+                        height: 6px; border-radius: 3px; background: Theme.secondary-surface;
+                        Rectangle { width: parent.width * clamp(root.selected.progress, 0, 1); border-radius: 3px; background: Theme.active-frame; }
+                    }
+                    if root.selected-index >= 0 && (root.selected.kind == 0 || root.selected.kind == 1) : OperationSpeedChart {
+                        chart: root.selected.speed-chart;
+                        deletion: root.selected.kind == 1;
+                        height: max(110px, Theme.font-size * 5);
+                    }
+                    Text {
+                        text: root.selected.detail; color: Theme.text; font-size: Theme.font-size;
+                        min-width: 0px; wrap: char-wrap;
                     }
                 }
-                HintedActionButton { text: "Close"; hint: "Close Jobs (Escape). Background operations continue."; clicked => { root.close(); } }
+            }
+            Rectangle { height: 1px; background: Theme.frame; }
+            footer := DialogFooter {
+                compact-height: root.height < 280px;
+                dismiss-text: "Close";
+                dismiss-hint: "Close Jobs (Escape). Background operations continue.";
+                dismiss => { root.close(); }
+                HintedActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy;
+                    enabled: root.selected-index >= 0; hint: "Copy the selected job's full details and retained errors.";
+                    clicked => { root.copy-details(root.selected.identity); } }
+                HintedActionButton { text: "Cancel job"; fallback-icon: FallbackIcons.close;
+                    enabled: root.selected.cancellable; hint: "Request cancellation of this job. Completed changes are retained.";
+                    clicked => { root.cancel(root.selected.identity); } }
+                if root.selected.attention : HintedActionButton { text: "Resolve";
+                    hint: "Review the decision needed by this job."; clicked => { root.resolve(root.selected.identity); } }
             }
         }
     }

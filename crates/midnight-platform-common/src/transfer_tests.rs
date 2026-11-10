@@ -4,8 +4,14 @@ use std::{
     io::{self, Cursor, Read, Seek, SeekFrom, Write},
     sync::{Arc, Mutex},
 };
+#[path = "transfer_cleanup_tests.rs"]
+mod cleanup_contract;
+#[path = "transfer_edges_tests.rs"]
+mod edges;
 #[path = "transfer_metadata_tests.rs"]
 mod metadata;
+#[path = "transfer_retry_tests.rs"]
+mod retry;
 
 struct Source {
     entry: TransferEntry,
@@ -13,6 +19,10 @@ struct Source {
     changed: Arc<Mutex<bool>>,
 }
 impl TransferSource for Source {
+    fn seek_for_validation(&mut self, offset: u64, _: &Cancellation) -> Result<u64, FsError> {
+        self.data.set_position(offset);
+        Ok(self.data.get_ref().len() as u64)
+    }
     fn rewind_for_validation(
         &mut self,
         _: &Cancellation,
@@ -42,6 +52,7 @@ struct Stage {
     metadata: Option<Arc<Mutex<metadata::State>>>,
     data: Cursor<Vec<u8>>,
     corrupt_on_sync: bool,
+    corrupt_offset: Option<usize>,
     truncate_on_sync: bool,
     fail_sync: bool,
     replacement: Option<(Arc<std::sync::atomic::AtomicUsize>, TransferPublication)>,
@@ -148,6 +159,9 @@ impl StagedTransferFile for Stage {
         if self.corrupt_on_sync && !self.data.get_ref().is_empty() {
             self.data.get_mut()[0] ^= 1;
         }
+        if let Some(offset) = self.corrupt_offset {
+            self.data.get_mut()[offset] ^= 1;
+        }
         if self.truncate_on_sync {
             self.data.get_mut().pop();
         }
@@ -191,6 +205,12 @@ impl StagedTransferFile for Stage {
 }
 
 struct Target(TransferEntry);
+pub(super) fn stage_with_guard(changed: Arc<Mutex<bool>>) -> Box<dyn StagedTransferFile> {
+    Box::new(Stage {
+        changed: Some(changed),
+        ..Default::default()
+    })
+}
 struct ReadGuard(Arc<Mutex<bool>>);
 impl midnight_core::TransferReadGuard for ReadGuard {
     fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {

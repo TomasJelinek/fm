@@ -1,9 +1,20 @@
 # Unique numbered Hot Paths
 
-Hot Paths store each native folder path once. Repeated Add preserves the existing
-identity and compatibility name. New paths receive the first free slot 1–10;
-additional paths remain accessible from the menus. Slot 10 is displayed as 0.
-The drive bar shows numbered buttons. Bare 1–9/0 opens that slot in the focused
+Hot Paths store each native folder path once. Archive locations are also required
+by the [current extension](2026-11-07-panel-viewer-followups.md#archive-hot-paths):
+container and internal path are stored separately and displayed as `archive.zip@path`.
+Archive add/restore remains pending until its implementation tests are recorded.
+Repeated Add preserves the existing
+identity and compatibility name. Every ordinary creation route (toolbar star,
+menu Add path, manager Add current and Ctrl+Shift+Plus) automatically assigns the
+first unused digit in order 1–9, then 0, without asking the user or displacing an
+existing shortcut. Internally the digits use slots 1–10; slot 10 is displayed as 0.
+If all ten are occupied, additional paths remain accessible from the menus without
+a numbered shortcut. Removing an assignment makes that number available to the
+next new path; existing paths are not renumbered.
+The Hot Paths menu and drive dropdown show numbered entries; saved paths have no
+individual drive-toolbar buttons. The star and menu sit beside View in the panel
+toolbar. Bare 1–9/0 opens that slot in the focused
 file panel; existing Ctrl/Shift aliases remain configurable in Options → Keyboard.
 Unassigned digits are consumed without navigation. Search, command, path and
 other text editors keep normal digit input, including composition and AltGr.
@@ -17,7 +28,7 @@ shortcut changes that selected identity, independent of the panel's current
 folder. Moving a numbered path to an occupied slot swaps the two slots. An
 unnumbered/new path taking an occupied slot leaves the displaced path unnumbered;
 no unique location is removed. Add current and Remove keep the manager open.
-The ordinary menu and drive bar continue to navigate when clicked.
+The ordinary menu and drive dropdown continue to navigate when clicked.
 
 Stored duplicates are merged deterministically in saved order: keep the first
 identity, original native path and legacy name; if it has no slot, retain the

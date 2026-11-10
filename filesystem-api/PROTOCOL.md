@@ -60,3 +60,52 @@ an explicit versioned protocol change.
 The helpers are trusted installed executables; installing a plugin grants code
 trust. OS containment limits untrusted archive parsing. Frame validation is not a
 replacement for the worker SDK's OS restrictions and process resource limits.
+# Protocol 2 streaming extension (API 0.3)
+
+Protocol selection is explicit from the trusted installed manifest. The default
+read/write helpers retain protocol 1 bytes; `*_with_protocol(..., Protocol::V2)`
+is required for version 2. Version 1 node records omit `modified` and decode it
+as unavailable. Version 2 appends a timestamp tag after each node's readable flag:
+0 unavailable, 1 UTC (signed i64 Unix seconds, u32 nanoseconds), 2 local civil
+(i32 year, u8 month/day/hour/minute/second). Numeric fields are little endian.
+Civil dates are calendar validated; they carry no inferred timezone.
+
+Version 2 adds message tags after the existing common version/tag/request header:
+
+| Tag | Message | Fields |
+| --- | --- | --- |
+| 11 | StageBegin | purpose u8 (0 scratch, 1 member followed by entry u64), expected-length bool and optional u64, max-length u64 |
+| 12 | StageCreated | stage u64 |
+| 13 | StageAppend | stage u64, offset u64, bounded bytes |
+| 14 | StageAck | stage u64, next-offset u64 |
+| 15 | StageSeal | stage u64, length u64 |
+| 16 | StageSealed | stage u64, length u64 |
+| 17 | SpoolRead | stage u64, offset u64, length u32 |
+| 18 | SpoolData | stage u64, bounded bytes |
+| 19 | ContentReady | entry u64, stage u64, offset u64, length u64 |
+| 20 | StageProgress | stage u64, completed decoded bytes u64 |
+| 21 | StageProgressAck | stage u64, completed decoded bytes u64 |
+
+All request/stage IDs are nonzero, member IDs start at 2, ranges cannot overflow
+u64, read/append payloads remain bounded to 256 KiB, append is nonempty. SourceRead
+may occur during any active request and may revisit ranges. The host validates
+source identity before/after reads and before publishing content. It grants at
+most one unfinished stage, validates session ownership and exact append offsets,
+and seals only the complete expected length. Scratch stages remain private to
+the mount. Member stages belong to the requested member. ContentReady is a
+terminal reply naming a checked range of a sealed stage, after all enclosing
+format integrity checks have passed. It never names a filesystem path. Before
+sealing, no staged bytes may be read. Any protocol, I/O, integrity or cancellation
+failure discards unfinished stages and ends the session.
+
+StageProgress reports strictly increasing actual decoded work for the active
+unsealed stage, including discarded solid-block siblings required for integrity.
+The host validates stage/request ownership and monotonic nonzero progress before
+acknowledging it. Only successful nonempty source/spool I/O, appends and accepted
+decoded progress renew the idle watchdog; protocol chatter does not. Progress
+does not publish bytes or replace final integrity checks.
+
+`max_length` is the declared member length, or u64::MAX for an unknown decoded
+stream. It is a consistency guard, not an artificial content-size quota. Disk
+exhaustion and platform offset failures are reported by host I/O. The host retains
+bounded metadata/frame/process resources independently of total content length.

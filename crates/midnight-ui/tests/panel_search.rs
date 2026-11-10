@@ -151,6 +151,9 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     let window = MainWindow::new().unwrap();
     let root = std::env::temp_dir().join("midnight-panel-search 文档");
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    presenter
+        .borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let captured = commands.clone();
     install(
@@ -402,7 +405,8 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     );
     window.invoke_focus_files();
 
-    // Click the actual persistent Options checkbox, then continue in files.
+    // Preview the actual Options checkbox, then commit and acknowledge its save
+    // before continuing in files. Escape now correctly rolls previews back.
     native.draw_if_needed(|renderer| {
         renderer.render(&mut pixels, 1340);
     });
@@ -417,9 +421,41 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     );
     assert!(
         window.get_quick_search_filter(),
-        "the actual Options checkbox must apply its stored preference"
+        "the actual Options checkbox must preview its preference"
     );
-    key(&window, Key::Escape);
+    assert!(
+        commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::SavePreferences { .. })),
+        "the checkbox preview must not persist before OK"
+    );
+    ui::click_popup(&window, "OK", AccessibleRole::Button);
+    let saves = commands
+        .borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::SavePreferences {
+                revision,
+                preferences,
+            } => Some((*revision, preferences.quick_search_filter)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(saves.len(), 1, "OK must save the staged preference once");
+    assert!(saves[0].1);
+    assert!(ui::has_popup(&window), "Options must await the save result");
+    presenter.borrow_mut().apply(Event::PreferencesSaved {
+        revision: saves[0].0,
+        result: Ok(()),
+    });
+    refresh(&window, &presenter.borrow());
+    slint::platform::update_timers_and_animations();
+    native.draw_if_needed(|renderer| {
+        renderer.render(&mut pixels, 1340);
+    });
+    assert!(!ui::has_popup(&window));
+    assert!(window.get_quick_search_filter());
     window.invoke_focus_files();
     assert_eq!(window.get_focused_pane(), 0);
     key(&window, "al");
@@ -526,6 +562,7 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
     assert_eq!(window.get_left_rows().row_count(), 4);
     let drive = root.join("drive");
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![NavigationLocation {
             id: "native-drive".into(),

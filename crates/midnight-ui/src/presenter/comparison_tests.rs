@@ -84,7 +84,7 @@ fn comparison_publishes_both_and_next_toggle_carries_authoritative_seed() {
         navigation: NavigationId(1),
         revision: request.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(request.view.unwrap(), vec![0]).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
     assert!(
         p.comparison.seeds[0].is_none(),

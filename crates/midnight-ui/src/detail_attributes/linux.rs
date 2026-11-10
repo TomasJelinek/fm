@@ -1,5 +1,10 @@
 use midnight_core::EntryMetadata;
 
+// POSIX mode bits carry no Hidden/System attributes. Do not infer them from names.
+pub(crate) fn dim_icon(_metadata: &EntryMetadata) -> bool {
+    false
+}
+
 pub(crate) fn explanation(_metadata: &EntryMetadata) -> String {
     String::new()
 }

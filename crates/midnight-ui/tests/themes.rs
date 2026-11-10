@@ -28,6 +28,11 @@ fn contrast(foreground: Color, background: Color) -> f64 {
 }
 
 fn readable(theme: &Theme<'_>, name: &str) {
+    let minimum = match theme.get_scheme() {
+        17..=20 => 7.0,
+        21..=22 => 12.0,
+        _ => 4.5,
+    };
     for foreground in [
         theme.get_text(),
         theme.get_strong_text(),
@@ -46,8 +51,8 @@ fn readable(theme: &Theme<'_>, name: &str) {
             theme.get_selected_background(),
         ] {
             assert!(
-                contrast(foreground, background) >= 4.5,
-                "{name}: row text {foreground:?} on {background:?}"
+                contrast(foreground, background) >= minimum,
+                "{name}: row text {foreground:?} on {background:?}, minimum {minimum}"
             );
         }
     }
@@ -55,10 +60,12 @@ fn readable(theme: &Theme<'_>, name: &str) {
         theme.get_text(),
         theme.get_strong_text(),
         theme.get_secondary_text(),
+        theme.get_muted_text(),
         theme.get_accent(),
     ] {
         for background in [
             theme.get_window_background(),
+            theme.get_pane_background(),
             theme.get_surface(),
             theme.get_secondary_surface(),
             theme.get_header(),
@@ -66,17 +73,21 @@ fn readable(theme: &Theme<'_>, name: &str) {
             theme.get_hover(),
         ] {
             assert!(
-                contrast(foreground, background) >= 4.5,
-                "{name}: control text {foreground:?} on {background:?}"
+                contrast(foreground, background) >= minimum,
+                "{name}: control text {foreground:?} on {background:?}, minimum {minimum}"
             );
         }
     }
     for (foreground, background, minimum) in [
-        (theme.get_error_text(), theme.get_error_background(), 4.5),
+        (
+            theme.get_error_text(),
+            theme.get_error_background(),
+            minimum,
+        ),
         (
             theme.get_selection_text(),
             theme.get_selection_background(),
-            4.5,
+            minimum,
         ),
         (theme.get_cursor_edge(), theme.get_cursor_background(), 3.0),
         (
@@ -84,12 +95,44 @@ fn readable(theme: &Theme<'_>, name: &str) {
             theme.get_selected_background(),
             3.0,
         ),
+        (
+            theme.get_selected_edge(),
+            theme.get_cursor_background(),
+            3.0,
+        ),
+        (theme.get_selected_edge(), theme.get_inactive_cursor(), 3.0),
         (theme.get_active_frame(), theme.get_active_header(), 3.0),
         (theme.get_frame(), theme.get_surface(), 3.0),
     ] {
         assert!(
             contrast(foreground, background) >= minimum,
             "{name}: semantic contrast {foreground:?} on {background:?}"
+        );
+    }
+}
+
+fn high_contrast_selection_marks(test: &ui::TestUi) {
+    let theme = test.window.global::<Theme>();
+    for (label, focused) in [("README.md", true), ("Selected without focus.txt", false)] {
+        let row = ui::root_item(&test.window, label, AccessibleRole::ListItem);
+        let origin = row.map_to_native_window(row.geometry().origin);
+        let stripe = test.pixel(origin.x + 1.0, origin.y + 5.0);
+        let top = test.pixel(origin.x + 8.0, origin.y);
+        let edge = theme.get_selected_edge();
+        assert_eq!(
+            (stripe.r, stripe.g, stripe.b),
+            (edge.red(), edge.green(), edge.blue())
+        );
+        // A selected cursor adds a horizontal line to the selected row's side
+        // stripe. Focus and selection remain distinct without recognizing hue.
+        let expected = if focused {
+            edge
+        } else {
+            theme.get_selected_background()
+        };
+        assert_eq!(
+            (top.r, top.g, top.b),
+            (expected.red(), expected.green(), expected.blue())
         );
     }
 }
@@ -115,6 +158,12 @@ fn all_themes_are_selectable_and_keep_text_readable() {
         "Verdant Light",
         "Catppuccin Latte",
         "Rosé Pine Dawn",
+        "Paper Contrast",
+        "Sandstone Contrast",
+        "Deep Ocean",
+        "Graphite Contrast",
+        "High Contrast Dark",
+        "High Contrast Light",
     ];
     let accepted = Rc::new(Cell::new(0));
     let changed = accepted.clone();
@@ -144,7 +193,8 @@ fn all_themes_are_selectable_and_keep_text_readable() {
                 cursor: true,
                 prefix_end: 4,
                 size: "24.5 KB".into(),
-                modified: "2026-11-06 12:30".into(),
+                modified_date: "2026-11-06".into(),
+                modified_time: "12:30".into(),
                 ..Default::default()
             },
             FileRow {
@@ -152,6 +202,13 @@ fn all_themes_are_selectable_and_keep_text_readable() {
                 name: "notes_é.txt".into(),
                 compressed: true,
                 size: "1.2 KB".into(),
+                ..Default::default()
+            },
+            FileRow {
+                identity: "4".into(),
+                name: "Selected without focus.txt".into(),
+                selected: true,
+                size: "8 KB".into(),
                 ..Default::default()
             },
         ]))
@@ -183,18 +240,39 @@ fn all_themes_are_selectable_and_keep_text_readable() {
             let theme = test.window.global::<Theme>();
             assert_eq!(
                 theme.get_light(),
-                matches!(index, 2 | 7 | 14..=16),
+                matches!(index, 2 | 7 | 14..=18 | 22),
                 "{name}"
             );
             let color = theme.get_pane_background();
+            let accent = theme.get_accent();
             assert!(
-                unique.insert((color.red(), color.green(), color.blue())),
+                unique.insert((
+                    color.red(),
+                    color.green(),
+                    color.blue(),
+                    accent.red(),
+                    accent.green(),
+                    accent.blue(),
+                )),
                 "{name}"
             );
             readable(&theme, name);
+            let background = theme.get_header();
             render::snapshot(&test, &format!("palette-{index}-density-{density}-options"));
             ui::key(&test.window, Key::Escape);
             test.draw();
+            // The wide empty part of the bar must use the theme header rather
+            // than an uncolored/light surface, in both density modes.
+            let options = ui::root_position(&test.window, "Options", AccessibleRole::Button);
+            let pixel = test.pixel(test.width as f32 * 0.75, options.y);
+            assert_eq!(
+                (pixel.r, pixel.g, pixel.b),
+                (background.red(), background.green(), background.blue()),
+                "{name}: top toolbar background must follow the theme",
+            );
+            if index >= 21 {
+                high_contrast_selection_marks(&test);
+            }
             render::snapshot(&test, &format!("palette-{index}-density-{density}-panel"));
         }
     }

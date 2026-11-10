@@ -1,7 +1,24 @@
 //! Thin UI adapters. Reading, parsing, search, layout and selection run on the backend.
 #![deny(unsafe_code)]
 
+mod image_camera;
+mod image_motion;
+#[cfg(test)]
+mod image_presentation_tests;
+mod image_tiles;
+mod image_zoom;
+#[cfg(test)]
+mod opening_retirement_tests;
+#[cfg(test)]
+mod opening_tests;
+mod preferences;
 mod scrolling;
+mod text_position;
+#[cfg(test)]
+mod text_presentation_tests;
+mod web_input;
+#[cfg(test)]
+mod web_input_tests;
 
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
@@ -17,25 +34,59 @@ use std::{
 mod generated {
     slint::include_modules!();
 }
-pub use generated::ViewerWindow;
+pub use generated::{ViewerRasterTile, ViewerWindow};
 pub use midnight_ui_input::WindowPlacement;
 
 pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
+/// Called once after initial backend content is ready, fails, or closes before readiness.
+pub type OpenReady = Box<dyn FnOnce(Result<(), String>)>;
+type PreferencesListener = Rc<dyn Fn(ViewerPreferenceChange)>;
+type PreferencesRelay = Rc<RefCell<PreferencesListener>>;
+type InputSender = Rc<dyn Fn(ViewerInput) -> bool>;
 
 pub struct ViewerWindows {
     service: Service,
     windows: RefCell<Vec<Rc<OpenWindow>>>,
+    preferences_listener: PreferencesRelay,
 }
 
 struct OpenWindow {
     window: ViewerWindow,
-    session: WindowSession,
+    session: Rc<WindowSession>,
+    input: RefCell<InputSender>,
     timer: Timer,
     closed: Cell<bool>,
+    ready: RefCell<Option<OpenReady>>,
     last_geometry: Cell<(u32, u32, u32)>,
     frame: Cell<u64>,
+    frame_generation: Cell<u64>,
     raster_size: Cell<(u32, u32)>,
     modes: RefCell<Vec<u16>>,
+    preferences_listener: PreferencesRelay,
+    image_info: RefCell<Option<ViewerImageInfo>>,
+    font_catalog_ready: Cell<bool>,
+    image_zoom: RefCell<image_zoom::Intent>,
+    image_camera: RefCell<image_camera::Camera>,
+    image_textures: RefCell<image_tiles::Textures>,
+    image_redraw: Timer,
+    image_native: RefCell<image_motion::Native>,
+    text_position: RefCell<text_position::TextPosition>,
+    web_native: RefCell<web_input::Native>,
+    key_resolver: RefCell<KeyResolver>,
+}
+
+impl OpenWindow {
+    fn opened(&self, result: Result<(), String>) {
+        let ready = self.ready.borrow_mut().take();
+        if let Some(ready) = ready {
+            ready(result);
+        }
+    }
+
+    fn enqueue(&self, input: ViewerInput) -> bool {
+        let sender = self.input.borrow().clone();
+        sender(input)
+    }
 }
 
 impl ViewerWindows {
@@ -43,6 +94,38 @@ impl ViewerWindows {
         Self {
             service,
             windows: RefCell::new(Vec::new()),
+            preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
+        }
+    }
+
+    pub fn set_preferences_listener(&self, listener: Rc<dyn Fn(ViewerPreferenceChange)>) {
+        *self.preferences_listener.borrow_mut() = listener;
+    }
+
+    /// Restore without reporting a user edit or writing application settings.
+    pub fn restore_preferences(&self, preferences: std::sync::Arc<ViewerPreferences>) {
+        for open in self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|open| !open.closed.get())
+        {
+            let raster_zoom_changed =
+                open.session.preferences().image_zoom != preferences.image_zoom;
+            if let Err(message) = open.session.restore_preferences(preferences.clone()) {
+                open.window.set_status(message.into());
+            } else {
+                if raster_zoom_changed
+                    && open
+                        .image_info
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|info| info.page == 0)
+                {
+                    open.image_zoom.borrow_mut().clear();
+                }
+                preferences::present(open);
+            }
         }
     }
 
@@ -54,16 +137,40 @@ impl ViewerWindows {
         keys: KeyResolver,
         copy: Rc<dyn Fn(String)>,
     ) -> Result<slint::Weak<ViewerWindow>, String> {
+        self.open_with_ready(launch, appearance, placement, keys, copy, Box::new(|_| {}))
+    }
+
+    /// Window construction is synchronous; `ready` separately acknowledges initial content.
+    /// Synchronous errors are returned without invoking `ready`.
+    pub fn open_with_ready(
+        &self,
+        launch: ViewerLaunch,
+        appearance: ViewerAppearance,
+        placement: impl Into<WindowPlacement>,
+        keys: KeyResolver,
+        copy: Rc<dyn Fn(String)>,
+        ready: OpenReady,
+    ) -> Result<slint::Weak<ViewerWindow>, String> {
         self.windows
             .borrow_mut()
             .retain(|window| !window.closed.get());
         if self.windows.borrow().len() >= 4 {
+            self.service.retire(launch);
             return Err("Close a viewer before opening another (maximum four windows).".into());
         }
-        let window = ViewerWindow::new().map_err(|e| e.to_string())?;
+        let window = match ViewerWindow::new() {
+            Ok(window) => window,
+            Err(error) => {
+                self.service.retire(launch);
+                return Err(error.to_string());
+            }
+        };
+        window.set_case_sensitive(launch.preferences.case_sensitive);
+        window.set_wrap_enabled(launch.preferences.wrap);
         let placement = placement.into();
         let size = placement.logical_size();
         window.set_compact(size.width < 500.0);
+        window.set_narrow_typography(size.width < 680.0);
         placement.apply(window.window());
         window.set_foreground(color(appearance.foreground));
         window.set_background_color(color(appearance.background));
@@ -81,18 +188,38 @@ impl ViewerWindows {
             height: (size.height - 48.0).max(1.0) as u32,
             scale: window.window().scale_factor(),
         };
-        let session = self.service.open(launch, appearance, geometry)?;
+        let session = Rc::new(self.service.open(launch, appearance, geometry)?);
+        let input = Rc::downgrade(&session);
         let open = Rc::new(OpenWindow {
             window,
             session,
+            input: RefCell::new(Rc::new(move |value| {
+                input.upgrade().is_some_and(|session| session.send(value))
+            })),
             timer: Timer::default(),
             closed: Cell::new(false),
+            ready: RefCell::new(Some(ready)),
             last_geometry: Cell::new((0, 0, 0)),
             frame: Cell::new(0),
+            frame_generation: Cell::new(0),
             raster_size: Cell::new((1, 1)),
             modes: RefCell::new(Vec::new()),
+            preferences_listener: self.preferences_listener.clone(),
+            image_info: RefCell::new(None),
+            font_catalog_ready: Cell::new(false),
+            image_zoom: RefCell::new(Default::default()),
+            image_camera: RefCell::new(Default::default()),
+            image_textures: RefCell::new(Default::default()),
+            image_redraw: Timer::default(),
+            image_native: RefCell::new(Default::default()),
+            text_position: RefCell::new(Default::default()),
+            web_native: RefCell::new(Default::default()),
+            key_resolver: RefCell::new(keys.clone()),
         });
-        bind(&open, keys);
+        bind(&open);
+        preferences::present(&open);
+        image_motion::install(&open);
+        bind_delivery(&open, self.service.clone(), copy.clone());
         let weak = Rc::downgrade(&open);
         let service = self.service.clone();
         open.timer
@@ -104,8 +231,11 @@ impl ViewerWindows {
                     return;
                 }
                 let window = &open.window;
+                preferences::present_font_catalog(&open);
                 let scale = window.window().scale_factor();
-                window.set_compact(window.window().size().to_logical(scale).width < 500.0);
+                let width = window.window().size().to_logical(scale).width;
+                window.set_compact(width < 500.0);
+                window.set_narrow_typography(width < 680.0);
                 let width = (window.get_content_width() * scale).max(1.0) as u32;
                 let height = (window.get_content_height() * scale).max(1.0) as u32;
                 let geometry = (width, height, scale.to_bits());
@@ -116,74 +246,20 @@ impl ViewerWindows {
                         scale,
                     }))
                 {
+                    if window.get_image_mode() {
+                        open.image_zoom.borrow_mut().clear();
+                        open.text_position.borrow_mut().cancel();
+                    } else {
+                        open.text_position.borrow_mut().changing_content();
+                    }
+                    window.set_position_context(
+                        format!("resize:{width}:{height}:{}", geometry.2).into(),
+                    );
                     open.last_geometry.set(geometry);
                 }
-                for output in open.session.mailbox.take() {
-                    match &output {
-                        ViewerOutput::Frame(frame) => {
-                            if *open.modes.borrow() != frame.modes {
-                                *open.modes.borrow_mut() = frame.modes.clone();
-                                window.set_modes(slint::ModelRc::new(slint::VecModel::from(
-                                    frame
-                                        .modes
-                                        .iter()
-                                        .map(|mode| mode_label(*mode).into())
-                                        .collect::<Vec<slint::SharedString>>(),
-                                )));
-                            }
-                            window.set_mode_index(
-                                frame
-                                    .modes
-                                    .iter()
-                                    .position(|mode| *mode == frame.mode)
-                                    .unwrap_or(0) as i32,
-                            );
-                            open.frame.set(frame.revision);
-                            let image_mode = frame.image.is_some();
-                            if image_mode != window.get_image_mode() {
-                                window.set_search_visible(false);
-                                window.invoke_focus_content();
-                            }
-                            window.set_image_mode(image_mode);
-                            window.set_document_page(
-                                frame.image.as_ref().map_or(0, |image| image.page as i32),
-                            );
-                            window.set_document_pages(
-                                frame
-                                    .image
-                                    .as_ref()
-                                    .map_or(0, |image| image.page_count as i32),
-                            );
-                            window.set_zoom_percent(
-                                frame
-                                    .image
-                                    .as_ref()
-                                    .map_or(100.0, |image| (image.zoom * 100.0) as f32),
-                            );
-                            window.set_wrap_enabled(frame.wrap_enabled);
-                            window.set_wrap_available(frame.wrap_available);
-                            open.raster_size.set((frame.width, frame.height));
-                            let pixels =
-                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                    frame.pixels.as_ref(),
-                                    frame.width,
-                                    frame.height,
-                                );
-                            window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
-                            window.set_accessible_text(frame.accessible_text.as_ref().into());
-                            window.set_position(frame.position as f32);
-                            window.set_vertical_extent(frame.vertical_extent as f32);
-                            window.set_horizontal_position(frame.horizontal_position as f32);
-                            window.set_horizontal_extent(frame.horizontal_extent as f32);
-                            window.set_caption(frame.caption.as_str().into());
-                            window.set_status(frame.status.as_str().into());
-                        }
-                        ViewerOutput::Status(message) => window.set_status(message.as_str().into()),
-                        ViewerOutput::CopyText(text) => copy(text.clone()),
-                        ViewerOutput::Closed => close(&open),
-                    }
-                    service.retire(output);
-                }
+                present_output(&open, &service, copy.as_ref());
+                image_motion::fallback(&open);
+                flush_position(&open);
             });
         open.window.show().map_err(|e| e.to_string())?;
         open.window.invoke_focus_content();
@@ -199,12 +275,419 @@ impl ViewerWindows {
     }
 }
 
-fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
+fn bind_delivery(open: &Rc<OpenWindow>, service: Service, copy: Rc<dyn Fn(String)>) {
+    let weak = Rc::downgrade(open);
+    open.window.on_deliver_output(move || {
+        if let Some(open) = weak.upgrade()
+            && !open.closed.get()
+        {
+            present_output(&open, &service, copy.as_ref());
+        }
+    });
+    let window = open.window.as_weak();
+    open.session
+        .mailbox
+        .notify_on_ready(std::sync::Arc::new(move || {
+            window
+                .upgrade_in_event_loop(|window| window.invoke_deliver_output())
+                .is_ok()
+        }));
+}
+
+fn accept_preference(open: &OpenWindow, change: ViewerPreferenceChange) -> bool {
+    match open.session.change_preferences(&change) {
+        Ok(changed) => {
+            if changed {
+                if !matches!(
+                    change,
+                    ViewerPreferenceChange::CaseSensitive(_)
+                        | ViewerPreferenceChange::ImageZoom(_)
+                        | ViewerPreferenceChange::DocumentZoom(_)
+                ) {
+                    open.text_position.borrow_mut().cancel();
+                }
+                let listener = open.preferences_listener.borrow().clone();
+                listener(change);
+            }
+            true
+        }
+        Err(message) => {
+            open.window.set_status(message.into());
+            false
+        }
+    }
+}
+
+fn image_preference(open: &OpenWindow, input: &ViewerImageInput) -> Option<ViewerPreferenceChange> {
+    let info = open.image_info.borrow().clone()?;
+    let zoom = match input {
+        ViewerImageInput::ViewZoom { zoom, .. } => *zoom,
+        ViewerImageInput::Fit => ViewerZoomPreference::Fit,
+        ViewerImageInput::ActualPixels => ViewerZoomPreference::ActualPixels,
+        ViewerImageInput::Zoom { factor, .. } => {
+            let scale = open.image_zoom.borrow().scale(
+                open.frame_generation.get(),
+                &info,
+                image_viewport(open),
+            );
+            ViewerZoomPreference::from_scale((scale * factor).clamp(1.0 / 32768.0, 64.0)).ok()?
+        }
+        ViewerImageInput::Drag { .. } | ViewerImageInput::PanTo { .. } => return None,
+    };
+    Some(if info.page > 0 {
+        ViewerPreferenceChange::DocumentZoom(zoom)
+    } else {
+        ViewerPreferenceChange::ImageZoom(zoom)
+    })
+}
+
+fn image_viewport(open: &OpenWindow) -> [f32; 2] {
+    let scale = open.window.window().scale_factor();
+    [
+        open.window.get_content_width() * scale,
+        open.window.get_content_height() * scale,
+    ]
+}
+
+fn send_input(open: &OpenWindow, input: ViewerInput) -> bool {
+    let preference = match &input {
+        ViewerInput::Image { input, .. } => image_preference(open, input),
+        _ => None,
+    };
+    let input = if let ViewerInput::Image {
+        frame,
+        input: gesture,
+    } = &input
+        && matches!(
+            gesture,
+            ViewerImageInput::Fit | ViewerImageInput::ActualPixels | ViewerImageInput::Zoom { .. }
+        ) {
+        if !open.text_position.borrow().context_available() {
+            return false;
+        }
+        let Some(info) = open.image_info.borrow().clone() else {
+            return false;
+        };
+        let zoom = match preference.as_ref() {
+            Some(
+                ViewerPreferenceChange::ImageZoom(zoom)
+                | ViewerPreferenceChange::DocumentZoom(zoom),
+            ) => *zoom,
+            _ => return false,
+        };
+        let viewport = image_viewport(open);
+        if !info.zoom.is_finite()
+            || info.zoom <= 0.0
+            || viewport
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return false;
+        }
+        if zoom != ViewerZoomPreference::Fit
+            && (0..2).any(|axis| {
+                (info.visible_source[axis] * info.zoom - f64::from(viewport[axis])).abs() > 1.0
+            })
+        {
+            return false;
+        }
+        let anchor = match gesture {
+            ViewerImageInput::Zoom {
+                anchor: Some(anchor),
+                ..
+            } => *anchor,
+            _ => viewport.map(|value| value / 2.0),
+        };
+        if anchor.iter().any(|value| !value.is_finite()) {
+            return false;
+        }
+        let anchor = std::array::from_fn(|axis| anchor[axis].clamp(0.0, viewport[axis]));
+        let origin = if open.window.get_tiled() {
+            open.image_camera.borrow().origin
+        } else {
+            info.origin
+        };
+        let source_anchor =
+            std::array::from_fn(|axis| origin[axis] + f64::from(anchor[axis]) / info.zoom);
+        if source_anchor.iter().any(|value| !value.is_finite()) {
+            return false;
+        }
+        ViewerInput::Image {
+            frame: *frame,
+            input: ViewerImageInput::ViewZoom {
+                zoom,
+                source_anchor,
+                viewport_anchor: anchor,
+            },
+        }
+    } else {
+        input
+    };
+    let is_zoom = matches!(
+        input,
+        ViewerInput::Image {
+            input: ViewerImageInput::ViewZoom { .. },
+            ..
+        }
+    );
+    let accepted = open.enqueue(input);
+    if accepted && is_zoom {
+        open.image_camera.borrow_mut().cancel();
+        open.image_redraw.stop();
+    }
+    if accepted && let Some(preference) = preference {
+        if let Some(info) = open.image_info.borrow().as_ref()
+            && let ViewerPreferenceChange::ImageZoom(zoom)
+            | ViewerPreferenceChange::DocumentZoom(zoom) = preference
+        {
+            open.image_zoom.borrow_mut().accepted(
+                open.frame_generation.get(),
+                info,
+                image_viewport(open),
+                zoom,
+            );
+        }
+        accept_preference(open, preference);
+    }
+    accepted
+}
+
+fn present_output(open: &OpenWindow, service: &Service, copy: &dyn Fn(String)) {
+    present_outputs(open, service, copy, open.session.mailbox.take());
+}
+
+fn present_outputs(
+    open: &OpenWindow,
+    service: &Service,
+    copy: &dyn Fn(String),
+    outputs: Vec<ViewerOutput>,
+) {
+    let window = &open.window;
+    for output in outputs {
+        match &output {
+            ViewerOutput::Frame(frame) => {
+                if frame.revision <= open.frame.get()
+                    || frame.generation < open.frame_generation.get()
+                {
+                    service.retire(output);
+                    continue;
+                }
+                if !open.text_position.borrow_mut().frame(
+                    frame.generation,
+                    frame.position_sequence,
+                    [frame.position, frame.horizontal_position],
+                ) {
+                    service.retire(output);
+                    continue;
+                }
+                if let (Some(info), Some(tiles)) = (&frame.image, &frame.tiles) {
+                    let incoming = open.image_camera.borrow().incoming(info);
+                    let Some((displayed, replace)) = incoming else {
+                        service.retire(output);
+                        continue;
+                    };
+                    let model = open
+                        .image_textures
+                        .borrow_mut()
+                        .receive(tiles, info, displayed, replace);
+                    let Ok(model) = model else {
+                        if let Err(message) = model {
+                            window.set_status(message.into());
+                        }
+                        service.retire(output);
+                        continue;
+                    };
+                    open.image_camera.borrow_mut().receive(
+                        info,
+                        window.window().scale_factor(),
+                        open.image_textures.borrow().grid(),
+                    );
+                    window.set_image_tiles(model);
+                    window.set_tiled(true);
+                    window.set_tile_upload_count(
+                        open.image_textures.borrow().uploads.min(i32::MAX as u64) as i32,
+                    );
+                    window.set_surface(slint::Image::default());
+                } else {
+                    window.set_tiled(false);
+                    window.set_image_tiles(Default::default());
+                    open.image_camera.borrow_mut().suspend();
+                    open.image_textures.borrow_mut().clear();
+                }
+                open.image_zoom
+                    .borrow_mut()
+                    .receive(frame.generation, frame.image.as_ref());
+                *open.image_info.borrow_mut() = frame.image.clone();
+                if *open.modes.borrow() != frame.modes {
+                    *open.modes.borrow_mut() = frame.modes.clone();
+                    window.set_modes(slint::ModelRc::new(slint::VecModel::from(
+                        frame
+                            .modes
+                            .iter()
+                            .map(|mode| mode_label(*mode).into())
+                            .collect::<Vec<slint::SharedString>>(),
+                    )));
+                }
+                window.set_mode_index(
+                    frame
+                        .modes
+                        .iter()
+                        .position(|mode| *mode == frame.mode)
+                        .unwrap_or(0) as i32,
+                );
+                open.frame.set(frame.revision);
+                open.frame_generation.set(frame.generation);
+                let image_mode = frame.image.is_some();
+                if image_mode != window.get_image_mode() {
+                    window.set_search_visible(false);
+                    window.invoke_focus_content();
+                }
+                window.set_image_mode(image_mode);
+                let web_mode = frame.mode == VIEWER_MODE_HTML;
+                if web_mode != window.get_web_mode() {
+                    window.set_web_network(false);
+                    window.set_web_scripts(false);
+                    window.invoke_focus_content();
+                }
+                window.set_web_mode(web_mode);
+                window.set_source_mode(frame.mode == 2 && !image_mode);
+                window.set_markdown_mode(frame.mode == 4 && !image_mode);
+                window.set_font_available(frame.mode != 3 && !image_mode && !web_mode);
+                preferences::present(open);
+                window.set_document_page(frame.image.as_ref().map_or(0, |image| image.page as i32));
+                window.set_document_pages(
+                    frame
+                        .image
+                        .as_ref()
+                        .map_or(0, |image| image.page_count as i32),
+                );
+                if !web_mode {
+                    window.set_zoom_percent(
+                        frame
+                            .image
+                            .as_ref()
+                            .map_or(100.0, |image| (image.zoom * 100.0) as f32),
+                    );
+                }
+                window.set_wrap_enabled(frame.wrap_enabled);
+                window.set_wrap_available(frame.wrap_available);
+                open.raster_size.set((frame.width, frame.height));
+                if frame.tiles.is_none() {
+                    let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        frame.pixels.as_ref(),
+                        frame.width,
+                        frame.height,
+                    );
+                    window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
+                }
+                window.set_accessible_text(frame.accessible_text.as_ref().into());
+                window.set_position(frame.position as f32);
+                window.set_displayed_position(frame.position as f32);
+                window.set_vertical_extent(frame.vertical_extent as f32);
+                window.set_horizontal_position(frame.horizontal_position as f32);
+                window.set_horizontal_extent(frame.horizontal_extent as f32);
+                window.set_caption(frame.caption.as_str().into());
+                window.set_status(frame.status.as_str().into());
+                if image_mode {
+                    window.set_position_context(
+                        format!(
+                            "image:{}",
+                            frame.image.as_ref().map_or(0, |info| info.surface.0)
+                        )
+                        .into(),
+                    );
+                    if frame.tiles.is_some() {
+                        image_motion::present(open);
+                    } else {
+                        window.set_position_pending(false);
+                    }
+                } else {
+                    window.set_position_context(format!("text:{}", frame.generation).into());
+                    present_position(open);
+                }
+                window.invoke_frame_presented();
+            }
+            ViewerOutput::Status(message) => window.set_status(message.as_str().into()),
+            ViewerOutput::ImageUnavailable {
+                generation,
+                surface,
+                message,
+            } => {
+                if *generation >= open.frame_generation.get()
+                    && (surface.0 == 0
+                        || open
+                            .image_info
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|info| info.surface == *surface))
+                {
+                    open.frame_generation.set(*generation);
+                    open.text_position.borrow_mut().changing_content();
+                    open.image_zoom.borrow_mut().clear();
+                    open.image_camera.borrow_mut().suspend();
+                    open.image_redraw.stop();
+                    window.set_status(message.as_str().into());
+                }
+            }
+            ViewerOutput::CopyText(text) => copy(text.clone()),
+            ViewerOutput::WebShortcut(shortcut) => web_input::received(open, *shortcut),
+            ViewerOutput::WebState {
+                generation,
+                policy,
+                zoom,
+            } => {
+                if *generation >= open.frame_generation.get()
+                    && open.text_position.borrow().context_available()
+                {
+                    window.set_web_network(policy.network);
+                    window.set_web_scripts(policy.scripts);
+                    window.set_zoom_percent((zoom * 100.0) as f32);
+                }
+            }
+            ViewerOutput::Closed => close(open),
+        }
+        service.retire(output);
+    }
+    if !open.closed.get()
+        && let Some(result) = open.session.mailbox.take_open_result()
+    {
+        open.opened(result);
+    }
+}
+
+fn present_position(open: &OpenWindow) {
+    let state = open.text_position.borrow();
+    let [vertical, horizontal] = state.positions();
+    open.window.set_position_pending(state.has_pending());
+    open.window.set_position(vertical as f32);
+    open.window.set_horizontal_position(horizontal as f32);
+}
+
+fn flush_position(open: &OpenWindow) {
+    open.text_position.borrow_mut().flush(|target| {
+        open.enqueue(ViewerInput::Position {
+            generation: target.generation,
+            sequence: target.sequence,
+            horizontal: target.horizontal,
+            position: target.position,
+        })
+    });
+}
+
+fn bind(open: &Rc<OpenWindow>) {
     bind_image(open);
+    web_input::bind(open);
+    preferences::bind(open);
     let weak = Rc::downgrade(open);
     open.window.on_change_wrap(move |wrap| {
         if let Some(open) = weak.upgrade() {
-            open.session.send(ViewerInput::Wrap(wrap));
+            accept_preference(&open, ViewerPreferenceChange::Wrap(wrap));
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_change_case_sensitive(move |value| {
+        if let Some(open) = weak.upgrade() {
+            accept_preference(&open, ViewerPreferenceChange::CaseSensitive(value));
         }
     });
     let weak = Rc::downgrade(open);
@@ -212,14 +695,17 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
         if let Some(open) = weak.upgrade()
             && let Ok(index) = usize::try_from(index)
             && let Some(mode) = open.modes.borrow().get(index)
+            && index != open.window.get_mode_index() as usize
+            && open.enqueue(ViewerInput::Mode(*mode))
         {
-            open.session.send(ViewerInput::Mode(*mode));
+            open.text_position.borrow_mut().changing_content();
+            open.window
+                .set_position_context(format!("mode:{index}").into());
         }
     });
     let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));
     let weak = Rc::downgrade(open);
     let native_state = native.clone();
-    let native_keys = keys.clone();
     open.window.window().on_winit_window_event(move |_, event| {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
@@ -229,14 +715,19 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
             return EventResult::PreventDefault;
         }
         let consumed = native_state.borrow_mut().handle(event, |chord| {
-            native_keys(&chord, !open.window.get_content_focused())
-                .is_some_and(|action| dispatch_key(&open, &action))
+            let action = (open.key_resolver.borrow())(&chord, !open.window.get_content_focused());
+            action.is_some_and(|action| dispatch_key(&open, &action))
         });
         if consumed {
-            EventResult::PreventDefault
-        } else {
-            EventResult::Propagate
+            return EventResult::PreventDefault;
         }
+        if web_input::observe(&open, event, !native_state.borrow().alt_gr()) {
+            return EventResult::PreventDefault;
+        }
+        if image_motion::observe(&open, event) {
+            return EventResult::PreventDefault;
+        }
+        EventResult::Propagate
     });
     let weak = Rc::downgrade(open);
     open.window.on_input_key(move |event, search| {
@@ -250,17 +741,20 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
         let Some(chord) = native.borrow().logical_chord(&event) else {
             return false;
         };
-        keys(&chord, search).is_some_and(|action| dispatch_key(&open, &action))
+        let action = (open.key_resolver.borrow())(&chord, search);
+        action.is_some_and(|action| dispatch_key(&open, &action))
     });
     bind_pointer(open);
     let weak = Rc::downgrade(open);
     open.window.on_search(move |backwards| {
-        if let Some(open) = weak.upgrade() {
-            open.session.send(ViewerInput::Search {
+        if let Some(open) = weak.upgrade()
+            && open.enqueue(ViewerInput::Search {
                 query: open.window.get_query().to_string(),
                 backwards,
                 case_sensitive: open.window.get_case_sensitive(),
-            });
+            })
+        {
+            open.text_position.borrow_mut().cancel();
         }
     });
     let weak = Rc::downgrade(open);
@@ -273,6 +767,11 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
 }
 
 fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
+    if open.window.get_web_mode()
+        && let Some(result) = web_input::navigate(open, action)
+    {
+        return result;
+    }
     let input = match action {
         "viewer.close" => {
             close(open);
@@ -282,12 +781,18 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             if open.window.get_image_mode() {
                 return false;
             }
-            open.window.invoke_focus_search();
+            focus_search(open);
             return true;
         }
         "viewer.next-file" => ViewerInput::NextFile,
         "viewer.document-previous" | "viewer.document-next" => {
             if open.window.get_document_page() == 0 {
+                return false;
+            }
+            if action == "viewer.document-next"
+                && open.window.get_document_page() >= open.window.get_document_pages()
+                || action == "viewer.document-previous" && open.window.get_document_page() <= 1
+            {
                 return false;
             }
             ViewerInput::DocumentPage {
@@ -299,8 +804,31 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
                 },
             }
         }
-        "viewer.wrap" => ViewerInput::Wrap(!open.window.get_wrap_enabled()),
+        "viewer.wrap" => {
+            if !open.window.get_wrap_available() {
+                return false;
+            }
+            accept_preference(
+                open,
+                ViewerPreferenceChange::Wrap(!open.window.get_wrap_enabled()),
+            );
+            return true;
+        }
         "viewer.zoom-in" | "viewer.zoom-out" | "viewer.fit" | "viewer.actual-pixels" => {
+            if open.window.get_web_mode() {
+                let current = f64::from(open.window.get_zoom_percent()) / 100.0;
+                let zoom = match action {
+                    "viewer.zoom-in" => current * 1.25,
+                    "viewer.zoom-out" => current * 0.8,
+                    _ => 1.0,
+                }
+                .clamp(0.1, 10.0);
+                if web_input::send(open, viewer_web::CommandKind::Zoom(zoom)) {
+                    open.window.set_zoom_percent((zoom * 100.0) as f32);
+                    return true;
+                }
+                return false;
+            }
             if !open.window.get_image_mode() {
                 return false;
             }
@@ -332,7 +860,7 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
                 return false;
             }
             if open.window.get_query().is_empty() {
-                open.window.invoke_focus_search();
+                focus_search(open);
                 return true;
             }
             ViewerInput::Search {
@@ -352,30 +880,109 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             None => return false,
         },
     };
-    open.session.send(input)
+    if let ViewerInput::Scroll { x, y } = input
+        && open.window.get_tiled()
+    {
+        return image_motion::push(
+            open,
+            x / open.window.window().scale_factor(),
+            y / open.window.window().scale_factor(),
+            false,
+        );
+    }
+    let changing = matches!(
+        input,
+        ViewerInput::NextFile | ViewerInput::DocumentPage { .. }
+    );
+    let new_file = matches!(input, ViewerInput::NextFile);
+    let navigation = matches!(
+        input,
+        ViewerInput::Scroll { .. }
+            | ViewerInput::Seek(_)
+            | ViewerInput::Pan(_)
+            | ViewerInput::Search { .. }
+            | ViewerInput::Wrap(_)
+    );
+    let accepted = send_input(open, input);
+    if changing && accepted {
+        open.image_zoom.borrow_mut().clear();
+        if new_file {
+            open.image_camera.borrow_mut().suspend();
+            open.text_position.borrow_mut().changing_content();
+        } else {
+            open.image_camera.borrow_mut().cancel();
+        }
+        open.window
+            .set_position_context(format!("changing:{}", open.frame.get()).into());
+    }
+    if navigation && accepted {
+        open.text_position.borrow_mut().cancel();
+    }
+    accepted
+}
+
+fn focus_search(open: &OpenWindow) {
+    if open.window.get_web_mode() {
+        web_input::send(open, viewer_web::CommandKind::Focus(false));
+    }
+    open.window.invoke_focus_search();
 }
 
 fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_scroll(move |x, y| {
         if let Some(open) = weak.upgrade() {
+            if open.window.get_tiled() {
+                image_motion::push(&open, x, y, true);
+                return;
+            }
             let scale = open.window.window().scale_factor();
-            open.session.send(ViewerInput::Scroll {
+            if open.enqueue(ViewerInput::Scroll {
                 x: x * scale,
                 y: y * scale,
-            });
+            }) {
+                open.text_position.borrow_mut().cancel();
+            }
         }
     });
     let weak = Rc::downgrade(open);
     open.window.on_seek(move |value| {
         if let Some(open) = weak.upgrade() {
-            open.session.send(ViewerInput::Seek(value.into()));
+            if open.window.get_tiled() {
+                image_motion::seek(&open, 1, f64::from(value));
+                return;
+            }
+            if open.window.get_image_mode() {
+                if open.enqueue(ViewerInput::Seek(f64::from(value))) {
+                    open.window.set_position(value);
+                }
+                return;
+            }
+            open.text_position
+                .borrow_mut()
+                .request(false, f64::from(value));
+            present_position(&open);
+            flush_position(&open);
         }
     });
     let weak = Rc::downgrade(open);
     open.window.on_pan(move |value| {
         if let Some(open) = weak.upgrade() {
-            open.session.send(ViewerInput::Pan(value.into()));
+            if open.window.get_tiled() {
+                image_motion::seek(&open, 0, f64::from(value));
+                return;
+            }
+            if open.window.get_image_mode() {
+                if open.enqueue(ViewerInput::Pan(f64::from(value))) {
+                    open.window.set_horizontal_position(value);
+                }
+                return;
+            }
+            open.text_position
+                .borrow_mut()
+                .request(true, f64::from(value));
+            present_position(&open);
+            flush_position(&open);
         }
     });
     let weak = Rc::downgrade(open);
@@ -396,10 +1003,14 @@ fn bind_image(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_document_turn(move |delta| {
         if let Some(open) = weak.upgrade() {
-            open.session.send(ViewerInput::DocumentPage {
-                frame: open.frame.get(),
-                delta,
-            });
+            dispatch_key(
+                &open,
+                if delta > 0 {
+                    "viewer.document-next"
+                } else {
+                    "viewer.document-previous"
+                },
+            );
         }
     });
     let weak = Rc::downgrade(open);
@@ -422,26 +1033,36 @@ fn bind_image(open: &Rc<OpenWindow>) {
             && delta != 0.0
         {
             let scale = open.window.window().scale_factor();
-            open.session.send(ViewerInput::Image {
-                frame: open.frame.get(),
-                input: ViewerImageInput::Zoom {
-                    factor: if delta > 0.0 { 1.25 } else { 0.8 },
-                    anchor: Some([x * scale, y * scale]),
+            send_input(
+                &open,
+                ViewerInput::Image {
+                    frame: open.frame.get(),
+                    input: ViewerImageInput::Zoom {
+                        factor: if delta > 0.0 { 1.25 } else { 0.8 },
+                        anchor: Some([x * scale, y * scale]),
+                    },
                 },
-            });
+            );
         }
     });
     let weak = Rc::downgrade(open);
     open.window.on_image_drag(move |x, y| {
         if let Some(open) = weak.upgrade() {
+            if open.window.get_tiled() {
+                image_motion::push(&open, -x, -y, true);
+                return;
+            }
             let scale = open.window.window().scale_factor();
-            open.session.send(ViewerInput::Image {
-                frame: open.frame.get(),
-                input: ViewerImageInput::Drag {
-                    x: x * scale,
-                    y: y * scale,
+            send_input(
+                &open,
+                ViewerInput::Image {
+                    frame: open.frame.get(),
+                    input: ViewerImageInput::Drag {
+                        x: x * scale,
+                        y: y * scale,
+                    },
                 },
-            });
+            );
         }
     });
 }
@@ -450,9 +1071,14 @@ fn close(open: &OpenWindow) {
     if !open.closed.replace(true) {
         open.session.close();
         open.timer.stop();
+        open.image_zoom.borrow_mut().clear();
+        open.image_redraw.stop();
         let _ = open.window.hide();
         open.window.set_surface(slint::Image::default());
+        open.window.set_image_tiles(Default::default());
+        open.image_textures.borrow_mut().clear();
         open.window.set_accessible_text("".into());
+        open.opened(Err("Viewer closed before displaying content.".into()));
     }
 }
 
@@ -463,6 +1089,7 @@ fn mode_label(mode: u16) -> &'static str {
         3 => "Binary",
         4 => "Markdown",
         VIEWER_MODE_IMAGE => "Image",
+        VIEWER_MODE_HTML => "HTML",
         _ => "Unknown",
     }
 }

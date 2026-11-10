@@ -28,9 +28,11 @@ The evidence matrix is [IMPLEMENTATION_BACKLOG.md](../../IMPLEMENTATION_BACKLOG.
 - Keep Windows/Linux/macOS bodies and tests in separate files/crates.
 - Rustfmt max_width = 100; handwritten source at most 100,000 bytes.
 - Copy uses SHA-256 over source bytes and independent destination readback.
-- Move may remove sources only after the entire operation is copied and verified;
-  skips, cancellation, changed identities and durability/publication failures do
-  not authorize that deletion phase.
+- Ordinary Move removes each exact source immediately after that file's copy,
+  independent SHA-256 destination readback, publication and required metadata
+  succeed. Do not wait for the whole batch and do not use source recovery folders
+  or a recovery opt-in. Later error/cancellation retains earlier completed moves;
+  changed identities and failed verification never authorize deletion.
 - More than one copy stream requires positively classified local SSD at both ends;
   HDD/network/unknown remains serial with shared device/mutation budgets.
 - Never operate on navigation `..`; selections retain captured identities/revisions.
@@ -69,7 +71,8 @@ or failures justify it, rather than rebuilding unchanged plugins for every task.
   native-input regression; preserve an honest investigation state if unreproduced.
 - [ ] Complete copy: directory merge, explicit overwrite contracts, links/metadata,
   per-item/remaining-conflict choices and a shared backend queue.
-- [ ] Implement verified two-phase Move/Cut/F6 and source identity revalidation.
+- [ ] Finish ordinary per-file Move/Cut/F6 with source identity revalidation;
+  remove the superseded source-recovery workflow.
 - [ ] Implement bounded modeless Find with name/content queries and safe result actions.
 - [ ] Implement rectangular selection across Details/Brief/Thumbnails and providers.
 - [ ] Implement Custom Commands settings, safe expansion/launch and conditional toolbar.

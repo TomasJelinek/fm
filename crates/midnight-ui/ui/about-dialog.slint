@@ -1,0 +1,46 @@
+import { AboutSlint, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+export component AboutDialog inherits Rectangle {
+    in property <string> application-version;
+    in property <image> application-icon;
+    in property <image> close-icon;
+    callback close();
+    callback move-dialog(length, length);
+    background: Theme.surface;
+    init => { close-button.focus(); }
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: 8px; spacing: 6px;
+            DialogHeader {
+                title: "Midnight Explorer"; text-size: 18px; compact: true;
+                native-icon: root.application-icon;
+                close-label: "Close dialog"; close => { root.close(); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            ScrollView {
+                min-height: 0px; vertical-stretch: 1;
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    spacing: 8px; alignment: start;
+                    Text { text: "Version " + root.application-version; color: Theme.text; wrap: word-wrap; }
+                    Text { text: "A focused, two-pane file manager."; color: Theme.secondary-text; wrap: word-wrap; }
+                    AboutSlint {}
+                }
+            }
+            close-button := HintedActionButton {
+                native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
+                text: "Close"; min-height: Theme.control-height;
+                hint: "Close this dialog and return to the file manager.";
+                clicked => { root.close(); }
+            }
+        }
+    }
+}

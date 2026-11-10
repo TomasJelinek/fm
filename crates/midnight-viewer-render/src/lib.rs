@@ -7,20 +7,28 @@ use parley::{
 };
 use std::{borrow::Cow, ops::Range};
 
+mod document;
+mod fonts;
+pub use document::{DocumentBlock, DocumentKind, DocumentStyle};
 mod glyph_cache;
+pub use fonts::{installed_families, is_generic_family, monospace_families};
 mod glyphs;
 mod options;
 mod raster;
 mod selection;
 mod source_map;
+mod tables;
 
 pub use options::TextOptions;
 pub use raster::{Raster, Viewport};
 use source_map::SourceMap;
+pub use tables::{CellAlignment, TableCell, TableRow};
 
 /// A page is a bounded decoded fragment, never the complete file by default.
 pub const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_SPANS: usize = 4096;
+// Splitting the API's independent span/decoration ranges preserves both styles.
+const MAX_STYLE_SPANS: usize = 4 * MAX_SPANS + 512;
 const MAX_LINES: usize = 4096;
 
 /// A paint-only range in the decoded UTF-8 page, sorted without overlaps.
@@ -37,6 +45,8 @@ pub struct StyleSpan {
     pub weight: u16,
     pub italic: bool,
     pub underline: bool,
+    pub strikethrough: bool,
+    pub monospace: bool,
     pub size: f32,
 }
 
@@ -67,6 +77,7 @@ pub struct TextPage {
     text: String,
     layout: Layout<[u8; 4]>,
     source_map: SourceMap,
+    composite: Option<tables::Composite>,
 }
 
 impl TextRenderer {
@@ -93,20 +104,13 @@ impl TextRenderer {
         {
             return Err(LayoutError::InvalidGeometry);
         }
-        if styles.len() > MAX_SPANS {
-            return Err(LayoutError::LimitExceeded);
+        if options
+            .line_height
+            .is_some_and(|height| !height.is_finite() || !(1.0..=3.0).contains(&height))
+        {
+            return Err(LayoutError::InvalidGeometry);
         }
-        for style in styles {
-            if text.get(style.range.clone()).is_none() || style.range.is_empty() {
-                return Err(LayoutError::InvalidRange);
-            }
-            if !style.size.is_finite()
-                || !(1.0..=256.0).contains(&(style.size * options.scale))
-                || !(1..=1000).contains(&style.weight)
-            {
-                return Err(LayoutError::LimitExceeded);
-            }
-        }
+        validate_styles(text, options.scale, styles)?;
         if options.family.len() > 256
             || options.size * options.scale > 256.0
             || !(1..=64).contains(&options.tab_width)
@@ -115,13 +119,22 @@ impl TextRenderer {
             return Err(LayoutError::LimitExceeded);
         }
         let (shaped, source_map) = SourceMap::prepare(text, options.tab_width)?;
-        let mut builder =
-            self.layouts
-                .ranged_builder(&mut self.fonts, &shaped, options.scale, true);
+        let mut builder = self
+            .layouts
+            // Page-local baseline rounding changes the spacing pattern when
+            // an overlapping fragment starts at another fractional line.
+            .ranged_builder(&mut self.fonts, &shaped, options.scale, false);
         builder.push_default(StyleProperty::FontSize(options.size));
-        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-            Cow::Borrowed(options.family),
-        )));
+        if let Some(height) = options.line_height {
+            builder.push_default(StyleProperty::LineHeight(
+                parley::style::LineHeight::FontSizeRelative(height),
+            ));
+        }
+        builder.push_default(StyleProperty::FontFamily(if options.literal_family {
+            FontFamily::named(options.family)
+        } else {
+            FontFamily::Source(Cow::Borrowed(options.family))
+        }));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(
             options.weight,
         ))));
@@ -131,6 +144,9 @@ impl TextRenderer {
             FontStyle::Normal
         }));
         builder.push_default(StyleProperty::Brush(options.foreground));
+        if options.tabular_numbers {
+            builder.push_default(StyleProperty::FontFeatures("\"tnum\"".into()));
+        }
         // Prefer word boundaries; an oversized word must still fit the viewport.
         if options.wrap_width.is_some() {
             builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
@@ -151,6 +167,16 @@ impl TextRenderer {
                 }),
                 range.clone(),
             );
+            if style.monospace {
+                builder.push(
+                    StyleProperty::FontFamily(FontFamily::Source(Cow::Borrowed("monospace"))),
+                    range.clone(),
+                );
+            }
+            builder.push(
+                StyleProperty::Strikethrough(style.strikethrough),
+                range.clone(),
+            );
             builder.push(StyleProperty::Underline(style.underline), range);
         }
         for span in spans {
@@ -166,6 +192,7 @@ impl TextRenderer {
             text: text.into(),
             layout,
             source_map,
+            composite: None,
         })
     }
 
@@ -198,15 +225,22 @@ impl TextPage {
     }
 
     pub fn line_count(&self) -> usize {
-        self.layout.len()
+        self.composite.as_ref().map_or_else(
+            || self.layout.len(),
+            |grid| grid.parts.iter().map(|part| part.page.line_count()).sum(),
+        )
     }
 
     pub fn width(&self) -> f32 {
-        self.layout.width()
+        self.composite
+            .as_ref()
+            .map_or_else(|| self.layout.width(), |grid| grid.width)
     }
 
     pub fn height(&self) -> f32 {
-        self.layout.height()
+        self.composite
+            .as_ref()
+            .map_or_else(|| self.layout.height(), |grid| grid.height)
     }
 }
 
@@ -232,6 +266,24 @@ fn validate_input(
             return Err(LayoutError::InvalidRange);
         }
         previous_end = span.range.end;
+    }
+    Ok(())
+}
+
+fn validate_styles(text: &str, scale: f32, styles: &[StyleSpan]) -> Result<(), LayoutError> {
+    if styles.len() > MAX_STYLE_SPANS {
+        return Err(LayoutError::LimitExceeded);
+    }
+    for style in styles {
+        if text.get(style.range.clone()).is_none() || style.range.is_empty() {
+            return Err(LayoutError::InvalidRange);
+        }
+        if !style.size.is_finite()
+            || !(1.0..=256.0).contains(&(style.size * scale))
+            || !(1..=1000).contains(&style.weight)
+        {
+            return Err(LayoutError::LimitExceeded);
+        }
     }
     Ok(())
 }

@@ -37,3 +37,8 @@ Exact pinned package LICENSE files were reviewed on 7 November 2026. The
 bzip2-1.0.6 conditions require preserving notices, marking altered source versions,
 not misrepresenting origin, and not using authors' names for endorsement.
 No mandatory fees, royalties, subscription or paid license branch is selected.
+
+The November 9 streaming change reuses these exact codec pins/features. Only the
+project's public filesystem API and worker SDK versions change. Salamander source
+was inspected for index/extraction/cache lifecycle behavior; no GPL source or
+assets were copied into this plugin or the host.

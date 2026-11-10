@@ -143,11 +143,11 @@ mod tests {
         };
         assert_eq!(
             tooltip(Some(&info), &NumberLocale::default()),
-            format!("{label}\n1.0 GB free")
+            format!("{label}\n1.0 GiB free")
         );
         assert_eq!(
             menu_label(&volume, Some(&info), &NumberLocale::default()),
-            format!("Q: — {label} — 1.0 GB free")
+            format!("Q: — {label} — 1.0 GiB free")
         );
         assert_eq!(volume.root, Path::new("Q:"));
     }

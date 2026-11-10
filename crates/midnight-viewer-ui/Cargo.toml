@@ -16,6 +16,11 @@ i-slint-core = { version = "=1.18.1", default-features = false, features = ["std
 slint-build.workspace = true
 
 [dev-dependencies]
+slint = { workspace = true, features = ["unstable-wgpu-30"] }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
 tokio.workspace = true
 png = "0.18"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
+midnight-platform-linux.workspace = true

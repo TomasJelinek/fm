@@ -3,6 +3,42 @@ use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::Win32::Globalization::{GetLocaleInfoEx, GetNumberFormatEx, LOCALE_SDECIMAL};
 
 #[test]
+fn archive_calendar_is_formatted_without_normalizing_invalid_dates() {
+    use midnight_core::ArchiveTimestamp;
+    let service = WindowsFileSystem::new(None);
+    let valid = ArchiveTimestamp::Local {
+        year: 2024,
+        month: 2,
+        day: 29,
+        hour: 12,
+        minute: 34,
+        second: 56,
+    };
+    let rendered = service.format_archive_local_time(valid).unwrap();
+    assert!(!rendered.date.is_empty() && !rendered.time.is_empty());
+    assert!(
+        service
+            .format_archive_local_time(ArchiveTimestamp::Local {
+                year: 2023,
+                month: 2,
+                day: 29,
+                hour: 12,
+                minute: 34,
+                second: 56,
+            })
+            .is_none()
+    );
+    assert!(
+        service
+            .format_archive_local_time(ArchiveTimestamp::Utc {
+                seconds: 0,
+                nanoseconds: 0,
+            })
+            .is_none()
+    );
+}
+
+#[test]
 fn current_user_number_snapshot_matches_nls_without_losing_u64_precision() {
     let locale = WindowsFileSystem::new(None).number_locale().unwrap();
     let mut decimal = [0u16; 32];

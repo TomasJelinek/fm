@@ -20,19 +20,94 @@ mod source;
 mod validation;
 
 impl TransferService for crate::WindowsFileSystem {
+    fn native_drop_device(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<u64>, FsError> {
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+        checked(cancel, path)?;
+        validate_path(path, true)?;
+        // Advisory metadata only. Operation preparation independently pins and validates
+        // its authority; this handle requests neither file contents nor deletion rights.
+        let file = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|e| error(path, e))?;
+        let attributes = file
+            .metadata()
+            .map_err(|e| error(path, e))?
+            .file_attributes();
+        let device = if attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            Some(identity(&file, path)?.device)
+        } else {
+            None
+        };
+        checked(cancel, path)?;
+        Ok(device)
+    }
+    fn prepare_checksum_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        use std::path::{Component, PathBuf};
+        use windows_sys::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN};
+        checked(cancel, path)?;
+        validate_path(path, true)?;
+        let mut root = PathBuf::new();
+        let mut file = None;
+        for component in path.components() {
+            checked(cancel, path)?;
+            match component {
+                Component::Prefix(_) => root.push(component.as_os_str()),
+                Component::RootDir => {
+                    root.push(component.as_os_str());
+                    file = Some(native::open_parent(&root).map_err(|e| error(path, e))?);
+                }
+                Component::Normal(name) => {
+                    let parent = file.as_ref().ok_or_else(|| {
+                        invalid(path, "checksum directory requires a native root")
+                    })?;
+                    let child = native::open_relative(
+                        parent,
+                        name,
+                        FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        FILE_OPEN,
+                        FILE_DIRECTORY_FILE,
+                    )
+                    .map_err(|e| error(path, e))?;
+                    if child
+                        .metadata()
+                        .map_err(|e| error(path, e))?
+                        .file_attributes()
+                        & FILE_ATTRIBUTE_REPARSE_POINT
+                        != 0
+                    {
+                        return Err(unsupported(
+                            path,
+                            "checksum directory contains a link or junction",
+                        ));
+                    }
+                    file = Some(child);
+                }
+                _ => return Err(invalid(path, "checksum directory contains a dot component")),
+            }
+        }
+        let file =
+            file.ok_or_else(|| invalid(path, "checksum directory requires a native root"))?;
+        destination::Directory::from_file(file, path.to_owned())
+            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
+    }
     fn prepare_move_destination(
         &self,
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        let directory = self.prepare_transfer_destination(path, cancel)?;
-        if !directory.capabilities().recoverable_replacement {
-            return Err(unsupported(
-                path,
-                "Verified Move requires a qualified local destination. Choose Copy to retain the source.",
-            ));
-        }
-        Ok(directory)
+        self.prepare_transfer_destination(path, cancel)
     }
     fn prepare_move_source(
         &self,

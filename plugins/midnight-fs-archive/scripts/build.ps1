@@ -43,7 +43,8 @@ kind = "filesystem-worker"
 version = "0.1.0"
 entry_executable = "midnight-fs-archive.exe"
 target = "$target"
-protocol = 1
+protocol = 2
+stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 "@
         [IO.File]::WriteAllText((Join-Path $package 'plugin.toml'), $manifest.Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))

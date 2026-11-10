@@ -6,7 +6,12 @@ export component PanelSplitter inherits Rectangle {
     in-out property <float> fraction: 0.5;
     callback centered();
     callback resized();
-    public function center() { root.fraction = 0.5; root.centered(); }
+    callback committed(float);
+    private property <bool> dragging;
+    private property <float> drag-start-fraction;
+    public function center() {
+        root.fraction = 0.5; root.centered(); root.committed(root.fraction);
+    }
     width: Theme.touch ? 12px : 6px;
     accessible-role: button;
     accessible-label: "Panel splitter";
@@ -28,14 +33,27 @@ export component PanelSplitter inherits Rectangle {
     focus := FocusScope {
         key-pressed(event) => {
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
-                if event.text == Key.LeftArrow { root.adjust(-12px); return accept; }
-                if event.text == Key.RightArrow { root.adjust(12px); return accept; }
+                if event.text == Key.LeftArrow {
+                    root.adjust(-12px); root.committed(root.fraction); return accept;
+                }
+                if event.text == Key.RightArrow {
+                    root.adjust(12px); root.committed(root.fraction); return accept;
+                }
                 if event.text == Key.Return { root.center(); return accept; }
             }
             reject
         }
         area := TouchArea {
             mouse-cursor: ew-resize;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.dragging = true; root.drag-start-fraction = root.fraction;
+                }
+                if root.dragging && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                    root.dragging = false;
+                    if root.fraction != root.drag-start-fraction { root.committed(root.fraction); }
+                }
+            }
             moved => { if self.pressed { root.adjust(self.mouse-x - self.pressed-x); } }
             clicked => { focus.focus(); }
             double-clicked => { root.center(); }

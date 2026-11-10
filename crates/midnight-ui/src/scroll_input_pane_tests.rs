@@ -9,6 +9,9 @@ use slint::platform::{
 };
 use std::{cell::Cell, path::PathBuf, sync::Arc};
 
+#[path = "scroll_input_toolbar_tests.rs"]
+mod toolbar_tests;
+
 struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
 
 impl Platform for TestPlatform {
@@ -203,7 +206,7 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
             );
         }
     }
-    h.advance(1);
+    h.advance(6);
     assert!(
         (h.offset(0) + 60.0).abs() < 0.01,
         "all wheel pixels delivered once"

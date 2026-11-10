@@ -1,6 +1,18 @@
 # Midnight Explorer
 
+[Make File List](docs/MAKE_FILE_LIST.md) exports a captured panel selection with
+Salamander-compatible templates to the clipboard, internal viewer or a UTF-8 file
+(Ctrl+M; also available from the top toolbar and F10 Tools menu).
+
 A dual-pane desktop file manager written in Rust with Slint and Tokio.
+
+An optional [HTML viewer](docs/developer/WEB_VIEWER_API.md) renders HTML with
+embedded Chromium inside the normal viewer. Its runtime is a separate plugin
+package; building `me.exe` alone does not install Chromium. Build/package steps
+are in the [independent provider README](plugins/midnight-viewer-html/README.md).
+F3 handles `.html`, `.htm` and `.xhtml`; Ctrl+F searches and Escape closes the
+viewer. HTML starts offline with JavaScript disabled. Windows rendering is
+qualified; the Linux browser runtime still requires native qualification.
 
 Product version **0.1** (Cargo SemVer `0.1.0`); the native window title shows
 `Midnight Explorer 0.1 — File Manager`. The displayed version is derived from the package version.
@@ -32,12 +44,22 @@ the selected user/sudo permissions. F3 opens an installed internal viewer; Alt+F
 plain text, and F4 opens the configured external editor. Ctrl+C/Ctrl+V copies files and ordinary folders through a
 background queue with independent SHA-256 destination readback. Existing names
 prompt for Skip, a different name, explicit folder Merge or recoverable Replace;
-replacement retains the displaced original. F6 and Ctrl+X/Ctrl+V are being qualified
-for recoverable moves of at most 64 ordinary native files: every destination must
-be verified before original names are moved into recovery folders. Originals are
-retained, so this first move implementation does not free their disk space.
-Directory/link moves, link copying and full metadata preservation remain pending.
-See [the transfer capabilities and recovery contract](docs/developer/TRANSFERS.md).
+replacement retains the displaced original. F6 and Ctrl+X/Ctrl+V use ordinary
+Move on qualified Windows NTFS and Linux ext storage: independently verify each
+destination, then delete that exact source before continuing. Recursive ordinary
+folders use the same per-file checks and remove emptied source folders last.
+There is no source-recovery mode or journal. See the
+[current accepted follow-ups](docs/superpowers/specs/2026-11-07-panel-viewer-followups.md).
+Link/provider moves, link copying and full metadata preservation remain pending;
+required modified-time preservation currently accepts regular files only.
+See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
+
+Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
+an unavailable destination or a full disk. Retry preserves full checksum checks;
+Skip All applies only to the same error type and phase in that job. Decide later
+keeps the pending decision in Jobs. Successful transfers close automatically
+opened progress; manually opened Jobs stays open, and the recent job record remains.
+See [error recovery and validation](docs/verification/2026-11-08-transfer-errors.md).
 
 Mouse file dragging uses the same verified copy queue for drops into either panel's
 displayed directory. Dragging a selected row keeps the selected group; dragging
@@ -77,23 +99,29 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They then build the platform's independent native filesystem package
-and the five independent viewer packages using the public APIs/SDKs, and install
-their artifacts under the executable's `filesystems/` and `viewers/` directories.
-They do not install system packages or launch the application. Direct `cargo build`
-builds the host only; use `scripts/build-native-filesystem.ps1` / `.sh` and
-`scripts/build-viewers.ps1` / `.sh` to add these packages separately. See the
-[native filesystem build instructions](docs/developer/NATIVE_FILESYSTEM_API.md#building-the-native-package)
-for test and offline options.
+exit status. They also build the platform's independent native and Network Neighborhood
+filesystem packages under `filesystems/native.{windows,linux}/` and
+`filesystems/network.{windows,linux}/`, then the five
+independent viewer packages using the public SDK under `viewers/`. They do
+not install system packages or launch the application. Direct `cargo build` builds
+the host only. Run `scripts/build-native-filesystem.ps1` or
+`scripts/build-native-filesystem.sh` before launching it, add Network Neighborhood with
+`scripts/build-network-filesystem.ps1` or `.sh`, and use `scripts/build-viewers.ps1`
+or `scripts/build-viewers.sh` to add viewers. Native browsing and F3 source reads have
+no built-in fallback when their native filesystem package is absent or incompatible.
 Archive and thumbnail workers have separate builds; the root helpers do not install
 them. Use the archive plugin's `scripts/build.ps1` or `scripts/build.sh` with a
 canonical worker SDK configuration, and `scripts/build-thumbnailers.ps1` or
 `scripts/build-thumbnailers.sh` for thumbnails. Stage the results in executable-adjacent
 `filesystems/` and `thumbnailers/` respectively. See the
 [filesystem API and build reference](docs/developer/FILESYSTEM_API.md) and
-[worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging requires exactly
-one compatible native filesystem provider; archive and thumbnail packages are
-optional. It preserves package permissions and notices.
+[worker SDK guide](docs/developer/WORKER_SDK.md). Release packaging accepts these
+package roots, requires one compatible native and one network filesystem provider, and
+preserves executable permissions and notices. Archive and thumbnail packages remain optional.
+The [network plugin guide](plugins/midnight-filesystem-network/README.md) describes
+its optional Linux GIO/GVfs runtime and explicit unavailable/authentication states.
+See the [native filesystem build instructions](docs/developer/NATIVE_FILESYSTEM_API.md#building-the-native-package)
+for package-only builds, test switches and offline options.
 The Cargo package remains `midnight-explorer`; its executable is `me.exe` on Windows
 and `me` on Linux.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
@@ -116,7 +144,8 @@ Build from PowerShell or Command Prompt:
 .\build.bat release
 ```
 
-Host-only commands with a normal Rust installation (viewer packages are built separately):
+Host-only commands with a normal Rust installation (native filesystem and viewer packages
+must also be built with the helpers above):
 
 ```powershell
 cargo build -p midnight-explorer --locked
@@ -141,8 +170,8 @@ powershell -NoProfile -File scripts/deploy-private.ps1 -SourceDirectory _build/r
 
 Use the original build EXE, the **Midnight Explorer** desktop shortcut, or the
 private installation path printed by that command. Restart after deployment.
-The `-IncludeFilesystems` and `-IncludeThumbnailers` switches require those
-independently built packages; omit a switch when its optional package is absent.
+`-IncludeFilesystems` includes the required native filesystem and any built archive
+workers. Omit `-IncludeThumbnailers` when optional thumbnail packages are absent.
 The helper does not launch the app or change saved settings. Direct launches:
 
 ```powershell
@@ -296,8 +325,11 @@ graphics runtime and fonts; it does not establish production GPU performance.
 See the [complete current keyboard map](docs/KEYBOARD_SHORTCUTS.md), including
 editor scope and shortcuts reserved for later stages.
 
-- Ctrl+A / Ctrl+D / Ctrl+I: select all / clear / invert selection in the focused
-  file pane. The parent `..` is excluded; text editors retain normal editing.
+- Ctrl+A / Ctrl+D: select all / clear selection in the focused file pane.
+  Ctrl+A includes folders; Ctrl+Shift+A selects files only and deselects folders.
+  Ctrl+I inverts files only, preserving selection of folders and directory links.
+  This works inside archives too. The parent `..` is excluded; text editors retain
+  normal editing. These shortcuts can be reassigned in Options.
 - Type in the file pane to search filename prefixes, always Unicode
   case-insensitively. The matching prefix is colored; Up/Down visits matches and
   Escape exits. Options can filter the list while typing instead of just jumping.
@@ -333,12 +365,18 @@ editor scope and shortcuts reserved for later stages.
 - Space / Insert: toggle selection and advance, clamped at the last row. Space
   also schedules the focused directory's size without following links.
 - Ctrl+R / toolbar Refresh: reload the current directory.
+- F10 opens the main menu with file operations, selection, panel navigation/view
+  controls, Find, comparisons, checksums, Hot Paths, Options and Jobs. Choose a
+  category to narrow the list; entries show configured keys and unavailable
+  operations remain visible but disabled.
 - Ctrl+Shift+S: calculate selected folder sizes, or all folders when none are selected;
   press again to cancel. Partial/running values are marked; links are skipped.
-- Ctrl+[ / Ctrl+]: insert the left/right path as a literal shell argument.
-  Simple paths remain bare; special characters use escaped double quotes.
-- Ctrl+P: insert the active path; Ctrl+Enter: append the focused filename at
-  the end of the command draft. Insertion never submits the command.
+- Ctrl+[ / Ctrl+]: insert the left/right path at the caret or replace the selection.
+  The physical bracket keys also work with Shift and with non-US layouts.
+  Ctrl+P inserts the active path. Directory insertions end with a native path
+  separator, without doubling an existing one.
+- Ctrl+Enter: append the focused filename at the end of the command draft.
+  Insertion adds no quotes, escaping or spaces and never submits the command.
 - Alt+F1 / Alt+F2: open left / right drive choices. Ctrl+F3/F4/F5/F6 sort by
   name/type/time/size; Ctrl+F9 refreshes; Ctrl+Shift+F10 calculates folder sizes.
 - Enter in the command editor: open the system terminal in the active directory
@@ -359,15 +397,25 @@ editor scope and shortcuts reserved for later stages.
   while the toolbar shows one primary OneDrive shortcut.
   Suitable host icons load on the backend; missing native action icons retain
   semantic application vectors and native colors remain intact.
-- Options after F12 groups settings by topic, including Panel, Appearance, Command,
+- The top toolbar's Options gear groups settings by topic, including Panel, Appearance, Command,
   Keyboard and Custom Commands. It offers readable
   or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Dracula, Nord,
   Gruvbox Dark, Catppuccin Mocha, Solarized Light, Carbon Green, Desktop/Touch spacing, an installed
   font family and independent Desktop/Touch base sizes (8–32px). Preview
-  is immediate; typed preferences are saved asynchronously by the backend.
-  Colors offers ordered wildcard/regex filename rules. Set a base text color and
+  is immediate and reversible. **OK** validates all pages, saves asynchronously
+  and closes after success. **Cancel**, Escape and X discard all edits and restore
+  previewed theme, spacing and fonts. Validation or save errors keep Options open.
+  **Reset to defaults** resets all Options pages while preserving tabs, command
+  history, hot paths and custom commands. It is a preview until OK; Cancel undoes
+  the reset too.
+  See the [Options transaction design](docs/superpowers/specs/2026-11-08-options-transaction.md).
+  Colors offers a visible priority list of wildcard/regex filename rules; the
+  first matching enabled rule wins. Set a base text color and
   optional background; focused/selected variants are derived automatically and
   previewed together. Matching runs on backend workers in every panel view.
+  Color swatches open a movable, resizable picker popup. Its controls scroll in
+  small windows while Use color / Cancel stay visible; Escape cancels just the
+  picker, and the outer Options OK / Cancel still controls saving.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
   appears in full beside the command input in the same single row, without
   elision or a fixed path-width cap. Extreme paths remain fully accessible in a
@@ -377,12 +425,24 @@ editor scope and shortcuts reserved for later stages.
   Enter submits the displayed draft.
   The window minimum stays 320×200 logical pixels at every font/density. Compact
   layout keeps the active panel and essential controls accessible; wide controls scroll.
+- One shared toolbar above both panels operates on the active panel. It includes
+  navigation/history, New File, Attributes, Find, Filter, file/directory comparison,
+  Checksums, Folder Sizes, Properties, Hot Paths, view mode and sort. Drives,
+  paths and tabs remain per-panel. Narrow windows scroll the shared toolbar.
+  The Options gear stays fixed at its right end; the moon button immediately
+  beside it opens About with the application version. The bottom bar keeps
+  F1–F12 and Jobs.
+  Switching panels or locations invalidates an open context-dependent popup.
 - Custom Commands has a dedicated toolbar above the command editor whenever at
-  least one command is configured. Icons may have optional text; overflow scrolls.
+  least one command is configured. At compact window sizes, the shared toolbar's
+  **Custom commands** button opens the same commands in a popup to preserve file
+  browsing space. Icons may have optional text; overflow scrolls.
   Right-click opens the matching settings page and selects that command.
   Drag rows in Options → Custom Commands to change their order. A marker shows
   the insertion point; the list scrolls at its edges. Escape cancels the drag.
-  Order is saved without changing command IDs or shortcuts; Up/Down remain available.
+  Order is staged without changing command IDs or shortcuts; **OK** saves it,
+  **Cancel** restores it. Up/Down remain available. **Update command** stages an
+  individual form so another command can be edited before confirming the dialog.
   Program mode passes native arguments separately; terminal mode uses literal
   user-authored PowerShell/POSIX source with explicitly declared context variables.
   Preview does not execute. Jobs reports started/not-started processes; Cancel
@@ -404,7 +464,7 @@ editor scope and shortcuts reserved for later stages.
 - Shift+drive letter: switch the focused file pane on Windows.
 - F2: rename the focused item; F7: create an absolute or relative folder path,
   including `..` and missing intermediate folders. Paths may leave the active panel.
-- Shift+F4 or the panel's **New empty file** button: enter a filename and press
+- Shift+F4 or the shared toolbar's **New empty file** button: enter a filename and press
   Enter to create a zero-byte file. Escape cancels; existing entries are never
   overwritten. The new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
@@ -413,12 +473,17 @@ editor scope and shortcuts reserved for later stages.
   file count/total file bytes and folder count; folder contents are not recursively
   counted just to open the confirmation.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
-  Options follows F12; Jobs shows the operation queue, progress and cancellation.
+  The Options gear is at the right of the top toolbar; Jobs shows the operation
+  queue, progress and cancellation.
 - Hold Ctrl to show the effective Ctrl+F1–F12 captions and actions in the footer.
   Remapped or disabled shortcuts are reflected in this layer. Ctrl+F11 expands
-  the active panel and leaves a rail for switching to the other panel; another
-  Ctrl+F11 restores the previous split. Double-clicking the splitter centers it.
-- Ctrl+F10 compares the two displayed directories on the backend, selecting
+  the active panel across the entire panels area, completely hiding the other
+  panel and splitter. Tab switches the visible panel; another Ctrl+F11 restores
+  the previous split. Outside zoom, double-clicking the splitter centers it.
+  The normal panel width ratio is saved automatically after adjustment and restored
+  on the next startup, including when the window size changes.
+- Ctrl+F10 or **Compare directories** in the shared top toolbar compares the
+  two displayed native directories on the backend, selecting
   missing, larger or newer files. Size and modified time are enabled by default,
   with a two-second timestamp tolerance. Name-case matching and unmatched
   directories are configurable. Matching metadata does **not** verify file contents;
@@ -427,11 +492,17 @@ editor scope and shortcuts reserved for later stages.
   regular expression, with explicit case sensitivity. Directories remain visible;
   the filter combines with typing-based filename search. Invalid expressions do
   not replace the active filter.
-- Ctrl+Shift+C compares two selected regular files in the active panel, or one
-  selected/focused file from each panel. Text pairs show line differences; image
+- Ctrl+Shift+C or **Compare files** in the shared top toolbar compares two
+  selected regular files in the active panel, or one focused/selected file with
+  its same-name counterpart in the other panel. An explicit selection in the other
+  panel takes priority. Automatic matching uses the exact native name among visible
+  files; select both files explicitly to compare different names or letter case.
+  Text pairs show line differences; image
   pairs provide Side-by-Side, Swipe and Onion Skin controls.
 - F3 opens PDFs with the installed independent PDF viewer. Ctrl+PageUp/Down or
   the page buttons switch pages; Fit, zoom and pan are shared with image viewing.
+  Each new PDF opens fitted to the window. Page changes retain manual zoom/100%;
+  Fit adapts to each page's dimensions.
 - F5 inside an archive copies the captured members to a native destination using
   the background queue and SHA-256 destination readback. Archive contents stay
   read-only. XZ, Bzip2 and Zstandard streams and their TAR variants are supported
@@ -450,8 +521,14 @@ editor scope and shortcuts reserved for later stages.
   Brief fills columns downward; Left/Right changes columns. Thumbnails uses
   Left/Right between cells and Up/Down between grid rows. Page Up/Down moves a
   visible page. Active prefix search retains its existing match navigation.
-  Actual image/video preview decoding is planned in the
-  [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
+  Installed thumbnailer plugins provide cached previews for supported image/video
+  formats; see the [thumbnail design](docs/superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
+  **Options → Previews → Thumbnail size** offers 48, 64, 72 (default), 96, 128,
+  192 and 256 logical pixels. Larger sizes retain the current preview while a
+  sharper image is prepared for that file; smaller sizes reuse larger cached
+  images. The setting previews immediately, Cancel restores it and OK saves it.
+  See the [size and cache policy](docs/superpowers/specs/2026-11-09-thumbnail-size-and-cache.md)
+  for display scaling, cache reuse and storage layout.
 - Click column headers: change sorting. Cursor and selection remain attached to
   the original raw filesystem paths when the listing order changes.
   Repeated clicks toggle ascending/descending order. Completed folder sizes are
@@ -462,13 +539,19 @@ Bindings are validated for conflicts in their applicable contexts; native text e
 and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
 lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
 
-Options, tabs, bookmarks, panel filters, enabled command history and shortcut overrides are stored
-as version 8 UTF-8 JSON in the native
+Options, tabs, bookmarks, panel filters, enabled command history, viewer preferences
+and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 21) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
 the former `FM` (Windows) / `fm` (Linux) location is read safely; saves use only the
 new location and preserve the old file.
+Viewer preferences include wrapping, line numbers, fonts, Markdown presentation
+and image/PDF zoom modes; see [viewer settings](docs/developer/VIEWER_PREFERENCES.md).
+Source mode exposes line numbers and the current logical line/column. Markdown
+offers GitHub (default), Compact and Comfortable layouts, plus font and size
+controls. Exact distant source positions index in the background without delaying
+scrolling. See [viewer presentation](docs/developer/VIEWER_PRESENTATION.md).
 Storage and font/icon discovery run on backend workers. See the
 [navigation and appearance design](docs/superpowers/specs/2026-11-04-navigation-and-appearance-design.md).
 Exact byte sizes and date/time use system regional settings captured on the backend;
@@ -648,7 +731,10 @@ trusted native code. Image viewers and read-only archive packages use separate
 versioned executable-worker protocols, with restricted processes for untrusted
 parsing. Slint rendering and Tokio
 orchestration stay in the host. Missing packages remove the corresponding plugin
-features after restart; native browsing currently remains built into the host.
+features after restart. Native panel browsing, metadata, capacity/storage queries
+and native F3 content use separate Windows/Linux filesystem libraries. Other
+native operations and watches still use explicit host platform services; the
+generic provider migration remains in progress.
 Plugins share this Git repository but have independent Cargo workspaces under
 `plugins/`, with their own builds, dependencies, tests and CI. They share only the
 public API/SDK and must build from an exported plugin directory without host
@@ -660,7 +746,8 @@ Enter/double-click opens an archive, directories and `..` navigate it, saved tab
 retain typed provider addresses, and F3 reads member content through the broker.
 Members have opaque identities; duplicate names remain distinct. Missing providers
 or changed sources retain unavailable saved tabs with a diagnostic. Mutations,
-external editing, extraction, passwords, nested archives and RAR are unavailable.
+external editing, passwords, nested archives and RAR are unavailable. F5 copies
+members out through the verified background copy queue.
 The initial bounded mount permits 64 MiB source/per-member data and 128 MiB total
 decoded data; large or high-expansion archives fail explicitly. Full limits and
 supported codecs are in the [archive API reference](docs/developer/FILESYSTEM_API.md).
@@ -668,8 +755,9 @@ supported codecs are in the [archive API reference](docs/developer/FILESYSTEM_AP
 packages. Options → Archives keeps document/media/application containers unchecked
 by default; each extension can be enabled explicitly. The entrance-arrow icon marks
 enabled native archives only when their provider is installed.
-Native-provider migration, network providers and reusable terminal sessions remain
-planned. Each OS will have its own native provider. Copy/move conflicts require a source/destination metadata
+The remaining generic provider migration, live SMB/FUSE qualification and reusable terminal
+sessions remain planned. Each OS has a separate native provider implementation.
+Copy/move conflicts require a source/destination metadata
 comparison and explicit overwrite policy before publication.
 
 ### Internal viewers
@@ -700,7 +788,8 @@ Plugins are independent Cargo projects in `plugins/`, with their own tests and l
 Only built packages under `viewers/<package>/plugin.toml` (text/source/Markdown) or
 `viewers/<package>/image-viewer.json` (isolated image/PDF worker) in the resolved installation are
 discovered. Options → Plugins lists available/refused packages and lets you disable
-or enable them for the next startup. Missing or disabled plugins remove their
+or enable them, edit their extension associations and choose precedence for the next
+startup. See [viewer file types](docs/VIEWER_ASSOCIATIONS.md). Missing or disabled plugins remove their
 capability; the host has no built-in parser fallback. At most four viewer windows
 may be open. Reading, parsing, search, layout and rasterization run on backend workers.
 

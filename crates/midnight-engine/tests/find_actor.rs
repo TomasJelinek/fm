@@ -24,6 +24,127 @@ fn request(path: &Path, session: u64, generation: u64) -> FindRequest {
 }
 
 #[tokio::test]
+async fn sorted_views_keep_discovery_validation_authority_and_latest_revision() {
+    struct ReverseLocale;
+    impl LocaleService for ReverseLocale {
+        fn number_locale(&self) -> Result<NumberLocale, FsError> {
+            Ok(NumberLocale::default())
+        }
+        fn collation_key(&self, value: &std::ffi::OsStr) -> Result<Option<Vec<u8>>, FsError> {
+            Ok(value.to_str().map(|s| {
+                s.bytes()
+                    .map(|byte| 255 - byte.to_ascii_lowercase())
+                    .collect()
+            }))
+        }
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    for (name, bytes) in [("A.txt", 3), ("z.txt", 1), ("b.md", 2)] {
+        fs::write(temporary.path().join(name), vec![42; bytes]).unwrap();
+    }
+    let service = Arc::new(LocalFileSystem::new(None));
+    let (send, commands) = mpsc::channel(16);
+    let (events, mut receive) = mpsc::channel(16);
+    let engine = tokio::spawn(
+        Engine::new(service.clone(), events)
+            .with_find(service)
+            .with_locale(Arc::new(ReverseLocale))
+            .run(commands),
+    );
+    send.send(Command::StartFind(Box::new(request(
+        temporary.path(),
+        1,
+        1,
+    ))))
+    .await
+    .unwrap();
+    let mut authority = Vec::new();
+    let mut finished = false;
+    let mut latest = None;
+    let order = loop {
+        let event = next_find(&mut receive).await;
+        match event.update {
+            FindUpdate::Batch(batch) => authority.extend(batch.iter().cloned()),
+            FindUpdate::Finished(_) => finished = true,
+            FindUpdate::Sorted(order) if order.ids.len() == 3 => latest = Some(order),
+            _ => {}
+        }
+        if finished && let Some(order) = latest.take() {
+            break order;
+        }
+    };
+    let names = |order: &FindOrder| {
+        order
+            .ids
+            .iter()
+            .map(|id| {
+                authority[(id.0 - 1) as usize]
+                    .entry
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&order), ["z.txt", "b.md", "A.txt"]);
+    for (revision, descending) in [(1, true), (2, false)] {
+        send.send(Command::SortFind(FindSortRequest {
+            session: FindSessionId(1),
+            generation: FindGeneration(1),
+            revision,
+            sort: FindSortSpec {
+                column: FindSortColumn::Size,
+                descending,
+            },
+        }))
+        .await
+        .unwrap();
+    }
+    send.send(Command::SortFind(FindSortRequest {
+        session: FindSessionId(1),
+        generation: FindGeneration(0),
+        revision: 99,
+        sort: FindSortSpec {
+            column: FindSortColumn::Modified,
+            descending: true,
+        },
+    }))
+    .await
+    .unwrap();
+    let order = loop {
+        let event = next_find(&mut receive).await;
+        if let FindUpdate::Sorted(order) = event.update {
+            assert_ne!(order.revision, 99);
+            if order.revision == 2 {
+                break order;
+            }
+        }
+    };
+    assert_eq!(names(&order), ["z.txt", "b.md", "A.txt"]);
+    let result = &authority[0];
+    send.send(Command::ValidateFindResult(FindValidationRequest {
+        session: FindSessionId(1),
+        generation: FindGeneration(1),
+        result: result.id,
+        token: 55,
+    }))
+    .await
+    .unwrap();
+    loop {
+        if let Event::FindResultValidated(event) = receive.recv().await.unwrap() {
+            assert_eq!(event.result.unwrap().path, result.entry.path);
+            break;
+        }
+    }
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(5), engine)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn native_find_streams_and_revalidates_retained_results_without_panel_navigation() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("result 文档.txt");

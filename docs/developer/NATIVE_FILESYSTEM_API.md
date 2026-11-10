@@ -23,12 +23,23 @@ Native packages are trusted in-process code, without a sandbox claim.
 
 Build and test output belongs under `_build/`; inspect each pinned dependency's
 license/features and ship its notices. The project's own license is undecided.
+See [independent package evidence and limits](../verification/2026-11-07-native-filesystem-packages.md).
 The host consumer now lives in
 [`midnight-native-filesystem-host`](../../crates/midnight-native-filesystem-host/src/lib.rs).
 `Catalog::discover` performs bounded manifest discovery; `NativeProvider::open`
 revalidates the complete package and the native descriptor before creating an
 instance. It implements directory, metadata, volume and storage service adapters.
-Its `capture` method returns content through the plugin's retained read handle.
+The manifest may include an optional friendly `name` of at most 128 UTF-8 bytes,
+nonblank and without control characters. Missing names preserve old packages.
+The host retains the declared native/network kind separately from that display
+name; neither names nor captions grant provider or native-path authority.
+
+The application's `FilesystemPluginsListed` event exposes this manifest-only
+catalog together with archive package metadata. It does not load the library or
+add any public ABI operation. Its Installed status describes validated manifest
+and artifact presence, not successful runtime initialization. The Options overview
+is read-only and supplies no filesystem enable/disable or hot-reload capability.
+`NativeProvider::capture` returns content through the plugin's retained read handle.
 ABI minor 1 optionally advertises `volume-details`: labels preserve raw native
 text, while rich information keeps physical free/total and caller-available space
 distinct. Old plugins remain loadable; an absent capability returns Unsupported.
@@ -56,16 +67,21 @@ provider and checks cancellation before returning. Exact current v1 tokens and
 their documented Windows/Linux legacy equivalents are accepted only when every
 identity/revision field agrees; mismatches return `SourceChanged`. This is a
 host-side migration adapter, not a new wire operation or permission to reinterpret
-arbitrary provider tokens.
+arbitrary provider tokens. Archive restoration uses it before launching the decoder
+and stores the current validated token. See [archive capture qualification](../verification/2026-11-09-archive-native-capture.md).
 
-This backend baseline makes the host and independent packages available for
-composition. Application browsing and content routes are not changed by this
-commit; production cutover is a separate composition gate.
-Watch/mutation contracts, generic provider identities and macOS remain
-separate migration gates. Native tests are available in each package and
-`midnight-native-filesystem-host`; this document makes no deployment claim.
-See the [backend baseline checks](../verification/2026-11-09-native-backend-baseline.md)
-for the tested candidate and its platform limits.
+[Host qualification](../verification/2026-11-08-native-filesystem-host.md) includes
+actual DLL/SO loading, missing/duplicate/incompatible packages, removed-library
+refusal, cancellation cleanup and the reader-budget regression. The application
+composition now uses this installed service for browsing, storage queries, native
+F3, comparison/thumbnail capture and native archive-container capture. Root build
+helpers install the matching native package under
+`filesystems/native.<platform>/`; direct Cargo builds need the
+`scripts/build-native-filesystem.ps1` or `.sh` helper before launching.
+Missing/incompatible packages have no static browsing or viewer-read fallback.
+Composition qualification is tracked in the
+[cutover report](../verification/2026-11-08-native-filesystem-cutover.md). Watch/mutation
+contracts and generic provider identities remain separate migration gates.
 
 ## Building the native package
 

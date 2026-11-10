@@ -11,14 +11,16 @@ pub(super) struct State {
 
 impl Presenter {
     pub(super) fn flush_selection_sizes(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_archive_size_observers(send);
         for pane in [PaneId::Left, PaneId::Right] {
             let p = &mut self.panes[pane.index()];
-            if p.loading
+            if p.tree_view().is_some()
+                || p.loading
                 || !p.native_capabilities()
                 || p.selection_revision != p.selection_applied
                 || !p.selection_preview.is_empty()
                 || p.selection_pending_bulk
-                || p.selection_deferred
+                || p.selection_deferred.any()
                 || p.selection_rebase_pending
             {
                 continue;
@@ -78,6 +80,14 @@ impl Presenter {
 
 impl Pane {
     pub(super) fn selected_folder_sizes(&self) -> Option<SelectedFolderSizes> {
+        if self.tree_view().is_some() {
+            return self.tree_size_summary();
+        }
+        if let Some(archive) = &self.archive {
+            return archive
+                .sizes
+                .summary(self.successful_generation?, archive.selection_revision);
+        }
         self.selection_sizes
             .sent
             .filter(|(_, navigation, revision)| {

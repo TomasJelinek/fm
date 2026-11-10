@@ -1,7 +1,7 @@
 //! Cheap root discovery and bounded background metadata have independent workers.
 
 use crate::Outbox;
-use midnight_core::{Event, FileSystem, FsError, IconKey, Volume, VolumeDetails};
+use midnight_core::{Event, FileSystem, FsError, IconKey, LocaleService, Volume, VolumeDetails};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -25,13 +25,14 @@ pub(crate) struct Controller {
 impl Controller {
     pub(crate) fn new(
         filesystem: Arc<dyn FileSystem>,
+        locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         icons: watch::Sender<Vec<IconKey>>,
         context: watch::Sender<u64>,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let (requests, receiver) = watch::channel(0);
-        tasks.spawn(run(filesystem, outbox, icons, context, receiver));
+        tasks.spawn(run(filesystem, locale, outbox, icons, context, receiver));
         Self { requests }
     }
 
@@ -168,6 +169,7 @@ impl Details {
 
 async fn run(
     filesystem: Arc<dyn FileSystem>,
+    locale: Option<Arc<dyn LocaleService>>,
     outbox: Outbox,
     icons: watch::Sender<Vec<IconKey>>,
     context: watch::Sender<u64>,
@@ -186,12 +188,15 @@ async fn run(
             pending = false;
             let version = *requests.borrow_and_update();
             let filesystem = filesystem.clone();
+            let locale = locale.clone();
             discovery.spawn(async move {
-                let result = tokio::task::spawn_blocking(move || filesystem.list_volumes())
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(worker_error("volume discovery worker", Path::new("")))
-                    });
+                let result = tokio::task::spawn_blocking(move || {
+                    filesystem.list_volumes().and_then(|volumes| {
+                        crate::navigation_ordering::volumes(volumes, locale.as_deref())
+                    })
+                })
+                .await
+                .unwrap_or_else(|_| Err(worker_error("volume discovery worker", Path::new(""))));
                 (version, result)
             });
         }

@@ -1,8 +1,10 @@
 import { Theme } from "theme.slint";
 import { DialogText } from "dialog-text.slint";
-import { DialogHeader } from "dialog-frame.slint";
+import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
+import { ErrorGlyph } from "error-notice.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollView } from "std-widgets.slint";
+import { FallbackIcons } from "action-icons.slint";
 
 export component NoticeDialog inherits Rectangle {
     in property <string> title;
@@ -17,7 +19,7 @@ export component NoticeDialog inherits Rectangle {
     background: Theme.surface; border-color: Theme.active-frame;
     border-width: 1px; border-radius: 6px;
     FocusScope {
-        capture-key-pressed(event) => {
+        key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
             reject
         }
@@ -26,8 +28,16 @@ export component NoticeDialog inherits Rectangle {
             DialogHeader {
                 title: root.title; foreground: root.error ? Theme.error-text : Theme.strong-text;
                 error: root.error;
+                fallback-icon: FallbackIcons.about;
                 text-size: Theme.font-size * 1.25; compact: root.height < 280px;
+                close-label: "Close dialog"; close => { root.close(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            if root.error && DialogWindowStyle.native-titlebar: HorizontalLayout {
+                spacing: 8px; cross-axis-alignment: center;
+                ErrorGlyph {}
+                Text { text: root.title; color: Theme.error-text; font-weight: 600;
+                    overflow: elide; horizontal-stretch: 1; min-width: 0px; }
             }
             Rectangle { height: 1px; background: Theme.frame; }
             DialogText { text: root.body; vertical-stretch: 1; min-height: 0px; }

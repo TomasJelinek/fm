@@ -37,11 +37,76 @@ struct CapturedArchive {
     records: Mutex<Records>,
 }
 
+/// Reuse a completed backend listing, retaining its exact raw archive records.
+/// Source validation remains mandatory; no listing, extraction or native path synthesis occurs.
+/// The seeded root is consumed once and must be replaced on root refresh.
+pub(crate) fn captured_archive_root(
+    location: &ArchiveLocation,
+    entries: &[midnight_core::Entry],
+    cancel: &Cancellation,
+) -> Result<OpenedLocation, ProviderError> {
+    super::root_seed::preflight(entries, cancel)?;
+    let (root, captured) = capture_location(location, cancel)?;
+    let mut nodes = Vec::with_capacity(entries.len());
+    let mut rows = Vec::with_capacity(entries.len());
+    for entry in entries {
+        super::registry::check_cancel(cancel)?;
+        let node = entry
+            .virtual_node
+            .as_ref()
+            .ok_or(ProviderError::InvalidResponse(
+                "native entry in archive root snapshot",
+            ))?;
+        if !entry.path.as_os_str().is_empty()
+            || entry.id.0 != node.id.entry
+            || entry.kind != node.kind
+            || entry.metadata.size != node.size
+            || entry.display_name != node.display_name
+            || entry.name != std::ffi::OsStr::new(&node.display_name)
+        {
+            return Err(ProviderError::InvalidResponse(
+                "invalid archive root snapshot",
+            ));
+        }
+        nodes.push(node.clone());
+        rows.push(ProviderEntry {
+            token: token(captured.mount.id(), node.id.entry)?,
+            raw_name: node.raw_name.clone(),
+            display_name: entry.display_name.clone(),
+            kind: node.kind,
+            metadata: entry.metadata.clone(),
+        });
+    }
+    captured.validate_rows(location.directory, &nodes)?;
+    captured.cache(&nodes, true)?;
+    check(captured.mount.as_ref(), cancel)?;
+    super::root_seed::wrap(
+        OpenedLocation {
+            root,
+            mount: Arc::new(captured),
+        },
+        rows,
+        super::root_seed::RootReadPolicy::CapturedOnce,
+        cancel,
+    )
+}
+
 /// Backend only. Does not discover plugins, open a native path or restore an address.
 pub fn captured_archive(
     location: &ArchiveLocation,
     cancel: &Cancellation,
 ) -> Result<OpenedLocation, ProviderError> {
+    let (root, captured) = capture_location(location, cancel)?;
+    Ok(OpenedLocation {
+        root,
+        mount: Arc::new(captured),
+    })
+}
+
+fn capture_location(
+    location: &ArchiveLocation,
+    cancel: &Cancellation,
+) -> Result<(NodeToken, CapturedArchive), ProviderError> {
     super::registry::check_cancel(cancel)?;
     let mount = location.mount.clone().ok_or(ProviderError::Unavailable)?;
     if mount.id() == 0
@@ -99,14 +164,14 @@ pub fn captured_archive(
     }
     let captured = location.clone();
     check(mount.as_ref(), cancel)?;
-    Ok(OpenedLocation {
+    Ok((
         root,
-        mount: Arc::new(CapturedArchive {
+        CapturedArchive {
             mount,
             captured,
             records: Mutex::new(Records { nodes, names_bytes }),
-        }),
-    })
+        },
+    ))
 }
 
 impl CapturedArchive {
@@ -264,6 +329,7 @@ impl CapturedArchive {
                 trail,
             },
             member,
+            original: record.node,
         })
     }
 

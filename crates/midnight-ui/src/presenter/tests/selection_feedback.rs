@@ -1,5 +1,9 @@
 use super::*;
 
+fn file_entry(id: u64, path: &str) -> Entry {
+    Entry::new(EntryId(id), path.into(), EntryKind::File)
+}
+
 fn loaded() -> Presenter {
     let mut p = Presenter::new("left".into(), "right".into());
     let navigation = begin(&mut p, PaneId::Left, "left");
@@ -42,8 +46,146 @@ fn ack(p: &mut Presenter, request: &SelectionRequest, bits: u64) {
         selection: Arc::new(
             SelectionSnapshot::from_bits(request.view.clone().unwrap(), vec![bits]).unwrap(),
         ),
-        deferred: false,
+        deferred: Default::default(),
     });
+}
+
+#[test]
+fn invert_files_previews_preserve_selected_and_unselected_folders() {
+    let mut p = loaded();
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let offset = p.panes[0].parent_offset();
+    p.select_row_modified(PaneId::Left, offset, true, false, &send);
+    let selected = request(&commands);
+    ack(&mut p, &selected, 1);
+    p.bulk_selection(PaneId::Left, SelectionOperation::Invert, &send);
+    assert_eq!(visible(&p), [0, 1, 3, 5]);
+    p.bulk_selection(PaneId::Left, SelectionOperation::Invert, &send);
+    assert_eq!(visible(&p), [0]);
+}
+
+#[test]
+fn select_files_only_keeps_streaming_feedback_after_an_older_select_all_ack() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let navigation = begin(&mut p, PaneId::Left, "left");
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: vec![
+            file_entry(1, "left/a"),
+            Entry::new(EntryId(2), "left/junction".into(), EntryKind::DirectoryLink),
+        ],
+    });
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.bulk_selection(PaneId::Left, SelectionOperation::All, &send);
+    assert_eq!(visible(&p), [0, 1]);
+    let all = request(&commands);
+    p.bulk_selection(PaneId::Left, SelectionOperation::FilesOnly, &send);
+    let files = request(&commands);
+    assert_eq!(visible(&p), [0]);
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: all.revision,
+        selection: Arc::default(),
+        deferred: SelectionDefaults::ALL,
+    });
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: vec![
+            file_entry(3, "left/b"),
+            Entry::new(EntryId(4), "left/folder".into(), EntryKind::Directory),
+        ],
+    });
+    assert_eq!(visible(&p), [0, 2]);
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: files.revision,
+        selection: Arc::default(),
+        deferred: SelectionDefaults {
+            files: true,
+            directories: false,
+        },
+    });
+    assert_eq!(visible(&p), [0, 2]);
+}
+
+#[test]
+fn invert_files_streaming_defaults_keep_arriving_folders_unchanged() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let navigation = begin(&mut p, PaneId::Left, "left");
+    let folder = |id, path: &str| Entry::new(EntryId(id), path.into(), EntryKind::Directory);
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: vec![
+            file_entry(1, "left/a"),
+            folder(2, "left/folder"),
+            Entry::new(EntryId(3), "left/junction".into(), EntryKind::DirectoryLink),
+        ],
+    });
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    p.bulk_selection(PaneId::Left, SelectionOperation::Invert, &send);
+    assert_eq!(visible(&p), [0]);
+    let inverted = request(&commands);
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: inverted.revision,
+        selection: Arc::default(),
+        deferred: SelectionDefaults {
+            files: true,
+            directories: false,
+        },
+    });
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: vec![file_entry(4, "left/b"), folder(5, "left/late folder")],
+    });
+    assert_eq!(visible(&p), [0, 3]);
+    p.bulk_selection(PaneId::Left, SelectionOperation::All, &send);
+    let all = request(&commands);
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: all.revision,
+        selection: Arc::default(),
+        deferred: SelectionDefaults::ALL,
+    });
+    p.bulk_selection(PaneId::Left, SelectionOperation::Invert, &send);
+    assert_eq!(visible(&p), [1, 2, 4]);
+    let inverted = request(&commands);
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: inverted.revision,
+        selection: Arc::default(),
+        deferred: SelectionDefaults {
+            files: false,
+            directories: true,
+        },
+    });
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: vec![folder(6, "left/last folder"), file_entry(7, "left/c")],
+    });
+    assert_eq!(visible(&p), [1, 2, 4, 5]);
 }
 
 #[test]
@@ -283,7 +425,7 @@ fn deferred_all_acknowledgement_keeps_marks_for_existing_and_arriving_rows() {
         navigation,
         revision: all.revision,
         selection: Arc::default(),
-        deferred: true,
+        deferred: SelectionDefaults::ALL,
     });
     assert_eq!(
         visible(&p),
@@ -313,7 +455,7 @@ fn deferred_all_acknowledgement_keeps_marks_for_existing_and_arriving_rows() {
     let rebase = request(&commands);
     ack(&mut p, &rebase, 7);
     assert_eq!(visible(&p), [0, 1, 2]);
-    assert!(!p.panes[0].selection_deferred);
+    assert!(!p.panes[0].selection_deferred.any());
 }
 
 #[test]
@@ -323,7 +465,7 @@ fn deferred_defaults_keep_explicit_exceptions_and_survive_later_queue_failure() 
     p.apply(Event::EntriesBatch {
         pane: PaneId::Left,
         navigation,
-        entries: vec![entry(1, "left/a"), entry(2, "left/b")],
+        entries: vec![file_entry(1, "left/a"), file_entry(2, "left/b")],
     });
     let commands = RefCell::new(Vec::new());
     let send = |cmd| {
@@ -337,17 +479,23 @@ fn deferred_defaults_keep_explicit_exceptions_and_survive_later_queue_failure() 
         navigation,
         revision: inverted.revision,
         selection: Arc::default(),
-        deferred: true,
+        deferred: SelectionDefaults {
+            files: true,
+            directories: false,
+        },
     });
     p.select_row_modified(PaneId::Left, 1, true, false, &send);
     let toggle = request(&commands);
-    let exception = Arc::new(DirectoryIndex::from_entries(&[entry(2, "left/b")]));
+    let exception = Arc::new(DirectoryIndex::from_entries(&[file_entry(2, "left/b")]));
     p.apply(Event::SelectionChanged {
         pane: PaneId::Left,
         navigation,
         revision: toggle.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(exception, vec![0]).unwrap()),
-        deferred: true,
+        deferred: SelectionDefaults {
+            files: true,
+            directories: false,
+        },
     });
     assert_eq!(
         visible(&p),
@@ -391,7 +539,7 @@ fn failed_destination_does_not_transfer_its_deferred_default_to_restored_rows() 
         navigation,
         revision: all.revision,
         selection: Arc::default(),
-        deferred: true,
+        deferred: SelectionDefaults::ALL,
     });
     p.apply(Event::ListingFailed {
         pane: PaneId::Left,
@@ -402,6 +550,6 @@ fn failed_destination_does_not_transfer_its_deferred_default_to_restored_rows() 
             io::Error::other("unavailable"),
         ),
     });
-    assert!(!p.panes[0].selection_deferred);
+    assert!(!p.panes[0].selection_deferred.any());
     assert!(visible(&p).is_empty());
 }

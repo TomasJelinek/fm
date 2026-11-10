@@ -43,16 +43,23 @@ impl Grid {
     }
 
     pub fn empty_at(self, point: (f32, f32)) -> bool {
-        let Ok((page, _)) = self.shape() else {
-            return false;
-        };
+        self.hit_at(point).is_ok_and(|row| row.is_none())
+    }
+
+    /// Return the displayed row under a point in content coordinates, without scanning entries.
+    pub fn row_at(self, point: (f32, f32)) -> Option<usize> {
+        self.hit_at(point).ok().flatten()
+    }
+
+    fn hit_at(self, point: (f32, f32)) -> Result<Option<usize>, &'static str> {
+        let (page, _) = self.shape()?;
         if !point.0.is_finite()
             || !point.1.is_finite()
             || point.0 < 0.0
             || point.0 >= self.width
             || point.1 < 0.0
         {
-            return false;
+            return Err("Point is outside the list content");
         }
         let column = (point.0 / self.width * self.columns as f32).floor() as usize;
         let band = (point.1 / self.row_height).floor() as usize;
@@ -69,7 +76,7 @@ impl Grid {
             band.checked_mul(self.columns)
                 .and_then(|p| p.checked_add(column))
         };
-        row.is_none_or(|row| row >= self.count)
+        Ok(row.filter(|row| *row < self.count))
     }
 
     /// Coordinates are in the list's content space. Construction never walks entries.

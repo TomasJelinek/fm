@@ -61,6 +61,7 @@ fn source_matches(snapshots: &Snapshots, request: &CompareRequest) -> bool {
         let state = &snapshots[slot];
         side.source.pane.index() == slot
             && state.pending.is_none()
+            && state.has_native_view()
             && [&state.visible, &state.committed]
                 .into_iter()
                 .flatten()

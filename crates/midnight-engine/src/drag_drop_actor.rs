@@ -112,7 +112,20 @@ pub(super) fn run(
         let result = if command.cancel.is_cancelled() || generation != Some(command.host) {
             Ok(DragFinish::Cancelled)
         } else if let Some(native) = &mut session {
-            native.start_drag(&command.files, &command.cancel)
+            command
+                .captured
+                .as_ref()
+                .map_or(Ok(()), |source| {
+                    if source.resolve(&command.cancel)? == *command.files {
+                        Ok(())
+                    } else {
+                        Err(error(
+                            io::ErrorKind::InvalidInput,
+                            "The captured drag sources changed.",
+                        ))
+                    }
+                })
+                .and_then(|()| native.start_drag(&command.files, &command.cancel))
         } else {
             Ok(DragFinish::Unavailable)
         };

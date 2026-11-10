@@ -1,6 +1,6 @@
 //! Backend branch occurrences. No row caption or position conveys file authority.
 use super::{MountedEntry, MountedLocation, ProviderEntry, ProviderError};
-use midnight_core::{Cancellation, EntryKind, NodeRef};
+use midnight_core::{Cancellation, EntryKind, GeneratedTextSource, NodeRef};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -64,8 +64,10 @@ pub struct TreeRow {
     pub disclosure: Disclosure,
     pub expanded: bool,
     pub error: Option<ProviderError>,
+    pub error_details: Option<Arc<dyn GeneratedTextSource>>,
 }
 
+#[derive(Clone)]
 struct Node {
     source: MountedLocation,
     target: Option<MountedLocation>,
@@ -76,7 +78,10 @@ struct Node {
     children: Vec<BranchId>,
     expanded: bool,
     known: Option<bool>,
+    listed: bool,
+    listing_version: u64,
     error: Option<ProviderError>,
+    error_details: Option<Arc<dyn GeneratedTextSource>>,
     pending: Option<(u64, Cancellation)>,
 }
 
@@ -89,7 +94,11 @@ pub struct DirectoryTree {
     nodes: HashMap<BranchId, Node>,
     limits: TreeLimits,
     active: Arc<AtomicUsize>,
+    reports: crate::size_warnings::ReportLog,
 }
+
+/// Bounded rollback state for an atomic model/projection maintenance publication.
+pub(crate) struct TreeCheckpoint(HashMap<BranchId, Node>);
 
 struct Permit(Arc<AtomicUsize>, Cancellation);
 impl Drop for Permit {
@@ -120,6 +129,12 @@ pub struct BranchResult {
 }
 
 impl BranchWork {
+    /// Link pane cancellation without revoking an independently retained target.
+    pub(crate) fn with_cancellation(mut self, lifetime: &Cancellation) -> Self {
+        self.cancel = self.cancel.linked(lifetime);
+        self
+    }
+
     /// Run with a shared engine blocking-worker permit, never on the UI thread.
     pub fn run(self) -> BranchResult {
         let rows = if self.root {
@@ -147,6 +162,79 @@ impl BranchWork {
 }
 
 impl DirectoryTree {
+    pub(crate) fn watch_listing(&self, branch: BranchId) -> Option<(u64, &[BranchId])> {
+        let node = self.nodes.get(&branch)?;
+        node.listed
+            .then_some((node.listing_version, node.children.as_slice()))
+    }
+    pub(crate) fn checkpoint(&self) -> TreeCheckpoint {
+        let mut nodes = self.nodes.clone();
+        for node in nodes.values_mut() {
+            node.pending = None;
+        }
+        TreeCheckpoint(nodes)
+    }
+
+    pub(crate) fn restore(
+        &mut self,
+        checkpoint: TreeCheckpoint,
+        branch: BranchId,
+        error: ProviderError,
+    ) {
+        self.nodes = checkpoint.0;
+        let available = self.limits.bytes.saturating_sub(self.payload_bytes());
+        let details = self.failure_details(branch, &error);
+        if let Some(node) = self.nodes.get_mut(&branch) {
+            node.error = Some(bounded_error(error, available));
+            node.error_details = details;
+        }
+    }
+
+    pub(crate) fn root_target(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<super::MountedTarget, ProviderError> {
+        let root = &self.nodes[&self.root];
+        root.source.resolve_target(&root.node, cancel)
+    }
+
+    /// Parent-first retained native directory scope, including collapsed cached nodes.
+    /// Call only after establishing that the root context is native.
+    pub(crate) fn loaded_native_branches(&self) -> Vec<BranchId> {
+        let mut result = Vec::new();
+        let mut pending = vec![self.root];
+        while let Some(id) = pending.pop() {
+            let node = &self.nodes[&id];
+            if node.target.is_some() || node.entry.kind != EntryKind::Directory {
+                continue;
+            }
+            if node.listed {
+                result.push(id);
+            }
+            pending.extend(node.children.iter().rev().copied());
+        }
+        result
+    }
+
+    pub(crate) fn loaded_native_branch(&self, branch: BranchId) -> bool {
+        let Some(node) = self.nodes.get(&branch) else {
+            return false;
+        };
+        if !node.listed || node.entry.kind != EntryKind::Directory {
+            return false;
+        }
+        let mut current = Some(branch);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(&id) else {
+                return false;
+            };
+            if node.target.is_some() || node.entry.kind != EntryKind::Directory {
+                return false;
+            }
+            current = node.parent;
+        }
+        true
+    }
     /// Resolve a visible source entry, not a container mounted on that entry.
     /// The downstream service still establishes action-specific authority.
     pub fn resolve_entry_target(
@@ -235,8 +323,10 @@ impl DirectoryTree {
         node.children.clear();
         node.target = Some(target);
         node.known = None;
+        node.listed = false;
         node.expanded = false;
         node.error = None;
+        node.error_details = None;
         Ok(())
     }
     /// Read-only navigation context. A separate operation service must establish
@@ -272,6 +362,7 @@ impl DirectoryTree {
             disclosure: disclosure(node),
             expanded: node.expanded,
             error: node.error.clone(),
+            error_details: node.error_details.clone(),
         })
     }
 
@@ -311,6 +402,7 @@ impl DirectoryTree {
             next_request: 1,
             limits,
             active: Arc::default(),
+            reports: crate::tree_diagnostics::log(),
             nodes: HashMap::from([(
                 root,
                 Node {
@@ -323,7 +415,10 @@ impl DirectoryTree {
                     children: Vec::new(),
                     expanded: false,
                     known: None,
+                    listed: false,
+                    listing_version: 0,
                     error: None,
+                    error_details: None,
                     pending: None,
                 },
             )]),
@@ -382,6 +477,7 @@ impl DirectoryTree {
             previous.cancel();
         }
         node.error = None;
+        node.error_details = None;
         let (location, target_node) = node.target.as_ref().map_or_else(
             || (node.source.clone(), node.node.clone()),
             |target| (target.clone(), target.root().clone()),
@@ -422,16 +518,44 @@ impl DirectoryTree {
                     .known = Some(!rows.is_empty());
                 Ok(())
             } else {
-                self.install(result.branch, rows, result.kind == TreeRequest::Expand)
+                self.install(
+                    result.branch,
+                    rows,
+                    result.kind == TreeRequest::Expand,
+                    result.request,
+                )
             }
         });
         if let Err(error) = outcome {
             let used = self.payload_bytes();
+            let details = self.failure_details(result.branch, &error);
             if let Some(node) = self.nodes.get_mut(&result.branch) {
                 node.error = Some(bounded_error(error, self.limits.bytes.saturating_sub(used)));
+                node.error_details = details;
             }
         }
         true
+    }
+
+    fn failure_details(
+        &self,
+        branch: BranchId,
+        error: &ProviderError,
+    ) -> Option<Arc<dyn GeneratedTextSource>> {
+        let node = self.nodes.get(&branch)?;
+        let message = match error {
+            ProviderError::Failed(message) => std::borrow::Cow::Borrowed(message.as_str()),
+            _ => std::borrow::Cow::Owned(error.to_string()),
+        };
+        Some(crate::tree_diagnostics::report(
+            &self.reports,
+            format_args!(
+                "{} (provider {}, occurrence {branch:?})",
+                node.entry.display_name,
+                node.source.address().provider().as_str(),
+            ),
+            &message,
+        ))
     }
 
     fn install(
@@ -439,6 +563,7 @@ impl DirectoryTree {
         branch: BranchId,
         rows: Vec<MountedEntry>,
         expand: bool,
+        listing_version: u64,
     ) -> Result<(), ProviderError> {
         let parent = self
             .nodes
@@ -526,7 +651,10 @@ impl DirectoryTree {
                         children: Vec::new(),
                         expanded: false,
                         known: None,
+                        listed: false,
+                        listing_version: 0,
                         error: None,
+                        error_details: None,
                         pending: None,
                     },
                 );
@@ -540,6 +668,8 @@ impl DirectoryTree {
             .get_mut(&branch)
             .ok_or(ProviderError::StaleReference)?;
         parent.known = Some(!children.is_empty());
+        parent.listed = true;
+        parent.listing_version = listing_version;
         parent.children = children;
         if expand {
             parent.expanded = true;

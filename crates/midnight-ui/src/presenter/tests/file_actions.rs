@@ -55,7 +55,7 @@ fn copy_waits_for_exact_selection_revision_and_keeps_its_captured_view() {
             navigation: all.navigation,
             revision: all.revision,
             selection: selection.clone(),
-            deferred: false,
+            deferred: Default::default(),
         },
         &send,
     );

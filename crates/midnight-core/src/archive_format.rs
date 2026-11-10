@@ -17,6 +17,63 @@ pub enum ArchiveFormat {
     TarZstd,
 }
 
+impl ArchiveFormat {
+    /// Stable host settings identifier, independent of plugin wire discriminants.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::Tar => "tar",
+            Self::Gzip => "gzip",
+            Self::TarGzip => "tar-gzip",
+            Self::SevenZip => "7z",
+            Self::Xz => "xz",
+            Self::TarXz => "tar-xz",
+            Self::Bzip2 => "bzip2",
+            Self::TarBzip2 => "tar-bzip2",
+            Self::Zstd => "zstd",
+            Self::TarZstd => "tar-zstd",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        ARCHIVE_FORMATS
+            .iter()
+            .copied()
+            .find(|format| format.id() == id)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Zip => "ZIP",
+            Self::Tar => "TAR",
+            Self::Gzip => "GZIP stream",
+            Self::TarGzip => "TAR.GZ",
+            Self::SevenZip => "7-Zip",
+            Self::Xz => "XZ stream",
+            Self::TarXz => "TAR.XZ",
+            Self::Bzip2 => "Bzip2 stream",
+            Self::TarBzip2 => "TAR.BZ2",
+            Self::Zstd => "Zstandard stream",
+            Self::TarZstd => "TAR.ZST",
+        }
+    }
+}
+
+/// All decoder families exposed by the host, including unavailable installed workers.
+pub const ARCHIVE_FORMATS: &[ArchiveFormat] = &[
+    ArchiveFormat::Zip,
+    ArchiveFormat::SevenZip,
+    ArchiveFormat::Tar,
+    ArchiveFormat::Gzip,
+    ArchiveFormat::TarGzip,
+    ArchiveFormat::Xz,
+    ArchiveFormat::TarXz,
+    ArchiveFormat::Bzip2,
+    ArchiveFormat::TarBzip2,
+    ArchiveFormat::Zstd,
+    ArchiveFormat::TarZstd,
+];
+
 /// One configurable filename association. The extension is ASCII without a leading dot.
 /// Enabling it changes panel activation only, never the system file association.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

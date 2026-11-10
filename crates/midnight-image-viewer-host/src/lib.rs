@@ -4,6 +4,7 @@
 pub use midnight_image_viewer_api::{DocumentMetadata, Frame, Metadata, Viewport};
 mod providers;
 pub use providers::{Discovery, Provider, discover, discover_with_diagnostics};
+mod raster_reply;
 mod session;
 pub use session::{ImageSession, Source};
 

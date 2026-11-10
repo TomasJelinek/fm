@@ -2,6 +2,9 @@ use super::*;
 use crate::{CommittedSnapshot, SnapshotState};
 use tokio::sync::Semaphore;
 
+#[path = "drag_drop_ownership_tests.rs"]
+mod ownership;
+
 struct Harness {
     sink: Sink,
     events: mpsc::Receiver<DragDropEvent>,
@@ -25,6 +28,8 @@ impl Harness {
             SnapshotState::default(),
             SnapshotState {
                 archive: None,
+                network: None,
+                network_navigation: None,
                 archive_navigation: None,
                 committed: Some(CommittedSnapshot {
                     navigation: NavigationId(5),
@@ -93,7 +98,7 @@ fn native_ack_requires_actual_capacity_and_delivery_admission() {
     assert_eq!(item_count, 1);
     assert_eq!(destination, h.request.target.directory);
     let captured = h.sink.pending.lock().unwrap().remove(&token).unwrap();
-    assert_eq!(captured.request.files.paths, h.request.files.paths);
+    assert_eq!(captured.files.paths, h.request.files.paths);
     drop(captured);
     assert_eq!(h.sink.capacity.capacity().available_permits(), 1);
 
@@ -234,6 +239,7 @@ async fn native_runtime_failure_revokes_ready_before_another_gesture() {
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
         Some(Arc::new(FailsWhilePumping)),
+        None,
         fixture.sink.snapshots.clone(),
         copy_operations::Admission::default(),
         Outbox {
@@ -273,6 +279,95 @@ async fn native_runtime_failure_revokes_ready_before_another_gesture() {
 
 #[tokio::test]
 async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly_once() {
+    accepted_drop(
+        false,
+        InternalDropIntent::Copy,
+        TransferIntent::Copy,
+        TransferVerification::FullSha256,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn same_panel_folder_move_uses_native_queue_and_frozen_sample_policy() {
+    accepted_drop(
+        true,
+        InternalDropIntent::Move,
+        TransferIntent::Move,
+        TransferVerification::SizeAndSamples,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn same_panel_folder_control_copy_keeps_source_and_frozen_sample_policy() {
+    accepted_drop(
+        true,
+        InternalDropIntent::Copy,
+        TransferIntent::Copy,
+        TransferVerification::SizeAndSamples,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn automatic_same_volume_folder_drop_moves_in_either_panel() {
+    for same_panel in [true, false] {
+        accepted_drop(
+            same_panel,
+            InternalDropIntent::Auto,
+            TransferIntent::Move,
+            TransferVerification::FullSha256,
+            false,
+        )
+        .await;
+    }
+}
+
+#[derive(Debug)]
+struct OccurrenceSource {
+    files: FileClipboard,
+    occurrence: TreeCopyOccurrence,
+}
+impl CapturedClipboardFiles for OccurrenceSource {
+    fn intent(&self) -> FileClipboardIntent {
+        FileClipboardIntent::Copy
+    }
+    fn resolve(&self, _: &Cancellation) -> Result<FileClipboard, FsError> {
+        Ok(self.files.clone())
+    }
+    fn tree_copy_occurrence(&self, root: usize) -> Option<TreeCopyOccurrence> {
+        (root == 0).then_some(self.occurrence)
+    }
+}
+
+#[tokio::test]
+async fn captured_nested_drop_reports_exact_tree_root_completion_for_copy_and_move() {
+    for (intent, expected) in [
+        (InternalDropIntent::Copy, TransferIntent::Copy),
+        (InternalDropIntent::Move, TransferIntent::Move),
+    ] {
+        accepted_drop(
+            true,
+            intent,
+            expected,
+            TransferVerification::SizeAndSamples,
+            true,
+        )
+        .await;
+    }
+}
+
+async fn accepted_drop(
+    same_panel: bool,
+    intent: InternalDropIntent,
+    expected: TransferIntent,
+    verification: TransferVerification,
+    captured_tree: bool,
+) {
     // Respect the test runner's native filesystem. A WSL checkout can live on
     // DrvFS, which cannot publish verified O_TMPFILE stages; TMPDIR can point
     // to the isolated POSIX _build fixture root instead.
@@ -283,16 +378,44 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
         .tempdir_in(temp_root)
         .unwrap();
     let source = temp.path().join("source");
-    let destination = temp.path().join("destination");
+    let destination = if same_panel {
+        source.join("folder")
+    } else {
+        temp.path().join("destination")
+    };
     std::fs::create_dir(&source).unwrap();
     std::fs::create_dir(&destination).unwrap();
-    let file = source.join("文档 literal.txt");
+    let source_parent = if captured_tree {
+        let nested = source.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        nested
+    } else {
+        source.clone()
+    };
+    let file = source_parent.join("文档 literal.txt");
     let bytes = vec![0x5a; 300_017];
     std::fs::write(&file, &bytes).unwrap();
-    let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), file.clone(), EntryKind::File)].into();
+    if captured_tree {
+        std::fs::write(destination.join("文档 literal.txt"), b"old destination").unwrap();
+    }
+    let mut entries = vec![if captured_tree {
+        Entry::new(EntryId(1), source_parent, EntryKind::Directory)
+    } else {
+        Entry::new(EntryId(1), file.clone(), EntryKind::File)
+    }];
+    if same_panel {
+        entries.push(Entry::new(
+            EntryId(2),
+            destination.clone(),
+            EntryKind::Directory,
+        ));
+    }
+    let entries: Arc<[Entry]> = entries.into();
     let snapshots = Arc::new(Mutex::new([
         SnapshotState {
             archive: None,
+            network: None,
+            network_navigation: None,
             archive_navigation: None,
             committed: Some(CommittedSnapshot {
                 navigation: NavigationId(1),
@@ -304,6 +427,8 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
         },
         SnapshotState {
             archive: None,
+            network: None,
+            network_navigation: None,
             archive_navigation: None,
             committed: Some(CommittedSnapshot {
                 navigation: NavigationId(2),
@@ -336,8 +461,9 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
         wakeup: Arc::new(|| {}),
     };
     let mut tasks = JoinSet::new();
+    let service = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let copies = copy_operations::Controller::new(
-        Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
+        Some(service.clone()),
         outbox.clone(),
         Arc::new(Semaphore::new(1)),
         Arc::new(Semaphore::new(1)),
@@ -345,6 +471,7 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
     );
     let mut controller = Controller::new(
         None,
+        Some(service),
         snapshots.clone(),
         copies.admission(),
         outbox,
@@ -361,18 +488,43 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
             &mut tasks,
         )
         .await;
-    controller
-        .prepare(
-            DragId(1),
-            PaneId::Left,
-            NavigationId(1),
-            SelectedFiles {
-                selection: Arc::default(),
-                view: Arc::new(DirectoryIndex::from_entries(&entries)),
-                fallback: Some(file.clone()),
+    let occurrence = TreeCopyOccurrence {
+        stamp: TreeViewStamp {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            session: TreeSessionId(4),
+            revision: TreeRevision(5),
+        },
+        row: TreeRowId(42),
+    };
+    let retained_source = if captured_tree {
+        let captured = Arc::new(OccurrenceSource {
+            files: FileClipboard {
+                paths: vec![file.clone()],
+                intent: FileClipboardIntent::Copy,
             },
-        )
-        .await;
+            occurrence,
+        });
+        let weak = Arc::downgrade(&captured);
+        controller
+            .prepare_captured(DragId(1), PaneId::Left, NavigationId(1), captured)
+            .await;
+        Some(weak)
+    } else {
+        controller
+            .prepare(
+                DragId(1),
+                PaneId::Left,
+                NavigationId(1),
+                SelectedFiles {
+                    selection: Arc::default(),
+                    view: Arc::new(DirectoryIndex::from_entries(&entries)),
+                    fallback: Some(file.clone()),
+                },
+            )
+            .await;
+        None
+    };
     let prepared = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if matches!(
@@ -388,12 +540,36 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
     })
     .await;
     assert!(prepared.is_ok());
-    controller.internal(DragId(1), target, 1).await;
+    controller
+        .internal_request(InternalDropRequest {
+            id: DragId(1),
+            destination: if same_panel {
+                InternalDropDestination::PanelEntry {
+                    pane: PaneId::Left,
+                    navigation: NavigationId(1),
+                    entry: EntryId(2),
+                }
+            } else {
+                InternalDropDestination::PaneRoot {
+                    pane: PaneId::Right,
+                    navigation: NavigationId(2),
+                }
+            },
+            intent,
+            verification,
+        })
+        .await;
     let token = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(Event::DragDrop(DragDropEvent::DropAccepted { token, .. })) =
-                events.recv().await
+            if let Some(Event::DragDrop(DragDropEvent::DropAccepted {
+                token,
+                intent,
+                verification: captured,
+                ..
+            })) = events.recv().await
             {
+                assert_eq!(intent, expected);
+                assert_eq!(captured, Some(verification));
                 break token;
             }
         }
@@ -402,13 +578,34 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
     .unwrap();
     assert_eq!(copies.capacity().available_permits(), 31);
     // Navigation after native acceptance must not retarget or cancel the queued copy.
-    snapshots.lock().unwrap()[1].pending = Some(NavigationId(3));
+    snapshots.lock().unwrap()[usize::from(!same_panel)].pending = Some(NavigationId(3));
     targets.lock().unwrap().targets.clear();
-    controller.accept(token, OperationId(1), &copies).await;
-    controller.accept(token, OperationId(2), &copies).await;
+    controller
+        .accept(token, OperationId(1), Default::default(), &copies)
+        .await;
+    controller
+        .accept(token, OperationId(2), Default::default(), &copies)
+        .await;
+    let mut completed = false;
     let terminal = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
-            if let Some(Event::Copy(CopyEvent::Progress(progress))) = events.recv().await {
+            if let Some(Event::Copy(event)) = events.recv().await {
+                if let CopyEvent::Conflict(conflict) = event {
+                    // The source resolver retires its gesture owner independently;
+                    // the paused native job must retain its own provider authority.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    assert!(retained_source.as_ref().unwrap().upgrade().is_some(), "prepared job released its captured provider before native handles and cleanup");
+                    assert!(conflict.can_replace);
+                    copies.decide(CopyDecision { id: conflict.id, version: conflict.version, choice: CopyChoice::ReplaceRecoverable { all: false } }).await;
+                    continue;
+                }
+                if let CopyEvent::RootCompleted { id, source } = event {
+                    assert_eq!(id, OperationId(1));
+                    if captured_tree { assert!(matches!(source, CompletedCopySource::Tree(found) if found == occurrence), "nested drop lost its exact tree occurrence: {source:?}"); }
+                    completed = true;
+                    continue;
+                }
+                let CopyEvent::Progress(progress) = event else { continue; };
                 assert_eq!(
                     progress.id,
                     OperationId(1),
@@ -422,15 +619,40 @@ async fn accepted_internal_drop_keeps_destination_and_uses_verified_copy_exactly
     })
     .await
     .unwrap();
+    assert!(completed);
+    assert!(
+        retained_source
+            .as_ref()
+            .is_none_or(|source| source.upgrade().is_none()),
+        "terminal job retained its provider after native cleanup"
+    );
     assert_eq!(
         terminal.state,
         CopyOperationState::Completed,
         "{:?}",
         terminal.errors
     );
-    assert_eq!(terminal.verified_bytes, bytes.len() as u64);
+    assert_eq!(terminal.verification, verification);
+    assert_eq!(terminal.intent, expected);
+    if expected == TransferIntent::Move {
+        assert_eq!(terminal.native_entries_moved, 1);
+        assert_eq!(
+            terminal.copied_bytes + terminal.verified_bytes + terminal.validation_bytes,
+            0
+        );
+        assert!(!file.exists());
+    } else {
+        assert_eq!(
+            terminal.verified_bytes,
+            if verification == TransferVerification::FullSha256 {
+                bytes.len() as u64
+            } else {
+                196_608
+            }
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
     assert_eq!(terminal.destination_directory, destination);
-    assert_eq!(std::fs::read(&file).unwrap(), bytes);
     assert_eq!(
         std::fs::read(destination.join("文档 literal.txt")).unwrap(),
         bytes
@@ -447,6 +669,7 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
     let (sender, _events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        None,
         None,
         fixture.sink.snapshots.clone(),
         fixture.sink.capacity.clone(),
@@ -475,9 +698,9 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
     sink.try_accept(fixture.request).unwrap();
     assert_eq!(fixture.sink.capacity.capacity().available_permits(), 31);
     controller.shutdown();
+    while tasks.join_next().await.is_some() {}
     assert_eq!(fixture.sink.capacity.capacity().available_permits(), 32);
     assert!(controller.pending.lock().unwrap().is_empty());
-    while tasks.join_next().await.is_some() {}
 }
 
 #[derive(Default)]
@@ -549,6 +772,7 @@ async fn native_drag_keeps_one_actor_thread_and_cancellation_remains_responsive(
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
         Some(service.clone()),
+        None,
         fixture.sink.snapshots.clone(),
         fixture.sink.capacity.clone(),
         Outbox {

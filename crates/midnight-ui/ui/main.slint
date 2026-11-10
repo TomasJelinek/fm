@@ -1,4 +1,6 @@
 import { DialogFrame, DialogHeader } from "dialog-frame.slint";
+import { FileListWindow } from "file-list-window.slint";
+export { FileListWindow }
 import { FindWindow, FindRow, FindDraft } from "find-window.slint";
 export { FindWindow, FindRow, FindDraft }
 import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft } from "checksum-window.slint";
@@ -7,11 +9,15 @@ import { UserCommandToolbar, UserCommandRow } from "user-command-toolbar.slint";
 export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
 export { ShortcutHints }
-import { HelpBody } from "help-dialog.slint";
-import { NoticeDialog } from "notice-dialog.slint";
+import { HelpWindow } from "help-window.slint";
+import { AboutWindow } from "about-window.slint";
+import { NoticeWindow } from "notice-window.slint";
+export { HelpWindow, AboutWindow, NoticeWindow }
+
 import { HintedActionButton } from "hinted-inputs.slint";
-import { ScrollView, AboutSlint, Palette } from "std-widgets.slint";
+import { ScrollView, Palette } from "std-widgets.slint";
 import { CommandMenuBody } from "command-menu.slint";
+import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
 import { TipBody, CompactPicker, TooltipPlacement } from "controls.slint";
 import { FileActionMenu } from "file-menu.slint";
@@ -23,6 +29,9 @@ import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { PanelSplitter } from "panel-splitter.slint";
 import { TerminalControl } from "terminal-control.slint";
 import { OptionsBody } from "options-dialog.slint";
+import { ColorPickerDialog } from "color-picker.slint";
+import { EditorOptionsView, EditorOptionsDraft } from "editor-options.slint";
+export { EditorOptionsView, EditorOptionsDraft }
 import { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm } from "user-command-options.slint";
 export { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm }
 import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
@@ -37,6 +46,8 @@ import { FilenameColorPresentation } from "filename-colors.slint";
 export { FilenameColorPresentation }
 import { OperationDialog } from "operation-controls.slint";
 import { OperationsBody, OperationRow, JobsView } from "jobs-dialog.slint";
+import { SpeedChartData } from "operation-speed-chart.slint";
+export { SpeedChartData }
 export { JobsView }
 import { CopyConflictDialog } from "copy-controls.slint";
 import { MetadataDialog, MetadataDraft, MetadataFileRow } from "metadata-controls.slint";
@@ -55,6 +66,10 @@ export { TooltipPlacement }
 import { LocationRow } from "navigation-models.slint";
 export { LocationRow }
 import { FilePane } from "file-pane.slint";
+import { SharedToolbar } from "shared-toolbar.slint";
+import { OmissionText } from "path-text.slint";
+import { PathPasteView } from "path-editor.slint";
+export { PathPasteView }
 import { SelectionRectangle } from "selection-rectangle.slint";
 export { SelectionRectangle }
 import { FunctionButton } from "function-button.slint";
@@ -62,18 +77,29 @@ import { FunctionBar } from "function-bar.slint";
 export { FunctionSlot } from "function-models.slint";
 
 export component MainWindow inherits Window {
+    in property <bool> dialog-input-blocked;
+    callback open-help-window();
+    callback open-about-window();
+    callback open-notice-window();
+    callback refresh-information-windows();
+    callback close-information-windows();
     in property <bool> left-native-filesystem: true;
     in property <bool> right-native-filesystem: true;
+    in property <bool> left-can-measure-folders: root.left-native-filesystem;
+    in property <bool> right-can-measure-folders: root.right-native-filesystem;
     in property <bool> left-can-target-cursor;
     in property <bool> right-can-target-cursor;
     in property <bool> left-can-target-selection;
     in property <bool> right-can-target-selection;
     callback thumbnail-clear-cache();
     callback thumbnail-options-changed(bool, bool, int);
+    callback thumbnail-size-changed(int);
     in property <bool> thumbnails-enabled: true;
     in property <bool> thumbnails-network: false;
+    in property <int> thumbnail-size: 72;
     callback row-drag(int, int, string, float, float) -> bool;
     callback drag-moved(float, float);
+    callback drag-modifiers(bool, bool, bool);
     callback drag-released(float, float);
     callback drag-cancel();
     callback drag-escape() -> bool;
@@ -83,6 +109,7 @@ export component MainWindow inherits Window {
     in-out property <bool> touch-contact;
     callback release-drag-input();
     in property <int> drag-hover-pane: -1;
+    in property <int> drag-hover-row: -1;
     in property <string> drag-label;
     in property <[string]> keyboard-actions;
     in property <int> keyboard-selected;
@@ -104,6 +131,10 @@ export component MainWindow inherits Window {
     callback refresh-find-windows();
     callback close-find-windows();
     callback calculate-checksums(int);
+    callback make-file-list(int);
+    callback refresh-file-list-window();
+    callback close-file-list-window();
+    callback refresh-file-list-viewer();
     callback refresh-checksum-windows();
     callback close-checksum-windows();
     callback edit-file(int);
@@ -112,8 +143,8 @@ export component MainWindow inherits Window {
     callback physical-shortcut(string, bool, bool, bool, bool) -> bool;
     in property <bool> native-alt-gr;
     in property <bool> native-digit-event;
-    out property <int> volume-popup-pane: left.volume-popup-open ? 0 : right.volume-popup-open ? 1 : -1;
-    out property <int> hot-path-popup-pane: left.hot-path-popup-open ? 0 : right.hot-path-popup-open ? 1 : -1;
+    out property <int> volume-popup-pane: left.volume-popup-open ? 0 : right.volume-popup-open ? 1 : toolbar.hot-path-popup-open ? root.active-pane : -1;
+    out property <int> hot-path-popup-pane: toolbar.hot-path-popup-open ? root.active-pane : -1;
     in property <string> file-menu-token;
     in property <length> file-menu-x;
     in property <length> file-menu-y;
@@ -136,6 +167,7 @@ export component MainWindow inherits Window {
     in property <int> operation-kind;
     in property <string> operation-warning;
     in property <bool> network-available;
+    in property <bool> network-discovery-available;
     callback mutation(int, int);
     callback confirm-operation(string, string);
     callback cancel-operation(string);
@@ -143,19 +175,54 @@ export component MainWindow inherits Window {
     callback copy-job-details(string);
     callback network-connections(bool);
     public function begin-operation() { operation-dialog.begin(); }
-    public function show-operations() { root.drag-invalidate-targets(); operations-popup.show(); }
+    out property <bool> operations-visible;
+    in-out property <string> operations-auto-copy;
+    private property <bool> operations-resume-after-decision;
+    public function show-operations() {
+        root.operations-auto-copy = "";
+        root.drag-invalidate-targets(); root.operations-visible = true; operations-popup.show();
+    }
+    public function show-copy-operations(token: string) {
+        if !root.operations-visible {
+            root.operations-auto-copy = token;
+            root.drag-invalidate-targets(); root.operations-visible = true; operations-popup.show();
+        }
+    }
+    public function close-operations() {
+        root.operations-auto-copy = ""; root.operations-visible = false;
+        root.operations-resume-after-decision = false;
+        operations-popup.close(); root.focus-files();
+    }
     in property <string> copy-token;
     in property <string> copy-body;
     in property <string> copy-name;
     in property <bool> copy-can-replace;
     in property <bool> copy-can-merge;
+    in property <bool> copy-is-failure;
+    in property <bool> copy-can-retry;
+    in property <bool> copy-can-skip;
     in property <string> copy-source-details;
     in property <string> copy-target-details;
     in-out property <string> copy-latest;
     callback decide-copy(string, int, string);
     callback resolve-copy(string);
-    public function show-copy-conflict() { root.drag-invalidate-targets(); operations-popup.close(); copy-popup.show(); }
-    public function close-copy-conflict() { copy-popup.close(); }
+    callback defer-copy(string);
+    public function show-copy-conflict() {
+        root.operations-resume-after-decision = root.operations-resume-after-decision || root.operations-visible;
+        root.operations-visible = false;
+        root.drag-invalidate-targets(); operations-popup.close(); copy-popup.show();
+    }
+    public function close-copy-conflict() {
+        copy-popup.close();
+        if root.operations-resume-after-decision {
+            root.operations-resume-after-decision = false;
+            root.operations-visible = true; operations-popup.show();
+        }
+    }
+    function defer-copy-prompt() {
+        root.operations-resume-after-decision = false;
+        copy-popup.close(); root.focus-files(); root.defer-copy(root.copy-token);
+    }
     in property <string> copy-draft-token;
     in property <bool> copy-draft-move;
     in property <string> copy-draft-body;
@@ -173,6 +240,7 @@ export component MainWindow inherits Window {
     public function show-metadata-conflict() { root.drag-invalidate-targets(); operations-popup.close(); metadata-conflict-popup.show(); }
     public function close-metadata-conflict() { metadata-conflict-popup.close(); }
     in property <string> metadata-token;
+    callback dismiss-metadata-hints();
     in property <string> metadata-revision;
     in property <bool> metadata-start-case;
     in property <string> metadata-summary;
@@ -210,6 +278,7 @@ export component MainWindow inherits Window {
     callback cancel-comparison();
     callback apply-panel-filter(int, bool, int, string, bool);
     callback cancel-panel-filter();
+    callback clear-panel-filter(int);
     private property <bool> comparison-open: root.comparison-view.open;
     private property <bool> panel-filter-open: root.panel-filter-view.open;
     changed comparison-open => {
@@ -226,6 +295,10 @@ export component MainWindow inherits Window {
     in property <string> application-version;
     in-out property <bool> panels-swapped;
     in-out property <float> panel-ratio: 0.5;
+    // A separate saved value prevents routine refreshes resetting a live drag.
+    in property <float> restored-panel-ratio: 0.5;
+    changed restored-panel-ratio => { root.panel-ratio = root.restored-panel-ratio; }
+    callback panel-split-changed(float);
     in-out property <bool> panel-zoomed;
     public function toggle-panel-zoom(pane: int) {
         root.drag-invalidate-targets();
@@ -293,6 +366,10 @@ export component MainWindow inherits Window {
     in-out property <int> desktop-font-size <=> Theme.desktop-font-size;
     in-out property <int> touch-font-size <=> Theme.touch-font-size;
     in property <bool> preferences-unsaved;
+    in property <bool> preferences-saving;
+    in property <bool> preferences-ready;
+    in property <bool> preferences-save-failed;
+    in property <string> preferences-save-status;
     out property <int> focused-pane: left.list-focused ? 0 : right.list-focused ? 1 : -1;
     out property <bool> shell-focused: shortcuts.has-focus;
     out property <length> left-pane-left: left.absolute-position.x;
@@ -367,6 +444,8 @@ export component MainWindow inherits Window {
     in property <string> right-status;
     in property <string> left-error;
     in property <string> right-error;
+    in property <string> left-error-revision;
+    in property <string> right-error-revision;
     in property <bool> left-loading;
     in property <bool> right-loading;
     in property <int> left-cursor: -1;
@@ -382,6 +461,7 @@ export component MainWindow inherits Window {
     in-out property <bool> quick-search-filter;
     in-out property <bool> sizes-in-bytes;
     in-out property <bool> remember-command-history: true;
+    in-out property <bool> copy-checksum-verification: true;
     in-out property <int> options-topic-index;
     in property <[UserCommandRow]> user-commands;
     in property <string> command-preview-token;
@@ -414,11 +494,12 @@ export component MainWindow inherits Window {
     in property <string> message-body;
     in property <bool> message-error;
     callback copy-message();
+    callback copy-panel-error(int, string);
     in property <int> message-generation;
     in-out property <string> command-text <=> command-input.text;
     out property <string> command-directory: root.active-pane == 0 ? root.left-path : root.right-path;
     out property <string> command-prompt: root.command-directory == "" ? "" : root.command-directory + ">";
-    changed command-directory => { cwd-scroll.content-x = 0px; }
+    changed command-directory => { cwd-scroll.content-x = min(0px, cwd-scroll.visible-width - cwd-scroll.content-width); }
     out property <length> command-path-natural-width: full-cwd.preferred-width + 8px;
     out property <length> command-path-content-width: cwd-scroll.content-width;
     out property <length> command-path-width: cwd-scroll.width;
@@ -438,8 +519,8 @@ export component MainWindow inherits Window {
     out property <length> command-history-height: command-history-picker.height;
     out property <length> options-left: (root.width - root.options-width) / 2;
     out property <length> options-top: (root.height - root.options-height) / 2;
-    out property <length> options-width: min(root.width - 24px, max(900px, Theme.font-size * 38));
-    out property <length> options-height: min(root.height - 24px, max(720px, Theme.font-size * 30));
+    out property <length> options-width: min(root.width - 24px, max(740px, Theme.font-size * 28));
+    out property <length> options-height: min(root.height - 24px, max(520px, Theme.font-size * 20));
     out property <bool> command-focused: command-input.has-focus;
     // Slint 1.18.1 exposes these internal UTF-8 offsets; keep the pinned SDK and
     // the actual-key Unicode selection tests together when upgrading Slint.
@@ -451,6 +532,10 @@ export component MainWindow inherits Window {
     callback volume(int, int);
     callback sort(int, int);
     callback row-click(int, int, bool, bool);
+    callback tree-disclosure(int, string);
+    callback panel-warning-details(int, string, bool);
+    callback panel-error-details(int, string);
+    callback refresh-warning-viewer();
     callback row-context-menu(int, int, float, float, bool, bool);
     callback drive-context-menu(int, string, float, float, bool, bool);
     callback file-clipboard(int, int);
@@ -473,6 +558,7 @@ export component MainWindow inherits Window {
     callback search-filter-changed(bool);
     callback sizes-format-changed(bool);
     callback remember-command-history-changed(bool);
+    callback copy-verification-changed(bool);
     callback insert-path(int);
     callback insert-name();
     callback tab-new(int);
@@ -497,6 +583,17 @@ export component MainWindow inherits Window {
     callback preferences-changed(int, int, int);
     callback font-options-changed(int, int, int, int);
     callback options-opened();
+    callback options-accepted();
+    callback options-cancelled();
+    callback options-reset();
+    in-out property <bool> options-open;
+    in property <bool> options-busy;
+    in property <bool> options-committing;
+    in-out property <string> options-feedback-revision;
+    changed options-open => {
+        if root.options-open { options.show(); }
+        else { ColorOptionsView.picker-field = -1; options.close(); root.focus-files(); }
+    }
     in property <string> editor-default-label;
     in property <string> editor-executable;
     in property <string> editor-arguments;
@@ -546,40 +643,128 @@ export component MainWindow inherits Window {
         if pane == 0 { left.commit-volume-shortcut(); } else { right.commit-volume-shortcut(); }
     }
     public function take-location-choice(pane: int, index: int) -> string {
+        if toolbar.hot-path-popup-open {
+            return pane == root.active-pane ? toolbar.take-location-choice(index) : "";
+        }
         return pane == 0 ? left.take-location-choice(index) : right.take-location-choice(index);
     }
     public function apply-file-input-action(pane: int, action: int) {
         if pane == 0 { left.apply-input-action(action); } else { right.apply-input-action(action); }
     }
+    private property <int> main-menu-generation;
     public function show-app-menu(menu: int) {
         root.drag-invalidate-targets();
-        if menu == 0 { help.show(); } else if menu == 1 { user-menu.show(); } else { main-menu.show(); }
+        if menu == 0 { root.open-help-window(); } else if menu == 1 { user-menu.show(); }
+        else { root.main-menu-generation += 1; main-menu.show(); }
     }
-    public function show-options() { root.drag-invalidate-targets(); root.options-opened(); options.show(); }
-    public function capture-function-press(x: length, y: length) { function-bar.capture-press(x, y); }
-    public function release-function-press() { function-bar.release-press(); }
-    changed message-generation => { if root.message-generation != 0 { root.drag-invalidate-targets(); message.show(); } }
+    public function show-about() { root.drag-invalidate-targets(); root.open-about-window(); }
+    public function show-bookmarks(pane: int) {
+        if pane == 0 { left.open-bookmarks(); } else { right.open-bookmarks(); }
+    }
+    private property <string> toolbar-context: root.active-pane + ":" + (root.active-pane == 0 ? root.left-search-context : root.right-search-context);
+    private property <string> custom-command-context;
+    private property <bool> custom-command-popup-open;
+    changed toolbar-context => { if root.custom-command-popup-open { root.close-custom-commands(); } }
+    changed compact-window => { if root.custom-command-popup-open { root.close-custom-commands(); } }
+    function close-custom-commands() {
+        custom-commands-popup.close(); root.custom-command-popup-open = false; root.focus-files();
+    }
+    public function change-view-mode(pane: int, mode: int) {
+        if pane == 0 { root.left-view-mode = mode; } else { root.right-view-mode = mode; }
+        root.view-mode(pane, mode);
+    }
+    public function show-options() {
+        if root.options-open { return; }
+        root.drag-invalidate-targets();
+        ColorOptionsView.picker-field = -1;
+        ArchiveOptionsView.draft = "";
+        root.options-opened();
+        root.options-open = true;
+    }
+    public function cancel-options() {
+        if root.options-committing { return; }
+        root.options-cancelled();
+        root.options-open = false;
+    }
+    public function capture-function-press(x: length, y: length) {
+        function-bar.capture-press(x, y); toolbar.capture-press(x, y);
+        left.capture-tree-press(x, y); right.capture-tree-press(x, y);
+    }
+    public function release-function-press() {
+        function-bar.release-press(); toolbar.release-press();
+        left.release-tree-press(); right.release-tree-press();
+    }
+    public function cancel-function-press() {
+        function-bar.cancel-press(); toolbar.cancel-press();
+        left.cancel-tree-press(); right.cancel-tree-press();
+    }
+    changed message-generation => { if root.message-generation != 0 { root.drag-invalidate-targets(); root.open-notice-window(); } }
     changed command-text => { root.command-edited(root.command-text != ""); }
     shortcuts := FocusScope {
       min-width: 0px; min-height: 0px;
       preferred-width: 0px; preferred-height: 0px;
       capture-key-pressed(event) => {
+        if root.dialog-input-blocked { return accept; }
+        root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         if event.text == Key.Escape && SelectionRectangle.cancel() { return accept; }
         if event.text == Key.Escape && root.drag-escape() { return accept; }
         if root.window-key(event) { return accept; }
         reject
       }
-      capture-key-released(event) => { root.window-key-release(event); reject }
+      capture-key-released(event) => {
+        if root.dialog-input-blocked { return accept; }
+        root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
+        root.window-key-release(event); reject
+      }
       VerticalLayout {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
         padding: root.compact-window ? 4px : Theme.window-padding;
         spacing: root.compact-window ? 2px : Theme.gap;
+        toolbar := SharedToolbar {
+            can-measure-folders: root.active-pane == 0 ? root.left-can-measure-folders : root.right-can-measure-folders;
+            pane-id: root.active-pane;
+            input-context: root.active-pane == 0 ? root.left-search-context : root.right-search-context;
+            compact: root.compact-window;
+            native-filesystem: root.active-pane == 0 ? root.left-native-filesystem : root.right-native-filesystem;
+            can-target-selection: root.active-pane == 0 ? root.left-can-target-selection : root.right-can-target-selection;
+            can-compare-directories: root.left-native-filesystem && root.right-native-filesystem;
+            show-custom-commands: root.compact-window && root.user-commands.length > 0;
+            action-icons: root.action-icons;
+            application-icon: root.icon;
+            back-history: root.active-pane == 0 ? root.left-back-history : root.right-back-history;
+            forward-history: root.active-pane == 0 ? root.left-forward-history : root.right-forward-history;
+            history-revision: root.history-revision;
+            hot-path-choices: root.hot-path-choices; choice-revision: root.navigation-revision;
+            action(a) => { root.action(root.active-pane, a); }
+            history-choice(forward, identity) => { root.history-choice(root.active-pane, forward, identity); }
+            mutation(a) => { root.mutation(root.active-pane, a); }
+            attributes => { root.open-metadata(root.active-pane, false); }
+            find-files => { root.find-files(root.active-pane); }
+            compare-files => { root.compare-files(root.active-pane); }
+            compare-directories => { root.open-comparison(); }
+            checksums => { root.calculate-checksums(root.active-pane); }
+            make-file-list => { root.make-file-list(root.active-pane); }
+            folder-sizes => { root.folder-sizes(root.active-pane); }
+            properties => { root.properties(root.active-pane); }
+            options => { root.show-options(); }
+            about => { root.show-about(); }
+            custom-commands => {
+                root.custom-command-context = root.toolbar-context;
+                root.custom-command-popup-open = true;
+                custom-commands-popup.show();
+            }
+            bookmark-add => { root.bookmark-add(root.active-pane, root.active-pane == 0 ? root.left-bookmark-name : root.right-bookmark-name, 0); }
+            bookmark-open(identity) => { root.bookmark-open(root.active-pane, identity); }
+            bookmark-manage => { root.show-bookmarks(root.active-pane); }
+            volume-key(event) => { return root.volume-key(event); }
+            focus-files => { root.focus-files(); }
+        }
         panels := Rectangle {
             vertical-stretch: 1;
-            private property <length> gutter: Theme.touch ? 12px : 6px;
+            private property <length> gutter: root.panel-zoomed ? 0px : (Theme.touch ? 12px : 6px);
             private property <length> usable: max(0px, self.width - self.gutter);
             private property <length> minimum-pane: min(286px, self.usable / 2);
-            private property <length> rail-width: Theme.touch ? 44px : 28px;
+            private property <length> rail-width: root.panel-zoomed ? 0px : (Theme.touch ? 44px : 28px);
             private property <bool> active-on-left: (root.active-pane == 0) != root.panels-swapped;
             private property <length> left-width: root.single-panel
                 ? (self.active-on-left ? self.usable - self.rail-width : self.rail-width)
@@ -589,11 +774,17 @@ export component MainWindow inherits Window {
                 minimal: root.compact-window;
                 can-target-selection: root.left-can-target-selection;
                 native-filesystem: root.left-native-filesystem;
+                can-compare-directories: root.left-native-filesystem && root.right-native-filesystem;
+                compare-files => { root.compare-files(0); }
+                compare-directories => { root.open-comparison(); }
                 filter-label: root.left-filter-label;
+                network-discovery-available: root.network-discovery-available;
                 filter => { root.open-panel-filter(0); }
+                clear-filter => { root.clear-panel-filter(0); }
                 find-files => { root.find-files(0); }
                 visible: !root.single-panel || root.active-pane == 0;
                 view-mode: root.left-view-mode; view-mode-label: "Left panel view mode"; sort-label: "Left panel sort";
+                thumbnail-size: root.thumbnail-size;
                 view-mode-selected(mode) => { root.left-view-mode = mode; root.view-mode(0, mode); }
                 mutation(action) => { root.mutation(0, action); }
                 x: root.panels-swapped ? panels.left-width + panels.gutter : 0px;
@@ -611,6 +802,7 @@ export component MainWindow inherits Window {
                 path-copy(identity) => { root.path-copy(0, identity); }
                 history-choice(forward, identity) => { root.history-choice(0, forward, identity); }
                 detail-copy(identity) => { root.detail-copy(0, identity); }
+                copy-error(text) => { root.copy-panel-error(0, text); }
                 viewport-width: root.width; viewport-height: root.height;
                 tab-new => { root.tab-new(0); } tab-select(id) => { root.tab-select(0, id); } tab-close(id) => { root.tab-close(0, id); }
                 bookmark-add(name, slot) => { root.bookmark-add(0, name, slot); } bookmark-open(id) => { root.bookmark-open(0, id); }
@@ -624,13 +816,18 @@ export component MainWindow inherits Window {
                 volume-icons: root.volume-icons;
                 volume-tooltips: root.volume-tooltips;
                 volumes-revision: root.volumes-revision;
-                path: root.left-path; status: root.left-status; error: root.left-error; loading: root.left-loading;
+                path: root.left-path; status: root.left-status; error: root.left-error; error-revision: root.left-error-revision; loading: root.left-loading;
                 cursor-index: root.left-cursor; sort-column: root.left-sort; descending: root.left-descending;
                 action(a) => { root.action(0, a); } navigate(p) => { root.navigate(0, p); } volume(v) => { root.volume(0, v); }
                 sort(c) => { root.sort(0, c); } row-click(r, c, s) => { root.row-click(0, r, c, s); } open(r) => { root.open(0, r); }
+                disclosure(identity) => { root.tree-disclosure(0, identity); }
+                warning-details(identity, tree) => { root.panel-warning-details(0, identity, tree); }
+                error-details(text) => { root.panel-error-details(0, text); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(0, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
                 drop-highlight: root.drag-hover-pane == 0; drag-label: root.drag-label;
+                drop-row: root.drag-hover-pane == 0 ? root.drag-hover-row : -1;
+                drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }
                 row-drag(r, identity, x, y) => { return root.row-drag(0, r, identity, x, y); }
                 drag-moved(x, y) => { root.drag-moved(x, y); }
                 drag-released(x, y) => { root.drag-released(x, y); }
@@ -654,11 +851,17 @@ export component MainWindow inherits Window {
                 minimal: root.compact-window;
                 can-target-selection: root.right-can-target-selection;
                 native-filesystem: root.right-native-filesystem;
+                can-compare-directories: root.left-native-filesystem && root.right-native-filesystem;
+                compare-files => { root.compare-files(1); }
+                compare-directories => { root.open-comparison(); }
                 filter-label: root.right-filter-label;
+                network-discovery-available: root.network-discovery-available;
                 filter => { root.open-panel-filter(1); }
+                clear-filter => { root.clear-panel-filter(1); }
                 find-files => { root.find-files(1); }
                 visible: !root.single-panel || root.active-pane == 1;
                 view-mode: root.right-view-mode; view-mode-label: "Right panel view mode"; sort-label: "Right panel sort";
+                thumbnail-size: root.thumbnail-size;
                 view-mode-selected(mode) => { root.right-view-mode = mode; root.view-mode(1, mode); }
                 mutation(action) => { root.mutation(1, action); }
                 x: root.panels-swapped ? 0px : panels.left-width + panels.gutter;
@@ -676,6 +879,7 @@ export component MainWindow inherits Window {
                 path-copy(identity) => { root.path-copy(1, identity); }
                 history-choice(forward, identity) => { root.history-choice(1, forward, identity); }
                 detail-copy(identity) => { root.detail-copy(1, identity); }
+                copy-error(text) => { root.copy-panel-error(1, text); }
                 viewport-width: root.width; viewport-height: root.height;
                 tab-new => { root.tab-new(1); } tab-select(id) => { root.tab-select(1, id); } tab-close(id) => { root.tab-close(1, id); }
                 bookmark-add(name, slot) => { root.bookmark-add(1, name, slot); } bookmark-open(id) => { root.bookmark-open(1, id); }
@@ -689,13 +893,18 @@ export component MainWindow inherits Window {
                 volume-icons: root.volume-icons;
                 volume-tooltips: root.volume-tooltips;
                 volumes-revision: root.volumes-revision;
-                path: root.right-path; status: root.right-status; error: root.right-error; loading: root.right-loading;
+                path: root.right-path; status: root.right-status; error: root.right-error; error-revision: root.right-error-revision; loading: root.right-loading;
                 cursor-index: root.right-cursor; sort-column: root.right-sort; descending: root.right-descending;
                 action(a) => { root.action(1, a); } navigate(p) => { root.navigate(1, p); } volume(v) => { root.volume(1, v); }
                 sort(c) => { root.sort(1, c); } row-click(r, c, s) => { root.row-click(1, r, c, s); } open(r) => { root.open(1, r); }
+                disclosure(identity) => { root.tree-disclosure(1, identity); }
+                warning-details(identity, tree) => { root.panel-warning-details(1, identity, tree); }
+                error-details(text) => { root.panel-error-details(1, text); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(1, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
                 drop-highlight: root.drag-hover-pane == 1; drag-label: root.drag-label;
+                drop-row: root.drag-hover-pane == 1 ? root.drag-hover-row : -1;
+                drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }
                 row-drag(r, identity, x, y) => { return root.row-drag(1, r, identity, x, y); }
                 drag-moved(x, y) => { root.drag-moved(x, y); }
                 drag-released(x, y) => { root.drag-released(x, y); }
@@ -716,14 +925,15 @@ export component MainWindow inherits Window {
                 insert-path => { root.insert-path(1); } insert-name => { root.insert-name(); } drive-info => { root.drive-info(1); }
             }
             PanelSplitter {
-                visible: !root.compact-window;
+                visible: !root.single-panel;
                 x: panels.left-width; y: 0px; height: parent.height;
                 fraction <=> root.panel-ratio;
                 available-width: panels.usable; minimum-pane-width: panels.minimum-pane;
                 centered => { root.panel-zoomed = false; }
                 resized => { root.panel-zoomed = false; }
+                committed(ratio) => { root.panel-split-changed(ratio); }
             }
-            if root.single-panel : Rectangle {
+            if root.compact-window && !root.panel-zoomed : Rectangle {
                 x: panels.active-on-left ? panels.left-width + panels.gutter : 0px;
                 width: panels.rail-width; height: parent.height;
                 background: rail-touch.has-hover ? Theme.hover : Theme.secondary-surface;
@@ -749,7 +959,7 @@ export component MainWindow inherits Window {
                 Tooltip { TipBody { text: "Activate other panel\n" + (root.active-pane == 0 ? root.right-path : root.left-path); } }
             }
         }
-        if root.user-commands.length > 0: UserCommandToolbar {
+        if root.user-commands.length > 0 && !root.compact-window: UserCommandToolbar {
             commands: root.user-commands;
             execute(id, revision) => { root.execute-user-command(id, revision); }
             settings(id) => {
@@ -781,13 +991,12 @@ export component MainWindow inherits Window {
                 command-content := Rectangle {
                     horizontal-stretch: 1; min-width: 0px;
                     height: command-bar.height;
-                    private property <length> gap: Theme.touch ? 6px : 5px;
-                    // Keep typing useful with wide native fonts; long cwd text
-                    // remains complete inside its horizontally pannable viewport.
+                    // Retain the full prompt and useful typing space. A clipped
+                    // prompt starts with its tail visible and explicit omission markers.
                     private property <length> editor-reserve: min(360px,
                         max(max(0px, self.width) * 0.5, min(320px, self.width - 120px)));
                     private property <length> prompt-width: root.command-directory == "" ? 0px
-                        : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve - self.gap));
+                        : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve));
                     cwd-scroll := ScrollView {
                         x: 0px; y: 0px;
                         width: command-content.prompt-width; height: parent.height;
@@ -796,6 +1005,8 @@ export component MainWindow inherits Window {
                         mouse-drag-pan-enabled: true;
                         content-width: max(self.visible-width, root.command-path-natural-width);
                         content-height: self.visible-height;
+                        content-x: min(0px, self.visible-width - self.content-width);
+                        changed content-width => { self.content-x = min(0px, self.visible-width - self.content-width); }
                         Rectangle {
                             width: cwd-scroll.content-width; height: cwd-scroll.visible-height;
                             full-cwd := Text {
@@ -819,8 +1030,41 @@ export component MainWindow inherits Window {
                             Tooltip { TipBody { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; } }
                         }
                     }
+                    if cwd-scroll.content-x < -0.5px : Rectangle {
+                        x: 0px; y: 0px; height: parent.height;
+                        width: min(cwd-scroll.width, command-prefix.width + command-dots.preferred-width + 4px);
+                        clip: true; background: Theme.secondary-surface;
+                        command-prefix := Rectangle {
+                            x: 4px; width: max(0px, min(100px, cwd-scroll.width * 0.3) - 4px);
+                            height: parent.height; clip: true;
+                            Text {
+                                x: 0px; y: 0px;
+                                width: self.preferred-width; height: parent.height;
+                                text: root.command-directory; color: Theme.secondary-text;
+                                font-size: Theme.small-font; vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                        }
+                        command-dots := OmissionText {
+                            x: command-prefix.x + command-prefix.width; width: self.preferred-width;
+                            height: parent.height; text: "..."; color: Theme.secondary-text;
+                            font-size: Theme.small-font; vertical-alignment: center;
+                            accessible-label: "Working folder path shortened";
+                        }
+                    }
+                    if cwd-scroll.content-x > min(0px, cwd-scroll.visible-width - cwd-scroll.content-width) + 0.5px : Rectangle {
+                        x: max(0px, cwd-scroll.width - self.width); height: parent.height;
+                        width: right-command-dots.preferred-width + 4px;
+                        background: Theme.secondary-surface;
+                        right-command-dots := OmissionText {
+                            width: parent.width; height: parent.height;
+                            text: "..."; color: Theme.secondary-text;
+                            font-size: Theme.small-font; vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                    }
                     command-slot := Rectangle {
-                        x: cwd-scroll.width > 0px ? cwd-scroll.width + command-content.gap : 0px;
+                        x: cwd-scroll.width;
                         width: max(0px, parent.width - self.x); height: parent.height; clip: true;
                         command-input := TextInput {
                             font-size: root.compact-window ? min(28px, Theme.font-size) : Theme.font-size;
@@ -882,6 +1126,7 @@ export component MainWindow inherits Window {
             }
         }
         function-bar := FunctionBar {
+            can-measure-folders: root.active-pane == 0 ? root.left-can-measure-folders : root.right-can-measure-folders;
             compact: root.compact-window;
             can-target-cursor: root.active-pane == 0 ? root.left-can-target-cursor : root.right-can-target-cursor;
             can-target-selection: root.active-pane == 0 ? root.left-can-target-selection : root.right-can-target-selection;
@@ -890,7 +1135,6 @@ export component MainWindow inherits Window {
             control-layer: root.control-layer; network-available: root.network-available;
             searching: root.active-pane == 0 ? root.left-search-active : root.right-search-active;
             action(action, pane) => { root.function-action(action, pane); }
-            options => { root.show-options(); }
             jobs => { root.show-operations(); }
         }
         if !root.compact-window && root.desktop-feedback-important && root.desktop-status != "" : Text {
@@ -905,7 +1149,8 @@ export component MainWindow inherits Window {
     operation-frame := DialogFrame {
         visible: root.operation-token != "";
         width: root.width; height: root.height;
-        desired-width: 650px; desired-height: 420px; dim: true;
+        desired-width: max(520px, Theme.font-size * 28);
+        desired-height: operation-dialog.preferred-dialog-height; dim: true;
         changed visible => { if self.visible { self.reset(); } }
         operation-dialog := OperationDialog {
             move-dialog(dx, dy) => { operation-frame.move-by(dx, dy); }
@@ -921,13 +1166,47 @@ export component MainWindow inherits Window {
             cancel => { root.cancel-operation(root.operation-token); }
         }
     }
+    custom-commands-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        forward-focus: custom-command-focus;
+        TouchArea { clicked => { root.close-custom-commands(); } }
+        Rectangle {
+            x: 4px; y: min(root.height - self.height - 4px, toolbar.absolute-position.y + toolbar.height + 3px);
+            width: max(0px, root.width - 8px); height: Theme.control-height + 8px;
+            background: Theme.surface; border-width: 1px; border-color: Theme.active-frame; border-radius: 4px;
+            custom-command-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.close-custom-commands(); return accept; }
+                    reject
+                }
+                UserCommandToolbar {
+                    x: 4px; y: 4px; width: max(0px, parent.width - 8px);
+                    commands: root.user-commands; visible: root.custom-command-popup-open;
+                    execute(id, revision) => {
+                        if root.custom-command-context == root.toolbar-context {
+                            root.close-custom-commands(); root.execute-user-command(id, revision);
+                        }
+                    }
+                    settings(id) => {
+                        if root.custom-command-context == root.toolbar-context {
+                            root.close-custom-commands();
+                            if id != "" { UserCommandSettingsView.select(id); }
+                            root.options-topic-index = 9; root.show-options();
+                        }
+                    }
+                    icon-visible(id, revision, visible) => { root.user-command-icon-visible(id, revision, visible); }
+                }
+            }
+        }
+    }
     operations-popup := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
         operations-popup-frame := DialogFrame {
-            desired-width: max(820px, Theme.font-size * 32); desired-height: max(620px, Theme.font-size * 25);
+            desired-width: max(720px, Theme.font-size * 30); desired-height: max(500px, Theme.font-size * 22);
             dismiss-on-outside: false;
-            dismiss => { operations-popup.close(); root.focus-files(); }
+            dismiss => { root.close-operations(); }
             operation-list := OperationsBody {
                 requested-identity: root.command-preview-token;
                 move-dialog(dx, dy) => { operations-popup-frame.move-by(dx, dy); }
@@ -935,18 +1214,19 @@ export component MainWindow inherits Window {
                 cancel(id) => { root.cancel-job(id); }
                 resolve(id) => { root.resolve-copy(id); }
                 copy-details(id) => { root.copy-job-details(id); }
-                close => { operations-popup.close(); root.focus-files(); }
+                close => { root.close-operations(); }
             }
         }
     }
     copy-draft-frame := DialogFrame {
         visible: root.copy-draft-token != "";
         width: root.width; height: root.height;
-        desired-width: max(620px, Theme.font-size * 26); desired-height: max(300px, Theme.font-size * 14); dim: true;
+        desired-width: max(580px, Theme.font-size * 26);
+        desired-height: copy-draft-dialog.preferred-dialog-height; dim: true;
         changed visible => { if self.visible { self.reset(); } }
         copy-draft-dialog := OperationDialog {
             move-dialog(dx, dy) => { copy-draft-frame.move-by(dx, dy); }
-            title: root.copy-draft-move ? "Move with recovery" : "Copy"; body: root.copy-draft-body; has-name: true;
+            title: root.copy-draft-move ? "Move" : "Copy"; body: root.copy-draft-body; has-name: true;
             initial-name: root.copy-draft-destination; selection-end: root.copy-draft-selection-end;
             input-label: "Destination folder"; confirm-text: root.copy-draft-move ? "Move" : "Copy"; warning: root.copy-draft-error;
             native-icon: root.action-icons.copy; fallback-icon: FallbackIcons.copy;
@@ -959,19 +1239,21 @@ export component MainWindow inherits Window {
         }
     }
     copy-popup := PopupWindow {
-        close-policy: close-on-click-outside;
+        close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
         copy-popup-frame := DialogFrame {
             desired-width: max(700px, Theme.font-size * 38); desired-height: max(500px, Theme.font-size * 25);
-            dismiss-on-outside: true;
-            dismiss => { copy-popup.close(); root.focus-files(); }
+            dismiss-on-outside: !root.copy-is-failure;
+            dismiss => { root.defer-copy-prompt(); }
             copy-dialog := CopyConflictDialog {
                 move-dialog(dx, dy) => { copy-popup-frame.move-by(dx, dy); }
                 body: root.copy-body; initial-name: root.copy-name; token: root.copy-token; native-icon: root.action-icons.copy;
                 can-replace: root.copy-can-replace; can-merge: root.copy-can-merge;
+                failure-mode: root.copy-is-failure; can-retry: root.copy-can-retry; can-skip: root.copy-can-skip;
+                allow-alternate-name: !root.copy-is-failure;
                 source-details: root.copy-source-details; target-details: root.copy-target-details;
                 decide(choice, name) => { root.decide-copy(root.copy-token, choice, name); }
-                later => { copy-popup.close(); root.focus-files(); }
+                later => { root.defer-copy-prompt(); }
             }
         }
     }
@@ -1011,7 +1293,7 @@ export component MainWindow inherits Window {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
         metadata-popup-frame := DialogFrame {
-            desired-width: max(860px, Theme.font-size * 32); desired-height: max(620px, Theme.font-size * 25);
+            desired-width: max(640px, Theme.font-size * 28); desired-height: max(440px, Theme.font-size * 20);
             dismiss-on-outside: false;
             dismiss => { root.cancel-metadata(root.metadata-token); }
             metadata-body := MetadataDialog {
@@ -1031,6 +1313,7 @@ export component MainWindow inherits Window {
                 dirty => { root.dirty-metadata(root.metadata-token); }
                 confirm(policy) => { root.confirm-metadata(root.metadata-token, root.metadata-revision, policy); }
                 cancel => { root.cancel-metadata(root.metadata-token); }
+                dismiss-hints => { root.dismiss-metadata-hints(); }
             }
         }
     }
@@ -1056,7 +1339,7 @@ export component MainWindow inherits Window {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
         panel-filter-popup-frame := DialogFrame {
-            desired-width: max(700px, Theme.font-size * 30); desired-height: max(480px, Theme.font-size * 24);
+            desired-width: max(520px, Theme.font-size * 24); desired-height: max(300px, Theme.font-size * 17);
             dismiss-on-outside: false;
             dismiss => { root.cancel-panel-filter(); }
             PanelFilterDialog {
@@ -1067,20 +1350,57 @@ export component MainWindow inherits Window {
                 changed opened => { if self.opened { self.begin(); } }
                 apply(enabled, mode, expression, names) => { root.apply-panel-filter(root.panel-filter-view.pane, enabled, mode, expression, names); }
                 cancel => { root.cancel-panel-filter(); }
+                clear => { root.clear-panel-filter(root.panel-filter-view.pane); }
             }
         }
     }
     options := PopupWindow {
-        close-policy: close-on-click-outside;
+        close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
+      color-picker-popup := PopupWindow {
+        close-policy: no-auto-close;
+        x: 0px; y: 0px;
+        preferred-width: root.width; preferred-height: root.height;
+        color-picker-frame := DialogFrame {
+            // Popup WindowItem dimensions may retain their opening size. Anchor
+            // the frame explicitly so Slint cannot center it in those old bounds.
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(480px, Theme.font-size * 22);
+            desired-height: max(600px, Theme.font-size * 28);
+            dismiss-on-outside: false; dim: true;
+            changed visible => { if self.visible { self.reset(); } }
+            color-picker-body := ColorPickerDialog {
+                title: options-frame.picker-field == 0 ? "Foreground color" : "Background color";
+                initial: options-frame.picker-initial; generation: options-frame.picker-generation;
+                moved(dx, dy) => { color-picker-frame.move-by(dx, dy); }
+                accepted(value) => {
+                    ColorOptionsView.choose-color(options-frame.picker-field, value);
+                    ColorOptionsView.picker-field = -1;
+                }
+                cancelled => { ColorOptionsView.picker-field = -1; }
+            }
+        }
+      }
         options-frame := DialogFrame {
-            desired-width: max(900px, Theme.font-size * 38); desired-height: max(720px, Theme.font-size * 30);
+            private property <int> picker-field: ColorOptionsView.picker-field;
+            private property <color> picker-initial;
+            private property <int> picker-generation;
+            changed picker-field => {
+                if self.picker-field >= 0 && root.options-open {
+                    self.picker-initial = self.picker-field == 0
+                        ? (ColorOptionsView.preview-foreground-set ? ColorOptionsView.preview-foreground : Theme.text)
+                        : (ColorOptionsView.preview-background-set ? ColorOptionsView.preview-background : Theme.pane-background);
+                    self.picker-generation += 1;
+                    color-picker-popup.show();
+                } else { color-picker-popup.close(); }
+            }
+            desired-width: max(740px, Theme.font-size * 28); desired-height: max(520px, Theme.font-size * 20);
             changed body-left => { root.options-left = self.body-left; }
             changed body-top => { root.options-top = self.body-top; }
             changed body-width => { root.options-width = self.body-width; }
             changed body-height => { root.options-height = self.body-height; }
-            dismiss-on-outside: true;
-            dismiss => { options.close(); }
+            dismiss-on-outside: false;
+            dismiss => { root.cancel-options(); }
             options-body := OptionsBody {
                 move-dialog(dx, dy) => { options-frame.move-by(dx, dy); }
                 editor-default-label: root.editor-default-label; editor-executable: root.editor-executable;
@@ -1093,11 +1413,17 @@ export component MainWindow inherits Window {
                 font-choices: root.font-choices; font-index: root.font-index; font-list-ready: root.font-list-ready;
                 desktop-font-size: root.desktop-font-size; touch-font-size: root.touch-font-size;
                 preferences-unsaved: root.preferences-unsaved;
+                options-busy: root.options-busy; options-saving: root.options-committing;
+                preferences-saving: root.preferences-saving; preferences-ready: root.preferences-ready;
+                preferences-save-status: root.preferences-save-status; preferences-save-failed: root.preferences-save-failed;
                 quick-search-filter: root.quick-search-filter; sizes-in-bytes: root.sizes-in-bytes;
                 remember-command-history: root.remember-command-history;
+                copy-checksum-verification: root.copy-checksum-verification;
                 command-history-empty: root.command-history.length == 0;
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
+                thumbnail-size: root.thumbnail-size;
+                thumbnail-size-changed(size) => { root.thumbnail-size-changed(size); }
                 thumbnail-options-changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
                 thumbnail-clear-cache => { root.thumbnail-clear-cache(); }
                 preferences-changed(theme, density, field) => { root.preferences-changed(theme, density, field); }
@@ -1105,20 +1431,12 @@ export component MainWindow inherits Window {
                 search-filter-changed(value) => { root.search-filter-changed(value); }
                 sizes-format-changed(value) => { root.sizes-format-changed(value); }
                 remember-command-history-changed(value) => { root.remember-command-history-changed(value); }
+                copy-verification-changed(value) => { root.copy-verification-changed(value); }
                 command-history-clear => { root.command-history-clear(); }
-                close => { options.close(); }
+                confirm => { root.options-accepted(); }
+                reset => { root.options-reset(); }
+                close => { root.cancel-options(); }
             }
-        }
-    }
-    help := PopupWindow {
-        close-policy: close-on-click-outside;
-        x: 0px; y: 0px; width: root.width; height: root.height;
-        help-frame := DialogFrame {
-            desired-width: max(620px, Theme.font-size * 24); desired-height: Theme.touch ? 600px : 490px;
-            dismiss-on-outside: true;
-            dismiss => { help.close(); }
-            HelpBody {
-                move-dialog(dx, dy) => { help-frame.move-by(dx, dy); } close-icon: root.action-icons.close; close => { help.close(); } }
         }
     }
     user-menu := PopupWindow {
@@ -1135,7 +1453,7 @@ export component MainWindow inherits Window {
                 { native-icon: root.action-icons.bookmarks, fallback-icon: FallbackIcons.bookmarks, label: "Bookmarks and Hot Paths", hint: "Save, open or remove a favorite folder. Hot Paths provide ten numbered shortcuts." },
                 { native-icon: root.action-icons.properties, fallback-icon: FallbackIcons.properties, label: "Properties" + (ShortcutHints.key("files.properties") == "" ? "" : " · " + ShortcutHints.key("files.properties")), hint: ShortcutHints.hint("Show Properties for selected items, or the focused file or folder", "files.properties") },
                 { native-icon: root.action-icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes, label: "Calculate / cancel folder sizes", hint: ShortcutHints.hint("Measure selected folders, or all folders when nothing is selected; choose again to cancel", "panel.folder-sizes") },
-                { native-icon: root.action-icons.properties, fallback-icon: FallbackIcons.properties, label: "Checksums", hint: ShortcutHints.hint("Calculate SHA-256, SHA-512, MD5 or SHA-1 for the captured selection", "files.checksums") },
+                { fallback-icon: FallbackIcons.checksums, label: "Checksums", hint: ShortcutHints.hint("Calculate, save or verify SFV, MD5, SHA-1, SHA-256 and SHA-512", "files.checksums") },
                 { native-icon: root.action-icons.close, fallback-icon: FallbackIcons.close, label: "Close", hint: "Close this dialog and return to the file manager." },
             ];
             selected(index) => {
@@ -1150,69 +1468,27 @@ export component MainWindow inherits Window {
     }
     main-menu := PopupWindow {
         close-policy: close-on-click-outside;
-        x: root.width - self.width - 15px; y: max(4px, root.height - self.height - 75px);
-        width: min(root.width - 24px, max(300px, Theme.font-size * 14 + 24px));
-        height: min(root.height - 8px, max(Theme.touch ? 330px : 260px, Theme.control-height * 5 + 90px));
-        CommandMenuBody {
-            dismissed => { main-menu.close(); }
-            title: "Menu";
-            item-count: 5;
-            rows: [
-                { native-icon: root.action-icons.options, fallback-icon: FallbackIcons.options, label: "Options", hint: "Choose panel behavior, appearance, command history and keyboard shortcuts." },
-                { native-icon: root.action-icons.refresh, fallback-icon: FallbackIcons.refresh, label: "Refresh active folder", hint: ShortcutHints.hint("Read the active folder again", "panel.refresh") },
-                { native-icon: root.action-icons.help, fallback-icon: FallbackIcons.help, label: "Keyboard help" + (ShortcutHints.key("app.help") == "" ? "" : " · " + ShortcutHints.key("app.help")), hint: "Show current keyboard shortcuts and usage help." },
-                { native-icon: root.action-icons.about, fallback-icon: FallbackIcons.about, label: "About Midnight Explorer", hint: "Show application and Slint version information." },
-                { native-icon: root.action-icons.exit, fallback-icon: FallbackIcons.exit, label: "Exit", hint: ShortcutHints.hint("Close the file manager", "app.exit") },
-            ];
-            selected(index) => {
-                if index == 0 { main-menu.close(); root.show-options(); }
-                if index == 1 { main-menu.close(); root.action(root.active-pane, 3); }
-                if index == 2 { main-menu.close(); help.show(); }
-                if index == 3 { main-menu.close(); about.show(); }
-                if index == 4 { main-menu.close(); root.exit(); }
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        main-menu-frame := DialogFrame {
+            desired-width: max(520px, Theme.font-size * 30); desired-height: 740px;
+            dismiss-on-outside: true; dismiss => { main-menu.close(); root.focus-files(); }
+            main-menu-body := MainMenuBody {
+                can-measure-folders: root.active-pane == 0 ? root.left-can-measure-folders : root.right-can-measure-folders;
+                icons: root.action-icons;
+                generation: root.main-menu-generation;
+                can-target-cursor: root.active-pane == 0 ? root.left-can-target-cursor : root.right-can-target-cursor;
+                can-target-selection: root.active-pane == 0 ? root.left-can-target-selection : root.right-can-target-selection;
+                native-filesystem: root.active-pane == 0 ? root.left-native-filesystem : root.right-native-filesystem;
+                network-available: root.network-available;
+                moved(dx, dy) => { main-menu-frame.move-by(dx, dy); }
+                dismissed => { main-menu.close(); root.focus-files(); }
+                action(action) => { main-menu.close(); root.function-action(action, root.active-pane); }
             }
         }
     }
-    message := PopupWindow {
-        close-policy: no-auto-close;
-        x: 0px; y: 0px; width: root.width; height: root.height;
-        message-frame := DialogFrame {
-            desired-width: max(600px, Theme.font-size * 45); desired-height: max(360px, Theme.font-size * 26);
-            dismiss-on-outside: false;
-            dismiss => { message.close(); }
-            message-body := NoticeDialog {
-                move-dialog(dx, dy) => { message-frame.move-by(dx, dy); }
-                title: root.message-title; body: root.message-body; error: root.message-error;
-                generation: root.message-generation;
-                copy-details => { root.copy-message(); }
-                close => { message.close(); }
-            }
-        }
-    }
-    about := PopupWindow {
-        close-policy: close-on-click-outside;
-        x: 0px; y: 0px; width: root.width; height: root.height;
-        about-frame := DialogFrame {
-            desired-width: 360px; desired-height: Theme.touch ? 320px : 270px;
-            dismiss-on-outside: true;
-            dismiss => { about.close(); }
-            Rectangle {
-                background: Theme.surface; border-radius: 8px; border-color: Theme.active-frame; border-width: 1px;
-                init => { about-close.focus(); }
-                FocusScope {
-                capture-key-pressed(event) => {
-                    if event.text == Key.Escape { about.close(); return accept; }
-                    reject
-                }
-                VerticalLayout {
-                    padding: 8px; spacing: 6px;
-                    DialogHeader { title: "Midnight Explorer · File Manager"; text-size: 18px; compact: true; dragged(dx, dy) => { about-frame.move-by(dx, dy); } }
-                    Text { text: "A focused, two-pane file browser."; color: Theme.secondary-text; }
-                    ScrollView { min-height: 0px; vertical-stretch: 1; AboutSlint {} }
-                    about-close := HintedActionButton { native-icon: root.action-icons.close; fallback-icon: FallbackIcons.close; text: "Close"; min-height: Theme.control-height; hint: "Close this dialog and return to the file manager."; clicked => { about.close(); } }
-                }
-                }
-            }
-        }
+    // Native owner-modal dialogs retain the main surface but gate its input.
+    if root.dialog-input-blocked: TouchArea {
+        width: root.width; height: root.height;
+        scroll-event(event) => { accept }
     }
 }

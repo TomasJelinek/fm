@@ -59,8 +59,12 @@ pub unsafe fn entry<F: Filesystem>(
         {
             return INVALID;
         }
+        let mut header = Header::v1(size_of::<Api>() as u32);
+        if capabilities & (CAP_ACTIVATE | CAP_REFRESH | CAP_RESOLVE_TEXT) != 0 {
+            header.minimum_host_minor = 2;
+        }
         let table = Api {
-            header: Header::v1(size_of::<Api>() as u32),
+            header,
             capabilities,
             id: Slice {
                 data: id.as_ptr(),

@@ -16,13 +16,25 @@ command line taller or increasing the application's 320×200 minimum.
 Options gains a **Custom Commands** page with an ordered, selectable list,
 Add/Edit/Remove, drag-and-drop ordering, move up/down and a preview. Drag a row
 to an insertion marker; holding near a visible list edge scrolls the list. A
-valid changed drop saves once and retains the command's ID and shortcut bindings.
+valid changed drop stages the new order and retains the command's ID and shortcut
+bindings. Update command stages an edited form; OK saves the whole Options session
+once, and Cancel restores its original list and appearance previews.
 Escape or dropping outside the visible list cancels. Apply or cancel an edited
 draft before changing order. The keyboard-accessible Up/Down buttons remain.
 Right-click anywhere on this toolbar
 opens a context menu containing **Settings…**, which opens that exact page and
 selects the clicked command. An empty toolbar is configured from Options. A
 settings selection, preview, icon hover or history recall never launches a command.
+
+The Custom Commands page displays Preview results inline below its grouped draft
+actions. Preview keeps Options open and does not create another Jobs popup. The
+result shows the working folder, program and separate arguments (or literal
+terminal script and captured environment) in a bounded, scrollable read-only
+area. It belongs to one draft and preview attempt: editing, selecting another
+command or cancelling invalidates that display. A delayed failure from an older
+attempt must not overwrite a newer result. Selection capture and validation
+errors stay in the same form. Update command stages the draft; only the main
+Options OK saves it, and Cancel discards it.
 
 ## Salamander reference and adaptation
 

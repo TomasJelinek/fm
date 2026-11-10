@@ -1,0 +1,40 @@
+import { Theme } from "theme.slint";
+import { FileIcon } from "file-icon.slint";
+import { ArchiveBadge } from "archive-badge.slint";
+
+// Keep shell overlays and application badges in one opacity group. Filename,
+// selection and operation warnings deliberately remain outside this artwork.
+export component FileArtwork inherits Rectangle {
+    in property <image> native-icon;
+    in property <bool> parent-entry;
+    in property <bool> browsable-archive;
+    in property <bool> compressed;
+    in property <bool> dimmed;
+    in property <bool> thumbnail;
+    opacity: root.dimmed ? 0.5 : 1;
+    FileIcon {
+        width: parent.width; height: parent.height; image-fit: contain;
+        native-icon: root.native-icon; browsable-archive: root.browsable-archive;
+        parent-entry: root.parent-entry;
+    }
+    if root.compressed : Rectangle {
+        x: parent.width - (root.thumbnail ? 11px : 8px);
+        y: parent.height - (root.thumbnail ? 19px : 8px);
+        width: root.thumbnail ? 15px : 9px;
+        height: root.thumbnail ? 19px : 9px;
+        background: root.thumbnail ? transparent : Theme.pane-background;
+        border-radius: 2px;
+        Text {
+            text: "C"; font-size: root.thumbnail ? 12px : 8px; font-weight: 700;
+            color: Theme.compression-mark;
+            horizontal-alignment: center; vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    if root.browsable-archive && root.native-icon.width > 0 : ArchiveBadge {
+        x: parent.width - (root.thumbnail ? 20px : 10px);
+        y: root.thumbnail ? 10px : 1px;
+        width: root.thumbnail ? 10px : 8px;
+        height: root.thumbnail ? 17px : 12px;
+    }
+}

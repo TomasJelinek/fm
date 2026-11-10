@@ -2,8 +2,8 @@ use super::*;
 use crate::FindWindow;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
-    item_tree::ItemRc,
-    items::{AccessibleRole, WindowItem},
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::{AccessibleRole, Flickable, WindowItem},
     window::PopupWindowLocation,
 };
 use slint::platform::{
@@ -59,6 +59,89 @@ fn input(item: ItemRc, label: &str) -> Option<ItemRc> {
         }
     }
     None
+}
+
+fn hovered_tooltip_areas(item: ItemRc) -> usize {
+    let mut count = usize::from(
+        item.downcast::<TooltipArea>()
+            .is_some_and(|area| area.as_pin_ref().has_hover()),
+    );
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        count += hovered_tooltip_areas(item);
+    }
+    count
+}
+
+#[test]
+fn find_checkbox_without_a_hint_does_not_open_an_empty_tooltip_after_hover_delay() {
+    fn checkbox(item: ItemRc, label: &str) -> Option<ItemRc> {
+        if item.accessible_role() == AccessibleRole::Checkbox
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value.as_str() == label)
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = checkbox(item, label) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let (natives, time) = setup();
+    let window = FindWindow::new().unwrap();
+    install_find(&window).unwrap();
+    window.invoke_apply_preferences(0, 0, "Segoe UI".into(), 13, 13);
+    window.show().unwrap();
+    let native = natives.borrow()[0].clone();
+    resize(window.window(), &native, 860., 900.);
+    let mut pixels = vec![slint::Rgb8Pixel::default(); 860 * 900];
+    let draw = |pixels: &mut [slint::Rgb8Pixel]| {
+        slint::platform::update_timers_and_animations();
+        native.draw_if_needed(|renderer| {
+            renderer.render(pixels, 860);
+        });
+    };
+    draw(&mut pixels);
+    let root = || ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+    let target = checkbox(root(), "Match name case").unwrap();
+    let rect = target.geometry();
+    let origin = target.map_to_native_window(rect.origin);
+    let mut ancestor = target.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(item) = ancestor {
+        if item.downcast::<Flickable>().is_some() {
+            let area = item.geometry();
+            let clip = item.map_to_native_window(area.origin);
+            assert!(
+                origin.y >= clip.y && origin.y + rect.height() <= clip.y + area.height(),
+                "the real checkbox must be visible through the query viewport before hover"
+            );
+        }
+        ancestor = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    let position =
+        slint::LogicalPosition::new(origin.x + rect.width() / 2., origin.y + rect.height() / 2.);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    draw(&mut pixels);
+    time.set(Duration::from_millis(200));
+    draw(&mut pixels);
+    time.set(Duration::from_millis(600));
+    draw(&mut pixels);
+    assert!(
+        !WindowInner::from_pub(window.window())
+            .active_popups()
+            .iter()
+            .any(|popup| matches!(popup.window_kind, WindowKind::ToolTip)),
+        "a checkbox with no hint must not open a blank tooltip after timed hover"
+    );
+    window.hide().unwrap();
 }
 
 #[test]
@@ -120,13 +203,21 @@ fn actual_find_hint_is_offset_and_clamped_to_the_find_host() {
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
     let cursor = slint::LogicalPosition::new(
-        origin.x + rect.size.width - 4.,
+        // Fluent ScrollView overlays a 14px scrollbar on its viewport. Hover
+        // the visible editor interior rather than the track over its far edge.
+        origin.x + rect.size.width - 24.,
         origin.y + rect.size.height / 2.,
     );
     assert!(cursor.x > 180. && cursor.x < 360. && cursor.y < 270.);
     find.window()
         .dispatch_event(WindowEvent::PointerMoved { position: cursor });
     draw();
+    assert!(
+        hovered_tooltip_areas(ItemRc::new_root(
+            WindowInner::from_pub(find.window()).component(),
+        )) > 0,
+        "The mask editor must receive hover before timing its hint: {origin:?}, {rect:?}, {cursor:?}"
+    );
     time.set(Duration::from_millis(600));
     draw();
     let inner = WindowInner::from_pub(find.window());

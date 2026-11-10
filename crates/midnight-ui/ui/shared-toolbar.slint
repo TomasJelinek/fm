@@ -1,0 +1,210 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { CompactPicker } from "controls.slint";
+import { ActionIcons, FallbackIcons } from "action-icons.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { NavigationChoiceRow } from "navigation-models.slint";
+import { NavigationButton, HistoryNavigation } from "navigation-controls.slint";
+
+// One application bar, with immutable input context for pressed/open controls.
+export component SharedToolbar inherits Rectangle {
+    in property <int> pane-id;
+    in property <string> input-context;
+    in property <bool> compact;
+    in property <bool> native-filesystem;
+    in property <bool> can-measure-folders: root.native-filesystem;
+    in property <bool> can-target-selection;
+    in property <bool> can-compare-directories;
+    in property <bool> show-custom-commands;
+    in property <ActionIcons> action-icons;
+    in property <image> application-icon;
+    in property <[NavigationChoiceRow]> back-history;
+    in property <[NavigationChoiceRow]> forward-history;
+    in property <int> history-revision;
+    in property <[NavigationChoiceRow]> hot-path-choices;
+    in property <int> choice-revision;
+    private property <string> context-key: root.pane-id + ":" + root.input-context + ":" + root.history-revision + ":" + root.choice-revision;
+    private property <bool> pointer-snapshot;
+    private property <bool> press-cancelled;
+    private property <string> pressed-context;
+    private property <string> press-context: root.pointer-snapshot ? root.pressed-context : root.context-key;
+    public function capture-press(x: length, y: length) {
+        root.press-cancelled = false;
+        root.pointer-snapshot = x >= tools.absolute-position.x && x < tools.absolute-position.x + tools.width
+            && y >= tools.absolute-position.y && y < tools.absolute-position.y + tools.height;
+        if root.pointer-snapshot { root.pressed-context = root.context-key; }
+    }
+    public function release-press() { root.pointer-snapshot = false; }
+    public function cancel-press() { root.press-cancelled = true; }
+    private property <length> control-height: root.compact ? min(28px, Theme.control-height) : Theme.control-height;
+    private property <length> tool-width: Theme.tool-width;
+    private property <length> arrow-width: Theme.touch ? 26px : 22px;
+    private property <length> gap: Theme.touch ? 6px : 4px;
+    private property <length> full-width: 14 * root.tool-width + 3 * root.arrow-width + 13 * root.gap
+        + (root.show-custom-commands ? root.tool-width + root.gap : 0px);
+    private property <length> actions-width: max(0px, root.width - 2 * root.tool-width - root.gap - 8px);
+    private property <bool> overflowing: root.full-width > root.actions-width - 8px;
+    out property <bool> hot-path-popup-open: hot-path-picker.popup-open;
+    callback action(int);
+    callback history-choice(bool, string);
+    callback mutation(int);
+    callback attributes();
+    callback find-files();
+    callback compare-files();
+    callback compare-directories();
+    callback checksums();
+    callback make-file-list();
+    callback folder-sizes();
+    callback properties();
+    callback custom-commands();
+    callback options();
+    callback about();
+    callback bookmark-add();
+    callback bookmark-open(string);
+    callback bookmark-manage();
+    callback volume-key(KeyEvent) -> int;
+    callback focus-files();
+    public function take-location-choice(index: int) -> string { return hot-path-picker.take-choice(index); }
+    height: root.control-height + 6px;
+    min-width: 0px;
+    background: Theme.header;
+    border-radius: 4px;
+    border-width: 1px; border-color: Theme.frame;
+    NavigationButton {
+        visible: root.overflowing;
+        x: 2px; y: 3px; width: root.tool-width; height: root.control-height;
+        label: "‹"; hint: "Scroll toolbar left";
+        enabled: tools.content-x < 0px;
+        clicked => { tools.content-x = min(0px, tools.content-x + tools.visible-width * 0.8); }
+    }
+    tools := ScrollView {
+        x: root.overflowing ? root.tool-width + 4px : 4px; y: 3px;
+        width: max(0px, root.actions-width - 2 * self.x); height: root.control-height;
+        horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
+        content-width: max(self.visible-width, root.full-width);
+        content-height: self.visible-height;
+        HorizontalLayout {
+            width: tools.content-width; height: root.control-height;
+            spacing: root.gap; alignment: start;
+            HistoryNavigation {
+                primary-width: root.tool-width; arrow-width: root.arrow-width; control-height: root.control-height;
+                native-icon: root.action-icons.back; icon: FallbackIcons.back;
+                hint: ShortcutHints.hint("Back", "panel.back"); model: root.back-history;
+                revision: root.history-revision; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                step => { root.action(0); root.focus-files(); }
+                selected(identity) => { root.history-choice(false, identity); root.focus-files(); }
+                dismissed => { root.focus-files(); }
+            }
+            HistoryNavigation {
+                primary-width: root.tool-width; arrow-width: root.arrow-width; control-height: root.control-height;
+                native-icon: root.action-icons.forward; icon: FallbackIcons.forward;
+                hint: ShortcutHints.hint("Forward", "panel.forward"); model: root.forward-history;
+                revision: root.history-revision; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                step => { root.action(1); root.focus-files(); }
+                selected(identity) => { root.history-choice(true, identity); root.focus-files(); }
+                dismissed => { root.focus-files(); }
+            }
+            NavigationButton { width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled; native-icon: root.action-icons.parent; icon: FallbackIcons.parent; hint: ShortcutHints.hint("Parent folder", "panel.parent"); clicked => { root.action(2); root.focus-files(); } }
+            NavigationButton { width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled; native-icon: root.action-icons.refresh; icon: FallbackIcons.refresh; hint: ShortcutHints.hint("Refresh", "panel.refresh"); clicked => { root.action(3); root.focus-files(); } }
+            NavigationButton { width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled; native-icon: root.action-icons.new-file; icon: FallbackIcons.new-file; hint: ShortcutHints.hint("New empty file", "files.create-file"); enabled: root.native-filesystem; clicked => { root.mutation(4); root.focus-files(); } }
+            NavigationButton { width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled; icon: FallbackIcons.attributes; hint: ShortcutHints.hint("Attributes, times and case", "files.attributes"); enabled: root.native-filesystem && root.can-target-selection; clicked => { root.attributes(); } }
+            NavigationButton { width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled; native-icon: root.action-icons.find; icon: FallbackIcons.find; hint: ShortcutHints.hint("Find files and text", "files.find"); enabled: root.native-filesystem; clicked => { root.find-files(); } }
+            NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                icon: FallbackIcons.compare-files;
+                accessible-label: "Compare files";
+                hint: ShortcutHints.hint("Compare files", "files.compare") + "\nCompare selected files or a same-name counterpart. If the pair is unclear, choose File A and File B.";
+                clicked => { root.compare-files(); }
+            }
+            NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                icon: FallbackIcons.compare-directories; enabled: root.can-compare-directories;
+                accessible-label: "Compare directories";
+                hint: ShortcutHints.hint("Compare directories", "panel.compare") + "\nCompare names, sizes and modification times in both native panels; select differences.";
+                clicked => { root.compare-directories(); }
+            }
+            NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                icon: FallbackIcons.checksums; enabled: root.native-filesystem;
+                accessible-label: "Checksums";
+                hint: ShortcutHints.hint("Checksums", "files.checksums") + "\nCalculate, save or verify SFV, MD5, SHA-1, SHA-256 and SHA-512 files.";
+                clicked => { root.checksums(); }
+            }
+            NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                icon: FallbackIcons.make-file-list; enabled: root.can-target-selection;
+                accessible-label: "Make File List";
+                hint: ShortcutHints.hint("Make File List", "files.make-list") + "\nExport selected names and metadata to clipboard, viewer or a text file.";
+                clicked => { root.make-file-list(); }
+            }
+            NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                native-icon: root.action-icons.folder-sizes; icon: FallbackIcons.folder-sizes;
+                enabled: root.can-measure-folders; accessible-label: "Folder sizes";
+                hint: ShortcutHints.hint("Calculate or cancel folder sizes", "panel.folder-sizes") + "\nMeasure selected folders, or all folders when none are selected.";
+                clicked => { root.folder-sizes(); root.focus-files(); }
+            }
+            NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                native-icon: root.action-icons.properties; icon: FallbackIcons.properties;
+                enabled: root.native-filesystem && root.can-target-selection; accessible-label: "Properties";
+                hint: ShortcutHints.hint("Properties", "files.properties"); clicked => { root.properties(); }
+            }
+            if root.show-custom-commands : NavigationButton {
+                width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                native-icon: root.action-icons.run; icon: FallbackIcons.run;
+                hint: "Custom commands"; clicked => { root.custom-commands(); }
+            }
+            Rectangle {
+                width: root.tool-width + root.arrow-width; height: root.control-height;
+                border-width: 1px; border-color: Theme.frame; border-radius: 4px;
+                NavigationButton {
+                    x: 0px; y: 0px;
+                    width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                    native-icon: root.action-icons.bookmarks; icon: FallbackIcons.bookmarks;
+                    hint: "Add current path to Hot Paths";
+                    clicked => { root.bookmark-add(); root.focus-files(); }
+                }
+                hot-path-picker := CompactPicker {
+                    path-labels: true;
+                    x: root.tool-width; width: root.arrow-width; height: root.control-height;
+                    minimum-control-width: 0px; framed: false; arrow-trigger-only: true;
+                    choices: root.hot-path-choices; model-revision: root.choice-revision; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                    separator-before-key: "add-hot-path";
+                    accessible-name: "Hot Paths"; hint: "Choose a saved folder, add the current path or manage numbered Hot Paths. Configure their keys in Options → Keyboard.";
+                    popup-width: 500px; popup-align-right: true;
+                    shortcut-event(event) => { return root.volume-key(event); }
+                    selected-key(identity) => {
+                        if identity == "manage-hot-paths" { root.bookmark-manage(); }
+                        else if identity == "add-hot-path" { root.bookmark-add(); root.focus-files(); }
+                        else { root.bookmark-open(identity); root.focus-files(); }
+                    }
+                    dismissed => { root.focus-files(); }
+                }
+            }
+        }
+    }
+    NavigationButton {
+        visible: root.overflowing;
+        x: root.actions-width - self.width - 2px; y: 3px; width: root.tool-width; height: root.control-height;
+        label: "›"; hint: "Scroll toolbar right";
+        enabled: tools.content-x > min(0px, tools.visible-width - tools.content-width);
+        clicked => { tools.content-x = max(tools.visible-width - tools.content-width, tools.content-x - tools.visible-width * 0.8); }
+    }
+    NavigationButton {
+        x: root.width - 2 * root.tool-width - root.gap - 4px; y: 3px;
+        width: root.tool-width; height: root.control-height;
+        native-icon: root.action-icons.options; icon: FallbackIcons.options;
+        accessible-label: "Options"; hint: "Options\nApplication preferences";
+        press-cancelled: root.press-cancelled;
+        clicked => { root.options(); }
+    }
+    NavigationButton {
+        x: root.width - root.tool-width - 4px; y: 3px;
+        width: root.tool-width; height: root.control-height;
+        native-icon: root.application-icon;
+        accessible-label: "About Midnight Explorer"; hint: "About Midnight Explorer";
+        press-cancelled: root.press-cancelled;
+        clicked => { root.about(); }
+    }
+}

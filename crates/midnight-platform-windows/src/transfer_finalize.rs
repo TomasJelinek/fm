@@ -8,7 +8,7 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{ERROR_IO_PENDING, INVALID_HANDLE_VALUE},
+    Foundation::{ERROR_HANDLE_EOF, ERROR_IO_PENDING, INVALID_HANDLE_VALUE},
     System::{
         IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED},
         Ioctl::*,
@@ -44,10 +44,24 @@ pub(super) fn qualify(file: &File, path: &Path) -> Result<(), FsError> {
             "Verified Move removal requires a single-link regular file without the readonly attribute. Choose Copy to retain the source.",
         ));
     }
-    check_streams(file, path)
+    check_streams(file, path, false)
 }
 
-fn check_streams(file: &File, path: &Path) -> Result<(), FsError> {
+pub(super) fn qualify_directory(file: &File, path: &Path) -> Result<(), FsError> {
+    let metadata = file.metadata().map_err(|e| error(path, e))?;
+    if !metadata.is_dir()
+        || metadata.file_attributes() & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_REPARSE_POINT)
+            != 0
+    {
+        return Err(unsupported(
+            path,
+            "Directory Move requires an ordinary directory without the readonly attribute.",
+        ));
+    }
+    check_streams(file, path, true)
+}
+
+fn check_streams(file: &File, path: &Path, directory: bool) -> Result<(), FsError> {
     // Fixed bound: inability to enumerate every stream is refusal, never omission.
     let mut buffer = vec![0u8; 64 * 1024];
     // SAFETY: live handle; byte buffer remains writable for its stated size.
@@ -60,11 +74,17 @@ fn check_streams(file: &File, path: &Path) -> Result<(), FsError> {
         )
     } == 0
     {
+        let failure = io::Error::last_os_error();
+        // Ordinary NTFS directories have no unnamed data stream. EOF explicitly
+        // reports an empty stream list; other errors never authorize removal.
+        if directory && failure.raw_os_error() == Some(ERROR_HANDLE_EOF as i32) {
+            return Ok(());
+        }
         return Err(unsupported(
             path,
             &format!(
                 "Cannot establish that all source streams are verified: {}",
-                io::Error::last_os_error()
+                failure
             ),
         ));
     }
@@ -83,7 +103,7 @@ fn check_streams(file: &File, path: &Path) -> Result<(), FsError> {
             .encode_utf16()
             .flat_map(u16::to_ne_bytes)
             .collect();
-        if name != expected {
+        if directory || name != expected {
             return Err(unsupported(
                 path,
                 "The source has alternate data streams that were not copied and verified. Choose Copy to retain every original stream.",
@@ -152,7 +172,7 @@ fn probe_mapped_writers(file: &File, path: &Path) -> Result<(), FsError> {
         return Err(unsupported(
             path,
             &format!(
-                "Source mapped-writer quiescence could not be established: {failure}. Original retained in recovery."
+                "Source mapped-writer quiescence could not be established: {failure}. Source removal refused."
             ),
         ));
     }
@@ -178,13 +198,13 @@ pub(super) fn prepare(
     let Some(TransferMoveCaptureOutcome::Captured { source, recovery }) = &state.outcome else {
         return Err(invalid(
             &capture.entry.item.path,
-            "source has no successful matching recovery capture",
+            "source has no successful matching temporary staging",
         ));
     };
     let directory = state
         .retained
         .as_ref()
-        .ok_or_else(|| invalid(source, "source recovery authority missing"))?
+        .ok_or_else(|| invalid(source, "temporary source authority missing"))?
         .clone();
     qualify(&capture.file, source)?;
     probe_mapped_writers(&capture.file, source)?;
@@ -219,7 +239,7 @@ impl TransferMoveFinalizer for Finalizer {
             != self
                 .receipt
                 .identity
-                .ok_or_else(|| invalid(&self.source, "recovery identity unknown"))?
+                .ok_or_else(|| invalid(&self.source, "temporary source identity unknown"))?
             || Revision::of(&self.file, &self.source)? != self.revision
             || self
                 .directory
@@ -229,7 +249,7 @@ impl TransferMoveFinalizer for Finalizer {
         {
             return Err(invalid(
                 &self.source,
-                "retained source revision or recovery binding changed; original preserved",
+                "source revision or temporary binding changed; original preserved",
             ));
         }
         Ok(())
@@ -242,10 +262,12 @@ impl TransferMoveFinalizer for Finalizer {
             checked(cancel, &self.source)?;
             let info = FILE_DISPOSITION_INFO_EX {
                 Flags: FILE_DISPOSITION_FLAG_DELETE
+                    | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
                     | FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK,
             };
             // SAFETY: live DELETE-capable source handle, fixed native structure. No
-            // POSIX unlink or readonly override. Success is delete-pending, not close.
+            // readonly override. POSIX removes this staged link when our DELETE
+            // owners close; other read handles may still retain physical storage.
             if unsafe {
                 SetFileInformationByHandle(
                     self.file.as_raw_handle(),

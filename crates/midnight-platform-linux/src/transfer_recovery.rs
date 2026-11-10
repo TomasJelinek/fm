@@ -6,11 +6,28 @@ use rustix::fs::{RenameFlags, renameat_with};
 use std::ffi::OsString;
 
 impl Directory {
-    pub(in crate::transfer) fn source_recovery(
-        &self,
-        cancel: &Cancellation,
-    ) -> Result<Self, FsError> {
-        create_recovery(self, cancel)
+    pub(in crate::transfer) fn source_stage(&self, cancel: &Cancellation) -> Result<Self, FsError> {
+        create_named_directory(self, cancel, ".midnight-move-")
+    }
+    pub(in crate::transfer) fn remove_empty_stage(&self, stage: Self) -> Result<(), FsError> {
+        let cleanup = Cancellation::default();
+        self.check_recovery_parent(&cleanup)?;
+        stage.revalidate(&cleanup)?;
+        let name = stage
+            .path
+            .file_name()
+            .ok_or_else(|| invalid(&stage.path, "temporary directory needs a basename"))?;
+        if stage.path.parent() != Some(self.path.as_path())
+            || self.inspect(name, &cleanup)?.map(|entry| entry.identity) != Some(stage.identity)
+        {
+            return Err(invalid(&stage.path, "temporary directory identity changed"));
+        }
+        // The parent is held and protected; the private random name is checked
+        // without following links. Linux rmdir refuses nonempty directories.
+        // As with creation, same-UID/privileged namespace mutation is not isolated.
+        rustix::fs::unlinkat(&*self.file, name, AtFlags::REMOVEDIR)
+            .map_err(|e| error(&stage.path, e.into()))?;
+        self.file.sync_all().map_err(|e| error(&stage.path, e))
     }
     pub(in crate::transfer) fn native_file(&self) -> &File {
         &self.file
@@ -42,7 +59,7 @@ impl Revision {
             mode: metadata.mode(),
         })
     }
-    fn after_rename_matches(self, other: Self) -> bool {
+    pub(in crate::transfer) fn after_rename_matches(self, other: Self) -> bool {
         // Our exchange itself updates ctime. It cannot be a post-exchange version token.
         self.size == other.size && self.modified == other.modified && self.mode == other.mode
     }
@@ -398,13 +415,21 @@ impl Stage {
 }
 
 fn create_recovery(directory: &Directory, cancel: &Cancellation) -> Result<Directory, FsError> {
+    create_named_directory(directory, cancel, ".midnight-recovery-")
+}
+
+fn create_named_directory(
+    directory: &Directory,
+    cancel: &Cancellation,
+    prefix: &str,
+) -> Result<Directory, FsError> {
     for _ in 0..16 {
         let mut random = [0u8; 16];
         File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(|e| error(&directory.path, e))?;
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-        let name = OsString::from(format!(".midnight-recovery-{suffix}"));
+        let name = OsString::from(format!("{prefix}{suffix}"));
         match directory.create_directory(&name, cancel) {
             Ok(created) => {
                 let file = File::from(

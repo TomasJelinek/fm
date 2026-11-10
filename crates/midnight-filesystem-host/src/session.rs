@@ -1,6 +1,6 @@
 use crate::Package;
 use midnight_core::{ArchiveMount, ArchiveNode, Cancellation, EntryKind, FsError, VirtualEntryId};
-use midnight_filesystem_api::{self as api, Format, Message};
+use midnight_filesystem_api::{self as api, Format, Message, Protocol};
 use midnight_plugin_host::CapturedFile;
 use std::{
     fs::File,
@@ -21,6 +21,20 @@ struct Supervision {
     stop: AtomicBool,
     deadline: Mutex<Option<(Instant, Cancellation)>>,
 }
+impl Supervision {
+    fn expired_at(&self, now: Instant) -> bool {
+        self.deadline
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|(deadline, cancel)| now >= *deadline || cancel.is_cancelled())
+    }
+
+    fn progress_at(&self, now: Instant, cancel: &Cancellation) {
+        *self.deadline.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((now + DEADLINE, cancel.clone()));
+    }
+}
 struct Channel {
     input: File,
     output: File,
@@ -29,10 +43,15 @@ struct Channel {
 pub struct Mount {
     id: u64,
     provider: String,
+    provider_version: String,
+    stable_entry_ids: bool,
+    format: Format,
     container: PathBuf,
     source: CapturedFile,
     channel: Mutex<Channel>,
     supervision: Arc<Supervision>,
+    protocol: Protocol,
+    staging: Arc<Mutex<Option<crate::staging::Staging>>>,
 }
 impl std::fmt::Debug for Mount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,6 +61,13 @@ impl std::fmt::Debug for Mount {
     }
 }
 impl Mount {
+    #[cfg(test)]
+    pub(crate) fn staging_present(&self) -> bool {
+        self.staging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
     /// Open a native archive locator using content captured by its filesystem provider.
     /// The locator is retained for navigation/errors, never opened by this route.
     pub fn open_captured(
@@ -61,7 +87,7 @@ impl Mount {
                 "Archive container locator must be an absolute native path",
             )));
         }
-        if source.length() > 64 * 1024 * 1024 {
+        if package.protocol == Protocol::V1 && source.length() > 64 * 1024 * 1024 {
             return Err(fail(io::Error::other(
                 "Archive source exceeds 64 MiB mount budget",
             )));
@@ -82,6 +108,19 @@ impl Mount {
     pub fn address(&self) -> midnight_core::ArchiveAddress {
         midnight_core::ArchiveAddress {
             provider: self.provider.clone(),
+            format: Some(match self.format {
+                Format::Zip => midnight_core::ArchiveFormat::Zip,
+                Format::Tar => midnight_core::ArchiveFormat::Tar,
+                Format::Gzip => midnight_core::ArchiveFormat::Gzip,
+                Format::TarGzip => midnight_core::ArchiveFormat::TarGzip,
+                Format::SevenZip => midnight_core::ArchiveFormat::SevenZip,
+                Format::Xz => midnight_core::ArchiveFormat::Xz,
+                Format::TarXz => midnight_core::ArchiveFormat::TarXz,
+                Format::Bzip2 => midnight_core::ArchiveFormat::Bzip2,
+                Format::TarBzip2 => midnight_core::ArchiveFormat::TarBzip2,
+                Format::Zstd => midnight_core::ArchiveFormat::Zstd,
+                Format::TarZstd => midnight_core::ArchiveFormat::TarZstd,
+            }),
             container: self.container.clone(),
             source_version: self.source.stable_version(),
             components: Vec::new(),
@@ -109,6 +148,16 @@ impl Mount {
         cancel: &Cancellation,
     ) -> Result<Arc<Self>, FsError> {
         let fail = |error: io::Error| FsError::from_io("open archive", path, error);
+        let staging = Arc::new(Mutex::new(if package.protocol == Protocol::V2 {
+            Some(
+                crate::staging::Staging::open(
+                    &std::env::temp_dir().join("MidnightExplorer-archive-spool"),
+                )
+                .map_err(fail)?,
+            )
+        } else {
+            None
+        }));
         ACTIVE
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < 2).then_some(n + 1)
@@ -118,13 +167,24 @@ impl Mount {
                     "Two archive mounts are already active; close one first",
                 ))
             })?;
-        let worker = match midnight_worker_platform::spawn(
-            &package.executable,
-            midnight_worker_platform::Limits {
-                memory_bytes: 512 * 1024 * 1024,
-                cpu_seconds: 15,
-            },
-        ) {
+        let spawned = if package.protocol == Protocol::V2 {
+            midnight_worker_platform::spawn_with_policy(
+                &package.executable,
+                midnight_worker_platform::ResourcePolicy {
+                    memory_bytes: 512 * 1024 * 1024,
+                    cpu: midnight_worker_platform::CpuBudget::NoAdditionalLimit,
+                },
+            )
+        } else {
+            midnight_worker_platform::spawn(
+                &package.executable,
+                midnight_worker_platform::Limits {
+                    memory_bytes: 512 * 1024 * 1024,
+                    cpu_seconds: 15,
+                },
+            )
+        };
+        let worker = match spawned {
             Ok(value) => value,
             Err(error) => {
                 ACTIVE.fetch_sub(1, Ordering::AcqRel);
@@ -136,19 +196,13 @@ impl Mount {
             deadline: Mutex::new(Some((Instant::now() + DEADLINE, cancel.clone()))),
         });
         let supervised = state.clone();
+        let cleanup = staging.clone();
         let mut process = worker.process;
         if let Err(error) = std::thread::Builder::new()
             .name("archive-supervisor".into())
             .spawn(move || {
                 loop {
-                    let expired = supervised
-                        .deadline
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .as_ref()
-                        .is_some_and(|(deadline, cancel)| {
-                            Instant::now() >= *deadline || cancel.is_cancelled()
-                        });
+                    let expired = supervised.expired_at(Instant::now());
                     if supervised.stop.load(Ordering::Acquire) || expired {
                         break;
                     }
@@ -157,6 +211,8 @@ impl Mount {
                 supervised.stop.store(true, Ordering::Release);
                 let _ = process.kill();
                 let _ = process.wait();
+                // Final content-file releases stay on the supervisor after in-flight I/O.
+                cleanup.lock().unwrap_or_else(|e| e.into_inner()).take();
                 ACTIVE.fetch_sub(1, Ordering::AcqRel);
             })
         {
@@ -167,6 +223,9 @@ impl Mount {
         let mount = Arc::new(Self {
             id,
             provider: package.id.clone(),
+            provider_version: package.version.clone(),
+            stable_entry_ids: package.stable_entry_ids,
+            format,
             container: path.to_owned(),
             source,
             channel: Mutex::new(Channel {
@@ -175,10 +234,16 @@ impl Mount {
                 request: 0,
             }),
             supervision: state,
+            protocol: package.protocol,
+            staging,
         });
         {
             let mut channel = mount.channel.lock().unwrap_or_else(|e| e.into_inner());
-            midnight_worker_sdk::read_ready(&mut channel.output).map_err(fail)?;
+            if package.protocol == Protocol::V2 {
+                midnight_worker_sdk::read_policy_ready(&mut channel.output).map_err(fail)?;
+            } else {
+                midnight_worker_sdk::read_ready(&mut channel.output).map_err(fail)?;
+            }
         }
         match mount.exchange(cancel, |request| Message::Open {
             request,
@@ -197,10 +262,9 @@ impl Mount {
     ) -> Result<Message, FsError> {
         let fail = |error: io::Error| FsError::from_io("archive", &self.container, error);
         let mut channel = self.channel.lock().unwrap_or_else(|e| e.into_inner());
-        if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
-            return Err(fail(io::ErrorKind::Interrupted.into()));
-        }
-        self.validate()?;
+        self.ensure_active(cancel).map_err(fail)?;
+        self.validate()
+            .inspect_err(|_| self.supervision.stop.store(true, Ordering::Release))?;
         *self
             .supervision
             .deadline
@@ -212,19 +276,49 @@ impl Mount {
                 .checked_add(1)
                 .ok_or_else(|| fail(io::Error::other("Archive request IDs exhausted")))?;
             let request = channel.request;
-            api::write_message(&mut channel.input, &message(request)).map_err(fail)?;
+            let operation = message(request);
+            if let Message::Read {
+                entry,
+                offset,
+                length,
+                ..
+            } = operation
+                && self.protocol == Protocol::V2
+            {
+                let cached = self
+                    .staging
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_mut()
+                    .and_then(|staging| staging.cached(entry));
+                if let Some(lease) = cached {
+                    let bytes = lease.read(offset, length).map_err(fail)?;
+                    self.validate()?;
+                    return Ok(Message::Content {
+                        request,
+                        eof: bytes.len() < length as usize,
+                        bytes,
+                    });
+                }
+            }
+            api::write_message_with_protocol(&mut channel.input, self.protocol, &operation)
+                .map_err(fail)?;
             let mut broker_bytes = 0u64;
             loop {
-                let reply = api::read_message(&mut channel.output).map_err(fail)?;
+                let reply = api::read_message_with_protocol(&mut channel.output, self.protocol)
+                    .map_err(fail)?;
                 if reply.request() != request {
                     return Err(fail(io::ErrorKind::InvalidData.into()));
+                }
+                if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
+                    return Err(fail(io::ErrorKind::Interrupted.into()));
                 }
                 match reply {
                     Message::SourceRead { offset, length, .. } => {
                         broker_bytes = broker_bytes
                             .checked_add(u64::from(length))
                             .ok_or_else(|| fail(io::ErrorKind::InvalidData.into()))?;
-                        if broker_bytes > self.source.length()
+                        if (self.protocol == Protocol::V1 && broker_bytes > self.source.length())
                             || offset
                                 .checked_add(u64::from(length))
                                 .is_none_or(|end| end > self.source.length())
@@ -235,8 +329,13 @@ impl Mount {
                             .source
                             .read_at(offset, length)
                             .map_err(|e| fail(io::Error::other(e)))?;
-                        api::write_message(
+                        if bytes.len() != length as usize {
+                            return Err(fail(io::ErrorKind::UnexpectedEof.into()));
+                        }
+                        self.progress(cancel);
+                        api::write_message_with_protocol(
                             &mut channel.input,
+                            self.protocol,
                             &Message::SourceData { request, bytes },
                         )
                         .map_err(fail)?;
@@ -255,12 +354,62 @@ impl Mount {
                         )));
                     }
                     other => {
+                        if self.protocol == Protocol::V2 {
+                            let mut staging =
+                                self.staging.lock().unwrap_or_else(|e| e.into_inner());
+                            let staging = staging
+                                .as_mut()
+                                .ok_or_else(|| fail(io::ErrorKind::Interrupted.into()))?;
+                            if let Some(reply) = staging.nested(&operation, &other).map_err(fail)? {
+                                if matches!(
+                                    &reply,
+                                    Message::StageAck { .. } | Message::StageProgressAck { .. }
+                                ) || matches!(&reply, Message::SpoolData { bytes, .. } if !bytes.is_empty())
+                                {
+                                    self.progress(cancel);
+                                }
+                                api::write_message_with_protocol(
+                                    &mut channel.input,
+                                    self.protocol,
+                                    &reply,
+                                )
+                                .map_err(fail)?;
+                                continue;
+                            }
+                            self.validate()?;
+                            self.ensure_active(cancel).map_err(fail)?;
+                            let lease = staging.terminal(&operation, &other).map_err(fail)?;
+                            if let (Some(lease), Message::Read { offset, length, .. }) =
+                                (lease, &operation)
+                            {
+                                let bytes = lease.read(*offset, *length).map_err(fail)?;
+                                self.validate()?;
+                                return Ok(Message::Content {
+                                    request,
+                                    eof: bytes.len() < *length as usize,
+                                    bytes,
+                                });
+                            }
+                        } else if !matches!(
+                            (&operation, &other),
+                            (Message::Open { .. }, Message::Opened { root: 1, .. })
+                                | (Message::List { .. }, Message::Entries { .. })
+                                | (Message::Read { .. }, Message::Content { .. })
+                        ) {
+                            return Err(fail(io::ErrorKind::InvalidData.into()));
+                        }
                         self.validate()?;
                         return Ok(other);
                     }
                 }
             }
-        })();
+        })()
+        .and_then(|reply| {
+            // Source validation and native spool I/O may outlive the watchdog. The
+            // completed result is publishable only while this operation remains active.
+            self.ensure_active(cancel).map_err(fail)?;
+            Ok(reply)
+        });
         *self
             .supervision
             .deadline
@@ -271,10 +420,64 @@ impl Mount {
         }
         result
     }
+    fn ensure_active(&self, cancel: &Cancellation) -> io::Result<()> {
+        if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
+            Err(io::ErrorKind::Interrupted.into())
+        } else {
+            Ok(())
+        }
+    }
+    fn progress(&self, cancel: &Cancellation) {
+        // Only completed byte I/O or monotonic decoded work renews the idle watchdog.
+        self.supervision.progress_at(Instant::now(), cancel);
+    }
 }
 impl ArchiveMount for Mount {
     fn id(&self) -> u64 {
         self.id
+    }
+    fn native_container_locator(&self) -> Option<&Path> {
+        Some(&self.container)
+    }
+    fn persistent_member_identity(
+        &self,
+        entry: u64,
+        expected_source_version: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        let invalid = || {
+            FsError::from_io(
+                "archive cache identity",
+                &self.container,
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Archive member or source revision changed",
+                ),
+            )
+        };
+        if entry < 2 || expected_source_version != self.source.stable_version() {
+            return Err(invalid());
+        }
+        self.validate()?;
+        if !self.stable_entry_ids {
+            return Ok(None);
+        }
+        let mut identity = b"MidnightArchiveMember\0v1\0".to_vec();
+        for part in [
+            self.provider.as_bytes(),
+            self.provider_version.as_bytes(),
+            self.container.as_os_str().as_encoded_bytes(),
+            expected_source_version,
+        ] {
+            if part.len() > 128 * 1024 {
+                return Err(invalid());
+            }
+            identity.extend_from_slice(&(part.len() as u64).to_le_bytes());
+            identity.extend_from_slice(part);
+        }
+        identity.push(self.format as u8);
+        identity.extend_from_slice(&self.source.length().to_le_bytes());
+        identity.extend_from_slice(&entry.to_le_bytes());
+        Ok(Some(identity))
     }
     fn validate(&self) -> Result<(), FsError> {
         self.source.revalidate().map_err(|e| {
@@ -314,7 +517,8 @@ impl ArchiveMount for Mount {
                 names = names
                     .saturating_add(node.name.len())
                     .saturating_add(node.display.len());
-                if node.id <= after
+                if node.id < 2
+                    || node.id <= after
                     || node.id == directory
                     || node.parent != directory
                     || result.len() >= 100_000
@@ -328,6 +532,30 @@ impl ArchiveMount for Mount {
                 }
                 after = node.id;
                 result.push(ArchiveNode {
+                    modified: node.modified.map(|timestamp| match timestamp {
+                        api::Timestamp::Utc {
+                            seconds,
+                            nanoseconds,
+                        } => midnight_core::ArchiveTimestamp::Utc {
+                            seconds,
+                            nanoseconds,
+                        },
+                        api::Timestamp::Local {
+                            year,
+                            month,
+                            day,
+                            hour,
+                            minute,
+                            second,
+                        } => midnight_core::ArchiveTimestamp::Local {
+                            year,
+                            month,
+                            day,
+                            hour,
+                            minute,
+                            second,
+                        },
+                    }),
                     id: VirtualEntryId {
                         mount: self.id,
                         entry: node.id,
@@ -378,3 +606,15 @@ impl Drop for Mount {
         self.supervision.stop.store(true, Ordering::Release);
     }
 }
+
+#[cfg(test)]
+#[path = "watchdog_tests.rs"]
+mod watchdog_tests;
+
+#[cfg(test)]
+#[path = "session_completion_tests.rs"]
+mod completion_tests;
+
+#[cfg(test)]
+#[path = "member_identity_tests.rs"]
+mod member_identity_tests;

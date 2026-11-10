@@ -6,9 +6,11 @@ mod archive;
 mod lease;
 mod native;
 mod registry;
+mod root_seed;
 pub mod tree;
 
 pub use archive::captured_archive;
+pub(crate) use archive::captured_archive_root;
 pub use lease::{MountedEntry, MountedLocation, MountedTarget};
 pub use native::{NativeCapture, NativeProvider, native_location};
 pub use registry::ProviderRegistry;
@@ -32,6 +34,10 @@ pub enum ProviderTarget {
 pub struct ArchiveTarget {
     pub location: ArchiveLocation,
     pub member: Option<ArchiveNode>,
+    /// Original listed record, including directory records. None only for an
+    /// unlisted captured root/ancestor. This preserves raw identity for display
+    /// projections without manufacturing a record from a navigation caption.
+    pub original: Option<ArchiveNode>,
 }
 
 /// Provider-owned logical node. Raw names and captions never become native paths.

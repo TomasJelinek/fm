@@ -13,7 +13,7 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 fn error_glyphs(item: ItemRc) -> usize {
     let mut count = usize::from(
         item.accessible_string_property(AccessibleStringProperty::Label)
-            .is_some_and(|label| label == "Folder size error"),
+            .is_some_and(|label| label == "Folder size warning"),
     );
     let mut child = item.first_child();
     while let Some(item) = child {

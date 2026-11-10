@@ -112,14 +112,15 @@ fn malformed_scalars_controls_and_partial_characters_keep_source_boundaries() {
 }
 
 #[test]
-fn viewport_completes_while_distant_position_is_still_scanning_and_cancel_stops_reads() {
+fn viewport_completes_during_bounded_coordinate_lookup_and_cancel_stops_reads() {
     let bytes = b"let line = 1;\r\n".repeat(100_000);
     let mut host = Host::new(&bytes, entry);
     open(&mut host, bytes.len() as u64);
+    host.short_reads(1024);
     let locate = host.submit(
         abi::REQUEST_LOCATE,
         &Locate {
-            source_anchor: bytes.len() as u64,
+            source_anchor: 256 * 1024,
         },
     );
     assert!(host.run_one());

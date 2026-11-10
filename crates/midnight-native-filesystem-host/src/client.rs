@@ -48,6 +48,10 @@ impl NativeProvider {
         let valid = matches!(
             (&request, &response),
             (Request::Resolve { .. }, Response::Resolved { .. })
+                | (Request::ResolveText { .. }, Response::Resolved { .. })
+                | (Request::Parent { .. }, Response::Parent(_))
+                | (Request::Activate { .. }, Response::Activated(_))
+                | (Request::Refresh { .. }, Response::Unit)
                 | (Request::Stat { .. }, Response::Node(_))
                 | (
                     Request::ListBegin { .. } | Request::ListNext { .. },

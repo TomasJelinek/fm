@@ -55,6 +55,7 @@ impl Desktop {
         let (context_requests, context_receiver) = watch::channel(0);
         tasks.spawn(context_worker(
             services.clone(),
+            locale.clone(),
             outbox.clone(),
             location_icons,
             context_receiver,
@@ -196,6 +197,7 @@ impl Desktop {
         pane: PaneId,
         navigation: NavigationId,
         path: PathBuf,
+        directory_only: bool,
         tasks: &mut JoinSet<()>,
     ) {
         let Some(services) = self.services.clone() else {
@@ -220,7 +222,13 @@ impl Desktop {
             let target = path.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                services.open_entry(&target)
+                if directory_only {
+                    services
+                        .directory_destination(&target)
+                        .map(|path| OpenEntryResult::DirectoryTarget { path })
+                } else {
+                    services.open_entry(&target)
+                }
             })
             .await;
             let result = match result {
@@ -229,6 +237,14 @@ impl Desktop {
                     navigation,
                     path,
                 }),
+                Ok(Ok(OpenEntryResult::DirectoryTarget { path: target })) => {
+                    Ok(DesktopActionResult::OpenDirectoryTarget {
+                        pane,
+                        navigation,
+                        path,
+                        target,
+                    })
+                }
                 Ok(Ok(OpenEntryResult::File { process: None })) => {
                     Ok(DesktopActionResult::FileOpened)
                 }
@@ -457,6 +473,7 @@ fn metadata_properties(
 /// A watch slot coalesces refreshes without overlapping uninterruptible host calls.
 async fn context_worker(
     services: Option<Arc<dyn DesktopServices>>,
+    locale: Option<Arc<dyn LocaleService>>,
     outbox: Outbox,
     icons: watch::Sender<Vec<IconKey>>,
     mut requests: watch::Receiver<u64>,
@@ -467,14 +484,18 @@ async fn context_worker(
     while requests.changed().await.is_ok() {
         let version = *requests.borrow_and_update();
         let worker = services.clone();
+        let locale = locale.clone();
         let result = tokio::task::spawn_blocking(move || {
             worker
                 .locations()
+                .and_then(|locations| {
+                    crate::navigation_ordering::locations(locations, locale.as_deref())
+                })
                 .map(|locations| (worker.shell_flavor(), locations))
         })
         .await;
         let (event, keys) = match result {
-            Ok(Ok((shell, locations))) => {
+            Ok(Ok((shell, (locations, network_position)))) => {
                 // Keep the finite semantic aliases ahead of large mount inventories.
                 let keys = locations
                     .iter()
@@ -487,7 +508,14 @@ async fn context_worker(
                     .take(ICON_CAPACITY)
                     .map(IconKey::for_location)
                     .collect();
-                (Event::DesktopContext { shell, locations }, keys)
+                (
+                    Event::DesktopContext {
+                        shell,
+                        locations,
+                        network_position,
+                    },
+                    keys,
+                )
             }
             Ok(Err(error)) => (Event::DesktopContextFailed(error), Vec::new()),
             Err(error) => (

@@ -1,0 +1,166 @@
+import { ListView } from "std-widgets.slint";
+import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+import { ListHeader } from "list-header.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+
+// Each selected list row is exactly one argument, including an empty string.
+export component ArgumentEditor inherits VerticalLayout {
+    in property <[string]> values;
+    in property <string> label-prefix;
+    in property <bool> command-values;
+    in property <bool> narrow;
+    in property <bool> enabled: true;
+    callback edit(int, string);
+    callback add(string);
+    callback remove(int);
+    callback move(int, int);
+    private property <int> selected: -1;
+    private property <int> value-choice;
+    private property <int> count: root.values.length;
+    private property <string> selected-value: root.selected >= 0 && root.selected < root.count ? root.values[root.selected] : "";
+    private property <length> row-height: Theme.control-height;
+    spacing: 6px; alignment: start;
+    changed count => {
+        root.selected = root.count == 0 ? -1 : clamp(root.selected, 0, root.count - 1);
+        root.reveal-selection();
+    }
+    init => { root.selected = root.count == 0 ? -1 : 0; }
+    changed selected => { root.reveal-selection(); }
+    changed selected-value => {
+        // Editing assigns LineEdit.text and replaces its binding. Synchronize
+        // later row changes without resetting the caret for an unchanged edit.
+        if argument-value.text != root.selected-value { argument-value.text = root.selected-value; }
+    }
+    changed row-height => { root.reveal-selection(); }
+    function reveal-selection() {
+        if root.selected < 0 { return; }
+        let top = root.selected * root.row-height;
+        if top < -rows.content-y { rows.content-y = -top; }
+        else if top + root.row-height > -rows.content-y + rows.visible-height {
+            rows.content-y = min(0px, rows.visible-height - top - root.row-height);
+        }
+    }
+    function select-row(index: int) {
+        if !root.enabled || index < 0 || index >= root.count { return; }
+        root.selected = index; list-focus.focus();
+    }
+    function append(value: string) {
+        if !root.enabled || root.count >= 64 { return; }
+        root.add(value); root.selected = root.count - 1;
+    }
+    function remove-selected() {
+        if !root.enabled || root.selected < 0 || root.selected >= root.count { return; }
+        let index = root.selected;
+        root.remove(index); root.selected = min(index, root.count - 1);
+    }
+    function move-selected(direction: int) {
+        let index = root.selected;
+        let next = index + direction;
+        if !root.enabled || index < 0 || index >= root.count || next < 0 || next >= root.count { return; }
+        root.move(index, direction); root.selected = next;
+    }
+    ListHeader {
+        title: "Arguments";
+        hint: "Each row is one literal argument. Spaces, quotes and empty arguments are preserved. Select a row to edit it.";
+        enabled: root.enabled;
+        can-add: root.count < 64; can-remove: root.selected >= 0;
+        can-move-up: root.selected > 0;
+        can-move-down: root.selected >= 0 && root.selected + 1 < root.count;
+        action-labels: ["Add argument", "Remove argument", "Move argument up", "Move argument down"];
+        action-hints: ["Append an empty argument (Insert)", "Remove the selected argument (Delete)", "Move the selected argument up (Alt+Up)", "Move the selected argument down (Alt+Down)"];
+        action(index) => {
+            if index == 0 { root.append(""); }
+            else if index == 1 { root.remove-selected(); }
+            else { root.move-selected(index == 2 ? -1 : 1); }
+        }
+    }
+    Rectangle {
+        height: root.row-height * clamp(root.count, 1, 4) + 2px;
+        min-width: 0px; background: Theme.pane-background; border-width: 1px; clip: true;
+        border-color: list-focus.has-focus ? Theme.active-frame : Theme.frame;
+        list-focus := FocusScope {
+            enabled: root.enabled;
+            key-pressed(event) => {
+                if !root.enabled { return reject; }
+                if event.text == Key.Insert { root.append(""); return accept; }
+                if event.text == Key.Delete { root.remove-selected(); return accept; }
+                if root.count == 0 { return reject; }
+                if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                    root.move-selected(event.text == Key.UpArrow ? -1 : 1); return accept;
+                }
+                if event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Home || event.text == Key.End {
+                    root.select-row(event.text == Key.Home ? 0 : event.text == Key.End ? root.count - 1
+                        : clamp(root.selected + (event.text == Key.UpArrow ? -1 : 1), 0, root.count - 1));
+                    return accept;
+                }
+                if event.text == Key.Return { argument-value.focus(); return accept; }
+                reject
+            }
+            rows := ListView {
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                horizontal-scrollbar-policy: always-off;
+                accessible-label: root.label-prefix + " arguments"; accessible-item-count: root.count;
+                changed visible-height => { root.reveal-selection(); }
+                for value[index] in root.values : Rectangle {
+                    width: rows.visible-width; height: root.row-height;
+                    private property <bool> selected: index == root.selected;
+                    background: self.selected ? Theme.selected-background : area.has-hover ? Theme.hover : Theme.pane-background;
+                    accessible-role: list-item; accessible-label: root.label-prefix + " argument " + (index + 1);
+                    accessible-description: value == "" ? "Empty argument" : value;
+                    accessible-enabled: root.enabled; accessible-item-index: index;
+                    accessible-item-selectable: true; accessible-item-selected: self.selected;
+                    accessible-action-default => { root.select-row(index); }
+                    Text {
+                        x: 8px;
+                        width: max(0px, parent.width - 16px - (rows.content-height > rows.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                        text: (index + 1) + ". " + (value == "" ? "(empty argument)" : value);
+                        color: parent.selected ? Theme.selected-text : Theme.text;
+                        font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
+                    }
+                    area := TouchArea { enabled: root.enabled; clicked => { root.select-row(index); } }
+                    Tooltip { TipBody { text: value == "" ? "This argument is an empty string." : value; } }
+                }
+            }
+        }
+        if root.count == 0 : Text {
+            text: "No arguments"; color: Theme.secondary-text; font-size: Theme.font-size;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+    argument-value := HintedLineEdit {
+        text: root.selected-value;
+        enabled: root.enabled && root.selected >= 0;
+        accessible-label: root.label-prefix + " argument " + (root.selected + 1);
+        placeholder-text: root.selected >= 0 ? "Empty argument" : "Select an argument";
+        hint: "Edit the selected literal argument. Spaces, quotes and an empty value are preserved.";
+        min-width: 0px; horizontal-stretch: 1;
+        edited => { if root.selected >= 0 { root.edit(root.selected, self.text); } }
+    }
+    GridLayout {
+        spacing: 6px;
+        if root.command-values : HintedComboBox {
+            row: 0; col: 0;
+            enabled: root.enabled;
+            current-index <=> root.value-choice; accessible-label: "Argument value"; horizontal-stretch: 1; min-width: 0px;
+            model: ["File path", "File name", "Name without extension", "Extension", "Active folder", "Other folder", "Selected paths"];
+            hint: "Choose a captured value to append as one complete argument.";
+        }
+        if root.command-values : HintedActionButton {
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            text: "Insert value"; accessible-label: "Insert argument value";
+            hint: "Append the chosen value as a new argument and select it. Existing arguments are unchanged.";
+            enabled: root.enabled && root.count < 64;
+            clicked => { root.append(root.value-choice == 0 ? "${file.path}" : root.value-choice == 1 ? "${file.name}"
+                : root.value-choice == 2 ? "${file.stem}" : root.value-choice == 3 ? "${file.extension}"
+                : root.value-choice == 4 ? "${active.path}" : root.value-choice == 5 ? "${other.path}" : "${selected.paths}"); }
+        }
+        if !root.command-values : HintedActionButton {
+            row: 0; col: 0; horizontal-stretch: 0;
+            text: "Insert file"; accessible-label: "Insert editor file argument";
+            hint: "Append the focused file as a new argument for F4. Existing arguments are unchanged.";
+            enabled: root.enabled && root.count < 64; clicked => { root.append("{file}"); }
+        }
+    }
+}

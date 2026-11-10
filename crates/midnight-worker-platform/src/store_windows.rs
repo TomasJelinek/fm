@@ -26,7 +26,7 @@ use windows_sys::{
 
 static TEMPORARIES: AtomicU64 = AtomicU64::new(1);
 
-pub(super) struct Root {
+pub(crate) struct Root {
     path: PathBuf,
     _pins: Vec<File>,
 }
@@ -162,6 +162,10 @@ fn check_private(file: &File) -> io::Result<()> {
 }
 
 impl Root {
+    /// Valid only while this root keeps every ancestor pinned against replacement.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
     pub fn open(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
             return Err(io::Error::other("Cache root must be absolute"));
@@ -191,7 +195,13 @@ impl Root {
             let file = match open() {
                 Ok(file) => file,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    private_directory(&current)?;
+                    match private_directory(&current) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                        Err(error) => return Err(error),
+                    }
+                    // Another writer may have created this component. Reopen it
+                    // without following reparse points; pin and validate below.
                     open()?
                 }
                 Err(error) => return Err(error),
@@ -204,7 +214,10 @@ impl Root {
                 .ok_or_else(|| io::Error::other("Cache root is empty"))?,
         )?;
         Ok(Self {
-            path: path.to_owned(),
+            // The component walk preserves native UTF-16 while normalizing separators.
+            // Reuse exactly the pinned lexical path when constructing child paths;
+            // a verbatim Windows path cannot contain ordinary forward separators.
+            path: current,
             _pins: pins,
         })
     }
@@ -216,6 +229,40 @@ impl Root {
             .open(self.path.join(name))?;
         no_reparse(&file, false)?;
         Ok(file)
+    }
+    pub fn bucket(&self, name: &str, create: bool) -> io::Result<Option<Self>> {
+        // The parent pins every ancestor without delete sharing. The validated
+        // basename cannot traverse a path; the final open pins and checks the bucket.
+        let path = self.path.join(name);
+        let open = || {
+            OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | FILE_TRAVERSE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&path)
+        };
+        let directory = match open() {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
+                match private_directory(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+                open()?
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        no_reparse(&directory, true)?;
+        check_private(&directory)?;
+        let mut pins = self
+            ._pins
+            .iter()
+            .map(File::try_clone)
+            .collect::<io::Result<Vec<_>>>()?;
+        pins.push(directory);
+        Ok(Some(Self { path, _pins: pins }))
     }
     pub fn lock_file(&self) -> io::Result<(File, bool)> {
         let open = |create| {
@@ -235,7 +282,7 @@ impl Root {
         no_reparse(&file, false)?;
         Ok((file, created))
     }
-    pub fn temporary(&self) -> io::Result<Temporary> {
+    pub(super) fn temporary(&self) -> io::Result<Temporary> {
         for _ in 0..16 {
             let name = format!(
                 "owned-{}-{}.tmp",
@@ -262,7 +309,7 @@ impl Root {
         }
         Err(io::Error::other("Cache temporary names exhausted"))
     }
-    pub fn publish(&self, mut temporary: Temporary, name: &str) -> io::Result<()> {
+    pub(super) fn publish(&self, mut temporary: Temporary, name: &str) -> io::Result<()> {
         match self.read(name) {
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}

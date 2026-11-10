@@ -27,4 +27,5 @@ else
     cargo build -p midnight-explorer --locked
 fi
 bash scripts/build-native-filesystem.sh "$build_profile"
+bash scripts/build-network-filesystem.sh "$build_profile"
 exec bash scripts/build-viewers.sh "$build_profile"

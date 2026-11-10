@@ -1,29 +1,66 @@
 use crate::{
     decode::{self, Decoded},
-    markdown,
+    markdown, page_cache,
     plugin::{Session, lock, send},
 };
 use midnight_plugin_sdk::{
     Context, Output,
-    api::{messages::Viewport, viewer::*},
+    api::{document::DocumentPage, messages::Viewport, viewer::*},
 };
 use std::{collections::BTreeSet, sync::Arc};
 
 pub struct Hints {
     plain: bool,
     checkpoints: BTreeSet<u64>,
+    cache: page_cache::Cache,
+    context: Option<Arc<DocumentPage>>,
 }
 impl Hints {
     pub fn new(_: &str, mode: u16) -> Self {
         Self {
             plain: mode == MODE_TEXT,
             checkpoints: BTreeSet::new(),
+            cache: page_cache::Cache::default(),
+            context: None,
         }
     }
     pub fn initialize(&mut self, _: &str, bom: u64) {
         self.checkpoints.insert(bom);
     }
 }
+
+pub fn cached(session: &Session, request: &Viewport) -> Option<(Arc<DocumentPage>, bool)> {
+    let (offset, count, _) = plan(session, request);
+    let bom = lock(&session.metadata).bom;
+    let mut hints = lock(&session.hints);
+    if let Some(page) = hints.cache.get(request) {
+        return Some((page, hints.plain));
+    }
+    let context = hints.context.as_ref()?;
+    let end = context.source.offset.checked_add(context.source.length)?;
+    if hints.plain
+        || offset < context.source.offset
+        || (end < offset.saturating_add(u64::from(count)) && context.has_after)
+        || request.source_anchor > end
+    {
+        return None;
+    }
+    let mut page = markdown::crop_context((**context).clone(), &window(request))?;
+    page.has_before = page.source.offset > bom;
+    hints.cache.insert(request, &page);
+    let page = hints.cache.get(request)?;
+    Some((page, hints.plain))
+}
+
+fn window(request: &Viewport) -> markdown::Window {
+    markdown::Window {
+        anchor: request.source_anchor,
+        backwards: request.backwards,
+        max_bytes: request.max_bytes.min(8192) as usize,
+        max_lines: request.max_lines as usize,
+    }
+}
+
 pub fn plan(session: &Session, viewport: &Viewport) -> (u64, u32, u64) {
     let metadata = lock(&session.metadata);
     let limit = viewport.max_bytes.min(8192) as u64;
@@ -33,20 +70,23 @@ pub fn plan(session: &Session, viewport: &Viewport) -> (u64, u32, u64) {
     } else {
         upper
     };
+    let target = if viewport.backwards { upper } else { anchor };
+    let lower = target.saturating_sub(32760).max(metadata.bom);
+    let upper_checkpoint = if viewport.backwards {
+        target.saturating_sub(1).max(metadata.bom)
+    } else {
+        target
+    };
     let checkpoint = lock(&session.hints)
         .checkpoints
-        .range(..=anchor)
-        .next_back()
+        .range(lower..=upper_checkpoint)
+        .next()
         .copied();
-    let target = if viewport.backwards { upper } else { anchor };
-    let offset = checkpoint
-        .filter(|&at| anchor - at <= 32768 && target - at <= 65528)
-        .unwrap_or_else(|| decode::lookbehind(anchor, metadata.bom, metadata.encoding));
-    let end = if viewport.backwards {
-        upper.saturating_add(8)
-    } else {
-        anchor.saturating_add(limit * 4 + 8)
-    };
+    let offset =
+        checkpoint.unwrap_or_else(|| decode::lookbehind(anchor, metadata.bom, metadata.encoding));
+    // A backward anchor can lie inside a table/paragraph. Include its following
+    // context too, otherwise layout would measure a different partial block.
+    let end = target.saturating_add(limit * 4 + 8);
     let count = end.saturating_sub(offset).min(65536).min(u64::MAX - offset) as u32;
     (offset, count.max(1), anchor)
 }
@@ -106,32 +146,30 @@ pub fn viewport(
             )
         }
     } else {
-        let rendered = if request.backwards {
-            markdown::render_backward(
-                &decoded,
-                session.revision,
-                page_eof,
-                upper,
-                request.max_bytes.min(8192) as usize,
-                request.max_lines as usize,
-                || context.is_cancelled(),
-            )
-        } else {
-            markdown::render_window(
-                &decoded,
-                session.revision,
-                page_eof,
-                anchor,
-                request.max_bytes.min(8192) as usize,
-                request.max_lines as usize,
-                || context.is_cancelled(),
-            )
-        };
-        let Some(page) = rendered else {
+        let Some((raw, checkpoints)) =
+            markdown::render_context(&decoded, session.revision, page_eof, || {
+                context.is_cancelled()
+            })
+        else {
             return;
         };
-        let checkpoints = markdown::checkpoints(&decoded, || context.is_cancelled());
+        let mut window = window(&request);
+        window.anchor = if request.backwards { upper } else { anchor };
+        let page = markdown::crop_context(raw.clone(), &window).unwrap_or_else(|| {
+            let plain = markdown::plain(&decoded, session.revision, page_eof);
+            if request.backwards {
+                markdown::crop_backward(plain, upper, window.max_bytes, window.max_lines)
+            } else {
+                markdown::crop(plain, anchor, window.max_bytes, window.max_lines)
+            }
+        });
         let mut hints = lock(&session.hints);
+        // One bounded parsed context, separate from the small final-page LRU.
+        // It is revision-local and was already read on demand. Nearby anchors
+        // can now reuse both bytes and parse structure while scrolling back.
+        if !context.is_cancelled() && page_cache::size(&raw) <= 1024 * 1024 {
+            hints.context = Some(Arc::new(raw.clone()));
+        }
         hints.checkpoints.extend(checkpoints);
         while hints.checkpoints.len() > 256 {
             let second = *hints.checkpoints.iter().nth(1).unwrap();
@@ -143,11 +181,23 @@ pub fn viewport(
         return;
     }
     page.has_before = page.source.offset > lock(&session.metadata).bom;
+    let cached = {
+        let mut hints = lock(&session.hints);
+        hints.cache.insert(&request, &page);
+        hints.cache.get(&request)
+    };
+    send_page(context, cached.as_deref().unwrap_or(&page), plain);
+}
+
+pub fn send_page(context: Context, page: &DocumentPage, plain: bool) {
+    if context.is_cancelled() {
+        return;
+    }
     if plain {
-        let text = page.blocks.first_mut().map(|b| &mut b.text);
-        if let Some(text) = text {
+        let text = page.blocks.first().map(|b| b.text.clone());
+        if let Some(mut text) = text {
             text.has_before = page.has_before;
-            send(context, Output::text(text));
+            send(context, Output::text(&text));
         } else {
             // Cropping removes empty semantic blocks, but a plain viewport
             // still needs a page to replace the host's opening or prior frame.
@@ -170,7 +220,7 @@ pub fn viewport(
             send(context, Output::text(&text));
         }
     } else {
-        send(context, Output::document(&page));
+        send(context, Output::document(page));
     }
 }
 
@@ -196,12 +246,20 @@ pub fn search_text(
                 .contains(&decoded.anchors[0].source_offset)
     };
     let document = if known {
-        let document =
-            markdown::render_window(decoded, revision, eof, anchor, 8192, 4096, &cancelled)?;
+        let (document, checkpoints) = markdown::render_slice(
+            decoded,
+            revision,
+            eof,
+            markdown::Window {
+                anchor,
+                backwards: false,
+                max_bytes: 8192,
+                max_lines: 4096,
+            },
+            &cancelled,
+        )?;
         let mut hints = lock(&session.hints);
-        hints
-            .checkpoints
-            .extend(markdown::checkpoints(decoded, &cancelled));
+        hints.checkpoints.extend(checkpoints);
         while hints.checkpoints.len() > 256 {
             let second = *hints.checkpoints.iter().nth(1).unwrap();
             hints.checkpoints.remove(&second);

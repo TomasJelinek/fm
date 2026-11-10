@@ -44,6 +44,7 @@ fn explicit_default_panel_mode_wins_over_late_loaded_choice() {
 
 fn stored_bookmark(id: u64, slot: Option<u8>) -> Bookmark {
     Bookmark {
+        archive: None,
         id: BookmarkId(id),
         name: format!("Saved {id}"),
         path: test_root().join(format!("saved-{id}")),
@@ -62,6 +63,9 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     let tabs = p.tabs(PaneId::Left);
     let generation = p.panes[0].generation;
     let saved = UserPreferences {
+        copy_checksum_verification: true,
+        file_list: Default::default(),
+        panel_split_basis_points: 5900,
         checksum_algorithms: ChecksumAlgorithms::default(),
         user_commands: Default::default(),
         window_geometry: Some(midnight_core::WindowGeometry {
@@ -76,7 +80,13 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             fullscreen: false,
         }),
         archive_association_overrides: Default::default(),
+        archive_custom_extensions: [("custom-bundle".into(), ArchiveFormat::Zip)].into(),
         disabled_viewer_plugins: Vec::new(),
+        viewer_associations: Arc::default(),
+        viewer: ViewerPreferences {
+            wrap: true,
+            ..Default::default()
+        },
         editor: EditorPreferences::default(),
         theme: PreferenceTheme::Light,
         density: UiDensity::Touch,
@@ -96,6 +106,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         panel_view_modes: Default::default(),
         thumbnails_enabled: true,
         thumbnails_network: false,
+        thumbnail_size: 192,
         shortcuts: vec![],
         panel_filters: Default::default(),
         filename_colors: Default::default(),
@@ -104,11 +115,13 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     expected.theme = PreferenceTheme::Dark;
     expected.tabs = [
         PaneTabPreferences {
+            networks: Default::default(),
             archives: Default::default(),
             paths: vec![test_root(), test_root()],
             active: 1,
         },
         PaneTabPreferences {
+            networks: Default::default(),
             archives: Default::default(),
             paths: vec![test_root()],
             active: 0,

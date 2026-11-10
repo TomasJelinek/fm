@@ -1,6 +1,8 @@
 //! Mouse capture, configurable Commander actions and zoom retain logical pane identity.
 #[path = "support/render.rs"]
 mod render;
+#[path = "support/toolbar.rs"]
+mod toolbar;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -61,12 +63,12 @@ fn control_footer_and_zoom_fit_touch_density_with_large_fonts() {
     test.window.invoke_toggle_panel_zoom(0);
     test.draw();
     assert!(test.window.get_left_list_width() > 940.0);
-    ui::root_item(&test.window, "Activate right panel", AccessibleRole::Button);
+    assert_eq!(test.window.get_right_pane_width(), 0.0);
     render::snapshot(&test, "commander-zoom-touch-font32");
 }
 
 #[test]
-fn attributes_button_and_sort_stay_inside_narrow_panel_toolbars() {
+fn shared_attributes_and_sort_stay_reachable_independent_of_panel_split() {
     let mut test = ui::TestUi::new();
     for width in [1040, 1340] {
         test.resize(width, 820);
@@ -75,8 +77,8 @@ fn attributes_button_and_sort_stay_inside_narrow_panel_toolbars() {
                 test.window.invoke_apply_preferences(0, density);
                 test.window.set_panel_ratio(ratio);
                 test.draw();
-                let left = test.window.get_left_list_left();
-                let right = left + test.window.get_left_list_width();
+                let left = 0.0;
+                let right = width as f32;
                 for (label, role) in [
                     (
                         "Attributes, times and case (Ctrl+F2)",
@@ -84,6 +86,9 @@ fn attributes_button_and_sort_stay_inside_narrow_panel_toolbars() {
                     ),
                     ("Left panel sort", AccessibleRole::Combobox),
                 ] {
+                    if role == AccessibleRole::Button {
+                        toolbar::reveal(&mut test, label, role);
+                    }
                     let item = ui::root_item(&test.window, label, role);
                     let geometry = item.geometry();
                     let origin = item.map_to_native_window(geometry.origin);
@@ -355,28 +360,48 @@ fn zoom_follows_activation_and_swapping_without_changing_models_or_split() {
     let left_rows = test.window.get_left_rows();
     let right_rows = test.window.get_right_rows();
     test.window.invoke_focus_files();
-    for swapped in [false, true] {
+    for (density, swapped) in [(0, false), (0, true), (1, false), (1, true)] {
+        test.window.invoke_apply_preferences(0, density);
         test.window.set_panels_swapped(swapped);
         test.window.set_active_pane(0);
         test.window.invoke_focus_files();
+        test.draw();
+        let panel_left = test
+            .window
+            .get_left_pane_left()
+            .min(test.window.get_right_pane_left());
+        let panel_right = (test.window.get_left_pane_left() + test.window.get_left_pane_width())
+            .max(test.window.get_right_pane_left() + test.window.get_right_pane_width());
+        let full_width = panel_right - panel_left;
         ui::chord(&test.window, &[Key::Control], Key::F11);
         test.draw();
         assert!(test.window.get_panel_zoomed());
         assert!(test.window.get_left_list_width() > 1200.0);
+        assert!((test.window.get_left_pane_width() - full_width).abs() < 0.1);
+        assert!((test.window.get_left_pane_left() - panel_left).abs() < 0.1);
+        assert_eq!(test.window.get_right_pane_width(), 0.0);
         let position = test.window.get_left_list_left();
         test.window.invoke_swap_panels();
         test.draw();
         assert_eq!(test.window.get_active_pane(), 0);
-        assert!((test.window.get_left_list_left() - position).abs() > 10.0);
+        assert!((test.window.get_left_list_left() - position).abs() < 0.1);
         assert!(test.window.get_left_list_width() > 1200.0);
         test.window.invoke_swap_panels();
         test.draw();
-        ui::click_root(&test.window, "Activate right panel", AccessibleRole::Button);
+        test.window.invoke_activate(1);
+        test.window.invoke_focus_files();
         test.draw();
         assert_eq!(test.window.get_active_pane(), 1);
         assert!(test.window.get_right_list_width() > 1200.0);
+        assert!((test.window.get_right_pane_width() - full_width).abs() < 0.1);
+        assert!((test.window.get_right_pane_left() - panel_left).abs() < 0.1);
+        assert_eq!(test.window.get_left_pane_width(), 0.0);
+        if !swapped {
+            render::snapshot(&test, &format!("full-panel-zoom-density-{density}"));
+        }
         test.resize(1100, 780);
         assert!(test.window.get_right_list_width() > 1000.0);
+        assert!((test.window.get_right_pane_width() - (full_width - 240.0)).abs() < 0.1);
         ui::chord(&test.window, &[Key::Control], Key::F11);
         test.draw();
         assert!(!test.window.get_panel_zoomed());
@@ -401,6 +426,9 @@ fn zoom_follows_activation_and_swapping_without_changing_models_or_split() {
     }
     test.window.invoke_toggle_panel_zoom(1);
     test.draw();
+    assert!(!ui::root_item(&test.window, "Panel splitter", AccessibleRole::Button).is_visible());
+    ui::chord(&test.window, &[Key::Control], Key::F11);
+    test.draw();
     ui::click_root(&test.window, "Panel splitter", AccessibleRole::Button);
     ui::key(&test.window, Key::Return);
     assert!(!test.window.get_panel_zoomed());
@@ -408,9 +436,12 @@ fn zoom_follows_activation_and_swapping_without_changing_models_or_split() {
 }
 
 #[test]
-fn resizing_the_zoomed_splitter_exits_zoom_and_tracks_the_pointer() {
+fn restored_splitter_tracks_the_pointer_after_leaving_zoom() {
     let mut test = ui::TestUi::new();
     test.window.set_panel_ratio(0.6);
+    test.window.invoke_toggle_panel_zoom(0);
+    test.draw();
+    assert!(!ui::root_item(&test.window, "Panel splitter", AccessibleRole::Button).is_visible());
     test.window.invoke_toggle_panel_zoom(0);
     test.draw();
     let start = ui::root_position(&test.window, "Panel splitter", AccessibleRole::Button);
@@ -435,7 +466,7 @@ fn resizing_the_zoomed_splitter_exits_zoom_and_tracks_the_pointer() {
         });
     assert!(
         !test.window.get_panel_zoomed(),
-        "resizing must leave the fixed zoom layout"
+        "resizing the restored splitter keeps the two-panel layout"
     );
     let final_position = ui::root_position(&test.window, "Panel splitter", AccessibleRole::Button);
     assert!(
@@ -448,6 +479,7 @@ fn presenter(test: &ui::TestUi, values: UserPreferences) -> Rc<RefCell<Presenter
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
     install(&test.window, presenter.clone(), Rc::new(|_| true));
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });

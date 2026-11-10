@@ -354,11 +354,14 @@ async fn duplicate_roots_share_cache_and_periodic_refresh_replaces_expired_detai
         tokio::task::yield_now().await;
     }
     assert_eq!(files.label_calls.load(Ordering::SeqCst), 1);
-    // Tokio rounds timer deadlines up to a millisecond tick. A timer barrier
-    // reaches that tick; advancing exactly 45s can stop just before it when the
-    // real clock was paused between ticks. The barrier cannot jump to the next
-    // discovery interval, so a missed 45s cache refresh still fails below.
-    tokio::time::sleep_until(refresh_due).await;
+    // Tokio rounds deadlines up to a millisecond tick. Advance explicitly:
+    // persistent archive-size blocking lanes inhibit paused-clock auto-advance.
+    // Stop at this refresh tick so a missed 45s cache refresh still fails below.
+    tokio::time::advance(
+        (refresh_due + Duration::from_millis(1))
+            .saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await;
     assert!(tokio::time::Instant::now() <= refresh_due + Duration::from_millis(1));
     // Keep the runtime runnable until real native workers finish. An event
     // receive with a timeout could auto-advance paused time to the next 45s

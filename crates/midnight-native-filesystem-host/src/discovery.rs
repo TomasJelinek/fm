@@ -9,11 +9,19 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Package {
     pub id: String,
+    pub name: Option<String>,
+    pub kind: PackageKind,
     pub version: String,
     pub directory: PathBuf,
     pub library: PathBuf,
     pub capabilities: u64,
     pub encoding: AddressEncoding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageKind {
+    Native,
+    Network,
 }
 
 #[derive(Debug, Default)]
@@ -29,6 +37,8 @@ struct Manifest {
     id: String,
     kind: String,
     version: String,
+    #[serde(default)]
+    name: Option<String>,
     entry_library: String,
     target: String,
     abi_major: u16,
@@ -39,6 +49,25 @@ struct Manifest {
 }
 
 impl Catalog {
+    /// Discovery providers never qualify as native content providers.
+    pub fn network_package(&self) -> Result<&Package, Failure> {
+        let mut providers = self
+            .packages
+            .iter()
+            .filter(|p| p.encoding == AddressEncoding::Opaque);
+        let package = providers.next().ok_or_else(|| {
+            Failure::new(
+                ErrorCode::Unavailable,
+                "Network Neighborhood plugin is unavailable",
+            )
+        })?;
+        if providers.next().is_some() {
+            return Err(invalid(
+                "Several Network Neighborhood plugins claim this platform",
+            ));
+        }
+        Ok(package)
+    }
     /// Backend-only discovery beside the resolved installation executable.
     pub fn discover(directory: &Path) -> Result<Self, Failure> {
         let directory = directory.canonicalize().map_err(Failure::from_io)?;
@@ -133,7 +162,10 @@ fn read_package(directory: &Path) -> Result<Option<Package>, Failure> {
 fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
     let manifest: Manifest = toml::from_str(text).map_err(invalid)?;
     if manifest.schema_version != 1
-        || manifest.kind != "filesystem-native"
+        || !matches!(
+            manifest.kind.as_str(),
+            "filesystem-native" | "filesystem-network"
+        )
         || manifest.protocol != 1
         || manifest.abi_major != abi::ABI_MAJOR
         || manifest.minimum_host_minor > abi::ABI_MINOR
@@ -146,6 +178,9 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
             .all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte))
         || manifest.version.is_empty()
         || manifest.version.len() > 64
+        || manifest.name.as_ref().is_some_and(|name| {
+            name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control)
+        })
         || manifest.entry_library.is_empty()
         || manifest.entry_library.contains(['/', '\\', ':', '\0'])
         || manifest.entry_library == "."
@@ -154,11 +189,15 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
         return Err(invalid("Incompatible native filesystem manifest"));
     }
     let encoding = match manifest.address_encoding.as_str() {
+        "opaque" => AddressEncoding::Opaque,
         "windows-utf16le" => AddressEncoding::WindowsUtf16Le,
         "unix-bytes" => AddressEncoding::UnixBytes,
         _ => return Err(invalid("Unsupported native address encoding")),
     };
-    if encoding != crate::paths::ENCODING {
+    let network = manifest.kind == "filesystem-network";
+    if (network && encoding != AddressEncoding::Opaque)
+        || (!network && encoding != crate::paths::ENCODING)
+    {
         return Err(invalid("Foreign native address encoding"));
     }
     let mut capabilities = 0;
@@ -171,6 +210,9 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
             "storage" => abi::CAP_STORAGE,
             "volume-details" => abi::CAP_VOLUME_DETAILS,
             "native-address" => abi::CAP_NATIVE_ADDRESS,
+            "activate" => abi::CAP_ACTIVATE,
+            "refresh" => abi::CAP_REFRESH,
+            "resolve-text" => abi::CAP_RESOLVE_TEXT,
             _ => return Err(invalid("Unknown native filesystem capability")),
         };
         if capabilities & bit != 0 {
@@ -178,11 +220,28 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
         }
         capabilities |= bit;
     }
-    if capabilities & abi::CAP_NATIVE_ADDRESS == 0 {
+    let network_caps = abi::CAP_BROWSE
+        | abi::CAP_STAT
+        | abi::CAP_VOLUMES
+        | abi::CAP_ACTIVATE
+        | abi::CAP_REFRESH
+        | abi::CAP_RESOLVE_TEXT;
+    if network && (capabilities != network_caps || manifest.minimum_host_minor < 2) {
+        return Err(invalid(
+            "Network provider requires the discovery-only ABI 1.2 capabilities",
+        ));
+    }
+    if !network && capabilities & abi::CAP_NATIVE_ADDRESS == 0 {
         return Err(invalid("Native address capability is required"));
     }
     Ok(Package {
         id: manifest.id,
+        name: manifest.name,
+        kind: if network {
+            PackageKind::Network
+        } else {
+            PackageKind::Native
+        },
         version: manifest.version,
         library: directory.join(manifest.entry_library),
         directory: directory.into(),
@@ -198,6 +257,55 @@ pub(crate) fn invalid(error: impl std::fmt::Display) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filesystem_friendly_name_metadata_is_optional_and_validated() {
+        let legacy = format!(
+            "schema_version=1\nid='network.test'\nkind='filesystem-network'\nversion='0.1.0'\nentry_library='network.dll'\ntarget='{}'\nabi_major=1\nminimum_host_minor=2\nprotocol=1\ncapabilities=['browse','stat','volumes','activate','refresh','resolve-text']\naddress_encoding='opaque'\n",
+            host_target()
+        );
+        assert!(parse_manifest(&legacy, Path::new("package")).is_ok());
+        assert!(
+            parse_manifest(
+                &format!("{legacy}name='Network filesystem'\n"),
+                Path::new("package")
+            )
+            .is_ok()
+        );
+        for name in [
+            String::new(),
+            "   ".into(),
+            "x".repeat(129),
+            "bad\u{1b}name".into(),
+        ] {
+            assert!(
+                parse_manifest(&format!("{legacy}name='{name}'\n"), Path::new("package")).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn network_manifest_has_opaque_addresses_and_no_native_authority() {
+        let text = format!(
+            "schema_version=1\nid='network.test'\nkind='filesystem-network'\nversion='0.1.0'\nentry_library='network.dll'\ntarget='{}'\nabi_major=1\nminimum_host_minor=2\nprotocol=1\ncapabilities=['browse','stat','volumes','activate','refresh','resolve-text']\naddress_encoding='opaque'\n",
+            host_target()
+        );
+        let package = parse_manifest(&text, Path::new("package")).unwrap();
+        assert_eq!(package.encoding, AddressEncoding::Opaque);
+        let catalog = Catalog {
+            packages: vec![package],
+            diagnostics: vec![],
+        };
+        assert!(catalog.native_package().is_err());
+        for invalid_text in [
+            text.replace("'opaque'", "'unix-bytes'"),
+            text.replace("'resolve-text'", "'native-address'"),
+            text.replace("'resolve-text'", "'read'"),
+            text.replace("minimum_host_minor=2", "minimum_host_minor=1"),
+            text.replace("'activate',", ""),
+        ] {
+            assert!(parse_manifest(&invalid_text, Path::new("package")).is_err());
+        }
+    }
     #[test]
     fn manifest_cannot_escape_package_or_invent_capabilities() {
         let text = format!(

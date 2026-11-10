@@ -14,11 +14,17 @@ pub(crate) struct Capture {
 }
 impl Capture {
     fn revision(pane: &Pane) -> SelectionRevision {
+        if pane.tree_view().is_some() {
+            return pane.tree.revision;
+        }
         pane.archive
             .as_ref()
             .map_or(pane.selection_revision, |a| a.selection_revision)
     }
     fn selection(pane: &Pane) -> usize {
+        if let Some(publication) = &pane.tree.publication {
+            return Arc::as_ptr(&publication.selection) as usize;
+        }
         pane.archive.as_ref().map_or_else(
             || Arc::as_ptr(&pane.selected) as usize,
             |a| Arc::as_ptr(&a.selected) as usize,
@@ -26,16 +32,22 @@ impl Capture {
     }
     fn available(pane: &Pane) -> bool {
         !pane.loading
+            && pane.network.is_none()
+            && !pane.network_request
             && !pane.showing_stream()
             && !pane.search_view_waiting()
-            && pane.archive.as_ref().map_or_else(
-                || {
-                    pane.selection_preview.is_empty()
-                        && pane.selection_applied == pane.selection_revision
-                        && !pane.selection_rebase_pending
-                },
-                |a| !a.selection_pending,
-            )
+            && if pane.tree_view().is_some() {
+                pane.tree.preview.is_empty() && pane.tree_input_ready()
+            } else {
+                pane.archive.as_ref().map_or_else(
+                    || {
+                        pane.selection_preview.is_empty()
+                            && pane.selection_applied == pane.selection_revision
+                            && !pane.selection_rebase_pending
+                    },
+                    |a| !a.selection_pending,
+                )
+            }
     }
     fn matches(&self, pane: &Pane) -> bool {
         !self.cancel.is_cancelled()
@@ -120,7 +132,9 @@ impl Presenter {
         if !capture.matches(&self.panes[pane.index()]) || ranges.len() != capture.len {
             return false;
         }
-        if self.panes[pane.index()].archive.is_some() {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.send_tree_selection(pane, TreeSelectionAction::Ranges { ranges, mode }, send)
+        } else if self.panes[pane.index()].archive.is_some() {
             self.archive_bulk_selection(pane, ArchiveSelectionAction::Ranges { ranges, mode }, send)
         } else {
             self.send_selection(pane, SelectionAction::Ranges { ranges, mode }, send)

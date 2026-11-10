@@ -17,7 +17,7 @@ fn archive_vector_fallback_is_visible_and_associated_artwork_wins_in_every_view(
         ..Default::default()
     }]));
     ui.window.set_left_rows(model.clone().into());
-    for theme in 0..9 {
+    for theme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         ui.window.set_theme_index(theme);
         for mode in 0..3 {
             ui.window.set_left_view_mode(mode);

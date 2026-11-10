@@ -7,6 +7,7 @@ fn entries() -> Vec<Entry> {
     (0..6)
         .map(|row| {
             Entry::from_archive(ArchiveNode {
+                modified: None,
                 id: VirtualEntryId {
                     mount: 42,
                     entry: 100 + row * 13,

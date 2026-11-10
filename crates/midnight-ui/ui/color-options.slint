@@ -1,7 +1,12 @@
 import { Theme } from "theme.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
-import { HintedCheckBox, HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
-import { Button } from "std-widgets.slint";
+import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { Button, ListView } from "std-widgets.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { TipBody } from "controls.slint";
+import { ListHeader } from "list-header.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
 
 export struct FilenameColorDraft {
     enabled: bool,
@@ -18,14 +23,146 @@ export global ColorOptionsView {
     in property <int> selected: -1;
     in-out property <FilenameColorDraft> draft;
     in property <bool> busy;
+    in property <bool> dirty;
     in property <string> error;
     in property <bool> preview-foreground-set;
     in property <color> preview-foreground;
     in property <bool> preview-background-set;
     in property <color> preview-background;
+    in-out property <int> picker-field: -1;
     callback select(int);
     callback edit(FilenameColorDraft);
     callback action(int);
+    callback choose-color(int, color);
+}
+
+component ColorPriorityList inherits Rectangle {
+    private property <int> selected-rule: ColorOptionsView.selected;
+    private property <int> rule-count: ColorOptionsView.labels.length;
+    private property <length> rule-height: Theme.control-height;
+    height: root.rule-count == 0 ? max(root.rule-height, empty-message.preferred-height + 16px)
+        : root.rule-height * min(root.rule-count, 4) + 2px;
+    background: Theme.pane-background; border-width: 1px; clip: true;
+    border-color: list-focus.has-focus ? Theme.active-frame : Theme.frame;
+    changed selected-rule => { root.reveal-selection(); }
+    changed rule-count => { root.reveal-selection(); }
+    changed rule-height => { root.reveal-selection(); }
+    function reveal-selection() {
+        if root.selected-rule < 0 { return; }
+        let top = root.selected-rule * root.rule-height;
+        if top < -rules.content-y { rules.content-y = -top; }
+        else if top + root.rule-height > -rules.content-y + rules.visible-height {
+            rules.content-y = min(0px, rules.visible-height - top - root.rule-height);
+        }
+    }
+    function select-rule(index: int) {
+        if ColorOptionsView.busy { return; }
+        list-focus.focus(); ColorOptionsView.picker-field = -1;
+        ColorOptionsView.select(index);
+    }
+    list-focus := FocusScope {
+        enabled: !ColorOptionsView.busy;
+        key-pressed(event) => {
+            if ColorOptionsView.busy || root.rule-count == 0 { return reject; }
+            if event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.Home || event.text == Key.End {
+                let next = event.text == Key.Home ? 0 : event.text == Key.End ? root.rule-count - 1
+                    : clamp(root.selected-rule + (event.text == Key.DownArrow ? 1 : -1), 0, root.rule-count - 1);
+                root.select-rule(next); return accept;
+            }
+            reject
+        }
+        rules := ListView {
+            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+            enabled: !ColorOptionsView.busy;
+            horizontal-scrollbar-policy: always-off;
+            accessible-label: "Filename color rules"; accessible-item-count: root.rule-count;
+            changed visible-height => { root.reveal-selection(); }
+            for label[index] in ColorOptionsView.labels : Rectangle {
+                width: rules.visible-width; height: root.rule-height;
+                private property <bool> selected: index == root.selected-rule;
+                background: self.selected ? Theme.selected-background
+                    : area.has-hover ? Theme.hover : Theme.pane-background;
+                accessible-role: list-item; accessible-label: label;
+                accessible-enabled: !ColorOptionsView.busy;
+                accessible-item-index: index; accessible-item-selectable: true;
+                accessible-item-selected: self.selected;
+                accessible-action-default => { root.select-rule(index); }
+                Text {
+                    x: 8px;
+                    width: max(0px, parent.width - 16px
+                        - (rules.content-height > rules.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                    text: label; font-size: Theme.font-size; overflow: elide;
+                    color: parent.selected ? Theme.selected-text : Theme.text;
+                    vertical-alignment: center;
+                }
+                area := TouchArea {
+                    enabled: !ColorOptionsView.busy;
+                    clicked => { root.select-rule(index); }
+                }
+                Tooltip { TipBody { text: label; } }
+            }
+        }
+    }
+    empty-message := Text {
+        visible: root.rule-count == 0;
+        x: 8px; width: max(0px, parent.width - 16px);
+        height: self.preferred-height; y: (parent.height - self.height) / 2;
+        text: "No rules. Add a rule to choose filename colors.";
+        color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component ColorField inherits VerticalLayout {
+    in property <bool> narrow;
+    in property <string> label;
+    in property <string> value;
+    in property <color> resolved;
+    in property <int> field;
+    callback edited(string);
+    spacing: 6px;
+    Text { text: root.label; color: Theme.text; font-size: Theme.font-size; }
+    GridLayout {
+        spacing: 6px;
+        Rectangle {
+            row: 0; col: 0;
+            width: Theme.control-height + 8px; height: Theme.control-height;
+            background: root.resolved; border-width: 1px;
+            border-color: swatch-focus.has-focus ? Theme.active-frame : Theme.frame;
+            border-radius: 3px;
+            accessible-role: button; accessible-label: "Choose " + root.label;
+            accessible-enabled: !ColorOptionsView.busy;
+            accessible-action-default => { if !ColorOptionsView.busy { ColorOptionsView.picker-field = root.field; } }
+            forward-focus: swatch-focus;
+            swatch-focus := FocusScope {
+                enabled: !ColorOptionsView.busy;
+                key-pressed(event) => {
+                    if event.text == Key.Return || event.text == Key.Space { ColorOptionsView.picker-field = root.field; return accept; }
+                    reject
+                }
+                TouchArea {
+                    enabled: !ColorOptionsView.busy;
+                    clicked => { swatch-focus.focus(); ColorOptionsView.picker-field = ColorOptionsView.picker-field == root.field ? -1 : root.field; }
+                }
+            }
+        }
+        HintedLineEdit {
+            row: 0; col: 1;
+            text: root.value; placeholder-text: "Theme default"; horizontal-stretch: 1; min-width: 0px;
+            enabled: !ColorOptionsView.busy;
+            accessible-label: root.label + " hex color";
+            hint: "Choose a color with the swatch, or enter #RRGGBB. Leave empty for the theme color.";
+            edited => { root.edited(self.text); }
+        }
+        HintedActionButton {
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 2;
+            colspan: root.narrow ? 2 : 1;
+            text: "Reset"; enabled: !ColorOptionsView.busy && root.value != "";
+            hint: "Use the theme's " + root.label + " color.";
+            clicked => { ColorOptionsView.picker-field = -1; root.edited(""); }
+        }
+    }
 }
 
 component ColorPreview inherits Rectangle {
@@ -34,7 +171,7 @@ component ColorPreview inherits Rectangle {
     private property <bool> selected: state >= 2;
     background: FilenameColorPresentation.background(ColorOptionsView.preview-background-set, ColorOptionsView.preview-background, cursor, true, selected, false);
     border-color: Theme.frame; border-width: 1px;
-    height: max(44px, Theme.font-size * 3.4); horizontal-stretch: 1;
+    min-height: max(44px, preview-text.preferred-height + 10px); horizontal-stretch: 1;
     Rectangle {
         x: 0px; y: 0px; width: root.selected ? 4px : 3px; height: parent.height;
         background: root.selected ? Theme.selected-edge : root.cursor ? Theme.cursor-edge : transparent;
@@ -42,7 +179,7 @@ component ColorPreview inherits Rectangle {
     if root.selected && root.cursor : Rectangle {
         x: 4px; y: 0px; height: 1px; width: parent.width - 4px; background: Theme.selected-edge;
     }
-    Text {
+    preview-text := Text {
         x: 8px; width: parent.width - 16px; vertical-alignment: center; horizontal-alignment: center;
         text: ["Normal", "Focused", "Selected", "Focused + selected"][root.state] + "\nExample.txt";
         font-size: Theme.font-size; font-weight: root.selected ? 600 : 400; wrap: word-wrap;
@@ -51,45 +188,53 @@ component ColorPreview inherits Rectangle {
 }
 
 export component ColorOptions inherits VerticalLayout {
+    in property <length> available-width;
+    in property <bool> narrow;
     spacing: 10px; alignment: start;
-    Text { text: "Filename colors · first matching enabled rule wins"; color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap; }
-    HintedComboBox {
-        model: ColorOptionsView.labels; current-index: ColorOptionsView.selected;
-        enabled: !ColorOptionsView.busy && ColorOptionsView.labels.length > 0;
-        accessible-label: "Filename color rules"; hint: "Rules are evaluated from top to bottom.";
-        selected(value) => { ColorOptionsView.select(self.current-index); }
+    private property <int> selected-rule: ColorOptionsView.selected;
+    private property <int> preview-columns: root.available-width < Theme.font-size * 18 ? 1
+        : root.available-width < Theme.font-size * 36 ? 2 : 4;
+    changed selected-rule => { ColorOptionsView.picker-field = -1; }
+    ListHeader {
+        title: "Rule priority";
+        hint: "The first matching enabled rule wins. Move rules up or down to change their priority.";
+        enabled: !ColorOptionsView.busy;
+        can-add: ColorOptionsView.labels.length < 32;
+        can-remove: ColorOptionsView.selected >= 0;
+        can-move-up: ColorOptionsView.selected > 0;
+        can-move-down: ColorOptionsView.selected >= 0 && ColorOptionsView.selected < ColorOptionsView.labels.length - 1;
+        action-labels: ["Add rule", "Remove rule", "Move up", "Move down"];
+        action-hints: ["Add a filename color rule", "Remove the selected rule", "Move this rule before the preceding rule", "Move this rule after the following rule"];
+        action(index) => { ColorOptionsView.picker-field = -1; ColorOptionsView.action(index); }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        for label[index] in ["Add rule", "Remove rule", "Move up", "Move down"] : Button {
-            text: label; accessible-label: label;
-            enabled: !ColorOptionsView.busy && (index == 0 ? ColorOptionsView.labels.length < 32 : index == 2 ? ColorOptionsView.selected > 0 : index == 3 ? ColorOptionsView.selected >= 0 && ColorOptionsView.selected < ColorOptionsView.labels.length - 1 : ColorOptionsView.selected >= 0);
-            clicked => { ColorOptionsView.action(index); }
-        }
-    }
+    ColorPriorityList { }
     if ColorOptionsView.selected >= 0 : VerticalLayout {
         spacing: 8px; alignment: start;
-        HorizontalLayout {
+        GridLayout {
             spacing: 10px;
-            HintedCheckBox {
+            WrappingCheckBox {
+                row: 0; col: 0;
                 text: "Enable rule"; checked: ColorOptionsView.draft.enabled; enabled: !ColorOptionsView.busy;
                 hint: "Disabled rules stay in the list but do not color filenames.";
                 toggled => { ColorOptionsView.draft.enabled = self.checked; ColorOptionsView.edit(ColorOptionsView.draft); }
             }
-            HintedCheckBox {
+            WrappingCheckBox {
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                 text: "Case sensitive"; checked: ColorOptionsView.draft.case-sensitive; enabled: !ColorOptionsView.busy;
                 hint: "Use the same case option as the panel filename filter.";
                 toggled => { ColorOptionsView.draft.case-sensitive = self.checked; ColorOptionsView.edit(ColorOptionsView.draft); }
             }
         }
-        HorizontalLayout {
+        GridLayout {
             spacing: 8px;
             HintedComboBox {
+                row: 0; col: 0; min-width: 0px;
                 model: ["Masks", "Regex"]; current-index: ColorOptionsView.draft.mode; enabled: !ColorOptionsView.busy;
                 accessible-label: "Color rule syntax"; hint: "Masks use * and ?, ; separates alternatives and | starts exclusions. Regex uses bounded Rust regular expressions.";
                 selected(value) => { ColorOptionsView.draft.mode = self.current-index; ColorOptionsView.edit(ColorOptionsView.draft); }
             }
             HintedComboBox {
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; min-width: 0px;
                 model: ["Files", "Folders", "Files and folders"]; current-index: ColorOptionsView.draft.target; enabled: !ColorOptionsView.busy;
                 accessible-label: "Color rule targets"; hint: "Choose which filename kinds this rule can match.";
                 selected(value) => { ColorOptionsView.draft.target = self.current-index; ColorOptionsView.edit(ColorOptionsView.draft); }
@@ -100,35 +245,39 @@ export component ColorOptions inherits VerticalLayout {
             accessible-label: "Color rule expression"; hint: "Examples: *.rs;*.toml|test* or regex \\.rs$. At most 4096 UTF-8 bytes.";
             edited => { ColorOptionsView.draft.expression = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
         }
-        HorizontalLayout {
-            spacing: 8px;
-            Text { text: "Foreground · #RRGGBB"; color: Theme.text; font-size: Theme.font-size; horizontal-stretch: 1; }
-            Text { text: "Background · optional"; color: Theme.text; font-size: Theme.font-size; horizontal-stretch: 1; }
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            HintedLineEdit {
-                text: ColorOptionsView.draft.foreground; placeholder-text: "Theme foreground"; enabled: !ColorOptionsView.busy;
-                accessible-label: "Filename foreground"; hint: "Base text color in #RRGGBB format, or empty for the theme default. Lightness is adjusted for readable contrast.";
-                edited => { ColorOptionsView.draft.foreground = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
+        GridLayout {
+            spacing: 10px;
+            ColorField {
+                row: 0; col: 0; narrow: root.narrow;
+                label: "Foreground"; field: 0; value: ColorOptionsView.draft.foreground;
+                resolved: ColorOptionsView.preview-foreground-set ? ColorOptionsView.preview-foreground : Theme.text;
+                edited(value) => { ColorOptionsView.draft.foreground = value; ColorOptionsView.edit(ColorOptionsView.draft); }
             }
-            HintedLineEdit {
-                text: ColorOptionsView.draft.background; placeholder-text: "Theme background"; enabled: !ColorOptionsView.busy;
-                accessible-label: "Filename background"; hint: "Optional #RRGGBB filename background. Focus and selection keep their theme backgrounds.";
-                edited => { ColorOptionsView.draft.background = self.text; ColorOptionsView.edit(ColorOptionsView.draft); }
+            ColorField {
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; narrow: root.narrow;
+                label: "Background"; field: 1; value: ColorOptionsView.draft.background;
+                resolved: ColorOptionsView.preview-background-set ? ColorOptionsView.preview-background : Theme.pane-background;
+                edited(value) => { ColorOptionsView.draft.background = value; ColorOptionsView.edit(ColorOptionsView.draft); }
             }
         }
-        HorizontalLayout { spacing: 5px; for state in 4 : ColorPreview { state: state; } }
+        for row in (root.preview-columns == 1 ? 4 : root.preview-columns == 2 ? 2 : 1) : HorizontalLayout {
+            spacing: 5px;
+            for column in root.preview-columns : ColorPreview {
+                state: row * root.preview-columns + column;
+            }
+        }
     }
-    Text { text: ColorOptionsView.error; visible: self.text != ""; color: Theme.error-text; font-size: Theme.font-size; wrap: word-wrap; }
-    HorizontalLayout {
+    if ColorOptionsView.error != "" : ErrorNotice { text: ColorOptionsView.error; }
+    GridLayout {
         spacing: 8px;
         HintedActionButton {
+            row: 0; col: 0;
             text: ColorOptionsView.busy ? "Checking…" : "Apply colors"; accessible-label: "Apply colors";
             enabled: !ColorOptionsView.busy;
             hint: "Empty rules preserve folder and file theme colors. Color rules never hide files. Changes apply after validation.";
             clicked => { ColorOptionsView.action(4); }
         }
-        Button { text: "Discard changes"; enabled: !ColorOptionsView.busy; clicked => { ColorOptionsView.action(5); } }
+        Button { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            text: "Discard changes"; enabled: !ColorOptionsView.busy; clicked => { ColorOptionsView.action(5); } }
     }
 }

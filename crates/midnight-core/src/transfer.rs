@@ -46,6 +46,28 @@ pub trait TransferTarget: Send + Sync {
 }
 
 pub trait TransferService: Send + Sync {
+    /// Metadata-only advisory native device identity for automatic drag action.
+    /// Unknown is safe and means Copy. Never read contents, mutate the namespace,
+    /// or acquire source deletion authority. Transfer preparation revalidates pins.
+    fn native_drop_device(
+        &self,
+        _path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<Option<u64>, FsError> {
+        Ok(None)
+    }
+    /// Open an existing checksum base without following any path component's links.
+    /// This grants no implicit filesystem writes; callers use only open_read_child.
+    fn prepare_checksum_directory(
+        &self,
+        path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        Err(transfer_unsupported(
+            path,
+            "safe checksum directory reads are unsupported",
+        ))
+    }
     /// A native destination whose retained stages support later publication proofs.
     fn prepare_move_destination(
         &self,
@@ -57,17 +79,14 @@ pub trait TransferService: Send + Sync {
             "verified Move destination is unsupported",
         ))
     }
-    /// Optional recoverable Move preparation. Ordinary Copy and virtual providers
+    /// Optional ordinary Move preparation. Ordinary Copy and virtual providers
     /// gain no source-mutation authority from their existing read capabilities.
     fn prepare_move_source(
         &self,
         path: &Path,
         _cancel: &Cancellation,
     ) -> Result<crate::PreparedTransferMove, FsError> {
-        Err(transfer_unsupported(
-            path,
-            "recoverable Move is unsupported",
-        ))
+        Err(transfer_unsupported(path, "verified Move is unsupported"))
     }
     fn prepare_transfer_source(
         &self,
@@ -84,6 +103,50 @@ pub trait TransferService: Send + Sync {
 /// A regular file or directory opened without following the selected entry's links.
 /// Iteration opens at most one child per call. Retain directory sources on the traversal stack.
 pub trait TransferSource: Send {
+    /// Seek the retained regular file during a guarded validation pass, including
+    /// after source capture changed its name. Return its current exact length.
+    /// Never reopen the original pathname; the caller retains/rechecks the guard
+    /// from `rewind_for_validation` around all sampled reads.
+    fn seek_for_validation(
+        &mut self,
+        _offset: u64,
+        _cancel: &Cancellation,
+    ) -> Result<u64, FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "retained source range validation is unsupported",
+        ))
+    }
+    /// Requested tree root only; descendant wrappers must return None.
+    fn tree_copy_occurrence(&self) -> Option<crate::TreeCopyOccurrence> {
+        None
+    }
+    /// Open one ordinary child relative to this pinned directory, without following links.
+    fn open_child(
+        &self,
+        _name: &OsStr,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "named child reads are unsupported",
+        ))
+    }
+    /// Optional virtual identity for completion feedback; never a native pathname.
+    fn virtual_identity(&self) -> Option<crate::VirtualEntryId> {
+        None
+    }
+    /// Enumerate one no-follow child with explicit native Move authority. Only a
+    /// source prepared for Move may implement this; ordinary Copy stays read-only.
+    fn next_move_child(
+        &mut self,
+        _cancel: &Cancellation,
+    ) -> Result<Option<crate::PreparedTransferMove>, FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "recursive Move is unsupported",
+        ))
+    }
     fn prepare_modified_time(
         &self,
         _cancel: &Cancellation,
@@ -112,6 +175,21 @@ pub trait TransferSource: Send {
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError>;
+    /// Whether a failed read can be repositioned on this exact retained source.
+    /// Forward-only/virtual streams must leave this disabled unless they implement
+    /// the full identity and original-revision contract of `retry_read_from`.
+    fn supports_read_retry(&self) -> bool {
+        false
+    }
+    /// Revalidate the original source identity/revision and seek its retained file
+    /// to the last committed byte. Never reopen/adopt the current source pathname.
+    /// An error may move the cursor; callers must repeat this operation before reading.
+    fn retry_read_from(&mut self, _offset: u64, _cancel: &Cancellation) -> Result<(), FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "retained source read retry is unsupported",
+        ))
+    }
     fn next_child(
         &mut self,
         cancel: &Cancellation,
@@ -119,6 +197,17 @@ pub trait TransferSource: Send {
 }
 
 pub trait TransferDirectory: Send + Sync {
+    /// Open one existing ordinary child through this pinned native directory.
+    fn open_read_child(
+        &self,
+        _name: &OsStr,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Err(transfer_unsupported(
+            self.path(),
+            "named child reads are unsupported",
+        ))
+    }
     /// Optional owned-stage authority. ContentOnly callers keep using stage_file.
     fn stage_file_with_metadata(
         &self,
@@ -134,6 +223,13 @@ pub trait TransferDirectory: Send + Sync {
     fn identity(&self) -> TransferIdentity;
     fn capabilities(&self) -> TransferCapabilities {
         TransferCapabilities::default()
+    }
+    /// Whether this directory can retain a displaced ordinary file during a native
+    /// move from this source device. This does not qualify copy-based replacement
+    /// or source deletion. Eligibility is only a hint; the actual pinned rename
+    /// must still validate the volume, target identity and explicit policy.
+    fn supports_native_move_replacement(&self, _source: TransferIdentity) -> bool {
+        false
     }
     fn prepare_target(
         &self,
@@ -168,6 +264,23 @@ pub trait TransferDirectory: Send + Sync {
         Err(transfer_unsupported(
             self.path(),
             "recoverable replacement is unsupported",
+        ))
+    }
+    /// Stage a replacement preserving the consented target's access controls and supported
+    /// native metadata. Before any content is written, the new object must be no more
+    /// accessible than the original. Unsupported security, streams or extended metadata
+    /// must fail explicitly, never silently fall back to an ordinary content-only stage.
+    /// The target's identity and revision remain subject to the usual replacement policy.
+    fn stage_file_preserving_target(
+        &self,
+        _name: &OsStr,
+        _expected: Arc<dyn TransferTarget>,
+        _policy: TransferReplacementPolicy,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        Err(transfer_unsupported(
+            self.path(),
+            "preserving existing output security and metadata is unsupported",
         ))
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
@@ -224,7 +337,8 @@ pub struct TransferRecovery {
 
 /// A provider-owned exclusive staging inode. Drop cleans up only its own unpublished inode.
 /// Default stages are content-only; required modified time is a separate optional
-/// authority. ACLs, other timestamps, streams and extended attributes are not promised.
+/// authority. Existing-output security and native metadata require the separate
+/// fail-closed `TransferDirectory::stage_file_preserving_target` capability.
 pub trait StagedTransferFile: Read + Write + Seek + Send {
     /// Change only modified time on the owned unpublished inode, never data or a
     /// published target. The caller separately syncs and reads back the exact value.
@@ -266,6 +380,8 @@ pub trait StagedTransferFile: Read + Write + Seek + Send {
     fn is_empty(&self) -> Result<bool, FsError> {
         self.len().map(|length| length == 0)
     }
+    /// Publish exclusively. Err means the final name was not changed by this call;
+    /// any successful mutation with failed durability must return a structured outcome.
     fn publish_no_replace(
         &mut self,
         name: &OsStr,

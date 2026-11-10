@@ -128,3 +128,36 @@ fn completed_hash_pass_keeps_fresh_guards_for_finalization() {
         "a late source edit after EOF must block removal"
     );
 }
+
+#[test]
+fn sampled_move_retains_guards_and_detects_postpublication_middle_corruption() {
+    for scenario in 0..3 {
+        let (old, source_changed) = copy(vec![42; 600_000], false);
+        let target_changed = Arc::new(std::sync::Mutex::new(false));
+        let mut job = VerifiedFileCopy::new_with_verification(
+            old.source,
+            crate::transfer::tests::stage_with_guard(target_changed.clone()),
+            TransferVerification::SizeAndSamples,
+        )
+        .unwrap();
+        let cancel = Cancellation::default();
+        while job.phase() != CopyPhase::ReadyToPublish {
+            job.step(&cancel).unwrap();
+        }
+        job.publish(OsStr::new("target"), &cancel).unwrap();
+        let mut proof = job.into_published_proof(&cancel).unwrap();
+        validate(&mut proof, &cancel).unwrap();
+        proof.revalidate_finalization(&cancel).unwrap();
+        match scenario {
+            0 => *source_changed.lock().unwrap() = true,
+            1 => *target_changed.lock().unwrap() = true,
+            _ => {
+                proof.stage.seek(SeekFrom::Start(300_000)).unwrap();
+                proof.stage.write_all(b"changed").unwrap();
+                assert!(validate(&mut proof, &cancel).is_err());
+                assert_eq!(proof.phase(), FileProofPhase::Failed);
+            }
+        }
+        assert!(proof.revalidate_finalization(&cancel).is_err());
+    }
+}

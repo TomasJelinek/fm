@@ -34,7 +34,8 @@ fn locale_snapshot_reaches_rows_details_and_copied_values_without_splitting_spac
         row.size.as_str(),
         "18\u{a0}446\u{a0}744\u{a0}073\u{a0}709\u{a0}551\u{a0}615"
     );
-    assert_eq!(row.modified.as_str(), "5. listopadu 2026 1:07 PM");
+    assert_eq!(row.modified_date.as_str(), "5. listopadu 2026");
+    assert_eq!(row.modified_time.as_str(), "1:07 PM");
     let fields = presenter.borrow().panel_details(PaneId::Left);
     for (label, expected) in [
         ("Bytes", row.size.as_str()),
@@ -68,7 +69,8 @@ fn modified_dates_outside_the_portable_calendar_render_unknown_but_keep_raw_time
     let row = Rows::new(presenter.clone(), PaneId::Left)
         .row_data(0)
         .unwrap();
-    assert_eq!(row.modified.as_str(), "—");
+    assert_eq!(row.modified_date.as_str(), "—");
+    assert_eq!(row.modified_time.as_str(), "—");
     assert_eq!(
         presenter.borrow().panes[0].entries[0].metadata.modified,
         Some(time)
@@ -86,12 +88,18 @@ fn directory_links_have_folder_appearance_without_queued_or_target_sizes() {
     );
     entry.metadata.size = Some(123);
     entry.metadata.compression = CompressionStatus::Compressed;
+    entry.metadata.localized_modified = Some(LocalizedDateTime {
+        date: "27. 6. 2024".into(),
+        time: "15:26:30".into(),
+    });
     presenter.borrow_mut().panes[0].entries = vec![entry].into();
     presenter.borrow_mut().panes[0].size_scan = Some(FolderSizeScanId(7));
     let row = Rows::new(presenter, PaneId::Left).row_data(0).unwrap();
     assert!(row.directory);
     assert_eq!(row.kind.as_str(), "Folder link");
-    assert_eq!(row.size.as_str(), "—");
+    assert_eq!(row.size.as_str(), "<DIR>");
+    assert_eq!(row.modified_date.as_str(), "27. 6. 2024");
+    assert_eq!(row.modified_time.as_str(), "15:26:30");
     assert_eq!(row.size_state, 0);
     assert!(
         row.compressed,
@@ -192,7 +200,7 @@ fn completed_partial_size_is_distinct_from_other_folders_still_queued() {
         finished.size_state, 3,
         "one inaccessible folder does not leave the scan running"
     );
-    assert_eq!(finished.size.as_str(), "≈ 167.3 MB");
+    assert_eq!(finished.size.as_str(), "≈ 167.3 MiB");
     assert_eq!(
         model.row_data(1).unwrap().size_state,
         1,
@@ -236,16 +244,16 @@ fn unfinished_directory_sizes_are_marked_until_their_own_clean_completion() {
             },
         );
     }
-    assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KB");
+    assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KiB");
     assert_eq!(model.row_data(0).unwrap().size_state, 1);
     assert!(model.row_data(0).unwrap().size_hint.contains("Calculating"));
-    assert_eq!(model.row_data(1).unwrap().size.as_str(), "2.0 KB");
+    assert_eq!(model.row_data(1).unwrap().size.as_str(), "2.0 KiB");
     assert_eq!(model.row_data(1).unwrap().size_state, 0);
     assert_eq!(model.row_data(2).unwrap().size.as_str(), "…");
     assert_eq!(model.row_data(2).unwrap().size_state, 1);
     assert!(model.row_data(2).unwrap().size_hint.contains("Queued"));
     presenter.borrow_mut().panes[0].size_scan = None;
-    assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KB");
+    assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KiB");
     assert_eq!(model.row_data(0).unwrap().size_state, 2);
     assert!(model.row_data(0).unwrap().size_hint.contains("cancelled"));
     assert_eq!(model.row_data(2).unwrap().size.as_str(), "—");
@@ -256,14 +264,14 @@ fn unfinished_directory_sizes_are_marked_until_their_own_clean_completion() {
         .unwrap()
         .finished = true;
     assert_eq!(model.row_data(0).unwrap().size_state, 0);
-    assert_eq!(model.row_data(0).unwrap().size.as_str(), "1.0 KB");
+    assert_eq!(model.row_data(0).unwrap().size.as_str(), "1.0 KiB");
     presenter.borrow_mut().panes[0]
         .folder_sizes
         .get_mut(&root.join("folder1"))
         .unwrap()
         .errors = 1;
     assert_eq!(model.row_data(0).unwrap().size_state, 3);
-    assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KB");
+    assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KiB");
     assert!(model.row_data(0).unwrap().size_hint.contains("partial"));
     assert!(model.row_data(0).unwrap().size_hint.contains("1 errors"));
 }
@@ -439,7 +447,7 @@ fn lazy_rows_read_current_shared_state_and_only_the_requested_pane() {
             },
         )],
     });
-    assert_eq!(model.row_data(999).unwrap().size.as_str(), "2.0 KB");
+    assert_eq!(model.row_data(999).unwrap().size.as_str(), "2.0 KiB");
     let right = Rows::new(presenter, PaneId::Right);
     assert_eq!(right.row_count(), 0);
 }

@@ -139,9 +139,11 @@ pub fn discover_with_diagnostics(application_executable: &Path) -> io::Result<Di
                 return Ok(None);
             }
             validate_package(&path)?;
-            if path.join("plugin.toml").try_exists()? {
+            if path.join("plugin.toml").try_exists()?
+                || path.join("web-viewer.json").try_exists()?
+            {
                 return Err(io::Error::other(
-                    "Ambiguous native and process viewer package",
+                    "Ambiguous native, image or web viewer package",
                 ));
             }
             let mut bytes = Vec::new();
@@ -291,3 +293,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "providers/catalog_tests.rs"]
+mod catalog_tests;

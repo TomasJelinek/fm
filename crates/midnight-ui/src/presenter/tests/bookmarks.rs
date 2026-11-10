@@ -1,6 +1,82 @@
 use super::*;
 
 #[test]
+fn archive_hot_path_add_uses_the_typed_member_location() {
+    let root = test_root();
+    let mut presenter = Presenter::new(root.clone(), root.clone());
+    presenter.panes[0].archive = Some(crate::presenter::archives::ArchivePane::unavailable(
+        ArchiveAddress {
+            format: None,
+            provider: "midnight.fs.archive".into(),
+            container: root.join("資料@source.zip"),
+            source_version: vec![1, 2, 3],
+            components: vec!["日本語".as_bytes().to_vec(), b"src".to_vec()],
+        },
+        root,
+    ));
+    assert!(presenter.add_bookmark(PaneId::Left, "src".into(), None, &|_| true));
+    assert_eq!(presenter.bookmarks().len(), 1);
+    assert_eq!(presenter.bookmarks()[0].slot, Some(1));
+    let saved = presenter.bookmarks()[0].clone();
+    let address = saved.archive.as_ref().unwrap();
+    assert_eq!(
+        address.components,
+        ["日本語".as_bytes().to_vec(), b"src".to_vec()]
+    );
+    assert_eq!(saved.path, test_root());
+    assert!(saved.display_text().contains("資料@source.zip@日本語"));
+
+    // A changed archive revision updates the same saved location and shortcut.
+    presenter.panes[0]
+        .archive
+        .as_mut()
+        .unwrap()
+        .location
+        .address
+        .source_version = vec![9];
+    assert!(presenter.add_bookmark(
+        PaneId::Left,
+        "ignored duplicate label".into(),
+        None,
+        &|_| true
+    ));
+    assert_eq!(presenter.bookmarks().len(), 1);
+    assert_eq!(presenter.bookmarks()[0].id, saved.id);
+    assert_eq!(
+        presenter.bookmarks()[0]
+            .archive
+            .as_ref()
+            .unwrap()
+            .source_version,
+        [9]
+    );
+
+    let old = presenter.panes[1].generation;
+    assert!(!presenter.open_bookmark(PaneId::Right, saved.id, &|_| false));
+    assert!(presenter.panes[1].archive.is_none());
+    assert_eq!(presenter.panes[1].generation, old);
+
+    let commands = RefCell::new(Vec::new());
+    assert!(
+        presenter.open_bookmark(PaneId::Right, saved.id, &|command| {
+            commands.borrow_mut().push(command);
+            true
+        })
+    );
+    assert!(commands.borrow().iter().any(|command| matches!(command,
+        Command::ArchiveNavigate { pane: PaneId::Right, action: ArchiveAction::List(location), .. }
+            if location.address == *presenter.bookmarks()[0].archive.as_ref().unwrap()
+                && location.mount.is_none())));
+    assert!(presenter.panes[1].archive_request);
+    assert!(!presenter.panes[1].native_capabilities());
+    assert!(presenter.panes[1].entries.is_empty());
+    assert_eq!(
+        presenter.panes[0].generation, 0,
+        "opening the other pane preserves this pane"
+    );
+}
+
+#[test]
 fn hot_path_menu_labels_include_slots_one_through_zero_and_actual_keys() {
     let left = test_root().join("Projects 文档");
     let right = test_root().join("Archive");
@@ -205,6 +281,7 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
         Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             theme: PreferenceTheme::Light,
             bookmarks: vec![Bookmark {
+                archive: None,
                 id: BookmarkId(40),
                 name: "Stored".into(),
                 path,
@@ -264,6 +341,7 @@ fn removed_loaded_identity_is_never_reused_by_a_later_bookmark() {
     let mut p = Presenter::new(test_root(), test_root());
     p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
         bookmarks: vec![Bookmark {
+            archive: None,
             id: BookmarkId(500),
             name: "Loaded".into(),
             path: test_root(),

@@ -1,5 +1,10 @@
 # File drag and drop
 
+The original Copy-only milestone below is extended by the
+[folder-drop and native-handoff design](2026-11-10-folder-drag-and-native-handoff.md),
+which adds exact folder targets, native tree captures and Explorer-style internal
+Copy/Move defaults. Native external protocol qualification remains separate.
+
 The user requests dragging files between panels and between Midnight Explorer
 and other applications. Implement copy semantics first, reusing the existing
 background copy queue and independent SHA-256 destination readback. No drag may
@@ -17,7 +22,7 @@ cannot start a new drag after the user has moved on.
 
 The first drop targets are the displayed directories of the two file-list areas.
 Highlight the receiving panel, not a folder row. Toolbars, command/path editors,
-dialogs and the inactive zoom rail are not drop targets. Respect swapped panels,
+dialogs, hidden panels and compact-mode activation rails are not drop targets. Respect swapped panels,
 the splitter, DPI, window movement and current navigation. A future extension may
 add explicit folder-row destinations, hover navigation and autoscroll.
 

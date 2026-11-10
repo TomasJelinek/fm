@@ -349,3 +349,63 @@ async fn stale_generation_is_rechecked_before_a_backpressured_event_can_be_publi
     );
     assert!(events.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn verification_admission_fits_alongside_retained_calculation_or_verification() {
+    let _quota = checksum::test_quota_fixture().await;
+    for previous_verification in [false, true] {
+        let (controller, _events, directory) = setup(Arc::new(Semaphore::new(1)), None);
+        let held = if previous_verification {
+            checksum::reserve_verification(&ChecksumVerifyRequest {
+                job: ChecksumJobId(1),
+                generation: ChecksumGeneration(1),
+                manifest: directory.join("previous.md5"),
+                limits: ChecksumLimits::default(),
+            })
+            .unwrap()
+        } else {
+            checksum::reserve(8 * 1024 * 1024, 8 * 1024 * 1024).unwrap()
+        };
+        let mut previous = (*retained(directory.join("source"))).clone();
+        previous.retention = held.clone();
+        controller
+            .state
+            .lock()
+            .unwrap()
+            .jobs
+            .get_mut(&ChecksumJobId(1))
+            .unwrap()
+            .result = Some(Arc::new(previous));
+        controller
+            .verify(ChecksumVerifyRequest {
+                job: ChecksumJobId(1),
+                generation: ChecksumGeneration(2),
+                manifest: directory.join("captured.md5"),
+                limits: ChecksumLimits::default(),
+            })
+            .unwrap();
+        assert_eq!(
+            controller.state.lock().unwrap().jobs[&ChecksumJobId(1)].generation,
+            ChecksumGeneration(2)
+        );
+        controller.cancel(ChecksumJobId(1), ChecksumGeneration(1));
+        assert!(
+            !controller.state.lock().unwrap().jobs[&ChecksumJobId(1)]
+                .cancel
+                .is_cancelled()
+        );
+        controller.release(ChecksumJobId(1), ChecksumGeneration(2));
+        assert!(
+            controller
+                .verify(ChecksumVerifyRequest {
+                    job: ChecksumJobId(1),
+                    generation: ChecksumGeneration(3),
+                    manifest: directory.join("other.md5"),
+                    limits: ChecksumLimits::default(),
+                })
+                .is_err()
+        );
+        controller.shutdown().await;
+        drop(held);
+    }
+}

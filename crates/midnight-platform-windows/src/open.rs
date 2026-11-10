@@ -5,12 +5,16 @@ use midnight_core::{FsError, OpenEntryResult, OpenService};
 use std::{
     fs::{self, OpenOptions},
     io,
-    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
+    os::windows::{
+        ffi::OsStrExt,
+        fs::{FileTypeExt, OpenOptionsExt},
+        io::AsRawHandle,
+    },
     path::{Component, Path, Prefix},
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::CloseHandle,
+    Foundation::{CloseHandle, ERROR_ACCESS_DENIED},
     Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, GetFileType,
     },
@@ -24,6 +28,21 @@ use windows_sys::Win32::{
 impl OpenService for WindowsFileSystem {
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
         open_with(path, launch_association)
+    }
+
+    fn directory_destination(&self, path: &Path) -> Result<std::path::PathBuf, FsError> {
+        let operation = || -> io::Result<std::path::PathBuf> {
+            validate_path(path)?;
+            if !fs::metadata(path)?.is_dir() {
+                return Err(unsupported_target());
+            }
+            match directory_result(path)? {
+                OpenEntryResult::Directory => Ok(path.to_owned()),
+                OpenEntryResult::DirectoryTarget { path } => Ok(path),
+                OpenEntryResult::File { .. } => Err(unsupported_target()),
+            }
+        };
+        operation().map_err(|error| FsError::from_io("open directory", path, error))
     }
 }
 
@@ -69,7 +88,7 @@ fn open_with(
         // Explicit activation follows links; listing and selection never call this service.
         let metadata = fs::metadata(path)?;
         if metadata.is_dir() {
-            return Ok(OpenEntryResult::Directory);
+            return directory_result(path);
         }
         if !metadata.is_file() {
             return Err(unsupported_target());
@@ -95,6 +114,37 @@ fn open_with(
         Ok(OpenEntryResult::File { process: None })
     };
     operation().map_err(|error| FsError::from_io("open file", path, error))
+}
+
+fn directory_result(path: &Path) -> io::Result<OpenEntryResult> {
+    if !fs::symlink_metadata(path)?.file_type().is_symlink_dir() {
+        return Ok(OpenEntryResult::Directory);
+    }
+    match fs::read_dir(path) {
+        Ok(_) => Ok(OpenEntryResult::Directory),
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+            // Compatibility junctions can deny listing the alias itself. Reading
+            // their OS reparse destination requests no content, privilege or ACL
+            // change. Only this explicit activation may choose another location;
+            // scanners and destructive operations never call this service.
+            let target = fs::read_link(path)?;
+            let target = if target.is_absolute() {
+                target
+            } else {
+                let parent = path.parent().ok_or_else(invalid_path)?;
+                fs::canonicalize(parent.join(target))?
+            };
+            validate_path(&target)?;
+            if !fs::metadata(&target)?.is_dir() {
+                return Err(unsupported_target());
+            }
+            // The target's own ACL remains authoritative. Opening its directory
+            // must succeed with ordinary caller rights before returning it.
+            drop(fs::read_dir(&target)?);
+            Ok(OpenEntryResult::DirectoryTarget { path: target })
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn validate_path(path: &Path) -> io::Result<()> {
@@ -333,3 +383,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "open_junction_tests.rs"]
+mod junction_tests;

@@ -1,0 +1,45 @@
+import { HintedActionButton } from "hinted-inputs.slint";
+import { NativeActionImage } from "action-icons.slint";
+import { Theme } from "theme.slint";
+
+// Keep standard button focus, pointer and accessibility behavior with menu columns.
+export component MenuActionButton inherits Rectangle {
+    in property <string> label;
+    in property <string> shortcut;
+    in property <image> row-native-icon;
+    in property <image> row-fallback-icon;
+    in property <bool> enabled: true;
+    in property <string> hint;
+    callback clicked();
+    accessible-role: button; accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: action-control;
+    action-control := HintedActionButton {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        min-width: 0px; text: ""; accessible-role: none;
+        enabled: root.enabled; hint: root.hint;
+        clicked => { if root.enabled { root.clicked(); } }
+    }
+    key-metrics := Text { visible: false; text: root.shortcut; font-size: Theme.small-font; }
+    NativeActionImage {
+        x: 8px; y: (root.height - self.height) / 2;
+        width: Theme.icon-size; height: self.width;
+        native-icon: root.row-native-icon; fallback-icon: root.row-fallback-icon;
+        action-enabled: root.enabled;
+    }
+    Text {
+        x: Theme.icon-size + 16px; y: 0px;
+        width: max(0px, keys.x - self.x - 8px); height: root.height;
+        text: root.label; font-size: Theme.font-size;
+        color: root.enabled ? Theme.text : Theme.muted-text;
+        vertical-alignment: center; overflow: elide;
+    }
+    keys := Text {
+        x: root.width - self.width - 8px; y: 0px;
+        width: min(key-metrics.preferred-width, root.width * 0.35); height: root.height;
+        text: root.shortcut; font-size: Theme.small-font;
+        color: root.enabled ? Theme.secondary-text : Theme.muted-text;
+        horizontal-alignment: right; vertical-alignment: center; overflow: elide;
+    }
+}

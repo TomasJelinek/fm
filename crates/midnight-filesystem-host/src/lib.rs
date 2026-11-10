@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 mod discovery;
 mod session;
+mod staging;
 pub use discovery::{Catalog, Package};
 pub use session::Mount;
 #[cfg(test)]

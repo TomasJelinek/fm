@@ -1,5 +1,6 @@
 schema_version = 1
 id = "midnight.viewer.markdown"
+name = "Markdown viewer"
 kind = "viewer"
 version = "0.1.0"
 entry_library = "midnight_viewer_markdown.dll"
@@ -11,4 +12,4 @@ models = ["document-blocks.v1", "text-page.v1"]
 modes = ["document", "text"]
 extensions = ["md", "markdown", "mdown", "mkd"]
 priority = 100
-description = "Bounded CommonMark semantic preview; inert HTML and safe link metadata"
+description = "Displays Markdown documents. HTML stays inert and links are shown as metadata."

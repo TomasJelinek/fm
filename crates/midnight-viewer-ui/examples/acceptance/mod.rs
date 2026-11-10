@@ -1,4 +1,5 @@
 //! Observable native acceptance steps; all file output runs off the UI event loop.
+mod controls;
 mod fixtures;
 pub use fixtures::fixtures;
 
@@ -25,6 +26,8 @@ pub struct Probe {
     output: PathBuf,
     writer: tokio::runtime::Handle,
     started: Instant,
+    controls: controls::Controls,
+    image_ready_since: Option<Instant>,
 }
 
 impl Probe {
@@ -36,6 +39,8 @@ impl Probe {
             output,
             writer,
             started: Instant::now(),
+            controls: Default::default(),
+            image_ready_since: None,
         }
     }
 
@@ -111,6 +116,9 @@ impl Probe {
                 key(window, " ");
             }
             5 if window.get_caption().contains("source.rs") && text.contains("fn main") => {
+                if !self.controls.source(window)? {
+                    return Ok(false);
+                }
                 let surface = pixels(window)?;
                 require(
                     surface.as_bytes().as_chunks::<4>().0.iter().any(|pixel| {
@@ -120,12 +128,26 @@ impl Probe {
                     "Source strings must paint green syntax pixels",
                 )?;
                 self.snapshot(window, "05-source")?;
+                window.invoke_focus_content();
                 key(window, " ");
             }
-            6 if window.get_caption().contains("markdown.md") && text.contains("Hello world") => {
+            6 if window.get_caption().contains("markdown.md")
+                && window.get_markdown_mode()
+                && !text.is_empty() =>
+            {
+                if !self.controls.markdown(window)? {
+                    return Ok(false);
+                }
                 require(
                     !text.contains("**") && !text.contains("# Heading"),
                     "Markdown must show parsed text",
+                )?;
+                require(
+                    text.contains("Café 世界")
+                        && text.contains("ready")
+                        && text.contains("Done")
+                        && !text.contains("~~old~~"),
+                    "Markdown must retain Unicode table cells and parse tasks and strikeout",
                 )?;
                 require(
                     pixels(window)?
@@ -137,9 +159,21 @@ impl Probe {
                     "Markdown heading must paint styled pixels",
                 )?;
                 self.snapshot(window, "06-markdown")?;
+                window.invoke_focus_content();
                 key(window, " ");
             }
             7 if window.get_caption().contains("image.bmp") && window.get_image_mode() => {
+                // Hiding text controls changes the physical viewport. Zoom
+                // intentionally rejects input until that geometry is acknowledged.
+                if self
+                    .image_ready_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    < Duration::from_millis(300)
+                    || !window.get_position_context().starts_with("image:")
+                {
+                    return Ok(false);
+                }
                 require(
                     window.get_document_page() == 0,
                     "Ordinary image cannot expose PDF paging",
@@ -239,6 +273,11 @@ fn require(condition: bool, message: &str) -> Result<()> {
 }
 
 fn pixels(window: &ViewerWindow) -> Result<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    if window.get_tiled() {
+        // Image panning retains independent textures rather than a single
+        // raster. Verify the actual composed native window in that mode.
+        return Ok(window.window().take_snapshot()?);
+    }
     window
         .get_surface()
         .to_rgba8()
@@ -291,9 +330,18 @@ fn find_control(item: ItemRc, label: &str) -> Option<ItemRc> {
 }
 
 fn click(window: &ViewerWindow, label: &str) -> Result<()> {
+    // Conditional controls appear when a backend mode frame arrives. Resolve
+    // their layout before inspecting the accessibility tree or pointer bounds.
+    let _ = window.window().take_snapshot()?;
     let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
-    let item =
-        find_control(root, label).ok_or_else(|| format!("Missing visible control: {label}"))?;
+    let item = find_control(root, label).ok_or_else(|| {
+        format!(
+            "Missing visible control: {label}; source={}, markdown={}, status={}",
+            window.get_source_mode(),
+            window.get_markdown_mode(),
+            window.get_status()
+        )
+    })?;
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
     let position = slint::LogicalPosition::new(

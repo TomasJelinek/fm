@@ -1,0 +1,77 @@
+import { Theme } from "theme.slint";
+import { FileRow, TreePress } from "file-models.slint";
+
+// Separate input ownership keeps expansion out of selection, drag and activation.
+export component TreeDisclosure inherits Rectangle {
+    in property <FileRow> item;
+    in property <TreePress> press;
+    in property <string> context;
+    in property <int> view-mode;
+    callback pressed();
+    callback disclose(string);
+    private property <bool> expanded: root.item.tree-expanded;
+    private property <bool> available: root.expanded || root.item.tree-disclosure == 1
+        || root.item.tree-disclosure == 3 || root.item.tree-disclosure == 6;
+    private property <string> label: root.expanded ? "Collapse folders in "
+        : root.item.tree-disclosure == 1 ? "Discover folders in "
+        : root.item.tree-disclosure == 2 ? "Loading folders in "
+        : root.item.tree-disclosure == 6 ? "Retry folders in " : "Expand folders in ";
+    border-radius: 3px;
+    background: pointer.has-hover && root.available ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label + root.item.name;
+    accessible-enabled: root.available;
+    accessible-action-default => { if root.available { root.disclose(root.item.identity); } }
+    Text {
+        text: root.expanded ? "−" : root.item.tree-disclosure == 3 ? "+"
+            : root.item.tree-disclosure == 1 ? "›" : root.item.tree-disclosure == 2 ? "…" : "↻";
+        color: Theme.secondary-text;
+        font-size: Theme.font-size;
+        horizontal-alignment: center; vertical-alignment: center;
+        accessible-role: none;
+    }
+    pointer := TouchArea {
+        private property <string> pressed-identity;
+        private property <int> pressed-disclosure;
+        private property <bool> pressed-expanded;
+        private property <string> pressed-context;
+        private property <int> pressed-view-mode;
+        private property <bool> left-pressed;
+        private property <bool> completed;
+        private property <bool> moved-away;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                self.left-pressed = event.button == PointerEventButton.left;
+                self.completed = false;
+                self.moved-away = false;
+                self.pressed-identity = root.press.active ? root.press.identity : root.item.identity;
+                self.pressed-disclosure = root.press.active ? root.press.disclosure : root.item.tree-disclosure;
+                self.pressed-expanded = root.press.active ? root.press.expanded : root.item.tree-expanded;
+                self.pressed-context = root.press.active ? root.press.context : root.context;
+                self.pressed-view-mode = root.press.active ? root.press.view-mode : root.view-mode;
+                root.pressed();
+            } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                let valid = self.left-pressed && self.completed && !self.moved-away && root.available
+                    && !(root.press.active && root.press.cancelled)
+                    && self.pressed-identity == root.item.identity
+                    && self.pressed-disclosure == root.item.tree-disclosure
+                    && self.pressed-expanded == root.item.tree-expanded
+                    && self.pressed-context == root.context && self.pressed-view-mode == root.view-mode
+                    && self.mouse-x >= 0px && self.mouse-x < self.width
+                    && self.mouse-y >= 0px && self.mouse-y < self.height;
+                self.left-pressed = false;
+                self.completed = false;
+                if valid { root.disclose(self.pressed-identity); }
+            } else if event.kind == PointerEventKind.cancel {
+                self.left-pressed = false;
+                self.completed = false;
+                self.pressed-identity = "";
+            }
+        }
+        moved => {
+            if self.left-pressed && (abs(self.mouse-x - self.pressed-x) >= 6px
+                || abs(self.mouse-y - self.pressed-y) >= 6px) { self.moved-away = true; }
+        }
+        clicked => { self.completed = self.left-pressed; }
+    }
+}

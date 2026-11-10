@@ -48,6 +48,9 @@ fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
     midnight_ui::install_file_keys(&window);
+    // This standalone host represents loaded preferences; Options otherwise
+    // intentionally blocks edits until the asynchronous initial load completes.
+    window.set_preferences_ready(true);
     let reads = Rc::new(Cell::new(0));
     window.set_font_choices(ModelRc::new(Catalog(reads.clone())));
     window.set_font_list_ready(true);

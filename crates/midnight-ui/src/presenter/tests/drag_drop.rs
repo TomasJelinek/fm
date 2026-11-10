@@ -1,5 +1,33 @@
 use super::*;
 
+#[test]
+fn dragging_a_native_nested_tree_occurrence_requests_exact_backend_capture() {
+    let (mut p, root) = super::tree::fixture();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(super::tree::publication(
+            root, 1, true, false,
+        )))),
+        &|_| true,
+    );
+    let row = p.panes[0].tree_row(1).unwrap();
+    let identity = p.panes[0].row_identity(&row.entry);
+    let sent = RefCell::new(Vec::new());
+    assert!(p.begin_file_drag(PaneId::Left, 2, &identity, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    assert!(sent.borrow().iter().any(|command| matches!(
+        command,
+        Command::Tree(request) if matches!(request.as_ref(), TreeCommand::Clipboard(_))
+    )));
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::PrepareDrag { .. }))
+    );
+}
+
 fn loaded() -> (Presenter, PathBuf) {
     let base = test_root().join("drag 文档 & $(literal)");
     let mut presenter = Presenter::new(base.clone(), test_root().join("target"));
@@ -78,7 +106,7 @@ fn drag_waits_for_exact_pending_selection_then_rejects_late_preparation_after_re
             navigation: all.navigation,
             revision: all.revision,
             selection: Arc::new(SelectionSnapshot::from_bits(all.view.unwrap(), vec![7]).unwrap()),
-            deferred: false,
+            deferred: Default::default(),
         },
         &send,
     );
@@ -93,7 +121,7 @@ fn drag_waits_for_exact_pending_selection_then_rejects_late_preparation_after_re
             _ => None,
         })
         .unwrap();
-    p.release_file_drag(None, &send);
+    p.release_file_drag(None, InternalDropIntent::Copy, &send);
     p.apply_with_sender(
         Event::DragDrop(DragDropEvent::Prepared { id, item_count: 3 }),
         &send,
@@ -115,6 +143,9 @@ fn accepted_drop_retries_one_operation_identity_and_keeps_captured_destination()
     let (mut p, _) = loaded();
     let destination = Arc::new(test_root().join("captured target"));
     let event = Event::DragDrop(DragDropEvent::DropAccepted {
+        drag: None,
+        intent: TransferIntent::Copy,
+        verification: None,
         token: DropToken(7),
         pane: PaneId::Right,
         item_count: 2,
@@ -137,13 +168,109 @@ fn accepted_drop_retries_one_operation_identity_and_keeps_captured_destination()
         true
     });
     let sent = sent.borrow();
-    let [Command::AcceptDrop { token, id: actual }] = sent.as_slice() else {
+    let [
+        Command::AcceptDrop {
+            token, id: actual, ..
+        },
+    ] = sent.as_slice()
+    else {
         panic!("one admitted drop must enqueue exactly one handoff");
     };
     assert_eq!(*token, DropToken(7));
     assert_eq!(*actual, id);
     assert_eq!(p.copies.progress[0].destination_directory, *destination);
     p.flush_drag_commands(&|_| panic!("accepted handoff must not repeat"));
+}
+
+#[test]
+fn accepted_internal_move_retains_its_frozen_verification_and_operation_label() {
+    let (mut p, _) = loaded();
+    assert_eq!(p.transfer_verification(), TransferVerification::FullSha256);
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::DropAccepted {
+            drag: None,
+            token: DropToken(8),
+            pane: PaneId::Right,
+            item_count: 1,
+            destination: Arc::new(test_root().join("captured target")),
+            intent: TransferIntent::Move,
+            verification: Some(TransferVerification::SizeAndSamples),
+        }),
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    assert_eq!(p.copies.progress[0].intent, TransferIntent::Move);
+    assert_eq!(
+        p.copies.progress[0].verification,
+        TransferVerification::SizeAndSamples
+    );
+    assert!(sent.borrow().iter().any(|command| matches!(
+        command,
+        Command::AcceptDrop {
+            verification: TransferVerification::SizeAndSamples,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn late_internal_acceptance_cannot_clear_marks_from_a_new_source_navigation() {
+    let (mut p, base) = loaded();
+    set_selected(&mut p, PaneId::Left, &[EntryId(1)]);
+    assert!(p.begin_file_drag(PaneId::Left, 1, &identity(&p, 1), &|_| true));
+    let drag = DragId(p.drag_drop.lifecycle.active.unwrap().id);
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::Prepared {
+            id: drag,
+            item_count: 1,
+        }),
+        &|_| true,
+    );
+    let target = p.preview_internal_drag_target(PaneId::Left, None).unwrap();
+    p.release_file_drag(Some(target), InternalDropIntent::Copy, &|_| true);
+    let away = test_root().join("another location");
+    let navigation = begin(&mut p, PaneId::Left, away.to_str().unwrap());
+    finish(&mut p, PaneId::Left, navigation, Vec::new());
+    let navigation = begin(&mut p, PaneId::Left, base.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![Entry::new(EntryId(101), base.join("one"), EntryKind::File)],
+    );
+    set_selected(&mut p, PaneId::Left, &[EntryId(101)]);
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::DropAccepted {
+            drag: Some(drag),
+            token: DropToken(12),
+            pane: PaneId::Right,
+            item_count: 1,
+            destination: Arc::new(test_root().join("accepted target")),
+            intent: TransferIntent::Copy,
+            verification: Some(TransferVerification::FullSha256),
+        }),
+        &|_| true,
+    );
+    let operation = p.copies.progress[0].id;
+    p.apply(Event::Copy(CopyEvent::RootCompleted {
+        id: operation,
+        source: CompletedCopySource::Native(base.join("one")),
+    }));
+    let sent = RefCell::new(Vec::new());
+    p.flush_copy_selection(&|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Selection(_))),
+        "a late acceptance must retain the old gesture origin, not clear new marks"
+    );
 }
 
 #[test]
@@ -161,6 +288,9 @@ fn exhausted_operation_ids_reject_an_admitted_drop_without_creating_a_job() {
     let (mut p, _) = loaded();
     p.operations.next_id = u64::MAX;
     let event = Event::DragDrop(DragDropEvent::DropAccepted {
+        drag: None,
+        intent: TransferIntent::Copy,
+        verification: None,
         token: DropToken(7),
         pane: PaneId::Right,
         item_count: 1,
@@ -216,7 +346,7 @@ fn unavailable_native_gesture_keeps_the_next_gesture_eligible_for_native_draggin
             &send,
         );
         assert_eq!(p.drag_native_ready(), None, "do not retry the same gesture");
-        p.release_file_drag(None, &send);
+        p.release_file_drag(None, InternalDropIntent::Copy, &send);
         previous = Some(id);
     }
 }

@@ -58,6 +58,7 @@ async fn failed_navigation(action: ArchiveAction) -> crate::SnapshotState {
     catalog.set(Catalog::default()).unwrap();
     let mut controller = Controller {
         capture: None,
+        locale: None,
         catalog: Arc::new(catalog),
         budget: Arc::new(Semaphore::new(2)),
         cancellations: std::array::from_fn(|_| Cancellation::default()),
@@ -88,6 +89,7 @@ async fn failed_navigation(action: ArchiveAction) -> crate::SnapshotState {
 async fn failed_archive_open_restores_native_snapshot_capabilities() {
     let state = failed_navigation(ArchiveAction::Open {
         path: std::env::temp_dir().join("missing.zip"),
+        format: ArchiveFormat::Zip,
     })
     .await;
     assert!(state.archive_navigation.is_none());
@@ -99,6 +101,7 @@ async fn failed_archive_open_restores_native_snapshot_capabilities() {
 async fn unavailable_saved_archive_keeps_native_capabilities_disabled() {
     let state = failed_navigation(ArchiveAction::List(ArchiveLocation::unavailable(
         ArchiveAddress {
+            format: None,
             provider: "missing.provider".into(),
             container: std::env::temp_dir().join("missing.zip"),
             source_version: vec![1],

@@ -55,6 +55,51 @@ fn initial_heading_preserves_raw_navigation_bounds() {
 }
 
 #[test]
+fn table_metadata_survives_sequential_forward_and_backward_viewports() {
+    let input = "| Name | Count |\n| :--- | ---: |\n| Café | 12 |\n| 字 | 42 |\n\nAfter table\n";
+    let mut host = open(input.as_bytes(), MODE_DOCUMENT);
+    let first = viewport(&mut host, 0, false, 14);
+    assert!(first.has_after);
+    assert!(first.blocks[0].table.as_ref().unwrap().header);
+    let second = viewport(&mut host, first.source.end().unwrap(), false, 8192);
+    assert!(
+        second
+            .blocks
+            .iter()
+            .any(|block| block.table.is_some() && block.text.text.contains("字"))
+    );
+    // A larger request retains the complete table, including rows preceding
+    // the requested anchor. Scroll back from its end instead of assuming that
+    // the returned page starts at the exact raw request byte.
+    let backward = viewport(&mut host, second.source.end().unwrap(), true, 8192);
+    assert!(backward.blocks.iter().any(|block| block.table.is_some()));
+    assert!(backward.source.offset < second.source.end().unwrap());
+}
+
+#[test]
+fn distant_table_rows_use_bounded_readable_fallback_without_losing_source_text() {
+    let mut input = String::from("| Name | Count |\n| --- | ---: |\n");
+    for row in 0..2400 {
+        input.push_str(&format!(
+            "| Row {row:04} with a longer Unicode value 字 | {row} |\n"
+        ));
+    }
+    let needle = "| Row 2000";
+    let anchor = input.find(needle).unwrap() as u64;
+    assert!(anchor > 65536);
+    let mut host = open(input.as_bytes(), MODE_DOCUMENT);
+    let page = viewport(&mut host, anchor, false, 128);
+    assert!(
+        page.blocks
+            .iter()
+            .any(|block| block.text.text.contains(needle))
+    );
+    assert!(page.blocks.iter().all(|block| block.table.is_none()));
+    assert!(page.source.offset <= anchor && page.source.end().unwrap() > anchor);
+    assert!(host.reads().iter().all(|read| read.length <= 65536));
+}
+
+#[test]
 fn initial_invisible_prefix_does_not_offer_an_empty_previous_page() {
     for (input, first) in [
         ("\n\n# Heading\n", 4),

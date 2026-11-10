@@ -17,7 +17,8 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         let p = &mut self.panes[pane.index()];
-        if p.loading || p.size_scan.is_some() || p.archive.is_some() {
+        if p.tree_view().is_some() || p.loading || p.size_scan.is_some() || !p.native_capabilities()
+        {
             return;
         }
         let Some(navigation) = p.successful_generation else {
@@ -34,7 +35,7 @@ impl Presenter {
             return;
         }
         let Some(next) = p.size_scan_generation.checked_add(1) else {
-            p.error = "Size request identities are exhausted.".into();
+            p.set_error("Size request identities are exhausted.", &mut self.retired);
             return;
         };
         let scan = FolderSizeScanId(next);
@@ -45,7 +46,12 @@ impl Presenter {
             entry,
         }) {
             p.size_scan_generation = next;
-            p.folder_sizes.insert(path.clone(), FolderSize::default());
+            if p.cancelled_size_scan.take().is_some() {
+                self.retired.push(Box::new(p.size_scan_scope.take()));
+            }
+            self.retired.push(Box::new(
+                p.folder_sizes.insert(path.clone(), FolderSize::default()),
+            ));
             p.entry_size_scans.push(EntrySizeScope {
                 scan,
                 navigation,
@@ -54,7 +60,10 @@ impl Presenter {
                 entry,
             });
         } else {
-            p.error = "Folder size queue is busy. Try Space again.".into();
+            p.set_error(
+                "Folder size queue is busy. Try Space again.",
+                &mut self.retired,
+            );
         }
     }
 
@@ -90,13 +99,17 @@ impl Presenter {
                     .get(&scope.path)
                     .is_some_and(|previous| previous.finished && !size.finished);
                 if !keep_final {
-                    p.folder_sizes.insert(scope.path.clone(), size);
+                    self.retired
+                        .push(Box::new(p.folder_sizes.insert(scope.path.clone(), size)));
+                } else {
+                    self.retired.push(Box::new(size));
                 }
             }
             Event::FolderSizesFinished { navigation, .. } if navigation == scope.navigation => {
                 self.retired
                     .push(Box::new(p.entry_size_scans.remove(index)));
             }
+            Event::FolderSizeUpdated { size, .. } => self.retired.push(Box::new(size)),
             _ => {}
         }
         None

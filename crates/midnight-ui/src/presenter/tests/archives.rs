@@ -18,6 +18,7 @@ impl ArchiveMount for FixtureMount {
 }
 fn node(id: u64, name: &str, kind: EntryKind) -> Entry {
     Entry::from_archive(ArchiveNode {
+        modified: None,
         id: VirtualEntryId {
             mount: 42,
             entry: id,
@@ -30,7 +31,7 @@ fn node(id: u64, name: &str, kind: EntryKind) -> Entry {
         readable: kind == EntryKind::File,
     })
 }
-fn archive_pane() -> Presenter {
+pub(super) fn archive_pane() -> Presenter {
     let mut p = Presenter::new(test_root(), test_root());
     let path = p.panes[0].path.to_string_lossy().into_owned();
     let nav = begin(&mut p, PaneId::Left, &path);
@@ -38,6 +39,7 @@ fn archive_pane() -> Presenter {
     let location = ArchiveLocation {
         mount: Some(Arc::new(FixtureMount)),
         address: ArchiveAddress {
+            format: None,
             provider: "midnight.archive".into(),
             container: test_root().join("sample.zip"),
             source_version: vec![1, 2, 3],
@@ -62,6 +64,57 @@ fn archive_pane() -> Presenter {
         }),
     });
     p
+}
+
+#[test]
+fn archive_bulk_selection_previews_and_acknowledges_opaque_file_and_folder_ids() {
+    let mut p = archive_pane();
+    for (operation, expected) in [
+        (SelectionOperation::All, [true, true, true]),
+        (SelectionOperation::FilesOnly, [false, true, true]),
+        (SelectionOperation::Clear, [false, false, false]),
+    ] {
+        let command = RefCell::new(None);
+        assert!(p.bulk_selection(PaneId::Left, operation, &|value| {
+            *command.borrow_mut() = Some(value);
+            true
+        }));
+        let Command::ArchiveSelect {
+            navigation,
+            revision,
+            view,
+            action: ArchiveSelectionAction::Bulk(sent),
+            ..
+        } = command.into_inner().unwrap()
+        else {
+            panic!("archive bulk selection command")
+        };
+        assert_eq!(sent, operation);
+        let mut selected = HashSet::new();
+        let mut totals = ArchiveSelectionTotals::default();
+        for (entry, expected) in p.panes[0].entries.iter().zip(expected) {
+            assert_eq!(p.panes[0].selection_visible(entry), expected);
+            if expected {
+                selected.insert(entry.id);
+                totals.change(entry.kind, entry.metadata.size, true);
+            }
+        }
+        p.apply(Event::ArchiveSelection {
+            pane: PaneId::Left,
+            navigation,
+            revision,
+            view,
+            result: Ok(ArchiveSelectionResult {
+                selected: Arc::new(selected),
+                totals,
+            }),
+        });
+        assert!(!p.panes[0].archive.as_ref().unwrap().selection_pending);
+        assert!(p.panes[0].selection_preview.is_empty());
+        for (entry, expected) in p.panes[0].entries.iter().zip(expected) {
+            assert_eq!(p.panes[0].selection_visible(entry), expected);
+        }
+    }
 }
 
 #[test]
@@ -241,10 +294,16 @@ fn readonly_archives_never_enqueue_native_operations_or_external_launch() {
     p.start_operation(PaneId::Left, MutationKind::CreateDirectory, &send);
     p.start_operation(PaneId::Left, MutationKind::Rename, &send);
     p.start_operation(PaneId::Left, MutationKind::Delete(DeleteMode::Trash), &send);
+    p.start_operation(
+        PaneId::Left,
+        MutationKind::Delete(DeleteMode::Permanent),
+        &send,
+    );
+    p.start_operation(PaneId::Left, MutationKind::CreateFile, &send);
+    p.start_operation(PaneId::Left, MutationKind::EditMetadata, &send);
     p.paste_files(PaneId::Left, &send);
     p.copy_files(PaneId::Left, &send);
     p.edit_file(PaneId::Left, &send);
-    p.folder_sizes(PaneId::Left, &send);
     assert!(!p.open(PaneId::Left, 2, &send));
     assert!(!p.open_terminal(&send));
 }
@@ -282,12 +341,30 @@ fn directory_activation_parent_and_refresh_keep_the_provider_identity() {
     }));
     let Command::ArchiveNavigate {
         action: ArchiveAction::List(location),
+        navigation,
         ..
     } = command.borrow_mut().take().unwrap()
     else {
         panic!("expected archive parent");
     };
     assert_eq!(location.directory, 1);
+    let entries: Arc<[Entry]> = vec![
+        node(7, "folder", EntryKind::Directory),
+        node(2, "folder", EntryKind::Directory),
+    ]
+    .into();
+    p.apply(Event::ArchiveListed {
+        pane: PaneId::Left,
+        navigation,
+        result: Ok(ArchiveListing {
+            location,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        }),
+    });
+    assert_eq!(p.panes[0].cursor, Some(EntryId(2)));
+    assert_eq!(p.panes[0].cursor_index(), Some(2));
+    assert!(p.panes[0].archive.as_ref().unwrap().selected.is_empty());
     assert!(p.refresh_location(PaneId::Left, &|c| matches!(
         c,
         Command::ArchiveNavigate { .. }
@@ -447,7 +524,7 @@ fn installed_provider_claims_native_archive_activation_and_disables_mutations_wh
         assert!(
             p.open(PaneId::Left, p.panes[0].parent_offset(), &|command| {
                 matches!(command, Command::ArchiveNavigate {
-                action: ArchiveAction::Open { path }, ..
+                action: ArchiveAction::Open { path, .. }, ..
             } if path == source)
             })
         );
@@ -472,6 +549,7 @@ fn saved_archive_tabs_restore_lazily_and_keep_addresses_when_provider_is_missing
         paths: vec![test_root(), test_root()],
         active: 1,
         archives: [(1, address.clone())].into(),
+        networks: Default::default(),
     };
     let mut p = Presenter::new(test_root(), test_root());
     let sent = RefCell::new(Vec::new());
@@ -599,4 +677,36 @@ fn unavailable_nested_archive_can_navigate_out_without_restoring_the_provider() 
         p.panes[0].pending.as_ref().unwrap().wanted_cursor.as_ref(),
         Some(&container)
     );
+}
+
+#[test]
+fn custom_compound_suffix_dispatches_the_chosen_decoder_with_the_original_native_path() {
+    let mut presenter = Presenter::new(test_root(), test_root());
+    let mut preferences = UserPreferences::default();
+    preferences
+        .archive_custom_extensions
+        .insert("backup.gz".into(), ArchiveFormat::SevenZip);
+    presenter.apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
+    let directory = presenter.panes[0].path.to_string_lossy().into_owned();
+    let navigation = begin(&mut presenter, PaneId::Left, &directory);
+    let source = test_root().join("文档.BACKUP.GZ");
+    finish(
+        &mut presenter,
+        PaneId::Left,
+        navigation,
+        vec![Entry::new(EntryId(7), source.clone(), EntryKind::File)],
+    );
+    presenter.apply(Event::ArchiveAvailability(vec![
+        ArchiveFormat::Gzip,
+        ArchiveFormat::SevenZip,
+    ]));
+    assert!(presenter.open(
+        PaneId::Left,
+        presenter.panes[0].parent_offset(),
+        &|command| {
+            matches!(command, Command::ArchiveNavigate {
+            action: ArchiveAction::Open { path, format: ArchiveFormat::SevenZip }, ..
+        } if path == source)
+        }
+    ));
 }

@@ -16,8 +16,10 @@ pub(crate) struct DragDropState {
     pub(crate) pointer_down: bool,
     pub(crate) item_count: usize,
     pub(crate) hover: Option<PaneId>,
+    pub(super) tree: tree_drag::State,
+    origins: HashMap<DragId, copy_selection::CapturedOrigins>,
     cancelled: VecDeque<DragId>,
-    accepted: VecDeque<(DropToken, OperationId)>,
+    accepted: VecDeque<(DropToken, OperationId, TransferVerification)>,
     rejected: VecDeque<DropToken>,
     last_drop_token: u64,
 }
@@ -31,13 +33,14 @@ pub(crate) fn invalidate(targets: &SharedDropTargets) {
 }
 
 impl Presenter {
-    fn drag_stamp(&self, pane: PaneId) -> SourceStamp {
+    pub(super) fn drag_stamp(&self, pane: PaneId) -> SourceStamp {
         let p = &self.panes[pane.index()];
         SourceStamp {
             pane: pane.index(),
             navigation: p.generation,
             displayed: p.displayed_generation().0,
             view: p.search.view_revision,
+            tree: p.tree_view().map(|view| view.stamp),
         }
     }
 
@@ -53,14 +56,20 @@ impl Presenter {
             || self.drag_drop.closed
             || !self.drag_drop.cancelled.is_empty()
             || self.drag_drop.lifecycle.active.is_some()
+            || self.drag_drop.tree.destination.is_some()
+            || self.drag_drop.origins.len() >= 32
             || self.selection_actions[pane.index()].is_some()
         {
             return false;
         }
+        if self.panes[pane.index()].tree_view().is_some() {
+            return self.begin_tree_drag(pane, row, identity, send);
+        }
         let p = &self.panes[pane.index()];
-        if !p.search_allows_activation()
+        if !p.native_capabilities()
+            || !p.search_allows_activation()
             || p.selection_pending_bulk
-            || p.selection_deferred
+            || p.selection_deferred.any()
             || p.selection_rebase_pending
         {
             return false;
@@ -84,20 +93,9 @@ impl Presenter {
         let selected = p.selection_visible(entry);
         let fallback = entry.path.clone();
         let view = p.display_index().clone();
-        let Some(id) = self
-            .drag_drop
-            .lifecycle
-            .begin(self.drag_stamp(pane))
-            .map(DragId)
-        else {
+        let Some(id) = self.start_file_drag(pane, row) else {
             return false;
         };
-        self.drag_drop.pointer_down = true;
-        self.drag_drop.gesture_fallback = false;
-        self.drag_drop.item_count = 0;
-        self.drag_drop.hover = None;
-        self.active = pane;
-        self.focus_display_row(pane, row);
         if selected {
             self.request_selection_action(pane, selection_actions::SelectionIntent::Drag(id), send);
         } else {
@@ -114,6 +112,37 @@ impl Presenter {
             );
         }
         self.drag_drop.lifecycle.active.is_some()
+    }
+
+    pub(super) fn start_file_drag(&mut self, pane: PaneId, row: usize) -> Option<DragId> {
+        let id = self
+            .drag_drop
+            .lifecycle
+            .begin(self.drag_stamp(pane))
+            .map(DragId)?;
+        self.drag_drop.pointer_down = true;
+        self.drag_drop.gesture_fallback = false;
+        self.drag_drop.item_count = 0;
+        self.drag_drop.hover = None;
+        self.active = pane;
+        self.focus_display_row(pane, row);
+        self.drag_drop
+            .origins
+            .insert(id, self.capture_copy_origins());
+        Some(id)
+    }
+
+    pub(super) fn queue_cancelled_drag(&mut self, id: DragId) {
+        self.retire_drag_origin(id);
+        if !self.drag_drop.cancelled.contains(&id) {
+            self.drag_drop.cancelled.push_back(id);
+        }
+    }
+
+    fn retire_drag_origin(&mut self, id: DragId) {
+        if let Some(origin) = self.drag_drop.origins.remove(&id) {
+            self.retired.push(Box::new(origin));
+        }
     }
 
     pub(super) fn prepare_selected_drag(
@@ -150,8 +179,9 @@ impl Presenter {
     }
 
     pub(crate) fn cancel_file_drag(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.cancel_tree_drag(None);
         if let Some(gesture) = self.drag_drop.lifecycle.cancel() {
-            self.drag_drop.cancelled.push_back(DragId(gesture.id));
+            self.queue_cancelled_drag(DragId(gesture.id));
             let pane = if gesture.source.pane == 0 {
                 PaneId::Left
             } else {
@@ -174,11 +204,13 @@ impl Presenter {
 
     pub(crate) fn release_file_drag(
         &mut self,
-        target: Option<(FileDropTarget, u64)>,
+        target: Option<InternalDropDestination>,
+        intent: InternalDropIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
         self.drag_drop.pointer_down = false;
         let Some(gesture) = self.drag_drop.lifecycle.release() else {
+            self.retired.push(Box::new(target));
             return;
         };
         self.drag_drop.hover = None;
@@ -187,18 +219,28 @@ impl Presenter {
         } else {
             PaneId::Right
         };
-        let valid = gesture.phase == Phase::Ready && self.drag_stamp(pane) == gesture.source;
-        if valid
-            && let Some((target, targets_revision)) = target
-            && send(Command::InternalDrop {
+        let valid = !self.operations.closing
+            && !self.drag_drop.closed
+            && gesture.phase == Phase::Ready
+            && self.drag_stamp(pane) == gesture.source;
+        let target = if valid {
+            target.and_then(|target| self.prepare_internal_drag_target(target, DragId(gesture.id)))
+        } else {
+            self.retired.push(Box::new(target));
+            None
+        };
+        if let Some(destination) = target
+            && send(Command::InternalDrop(Box::new(InternalDropRequest {
                 id: DragId(gesture.id),
-                target,
-                targets_revision,
-            })
+                destination,
+                intent,
+                verification: self.transfer_verification(),
+            })))
         {
             return;
         }
-        self.drag_drop.cancelled.push_back(DragId(gesture.id));
+        self.cancel_tree_drag(None);
+        self.queue_cancelled_drag(DragId(gesture.id));
         if self.selection_actions[pane.index()]
             .as_ref()
             .is_some_and(|pending| {
@@ -209,6 +251,57 @@ impl Presenter {
             self.cancel_selection_actions(pane);
         }
         self.flush_drag_commands(send);
+    }
+
+    pub(crate) fn preview_internal_drag_target(
+        &self,
+        pane: PaneId,
+        row: Option<(usize, &str)>,
+    ) -> Option<InternalDropDestination> {
+        let p = &self.panes[pane.index()];
+        let navigation = p.successful_generation?;
+        if self.operations.closing
+            || self.drag_drop.closed
+            || p.loading
+            || !p.native_capabilities()
+            || !p.search_allows_activation()
+            || navigation != NavigationId(p.generation)
+        {
+            return None;
+        }
+        if p.tree_view().is_some() && !p.tree_input_ready() {
+            return None;
+        }
+        let Some((row, identity)) = row else {
+            return Some(InternalDropDestination::PaneRoot { pane, navigation });
+        };
+        if let Some(view) = p.tree_view() {
+            let row = row
+                .checked_sub(p.parent_offset())
+                .and_then(|row| view.rows.get(row))?;
+            return (row.selectable
+                && row.navigable
+                && !row.context_only
+                && row.entry.kind == EntryKind::Directory
+                && row.entry.virtual_node.is_none()
+                && identity == p.row_identity(&row.entry))
+            .then(|| InternalDropDestination::TreeOccurrence {
+                view: view.clone(),
+                row: row.id,
+                request: TreeRequestId(0),
+            });
+        }
+        let entry = row
+            .checked_sub(p.parent_offset())
+            .and_then(|row| p.display_entry(row))?;
+        (entry.kind == EntryKind::Directory
+            && entry.virtual_node.is_none()
+            && identity == p.row_identity(entry))
+        .then_some(InternalDropDestination::PanelEntry {
+            pane,
+            navigation,
+            entry: entry.id,
+        })
     }
 
     pub(crate) fn drag_native_ready(&self) -> Option<DragId> {
@@ -350,11 +443,12 @@ impl Presenter {
                 PaneId::Right
             };
             if let Some(stale) = self.drag_drop.lifecycle.validate(self.drag_stamp(pane)) {
-                self.drag_drop.cancelled.push_back(DragId(stale.id));
+                self.queue_cancelled_drag(DragId(stale.id));
                 self.drag_drop.pointer_down = false;
                 self.drag_drop.hover = None;
             }
         }
+        self.flush_tree_drag(send);
         if !self.drag_drop.attached
             && !self.drag_drop.closed
             && !self.operations.closing
@@ -379,8 +473,12 @@ impl Presenter {
             }
             self.drag_drop.rejected.pop_front();
         }
-        while let Some((token, id)) = self.drag_drop.accepted.front().copied() {
-            if !send(Command::AcceptDrop { token, id }) {
+        while let Some((token, id, verification)) = self.drag_drop.accepted.front().copied() {
+            if !send(Command::AcceptDrop {
+                token,
+                id,
+                verification,
+            }) {
                 break;
             }
             self.drag_drop.accepted.pop_front();
@@ -406,14 +504,15 @@ impl Presenter {
             .drag_drop
             .accepted
             .iter()
-            .position(|(_, job)| *job == id)
+            .position(|(_, job, _)| *job == id)
         else {
             return false;
         };
-        let (token, _) = self.drag_drop.accepted.remove(index).unwrap();
+        let (token, _, _) = self.drag_drop.accepted.remove(index).unwrap();
         self.drag_drop.rejected.push_back(token);
         if let Some(progress) = self.copies.progress.iter_mut().find(|p| p.id == id) {
             Arc::make_mut(progress).state = CopyOperationState::Cancelled;
+            self.copies.automatic_jobs.observe_copy(progress);
         }
         self.copies.conflicts.retain(|conflict| conflict.id != id);
         self.trim_copy_history();
@@ -423,10 +522,11 @@ impl Presenter {
 
     pub fn shutdown_drag_drop(&mut self, send: &dyn Fn(Command) -> bool) {
         self.retire_drag_drop();
-        for (token, id) in self.drag_drop.accepted.drain(..) {
+        for (token, id, _) in self.drag_drop.accepted.drain(..) {
             self.drag_drop.rejected.push_back(token);
             if let Some(progress) = self.copies.progress.iter_mut().find(|p| p.id == id) {
                 Arc::make_mut(progress).state = CopyOperationState::Cancelled;
+                self.copies.automatic_jobs.observe_copy(progress);
             }
         }
         self.trim_copy_history();
@@ -441,6 +541,9 @@ impl Presenter {
     }
 
     pub(super) fn retire_drag_drop(&mut self) {
+        self.cancel_tree_drag(None);
+        self.retired
+            .push(Box::new(mem::take(&mut self.drag_drop.origins)));
         self.drag_drop.closed = true;
         if let Some(host) = &self.drag_drop.host {
             host.lifetime.cancel();
@@ -491,10 +594,36 @@ impl Presenter {
                     .active
                     .is_some_and(|g| g.id == id.0)
                 {
-                    self.drag_drop.cancelled.push_back(id);
+                    self.queue_cancelled_drag(id);
                 }
             }
             DragDropEvent::Finished { id, outcome } => {
+                let refresh = self
+                    .drag_drop
+                    .lifecycle
+                    .active
+                    .filter(|gesture| {
+                        gesture.id == id.0
+                            && gesture.phase == Phase::Native
+                            && matches!(outcome, DragFinish::Moved | DragFinish::Unconfirmed)
+                    })
+                    .map(|gesture| gesture.source);
+                if outcome != DragFinish::Unavailable {
+                    self.finish_tree_drag(id);
+                    self.retire_drag_origin(id);
+                }
+                if outcome == DragFinish::SourceRetained {
+                    self.desktop.status =
+                        "Destination requested source removal; original files were retained."
+                            .into();
+                    self.desktop
+                        .report("Move not completed", self.desktop.status.clone());
+                } else if outcome == DragFinish::Unconfirmed {
+                    self.desktop.status =
+                        "The destination accepted the drop but did not confirm completion. Check the source and destination folders.".into();
+                    self.desktop
+                        .report("Drop not confirmed", self.desktop.status.clone());
+                }
                 if self
                     .drag_drop
                     .lifecycle
@@ -511,41 +640,60 @@ impl Presenter {
                         self.drag_drop.pointer_down = false;
                         self.drag_drop.hover = None;
                         if outcome == DragFinish::Unavailable {
-                            self.drag_drop.cancelled.push_back(id);
+                            self.queue_cancelled_drag(id);
                         }
                     }
                 }
+                if let Some(source) = refresh {
+                    let pane = if source.pane == 0 {
+                        PaneId::Left
+                    } else {
+                        PaneId::Right
+                    };
+                    self.refresh_if_changed(pane, NavigationId(source.navigation), send);
+                }
             }
             DragDropEvent::DropAccepted {
+                drag,
                 token,
                 pane: _,
                 item_count,
                 destination,
+                intent,
+                verification,
             } => {
                 if token.0 <= self.drag_drop.last_drop_token {
                     return None;
                 }
                 self.drag_drop.last_drop_token = token.0;
+                let origins = drag.and_then(|drag| self.drag_drop.origins.remove(&drag));
                 let next = self.operations.next_id.checked_add(1);
                 if self.operations.closing
                     || self.drag_drop.closed
                     || item_count == 0
                     || !destination.is_absolute()
                     || self.drag_drop.accepted.len() >= 32
+                    || (drag.is_some() && origins.is_none())
                 {
                     self.drag_drop.rejected.push_back(token);
+                    self.retired.push(Box::new(origins));
                 } else if let Some(next) = next {
                     let id = OperationId(next);
+                    let verification = verification.unwrap_or_else(|| self.transfer_verification());
                     self.operations.next_id = id.0;
-                    self.copies.progress.push(Arc::new(CopyProgress::queued(
-                        id,
-                        (*destination).clone(),
-                        item_count as u64,
-                        TransferIntent::Copy,
-                    )));
-                    self.drag_drop.accepted.push_back((token, id));
+                    if let Some(origins) = origins {
+                        self.track_captured_copy_selection(id, origins);
+                    } else {
+                        self.track_copy_selection(id);
+                    }
+                    let mut progress =
+                        CopyProgress::queued(id, (*destination).clone(), item_count as u64, intent);
+                    progress.verification = verification;
+                    self.copies.progress.push(Arc::new(progress));
+                    self.drag_drop.accepted.push_back((token, id, verification));
                 } else {
                     self.drag_drop.rejected.push_back(token);
+                    self.retired.push(Box::new(origins));
                 }
             }
             DragDropEvent::Failed { id, error } => {
@@ -556,6 +704,10 @@ impl Presenter {
                         .is_some_and(|g| g.id == id.0)
                 }) {
                     self.cancel_file_drag(send);
+                }
+                if let Some(id) = id {
+                    self.finish_tree_drag(id);
+                    self.retire_drag_origin(id);
                 }
                 if id.is_none() {
                     self.drag_drop.supported = Some(false);

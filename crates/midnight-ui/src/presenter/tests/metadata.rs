@@ -183,7 +183,7 @@ fn metadata_action_waits_for_captured_selection_and_rejects_navigation() {
             navigation: NavigationId(nav),
             revision: SelectionRevision(8),
             selection,
-            deferred: false,
+            deferred: Default::default(),
         },
         &|c| {
             commands.borrow_mut().push(c);
@@ -224,7 +224,7 @@ fn navigation_cancels_a_metadata_intent_waiting_for_selection() {
             navigation: NavigationId(nav),
             revision: SelectionRevision(8),
             selection: old,
-            deferred: false,
+            deferred: Default::default(),
         },
         &|command| {
             assert!(!matches!(command, Command::PrepareOperation(_)));

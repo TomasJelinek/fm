@@ -59,6 +59,17 @@ pub fn decode_request(operation: u32, bytes: &[u8], maximum: usize) -> Result<Re
         16 => Request::VolumeInformation {
             address: input.address()?,
         },
+        17 => Request::Activate {
+            mount: input.u64()?,
+            node: input.u64()?,
+        },
+        18 => Request::Refresh {
+            mount: input.u64()?,
+            node: input.u64()?,
+        },
+        19 => Request::ResolveText {
+            text: input.text()?,
+        },
         _ => return Err(WireError::Unsupported),
     };
     input.finish()?;
@@ -145,6 +156,11 @@ pub fn decode_response(bytes: &[u8], maximum: usize) -> Result<Response, WireErr
                 8 => ErrorCode::Io,
                 9 => ErrorCode::StaleReference,
                 10 => ErrorCode::Busy,
+                11 => ErrorCode::Unavailable,
+                12 => ErrorCode::Offline,
+                13 => ErrorCode::AuthenticationRequired,
+                14 => ErrorCode::MountRequired,
+                15 => ErrorCode::TimedOut,
                 _ => return Err(WireError::Unsupported),
             };
             let os_code = if input.bool()? {
@@ -160,6 +176,11 @@ pub fn decode_response(bytes: &[u8], maximum: usize) -> Result<Response, WireErr
         }
         12 => Response::VolumeLabel(input.native_text()?),
         13 => Response::VolumeInformation(input.volume_information()?),
+        14 => Response::Activated(match input.u8()? {
+            1 => ActivationTarget::WithinProvider(input.address()?),
+            2 => ActivationTarget::Native(input.address()?),
+            _ => return Err(WireError::Unsupported),
+        }),
         _ => return Err(WireError::Unsupported),
     };
     input.finish()?;

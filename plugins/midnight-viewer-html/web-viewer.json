@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "protocol": 1,
+  "id": "midnight.viewer.html",
+  "name": "HTML viewer",
+  "version": "0.1.0",
+  "target": "x86_64-pc-windows-msvc",
+  "executable": "midnight-viewer-html.exe",
+  "extensions": ["html", "htm", "xhtml"]
+}

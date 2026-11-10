@@ -46,6 +46,17 @@ opt-level = 2
 [profile.dev.package.i-slint-renderer-femtovg]
 opt-level = 2
 
+# Native CPU sampling found unoptimized per-pixel blending dominating fallback
+# viewer redraws. Keep software presentation responsive when no GPU is available.
+[profile.dev.package.i-slint-renderer-software]
+opt-level = 2
+
+[profile.dev.package.i-slint-backend-winit]
+opt-level = 2
+
+[profile.dev.package.rgb]
+opt-level = 2
+
 [profile.dev.package.femtovg]
 opt-level = 2
 
@@ -68,6 +79,16 @@ opt-level = 1
 # Generated line tables are not useful when debugging handwritten presenters.
 debug = 0
 
+# Viewer iteration keeps hot pixel/layout loops useful without release LTO.
+[profile.dev.package.midnight-viewer-render]
+opt-level = 2
+
+[profile.dev.package.midnight-viewer-engine]
+opt-level = 1
+
+[profile.dev.package.midnight-viewer-ui]
+opt-level = 1
+
 # Text shaping and font lookup are part of every resized text layout too.
 [profile.dev.package.parley]
 opt-level = 2
@@ -82,4 +103,15 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.swash]
+opt-level = 2
+
+# Native System32 drag sampling found font decoding and trie lookup in these
+# unoptimized leaves. Keep backend services debuggable while optimizing text work.
+[profile.dev.package.read-fonts]
+opt-level = 2
+
+[profile.dev.package.font-types]
+opt-level = 2
+
+[profile.dev.package.zerotrie]
 opt-level = 2

@@ -86,3 +86,54 @@ impl StoredFilenameColor {
         }
     }
 }
+
+// Exact historical preset; customized, reordered and cleared lists stay untouched.
+fn legacy_defaults() -> Vec<FilenameColorRule> {
+    [
+        (
+            concat!(
+                "*.rs;*.c;*.h;*.cpp;*.hpp;*.cc;*.cs;*.java;*.kt;*.go;*.py;*.rb;*.js;*.jsx;",
+                "*.ts;*.tsx;*.swift;*.sh;*.ps1;*.sql;*.html;*.css;*.scss;*.vue;*.svelte;*.lua;",
+                "*.pl;*.php;*.slint;*.toml;*.yaml;*.yml;*.json;*.xml;*.cmake;Makefile;Dockerfile"
+            ),
+            RgbColor(70, 155, 215),
+        ),
+        (
+            "*.exe;*.com;*.bat;*.cmd;*.msi;*.appimage;*.run",
+            RgbColor(80, 170, 100),
+        ),
+        (
+            "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
+            RgbColor(185, 120, 210),
+        ),
+        (
+            "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",
+            RgbColor(220, 135, 65),
+        ),
+        (
+            concat!(
+                "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.txt;*.md;*.rst;*.xls;*.xlsx;*.ods;",
+                "*.ppt;*.pptx;*.odp;*.epub;*.csv;*.tsv"
+            ),
+            RgbColor(60, 165, 165),
+        ),
+    ]
+    .into_iter()
+    .map(|(expression, color)| FilenameColorRule {
+        expression: expression.into(),
+        style: FilenameStyle {
+            foreground: Some(color),
+            background: None,
+        },
+        ..Default::default()
+    })
+    .collect()
+}
+
+pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
+    if rules == legacy_defaults() {
+        midnight_core::default_filename_colors()
+    } else {
+        rules
+    }
+}

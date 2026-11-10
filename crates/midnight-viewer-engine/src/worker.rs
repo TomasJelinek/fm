@@ -20,20 +20,35 @@ mod image;
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
+#[path = "worker_text.rs"]
+mod text;
+#[path = "worker_web.rs"]
+mod web;
 
 struct Worker {
+    wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    preference_state: Arc<crate::preferences::Preferences>,
+    preference_revision: u64,
+    preferences: Arc<ViewerPreferences>,
     runtime: Arc<Runtime>,
     images: Arc<[midnight_image_viewer_host::Provider]>,
+    web_providers: Arc<[midnight_web_viewer_host::Provider]>,
+    web: Option<web::WebView>,
+    closing_web: Option<midnight_web_viewer_host::Session>,
+    image_ids: Arc<std::sync::atomic::AtomicU64>,
     image: Option<crate::image_view::ImageView>,
     closing_image: Option<crate::image_worker::ImageWorker>,
     files: Vec<(PathBuf, Option<crate::capture::Captured>)>,
     current: usize,
     basic: bool,
+    associations: Arc<ViewerAssociations>,
     disabled_plugins: Arc<[String]>,
     selected_mode: Option<u16>,
     modes: Vec<u16>,
     mode: u16,
     generation: u64,
+    positions: crate::position_ack::Positions,
+    position_page: Option<(u64, Page)>,
     session: Option<Session>,
     closing: Option<Session>,
     pending_open: bool,
@@ -44,6 +59,7 @@ struct Worker {
     renderer: TextRenderer,
     page: Option<Page>,
     shaped: Option<TextPage>,
+    text: text::Presentation,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
     image_size: [u32; 2],
@@ -54,6 +70,8 @@ struct Worker {
     binary: bool,
     wrap: bool,
     land_at_bottom: bool,
+    continuation: Option<crate::viewport::Continuation>,
+    queued_scroll: [f32; 2],
     caption: String,
     status: String,
     dirty: bool,
@@ -63,47 +81,75 @@ struct Worker {
 pub(crate) struct Services {
     pub runtime: Arc<Runtime>,
     pub images: Arc<[midnight_image_viewer_host::Provider]>,
+    pub web: Arc<[midnight_web_viewer_host::Provider]>,
     pub capture: crate::NativeCapture,
+    pub wake: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub preferences: Arc<crate::preferences::Preferences>,
 }
+
+pub(crate) use crate::input_queue::Message;
 
 pub(crate) fn run(
     services: Services,
     launch: ViewerLaunch,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
-    receiver: Receiver<ViewerInput>,
+    receiver: Receiver<Message>,
     output: &Mailbox,
     closed: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let Services {
         runtime,
         images,
+        web,
         capture,
+        wake,
+        preferences: preference_state,
     } = services;
     output.put(ViewerOutput::Status("Preparing file identities…".into()));
     let prepared = crate::capture::prepare_with(&launch, closed, capture)?;
+    let (preference_revision, preferences) = preference_state.snapshot();
     let mut disabled_plugins = launch.disabled_plugins.to_vec();
     // Ambiguous identities are disabled on both transports before any code loads.
+    let mut identities = std::collections::HashMap::new();
+    for id in runtime
+        .catalog()
+        .iter()
+        .map(|provider| &provider.id)
+        .chain(images.iter().map(|provider| &provider.id))
+        .chain(web.iter().map(|provider| &provider.id))
+    {
+        *identities.entry(id.clone()).or_insert(0usize) += 1;
+    }
     disabled_plugins.extend(
-        runtime
-            .catalog()
-            .iter()
-            .filter(|native| images.iter().any(|image| image.id == native.id))
-            .map(|native| native.id.clone()),
+        identities
+            .into_iter()
+            .filter_map(|(id, count)| (count > 1).then_some(id)),
     );
     let mut worker = Worker {
+        wake,
+        preference_state,
+        preference_revision,
+        preferences: preferences.clone(),
         runtime,
         images,
+        web_providers: web,
+        web: None,
+        closing_web: None,
+        image_ids: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         image: None,
         closing_image: None,
         files: prepared.files,
         current: prepared.current,
         basic: launch.basic,
+        associations: launch.associations.clone(),
         disabled_plugins: disabled_plugins.into(),
         selected_mode: None,
         modes: Vec::new(),
         mode: viewer::MODE_TEXT,
         generation: 0,
+        positions: Default::default(),
+        position_page: None,
         session: None,
         closing: None,
         pending_open: false,
@@ -114,6 +160,7 @@ pub(crate) fn run(
         renderer: TextRenderer::default(),
         page: None,
         shaped: None,
+        text: Default::default(),
         appearance,
         geometry: bounded_geometry(geometry),
         image_size: [geometry.width.max(1), geometry.height.max(1)],
@@ -122,8 +169,10 @@ pub(crate) fn run(
         length: 0,
         anchor: 0,
         binary: false,
-        wrap: false,
+        wrap: preferences.wrap,
         land_at_bottom: false,
+        continuation: None,
+        queued_scroll: [0.0; 2],
         caption: String::new(),
         status: String::new(),
         dirty: false,
@@ -134,15 +183,21 @@ pub(crate) fn run(
     let mut capture_finished = false;
     while !closed.load(Ordering::Acquire) {
         match receiver.recv_timeout(Duration::from_millis(12)) {
-            Ok(ViewerInput::Close) => break,
-            Ok(input) => worker.input(input, output),
+            Ok(message) => match message.into_input() {
+                Some(ViewerInput::Close) => break,
+                Some(input) => worker.input(input, output),
+                None => {}
+            },
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             Err(_) => {}
         }
         // A bounded batch combines wheel/resize events into a single raster frame.
         for input in receiver.try_iter().take(63) {
-            worker.input(input, output);
+            if let Some(input) = input.into_input() {
+                worker.input(input, output);
+            }
         }
+        worker.sync_preferences(output);
         for _ in 0..16 {
             if capture_finished {
                 break;
@@ -165,6 +220,10 @@ pub(crate) fn run(
             && worker.files[worker.current].1.is_some()
             && worker.closing.as_ref().is_none_or(Session::is_closed)
             && worker
+                .closing_web
+                .as_ref()
+                .is_none_or(midnight_web_viewer_host::Session::finished)
+            && worker
                 .closing_image
                 .as_ref()
                 .is_none_or(crate::image_worker::ImageWorker::finished)
@@ -181,15 +240,22 @@ pub(crate) fn run(
             }
         }
         worker.poll_image(output);
+        worker.poll_web(output);
         if worker.dirty {
             worker.dirty = false;
             if let Err(error) = worker.paint(output) {
                 worker.error(error, output);
             }
         }
+        // Optional indexing starts only after content has been published. It
+        // never participates in a viewport or scrollbar acknowledgement.
+        worker.locate_source();
     }
     if let Some(session) = worker.session.take() {
         session.close();
+    }
+    if let Some(web) = worker.web.take() {
+        web.session.close();
     }
     output.put(ViewerOutput::Closed);
     Ok(())
@@ -214,13 +280,100 @@ fn bounded_geometry(mut geometry: ViewerGeometry) -> ViewerGeometry {
 }
 
 impl Worker {
+    fn position_context(&mut self, output: &Mailbox) {
+        self.position_page = None;
+        if self.positions.has_pending()
+            && let Some(id) = self.viewport_request.take()
+            && let Some(session) = &self.session
+        {
+            session.cancel(id);
+        }
+        if let Err(error) = self.positions.reset() {
+            self.error(error, output);
+        }
+        self.dirty = true; // Publish this context even when a search finds no match.
+    }
+
+    fn apply_font(&mut self) {
+        let kind = match self.mode {
+            viewer::MODE_SOURCE => ViewerFontKind::Source,
+            viewer::MODE_DOCUMENT => ViewerFontKind::Markdown,
+            _ => ViewerFontKind::Text,
+        };
+        let font = self.preferences.font(kind);
+        self.appearance.family.clone_from(&font.family);
+        self.appearance.font_size = f32::from(font.size).min(256.0 / self.geometry.scale);
+    }
+
+    fn sync_preferences(&mut self, output: &Mailbox) {
+        let (revision, preferences) = self.preference_state.snapshot();
+        if revision == self.preference_revision {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.preferences, preferences);
+        self.preference_revision = revision;
+        self.wrap = self.preferences.wrap;
+        self.apply_font();
+        if let Some(image) = &mut self.image {
+            // PDF geometry belongs to accepted view commands, not restored settings.
+            // In particular, a late settings load cannot replace Fit or round zoom.
+            if !image.document
+                && previous.image_zoom != self.preferences.image_zoom
+                && let Some(view) = &mut image.geometry
+            {
+                view.restore_zoom(self.preferences.image_zoom);
+                image.changed();
+                self.frames.invalidate();
+                self.dirty = true;
+            }
+        } else if previous.wrap != self.preferences.wrap
+            || previous.line_numbers != self.preferences.line_numbers
+            || previous.text_font != self.preferences.text_font
+            || previous.source_font != self.preferences.source_font
+            || previous.markdown_font != self.preferences.markdown_font
+            || previous.markdown_preset != self.preferences.markdown_preset
+        {
+            self.position_context(output);
+            self.reflow(output);
+        }
+    }
+
     fn error(&mut self, error: String, output: &Mailbox) {
-        self.status = error.clone();
-        output.put(ViewerOutput::Status(error));
+        output.finish_open(Err(error.clone()));
+        self.status(error, output);
+    }
+
+    fn status(&mut self, status: String, output: &Mailbox) {
+        self.status = status.clone();
+        output.put(ViewerOutput::Status(status));
     }
 
     fn open(&mut self, output: &Mailbox) {
+        self.cancel_locate();
+        self.position_context(output);
+        // A pending close/capture must not repaint old-file content under the
+        // replacement file's new scrollbar generation.
+        self.page = None;
+        self.shaped = None;
+        self.text = Default::default();
+        self.selection = None;
+        self.continuation = None;
+        self.queued_scroll = [0.0; 2];
         self.frames.invalidate();
+        if let Some(web) = self.web.take() {
+            web.session.close();
+            self.closing_web = Some(web.session);
+        }
+        if self
+            .closing_web
+            .as_ref()
+            .is_some_and(|session| !session.finished())
+        {
+            self.pending_open = true;
+            self.status("Closing previous browser…".into(), output);
+            return;
+        }
+        self.closing_web = None;
         if let Some(image) = self.image.take() {
             image.worker.cancel();
             self.closing_image = Some(image.worker);
@@ -231,7 +384,7 @@ impl Worker {
             .is_some_and(|image| !image.finished())
         {
             self.pending_open = true;
-            self.error("Closing previous image…".into(), output);
+            self.status("Closing previous image…".into(), output);
             return;
         }
         self.closing_image = None;
@@ -245,13 +398,13 @@ impl Worker {
             .is_some_and(|session| !session.is_closed())
         {
             self.pending_open = true;
-            self.error("Closing previous file…".into(), output);
+            self.status("Closing previous file…".into(), output);
             return;
         }
         self.closing = None;
         if self.files[self.current].1.is_none() {
             self.pending_open = true;
-            self.error("Preparing next file identity…".into(), output);
+            self.status("Preparing next file identity…".into(), output);
             return;
         }
         self.pending_open = false;
@@ -263,10 +416,12 @@ impl Worker {
         self.origin = [0.0; 2];
         self.anchor = 0;
         self.viewport_request = None;
+        self.continuation = None;
+        self.queued_scroll = [0.0; 2];
         self.search_request = None;
         self.search_cursor = Default::default();
         self.found = None;
-        let (path, captured) = &self.files[self.current];
+        let (path, captured) = self.files[self.current].clone();
         self.caption = format!("{} — Midnight Explorer", path.display());
         let result = (|| {
             let file = captured
@@ -275,33 +430,57 @@ impl Worker {
                 .as_ref()
                 .map_err(Clone::clone)?
                 .clone();
-            if !self.basic
-                && let Some(provider) = path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .and_then(|extension| {
-                        self.images.iter().find(|provider| {
-                            provider.supports_extension(extension)
-                                && !self.disabled_plugins.contains(&provider.id)
-                        })
+            let route = crate::routing::choose(
+                self.runtime.catalog(),
+                self.images
+                    .iter()
+                    .map(|provider| crate::routing::ProcessCandidate {
+                        id: &provider.id,
+                        extensions: &provider.extensions,
                     })
-            {
+                    .chain(self.web_providers.iter().map(|provider| {
+                        crate::routing::ProcessCandidate {
+                            id: &provider.id,
+                            extensions: &provider.extensions,
+                        }
+                    })),
+                &path,
+                self.basic,
+                &self.disabled_plugins,
+                &self.associations,
+            )
+            .ok_or_else(|| {
+                "No compatible viewer plugin is installed beside the executable in viewers/."
+                    .to_owned()
+            })?;
+            if let crate::routing::Route::Process { index } = route {
+                if index >= self.images.len() {
+                    self.open_web(self.web_providers[index - self.images.len()].clone(), file)?;
+                    return Ok(None);
+                }
                 self.image = Some(crate::image_view::ImageView::new(
-                    crate::image_worker::ImageWorker::open(provider.clone(), Arc::new(file))?,
+                    crate::image_worker::ImageWorker::open(
+                        self.images[index].clone(),
+                        Arc::new(file),
+                        self.wake.clone(),
+                    )?,
+                    self.image_ids.clone(),
                 ));
                 self.mode = VIEWER_MODE_IMAGE;
                 self.modes = vec![VIEWER_MODE_IMAGE];
                 self.binary = false;
                 return Ok(None);
             }
-            let (plugin, mut mode) = self
-                .runtime
-                .choose_enabled(path, self.basic, &self.disabled_plugins)
-                .ok_or(
-                    "No compatible viewer plugin is installed beside the executable in viewers/."
-                        .to_owned(),
-                )?;
-            if !self.basic && plugin.modes.contains(&viewer::MODE_BINARY) {
+            let crate::routing::Route::Native {
+                index,
+                mut mode,
+                detect_binary,
+            } = route
+            else {
+                return Err("Unsupported viewer route.".into());
+            };
+            let plugin = &self.runtime.catalog()[index];
+            if detect_binary {
                 mode = file.preferred_basic_mode().map_err(|e| e.to_string())?;
             }
             if let Some(selected) = self
@@ -321,14 +500,55 @@ impl Worker {
         })();
         match result {
             Ok(session) => {
+                self.apply_font();
+                if let Some(session) = &session {
+                    session.notify_on_ready(self.wake.clone());
+                }
                 self.session = session;
-                self.error("Opening…".into(), output);
+                self.status("Opening…".into(), output);
             }
             Err(error) => self.error(error, output),
         }
     }
 
     fn request_page(&mut self, anchor: u64, backwards: bool, output: &Mailbox) {
+        self.request_page_for(anchor, backwards, None, output);
+    }
+
+    fn request_page_for(
+        &mut self,
+        anchor: u64,
+        backwards: bool,
+        position: Option<u64>,
+        output: &Mailbox,
+    ) {
+        self.cancel_locate();
+        self.position_page = None;
+        if position.is_none() && self.positions.has_pending() {
+            self.position_context(output);
+        }
+        let options = TextOptions {
+            family: if self.binary || self.appearance.family.is_empty() {
+                "monospace"
+            } else {
+                &self.appearance.family
+            },
+            size: self.appearance.font_size,
+            literal_family: !self.binary
+                && !self.appearance.family.is_empty()
+                && !midnight_viewer_render::is_generic_family(&self.appearance.family),
+            scale: self.geometry.scale,
+            line_height: self.line_height(),
+            ..TextOptions::default()
+        };
+        let line_height = self
+            .renderer
+            .layout_with_options("M", &options, &[])
+            .map_or(self.appearance.font_size * self.geometry.scale, |page| {
+                page.height()
+            });
+        let max_lines = crate::viewport::line_budget(self.geometry, line_height);
+        self.continuation = None;
         let Some(session) = &self.session else {
             return;
         };
@@ -339,10 +559,13 @@ impl Worker {
             source_anchor: anchor,
             backwards,
             max_bytes: if self.binary { 4096 } else { 12 * 1024 },
-            max_lines: 512,
+            max_lines,
         }) {
             Ok(id) => {
                 self.viewport_request = Some(id);
+                if let Some(sequence) = position {
+                    self.positions.requested(id, sequence);
+                }
                 self.land_at_bottom = backwards;
                 self.anchor = anchor;
             }
@@ -351,54 +574,135 @@ impl Worker {
     }
 
     fn input(&mut self, input: ViewerInput, output: &Mailbox) {
+        if self.web.is_some() && self.web_input(&input, output) {
+            return;
+        }
         if self.image.is_some() && self.image_input(&input) {
             return;
         }
         match input {
+            ViewerInput::Position {
+                generation,
+                sequence,
+                horizontal,
+                position,
+            } => {
+                if !self
+                    .positions
+                    .accept(generation, sequence, horizontal, position)
+                {
+                    return;
+                }
+                if horizontal {
+                    self.positions.horizontal(sequence, position);
+                    self.apply_horizontal_position();
+                    self.frames.invalidate();
+                    self.dirty = true;
+                } else {
+                    if self.positions.has_pending() {
+                        self.positions.defer(sequence, position);
+                        return;
+                    }
+                    if let Some(id) = self.search_request.take()
+                        && let Some(session) = &self.session
+                    {
+                        session.cancel(id);
+                    }
+                    let (anchor, backwards) = navigation::viewport(position, self.length);
+                    self.request_page_for(anchor, backwards, Some(sequence), output);
+                    if self.viewport_request.is_none() {
+                        self.position_context(output);
+                        self.dirty = true;
+                    }
+                }
+            }
             ViewerInput::Resize(geometry) => {
+                self.position_context(output);
                 self.frames.invalidate();
                 self.image_size = [geometry.width.max(1), geometry.height.max(1)];
                 let geometry = bounded_geometry(geometry);
                 let scale_changed = geometry.scale != self.geometry.scale;
                 let width_changed = geometry.width != self.geometry.width;
+                let height_changed = geometry.height != self.geometry.height;
                 self.geometry = geometry;
-                if scale_changed || (width_changed && self.wrap && self.wrap_available()) {
+                if scale_changed {
+                    self.apply_font();
+                }
+                if scale_changed
+                    || (width_changed
+                        && ((self.wrap && self.wrap_available())
+                            || self.mode == viewer::MODE_DOCUMENT))
+                {
                     self.reflow(output);
                 }
                 self.clamp_origin();
+                if (height_changed || scale_changed)
+                    && self.viewport_request.is_none()
+                    && let (Some(page), Some(shaped)) = (&self.page, &self.shaped)
+                    && page.after
+                    && crate::viewport::available_height(page, shaped, self.geometry.height as f32)
+                        - self.origin[1]
+                        < self.geometry.height as f32
+                    && let Some(continuation) =
+                        crate::viewport::Continuation::refill(page, shaped, self.origin)
+                {
+                    self.request_page(continuation.anchor, false, output);
+                    self.continuation = Some(continuation);
+                }
                 self.dirty = true;
             }
             ViewerInput::Scroll { x, y } if x.is_finite() && y.is_finite() => {
+                if self.positions.has_pending() {
+                    self.position_context(output);
+                }
+                if x != 0.0 {
+                    self.positions.horizontal = None;
+                }
                 if let Some(page) = &self.page {
                     let height = self.shaped.as_ref().map_or(0.0, |p| p.height());
                     let max_y = (height - self.geometry.height as f32).max(0.0);
                     let next = self.origin[1] + y;
-                    let crossing = navigation::page_direction(self.origin[1], y, max_y);
-                    if crossing > 0 && page.after && self.viewport_request.is_none() {
-                        self.request_page(page.end, false, output);
-                    } else if crossing < 0 && page.before && self.viewport_request.is_none() {
-                        self.request_page(page.start, true, output);
+                    let continuation = self.shaped.as_ref().and_then(|shaped| {
+                        crate::viewport::Continuation::capture(
+                            page,
+                            shaped,
+                            self.geometry,
+                            self.origin,
+                            y,
+                        )
+                    });
+                    if let Some(continuation) = continuation {
+                        if self.viewport_request.is_some() {
+                            self.queued_scroll[0] = (self.queued_scroll[0] + x).clamp(-1e7, 1e7);
+                            self.queued_scroll[1] = (self.queued_scroll[1] + y).clamp(-1e7, 1e7);
+                        } else {
+                            self.request_page(continuation.anchor, continuation.backwards, output);
+                            self.continuation = Some(continuation);
+                        }
                     } else {
                         self.frames.invalidate();
                         self.origin[1] = next.clamp(0.0, max_y);
                         let max_x = self
                             .shaped
                             .as_ref()
-                            .map_or(0.0, |p| (p.width() - self.geometry.width as f32).max(0.0));
+                            .map_or(0.0, |p| (p.width() - self.text_width()).max(0.0));
                         self.origin[0] = (self.origin[0] + x).clamp(0.0, max_x);
                         self.dirty = true;
                     }
                 }
             }
             ViewerInput::Seek(position) => {
+                self.position_context(output);
                 let (anchor, backwards) = navigation::viewport(position, self.length);
                 self.request_page(anchor, backwards, output)
             }
             ViewerInput::Pan(position) if position.is_finite() => {
+                self.position_context(output);
                 self.frames.invalidate();
-                let maximum = self.shaped.as_ref().map_or(0.0, |page| {
-                    (page.width() - self.geometry.width as f32).max(0.0)
-                });
+                let maximum = self
+                    .shaped
+                    .as_ref()
+                    .map_or(0.0, |page| (page.width() - self.text_width()).max(0.0));
                 self.origin[0] = position.clamp(0.0, 1.0) as f32 * maximum;
                 self.dirty = true;
             }
@@ -412,6 +716,7 @@ impl Worker {
                 self.open(output);
             }
             ViewerInput::Wrap(wrap) if self.wrap_available() && self.wrap != wrap => {
+                self.position_context(output);
                 self.wrap = wrap;
                 self.reflow(output);
             }
@@ -420,6 +725,7 @@ impl Worker {
                 backwards,
                 case_sensitive,
             } => {
+                self.position_context(output);
                 let Some(session) = &self.session else {
                     return;
                 };
@@ -437,7 +743,7 @@ impl Worker {
                 }) {
                     Ok(id) => {
                         self.search_request = Some(id);
-                        self.error("Searching…".into(), output);
+                        self.status("Searching…".into(), output);
                     }
                     Err(error) => self.error(error.to_string(), output),
                 }
@@ -449,7 +755,10 @@ impl Worker {
                 extend,
             } if self.frames.accepts(frame) => {
                 if let Some(page) = &self.shaped
-                    && let Ok(index) = page.hit_test(x + self.origin[0], y + self.origin[1])
+                    && let Ok(index) = page.hit_test(
+                        (x - self.text_margin()).max(0.0) + self.origin[0],
+                        y + self.origin[1],
+                    )
                 {
                     let start = if extend {
                         self.selection.map_or(index, |selection| selection.0)
@@ -479,21 +788,34 @@ impl Worker {
 
     fn event(&mut self, id: u64, event: EventKind, output: &Mailbox) {
         match event {
+            EventKind::TextPosition(position) => self.located(id, &position),
+            EventKind::Failed(failure)
+                if self
+                    .text
+                    .locate_request
+                    .is_some_and(|(request, _)| request == id) =>
+            {
+                self.text.locate_request = None;
+                // Older plugins reject the optional request. This is not a
+                // document failure and must not overwrite the usable viewport.
+                self.text.unavailable = failure.code != midnight_plugin_host::api::abi::QUEUE_FULL;
+                self.dirty = true;
+            }
             EventKind::Opened(_) => self.request_page(0, false, output),
             EventKind::TextPage(page) if self.viewport_request == Some(id) => {
-                self.set_page(Page::text(page, &self.appearance), output)
+                self.received_page(id, Page::text(page, &self.appearance), output);
             }
             EventKind::BinaryPage { page, bytes } if self.viewport_request == Some(id) => {
-                self.set_page(Page::binary(page, &bytes), output)
+                self.received_page(id, Page::binary(page, &bytes), output);
             }
             EventKind::DocumentPage(page) if self.viewport_request == Some(id) => {
-                self.set_page(Page::document(page, &self.appearance), output)
+                self.received_page(id, Page::document(page, &self.appearance), output);
             }
             EventKind::SearchMatch(found) if self.search_request == Some(id) => {
                 self.anchor = found.source.offset;
                 self.search_cursor.found(found.source.offset);
                 self.found = Some(found.source.clone());
-                self.error(format!("Match at byte {}", found.source.offset), output);
+                self.status(format!("Match at byte {}", found.source.offset), output);
                 self.request_page(found.source.offset, false, output);
             }
             EventKind::Failed(failure)
@@ -502,7 +824,16 @@ impl Worker {
                     || self.viewport_request == Some(id) =>
             {
                 if self.viewport_request == Some(id) {
+                    self.position_page = None;
+                    let failed = self.positions.complete(id, false)
+                        == crate::position_ack::Completion::Failed;
                     self.viewport_request = None;
+                    if failed {
+                        self.position_context(output);
+                        self.dirty = true;
+                    }
+                    self.queued_scroll = [0.0; 2];
+                    self.continuation = None;
                 }
                 if self.search_request == Some(id) {
                     self.search_request = None;
@@ -510,13 +841,53 @@ impl Worker {
                 self.error(failure.message, output);
             }
             EventKind::Completed | EventKind::Cancelled => {
+                if self
+                    .text
+                    .locate_request
+                    .is_some_and(|(request, _)| request == id)
+                {
+                    self.text.located_start =
+                        self.text.locate_request.take().map(|(_, start)| start);
+                    self.text.unavailable = self.text.coordinate.is_none();
+                    self.dirty = true;
+                }
                 if self.viewport_request == Some(id) {
+                    let mut completed = matches!(event, EventKind::Completed);
+                    if self.positions.has_pending() {
+                        completed = completed
+                            && self.position_page.take().is_some_and(|(page_id, page)| {
+                                page_id == id && self.set_page(page, output)
+                            });
+                    }
+                    let acknowledgement = self.positions.complete(id, completed);
                     self.viewport_request = None;
+                    match acknowledgement {
+                        crate::position_ack::Completion::Ready => self.dirty = true,
+                        crate::position_ack::Completion::Failed => {
+                            self.position_context(output);
+                            self.dirty = true;
+                            self.error("The requested viewport was not completed.".into(), output);
+                        }
+                        crate::position_ack::Completion::Unrelated => {}
+                    }
+                    if acknowledgement == crate::position_ack::Completion::Ready
+                        && let Some((sequence, position)) = self.positions.take_deferred()
+                    {
+                        let (anchor, backwards) = navigation::viewport(position, self.length);
+                        self.request_page_for(anchor, backwards, Some(sequence), output);
+                        if self.viewport_request.is_none() {
+                            self.position_context(output);
+                        }
+                    }
+                    let [x, y] = std::mem::replace(&mut self.queued_scroll, [0.0; 2]);
+                    if matches!(event, EventKind::Completed) && (x != 0.0 || y != 0.0) {
+                        self.input(ViewerInput::Scroll { x, y }, output);
+                    }
                 }
                 if self.search_request == Some(id) {
                     self.search_request = None;
                     if self.status == "Searching…" {
-                        self.error("No further match.".into(), output);
+                        self.status("No further match.".into(), output);
                     }
                 }
             }
@@ -526,6 +897,15 @@ impl Worker {
 
     fn wrap_available(&self) -> bool {
         matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
+    }
+
+    fn received_page(&mut self, id: u64, page: Page, output: &Mailbox) {
+        if self.positions.has_pending() {
+            self.position_page = Some((id, page));
+            self.positions.loaded(id);
+        } else {
+            self.set_page(page, output);
+        }
     }
 
     fn layout_page(
@@ -541,14 +921,25 @@ impl Worker {
             size: self.appearance.font_size,
             scale: self.geometry.scale,
             foreground: self.appearance.foreground,
-            wrap_width: (self.wrap && self.wrap_available()).then_some(self.geometry.width as f32),
+            literal_family: !self.binary
+                && !self.appearance.family.is_empty()
+                && !midnight_viewer_render::is_generic_family(&self.appearance.family),
+            wrap_width: ((self.wrap && self.wrap_available())
+                || self.mode == viewer::MODE_DOCUMENT)
+                .then_some(self.text_width()),
+            line_height: self.line_height(),
             ..TextOptions::default()
         };
-        self.renderer
-            .layout_with_styles(&page.text, &options, &page.spans, &page.styles)
+        page.layout(
+            &mut self.renderer,
+            &options,
+            self.preferences.markdown_preset == MarkdownPreset::GitHub,
+            self.appearance.background,
+        )
     }
 
     fn reflow(&mut self, output: &Mailbox) {
+        self.text.gutter = None;
         let Some(page) = self.page.take() else {
             return;
         };
@@ -564,7 +955,7 @@ impl Worker {
                 {
                     self.origin[1] = caret.y0 as f32 + offset;
                 }
-                if self.wrap && self.wrap_available() {
+                if (self.wrap && self.wrap_available()) || self.mode == viewer::MODE_DOCUMENT {
                     self.origin[0] = 0.0;
                 }
                 self.shaped = Some(shaped);
@@ -577,19 +968,37 @@ impl Worker {
         self.page = Some(page);
     }
 
-    fn set_page(&mut self, page: Page, output: &Mailbox) {
+    fn set_page(&mut self, page: Page, output: &Mailbox) -> bool {
         self.frames.invalidate();
+        let requested_anchor = self.anchor;
         self.anchor = page.start;
         match self.layout_page(&page) {
             Ok(shaped) => {
-                self.origin = [
-                    0.0,
-                    if self.land_at_bottom {
-                        (shaped.height() - self.geometry.height as f32).max(0.0)
-                    } else {
-                        0.0
-                    },
-                ];
+                self.origin = self
+                    .continuation
+                    .take()
+                    .and_then(|continuation| continuation.restore(&page, &shaped))
+                    .unwrap_or([
+                        0.0,
+                        if self.land_at_bottom {
+                            (shaped.height() - self.geometry.height as f32).max(0.0)
+                        } else if self.mode == viewer::MODE_DOCUMENT
+                            && requested_anchor > page.start
+                        {
+                            // Semantic pages keep complete paragraphs/tables around
+                            // a request. Place its source anchor, not the block start,
+                            // at the viewport edge without changing line wrapping.
+                            page.anchors
+                                .iter()
+                                .find(|anchor| anchor.source_offset >= requested_anchor)
+                                .and_then(|anchor| {
+                                    shaped.caret_geometry(anchor.text_offset as usize).ok()
+                                })
+                                .map_or(0.0, |caret| caret.y0 as f32)
+                        } else {
+                            0.0
+                        },
+                    ]);
                 self.selection = self.found.as_ref().and_then(|found| {
                     let first = page
                         .anchors
@@ -602,36 +1011,74 @@ impl Worker {
                     Some((first.text_offset as usize, last.text_offset as usize))
                 });
                 self.shaped = Some(shaped);
+                self.apply_horizontal_position();
+                self.clamp_origin();
+                let previous = self
+                    .page
+                    .as_ref()
+                    .filter(|_| self.mode == viewer::MODE_SOURCE);
+                self.text.page(previous, &page);
                 self.page = Some(page);
                 self.dirty = true;
                 self.status = String::new();
+                true
             }
-            Err(error) => self.error(format!("Cannot lay out this page: {error:?}"), output),
+            Err(error) => {
+                self.error(format!("Cannot lay out this page: {error:?}"), output);
+                false
+            }
+        }
+    }
+
+    fn apply_horizontal_position(&mut self) {
+        if let Some(position) = self.positions.horizontal {
+            let maximum = self
+                .shaped
+                .as_ref()
+                .map_or(0.0, |page| (page.width() - self.text_width()).max(0.0));
+            self.origin[0] = position as f32 * maximum;
         }
     }
 
     fn paint(&mut self, output: &Mailbox) -> Result<(), String> {
-        if let Some(image) = &mut self.image {
-            image.request();
+        if self.image.is_some() {
+            return self.paint_image(output);
+        }
+        // Other-axis input can dirty the view while this page is still awaiting
+        // its terminal event. Never stamp that uncompleted page with an old ack.
+        if self.positions.uncompleted_page() {
             return Ok(());
         }
+        self.prepare_gutter()?;
+        let margin = self.text_margin();
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
             return Ok(());
         };
-        let raster = self
+        let mut raster = self
             .renderer
             .rasterize(
                 shaped,
                 Viewport {
                     width: self.geometry.width,
                     height: self.geometry.height,
-                    origin: self.origin,
+                    origin: [self.origin[0] - margin, self.origin[1]],
                     background: self.appearance.background,
                     selection_color: self.appearance.selection,
                 },
                 self.selection.map(|(a, b)| a.min(b)..a.max(b)),
             )
             .map_err(|e| format!("Cannot render page: {e:?}"))?;
+        if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers {
+            text::paint_gutter(
+                &mut self.renderer,
+                &self.text,
+                &self.appearance,
+                self.geometry,
+                self.origin,
+                margin,
+                &mut raster,
+            )?;
+        }
         let revision = self.frames.painted()?;
         // BOM bytes and hidden Markdown delimiters do not create a scrollable
         // remainder when the plugin reports that the entire file is present.
@@ -648,7 +1095,9 @@ impl Worker {
             self.geometry.height as f32,
             self.origin[1],
         );
-        output.put(ViewerOutput::Frame(ViewerFrame {
+        output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
+            generation: self.positions.generation,
+            position_sequence: self.positions.acknowledged,
             revision,
             mode: self.mode,
             modes: self.modes.clone(),
@@ -658,28 +1107,30 @@ impl Worker {
             width: raster.width,
             height: raster.height,
             pixels: raster.rgba.into(),
+            tiles: None,
             accessible_text: page.text.clone().into(),
             position,
             vertical_extent,
             horizontal_position: f64::from(
-                self.origin[0] / (shaped.width() - self.geometry.width as f32).max(1.0),
+                self.origin[0] / (shaped.width() - self.text_width()).max(1.0),
             ),
-            horizontal_extent: f64::from(
-                (self.geometry.width as f32 / shaped.width().max(1.0)).min(1.0),
-            ),
+            horizontal_extent: f64::from((self.text_width() / shaped.width().max(1.0)).min(1.0)),
             caption: self.caption.clone(),
             status: format!(
-                "Bytes {}–{} / {}  {}",
-                page.start, page.end, self.length, self.status
+                "{}Bytes {}–{} / {}  {}",
+                self.source_status(page, shaped),
+                page.start,
+                page.end,
+                self.length,
+                self.status
             ),
-        }));
+        })));
         Ok(())
     }
 
     fn clamp_origin(&mut self) {
         if let Some(page) = &self.shaped {
-            self.origin[0] =
-                self.origin[0].clamp(0.0, (page.width() - self.geometry.width as f32).max(0.0));
+            self.origin[0] = self.origin[0].clamp(0.0, (page.width() - self.text_width()).max(0.0));
             self.origin[1] =
                 self.origin[1].clamp(0.0, (page.height() - self.geometry.height as f32).max(0.0));
         }

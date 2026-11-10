@@ -3,7 +3,7 @@ use midnight_filesystem_plugin_api::*;
 use midnight_filesystem_plugin_sdk::{CallContext, native::NativeReader};
 use std::{
     fs::{File, OpenOptions},
-    os::windows::fs::{FileExt, MetadataExt, OpenOptionsExt},
+    os::windows::fs::{FileExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -22,13 +22,7 @@ fn open(path: &Path) -> Result<File, Failure> {
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(crate::path::literal(path)?)
         .map_err(Failure::from_io)?;
-    let metadata = file.metadata().map_err(Failure::from_io)?;
-    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(Failure::new(
-            ErrorCode::Unsupported,
-            "Read requires a regular non-reparse file.",
-        ));
-    }
+    system::require_readable_file(&file)?;
     Ok(file)
 }
 impl Reader {

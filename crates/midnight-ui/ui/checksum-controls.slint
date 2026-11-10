@@ -1,0 +1,61 @@
+import { ScrollView } from "std-widgets.slint";
+import { HintedComboBox } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+
+export struct ChecksumDraft { md5: bool, sha1: bool, sha256: bool, sha512: bool, crc32: bool, recursive: bool }
+
+// Copy and export choose among algorithms from the captured run.
+export component ChecksumOutputPicker inherits HintedComboBox {
+    in property <[string]> labels;
+    in property <[int]> values;
+    in-out property <int> algorithm;
+    model: root.labels;
+    private property <int> selected-index: root.values.length == 0 ? -1 : root.values[0] == root.algorithm ? 0
+        : root.values.length > 1 && root.values[1] == root.algorithm ? 1
+        : root.values.length > 2 && root.values[2] == root.algorithm ? 2
+        : root.values.length > 3 && root.values[3] == root.algorithm ? 3
+        : root.values.length > 4 && root.values[4] == root.algorithm ? 4 : -1;
+    // ComboBox writes current-index on user selection and model reset. Restore
+    // the shared algorithm explicitly; a one-way binding alone is overwritten.
+    current-index: root.selected-index;
+    changed selected-index => { root.current-index = root.selected-index; }
+    changed values => { root.current-index = root.selected-index; }
+    changed labels => { root.current-index = root.selected-index; }
+    selected(value) => {
+        if root.current-index >= 0 && root.current-index < root.values.length {
+            root.algorithm = root.values[root.current-index];
+        }
+    }
+    accessible-label: "Output algorithm";
+    hint: "Choose a calculated algorithm for copying or saving. This does not recalculate files.";
+    enabled: root.values.length > 0;
+    min-width: 0px; min-height: Theme.control-height;
+    preferred-height: Theme.control-height; vertical-stretch: 0;
+}
+
+export component ChecksumOptions inherits ScrollView {
+    in-out property <ChecksumDraft> draft;
+    in property <bool> busy;
+    horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+        padding: 12px; spacing: 12px; alignment: start;
+        Text { text: "Calculate algorithms"; color: Theme.strong-text; font-weight: 600; }
+        WrappingCheckBox { text: "SHA-256"; checked <=> root.draft.sha256; enabled: !root.busy;
+            hint: "Recommended default. Copy verification uses SHA-256 independently of these choices."; }
+        WrappingCheckBox { text: "SHA-512"; checked <=> root.draft.sha512; enabled: !root.busy; }
+        Rectangle { height: 1px; background: Theme.frame; }
+        Text { text: "Legacy compatibility"; color: Theme.secondary-text; }
+        WrappingCheckBox { text: "CRC32 / SFV"; checked <=> root.draft.crc32; enabled: !root.busy;
+            hint: "Compatibility with SFV checksum files. Detects accidental damage; not authentication."; }
+        WrappingCheckBox { text: "MD5"; checked <=> root.draft.md5; enabled: !root.busy;
+            hint: "Compatibility with existing MD5 manifests. Not suitable for authenticating files."; }
+        WrappingCheckBox { text: "SHA-1"; checked <=> root.draft.sha1; enabled: !root.busy;
+            hint: "Compatibility with existing SHA-1 manifests. Not suitable for authenticating files."; }
+        Rectangle { height: 1px; background: Theme.frame; }
+        WrappingCheckBox { text: "Include subfolders"; checked <=> root.draft.recursive; enabled: !root.busy;
+            hint: "Recalculate the captured selection recursively. Links and other devices are excluded and counted."; }
+        if root.busy: Text { text: "Options are locked while work is running.";
+            color: Theme.secondary-text; wrap: word-wrap; }
+    }
+}

@@ -64,6 +64,47 @@ fn job_details_retain_error_path_when_it_differs_from_current_file() {
 }
 
 #[test]
+fn cancelled_transfer_keeps_cleanup_failure_and_exact_stage_path_visible() {
+    let p = Presenter::new("left".into(), "right".into());
+    let stage = PathBuf::from("destination/資料/.me-0123456789abcdef");
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
+        let mut progress = progress(6);
+        progress.intent = intent;
+        progress.state = CopyOperationState::Cancelled;
+        progress.current_path = None;
+        progress.failed = 16;
+        progress.errors = (0..15)
+            .map(|index| {
+                FsError::from_io(
+                    "read source",
+                    &PathBuf::from(format!("source-{index}")),
+                    io::Error::other("Earlier failure"),
+                )
+            })
+            .collect();
+        progress.errors.push(FsError::from_io(
+            "cleanup copy stage",
+            &stage,
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Temporary file removal failed",
+            ),
+        ));
+        let row = copy(&p, &progress);
+        assert_eq!(row.state, "Cancelled");
+        assert!(
+            row.failed,
+            "cancellation must not hide an unsuccessful cleanup"
+        );
+        assert!(!row.active && !row.cancellable);
+        assert!(row.detail.contains("Temporary file removal failed"));
+        assert!(row.detail.contains(stage.to_str().unwrap()));
+        assert!(row.summary.contains("2 files"));
+        assert!(row.summary.contains("16 errors"));
+    }
+}
+
+#[test]
 fn copy_details_show_retained_originals_and_truthful_bounded_samples() {
     let p = Presenter::new("left".into(), "right".into());
     let mut progress = progress(3);
@@ -73,7 +114,10 @@ fn copy_details_show_retained_originals_and_truthful_bounded_samples() {
     let row = copy(&p, &progress);
     assert!(row.detail.contains("20 recovery files retained"));
     assert!(row.detail.contains("destination/復元/original"));
-    assert!(row.detail.contains("Additional recovery files"));
+    assert!(
+        row.detail
+            .contains("Additional displaced destination files")
+    );
     assert!(!row.failed);
 }
 
@@ -83,6 +127,7 @@ fn copy_and_mutation_jobs_share_chronological_order_and_stable_identity() {
     p.copies.progress = vec![Arc::new(progress(1)), Arc::new(progress(3))];
     p.operations.progress.push(Arc::new(OperationProgress {
         id: OperationId(2),
+        throughput: Arc::default(),
         kind: MutationKind::Rename,
         state: OperationState::Running,
         total: 1,
@@ -107,17 +152,17 @@ fn copy_and_mutation_jobs_share_chronological_order_and_stable_identity() {
 }
 
 #[test]
-fn recoverable_move_reports_original_locations_and_never_claims_source_space_was_freed() {
+fn move_reports_exceptional_original_locations_and_never_claims_source_space_was_freed() {
     let p = Presenter::new("left".into(), "right".into());
     let mut progress = progress(4);
-    progress.intent = TransferIntent::RecoverableMove;
+    progress.intent = TransferIntent::Move;
     progress.phase = CopyOperationPhase::ValidatingAfterMove;
-    progress.source_names_captured = 1;
-    progress.source_recovery_count = 1;
+    progress.source_names_staged = 1;
+    progress.source_residual_count = 1;
     progress.validation_bytes = 246;
-    progress.source_recoveries.push(MoveSourceRecovery {
+    progress.source_residuals.push(MoveSourceResidual {
         source: "source/Žluťoučký.txt".into(),
-        recovery: TransferRecovery {
+        temporary: TransferRecovery {
             path: "source/.midnight-recovery-test/Žluťoučký.txt".into(),
             identity: None,
         },
@@ -127,11 +172,14 @@ fn recoverable_move_reports_original_locations_and_never_claims_source_space_was
     assert_eq!(row.title, "Move");
     assert_eq!(row.state, "Checking before source removal");
     assert!(row.detail.contains("0 source files removed"));
-    assert!(row.detail.contains("1 source recovery objects retained"));
+    assert!(
+        row.detail
+            .contains("1 temporary source locations need attention")
+    );
     assert!(row.detail.contains("Original source\nsource/Žluťoučký.txt"));
     assert!(
         row.detail
-            .contains("Recovery\nsource/.midnight-recovery-test/Žluťoučký.txt")
+            .contains("Temporary location\nsource/.midnight-recovery-test/Žluťoučký.txt")
     );
     assert!(!row.failed);
     assert!(!row.determinate);
@@ -141,14 +189,20 @@ fn recoverable_move_reports_original_locations_and_never_claims_source_space_was
 fn move_reports_removed_sources_separately_from_retained_and_pending_storage() {
     let p = Presenter::new("left".into(), "right".into());
     let mut progress = progress(5);
-    progress.intent = TransferIntent::RecoverableMove;
+    progress.intent = TransferIntent::Move;
     progress.source_files_removed = 3;
     progress.source_delete_pending = 2;
     progress.source_removal_durability_unconfirmed = 1;
-    progress.source_recovery_count = 1;
+    progress.source_residual_count = 1;
     let row = copy(&p, &progress);
     assert!(row.detail.contains("3 source files removed"));
-    assert!(row.detail.contains("1 source recovery objects retained"));
+    assert!(
+        row.detail
+            .contains("1 temporary source locations need attention")
+    );
     assert!(row.detail.contains("2 source removals accepted by Windows"));
-    assert!(row.detail.contains("1 source removals without a confirmed"));
+    assert!(
+        row.detail
+            .contains("1 source namespace changes without a confirmed")
+    );
 }

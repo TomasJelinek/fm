@@ -1,28 +1,46 @@
 #![forbid(unsafe_code)]
 
 mod archive_selection;
+mod archive_sizes;
 mod archives;
 pub use archives::ArchiveCapture;
 mod checksum;
 mod checksum_actor;
 mod clipboard;
+mod clipboard_text;
 mod comparison;
 mod copy_fence;
 mod copy_operations;
 mod desktop;
 mod drag_drop;
 mod entry_sizes;
+mod file_list_actor;
+mod file_list_output;
+mod file_list_records;
+mod file_list_worker;
 mod file_targets;
 mod filename_colors;
 mod filters;
 mod find;
+mod find_sort;
 mod find_worker;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
+mod navigation_fallback;
+#[cfg(test)]
+mod navigation_fallback_tests;
+#[cfg(all(test, unix))]
+mod navigation_fallback_unix_tests;
+#[cfg(all(test, windows))]
+mod navigation_fallback_windows_tests;
+mod navigation_ordering;
+mod network_neighborhood;
+mod operation_throughput;
 mod operations;
 #[cfg(test)]
 mod outbox_tests;
+mod path_picker;
 mod preferences;
 pub mod providers;
 pub mod reclaim;
@@ -31,12 +49,24 @@ mod search;
 mod selection;
 mod selection_sizes;
 mod shell_menu;
+mod size_warning_requests;
+mod size_warnings;
 pub mod snapshot;
 mod streaming_selection;
+mod tree_actor;
+mod tree_clipboard;
+mod tree_controller;
+mod tree_copy;
+mod tree_diagnostics;
+mod tree_projection;
+mod tree_roots;
+mod tree_selection;
+mod tree_sizes;
 mod user_command_prepare;
 mod user_command_runtime;
 mod user_commands;
 mod viewer_plugins;
+mod volume_information;
 mod volumes;
 mod watch;
 
@@ -109,6 +139,7 @@ impl Request {
 
 pub struct Engine {
     archive_capture: Option<ArchiveCapture>,
+    navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
     user_commands: Option<Arc<dyn midnight_core::UserCommandService>>,
     find: Option<Arc<dyn midnight_core::FindService>>,
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
@@ -122,14 +153,20 @@ pub struct Engine {
     editor: Option<Arc<dyn midnight_core::EditorService>>,
     clipboard: Option<Arc<dyn midnight_core::ClipboardService>>,
     shell_menu: Option<Arc<dyn midnight_core::ShellMenuService>>,
+    path_picker: Option<Arc<dyn midnight_core::PathPickerService>>,
     transfers: Option<Arc<dyn midnight_core::TransferService>>,
     drag_drop: Option<Arc<dyn midnight_core::FileDragDropService>>,
 }
 
 #[derive(Default)]
 struct SnapshotState {
+    tree_notify: Option<tree_controller::RootReady>,
+    network: Option<(NavigationId, Arc<[Entry]>)>,
+    network_navigation: Option<NavigationId>,
+    tree_root: Option<Arc<tree_roots::ReadyRoot>>,
     archive: Option<(NavigationId, Arc<[Entry]>)>,
     archive_navigation: Option<NavigationId>,
+    archive_sort_sizes: Option<archive_sizes::published::Published>,
     committed: Option<CommittedSnapshot>,
     visible: Option<CommittedSnapshot>,
     pending: Option<NavigationId>,
@@ -137,7 +174,10 @@ struct SnapshotState {
 
 impl SnapshotState {
     fn has_native_view(&self) -> bool {
-        self.archive.is_none() && self.archive_navigation.is_none()
+        self.archive.is_none()
+            && self.archive_navigation.is_none()
+            && self.network.is_none()
+            && self.network_navigation.is_none()
     }
 }
 
@@ -156,6 +196,9 @@ fn listing_failed(snapshots: &Snapshots, pane: PaneId, navigation: NavigationId)
     let mut snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
     if snapshots[pane.index()].pending == Some(navigation) {
         snapshots[pane.index()].pending = None;
+        if let Some(notify) = &snapshots[pane.index()].tree_notify {
+            notify.notify(navigation);
+        }
     }
 }
 
@@ -188,6 +231,7 @@ impl Engine {
     ) -> Self {
         Self {
             archive_capture: None,
+            navigation_fallback: None,
             user_commands: None,
             find: None,
             locale: None,
@@ -200,6 +244,7 @@ impl Engine {
             editor: None,
             clipboard: None,
             shell_menu: None,
+            path_picker: None,
             transfers: None,
             drag_drop: None,
             outbox: Outbox {
@@ -212,6 +257,15 @@ impl Engine {
     /// Native archive container reads require this explicit backend provider authority.
     pub fn with_archive_capture(mut self, capture: ArchiveCapture) -> Self {
         self.archive_capture = Some(capture);
+        self
+    }
+
+    /// Optional native services stay independent of the filesystem provider.
+    pub fn with_navigation_fallback(
+        mut self,
+        service: Arc<dyn midnight_core::NavigationFallbackService>,
+    ) -> Self {
+        self.navigation_fallback = Some(service);
         self
     }
 
@@ -245,6 +299,11 @@ impl Engine {
 
     pub fn with_shell_menu(mut self, service: Arc<dyn midnight_core::ShellMenuService>) -> Self {
         self.shell_menu = Some(service);
+        self
+    }
+
+    pub fn with_path_picker(mut self, service: Arc<dyn midnight_core::PathPickerService>) -> Self {
+        self.path_picker = Some(service);
         self
     }
 
@@ -293,8 +352,14 @@ impl Engine {
         let network_budget = Arc::new(Semaphore::new(1));
         let mut locale_requested = false;
         let mut requests: [Option<Request>; 2] = [None, None];
+        let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
-        let mut find = find::Controller::new(self.find, self.outbox.clone(), &mut tasks);
+        let mut find = find::Controller::new(
+            self.find,
+            self.locale.clone(),
+            self.outbox.clone(),
+            &mut tasks,
+        );
         let selection = selection::Controller::new(self.outbox.clone(), &mut tasks);
         let (properties_sender, mut properties_ready) =
             mpsc::channel::<selection::PreparedProperties>(2);
@@ -320,10 +385,29 @@ impl Engine {
             &mut tasks,
         );
         let mut clipboard = clipboard::Controller::new(self.clipboard, self.outbox.clone());
+        let mut size_warning_requests = size_warning_requests::Controller::new(self.outbox.clone());
         let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
+        let mut path_picker = path_picker::Controller::new(self.path_picker, self.outbox.clone());
         let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let mutation_gate = Arc::new(Semaphore::new(1));
+        let trees = tree_controller::Controller::new(
+            self.filesystem.clone(),
+            self.locale.clone(),
+            listing_budgets.clone(),
+            mutation_gate.clone(),
+            snapshots.clone(),
+            self.outbox.clone(),
+            watcher.as_ref().map(watch::Controller::handle),
+        );
+        let mut neighborhood = network_neighborhood::Controller::new(
+            self.locale.clone(),
+            self.outbox.clone(),
+            snapshots.clone(),
+            &mut tasks,
+        );
         let mut archives = archives::Controller::new(
             self.archive_capture,
+            self.locale.clone(),
             self.outbox.clone(),
             snapshots.clone(),
             &mut tasks,
@@ -332,7 +416,12 @@ impl Engine {
             comparison::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
         let filename_colors = filename_colors::Controller::new(self.outbox.clone(), &mut tasks);
-        let mutation_gate = Arc::new(Semaphore::new(1));
+        let mut file_lists = file_list_actor::Controller::new(
+            self.transfers.clone(),
+            mutation_gate.clone(),
+            self.outbox.clone(),
+            snapshots.clone(),
+        );
         let user_commands = user_commands::Controller::new(
             self.user_commands,
             self.transfers.clone(),
@@ -345,7 +434,7 @@ impl Engine {
             mutation_gate.clone(),
         );
         let copies = copy_operations::Controller::new(
-            self.transfers,
+            self.transfers.clone(),
             self.outbox.clone(),
             mutation_gate.clone(),
             Arc::new(Semaphore::new(1)),
@@ -361,6 +450,7 @@ impl Engine {
         );
         let mut drag_drop = drag_drop::Controller::new(
             self.drag_drop,
+            self.transfers,
             snapshots.clone(),
             copies.admission(),
             self.outbox.clone(),
@@ -369,22 +459,31 @@ impl Engine {
         let search = search::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
         let selected_sizes =
             selection_sizes::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
+        let archive_sizes = archive_sizes::Controller::new(snapshots.clone(), self.outbox.clone());
         let size_budget = Arc::new(Semaphore::new(2));
+        let size_delivery_cancel = Cancellation::default();
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
         let mut entry_sizes = entry_sizes::Controller::new(
             self.filesystem.clone(),
             self.outbox.clone(),
             snapshots.clone(),
             size_budget.clone(),
+            size_delivery_cancel.clone(),
             size_io_budget.clone(),
             selected_sizes.observer.clone(),
         );
         let mut size_requests: [Option<SizeRequest>; 2] = [None, None];
         let volumes = volumes::Controller::new(
             self.filesystem.clone(),
+            self.locale.clone(),
             self.outbox.clone(),
             desktop.volume_icon_sender(),
             desktop.context_sender(),
+            &mut tasks,
+        );
+        let volume_information = volume_information::Controller::new(
+            self.filesystem.clone(),
+            self.outbox.clone(),
             &mut tasks,
         );
 
@@ -394,6 +493,18 @@ impl Engine {
                     desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks);
                 }
                 command = commands.recv() => {
+                    let navigation_request = match &command {
+                        Some(Command::Navigate { pane, navigation, .. }
+                            | Command::Refresh { pane, navigation, .. }
+                            | Command::Resort { pane, navigation, .. }
+                            | Command::ArchiveNavigate { pane, navigation, .. }
+                            | Command::NetworkNavigate { pane, navigation, .. }) => Some((*pane, *navigation)),
+                        _ => None,
+                    };
+                    if let Some((pane, navigation)) = navigation_request {
+                        if navigation_high_water[pane.index()].is_some_and(|old| navigation <= old) { continue; }
+                        navigation_high_water[pane.index()] = Some(navigation);
+                    }
                     let resort = matches!(&command, Some(Command::Resort { .. }));
                     let desired_source = match &command {
                         Some(Command::Resort { source, .. }) => source.clone(),
@@ -405,6 +516,20 @@ impl Engine {
                         _ => None,
                     };
                     match command {
+                        Some(Command::RunFileList(request))=>{
+                            let (id,generation)=(request.id,request.generation);
+                            if let Err(error)=file_lists.start(*request,&mut tasks){
+                                self.outbox.send(Event::FileList(Box::new(midnight_core::FileListEvent{id,generation,result:Err(error)}))).await;
+                            }
+                        }
+                        Some(Command::ConfirmFileList{id,generation})=>{
+                            if let Err(error)=file_lists.confirm(id,generation,&mut tasks){
+                                self.outbox.send(Event::FileList(Box::new(midnight_core::FileListEvent{id,generation,result:Err(error)}))).await;
+                            }
+                        }
+                        Some(Command::CancelFileList{id,generation})=>file_lists.cancel(id,generation),
+                        Some(Command::CopyGeneratedText{request,content,cancel})=>clipboard.copy_generated(request,content,cancel,&mut tasks).await,
+                        Some(Command::OpenSizeWarnings { request, report, cancel }) => size_warning_requests.open(request, report, cancel, &mut tasks).await,
                         Some(Command::PreviewUserCommand(request)) => {
                             let (request_id, command) = (request.id, request.command.clone());
                             if let Err(error) = user_commands.start(*request, true) {
@@ -431,6 +556,12 @@ impl Engine {
                             }
                         }
                         Some(Command::CancelChecksums { job, generation }) => checksums.cancel(job, generation),
+                        Some(Command::VerifyChecksumManifest(request)) => {
+                            let (job, generation) = (request.job, request.generation);
+                            if let Err(error) = checksums.verify(*request) {
+                                self.outbox.send(Event::ChecksumRejected(Box::new(midnight_core::ChecksumRejected { job, generation, error }))).await;
+                            }
+                        }
                         Some(Command::ReleaseChecksums { job, generation }) => checksums.release(job, generation),
                         Some(Command::SaveChecksumManifest { save_id, job, generation, request }) => {
                             if let Err(error) = checksums.save(save_id, (job, generation), *request) {
@@ -447,6 +578,7 @@ impl Engine {
                                 self.outbox.send(Event::FindRejected(Box::new(midnight_core::FindRejected { session, generation, error }))).await;
                             }
                         }
+                        Some(Command::SortFind(request)) => find.sort(request),
                         Some(Command::CancelFind { session, generation }) => find.cancel(session, generation),
                         Some(Command::CloseFind(session)) => find.close(session),
                         Some(Command::ValidateFindResult(request)) => {
@@ -471,8 +603,21 @@ impl Engine {
                                 outbox.send(Event::ArchiveSelection { pane, navigation, revision, view, result }).await;
                             });
                         }
-                        Some(Command::ArchiveNavigate { pane, navigation, action, sort }) => {
+                        Some(Command::NetworkNavigate { pane, navigation, action, sort }) => {
                             if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
+                            trees.invalidate(pane, navigation, sort);
+                            if let Some(old) = requests[pane.index()].take() { old.cancel(); }
+                            if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
+                            entry_sizes.cancel_all(pane);
+                            search.invalidate(pane);
+                            comparison.invalidate(pane);
+                            archives.cancel(pane);
+                            neighborhood.navigate(pane, navigation, action, sort, &mut tasks);
+                        }
+                        Some(Command::ArchiveNavigate { pane, navigation, action, sort }) => {
+                            neighborhood.cancel(pane);
+                            if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
+                            trees.invalidate(pane, navigation, sort);
                             if let Some(old) = requests[pane.index()].take() { old.cancel(); }
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             entry_sizes.cancel_all(pane);
@@ -534,19 +679,32 @@ impl Engine {
                         Some(Command::EnqueueClipboardMove(request)) => copies.enqueue_clipboard_move(request).await,
                         Some(Command::EnqueueTransferWithMetadata(request)) => copies.enqueue_metadata(*request).await,
                         Some(Command::EnqueueArchiveCopy(request)) => copies.enqueue_archive(request).await,
+                        Some(Command::EnqueueCapturedTransfer(request)) => copies.enqueue_captured(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
                         Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut tasks).await,
                         Some(Command::DetachDragDrop { host_generation }) => drag_drop.detach(host_generation),
                         Some(Command::PrepareDrag { id, pane, navigation, files }) => drag_drop.prepare(id, pane, navigation, files).await,
+                        Some(Command::PrepareCapturedDrag { id, pane, navigation, source }) => drag_drop.prepare_captured(id, pane, navigation, source).await,
                         Some(Command::StartDrag(id)) => drag_drop.start(id).await,
                         Some(Command::CancelDrag(id)) => drag_drop.cancel(id).await,
-                        Some(Command::AcceptDrop { token, id }) => drag_drop.accept(token, id, &copies).await,
+                        Some(Command::AcceptDrop { token, id, verification }) => drag_drop.accept(token, id, verification, &copies).await,
                         Some(Command::RejectDrop(token)) => drag_drop.reject(token),
-                        Some(Command::InternalDrop { id, target, targets_revision }) => drag_drop.internal(id, target, targets_revision).await,
+                        Some(Command::InternalDrop(request)) => {
+                            if let Some(command) = drag_drop.internal_request(*request).await
+                                && let Some(event) = trees.submit(command).await {
+                                self.outbox.send(Event::Tree(Box::new(event))).await;
+                            }
+                        },
+                        Some(Command::CompleteInternalDrop { id, target }) => drag_drop.complete_internal(id, target).await,
                         Some(Command::Search(request)) => search.query(request),
                         Some(Command::CancelSearch { pane, revision }) => search.cancel(pane, revision),
                         None | Some(Command::Shutdown) => break,
+                        Some(Command::Tree(command)) => {
+                            if let Some(event) = trees.submit(*command).await {
+                                self.outbox.send(Event::Tree(Box::new(event))).await;
+                            }
+                        },
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
@@ -573,6 +731,7 @@ impl Engine {
                             let watch_target = visible.clone();
                             let mut snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
                             let state = &mut snapshots[visible.pane.index()];
+                            if !state.has_native_view() { continue; }
                             if state.visible.as_ref().is_some_and(|old| old.navigation > visible.navigation) { continue; }
                             let same_snapshot = |snapshot: &&CommittedSnapshot| snapshot.navigation == visible.navigation && snapshot.path == visible.path && Arc::ptr_eq(&snapshot.entries, &visible.entries);
                             let existing = state.committed.as_ref().filter(same_snapshot).or_else(|| state.visible.as_ref().filter(same_snapshot));
@@ -582,7 +741,11 @@ impl Engine {
                         }
                         Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks),
                         Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
+                        Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut tasks).await,
+                        Some(Command::PickPath { request, input }) => path_picker.show(request, input, &mut tasks).await,
+                        Some(Command::CancelPathPicker { request }) => path_picker.cancel(request),
                         Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut tasks).await,
+                        Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut tasks).await,
                         Some(Command::CutFiles { request, files }) => clipboard.cut_files(request, files, &mut tasks).await,
                         Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut tasks).await,
                         Some(Command::ShowShellMenu { request, files, owner, position, modifiers, target }) => {
@@ -593,7 +756,9 @@ impl Engine {
                             selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback },
                                 properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks);
                         }
-                        Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, &mut tasks),
+                        Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, false, &mut tasks),
+                        Some(Command::ResolveDirectoryLink { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, true, &mut tasks),
+                        Some(Command::ArchiveSizes(command)) => archive_sizes.submit(command).await,
                         Some(Command::ComputeFolderSizes { pane, navigation, scan, selection }) => {
                             // Retrying an accepted command must not falsely finish
                             // the still-running scan with the same identity.
@@ -625,6 +790,7 @@ impl Engine {
                             let filesystem = self.filesystem.clone();
                             let outbox = self.outbox.clone();
                             let budget = size_budget.clone();
+                            let delivery_cancel = size_delivery_cancel.clone();
                             let io_budget = size_io_budget.clone();
                             let size_observer = selected_sizes.observer.clone();
                             let scan_path = entries.as_ref().map(|snapshot| snapshot.path.clone());
@@ -650,13 +816,14 @@ impl Engine {
                                         .filter(|entry| entry.kind == EntryKind::Directory)
                                         .map(|entry| (entry.id, entry.path.clone())).collect();
                                     folder_sizes::compute_batched(filesystem.as_ref(), &roots, &worker_cancel, &mut |entry, size| {
-                                        if worker_cancel.is_cancelled() { return false; }
                                         let Some(path) = paths.get(&entry) else { return false; };
-                                        snapshot.sizes.lock().unwrap_or_else(|error| error.into_inner()).insert(path.clone(), size);
+                                        snapshot.sizes.lock().unwrap_or_else(|error| error.into_inner()).insert(path.clone(), size.clone());
                                         if let Some(event) = size_observer.updated(pane, &snapshot.sizes, path) {
                                             size_observer.publish(event);
                                         }
-                                        outbox.blocking_send(Event::FolderSizeUpdated { pane, navigation, scan, entry, size }, &worker_cancel)
+                                        // Cancellation freezes and publishes the last partial report.
+                                        // Engine shutdown still interrupts a saturated UI queue.
+                                        outbox.blocking_send(Event::FolderSizeUpdated { pane, navigation, scan, entry, size }, &delivery_cancel)
                                     }, &io_budget);
                                 }).await;
                                 if !final_cancel.is_cancelled() {
@@ -681,6 +848,7 @@ impl Engine {
                                 tasks.spawn(async move { outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await; });
                             }
                         }
+                        Some(Command::QueryVolumeInformation(request)) => volume_information.query(request),
                         Some(Command::ListVolumes) => {
                             volumes.refresh();
                         }
@@ -689,7 +857,9 @@ impl Engine {
                         | Some(Command::Resort { pane, navigation, path, sort, .. }) => {
                             if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
                             if snapshots.lock().unwrap_or_else(|e| e.into_inner())[pane.index()].archive_navigation.is_some_and(|old| navigation <= old) { continue; }
+                            trees.invalidate(pane, navigation, sort);
                             archives.cancel(pane);
+                            neighborhood.cancel(pane);
                             let continued_entry_sizes = (refresh || resort)
                                 .then(|| entry_sizes.continued_sizes(pane, &path, continued_scan)).flatten();
                             entry_sizes.navigate(pane, &path, refresh || resort);
@@ -729,6 +899,7 @@ impl Engine {
                             let icons = desktop.icon_sender();
                             let listing_snapshots = snapshots.clone();
                             let selection_stream = selection.streaming.clone();
+                            let navigation_fallback = self.navigation_fallback.clone();
                             let listing = tasks.spawn(async move {
                                 if !outbox.send(Event::ListingStarted { pane, navigation, path: listing_path.clone() }).await { return; }
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
@@ -741,7 +912,7 @@ impl Engine {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream });
+                                    list_directory(ListingTask { filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback });
                                 }).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -778,11 +949,20 @@ impl Engine {
             }
         }
 
+        commands.close();
         drag_drop.shutdown();
         user_commands.stop();
         find.shutdown();
         operations.shutdown();
         copies.shutdown();
+        drop(neighborhood);
+        drop(archives);
+        trees.shutdown().await;
+        // Queued commands may retain provider captures. Final release belongs to a
+        // backend blocking worker even when Shutdown precedes them in the queue.
+        retire_commands(commands).await;
+        archive_sizes.shutdown().await;
+        size_delivery_cancel.cancel();
         for request in requests.into_iter().flatten() {
             request.cancel();
         }
@@ -796,9 +976,13 @@ impl Engine {
         drop(selected_sizes);
         entry_sizes.shutdown();
         clipboard.shutdown();
+        size_warning_requests.shutdown();
+        file_lists.shutdown();
         shell_menu.shutdown();
+        path_picker.shutdown();
         drop(search);
         fonts.shutdown();
+        drop(volume_information);
         if let Some(settings) = settings {
             settings.shutdown();
             let _ =
@@ -808,10 +992,16 @@ impl Engine {
         user_commands.shutdown().await;
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+        tree_roots::shutdown(snapshots).await;
     }
 }
 
+async fn retire_commands(commands: mpsc::Receiver<Command>) {
+    let _ = tokio::task::spawn_blocking(move || drop(commands)).await;
+}
+
 struct ListingTask {
+    navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
     selection_stream: streaming_selection::StreamingSelections,
     filesystem: Arc<dyn FileSystem>,
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
@@ -829,6 +1019,7 @@ struct ListingTask {
 
 fn list_directory(task: ListingTask) {
     let ListingTask {
+        navigation_fallback,
         selection_stream,
         filesystem,
         locale,
@@ -895,14 +1086,30 @@ fn list_directory(task: ListingTask) {
     }
     if let Err(error) = result {
         listing_failed(&snapshots, pane, navigation);
-        outbox.blocking_send(
-            Event::ListingFailed {
+        let event = match navigation_fallback::next_path(
+            &path,
+            &error,
+            navigation_fallback.as_deref(),
+            &cancel,
+        ) {
+            Ok(Some(path)) => Event::ListingFallback {
+                pane,
+                navigation,
+                path,
+                error,
+            },
+            Ok(None) => Event::ListingFailed {
                 pane,
                 navigation,
                 error,
             },
-            &cancel,
-        );
+            Err(error) => Event::ListingFailed {
+                pane,
+                navigation,
+                error,
+            },
+        };
+        outbox.blocking_send(event, &cancel);
         return;
     }
     selection_stream.append(pane, navigation, &path, &batch);
@@ -1045,15 +1252,28 @@ fn publish_listing(
     ));
     let navigation = snapshot.navigation;
     let entries = snapshot.entries.clone();
-    {
+    let retired_root = {
         let mut cached = snapshots.lock().unwrap_or_else(|error| error.into_inner());
         if cancel.is_cancelled() {
             return;
         }
+        let retired = cached[pane.index()].remember_native_tree_root(
+            midnight_core::TreeRootSnapshot {
+                pane,
+                navigation,
+                entries: entries.clone(),
+                index: index.clone(),
+            },
+            snapshot.path.clone(),
+        );
         cached[pane.index()].archive = None;
+        cached[pane.index()].network_navigation = None;
+        cached[pane.index()].network = None;
         cached[pane.index()].committed = Some(snapshot);
         cached[pane.index()].pending = None;
-    }
+        retired
+    };
+    drop(retired_root);
     outbox.blocking_send(
         Event::ListingFinished {
             pane,

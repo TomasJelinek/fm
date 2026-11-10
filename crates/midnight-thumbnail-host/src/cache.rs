@@ -1,11 +1,28 @@
 //! Private persistent RGBA cache; a successful write is required before a generated frame is used.
-use crate::decode::Source;
+use crate::{
+    cache_store::{Record, Store},
+    decode::Source,
+};
 use midnight_thumbnail_api::{self as api, Frame, Message};
-use midnight_worker_platform::store::{PrivateStore, Record};
 use std::{collections::HashMap, io, path::Path, sync::Arc, time::SystemTime};
 
 pub const DEFAULT_DISK_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// Bounded physical decode sizes, retaining the original 96-pixel cache variant.
+pub const RESOLUTION_EDGES: [u32; 6] = [96, 128, 192, 256, 384, api::MAX_EDGE];
+
+pub fn resolution_edge(requested: u32) -> u32 {
+    RESOLUTION_EDGES
+        .into_iter()
+        .find(|edge| *edge >= requested)
+        .unwrap_or(api::MAX_EDGE)
+}
+
+/// Coverage records the decode request, even when a tiny source produces fewer pixels.
+pub struct CachedFrame {
+    pub frame: Arc<Frame>,
+    pub edge: u32,
+}
 
 const MAX_KEY_BYTES: usize = 16 * 1024;
 const MAX_RECORDS: usize = 8192;
@@ -66,6 +83,14 @@ impl Key {
     pub fn filename(&self) -> String {
         format!("{}.mtc", blake3::hash(&self.encoded).to_hex())
     }
+    fn with_edge(&self, edge: u32) -> Self {
+        let mut key = self.clone();
+        let dimensions = key.encoded.len() - 9;
+        key.encoded[dimensions..dimensions + 4].copy_from_slice(&edge.to_le_bytes());
+        key.encoded[dimensions + 4..dimensions + 8].copy_from_slice(&edge.to_le_bytes());
+        key.dimensions = (edge, edge);
+        key
+    }
     fn validate(&self, source: &dyn Source) -> io::Result<()> {
         source.validate()?;
         if self.version != source.version() || self.length != source.length() {
@@ -91,7 +116,7 @@ struct MemoryRecord {
     bytes: usize,
 }
 pub struct Cache {
-    store: PrivateStore,
+    store: Store,
     disk: HashMap<String, Record>,
     disk_bytes: u64,
     disk_limit: u64,
@@ -103,10 +128,10 @@ pub struct Cache {
 }
 impl Cache {
     pub fn open(root: &Path, disk_limit: u64, memory_limit: usize) -> io::Result<Self> {
-        let store = PrivateStore::open(root)?;
+        let store = Store::open(root)?;
         let mut transaction = store.transaction()?;
         let records = store.records()?;
-        let disk_bytes = records.iter().map(|record| record.bytes).sum();
+        let disk_bytes = sum_record_bytes(&records)?;
         let mut cache = Self {
             store,
             disk: records
@@ -127,12 +152,47 @@ impl Cache {
         Ok(cache)
     }
     pub fn get(&mut self, key: &Key, source: &dyn Source) -> io::Result<Option<Arc<Frame>>> {
+        self.get_matching(key, source, false)
+            .map(|hit| hit.map(|hit| hit.frame))
+    }
+    /// Reuse sufficient cached decode coverage without opening or decoding source content.
+    pub fn get_covering(
+        &mut self,
+        key: &Key,
+        source: &dyn Source,
+    ) -> io::Result<Option<CachedFrame>> {
+        self.get_matching(key, source, true)
+    }
+    fn get_matching(
+        &mut self,
+        key: &Key,
+        source: &dyn Source,
+        covering: bool,
+    ) -> io::Result<Option<CachedFrame>> {
         key.validate(source)?;
         let mut transaction = self.store.transaction()?;
         let synchronized =
             transaction.generation().is_some() && transaction.generation() == self.disk_generation;
         transaction.advance()?;
-        let result = self.get_locked(key);
+        let result = (|| {
+            if let Some(frame) = self.get_locked(key)? {
+                return Ok(Some(CachedFrame {
+                    frame,
+                    edge: key.dimensions.0.max(key.dimensions.1),
+                }));
+            }
+            if covering && key.dimensions.0 == key.dimensions.1 {
+                for edge in RESOLUTION_EDGES
+                    .into_iter()
+                    .filter(|edge| *edge > key.dimensions.0)
+                {
+                    if let Some(frame) = self.get_locked(&key.with_edge(edge))? {
+                        return Ok(Some(CachedFrame { frame, edge }));
+                    }
+                }
+            }
+            Ok(None)
+        })();
         if synchronized && result.is_ok() {
             self.disk_generation = transaction.generation();
         }
@@ -182,16 +242,7 @@ impl Cache {
                 return Ok(None);
             }
         };
-        self.forget_disk(&name);
-        self.disk_bytes += bytes.len() as u64;
-        self.disk.insert(
-            name.clone(),
-            Record {
-                name,
-                bytes: bytes.len() as u64,
-                modified: SystemTime::now(),
-            },
-        );
+        self.remember_disk(&name)?;
         let frame = Arc::new(frame);
         self.remember(key.clone(), frame.clone());
         Ok(Some(frame))
@@ -227,16 +278,7 @@ impl Cache {
         let name = key.filename();
         self.evict_disk(bytes.len() as u64, 1)?;
         self.store.write(&name, &bytes)?;
-        self.forget_disk(&name);
-        self.disk_bytes += bytes.len() as u64;
-        self.disk.insert(
-            name.clone(),
-            Record {
-                name,
-                bytes: bytes.len() as u64,
-                modified: SystemTime::now(),
-            },
-        );
+        self.remember_disk(&name)?;
         let frame = Arc::new(frame);
         self.remember(key.clone(), frame.clone());
         Ok(frame)
@@ -260,7 +302,7 @@ impl Cache {
     }
     fn refresh_disk(&mut self) -> io::Result<()> {
         let records = self.store.records()?;
-        self.disk_bytes = records.iter().map(|record| record.bytes).sum();
+        self.disk_bytes = sum_record_bytes(&records)?;
         self.disk = records
             .into_iter()
             .map(|record| (record.name.clone(), record))
@@ -281,9 +323,28 @@ impl Cache {
             self.disk_bytes -= record.bytes;
         }
     }
+    fn remember_disk(&mut self, name: &str) -> io::Result<()> {
+        let record = self
+            .store
+            .record(name)?
+            .ok_or_else(|| invalid("Thumbnail cache record disappeared"))?;
+        self.forget_disk(name);
+        self.disk_bytes = self
+            .disk_bytes
+            .checked_add(record.bytes)
+            .ok_or_else(|| invalid("Thumbnail cache byte total overflow"))?;
+        self.disk.insert(name.into(), record);
+        Ok(())
+    }
     fn evict_disk(&mut self, extra: u64, count: usize) -> io::Result<()> {
         while self.disk_bytes.saturating_add(extra) > self.disk_limit
-            || self.disk.len() + count > MAX_RECORDS
+            || self
+                .disk
+                .values()
+                .map(|record| record.copies)
+                .sum::<usize>()
+                + count
+                > MAX_RECORDS
         {
             let Some(name) = self
                 .disk
@@ -348,6 +409,14 @@ impl Cache {
             },
         );
     }
+}
+
+fn sum_record_bytes(records: &[Record]) -> io::Result<u64> {
+    records.iter().try_fold(0u64, |total, record| {
+        total
+            .checked_add(record.bytes)
+            .ok_or_else(|| invalid("Thumbnail cache byte total overflow"))
+    })
 }
 
 fn decode_record(key: &Key, bytes: &[u8]) -> io::Result<Frame> {

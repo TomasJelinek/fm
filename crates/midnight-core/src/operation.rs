@@ -64,6 +64,8 @@ pub struct OperationProgress {
     pub failed: u64,
     /// Removed nodes for deletion; the final entry for rename/create (not intermediate dirs).
     pub processed_entries: u64,
+    /// Shared backend activity samples; deletion measures processed entries/s.
+    pub throughput: Arc<crate::OperationThroughput>,
     pub current_path: Option<PathBuf>,
     pub message: String,
     /// At most 16 errors; failed remains the full top-level failure count.

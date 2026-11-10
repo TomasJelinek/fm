@@ -82,7 +82,7 @@ fn command_waits_for_exact_selection_and_retains_focus_other_panel_and_configura
             navigation: request.navigation,
             revision: request.revision,
             selection: selection.clone(),
-            deferred: false,
+            deferred: Default::default(),
         },
         &send,
     );
@@ -205,7 +205,7 @@ fn out_of_order_panel_selection_replies_still_submit_increasing_backend_ids() {
             selection: Arc::new(
                 SelectionSnapshot::from_bits(selection.view.unwrap(), vec![3]).unwrap(),
             ),
-            deferred: false,
+            deferred: Default::default(),
         },
         &send,
     );

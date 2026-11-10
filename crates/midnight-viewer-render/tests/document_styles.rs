@@ -15,6 +15,8 @@ fn underline_is_painted_in_the_same_raster_as_glyphs() {
                 weight: 400,
                 italic: false,
                 underline: true,
+                strikethrough: false,
+                monospace: false,
                 size: options.size,
             }],
         )
@@ -50,6 +52,8 @@ fn heading_geometry_and_hit_testing_share_the_styled_layout() {
                 weight: 700,
                 italic: false,
                 underline: false,
+                strikethrough: false,
+                monospace: false,
                 size: 30.0,
             }],
         )
@@ -80,6 +84,8 @@ fn oversized_and_invalid_semantic_styles_are_rejected_before_shaping() {
                     weight: 700,
                     italic: false,
                     underline: false,
+                    strikethrough: false,
+                    monospace: false,
                     size: 20.0,
                 }]
             )
@@ -96,9 +102,58 @@ fn oversized_and_invalid_semantic_styles_are_rejected_before_shaping() {
                     weight: 700,
                     italic: false,
                     underline: false,
+                    strikethrough: false,
+                    monospace: false,
                     size: f32::NAN,
                 }]
             )
             .is_err()
+    );
+}
+
+#[test]
+fn code_spans_use_monospace_and_strikethrough_changes_visible_pixels() {
+    let mut renderer = TextRenderer::default();
+    let options = TextOptions {
+        family: "sans-serif",
+        ..TextOptions::default()
+    };
+    let style = StyleSpan {
+        range: 0..4,
+        weight: 400,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        monospace: true,
+        size: options.size,
+    };
+    let code = renderer
+        .layout_with_styles("iWMW", &options, &[], std::slice::from_ref(&style))
+        .unwrap();
+    let monospace = renderer
+        .layout_with_options("iWMW", &TextOptions::default(), &[])
+        .unwrap();
+    assert!((code.width() - monospace.width()).abs() < 0.01);
+    let strike = renderer
+        .layout_with_styles(
+            "iWMW",
+            &options,
+            &[],
+            &[StyleSpan {
+                strikethrough: true,
+                ..style
+            }],
+        )
+        .unwrap();
+    let viewport = midnight_viewer_render::Viewport {
+        width: 120,
+        height: 60,
+        origin: [0.0; 2],
+        background: [0; 4],
+        selection_color: [0; 4],
+    };
+    assert_ne!(
+        renderer.rasterize(&code, viewport, None).unwrap().rgba,
+        renderer.rasterize(&strike, viewport, None).unwrap().rgba
     );
 }

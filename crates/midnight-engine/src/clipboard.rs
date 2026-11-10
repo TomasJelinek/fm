@@ -14,7 +14,10 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 enum Action {
     Text(String),
+    Generated(Arc<dyn midnight_core::GeneratedTextSource>, Cancellation),
+    ReadText,
     Files(SelectedFiles, FileClipboardIntent),
+    Captured(Arc<dyn midnight_core::CapturedClipboardFiles>, Cancellation),
     Read(PathBuf),
 }
 struct Request {
@@ -24,6 +27,10 @@ struct Request {
 impl Request {
     fn failure(self, error: FsError) -> Event {
         match self.action {
+            Action::ReadText => Event::PathClipboardTextRead {
+                request: self.id,
+                result: Err(error),
+            },
             Action::Read(destination) => Event::ClipboardFilesRead {
                 request: self.id,
                 destination,
@@ -43,6 +50,38 @@ pub(crate) struct Controller {
     outbox: Outbox,
 }
 impl Controller {
+    pub(crate) async fn copy_captured(
+        &mut self,
+        id: DesktopRequestId,
+        source: Arc<dyn midnight_core::CapturedClipboardFiles>,
+        cancel: Cancellation,
+        tasks: &mut JoinSet<()>,
+    ) {
+        self.submit(
+            Request {
+                id,
+                action: Action::Captured(source, cancel),
+            },
+            tasks,
+        )
+        .await;
+    }
+    pub(crate) async fn copy_generated(
+        &mut self,
+        id: DesktopRequestId,
+        content: Arc<dyn midnight_core::GeneratedTextSource>,
+        cancel: Cancellation,
+        tasks: &mut JoinSet<()>,
+    ) {
+        self.submit(
+            Request {
+                id,
+                action: Action::Generated(content, cancel),
+            },
+            tasks,
+        )
+        .await;
+    }
     pub(crate) fn new(service: Option<Arc<dyn ClipboardService>>, outbox: Outbox) -> Self {
         Self {
             sender: None,
@@ -94,9 +133,14 @@ impl Controller {
                         };
                         match opened {
                             Err(error) => request.failure(error),
-                            Ok(()) => {
-                                execute(request.id, action, session.as_mut().unwrap().as_mut())
-                            }
+                            // Opening the native session may block. A modeless
+                            // window can close during that call, after preparation.
+                            Ok(()) => match check_cancellation(&request.action, &cancel) {
+                                Err(error) => request.failure(error),
+                                Ok(()) => {
+                                    execute(request.id, action, session.as_mut().unwrap().as_mut())
+                                }
+                            },
                         }
                     }
                 };
@@ -113,10 +157,28 @@ impl Controller {
             self.sender = Some(self.start_worker(tasks));
         }
         if let Err(failed) = self.sender.as_ref().unwrap().try_send(request) {
-            let event = failed.into_inner().failure(error(
+            let request = failed.into_inner();
+            let id = request.id;
+            let busy = error(
                 io::ErrorKind::WouldBlock,
                 "Clipboard queue is busy; try again.",
-            ));
+            );
+            let event = if matches!(
+                &request.action,
+                Action::Captured(_, _) | Action::Generated(_, _)
+            ) {
+                tokio::task::spawn_blocking(move || request.failure(busy))
+                    .await
+                    .unwrap_or_else(|failure| Event::DesktopActionFinished {
+                        request: id,
+                        result: Err(error(
+                            io::ErrorKind::Other,
+                            &format!("Clipboard retirement failed: {failure}"),
+                        )),
+                    })
+            } else {
+                request.failure(busy)
+            };
             // Backpressure applies to rejected requests too; never spawn unbounded reply tasks.
             self.outbox.send(event).await;
         }
@@ -131,6 +193,16 @@ impl Controller {
             Request {
                 id,
                 action: Action::Text(text),
+            },
+            tasks,
+        )
+        .await;
+    }
+    pub(crate) async fn read_text(&mut self, id: DesktopRequestId, tasks: &mut JoinSet<()>) {
+        self.submit(
+            Request {
+                id,
+                action: Action::ReadText,
             },
             tasks,
         )
@@ -213,11 +285,60 @@ fn send_event(
 }
 enum Prepared {
     Text(String),
+    ReadText,
     Files(FileClipboard),
+    Captured(
+        Arc<dyn midnight_core::CapturedClipboardFiles>,
+        Cancellation,
+        Cancellation,
+    ),
     Read(PathBuf),
 }
 fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> {
+    check_cancellation(action, cancel)?;
     match action {
+        Action::Generated(source, _) => {
+            let length = source.length();
+            if length > 4 * 1024 * 1024 {
+                return Err(error(
+                    io::ErrorKind::InvalidInput,
+                    "The generated text exceeds the clipboard's 4 MiB budget. Use a file or the internal viewer.",
+                ));
+            }
+            let mut bytes = vec![0; length as usize];
+            let mut offset = 0;
+            while offset < bytes.len() {
+                check_cancellation(action, cancel)?;
+                let end = (offset + 256 * 1024).min(bytes.len());
+                let count = source
+                    .read_at(offset as u64, &mut bytes[offset..end])
+                    .map_err(|e| error(e.kind(), &e.to_string()))?;
+                if count == 0 || count > end - offset {
+                    return Err(error(
+                        io::ErrorKind::UnexpectedEof,
+                        "Generated text ended before its recorded length.",
+                    ));
+                }
+                offset += count;
+            }
+            check_cancellation(action, cancel)?;
+            if source.length() != length {
+                return Err(error(
+                    io::ErrorKind::InvalidData,
+                    "Generated text changed its recorded length.",
+                ));
+            }
+            let text = String::from_utf8(bytes)
+                .map_err(|_| error(io::ErrorKind::InvalidData, "Generated text is not UTF-8."))?;
+            if text.contains('\0') {
+                return Err(error(
+                    io::ErrorKind::InvalidInput,
+                    "Clipboard text cannot contain NUL.",
+                ));
+            }
+            Ok(Prepared::Text(text))
+        }
+        Action::ReadText => Ok(Prepared::ReadText),
         Action::Text(text) => {
             if text.len() > 4 * 1024 * 1024 || text.contains('\0') {
                 return Err(error(
@@ -227,6 +348,11 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
             }
             Ok(Prepared::Text(text.clone()))
         }
+        Action::Captured(source, request) => Ok(Prepared::Captured(
+            source.clone(),
+            request.clone(),
+            cancel.clone(),
+        )),
         Action::Files(files, intent) => {
             let paths = file_targets::resolve(
                 &files.selection,
@@ -253,10 +379,34 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
         }
     }
 }
+fn check_cancellation(action: &Action, global: &Cancellation) -> Result<(), FsError> {
+    if global.is_cancelled()
+        || matches!(action, Action::Generated(_, request) | Action::Captured(_, request) if request.is_cancelled())
+    {
+        Err(error(
+            io::ErrorKind::Interrupted,
+            "Clipboard copy was cancelled.",
+        ))
+    } else {
+        Ok(())
+    }
+}
 fn execute(id: DesktopRequestId, action: Prepared, session: &mut dyn ClipboardSession) -> Event {
     let result = match action {
+        Prepared::ReadText => {
+            return Event::PathClipboardTextRead {
+                request: id,
+                result: session.read_text().and_then(|text| {
+                    crate::clipboard_text::prepare_pasted_path(text)
+                        .map_err(|message| error(io::ErrorKind::InvalidData, message))
+                }),
+            };
+        }
         Prepared::Text(text) => session.copy_text(&text),
         Prepared::Files(files) => session.copy_files(&files),
+        Prepared::Captured(source, request, global) => {
+            publish_captured(source.as_ref(), &request, &global, session)
+        }
         Prepared::Read(destination) => {
             return Event::ClipboardFilesRead {
                 request: id,
@@ -273,9 +423,46 @@ fn execute(id: DesktopRequestId, action: Prepared, session: &mut dyn ClipboardSe
         result: result.map(|()| DesktopActionResult::ClipboardCopied),
     }
 }
+
+fn publish_captured(
+    source: &dyn midnight_core::CapturedClipboardFiles,
+    request: &Cancellation,
+    global: &Cancellation,
+    session: &mut dyn ClipboardSession,
+) -> Result<(), FsError> {
+    let check = || {
+        if request.is_cancelled() || global.is_cancelled() {
+            Err(error(
+                io::ErrorKind::Interrupted,
+                "Clipboard copy was cancelled.",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let intent = source.intent();
+    let files = source.resolve(global)?;
+    files.validate()?;
+    if files.intent != intent {
+        return Err(error(
+            io::ErrorKind::InvalidData,
+            "Captured clipboard intent changed.",
+        ));
+    }
+    check()?;
+    session.copy_files(&files)
+}
 fn error(kind: io::ErrorKind, message: &str) -> FsError {
     FsError::from_io("clipboard", Path::new(""), io::Error::new(kind, message))
 }
+
+#[cfg(test)]
+#[path = "clipboard_capture_tests.rs"]
+mod capture_tests;
+#[cfg(test)]
+#[path = "clipboard_generated_tests.rs"]
+mod generated_tests;
 
 #[cfg(test)]
 mod tests {
@@ -283,6 +470,33 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Pump(Arc<AtomicUsize>);
+    struct TextReader(&'static str);
+    impl ClipboardSession for TextReader {
+        fn copy_text(&mut self, _: &str) -> Result<(), FsError> {
+            panic!("reading must not write the clipboard");
+        }
+        fn read_text(&mut self) -> Result<String, FsError> {
+            Ok(self.0.into())
+        }
+    }
+    #[test]
+    fn explicit_text_read_applies_literal_path_policy_and_reports_invalid_input() {
+        let id = DesktopRequestId(17);
+        match execute(id, Prepared::ReadText, &mut TextReader("资料 ")) {
+            Event::PathClipboardTextRead {
+                request,
+                result: Ok(text),
+            } => {
+                assert_eq!(request, id);
+                assert_eq!(&*text, format!("资料 {}", std::path::MAIN_SEPARATOR));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            execute(id, Prepared::ReadText, &mut TextReader("bad\npath")),
+            Event::PathClipboardTextRead { result: Err(_), .. }
+        ));
+    }
 
     #[test]
     fn native_cut_and_copy_keep_captured_raw_paths_and_distinct_intents() {

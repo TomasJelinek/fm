@@ -1,5 +1,8 @@
 # File comparison implementation and verification
 
+The original input policy below was extended on November 8 with automatic
+[same-name opposite-panel matching](2026-11-08-comparison-same-name.md).
+
 Ctrl+Shift+C is the configurable `files.compare` action. Two selected files in
 the active pane take precedence. Otherwise the comparator uses one selected file
 or the focused file from each pane, preserving left/right pane order. More than

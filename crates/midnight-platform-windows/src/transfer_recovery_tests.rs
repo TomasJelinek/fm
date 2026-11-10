@@ -1,5 +1,317 @@
 use super::*;
-use std::fs;
+use std::{fs, mem::size_of_val};
+
+#[test]
+fn preserving_output_freezes_inherited_acl_without_adding_parent_grants() {
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"original").unwrap();
+    let directory = Directory::from_file(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let cancel = Cancellation::default();
+    let expected = prepare_target(&directory, OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    let mut stage = directory
+        .stage_file_preserving_target(
+            OsStr::new("target"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"replacement").unwrap();
+    stage.sync(&cancel).unwrap();
+    assert!(matches!(
+        stage
+            .publish_replace(OsStr::new("target"), &cancel)
+            .unwrap(),
+        TransferPublication::Replaced { .. }
+    ));
+    let descriptor = security_descriptor(&target);
+    let mut control = 0;
+    let mut revision = 0;
+    // SAFETY: initialized native descriptor and writable scalar outputs remain live.
+    assert_ne!(
+        unsafe {
+            GetSecurityDescriptorControl(
+                descriptor.as_ptr().cast_mut().cast(),
+                &mut control,
+                &mut revision,
+            )
+        },
+        0
+    );
+    assert_ne!(control & SE_DACL_PROTECTED, 0);
+    assert_eq!(fs::read(&target).unwrap(), b"replacement");
+}
+
+#[test]
+fn preserving_output_keeps_private_acl_and_hidden_attribute_before_content() {
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"private original").unwrap();
+    let directory = Directory::from_file(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let private = create_private_directory(&directory.file, OsStr::new("private"), 0).unwrap();
+    let private_path = temp.path().join("private");
+    let descriptor = security_descriptor(&private_path);
+    let target_wide: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: an initialized descriptor and a terminated fixture path remain live.
+    assert_ne!(
+        unsafe {
+            SetFileSecurityW(
+                target_wide.as_ptr(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor.as_ptr().cast_mut().cast(),
+            )
+        },
+        0
+    );
+    // SAFETY: the owned fixture is a normal file; only its display attribute is changed.
+    assert_ne!(
+        unsafe { SetFileAttributesW(target_wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) },
+        0
+    );
+    let original_security = security_descriptor(&target);
+    let expected = prepare_target(&directory, OsStr::new("target"), &Cancellation::default())
+        .unwrap()
+        .unwrap();
+    let mut stage = directory
+        .stage_file_preserving_target(
+            OsStr::new("target"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &Cancellation::default(),
+        )
+        .unwrap();
+    let stage_path = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".me-")
+        })
+        .expect("an exclusive native stage exists");
+    assert_eq!(security_descriptor(&stage_path), original_security);
+    assert_ne!(
+        fs::metadata(&stage_path).unwrap().file_attributes() & FILE_ATTRIBUTE_HIDDEN,
+        0
+    );
+    stage.write_all(b"private replacement").unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"private original");
+    stage.sync(&Cancellation::default()).unwrap();
+    assert!(matches!(
+        stage
+            .publish_replace(OsStr::new("target"), &Cancellation::default())
+            .unwrap(),
+        TransferPublication::Replaced { .. }
+    ));
+    assert_eq!(security_descriptor(&target), original_security);
+    assert_ne!(
+        fs::metadata(&target).unwrap().file_attributes() & FILE_ATTRIBUTE_HIDDEN,
+        0
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"private replacement");
+    drop(private);
+}
+
+#[test]
+fn preserving_output_keeps_an_explicit_integrity_label() {
+    let temp = fixture();
+    let target = temp.path().join("target");
+    let directory = Directory::from_file(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    // The test token may inherit only Modify from the workspace. Create the fixture
+    // with explicit WRITE_OWNER authority, which setting a mandatory label requires.
+    let mut fixture_file = create_private_file(&directory.file, OsStr::new("target")).unwrap();
+    fixture_file.write_all(b"original").unwrap();
+    let mut sid = [0u64; 16];
+    let mut length = size_of_val(&sid) as u32;
+    // SAFETY: aligned, writable storage covers the bounded native SID output.
+    assert_ne!(
+        unsafe {
+            CreateWellKnownSid(
+                WinLowLabelSid,
+                ptr::null_mut(),
+                sid.as_mut_ptr().cast(),
+                &mut length,
+            )
+        },
+        0
+    );
+    let mut acl = [0u64; 32];
+    let mut descriptor = SECURITY_DESCRIPTOR::default();
+    let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+    // SAFETY: all structures are aligned and live; policy 1 means no-write-up.
+    assert_ne!(
+        unsafe {
+            InitializeAcl(
+                acl.as_mut_ptr().cast(),
+                size_of_val(&acl) as u32,
+                ACL_REVISION,
+            )
+        },
+        0
+    );
+    assert_ne!(
+        unsafe {
+            AddMandatoryAce(
+                acl.as_mut_ptr().cast(),
+                ACL_REVISION,
+                0,
+                1,
+                sid.as_mut_ptr().cast(),
+            )
+        },
+        0
+    );
+    assert_ne!(
+        unsafe { InitializeSecurityDescriptor(descriptor_ptr, 1) },
+        0
+    );
+    assert_ne!(
+        unsafe { SetSecurityDescriptorSacl(descriptor_ptr, 1, acl.as_mut_ptr().cast(), 0) },
+        0
+    );
+    // SAFETY: only the owned fixture's mandatory label is modified.
+    assert_ne!(
+        unsafe {
+            SetKernelObjectSecurity(
+                fixture_file.as_raw_handle(),
+                LABEL_SECURITY_INFORMATION,
+                descriptor_ptr,
+            )
+        },
+        0
+    );
+    drop(fixture_file);
+    let cancel = Cancellation::default();
+    let expected = prepare_target(&directory, OsStr::new("target"), &cancel)
+        .unwrap()
+        .unwrap();
+    let mut stage = directory
+        .stage_file_preserving_target(
+            OsStr::new("target"),
+            expected,
+            TransferReplacementPolicy::RecoverableCurrentEntry,
+            &cancel,
+        )
+        .unwrap();
+    stage.write_all(b"replacement").unwrap();
+    stage.sync(&cancel).unwrap();
+    assert!(matches!(
+        stage
+            .publish_replace(OsStr::new("target"), &cancel)
+            .unwrap(),
+        TransferPublication::Replaced { .. }
+    ));
+    let stored = security_descriptor(&target);
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut actual = ptr::null_mut();
+    // SAFETY: initialized native descriptor owns the borrowed SACL.
+    assert_ne!(
+        unsafe {
+            GetSecurityDescriptorSacl(
+                stored.as_ptr().cast_mut().cast(),
+                &mut present,
+                &mut actual,
+                &mut defaulted,
+            )
+        },
+        0
+    );
+    assert_ne!(present, 0);
+    assert!(!actual.is_null());
+    let mut ace = ptr::null_mut();
+    // SAFETY: successful SACL query returned a valid ACL and output is writable.
+    assert_ne!(unsafe { GetAce(actual, 0, &mut ace) }, 0);
+    // SAFETY: the label ACE supplied above is a SYSTEM_MANDATORY_LABEL_ACE.
+    let label = unsafe { &*ace.cast::<SYSTEM_MANDATORY_LABEL_ACE>() };
+    assert_eq!(label.Mask, 1);
+    // SAFETY: both initialized SIDs remain owned by live allocations.
+    assert_ne!(
+        unsafe {
+            EqualSid(
+                ptr::addr_of!(label.SidStart).cast_mut().cast(),
+                sid.as_mut_ptr().cast(),
+            )
+        },
+        0
+    );
+}
+
+#[test]
+fn preserving_output_refuses_alternate_streams_instead_of_losing_them() {
+    let temp = fixture();
+    let target = temp.path().join("target");
+    fs::write(&target, b"original").unwrap();
+    fs::write(temp.path().join("target:private"), b"retained stream").unwrap();
+    let directory = Directory::from_file(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+    )
+    .unwrap();
+    let expected = prepare_target(&directory, OsStr::new("target"), &Cancellation::default())
+        .unwrap()
+        .unwrap();
+    assert!(
+        directory
+            .stage_file_preserving_target(
+                OsStr::new("target"),
+                expected,
+                TransferReplacementPolicy::RecoverableCurrentEntry,
+                &Cancellation::default()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(temp.path().join("target:private")).unwrap(),
+        b"retained stream"
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"original");
+}
+
+fn security_descriptor(path: &Path) -> Vec<u64> {
+    let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let information = OWNER_SECURITY_INFORMATION
+        | GROUP_SECURITY_INFORMATION
+        | DACL_SECURITY_INFORMATION
+        | LABEL_SECURITY_INFORMATION;
+    let mut needed = 0;
+    // SAFETY: terminated fixture path and writable size output; the probe writes no data.
+    unsafe {
+        GetFileSecurityW(wide.as_ptr(), information, ptr::null_mut(), 0, &mut needed);
+    }
+    assert!(needed > 0);
+    let mut storage = vec![0u64; (needed as usize).div_ceil(8)];
+    // SAFETY: aligned allocation covers the native output size and stays live.
+    assert_ne!(
+        unsafe {
+            GetFileSecurityW(
+                wide.as_ptr(),
+                information,
+                storage.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            )
+        },
+        0
+    );
+    storage
+}
 
 fn fixture() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -30,6 +342,7 @@ fn stage(path: &Path) -> Stage {
     .unwrap();
     let mut stage = Stage {
         metadata: false,
+        preserved: None,
         file,
         directory,
         published: false,

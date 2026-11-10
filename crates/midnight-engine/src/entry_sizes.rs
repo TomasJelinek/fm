@@ -39,6 +39,7 @@ pub(crate) struct Controller {
     outbox: Outbox,
     snapshots: Snapshots,
     budget: Arc<Semaphore>,
+    delivery_cancel: Cancellation,
     io_budget: Arc<folder_sizes::IoBudget>,
     size_observer: crate::selection_sizes::Observer,
     pending: [Vec<Request>; 2],
@@ -50,6 +51,7 @@ impl Controller {
         outbox: Outbox,
         snapshots: Snapshots,
         budget: Arc<Semaphore>,
+        delivery_cancel: Cancellation,
         io_budget: Arc<folder_sizes::IoBudget>,
         size_observer: crate::selection_sizes::Observer,
     ) -> Self {
@@ -58,6 +60,7 @@ impl Controller {
             outbox,
             snapshots,
             budget,
+            delivery_cancel,
             io_budget,
             size_observer,
             pending: Default::default(),
@@ -115,6 +118,7 @@ impl Controller {
         let outbox = self.outbox.clone();
         let snapshots = self.snapshots.clone();
         let budget = self.budget.clone();
+        let delivery_cancel = self.delivery_cancel.clone();
         let io_budget = self.io_budget.clone();
         let size_observer = self.size_observer.clone();
         let path = snapshot.path.clone();
@@ -141,15 +145,12 @@ impl Controller {
                     std::slice::from_ref(root),
                     &worker_cancel,
                     &mut |entry, size| {
-                        if worker_cancel.is_cancelled() {
-                            return false;
-                        }
                         record_size(
                             &snapshot,
                             &snapshots,
                             pane,
                             &root.path,
-                            size,
+                            &size,
                             &worker_cancel,
                         );
                         if let Some(event) =
@@ -165,7 +166,7 @@ impl Controller {
                                 entry,
                                 size,
                             },
-                            &worker_cancel,
+                            &delivery_cancel,
                         )
                     },
                     &io_budget,
@@ -293,14 +294,14 @@ fn record_size(
     snapshots: &Snapshots,
     pane: PaneId,
     path: &Path,
-    size: midnight_core::FolderSize,
+    size: &midnight_core::FolderSize,
     cancel: &Cancellation,
 ) {
     snapshot
         .sizes
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .insert(path.into(), size);
+        .insert(path.into(), size.clone());
     // Same-location refresh/resort must retain ongoing size estimates for later explicit sorting.
     let caches = {
         let state = snapshots.lock().unwrap_or_else(|error| error.into_inner());
@@ -318,6 +319,6 @@ fn record_size(
         cache
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(path.into(), size);
+            .insert(path.into(), size.clone());
     }
 }

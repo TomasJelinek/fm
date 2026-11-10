@@ -14,13 +14,29 @@ pub(crate) struct ColorState {
 }
 
 impl Presenter {
+    pub(crate) fn cancel_color_draft(&mut self) {
+        self.colors.validation = None;
+        self.retired.push(Box::new(self.colors.ready.take()));
+        self.colors.editor = Default::default();
+        self.colors.error.clear();
+    }
     pub(crate) fn filename_style(&self, pane: PaneId, entry: &Entry) -> Option<FilenameStyle> {
         let panel = &self.panes[pane.index()];
         let result = self.colors.results[pane.index()].as_ref()?;
         if panel.showing_stream() || !Arc::ptr_eq(&panel.entries, &result.request.source) {
             return None;
         }
-        result.styles.get(&entry.id).copied()
+        let id = if let Some(view) = panel.tree_view() {
+            view.index
+                .directory
+                .by_id
+                .get(&entry.id)
+                .and_then(|position| view.rows.get(*position))?
+                .original_root_entry?
+        } else {
+            entry.id
+        };
+        result.styles.get(&id).copied()
     }
 
     pub(crate) fn validate_colors(

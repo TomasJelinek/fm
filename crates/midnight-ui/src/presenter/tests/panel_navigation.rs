@@ -26,6 +26,7 @@ fn special_location_keeps_the_containing_volume_selected() {
     let special = root.join("Documents 文档");
     let mut presenter = Presenter::new(special.clone(), root.clone());
     presenter.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             NavigationLocation {
@@ -307,7 +308,7 @@ fn space_does_not_scan_links_or_restart_an_active_all_folder_scan() {
         navigation: clear.navigation,
         revision: clear.revision,
         selection: Arc::new(SelectionSnapshot::default()),
-        deferred: false,
+        deferred: Default::default(),
     });
     p.folder_sizes(PaneId::Left, &send);
     let active = p.panes[0].size_scan;

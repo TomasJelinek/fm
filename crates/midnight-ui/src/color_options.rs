@@ -72,6 +72,20 @@ pub(crate) fn color(value: RgbColor) -> Color {
     Color::from_rgb_u8(value.0, value.1, value.2)
 }
 
+pub(crate) fn save_draft(presenter: &mut Presenter, send: &dyn Fn(Command) -> bool) {
+    match presenter
+        .colors
+        .editor
+        .drafts
+        .iter()
+        .map(to_rule)
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(rules) => presenter.validate_colors(rules, send),
+        Err(error) => presenter.colors.error = error.into(),
+    }
+}
+
 fn sync_editor(presenter: &mut Presenter) {
     let editor = &mut presenter.colors.editor;
     if !editor.dirty {
@@ -101,15 +115,11 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         .iter()
         .enumerate()
         .map(|(index, rule)| {
-            let mut expression: String = rule.expression.chars().take(80).collect();
-            if expression.len() < rule.expression.len() {
-                expression.push('…');
-            }
             format!(
                 "{}. {}{}",
                 index + 1,
                 if rule.enabled { "" } else { "[off] " },
-                expression
+                rule.expression
             )
             .into()
         })
@@ -139,6 +149,7 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     view.set_preview_foreground(color(foreground.unwrap_or_default()));
     view.set_preview_background(color(background.unwrap_or_default()));
     view.set_busy(presenter.colors.validation.is_some());
+    view.set_dirty(editor.dirty);
     view.set_error(presenter.colors.error.as_str().into());
 }
 
@@ -148,6 +159,26 @@ pub(crate) fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     crate::filename_colors::install(window);
+    let weak = window.as_weak();
+    window
+        .global::<ColorOptionsView>()
+        .on_choose_color(move |field, chosen| {
+            let Some(window) = weak.upgrade() else { return };
+            let view = window.global::<ColorOptionsView>();
+            if view.get_busy() || view.get_picker_field() != field || view.get_selected() < 0 {
+                return;
+            }
+            let mut draft = view.get_draft();
+            let value = RgbColor(chosen.red(), chosen.green(), chosen.blue())
+                .hex()
+                .into();
+            match field {
+                0 => draft.foreground = value,
+                1 => draft.background = value,
+                _ => return,
+            }
+            view.invoke_edit(draft);
+        });
     let weak = window.as_weak();
     let state = presenter.clone();
     window.global::<ColorOptionsView>().on_select(move |index| {
@@ -224,15 +255,7 @@ pub(crate) fn install(
                     }
                 }
                 4 => {
-                    match editor
-                        .drafts
-                        .iter()
-                        .map(to_rule)
-                        .collect::<Result<Vec<_>, _>>()
-                    {
-                        Ok(rules) => presenter.validate_colors(rules, send.as_ref()),
-                        Err(error) => presenter.colors.error = error.into(),
-                    }
+                    save_draft(&mut presenter, send.as_ref());
                 }
                 5 => {
                     editor.dirty = false;

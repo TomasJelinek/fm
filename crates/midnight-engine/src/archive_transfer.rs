@@ -41,10 +41,13 @@ pub(super) fn resolve(
         ));
     }
     let actual = mount.list(request.location.directory, cancel)?;
-    let actual: std::collections::HashMap<_, _> = actual
-        .into_iter()
-        .map(|node| (node.id.entry, node))
-        .collect();
+    let mut actual_map = std::collections::HashMap::new();
+    for node in actual {
+        if actual_map.insert(node.id.entry, node).is_some() {
+            return Err(failure("Duplicate archive member identity."));
+        }
+    }
+    let actual = actual_map;
     let visited = Arc::new(Mutex::new(Traversal::default()));
     let mut sources = VecDeque::new();
     for entry in request
@@ -83,8 +86,8 @@ pub(super) fn resolve(
 }
 
 #[derive(Default)]
-struct Traversal {
-    seen: HashSet<u64>,
+pub(crate) struct Traversal {
+    seen: HashSet<VirtualEntryId>,
     listed: usize,
     names: usize,
 }
@@ -130,7 +133,7 @@ impl Source {
         let name = names::native_name(raw)?;
         {
             let mut ids = visited.lock().unwrap_or_else(|e| e.into_inner());
-            if ids.seen.len() >= 100_000 || !ids.seen.insert(node.id.entry) {
+            if ids.seen.len() >= 100_000 || !ids.seen.insert(node.id) {
                 return Err(failure(
                     "Archive traversal is cyclic or exceeds its entry budget.",
                 ));
@@ -164,6 +167,9 @@ impl Source {
     }
 }
 impl TransferSource for Source {
+    fn virtual_identity(&self) -> Option<VirtualEntryId> {
+        Some(self.node.id)
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }
@@ -197,6 +203,18 @@ impl TransferSource for Source {
         }
         buffer[..bytes.len()].copy_from_slice(&bytes);
         Ok(bytes.len())
+    }
+    fn supports_read_retry(&self) -> bool {
+        self.node.kind == EntryKind::File
+    }
+    fn retry_read_from(&mut self, offset: u64, cancel: &Cancellation) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        if !self.supports_read_retry() || self.node.size.is_none_or(|size| offset > size) {
+            return Err(failure("Invalid archive member retry offset."));
+        }
+        // Archive reads are explicitly addressed by the retained mount/member IDs.
+        self.offset = offset;
+        Ok(())
     }
     fn next_child(
         &mut self,
@@ -253,4 +271,62 @@ fn check(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), FsError>
 }
 fn failure(message: &str) -> FsError {
     error(Path::new(""), io::ErrorKind::InvalidData, message)
+}
+
+/// Shared aggregate traversal accounting across the complete captured batch.
+pub(crate) fn traversal() -> Arc<Mutex<Traversal>> {
+    Arc::default()
+}
+pub(crate) fn captured_root(
+    target: &crate::providers::ArchiveTarget,
+    traversal: Arc<Mutex<Traversal>>,
+    cancel: &Cancellation,
+) -> Result<Box<dyn TransferSource>, FsError> {
+    let mount = target
+        .location
+        .mount
+        .clone()
+        .ok_or_else(|| failure("Archive is unavailable."))?;
+    check(&*mount, cancel)?;
+    let expected = target
+        .original
+        .as_ref()
+        .or(target.member.as_ref())
+        .ok_or_else(|| failure("Archive root has no original member record."))?;
+    let actual = mount.list(expected.parent, cancel)?;
+    {
+        let mut budget = traversal.lock().unwrap_or_else(|e| e.into_inner());
+        budget.listed = budget.listed.saturating_add(actual.len());
+        for node in &actual {
+            budget.names = budget
+                .names
+                .saturating_add(node.raw_name.len())
+                .saturating_add(node.display_name.len());
+        }
+        if budget.listed > 100_000 || budget.names > 8 * 1024 * 1024 {
+            return Err(failure(
+                "Archive admission exceeds its aggregate listing budget.",
+            ));
+        }
+    }
+    let mut ids = HashSet::new();
+    let mut found = None;
+    for node in actual {
+        if node.id.mount != mount.id() || node.parent != expected.parent || !ids.insert(node.id) {
+            return Err(failure("Invalid archive parent listing."));
+        }
+        if node.id == expected.id {
+            found = Some(node);
+        }
+    }
+    let node = found.ok_or_else(|| failure("Captured archive member disappeared."))?;
+    if node.raw_name != expected.raw_name
+        || node.kind != expected.kind
+        || node.size != expected.size
+        || node.readable != expected.readable
+        || node.modified != expected.modified
+    {
+        return Err(failure("Captured archive member changed."));
+    }
+    Ok(Box::new(Source::new(mount, node, 0, traversal)?))
 }

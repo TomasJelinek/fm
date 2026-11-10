@@ -11,7 +11,7 @@ license = "MIT"
 description = "Independent restricted paginated PDF viewer for Midnight Explorer"
 
 [dependencies]
-midnight-image-viewer-sdk = { version = "=0.2.0", registry = "midnight" }
+midnight-image-viewer-sdk = { version = "=0.3.0", registry = "midnight" }
 hayro = { version = "=0.9.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 
 [profile.release]

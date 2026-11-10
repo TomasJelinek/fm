@@ -24,6 +24,7 @@ fn command_toolbar_rejects_rebound_click_and_opens_its_settings_from_context_men
     let windows = Rc::new(RefCell::new(Vec::new()));
     slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
     let main = MainWindow::new().unwrap();
+    main.set_preferences_ready(true);
     let rows = Rc::new(slint::VecModel::from(vec![
         row(1),
         UserCommandRow {
@@ -44,7 +45,8 @@ fn command_toolbar_rejects_rebound_click_and_opens_its_settings_from_context_men
     });
     main.show().unwrap();
     let native = windows.borrow()[0].clone();
-    draw(&native, 320, 200, "command-toolbar-small");
+    draw(&native, 640, 420, "command-toolbar-normal");
+    assert!(!main.get_compact_window());
     let button =
         modeless::accessible_item(&native, AccessibleRole::Button, "Custom command 1").unwrap();
     let rect = button.geometry();
@@ -91,7 +93,7 @@ fn command_toolbar_rejects_rebound_click_and_opens_its_settings_from_context_men
             position,
             button: PointerEventButton::Right,
         });
-    draw(&native, 320, 200, "command-toolbar-context");
+    draw(&native, 640, 420, "command-toolbar-context");
     assert!(
         !i_slint_core::window::WindowInner::from_pub(native.window())
             .active_popups()
@@ -106,7 +108,7 @@ fn command_toolbar_rejects_rebound_click_and_opens_its_settings_from_context_men
             .window()
             .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
     }
-    draw(&native, 320, 200, "command-settings-small");
+    draw(&native, 640, 420, "command-settings-normal");
     assert_eq!(main.get_options_topic_index(), 9);
     assert_eq!(
         calls.borrow().len(),
@@ -129,9 +131,12 @@ fn overflowing_toolbar_keeps_minimum_window_and_reveals_later_command_icons() {
         Rc::new(slint::VecModel::from((1..=40).map(row).collect::<Vec<_>>())).into(),
     );
     let visible = Rc::new(RefCell::new(std::collections::HashSet::new()));
+    let visibility_events = Rc::new(RefCell::new(Vec::new()));
     main.on_user_command_icon_visible({
         let visible = visible.clone();
+        let visibility_events = visibility_events.clone();
         move |id, _, showing| {
+            visibility_events.borrow_mut().push((id.clone(), showing));
             if showing {
                 visible.borrow_mut().insert(id);
             } else {
@@ -141,11 +146,36 @@ fn overflowing_toolbar_keeps_minimum_window_and_reveals_later_command_icons() {
     });
     main.show().unwrap();
     let native = windows.borrow()[0].clone();
-    draw(&native, 320, 200, "command-toolbar-overflow");
+    draw(&native, 320, 200, "command-toolbar-minimum");
+    assert!(main.get_compact_window());
+    assert_eq!(main.get_effective_minimum_height(), 200.0);
+    let root = i_slint_core::window::WindowInner::from_pub(main.window()).component();
+    assert_eq!(
+        i_slint_core::item_tree::ItemTreeRc::borrow_pin(&root)
+            .as_ref()
+            .layout_info(i_slint_core::layout::Orientation::Horizontal)
+            .min,
+        320.0
+    );
+    // Compact windows expose the shared popup instead of the separate row.
+    // shared_toolbar's tiny-window test exercises reachability, execution and pane capture.
+    assert!(
+        modeless::accessible_item(&native, AccessibleRole::Button, "Custom commands").is_some()
+    );
+    assert!(
+        modeless::accessible_item(&native, AccessibleRole::Button, "Custom command 1").is_none()
+    );
+    draw(&native, 640, 420, "command-toolbar-overflow");
+    // Visibility changes measured during layout reach the asynchronous icon
+    // callback on the next event-loop iteration.
+    slint::platform::update_timers_and_animations();
+    assert!(!main.get_compact_window());
     assert!(
         visible
             .borrow()
-            .contains(&slint::SharedString::from("command-1"))
+            .contains(&slint::SharedString::from("command-1")),
+        "initial icon visibility events: {:?}",
+        visibility_events.borrow()
     );
     assert!(
         !visible
@@ -154,7 +184,8 @@ fn overflowing_toolbar_keeps_minimum_window_and_reveals_later_command_icons() {
     );
     for _ in 0..16 {
         click(&native, "Scroll commands right");
-        draw(&native, 320, 200, "command-toolbar-end");
+        draw(&native, 640, 420, "command-toolbar-end");
+        slint::platform::update_timers_and_animations();
     }
     assert!(
         visible

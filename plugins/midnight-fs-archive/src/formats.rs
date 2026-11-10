@@ -1,9 +1,8 @@
 use crate::*;
-use std::io::Cursor;
 
 impl Archive {
-    pub(crate) fn zip(&mut self, source: Vec<u8>) -> Result<(), Error> {
-        let mut zip = zip::ZipArchive::new(Cursor::new(source)).map_err(zip_error)?;
+    pub(crate) fn zip(&mut self, source: Reader) -> Result<(), Error> {
+        let mut zip = zip::ZipArchive::new(source).map_err(zip_error)?;
         if zip.len() > self.limits.max_entries {
             return Err(Error::limit());
         }
@@ -34,8 +33,12 @@ impl Archive {
                 return Err(Error::limit());
             }
             let size = raw.size();
+            let modified = timestamps::zip_modified(raw.extra_data_fields(), raw.last_modified());
             drop(raw);
-            self.add(&name, &display, kind, None, readable)?;
+            let id = self.add(&name, &display, kind, None, readable)?;
+            if let Some(node) = self.nodes.get_mut((id - 2) as usize) {
+                node.modified = modified.filter(|time| time.validate().is_ok());
+            }
             if readable {
                 self.total = self.total.checked_add(size).ok_or_else(Error::limit)?;
                 if self.total > self.limits.max_total {

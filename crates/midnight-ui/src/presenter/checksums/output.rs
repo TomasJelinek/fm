@@ -1,7 +1,7 @@
 use super::*;
 
 #[path = "destination.rs"]
-mod destination;
+pub(super) mod destination;
 
 impl Presenter {
     pub(crate) fn copy_checksum(
@@ -15,7 +15,11 @@ impl Presenter {
         let Some(row) = self.checksums.sessions.get(&id).and_then(|s| s.row(token)) else {
             return;
         };
-        if row.state != ChecksumRowState::Calculated || row.digests.is_empty() {
+        if !matches!(
+            row.state,
+            ChecksumRowState::Calculated | ChecksumRowState::Verified | ChecksumRowState::Mismatch
+        ) || row.digests.is_empty()
+        {
             return;
         }
         let text = if whole_row {
@@ -64,7 +68,7 @@ impl Presenter {
         else {
             return false;
         };
-        if s.running || s.save.is_some() {
+        if s.running || s.save.is_some() || s.picker.is_some() {
             return false;
         }
         let Some(counts) = s
@@ -78,13 +82,16 @@ impl Presenter {
             s.error = "Acknowledge the displayed excluded files and incomplete discovery before saving a partial manifest.".into();
             return false;
         }
-        let destination = match destination::resolve(&s.suggested, &destination) {
+        let mut destination = match destination::resolve(&s.suggested, &destination) {
             Ok(path) => path,
             Err(error) => {
                 s.error = error.into();
                 return false;
             }
         };
+        if destination.extension().is_none() {
+            destination.set_extension(algorithm.extension());
+        }
         let command = Command::SaveChecksumManifest {
             save_id,
             job: id,

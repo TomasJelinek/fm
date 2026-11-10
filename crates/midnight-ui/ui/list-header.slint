@@ -1,0 +1,35 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+
+// Shared compact actions for ordered settings lists; callbacks retain owner policy.
+export component ListHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <bool> show-add: true;
+    in property <bool> show-remove: true;
+    in property <bool> can-add: true;
+    in property <bool> can-remove;
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    in property <[string]> action-labels: ["Add", "Remove", "Move up", "Move down"];
+    in property <[string]> action-hints: ["Add an item", "Remove the selected item", "Move the selected item up", "Move the selected item down"];
+    private property <[int]> action-indices: root.show-add
+        ? (root.show-remove ? [0, 1, 2, 3] : [0, 2, 3])
+        : (root.show-remove ? [1, 2, 3] : [2, 3]);
+    callback action(int);
+    spacing: 6px; cross-axis-alignment: center;
+    Text {
+        text: root.title; color: Theme.strong-text; font-size: Theme.font-size;
+        horizontal-stretch: 1; min-width: 0px; overflow: elide;
+        Tooltip { TipBody { text: root.hint; } }
+    }
+    for index in root.action-indices : HintedActionButton {
+        text: ["+", "−", "↑", "↓"][index];
+        accessible-label: root.action-labels[index]; hint: root.action-hints[index];
+        width: Theme.control-height + 4px; height: Theme.control-height; horizontal-stretch: 0;
+        enabled: root.enabled && (index == 0 ? root.can-add : index == 1 ? root.can-remove : index == 2 ? root.can-move-up : root.can-move-down);
+        clicked => { root.action(index); }
+    }
+}

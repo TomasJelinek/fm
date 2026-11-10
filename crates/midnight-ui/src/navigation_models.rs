@@ -90,6 +90,40 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
         .collect()
 }
 
+/// One backend-ordered sequence supplies both the menu and compact toolbar.
+pub(super) fn ordered_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
+    let mut rows = choices(presenter);
+    let drives = rows
+        .iter()
+        .take_while(|row| row.kind == LocationRole::Drive)
+        .count();
+    let specials = rows.len() - drives;
+    let position = presenter
+        .desktop
+        .network_position
+        .unwrap_or(0)
+        .min(specials);
+    rows.insert(
+        drives + position,
+        NavigationChoiceRow {
+            identity: presenter.network_choice_token().into(),
+            label: NETWORK_NEIGHBORHOOD_LABEL.into(),
+            compact_label: NETWORK_NEIGHBORHOOD_LABEL.into(),
+            tooltip: if presenter.network_available {
+                "Browse network devices and shared folders"
+            } else {
+                "Network Neighborhood requires an available network filesystem plugin."
+            }
+            .into(),
+            icon: presenter
+                .desktop
+                .image(&IconKey::action(ActionIcon::Network)),
+            kind: LocationRole::Network,
+        },
+    );
+    rows
+}
+
 /// Keep every account in the menu, with only the primary OneDrive shortcut on
 /// the compact toolbar. A second identical cloud icon has no readable identity.
 pub(super) fn toolbar_choices(
@@ -97,11 +131,14 @@ pub(super) fn toolbar_choices(
     choices: &[NavigationChoiceRow],
 ) -> Vec<NavigationChoiceRow> {
     let mut cloud_seen = false;
-    presenter
-        .navigation_choices()
+    let mut native = presenter.navigation_choices().iter();
+    choices
         .iter()
-        .zip(choices)
-        .filter_map(|(native, row)| {
+        .filter_map(|row| {
+            if row.kind == LocationRole::Network {
+                return Some(row.clone());
+            }
+            let native = native.next()?;
             if native.location.kind == LocationKind::OneDrive {
                 if cloud_seen {
                     return None;

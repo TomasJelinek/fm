@@ -101,15 +101,17 @@ impl Controller {
             return;
         }
         let mut progress = worker::initial(&request);
-        let valid = self.snapshots.lock().unwrap_or_else(|e| e.into_inner())
-            [request.source.pane.index()]
-        .visible
-        .as_ref()
-        .is_some_and(|visible| {
-            visible.navigation == request.source.navigation
-                && visible.path == request.source.path
-                && Arc::ptr_eq(&visible.entries, &request.source.entries)
-        });
+        let valid = {
+            let snapshots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
+            let state = &snapshots[request.source.pane.index()];
+            state.has_native_view()
+                && state.pending.is_none()
+                && state.visible.as_ref().is_some_and(|visible| {
+                    visible.navigation == request.source.navigation
+                        && visible.path == request.source.path
+                        && Arc::ptr_eq(&visible.entries, &request.source.entries)
+                })
+        };
         let rejection = if !valid {
             Some("The directory changed. Try the operation again.")
         } else if self.cancel.is_cancelled() {
@@ -438,6 +440,7 @@ async fn run(
                 let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
                 if job.cancel.is_cancelled() && progress.state == OperationState::Running {
                     progress.state = OperationState::CancelRequested;
+                    crate::operation_throughput::stop(&mut progress.throughput);
                     Some(progress.clone())
                 } else {
                     None
@@ -490,11 +493,38 @@ async fn run(
                 job.set_state(OperationState::Running);
                 publish(&output, &job.progress()).await;
                 let result_slot = job.metadata.as_ref().map(|edit| edit.result.clone());
-                let result = tokio::task::spawn_blocking(move || {
+                let mut throughput = crate::operation_throughput::Tracker::default();
+                throughput.deletion(&mut status.lock().unwrap_or_else(|e| e.into_inner()));
+                let worker_output = output.clone();
+                let pending = tokio::task::spawn_blocking(move || {
                     let _permit = permit;
-                    job.execute(output)
-                })
-                .await;
+                    job.execute(worker_output)
+                });
+                tokio::pin!(pending);
+                let mut timer = tokio::time::interval(crate::operation_throughput::CADENCE);
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut pending => {
+                            let mut progress = result.unwrap_or_else(|error| worker::panicked(&status, error.to_string()));
+                            throughput.deletion(&mut progress);
+                            break Ok(progress);
+                        },
+                        _ = timer.tick() => {
+                            let progress = {
+                                let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
+                                let previous = progress.throughput.clone();
+                                throughput.deletion(&mut progress);
+                                (!Arc::ptr_eq(&previous, &progress.throughput)).then(|| progress.clone())
+                            };
+                            if let Some(progress) = progress
+                                && output.sender.try_send(Event::Operation(OperationEvent::Progress(Arc::new(progress)))).is_ok()
+                            {
+                                (output.wakeup)();
+                            }
+                        },
+                    }
+                };
                 let metadata_result = result_slot
                     .and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
                 (status, result, metadata_result)

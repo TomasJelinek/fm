@@ -1,5 +1,7 @@
 //! Windows-specific native identity coverage.
 use crate::CapturedFile;
+#[path = "tests_windows_capture.rs"]
+mod capture;
 
 pub(super) fn make_shared(path: &std::path::Path) {
     crate::trust::fixture_acl(path, "D:P(A;;FA;;;WD)").unwrap();

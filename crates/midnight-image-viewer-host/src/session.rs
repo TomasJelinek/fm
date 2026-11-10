@@ -233,7 +233,7 @@ impl ImageSession {
             };
             let frame = self.exchange(cancel, timeout, |input, output, _, _| {
                 api::write_message(input, &message)?;
-                match api::read_message(output)? {
+                match crate::raster_reply::read(output, viewport.width, viewport.height)? {
                     Message::Rgba { id, frame }
                         if id == request_id
                             && frame.width == viewport.width
@@ -252,6 +252,19 @@ impl ImageSession {
         if result.is_err() {
             self.failed = true;
             let _ = self.process.kill();
+        }
+        result
+    }
+
+    /// Terminate and reap on the owning backend worker. UI close handlers only signal cancellation.
+    pub fn validate(&mut self, cancel: &AtomicBool) -> io::Result<()> {
+        let result = check_cancel(cancel)
+            .and_then(|()| self.validate_source())
+            .and_then(|()| check_cancel(cancel));
+        if self.failed || result.is_err() {
+            self.failed = true;
+            let _ = self.process.kill();
+            return result.and(Err(io::Error::other("Image session already ended")));
         }
         result
     }

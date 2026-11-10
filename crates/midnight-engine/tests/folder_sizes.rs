@@ -591,6 +591,31 @@ async fn full_scan_supersedes_a_blocked_individual_scan_before_replacing_its_cac
         .await
         .unwrap();
     entered(&filesystem).await;
+    // Consume the initial estimate so the old scan's next update below must be
+    // its final cancelled partial, delivered after the blocked read returns.
+    loop {
+        if let Event::FolderSizeUpdated {
+            pane,
+            navigation,
+            scan,
+            entry,
+            size,
+        } = next(&mut events).await
+        {
+            assert_eq!(
+                (pane, navigation, scan, entry),
+                (
+                    PaneId::Left,
+                    NavigationId(1),
+                    FolderSizeScanId(1),
+                    entries[0].id,
+                )
+            );
+            assert!(!size.finished);
+            assert_eq!(size.bytes, 0);
+            break;
+        }
+    }
     let old_token = filesystem.token.lock().unwrap().clone().unwrap();
     commands.send(scan(PaneId::Left, 1, 2)).await.unwrap();
     // The next command confirms full-scan dispatch without waiting for its blocked I/O.
@@ -602,25 +627,81 @@ async fn full_scan_supersedes_a_blocked_individual_scan_before_replacing_its_cac
     assert!(old_token.is_cancelled());
     filesystem.release();
     let mut final_size = None;
-    loop {
+    let mut cancelled_partial = false;
+    let mut replacement_finished = false;
+    while !cancelled_partial || !replacement_finished {
         match next(&mut events).await {
-            Event::FolderSizeUpdated { scan, size, .. } => {
-                assert_eq!(scan, FolderSizeScanId(2));
-                if size.finished {
-                    final_size = Some(size.bytes);
+            Event::FolderSizeUpdated {
+                pane,
+                navigation,
+                scan,
+                entry,
+                size,
+            } => {
+                assert_eq!(
+                    (pane, navigation, entry),
+                    (PaneId::Left, NavigationId(1), entries[0].id)
+                );
+                assert_eq!(size.errors, 0, "cancellation is not a read error");
+                assert!(size.warnings.is_none());
+                match scan {
+                    FolderSizeScanId(1) => {
+                        assert!(!size.finished, "superseded scan cannot claim completion");
+                        assert_eq!(size.bytes, 0, "cancelled blocked read emitted no entries");
+                        cancelled_partial = true;
+                    }
+                    FolderSizeScanId(2) => {
+                        if size.finished {
+                            final_size = Some(size.bytes);
+                        }
+                    }
+                    other => panic!("Unexpected size scan: {other:?}"),
                 }
             }
             Event::FolderSizesFinished {
-                scan, cancelled, ..
+                pane,
+                navigation,
+                scan,
+                cancelled,
             } => {
+                assert_eq!((pane, navigation), (PaneId::Left, NavigationId(1)));
                 assert_eq!(scan, FolderSizeScanId(2));
                 assert!(!cancelled);
-                break;
+                replacement_finished = true;
             }
             _ => {}
         }
     }
     assert_eq!(final_size, Some(42));
+    // Both workers have now published their final values. A later explicit size
+    // sort must use the replacement cache, never the old scan's zero-byte partial.
+    commands
+        .send(Command::Resort {
+            pane: PaneId::Left,
+            navigation: NavigationId(2),
+            path: "active".into(),
+            sort: SortSpec {
+                column: midnight_core::SortColumn::Size,
+                descending: false,
+            },
+            source: Some(midnight_core::VisibleDirectory {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                path: "active".into(),
+                entries: entries.clone(),
+            }),
+        })
+        .await
+        .unwrap();
+    let sorted = listing(&mut events, PaneId::Left, 2).await;
+    assert_eq!(sorted.len(), 1);
+    assert_eq!(sorted[0].id, entries[0].id);
+    assert_eq!(sorted[0].metadata.size, Some(42));
+    assert_eq!(
+        filesystem.reads.load(Ordering::SeqCst),
+        2,
+        "sorting must reuse the replacement result without rescanning"
+    );
     commands.send(Command::Shutdown).await.unwrap();
     task.await.unwrap();
 }

@@ -238,33 +238,57 @@ jobs:
           if-no-files-found: error
           path: _build/archive-ci/package/
 
-  native-filesystem:
+  filesystem-libraries:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             platform: windows
+            provider: native
+            plugin: midnight-filesystem-native-windows
+            library: midnight_filesystem_native_windows.dll
+            manifest: plugin.toml
           - os: ubuntu-24.04
             platform: linux
+            provider: native
+            plugin: midnight-filesystem-native-linux
+            library: libmidnight_filesystem_native_linux.so
+            manifest: plugin.toml
+          - os: windows-latest
+            platform: windows
+            provider: network
+            plugin: midnight-filesystem-network
+            library: midnight_filesystem_network.dll
+            manifest: plugin.windows.toml
+          - os: ubuntu-24.04
+            platform: linux
+            provider: network
+            plugin: midnight-filesystem-network
+            library: libmidnight_filesystem_network.so
+            manifest: plugin.linux.toml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
-            /plugins/midnight-filesystem-native-${{ matrix.platform }}/
+            /plugins/${{ matrix.plugin }}/
             /filesystem-api/
             /rust-toolchain.toml
+      - name: Linux local-only GIO test runtime
+        if: matrix.provider == 'network' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-0t64
       - name: Build and test with public filesystem API only
         shell: pwsh
         run: |
-          if (Test-Path 'crates') { throw 'Private application code leaked into native plugin build' }
-          $plugin = 'plugins/midnight-filesystem-native-${{ matrix.platform }}'
-          $build = Join-Path $env:GITHUB_WORKSPACE '_build/native-filesystem'
+          if (Test-Path 'crates') { throw 'Private application code leaked into filesystem plugin build' }
+          $plugin = 'plugins/${{ matrix.plugin }}'
+          $build = Join-Path $env:GITHUB_WORKSPACE '_build/filesystem-library'
           $temporary = Join-Path $env:GITHUB_WORKSPACE '_build/tmp'
           New-Item -ItemType Directory -Force $temporary | Out-Null
           $env:CARGO_TARGET_DIR=$build; $env:TEMP=$temporary; $env:TMP=$temporary; $env:TMPDIR=$temporary
+          if ('${{ matrix.provider }}' -eq 'network' -and -not $IsWindows) { $env:GIO_USE_VFS='local' }
           cargo fmt --manifest-path filesystem-api/Cargo.toml --all -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Filesystem API formatting failed' }
           cargo test --manifest-path filesystem-api/Cargo.toml --workspace --locked
@@ -272,28 +296,33 @@ jobs:
           cargo clippy --manifest-path filesystem-api/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Filesystem API/SDK strict checks failed' }
           cargo fmt --manifest-path "$plugin/Cargo.toml" --all -- --check
-          if ($LASTEXITCODE -ne 0) { throw 'Native plugin formatting failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin formatting failed' }
           cargo test --manifest-path "$plugin/Cargo.toml" --locked
-          if ($LASTEXITCODE -ne 0) { throw 'Native plugin tests failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin tests failed' }
+          if ('${{ matrix.provider }}' -eq 'network' -and -not $IsWindows) {
+            cargo test --manifest-path "$plugin/Cargo.toml" --locked --offline local_only_runtime_reports_network_backend_unavailable -- --ignored
+            if ($LASTEXITCODE -ne 0) { throw 'Local-only unavailable GIO runtime check failed' }
+          }
           cargo clippy --manifest-path "$plugin/Cargo.toml" --all-targets --locked --offline -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw 'Native plugin strict checks failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin strict checks failed' }
           cargo build --manifest-path "$plugin/Cargo.toml" --release --locked --offline
-          if ($LASTEXITCODE -ne 0) { throw 'Native plugin release build failed' }
-          $package = Join-Path $build 'package/native.${{ matrix.platform }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Filesystem plugin release build failed' }
+          $package = Join-Path $build 'package/${{ matrix.provider }}.${{ matrix.platform }}'
           New-Item -ItemType Directory -Force $package | Out-Null
-          $library = if ($IsWindows) { 'midnight_filesystem_native_windows.dll' } else { 'libmidnight_filesystem_native_linux.so' }
+          $library = '${{ matrix.library }}'
           Copy-Item -LiteralPath (Join-Path $build "release/$library") -Destination $package
-          foreach ($name in @('plugin.toml','README.md','THIRD-PARTY.md')) {
+          Copy-Item -LiteralPath "$plugin/${{ matrix.manifest }}" -Destination (Join-Path $package 'plugin.toml')
+          foreach ($name in @('README.md','THIRD-PARTY.md')) {
             Copy-Item -LiteralPath "$plugin/$name" -Destination $package
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: filesystem-${{ runner.os }}-native
+          name: filesystem-${{ runner.os }}-${{ matrix.provider }}
           if-no-files-found: error
-          path: _build/native-filesystem/package/
+          path: _build/filesystem-library/package/
 
   check:
-    needs: [viewers, image-viewer, archive-filesystem, native-filesystem]
+    needs: [viewers, image-viewer, archive-filesystem, filesystem-libraries]
     strategy:
       fail-fast: false
       matrix:
@@ -403,6 +432,12 @@ jobs:
         run: cargo test -p midnight-viewer-engine --lib --locked -- --ignored --nocapture
       - name: Installed native filesystem browse, read, volumes and absence checks
         run: cargo test -p midnight-native-filesystem-host --test native --locked -- --ignored --test-threads=1
+      - name: Installed network metadata boundary without LAN discovery
+        shell: pwsh
+        run: |
+          $env:MIDNIGHT_NETWORK_TEST_INSTALLATION = $env:MIDNIGHT_NATIVE_TEST_INSTALLATION
+          cargo test -p midnight-native-filesystem-host --lib installed_network_metadata --locked -- --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Installed network metadata boundary failed' }
       - name: Application viewers use native provider and refuse missing provider
         shell: pwsh
         run: |

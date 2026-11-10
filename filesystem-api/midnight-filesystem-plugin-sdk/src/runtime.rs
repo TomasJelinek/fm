@@ -206,6 +206,12 @@ impl Publication {
         };
         match catch_unwind(AssertUnwindSafe(|| completion(published))) {
             Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) if published && error.code == crate::api::ErrorCode::StaleReference => {
+                // The handler completed rollback after its mount/generation retired.
+                // No buffer is exposed; other mounts remain usable. A rollback failure
+                // (including finish(false)) still poisons admission below.
+                Err(UNKNOWN_HANDLE)
+            }
             result => {
                 lock(&self.instance.state).panicked = true;
                 Err(if result.is_err() {

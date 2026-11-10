@@ -20,6 +20,9 @@ pub(crate) struct ComparisonState {
 
 impl Presenter {
     pub(crate) fn open_comparison(&mut self) {
+        if !self.tree_action_allowed(PaneId::Left) || !self.tree_action_allowed(PaneId::Right) {
+            return;
+        }
         if self.panes.iter().any(|p| !p.native_capabilities()) {
             self.desktop.report(
                 "Archive comparison unavailable",
@@ -36,6 +39,9 @@ impl Presenter {
         options: CompareOptions,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if !self.tree_action_allowed(PaneId::Left) || !self.tree_action_allowed(PaneId::Right) {
+            return;
+        }
         if self.comparison.busy {
             return;
         }
@@ -81,7 +87,7 @@ impl Presenter {
                 && pane.selection_revision == side.selection_revision
                 && pane.selection_applied == pane.selection_revision
                 && !pane.selection_rebase_pending
-                && !pane.selection_deferred
+                && !pane.selection_deferred.any()
                 && pane.search.view_revision == side.view_revision
                 && pane.successful_generation == Some(side.source.navigation)
                 && pane.path == side.source.path
@@ -125,7 +131,7 @@ impl Presenter {
                 || p.search_view_waiting()
                 || p.selection_rebase_pending
                 || p.selection_applied != p.selection_revision
-                || p.selection_deferred
+                || p.selection_deferred.any()
             {
                 return;
             }

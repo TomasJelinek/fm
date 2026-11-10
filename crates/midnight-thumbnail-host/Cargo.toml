@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+midnight-core.workspace = true
 midnight-thumbnail-api = { path = "../../thumbnail-api/midnight-thumbnail-api" }
 midnight-worker-sdk = { path = "../../worker-api/midnight-worker-sdk" }
 midnight-worker-platform = { path = "../midnight-worker-platform" }

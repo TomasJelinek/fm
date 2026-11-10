@@ -8,12 +8,26 @@ use tokio::sync::{Notify, mpsc};
 
 #[path = "archive_copy_tests.rs"]
 mod archive;
+#[path = "copy_cancel_queue_tests.rs"]
+mod cancel_queue;
+#[path = "copy_completion_tests.rs"]
+mod completion;
+#[path = "copy_error_tests.rs"]
+mod errors;
 #[path = "move_tests.rs"]
 mod moves;
+#[path = "move_native_tests.rs"]
+mod native_moves;
 #[path = "copy_queue_tests.rs"]
 mod queue;
 #[path = "copy_replacement_tests.rs"]
 mod replacement;
+#[path = "copy_throughput_tests.rs"]
+mod throughput;
+#[path = "tree_copy_tests.rs"]
+mod tree_copy;
+#[path = "copy_verification_tests.rs"]
+mod verification;
 
 #[tokio::test]
 async fn native_drop_reservations_share_the_actual_copy_job_capacity() {
@@ -58,6 +72,7 @@ fn fixture() -> tempfile::TempDir {
 }
 fn request(id: u64, sources: &[PathBuf], destination: &Path) -> CopyRequest {
     CopyRequest {
+        verification: midnight_core::TransferVerification::default(),
         id: OperationId(id),
         clipboard: FileClipboard {
             paths: sources.into(),
@@ -117,11 +132,28 @@ impl Harness {
     }
     async fn terminal(&mut self, id: u64) -> Arc<CopyProgress> {
         loop {
-            if let CopyEvent::Progress(progress) = self.next().await
-                && progress.id == OperationId(id)
-                && progress.state.is_terminal()
-            {
-                return progress;
+            match self.next().await {
+                CopyEvent::Progress(progress)
+                    if progress.id == OperationId(id) && progress.state.is_terminal() =>
+                {
+                    return progress;
+                }
+                // Existing terminal-failure tests explicitly decline recovery. New
+                // recovery tests consume Failure themselves and exercise Retry.
+                CopyEvent::Failure(failure) if failure.id == OperationId(id) => {
+                    self.controller
+                        .decide(CopyDecision {
+                            id: failure.id,
+                            version: failure.version,
+                            choice: if failure.can_skip {
+                                CopyChoice::Skip
+                            } else {
+                                CopyChoice::Cancel
+                            },
+                        })
+                        .await;
+                }
+                _ => {}
             }
         }
     }
@@ -181,6 +213,7 @@ async fn recursive_multisource_copy_verifies_bytes_and_preserves_sources() {
 fn selected_request(id: u64, entries: &[Entry], destination: &Path) -> SelectedCopyRequest {
     let view = Arc::new(DirectoryIndex::from_entries(entries));
     SelectedCopyRequest {
+        verification: midnight_core::TransferVerification::default(),
         id: OperationId(id),
         files: SelectedFiles {
             selection: Arc::new(SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap()),
@@ -452,6 +485,7 @@ struct BlockedSource {
     inner: Box<dyn TransferSource>,
     entered: Arc<Notify>,
     released: Arc<AtomicBool>,
+    read_before_block: bool,
 }
 impl TransferSource for BlockedSource {
     fn entry(&self) -> &TransferEntry {
@@ -461,6 +495,10 @@ impl TransferSource for BlockedSource {
         self.inner.revalidate(cancel)
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
+        if self.read_before_block {
+            self.read_before_block = false;
+            return self.inner.read_chunk(buffer, cancel);
+        }
         self.entered.notify_one();
         while !self.released.load(Ordering::Acquire) {
             std::thread::park_timeout(Duration::from_millis(5));
@@ -479,6 +517,7 @@ struct BlockingService {
     entered: Arc<Notify>,
     released: Arc<AtomicBool>,
     prepared: Arc<AtomicUsize>,
+    read_before_block: bool,
 }
 struct ReleaseOnDrop(Arc<AtomicBool>);
 impl Drop for ReleaseOnDrop {
@@ -497,6 +536,7 @@ impl TransferService for BlockingService {
             inner: self.inner.prepare_transfer_source(path, cancel)?,
             entered: self.entered.clone(),
             released: self.released.clone(),
+            read_before_block: self.read_before_block,
         }))
     }
     fn prepare_transfer_destination(
@@ -526,6 +566,7 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
         entered: entered.clone(),
         released: released.clone(),
         prepared: prepared.clone(),
+        read_before_block: false,
     })));
     h.controller
         .enqueue(request(1, std::slice::from_ref(&source), &destination))
@@ -571,3 +612,5 @@ async fn cancellation_cannot_start_the_next_copy_before_native_io_returns() {
     assert_eq!(fs::metadata(source).unwrap().len(), 500_000);
     h.close().await;
 }
+#[path = "tree_move_tests.rs"]
+mod tree_move;

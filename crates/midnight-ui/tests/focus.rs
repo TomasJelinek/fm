@@ -93,6 +93,9 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
     let left = PathBuf::from("left 文档'Cafe\u{301} 👩🏽‍💻");
     let right = PathBuf::from("right 文件");
+    let separator = std::path::MAIN_SEPARATOR;
+    let left_directory = format!("left 文档'Cafe\u{301} 👩🏽‍💻{separator}");
+    let right_directory = format!("right 文件{separator}");
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
     let commands = Rc::new(RefCell::new(vec![]));
     let sent = commands.clone();
@@ -144,8 +147,10 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         -1,
         "path insertion must focus command editing"
     );
+    assert_eq!(window.get_command_text().as_str(), left_directory);
 
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![NavigationLocation {
             id: "d".into(),
@@ -243,7 +248,8 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, false);
     assert_eq!(
         window.get_command_text().as_str(),
-        "\"left 文档'Cafe\u{301} 👩🏽‍💻\""
+        format!("{left_directory}{left_directory}"),
+        "another insertion appends the directory at the caret with its native ending and no quotes or added spaces"
     );
     assert!(window.get_command_focused());
     assert!(
@@ -259,11 +265,13 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, true);
     key(&window, "]");
     hold(&window, Key::Control, false);
+    let right_command_prefix = format!("echo {right_directory}");
+    let replacement_cursor = right_command_prefix.len() as i32;
     assert_eq!(
         window.get_command_text().as_str(),
-        "echo \"right 文件\" tail"
+        format!("{right_command_prefix} tail")
     );
-    assert_eq!(window.get_command_cursor(), 19);
+    assert_eq!(window.get_command_cursor(), replacement_cursor);
     let before = window.get_command_text();
     presenter.borrow_mut().apply(Event::IconLoaded {
         key: IconKey::folder(),
@@ -271,7 +279,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     });
     midnight_ui::refresh(&window, &presenter.borrow());
     assert_eq!(window.get_command_text(), before);
-    assert_eq!(window.get_command_cursor(), 19);
+    assert_eq!(window.get_command_cursor(), replacement_cursor);
     assert!(window.get_command_focused());
 
     window.invoke_set_command("printf \"%s\" \"\"".into(), 13);
@@ -280,11 +288,11 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, false);
     assert_eq!(
         window.get_command_text().as_str(),
-        "printf \"%s\" \"\"",
-        "path insertion inside quotes must be rejected"
+        format!("printf \"%s\" \"{left_directory}\""),
+        "directory insertion preserves surrounding shell syntax and the raw name with its native ending"
     );
     key(&window, Key::Escape);
-    window.invoke_set_command(before, 19);
+    window.invoke_set_command(before, replacement_cursor);
 
     window.invoke_activate(1);
     assert_eq!(window.get_active_pane(), 1);
@@ -296,17 +304,15 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         commands.borrow().is_empty(),
         "drive shortcuts must not steal editor text"
     );
-    assert_eq!(
-        window.get_command_text().as_str(),
-        "echo \"right 文件\"D tail"
-    );
+    let appended_draft = format!("{right_command_prefix}D tail");
+    assert_eq!(window.get_command_text().as_str(), appended_draft);
     key(&window, Key::Return);
     key(&window, Key::Return);
     assert_eq!(commands.borrow().len(), 1);
     let request = match &commands.borrow()[0] {
         Command::LaunchTerminal { request, terminal } => {
             assert_eq!(terminal.working_directory, right);
-            assert_eq!(terminal.command, "echo \"right 文件\"D tail");
+            assert_eq!(terminal.command, appended_draft);
             assert_eq!(terminal.shell, ShellFlavor::Posix);
             assert_eq!(terminal.mode, TerminalMode::Standard);
             *request
@@ -319,7 +325,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         result: Ok(DesktopActionResult::TerminalStarted {
             process_id: 1,
             history: CommandHistoryEntry {
-                command: "echo \"right 文件\"D tail".into(),
+                command: appended_draft,
                 shell: ShellFlavor::Posix,
             },
         }),
@@ -601,6 +607,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         "Blue must restore the default blue surface"
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });
@@ -656,7 +663,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, true);
     key(&window, "]");
     hold(&window, Key::Control, false);
-    assert_eq!(window.get_command_text().as_str(), "echo \"right 文件\"");
+    assert_eq!(window.get_command_text().as_str(), right_command_prefix);
     window.invoke_terminal_changed(0);
     assert_eq!(
         window.get_terminal_index(),
@@ -665,7 +672,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     );
     assert_eq!(
         window.get_command_text().as_str(),
-        "echo \"right 文件\"",
+        right_command_prefix,
         "switching shell must keep existing inserted tokens unchanged"
     );
     assert!(

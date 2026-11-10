@@ -57,6 +57,22 @@ fn directory() -> tempfile::TempDir {
     tempfile::tempdir_in(root).unwrap()
 }
 
+fn record_path(root: &std::path::Path, key: &Key) -> std::path::PathBuf {
+    let name = key.filename();
+    root.join(&name[..2]).join(name)
+}
+
+fn disk_records(root: &std::path::Path) -> Vec<midnight_worker_platform::store::Record> {
+    let store = midnight_worker_platform::store::PrivateStore::open(root).unwrap();
+    let mut records = store.records().unwrap();
+    for index in 0..=255 {
+        if let Some(bucket) = store.bucket(&format!("{index:02x}"), false).unwrap() {
+            records.extend(bucket.records().unwrap());
+        }
+    }
+    records
+}
+
 #[test]
 fn another_cache_instance_clearing_disk_invalidates_warm_memory_and_allows_regeneration() {
     let root = directory();
@@ -94,7 +110,8 @@ fn already_open_cache_clears_records_published_by_another_instance() {
     first.put(&key, &source, frame(0)).unwrap();
     assert!(second.get(&key, &source).unwrap().is_some());
     second.clear().unwrap();
-    assert!(!path.join(key.filename()).exists());
+    assert!(!record_path(&path, &key).exists());
+    assert!(disk_records(&path).is_empty());
     assert!(first.get(&key, &source).unwrap().is_none());
 }
 
@@ -118,10 +135,9 @@ fn live_cache_instances_share_the_disk_budget() {
             .put(&key(&source, index), &source, frame(index))
             .unwrap();
     }
-    let bytes: u64 = std::fs::read_dir(&path)
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
+    let records = disk_records(&path);
+    assert!(!records.is_empty(), "measure retained sharded records");
+    let bytes: u64 = records.iter().map(|record| record.bytes).sum();
     assert!(bytes <= 600, "shared cache grew to {bytes} bytes");
 }
 
@@ -143,9 +159,7 @@ fn damaged_generation_forces_inventory_refresh_without_reusing_old_versions() {
     let store = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
     assert!(store.transaction().unwrap().generation().is_none());
     assert!(
-        store
-            .records()
-            .unwrap()
+        disk_records(&path)
             .iter()
             .map(|record| record.bytes)
             .sum::<u64>()
@@ -226,7 +240,7 @@ fn source_change_and_corrupt_record_never_return_a_preview() {
     source.changed.store(true, Ordering::Relaxed);
     assert!(cache.get(&old, &source).is_err());
     source.changed.store(false, Ordering::Relaxed);
-    std::fs::write(path.join(old.filename()), b"corrupt").unwrap();
+    std::fs::write(record_path(&path, &old), b"corrupt").unwrap();
     assert!(cache.get(&old, &source).unwrap().is_none());
 }
 
@@ -244,13 +258,116 @@ fn disk_eviction_keeps_the_most_recently_used_frame_within_budget() {
             .put(&key(&source, index), &source, frame(index))
             .unwrap();
     }
-    let bytes: u64 = std::fs::read_dir(&path)
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
+    let records = disk_records(&path);
+    assert!(!records.is_empty(), "measure retained sharded records");
+    let bytes: u64 = records.iter().map(|record| record.bytes).sum();
     assert!(bytes <= 600);
     assert!(cache.get(&key(&source, 5), &source).unwrap().is_some());
     assert!(cache.get(&key(&source, 0), &source).unwrap().is_none());
+}
+
+#[test]
+fn legacy_v1_records_are_read_in_place_and_only_new_writes_use_buckets() {
+    let root = directory();
+    let seed = root.path().join("seed");
+    let path = root.path().join("cache");
+    let source = SourceVersion {
+        version: 1,
+        changed: AtomicBool::new(false),
+    };
+    let key = key(&source, 0);
+    Cache::open(&seed, 1024 * 1024, 0)
+        .unwrap()
+        .put(&key, &source, frame(0))
+        .unwrap();
+    let bytes = std::fs::read(record_path(&seed, &key)).unwrap();
+    let flat = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
+    flat.write(&key.filename(), &bytes).unwrap();
+    let mut cache = Cache::open(&path, 1024 * 1024, 0).unwrap();
+    assert_eq!(
+        cache.get(&key, &source).unwrap().unwrap().rgba,
+        frame(0).rgba
+    );
+    assert!(path.join(key.filename()).exists());
+    assert!(
+        !path.join(&key.filename()[..2]).exists(),
+        "reads must not migrate records"
+    );
+    cache.put(&key, &source, frame(0)).unwrap();
+    assert!(record_path(&path, &key).exists());
+    assert!(!path.join(key.filename()).exists());
+}
+
+#[test]
+fn duplicates_keep_their_full_byte_cost_after_reads_and_are_evicted_together() {
+    let root = directory();
+    let path = root.path().join("cache");
+    let source = SourceVersion {
+        version: 1,
+        changed: AtomicBool::new(false),
+    };
+    let old = key(&source, 0);
+    Cache::open(&path, 1024 * 1024, 0)
+        .unwrap()
+        .put(&old, &source, frame(0))
+        .unwrap();
+    let bytes = std::fs::read(record_path(&path, &old)).unwrap();
+    let flat = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
+    flat.write(&old.filename(), &bytes).unwrap();
+    let limit = bytes.len() as u64 * 3 - 1;
+    let mut cache = Cache::open(&path, limit, 0).unwrap();
+    assert_eq!(disk_records(&path).len(), 2);
+    assert!(cache.get(&old, &source).unwrap().is_some());
+    cache.put(&key(&source, 1), &source, frame(1)).unwrap();
+    let records = disk_records(&path);
+    assert_eq!(records.len(), 1, "both old physical copies must be evicted");
+    assert!(records.iter().map(|record| record.bytes).sum::<u64>() <= limit);
+    assert!(!path.join(old.filename()).exists());
+    assert!(!record_path(&path, &old).exists());
+}
+
+#[test]
+fn clear_removes_legacy_and_sharded_duplicates_and_corruption_never_falls_back() {
+    let root = directory();
+    let path = root.path().join("cache");
+    let source = SourceVersion {
+        version: 1,
+        changed: AtomicBool::new(false),
+    };
+    let key = key(&source, 0);
+    let mut cache = Cache::open(&path, 1024 * 1024, 0).unwrap();
+    cache.put(&key, &source, frame(0)).unwrap();
+    let bytes = std::fs::read(record_path(&path, &key)).unwrap();
+    let flat = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
+    flat.write(&key.filename(), &bytes).unwrap();
+    cache.clear().unwrap();
+    assert!(disk_records(&path).is_empty());
+    cache.put(&key, &source, frame(0)).unwrap();
+    flat.write(&key.filename(), &bytes).unwrap();
+    std::fs::write(record_path(&path, &key), b"corrupt shard").unwrap();
+    assert!(cache.get(&key, &source).unwrap().is_none());
+    assert!(
+        disk_records(&path).is_empty(),
+        "fail closed and retire both copies"
+    );
+}
+
+#[test]
+fn duplicate_files_are_counted_toward_the_global_record_limit() {
+    let root = directory();
+    let path = root.path().join("cache");
+    let flat = midnight_worker_platform::store::PrivateStore::open(&path).unwrap();
+    let bucket = flat.bucket("00", true).unwrap().unwrap();
+    for index in 0..4097 {
+        let name = format!("{index:064x}.mtc");
+        flat.write(&name, b"").unwrap();
+        bucket.write(&name, b"").unwrap();
+    }
+    assert_eq!(disk_records(&path).len(), 8194);
+    let mut cache = Cache::open(&path, 1024 * 1024, 0).unwrap();
+    assert_eq!(disk_records(&path).len(), 8192);
+    cache.clear().unwrap();
+    assert!(disk_records(&path).is_empty());
 }
 
 #[test]
@@ -263,7 +380,7 @@ fn full_cache_generation_fast_path_cost() {
         store.write(&format!("{index:064x}.mtc"), b"").unwrap();
     }
     let started = std::time::Instant::now();
-    assert_eq!(store.records().unwrap().len(), 8192);
+    assert_eq!(disk_records(&path).len(), 8192);
     let inventory = started.elapsed();
     let mut cache = Cache::open(&path, 1024 * 1024, 0).unwrap();
     let source = SourceVersion {
@@ -276,7 +393,7 @@ fn full_cache_generation_fast_path_cost() {
         cache.put(&key, &source, frame(0)).unwrap();
     }
     let puts = started.elapsed();
-    assert_eq!(store.records().unwrap().len(), 8192);
+    assert_eq!(disk_records(&path).len(), 8192);
     eprintln!(
         "8192-record inventory: {inventory:?}; 100 synchronized puts: {puts:?} ({:?}/put)",
         puts / 100

@@ -3,6 +3,7 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { ListView, ScrollView } from "std-widgets.slint";
 import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { PathText } from "path-text.slint";
 import { TipBody, CompactPicker } from "controls.slint";
 import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slint";
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
@@ -15,6 +16,9 @@ export component NavigationButton inherits Rectangle {
     in property <string> hint;
     in property <string> identity;
     in property <int> model-revision;
+    in property <string> context;
+    in property <string> press-context: root.context;
+    in property <bool> press-cancelled;
     in property <bool> enabled: true;
     callback clicked();
     callback middle-clicked();
@@ -54,17 +58,19 @@ export component NavigationButton inherits Rectangle {
             enabled: root.enabled;
             private property <string> pressed-id;
             private property <int> pressed-revision;
+            private property <string> pressed-context;
             private property <bool> middle-pressed;
             private property <bool> left-pressed;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     self.pressed-id = root.identity; self.pressed-revision = root.model-revision;
+                    self.pressed-context = root.press-context;
                     self.middle-pressed = event.button == PointerEventButton.middle;
                     self.left-pressed = event.button == PointerEventButton.left;
                 } else if event.kind == PointerEventKind.up
                     && event.button == PointerEventButton.middle && self.middle-pressed {
-                    if self.has-hover && self.pressed-id == root.identity
-                        && self.pressed-revision == root.model-revision {
+                    if !root.press-cancelled && self.has-hover && self.pressed-id == root.identity
+                        && self.pressed-revision == root.model-revision && self.pressed-context == root.context {
                         root.middle-clicked();
                     }
                     self.middle-pressed = false;
@@ -73,7 +79,7 @@ export component NavigationButton inherits Rectangle {
                 }
             }
             clicked => {
-                if self.left-pressed && self.pressed-id == root.identity && self.pressed-revision == root.model-revision {
+                if !root.press-cancelled && self.left-pressed && self.pressed-id == root.identity && self.pressed-revision == root.model-revision && self.pressed-context == root.context {
                     focus.focus(); root.clicked();
                 }
             }
@@ -90,16 +96,21 @@ export component HistoryNavigation inherits Rectangle {
     in property <string> hint;
     in property <[NavigationChoiceRow]> model;
     in property <int> revision;
+    in property <string> context;
+    in property <string> press-context: root.context;
+    in property <bool> press-cancelled;
+    in property <length> control-height: Theme.control-height;
     callback step();
     callback selected(string);
     callback dismissed();
     width: root.primary-width + root.arrow-width;
-    height: Theme.control-height;
+    height: root.control-height;
     background: Theme.surface;
     border-width: 1px; border-radius: 4px; border-color: Theme.frame;
     HorizontalLayout {
         spacing: 0px; cross-axis-alignment: center;
         NavigationButton {
+            height: root.control-height; context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
             width: root.primary-width; icon: root.icon; native-icon: root.native-icon;
             hint: root.hint; enabled: root.model.length > 0;
             model-revision: root.revision;
@@ -107,6 +118,8 @@ export component HistoryNavigation inherits Rectangle {
             clicked => { root.step(); }
         }
         CompactPicker {
+            path-labels: true;
+            height: root.control-height; context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
             width: root.arrow-width; minimum-control-width: 0px;
             framed: false;
             choices: root.model; model-revision: root.revision;
@@ -326,7 +339,8 @@ export component BookmarkMenu inherits Rectangle {
         forward-focus: popup-focus;
         bookmark-frame := DialogFrame {
             desired-width: max(520px, Theme.font-size * 23);
-            desired-height: Theme.touch ? 500px : 440px;
+            desired-height: max(320px, Theme.control-height * 5 + 110px
+                + min(5, root.model.length) * max(44px, Theme.font-size + Theme.small-font + 12px));
             changed body-width => { if self.body-width < 400px { bookmark-close.focus(); } }
             changed body-height => { if self.body-height < 350px { bookmark-close.focus(); } }
             dismiss-on-outside: true;
@@ -343,14 +357,16 @@ export component BookmarkMenu inherits Rectangle {
                     padding: bookmark-frame.body-height < 350px ? 6px : 16px;
                     spacing: bookmark-frame.body-height < 350px ? 4px : 10px;
                     DialogHeader { title: "Manage Hot Paths"; compact: bookmark-frame.body-height < 350px;
+                        close-label: "Close dialog"; close => { root.dismiss(); }
                         fallback-icon: FallbackIcons.bookmarks; dragged(dx, dy) => { bookmark-frame.move-by(dx, dy); } }
                     ScrollView {
                         min-height: 0px; vertical-stretch: 1;
-                        horizontal-scrollbar-policy: as-needed;
-                        content-width: max(self.visible-width, 420px);
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
                         VerticalLayout { spacing: 8px;
                     ListView {
-                        height: max(80px, bookmark-frame.body-height * 0.35);
+                        height: max(44px, Theme.font-size + Theme.small-font + 12px)
+                            * clamp(root.model.length, 1, 5);
                         horizontal-scrollbar-policy: always-off;
                         for bookmark[index] in root.model : Rectangle {
                             height: max(44px, Theme.font-size + Theme.small-font + 12px);
@@ -364,7 +380,7 @@ export component BookmarkMenu inherits Rectangle {
                             forward-focus: bookmark-focus;
                             VerticalLayout {
                                 padding-left: 8px; padding-right: Theme.control-height + 8px; spacing: 0px;
-                                Text { text: bookmark.path; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; overflow: elide; }
+                                PathText { text: bookmark.path; foreground: Theme.text; font-size: Theme.font-size; }
                                 Text { text: bookmark.slot > 0 ? root.slot-label(bookmark.slot) : "No numbered shortcut"; color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
                             }
                             bookmark-focus := FocusScope {
@@ -407,9 +423,10 @@ export component BookmarkMenu inherits Rectangle {
                         }
                     }
                     Text { text: root.model.length == 0 ? "Add the current folder to create your first Hot Path." : "Select a path to change its numbered shortcut."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-                    HorizontalLayout {
+                    GridLayout {
                         spacing: 8px;
                         slot-picker := HintedComboBox {
+                            row: 0; col: 0; min-width: 0px; horizontal-stretch: 1;
                             accessible-label: "Hot Path shortcut";
                             min-height: Theme.control-height;
                             model: ["No numbered shortcut", root.slot-label(1), root.slot-label(2), root.slot-label(3), root.slot-label(4), root.slot-label(5), root.slot-label(6), root.slot-label(7), root.slot-label(8), root.slot-label(9), root.slot-label(10)];
@@ -418,13 +435,16 @@ export component BookmarkMenu inherits Rectangle {
                             hint: "Number for the selected path. Occupied numbers are exchanged; every saved folder is kept. Configure keys in Options → Keyboard.";
                         }
                         HintedActionButton {
+                            row: bookmark-frame.body-width < max(440px, Theme.font-size * 25) ? 1 : 0;
+                            col: bookmark-frame.body-width < max(440px, Theme.font-size * 25) ? 0 : 1;
+                            horizontal-stretch: 0;
                             text: "Apply shortcut"; enabled: root.selected-identity != ""; min-height: Theme.control-height;
                             hint: "Apply the numbered shortcut to the selected saved path.";
                             clicked => { root.assign-bookmark(root.selected-identity, root.draft-slot); }
                         }
                     }
-                    Text {
-                        text: "Current folder: " + root.path; color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
+                    PathText {
+                        text: "Current folder: " + root.path; foreground: Theme.secondary-text; font-size: Theme.small-font;
                         Tooltip { TipBody { text: root.path; } }
                     }
                     HintedActionButton {

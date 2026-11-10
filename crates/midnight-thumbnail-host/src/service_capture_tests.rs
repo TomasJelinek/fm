@@ -3,6 +3,16 @@ use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
+#[test]
+fn stopped_service_rejects_new_work() {
+    let service = Service::start(PathBuf::new(), PathBuf::new());
+    service.stop();
+    assert!(!service.set_view(View {
+        generation: 1,
+        targets: Vec::new()
+    }));
+}
+
 #[derive(Debug, Default)]
 struct Content(AtomicBool);
 impl ContentSource for Content {

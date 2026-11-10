@@ -23,6 +23,7 @@ fn assert_location(actual: &ArchiveLocation, base: &ArchiveLocation, ids: &[u64]
         raw.iter().map(|part| part.to_vec()).collect::<Vec<_>>()
     );
     assert_eq!(actual.address.provider, base.address.provider);
+    assert_eq!(actual.address.format, base.address.format);
     assert_eq!(actual.address.container, base.address.container);
     assert_eq!(actual.address.source_version, base.address.source_version);
     assert!(Arc::ptr_eq(
@@ -35,6 +36,7 @@ fn assert_location(actual: &ArchiveLocation, base: &ArchiveLocation, ids: &[u64]
 #[test]
 fn nested_directory_and_file_targets_retain_complete_raw_ancestry_from_captured_subdirectory() {
     let (mut location, state) = fixture(31, 4);
+    location.address.format = Some(midnight_core::ArchiveFormat::Zip);
     let base = location.clone();
     {
         let mut rows = state.rows.lock().unwrap();
@@ -64,6 +66,16 @@ fn nested_directory_and_file_targets_retain_complete_raw_ancestry_from_captured_
         &[&[0xff, 4], &[0xff, 6], &[0xff, 7]],
     );
     assert!(directory.member.is_none());
+    let original = directory
+        .original
+        .as_ref()
+        .expect("listed directory record");
+    assert_eq!(
+        (original.id.mount, original.id.entry, original.parent),
+        (31, 7, 6)
+    );
+    assert_eq!(original.raw_name.as_ref(), &[0xff, 7]);
+    assert_eq!(original.kind, EntryKind::Directory);
     let file = target(opened.mount.as_ref(), &third[0].token);
     assert_location(
         &file.location,
@@ -71,6 +83,9 @@ fn nested_directory_and_file_targets_retain_complete_raw_ancestry_from_captured_
         &[1, 4, 6, 7],
         &[&[0xff, 4], &[0xff, 6], &[0xff, 7]],
     );
+    let original = file.original.as_ref().expect("listed file record");
+    assert_eq!(original.id, file.member.as_ref().unwrap().id);
+    assert_eq!(original.raw_name, file.member.as_ref().unwrap().raw_name);
     let member = file.member.unwrap();
     assert_eq!(
         (member.id.mount, member.id.entry, member.parent),

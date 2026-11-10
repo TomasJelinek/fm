@@ -35,6 +35,8 @@ pub(crate) struct State {
 }
 pub(crate) struct Shared {
     pub state: Mutex<State>,
+    pub dispatcher: crate::wake::Wake,
+    pub ready: crate::wake::Wake,
     pub closing: AtomicBool,
     pub closed: AtomicBool,
     pub generation: u64,
@@ -76,6 +78,8 @@ impl Session {
         let (send, receive) = mpsc::sync_channel(MAX_REQUESTS);
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
+            dispatcher: Default::default(),
+            ready: Default::default(),
             closing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             generation,
@@ -118,6 +122,11 @@ impl Session {
     pub fn search(&self, search: messages::Search) -> Result<u64, Error> {
         self.submit(abi::REQUEST_SEARCH, &search)
     }
+    /// Optional independent lookup. Unsupported plugins report a request-scoped
+    /// Failed event with code UNSUPPORTED; ordinary viewing remains available.
+    pub fn locate(&self, locate: messages::Locate) -> Result<u64, Error> {
+        self.submit(abi::REQUEST_LOCATE, &locate)
+    }
     fn submit<T: codec::Model>(&self, kind: u32, value: &T) -> Result<u64, Error> {
         let payload = codec::encode(value)
             .map_err(|_| Error("Invalid or oversized viewer request".into()))?;
@@ -141,6 +150,8 @@ impl Session {
             state.requests.remove(&id);
             return Err(Error("Viewer request queue full".into()));
         }
+        drop(state);
+        self.shared.dispatcher.notify();
         Ok(id)
     }
     /// Cancellation has reserved capacity and is never queued behind data requests.
@@ -162,9 +173,20 @@ impl Session {
             keep
         });
         state.bytes -= removed;
+        drop(state);
+        self.shared.dispatcher.notify();
+    }
+    /// Register a bounded consumer wake. It must only enqueue work, returning
+    /// whether the signal was accepted; plugin callbacks never reenter consumers.
+    pub fn notify_on_ready(&self, notify: Arc<dyn Fn() -> bool + Send + Sync>) {
+        self.shared.ready.bind(notify);
     }
     pub fn drain(&self, maximum: usize) -> Vec<HostEvent> {
+        if maximum == 0 {
+            return Vec::new();
+        }
         let mut state = lock(&self.shared.state);
+        self.shared.ready.reset();
         let mut events = Vec::with_capacity(maximum.min(MAX_EVENTS));
         if maximum != 0
             && let Some(fatal) = state.fatal.take()
@@ -178,11 +200,20 @@ impl Session {
             state.bytes -= bytes;
             events.push(event);
         }
+        let remaining = state.fatal.is_some() || !state.events.is_empty();
+        drop(state);
+        if remaining {
+            self.shared.ready.notify();
+        }
+        if !events.is_empty() {
+            self.shared.dispatcher.notify();
+        }
         events
     }
     /// Returns immediately; cancellation, buffer release and native destruction run on backend.
     pub fn close(&self) {
         self.shared.closing.store(true, Ordering::Release);
+        self.shared.dispatcher.notify();
     }
     pub fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::Acquire)
@@ -223,6 +254,9 @@ impl Shared {
             }),
         });
         self.closing.store(true, Ordering::Release);
+        drop(state);
+        self.ready.notify();
+        self.dispatcher.notify();
     }
     pub fn cancelled(&self, id: u64) -> bool {
         self.closing.load(Ordering::Acquire)
@@ -267,6 +301,8 @@ impl Shared {
             });
             self.closing.store(true, Ordering::Release);
         }
+        drop(state);
+        self.ready.notify();
     }
     pub fn room(&self) -> bool {
         let state = lock(&self.state);
@@ -299,6 +335,7 @@ pub(crate) fn run_jobs(bridge: Arc<Bridge>, receive: mpsc::Receiver<crate::callb
                 job.0.drop.unwrap()(job.0.context);
             }
             bridge.jobs.fetch_sub(1, Ordering::Release);
+            bridge.shared.dispatcher.notify();
         }
     }
 }
@@ -310,6 +347,8 @@ pub(crate) mod tests {
     pub(crate) fn shared() -> Arc<Shared> {
         Arc::new(Shared {
             state: Mutex::new(State::default()),
+            dispatcher: Default::default(),
+            ready: Default::default(),
             closing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             generation: 7,

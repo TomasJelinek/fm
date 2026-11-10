@@ -92,6 +92,13 @@ the disk cache per user, outside executable/plugin directories and `_build`:
 | Linux | `$XDG_CACHE_HOME/midnight-explorer/thumbnails/v1`, default `~/.cache/midnight-explorer/thumbnails/v1` |
 | macOS later | `~/Library/Caches/<application-id>/thumbnails/v1` |
 
+New records are partitioned as `v1/ab/<hash>.mtc`, with lazy two-hex-character
+buckets and backward-compatible reads of flat records. Options → Previews now
+offers 48–256 logical pixels (default 72). Resolution upgrades preserve cached
+fallbacks, reuse sufficient larger frames and do not clear the whole cache.
+The [size and cache contract](2026-11-09-thumbnail-size-and-cache.md) specifies
+shared budgets, retained-image behavior and safe bucket access.
+
 The Linux root follows the [XDG cache definition](https://specifications.freedesktop.org/basedir/latest/).
 This is an application-private cache, not an implementation of the shared
 [freedesktop thumbnail format](https://specifications.freedesktop.org/thumbnail/latest/directory.html).
@@ -109,6 +116,48 @@ disable controls belong in Options. Cache write failures are explicit preview
 failures; generation must not silently fall back to memory-only retention.
 Remote thumbnails remain disabled unless explicitly opted in.
 Do not persist credentials, authenticated URLs or cleartext remote secrets in keys.
+
+### Archive content integration (10 November 2026)
+
+Visible targets carry typed native locators or archive mount/member snapshots.
+The presenter never opens a member or constructs a native filename from an archive
+caption. The application supplies a deferred backend capture to the same image and
+video thumbnail service used for native files. Container storage policy comes from
+the validated mount's native locator, not the previous panel's drive or a displayed
+archive address. Network/unknown backing storage requires the existing opt-in;
+archive reads conservatively occupy the non-SSD source budget.
+
+An archive worker may advertise `stable_entry_ids = true`. This promises that an
+identical source, format and provider implementation version produce the same
+opaque member IDs, including distinct IDs for duplicate filenames. The mount
+grants persistent cache authority only after checking the exact captured revision.
+The key includes provider/version, raw container locator, source revision, format,
+member ID and length; the thumbnail source hashes it before cache metadata storage.
+Transient mount IDs do not prevent reuse after reopening. Older manifests remain
+valid for browsing but do not grant persistent thumbnail authority. Provider authors
+must change their implementation version if their ID assignment changes.
+
+Archive targets keep the existing visible-target limit, retained-image budgets,
+resolution-aware lookup and fair selected-video animation. Changing the network
+permission replaces pinned source tokens and immediately hides retained archive
+pixels from the previous policy. Returning to an offscreen cached row also requires
+admission under the current policy before its pixels can reappear. Native command
+icons and ordinary unchanged scrolling retain their existing behavior.
+
+The archive broker may stage and verify a complete compressed member or solid block
+before its first bounded read returns. A viewport cancellation stops new decoder
+requests and rejects stale results, but does not kill the shared browsing mount.
+An admitted read drains under its progress watchdog while retaining the actual
+worker and I/O permits. A continuing large extraction can therefore outlive the
+thumbnail decoder timeout; the 20-second archive watchdog is an inactivity limit,
+not a fixed operation duration. Per-operation cooperative stream cancellation is
+separate future work. No public extraction path or new source-size limit is added.
+
+See the [implementation plan](../plans/2026-11-10-archive-thumbnails.md) and
+[verification record](../../verification/2026-11-10-archive-thumbnails.md) for the
+current source, native qualification and remaining cross-platform gates. Generic
+remote providers still need their own readable content leases; network-discovery
+nodes intentionally do not expose file content.
 
 ## Acceptance before real previews ship
 

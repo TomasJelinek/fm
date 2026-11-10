@@ -5,6 +5,7 @@ pub(crate) struct SourceStamp {
     pub(crate) navigation: u64,
     pub(crate) displayed: u64,
     pub(crate) view: u64,
+    pub(crate) tree: Option<midnight_core::TreeViewStamp>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +92,7 @@ mod tests {
             navigation: 7,
             displayed: 6,
             view: 3,
+            tree: None,
         }
     }
 

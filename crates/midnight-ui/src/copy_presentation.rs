@@ -1,4 +1,4 @@
-//! Presentation of verified copy counters and versioned name conflicts.
+//! Presentation of verified transfers and versioned conflict/error decisions.
 use super::*;
 
 pub(super) fn install(
@@ -53,14 +53,21 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
         return;
     }
     let destination = draft.destination.to_string_lossy();
-    let moving = draft.intent == TransferIntent::RecoverableMove;
+    let moving = draft.intent == TransferIntent::Move;
     window.set_copy_draft_move(moving);
     window.set_copy_draft_metadata_enabled(draft.metadata_available());
     window.set_copy_draft_preserve_time(false);
-    let policy = if moving {
-        "Up to 64 regular files; folders and links are unsupported. Each source is removed only after its destination is saved and verified with SHA-256, before the next file is copied. Cancel or a later error keeps completed moves. Unsupported locations are refused before copying.\n\n"
+    let verification = if presenter.transfer_verification() == TransferVerification::FullSha256 {
+        "Verification: full SHA-256."
     } else {
-        ""
+        "Quick verification: size + first/middle/last 64 KiB; bytes between samples are not checked."
+    };
+    let policy = if moving {
+        format!(
+            "Same-volume items are renamed. Other files are copied and verified before each source is removed.\n{verification}\n\n"
+        )
+    } else {
+        format!("{verification}\n\n")
     };
     window.set_copy_draft_body(
         format!("{}{}\n\nFrom\n{}", policy, draft.summary, draft.source).into(),
@@ -73,20 +80,38 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     refresh_draft(window, presenter);
+    let owner = window
+        .get_operations_auto_copy()
+        .parse::<u64>()
+        .ok()
+        .map(OperationId);
+    presenter.sync_automatic_copy_jobs(owner);
+    if owner.is_some_and(|id| presenter.may_close_automatic_copy_jobs(id)) {
+        window.invoke_close_operations();
+        presenter.sync_automatic_copy_jobs(None);
+    }
     if let Some(progress) = presenter.copies.progress.last() {
         let token: SharedString = progress.id.0.to_string().into();
         if window.get_copy_latest() != token {
-            window.set_copy_latest(token);
+            window.set_copy_latest(token.clone());
             if !progress.state.is_terminal()
                 && !presenter.operations.closing
                 && presenter.operations.preview.is_none()
                 && presenter.copies.draft.is_none()
+                && presenter.active_copy_decision().is_none()
             {
-                window.invoke_show_operations();
+                window.invoke_show_copy_operations(token);
+                presenter.sync_automatic_copy_jobs(
+                    window
+                        .get_operations_auto_copy()
+                        .parse::<u64>()
+                        .ok()
+                        .map(OperationId),
+                );
             }
         }
     }
-    let Some(conflict) = presenter.copies.conflicts.first() else {
+    let Some((id, version)) = presenter.active_copy_decision() else {
         if !window.get_copy_token().is_empty() {
             window.set_copy_token("".into());
             window.invoke_close_copy_conflict();
@@ -96,6 +121,23 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     if presenter.operations.preview.is_some() || presenter.copies.draft.is_some() {
         return;
     }
+    if let Some(failure) = presenter
+        .copies
+        .failures
+        .iter()
+        .find(|failure| failure.id == id && failure.version == version)
+    {
+        refresh_failure(window, failure);
+        return;
+    }
+    let Some(conflict) = presenter
+        .copies
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.id == id && conflict.version == version)
+    else {
+        return;
+    };
     let token: SharedString = format!("copy:{}:{}", conflict.id.0, conflict.version).into();
     if window.get_copy_token() == token {
         return;
@@ -107,6 +149,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     } else {
         "Replacement and merging are unavailable for these items. Choose another name or skip."
     };
+    window.set_copy_is_failure(false);
     window.set_copy_can_replace(conflict.can_replace);
     window.set_copy_can_merge(conflict.can_merge);
     window.set_copy_source_details(describe(&conflict.source, &presenter.number_locale).into());
@@ -123,6 +166,58 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     );
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();
+}
+
+fn refresh_failure(window: &MainWindow, failure: &CopyFailure) {
+    let token: SharedString = format!("copy-error:{}:{}", failure.id.0, failure.version).into();
+    if window.get_copy_token() == token {
+        return;
+    }
+    window.set_copy_is_failure(true);
+    window.set_copy_can_retry(failure.can_retry);
+    window.set_copy_can_skip(failure.can_skip);
+    window.set_copy_can_replace(false);
+    window.set_copy_can_merge(false);
+    window.set_copy_source_details("".into());
+    window.set_copy_target_details("".into());
+    window.set_copy_body(failure_details(failure).into());
+    window.set_copy_name("".into());
+    window.set_copy_token(token);
+    window.invoke_show_copy_conflict();
+}
+
+pub(crate) fn failure_details(failure: &CopyFailure) -> String {
+    let stage = match failure.stage {
+        CopyErrorStage::Preparing => "Preparing the transfer",
+        CopyErrorStage::Reading => "Reading the source",
+        CopyErrorStage::Writing => "Writing the destination",
+        CopyErrorStage::Syncing => "Saving the destination",
+        CopyErrorStage::Verifying => "Verifying the destination",
+        CopyErrorStage::Publishing => "Publishing the verified file",
+        CopyErrorStage::Enumerating => "Reading folder contents",
+        CopyErrorStage::CreatingDirectory => "Creating a destination folder",
+        CopyErrorStage::RemovingSource => "Removing the verified source",
+        CopyErrorStage::Cleanup => "Cleaning up temporary files",
+    };
+    let mut detail = format!("{stage}\n\n{}", failure.error.message);
+    if let Some(source) = &failure.source {
+        detail.push_str(&format!("\n\nSource\n{}", source.display()));
+    }
+    detail.push_str(&format!(
+        "\n\nDestination\n{}",
+        failure.destination.display()
+    ));
+    if !failure.error.path.as_os_str().is_empty()
+        && failure.error.path != failure.destination
+        && failure.source.as_ref() != Some(&failure.error.path)
+    {
+        detail.push_str(&format!(
+            "\n\nReported path\n{}",
+            failure.error.path.display()
+        ));
+    }
+    detail.push_str(&format!("\n\nOperation: {}", failure.error.operation));
+    detail
 }
 
 fn describe(item: &MutationItem, locale: &NumberLocale) -> String {
@@ -164,6 +259,30 @@ fn describe(item: &MutationItem, locale: &NumberLocale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failure_details_keep_full_unicode_paths_separate_from_the_message() {
+        let source = format!("資料/{}/source.txt", "long folder/".repeat(70));
+        let destination = format!("target/{}/資料.txt", "long folder/".repeat(70));
+        let failure = CopyFailure {
+            id: OperationId(1),
+            version: 7,
+            error: FsError::from_io(
+                "write",
+                std::path::Path::new("private/staging"),
+                std::io::Error::other("Access denied"),
+            ),
+            source: Some(source.clone().into()),
+            destination: destination.clone().into(),
+            stage: CopyErrorStage::Writing,
+            can_retry: true,
+            can_skip: true,
+        };
+        let detail = failure_details(&failure);
+        assert!(detail.contains(&format!("\n\nSource\n{source}")));
+        assert!(detail.contains(&format!("\n\nDestination\n{destination}")));
+        assert!(detail.contains("\n\nReported path\nprivate/staging"));
+        assert!(detail.contains("\n\nAccess denied\n\n"));
+    }
     #[test]
     fn conflict_details_distinguish_types_unknowns_and_explicit_precise_utc() {
         for (kind, label) in [

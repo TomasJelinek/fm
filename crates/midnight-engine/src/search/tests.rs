@@ -47,6 +47,7 @@ fn duplicate_archive_names_filter_by_provider_identity_without_native_paths() {
     request.source = (2..=3)
         .map(|id| {
             Entry::from_archive(midnight_core::ArchiveNode {
+                modified: None,
                 id: midnight_core::VirtualEntryId {
                     mount: 9,
                     entry: id,
@@ -65,6 +66,34 @@ fn duplicate_archive_names_filter_by_provider_identity_without_native_paths() {
     assert_eq!(result.matches.len(), 2);
     assert_eq!(result.index.by_id.len(), 2);
     assert!(result.index.by_path.is_empty());
+}
+
+#[test]
+fn archive_prefix_uses_valid_raw_name_instead_of_an_opaque_or_alternate_caption() {
+    let mut request = request("raw", &[]);
+    request.source = [
+        (1, &b"raw-name.txt"[..], "friendly caption"),
+        (2, &b"opaque-\xff"[..], "raw-name.txt"),
+        (3, &b"other.txt"[..], "raw-name.txt"),
+    ]
+    .into_iter()
+    .map(|(id, raw_name, caption)| {
+        Entry::from_archive(midnight_core::ArchiveNode {
+            modified: None,
+            id: midnight_core::VirtualEntryId {
+                mount: 9,
+                entry: id,
+            },
+            parent: 1,
+            raw_name: raw_name.into(),
+            display_name: caption.into(),
+            kind: EntryKind::File,
+            size: None,
+            readable: true,
+        })
+    })
+    .collect();
+    assert_eq!(rows(&ready(&request)), [(0, 0)]);
 }
 
 #[test]

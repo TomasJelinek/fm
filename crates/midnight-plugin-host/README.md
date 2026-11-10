@@ -10,6 +10,18 @@ Native code has the application's privileges; ABI checks are not a sandbox.
 identity/metadata without retaining a handle for every panel entry. Display names
 are lossy display-only strings; they never authorize access to a path.
 
+Native manifests may provide an optional `name`: at most 128 UTF-8 bytes,
+nonempty after trimming and without control characters. This short presentation
+name is separate from the functional `description`; neither changes plugin IDs,
+modes, extension routing or ABI identity. Older manifests remain valid. The app
+provides readable legacy names rather than using descriptions as list titles.
+
+Discovery delegates a package containing only `image-viewer.json` or only
+`web-viewer.json` to its corresponding process host. Those hosts retain manifest
+and dependency validation, including errors. Any combination of multiple native,
+image or web manifests is unavailable and remains diagnostic evidence. Catalog
+discovery does not load or launch a plugin.
+
 Application services first call `installed_executable()` on a backend worker.
 Windows can resolve an explicitly registered private copy for an identical shared
 host build; trusted portable installations retain adjacent discovery. Other

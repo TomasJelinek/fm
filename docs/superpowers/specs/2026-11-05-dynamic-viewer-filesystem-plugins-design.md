@@ -565,6 +565,12 @@ samostatné budoucí capabilities, nikoli změna významu ReadSelection.
 
 ## 9. Bezpečnost načítání a realistické záruky
 
+Interaktivní HTML používá samostatný procesový protokol, nikoli textový či
+Markdown ABI. Volitelný Chromium plugin, jeho offline výchozí režim, zachycené
+prostředky a platformní dohled popisuje
+[návrh HTML vieweru](2026-11-09-html-viewer-design.md). Oprávnění tohoto režimu
+nemění inertní chování Markdown vieweru.
+
 Nativní plugin je důvěryhodný spustitelný kód se stejnými OS právy jako aplikace.
 C ABI, Rust wrapper ani seznam capabilities nejsou sandbox. Vadný/malicious
 plugin může obejít host služby, shodit aplikaci, uváznout nebo poškodit paměť.

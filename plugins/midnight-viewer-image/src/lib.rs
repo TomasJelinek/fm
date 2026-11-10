@@ -8,11 +8,13 @@ use midnight_image_viewer_sdk::{
 };
 use std::io::{self, BufReader};
 
+mod frame_cache;
 mod sampling;
 
 /// A single oriented, color-managed original image, owned entirely by the restricted process.
 pub struct DecodedImage {
     pixels: RgbaImage,
+    frames: frame_cache::FrameCache,
 }
 
 /// Decode the first still frame using exactly the codecs and color engine used for thumbnails.
@@ -22,7 +24,10 @@ pub fn decode(stream: &mut dyn ReadSeek) -> io::Result<DecodedImage> {
     limits.max_image_width = Some(api::MAX_DECODED_EDGE);
     limits.max_image_height = Some(api::MAX_DECODED_EDGE);
     limits.max_alloc = Some(api::MAX_DECODED_BYTES);
-    let mut reader = ImageReader::new(BufReader::new(stream)).with_guessed_format()?;
+    // Each broker read crosses a process boundary and validates the captured
+    // source. Batch decoder row reads without preloading the complete file.
+    let buffered = BufReader::with_capacity(api::MAX_READ_BYTES, stream);
+    let mut reader = ImageReader::new(buffered).with_guessed_format()?;
     reader.limits(limits);
     let mut decoder = reader.into_decoder().map_err(io::Error::other)?;
     let (width, height) = decoder.dimensions();
@@ -72,7 +77,10 @@ pub fn decode(stream: &mut dyn ReadSeek) -> io::Result<DecodedImage> {
             bytes.copy_from_slice(&row);
         }
     }
-    Ok(DecodedImage { pixels })
+    Ok(DecodedImage {
+        pixels,
+        frames: Default::default(),
+    })
 }
 
 impl Image for DecodedImage {
@@ -84,6 +92,7 @@ impl Image for DecodedImage {
     }
 
     fn render(&self, viewport: Viewport) -> io::Result<Frame> {
-        sampling::render(&self.pixels, viewport)
+        self.frames
+            .render(viewport, || sampling::render(&self.pixels, viewport))
     }
 }

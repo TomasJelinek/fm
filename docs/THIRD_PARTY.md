@@ -1,33 +1,32 @@
 # Third-party libraries and licenses
 
-The native application cutover adds only local host dependencies already covered
-by this workspace inventory. Third-party declarations, pins, license choices and
-notices are unchanged. Fresh Windows and Linux dependency captures confirm that
-the selected package pins, declared licenses and target scopes are covered by
-the existing inventory;
-see [candidate scope and verification](verification/2026-11-09-native-application-cutover.md).
+Make File List adds no third-party library or enabled feature. Its engine reuses
+the workspace's `midnight-worker-platform` private spool and existing transfer,
+clipboard, native picker and viewer services.
 
 The additional color themes add no Cargo library or feature. Modern palette
 references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppuccin), with
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
 Release packages carry that record and `licenses/themes/` alongside library notices.
 
-Inventory captured on 7 November 2026 from the checked-in lockfiles and actual
-Cargo selections for Windows x64 and Linux x86-64:
+Inventory updated on 9 November 2026 from the checked-in lockfiles and actual
+Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
+captures for the independent native macOS filesystem package only:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **58**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **63**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **488**
-  package/version/source records, **456** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **530**
+  package/version/source records, **495** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The seventeen workspaces cover the application, public viewer/filesystem/thumbnail/image
-APIs and worker SDK, five independent viewer plugins, archive/image/video plugins,
-the independent native Windows/Linux filesystem packages, and the independent
-viewer ABI conformance project. Project-owned crates
+The twenty-one workspaces cover the application, public viewer/filesystem/thumbnail/image/web
+APIs and worker SDK, six independent viewer plugins, archive/image/video plugins,
+the independent native Windows/Linux/macOS Browse/Read filesystem packages,
+the independent Windows/Linux Network Neighborhood plugin, and the
+independent viewer ABI conformance project. Project-owned crates
 are excluded. The negative descriptor fixture has no third-party dependencies.
-Both target graphs include normal, build and test dependencies; this is broader
+Target graphs include normal, build and test dependencies; this is broader
 than the libraries linked into `me.exe`/`me`. Unused lockfile entries and optional
 packages present only in Cargo metadata's feature union are excluded using
 `cargo tree`. The complete list links to each workspace's maintained lockfile.
@@ -36,21 +35,85 @@ All entries have a declared license. Alternatives are retained verbatim; they do
 not mean all alternatives are selected. The mandatory free-of-charge requirement
 and Slint's selected royalty-free branch are in [the policy](DEPENDENCY_POLICY.md).
 
-The native Browse/Read API and author SDK use only `std`. The host adds only
-project-owned API dependencies and new dependants of already pinned serde,
-toml and test-only tempfile. The inventory reconciles these dependants and
-the two native package scopes with the existing package/version records;
-the application dependency selections otherwise remain unchanged.
+The optional HTML provider adds pinned `cef` / `cef-dll-sys`
+`156.4.0+156.0.26`, with only `sandbox` enabled and MIT selected for the Rust
+bindings. Its separately packaged Chromium Embedded Framework runtime is
+`156.0.26+g8ea0c73+chromium-156.0.8078.88`. The main executable does not link CEF.
+CEF's BSD license does not replace Chromium's bundled-component licenses;
+the package retains its full `LICENSE.txt`, generated `CREDITS.html`, and the
+locked Rust packages' copyright/license files. LGPL, MPL, Unicode/data and
+other component conditions still apply. See the provider's
+[pinned runtime, licenses and source-availability record](../plugins/midnight-viewer-html/THIRD_PARTY.md).
+No paid CEF wrapper, Widevine or proprietary codec build option is selected.
+The new Windows/Linux target Cargo selections were captured from the Windows
+builder, including its build-tool dependencies; this is dependency accounting,
+not a claim of native Linux Chromium qualification.
 
-Independent Windows and Linux packages reuse windows-sys 0.61.2/windows-link
-0.2.1 and libc 0.2.191 under their inspected MIT alternatives. Linux enables
-only libc `std`. Windows enables Foundation, Storage_FileSystem, System_IO,
-System_Ioctl, System_WindowsProgramming, System_Diagnostics_Debug and
-System_SystemServices; dynamic-loader tests also enable System_LibraryLoader.
-Each package includes its complete selected MIT notices in `THIRD-PARTY.md`.
-No third-party version, paid alternative or mandatory fee is introduced.
+The Linux HTML package prepared on 10 November additionally supports explicitly
+bundled Ubuntu 24.04 amd64 runtime libraries when the host does not supply them:
+
+| Native package | Exact package version | License in the pinned package |
+| --- | --- | --- |
+| NSS (`libnss3`) | `2:3.98-1ubuntu0.3` | MPL-2.0; bundled components retain Zlib, BSD and other notices |
+| NSPR (`libnspr4`) | `2:4.35-1.1build1` | MPL-2.0 |
+| ALSA (`libasound2t64`) | `1.2.11-1ubuntu0.3` | LGPL-2.1-or-later |
+
+These are separate dynamically loaded native libraries, not additions to the
+Cargo inventory or the main executable. The package preserves their exact binary
+hashes, original copyright files, complete license texts and matching original
+source archives plus distribution patches/build scripts under `sources/native/`.
+Retain that bundle when distributing this variant; compatible rebuilt shared
+libraries remain replaceable. Source details and the verified CEF archive hashes
+are in the [HTML provider record](../plugins/midnight-viewer-html/THIRD_PARTY.md).
+No new Rust dependency or feature is needed for Linux's private browser socket
+directory or for native tree-watch batching.
+
+The streaming-worker SDK reconciliation on 9 November upgrades only project-owned
+packages: worker SDK 0.2.0, image-viewer SDK 0.3.0, thumbnail SDK 0.2.0 and
+filesystem API/SDK 0.3.0. Twenty metadata/tree pairs were recaptured on native
+Windows and Linux for the application, affected public API workspaces and five
+independent archive/media consumers. The external dependency records and enabled
+features remain unchanged; regeneration and `--check` retain 490 records, 458
+names and 62 direct records, with byte-identical generated inventory tables.
+The existing MIT alternatives for windows-sys 0.61.2 and libc 0.2.191 were
+rechecked against their pinned license files. Image/PDF notices cover both target
+graphs; refreshed thumbnail notice staging now includes the Windows/Linux union
+(36 image and 29 video records), including Linux-only libc/cfg-if notices.
+FFmpeg's exact `build-options.txt`, corresponding source and configuration survive
+release staging unchanged. See the [SDK consumer and notice verification](
+verification/2026-11-09-worker-sdk-media-consumers.md).
+
+Custom archive suffixes reuse the already pinned `unicase` 2.10.0 in
+`midnight-core` as well as `midnight-engine`. Its exact manifest and MIT notice
+were inspected; MIT is the selected branch, and no optional features or additional
+packages are enabled. Release notice generation already retains this package's
+copyright and license files. The direct-dependant inventory includes both crates.
+
+The native filesystem host adds only project-owned API dependencies and new
+dependants of already pinned serde, toml and test-only tempfile. The application
+graphs were recaptured on Windows and Linux on 8 November; other workspace
+dependency selections are unchanged. Regeneration and `--check` retain the same
+490 package/version/source records, 458 names and 60 direct records.
+
+The subsequent Windows renderer correction enables Slint's `unstable-wgpu-30`
+configuration API to select DX12 explicitly. WGPU 30.0.1 and rgb 0.8.53 were
+already selected; their MIT licenses were checked. Resolution preserves all
+610 existing lockfile package pins and adds only optional Android metadata:
+`android-build` 0.1.4 (MIT) and `i-slint-backend-android-activity` 1.18.1 (the same
+Slint Royalty-free 2.0 alternative). Their pinned license files were inspected.
+Neither Android package nor Skia enters the Windows/Linux selected build graphs.
+The native Windows plugin enables additional modules of already pinned
+windows-sys 0.61.2 under its MIT alternative; its independent THIRD-PARTY notice
+contains the corresponding full text. The inventory captures were refreshed for
+these feature changes; there is no change to the selected license alternatives.
 
 ## Main functional libraries
+
+Optional executable-size diagnostics use `cargo-bloat` **0.12.1** (MIT), installed
+only into `.tools/cargo-bloat`; its build output stays under `_build/tools/`.
+It is not an application dependency or a distributed runtime component. The
+[diagnostic tool inventory](dependencies/CARGO_BLOAT.md) records its pinned Windows
+dependency graph separately from the application/plugin inventories above.
 
 This table is a guide; the linked inventories above contain every selected crate.
 
@@ -61,6 +124,7 @@ This table is a guide; the linked inventories above contain every selected crate
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Data/settings/manifest serialization | MIT OR Apache-2.0 |
 | sha2 0.10.9 | SHA-256 copy/readback verification, protected Windows plugin runtimes and standalone SHA-256/SHA-512 checksum backend | MIT OR Apache-2.0 |
 | md-5 0.10.6 / sha1 0.10.6 | MD5/SHA-1 compatibility calculations in the standalone checksum backend; not authentication or copy verification | MIT OR Apache-2.0; MIT branch selected |
+| crc32fast 1.5.4 | SFV/CRC32 compatibility calculations; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
 | notify 8.2.1 | Filesystem event watching | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
 | zip 8.6.0 | Read-only ZIP archive provider | MIT |
@@ -92,6 +156,53 @@ project does not enable. The Ctrl+F8 window is implemented and has separate
 [UI qualification](verification/2026-11-07-checksum-window.md); native hashing and
 manifest evidence is in [backend verification](verification/2026-11-07-checksum-backend.md).
 
+SFV checksum support reuses the already locked `crc32fast` 1.5.4 as a direct
+engine dependency with only `std` enabled. Its released manifest and full MIT
+license were inspected; MIT is the selected branch. The only runtime dependency
+is the already selected `cfg-if` 1.0.5. The release notice collector retains the
+existing `crc32fast` copyright and license files under `licenses/crc32fast-1.5.4/`;
+no new package, paid alternative or nightly feature is introduced.
+The Windows and native Linux application graphs were recaptured and the complete
+inventory regenerated and checked: 490 package records and 458 names remain,
+with 61 direct package/version records after promoting `crc32fast` to a direct
+dependency.
+
+The native Browse/Read API and author SDK use only `std`. Independent Windows
+and Linux filesystem packages reuse windows-sys 0.61.2/windows-link 0.2.1 and
+libc 0.2.191 under their inspected MIT alternatives. Windows runtime features are
+Foundation/Storage_FileSystem; standalone dynamic-loader tests additionally use
+System_LibraryLoader. Linux enables only libc `std`. Each package includes the
+complete selected MIT notice; no dependency version or mandatory fee was added.
+
+The independent Network Neighborhood plugin adds the `network` inventory scope.
+Windows reuses windows-sys 0.61.2 (defaults disabled; Foundation and WNet with their
+parent features) and windows-link 0.2.1 under MIT. Linux lazily loads GIO through
+libloading 0.8.9 (ISC) and cfg-if 1.0.5 (MIT), without optional features. Their
+exact pinned manifests and license texts were inspected; all four already exist
+in the inventory. Native-host Windows/Linux metadata and Cargo tree captures
+record the separate target graphs. Promoting libloading to a direct dependency
+raises the direct count to 62; the complete inventory remains 490 records and 458
+names. Full selected license texts and runtime notes
+ship inside the package's [THIRD-PARTY.md](../plugins/midnight-filesystem-network/THIRD-PARTY.md).
+Optional GLib/GIO and GVfs/backends/FUSE are system-provided and are not bundled.
+The inspected GLib package is LGPL-2.1-or-later with per-file notices; GVfs 1.54.4
+COPYING is GNU Library GPL v2, with inspected backend/client headers allowing later
+versions. Any future native runtime bundle needs its own full license, backend
+dependency and corresponding-source audit. Current fixture checks do not qualify
+live SMB/FUSE interoperability.
+
+The independent native macOS package also uses libc 0.2.191 with only `std` and
+the public, std-only filesystem API/SDK. Its exact cached manifest/features and
+full MIT license were inspected; retain the package's
+[THIRD-PARTY.md](../plugins/midnight-filesystem-native-macos/THIRD-PARTY.md) with
+every distribution. Its separate Darwin x86-64 and arm64 captures add the
+`native-macos` scope and direct dependant to the existing libc record, without
+adding a package/version or changing license choices. The existing Windows/Linux
+captures are preserved. These target-filtered metadata/tree captures were made
+on Windows; this graph has no additional build or procedural-macro dependencies.
+They do not establish Darwin linking, runtime behavior or main-application support;
+see the package's [qualification limits](../plugins/midnight-filesystem-native-macos/VERIFICATION.md).
+
 The archive provider supports bounded ZIP/7z/TAR and GZIP/XZ/BZIP2/Zstandard streams,
 including compressed TAR variants, with read-only browsing and host-verified copy-out;
 its concrete limits are in [the filesystem API](developer/FILESYSTEM_API.md).
@@ -101,6 +212,13 @@ Tree-sitter. Media preview choices and implementation status are in the
 [thumbnail design](superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).
 
 ## Native libraries, runtime and data outside Cargo
+
+Linux settings Browse uses the desktop FileChooser portal through zbus 5.19.0
+(MIT), futures-lite 2.6.1 and Tokio (both MIT OR Apache-2.0). The Tokio-backed
+portal enables socket2 0.6.5 (MIT OR Apache-2.0) and bytes 1.12.1 (MIT). These
+licenses were checked in the pinned Cargo manifests; no paid service is involved.
+Windows Browse uses the existing Windows Common Item Dialog bindings. Runtime
+distribution notices are generated from the target's selected dependency graph.
 
 These are distinct from the Cargo inventory. Most are supplied by the user's OS;
 versions, transitive dependencies and graphics drivers vary by installation.
@@ -119,7 +237,8 @@ versions, transitive dependencies and graphics drivers vary by installation.
 | libudev | Linux device discovery | LGPL-2.1-or-later ([systemd source](https://raw.githubusercontent.com/systemd/systemd/main/README)) |
 | Vulkan loader | Linux graphics backend | Apache-2.0 with more-permissive exceptions ([license](https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/main/LICENSE.txt)) |
 | Windows system DLLs, UCRT, VC runtime | Windows shell, storage, UI, DirectWrite and graphics | Microsoft platform/runtime terms; not open source merely because the Rust bindings are MIT/Apache |
-| Rust standard library/runtime | Both platforms | MIT/Apache-2.0 plus component-specific notices; releases include `licenses/rust/COPYRIGHT-library.html` |
+| Darwin/libSystem | Independent native macOS filesystem package prerequisite; not bundled | Apple platform terms; the libc Rust binding's MIT license does not relicense macOS |
+| Rust standard library/runtime | Application platforms and independent macOS filesystem package | MIT/Apache-2.0 plus component-specific notices; releases include `licenses/rust/COPYRIGHT-library.html` |
 | Unicode case-fold data in viewer packages | Unicode-insensitive search | Unicode-3.0; each package retains `UNICODE-LICENSE.txt` |
 
 Read-only import inspection of the tested release found Linux `me` directly imports
@@ -158,7 +277,10 @@ private host crates. Use an existing released bundle matching plugin lockfiles.
 All capture and generated build output belongs under `_build/`.
 
 Capture JSON and tree text for each scope below, using Windows for
-`x86_64-pc-windows-msvc` and Linux for `x86_64-unknown-linux-gnu`. Name the outputs
+`x86_64-pc-windows-msvc` and Linux for `x86_64-unknown-linux-gnu`, except
+`native-macos`, which requires only `x86_64-apple-darwin` and
+`aarch64-apple-darwin`. Do not add Darwin captures for the application or other
+workspaces. Name the outputs
 `<scope>-<target>.json` and `<scope>-<target>.tree` in `_build/qa/dependency-inventory/`.
 
 | Scope | Manifest |
@@ -172,6 +294,8 @@ Capture JSON and tree text for each scope below, using Windows for
 | filesystem-api | `filesystem-api/Cargo.toml` |
 | native-windows | `plugins/midnight-filesystem-native-windows/Cargo.toml` |
 | native-linux | `plugins/midnight-filesystem-native-linux/Cargo.toml` |
+| native-macos | `plugins/midnight-filesystem-native-macos/Cargo.toml` |
+| network | `plugins/midnight-filesystem-network/Cargo.toml` |
 | worker-api | `worker-api/Cargo.toml` |
 | thumbnail-api | `thumbnail-api/Cargo.toml` |
 | image-viewer-api | `image-viewer-api/Cargo.toml` |
@@ -182,7 +306,8 @@ Capture JSON and tree text for each scope below, using Windows for
 | thumbnail-video | `plugins/midnight-thumbnail-video/Cargo.toml` |
 
 Example PowerShell capture for one scope/target; repeat using the table. Omit
-`--config $sdkConfig` for application and API workspaces. Viewer plugins use the
+`--config $sdkConfig` for application, API, native and network filesystem workspaces.
+These filesystem packages use only the checked-in public API/SDK. Viewer plugins use the
 released viewer bundle; archive and thumbnail plugins use the separate public
 worker bundle described in [the worker SDK](developer/WORKER_SDK.md). Supply the
 matching bundle's absolute config path; plugin lockfiles pin its package checksums.
@@ -208,12 +333,20 @@ PowerShell's `Set-Content`; use `python3` where Python is installed under that n
 `cargo metadata`/`tree` do not compile native code. Capture each target on its
 native host: build dependencies/procedural macros follow the host, so a Windows
 cross-target query is not equivalent to the native Linux graph.
-The generator reads the thirty-four captures, excludes project-owned API/SDK crates,
+The native macOS package's two added captures are an explicit cross-target
+exception: its current libc/public-API/SDK graph has no additional build or
+procedural-macro dependencies. Recapture on a Mac if that graph gains such
+dependencies; do not extrapolate its graph to the application. Metadata/tree
+success never establishes native runtime support.
+The generator reads thirty-eight metadata/tree pairs, excludes project-owned API/SDK crates,
 and writes deterministic Markdown/CSV. Recapture after every dependency or feature
 change. `--check` verifies tables against the supplied captures; it does not prove
 those captures are current. Current source hashes are deliberately not labelled
-as capture provenance. The captures for this inventory were refreshed on both
-native hosts for the versions reported above.
+as capture provenance. Windows/Linux captures retain their existing native-host
+provenance; the native-macos reconciliation added two Darwin pairs, and the network
+plugin adds two native-host Windows/Linux pairs captured on 9 November 2026.
+The streaming-worker update subsequently refreshed the twenty pairs named above;
+the remaining eighteen pairs retain their existing capture provenance.
 
 ```sh
 python3 -B -m unittest discover -s scripts/tests -v

@@ -102,6 +102,7 @@ fn opaque_archive_names_never_promote_a_display_caption_into_authoritative_name_
         b"different-name.txt".as_slice(),
     ] {
         let entry = Entry::from_archive(ArchiveNode {
+            modified: None,
             id: VirtualEntryId { mount: 9, entry: 2 },
             parent: 1,
             raw_name: raw_name.into(),
@@ -120,6 +121,7 @@ fn opaque_archive_names_never_promote_a_display_caption_into_authoritative_name_
         assert!(!matches("present(name)", &entry));
     }
     let entry = Entry::from_archive(ArchiveNode {
+        modified: None,
         id: VirtualEntryId { mount: 9, entry: 3 },
         parent: 1,
         raw_name: "文档.rs".as_bytes().into(),

@@ -1,4 +1,4 @@
-use crate::Limits;
+use crate::{CpuBudget, ResourcePolicy};
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows_sys::Win32::{
@@ -6,7 +6,7 @@ use windows_sys::Win32::{
     System::{JobObjects::*, Threading::*},
 };
 
-pub(super) fn restrict(limits: Limits) -> io::Result<()> {
+pub(super) fn restrict(limits: ResourcePolicy) -> io::Result<()> {
     let mut token = std::ptr::null_mut();
     // SAFETY: fixed current-process pseudo handle and valid token output; own only on success.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
@@ -36,15 +36,24 @@ pub(super) fn restrict(limits: Limits) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    let required = JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-        | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-        | JOB_OBJECT_LIMIT_PROCESS_TIME;
+    let required = JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    let cpu_valid = match limits.cpu {
+        CpuBudget::Seconds(seconds) => {
+            budget.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_PROCESS_TIME != 0
+                && budget.BasicLimitInformation.PerProcessUserTimeLimit
+                    <= i64::from(seconds) * 10_000_000
+        }
+        CpuBudget::NoAdditionalLimit => {
+            budget.BasicLimitInformation.LimitFlags
+                & (JOB_OBJECT_LIMIT_PROCESS_TIME | JOB_OBJECT_LIMIT_JOB_TIME)
+                == 0
+        }
+    };
     if app_container != 1
         || budget.BasicLimitInformation.LimitFlags & required != required
         || budget.BasicLimitInformation.ActiveProcessLimit != 1
         || budget.ProcessMemoryLimit as u64 > limits.memory_bytes
-        || budget.BasicLimitInformation.PerProcessUserTimeLimit
-            > i64::from(limits.cpu_seconds) * 10_000_000
+        || !cpu_valid
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

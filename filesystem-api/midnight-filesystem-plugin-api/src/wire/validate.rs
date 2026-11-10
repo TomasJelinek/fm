@@ -55,6 +55,8 @@ pub(super) fn request(value: &Request) -> Result<(), WireError> {
         | Request::VolumeLabel { address: value }
         | Request::VolumeInformation { address: value } => address(value),
         Request::Stat { mount, node }
+        | Request::Activate { mount, node }
+        | Request::Refresh { mount, node }
         | Request::Parent { mount, node }
         | Request::OpenRead { mount, node } => require(*mount != 0 && *node != 0),
         Request::ListBegin {
@@ -80,10 +82,17 @@ pub(super) fn request(value: &Request) -> Result<(), WireError> {
                 && offset.checked_add(u64::from(*length)).is_some(),
         ),
         Request::Volumes => Ok(()),
+        Request::ResolveText { text } => require(!text.is_empty() && !text.contains('\0')),
     }
 }
 pub(super) fn response(value: &Response) -> Result<(), WireError> {
     match value {
+        Response::Activated(target) => {
+            let (ActivationTarget::WithinProvider(value) | ActivationTarget::Native(value)) =
+                target;
+            address(value)?;
+            target.validate()
+        }
         Response::Unit
         | Response::Parent(None)
         | Response::StorageKind(_)

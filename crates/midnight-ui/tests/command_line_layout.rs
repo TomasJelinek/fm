@@ -1,4 +1,6 @@
 //! The command editor and its controls share the footer's compact row geometry.
+#[path = "support/render.rs"]
+mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -45,13 +47,64 @@ fn in_command_row(item: ItemRc, top: f32, height: f32, label: &str) {
 }
 
 #[test]
+fn prompt_and_command_text_have_only_a_small_visual_gap() {
+    let mut test = ui::TestUi::new();
+    configure(&mut test, "C:\\data");
+    for density in [0, 1] {
+        for font in [11, 32] {
+            test.window.invoke_apply_fonts("".into(), font, font);
+            test.window.invoke_apply_preferences(0, density);
+            test.draw();
+            let prompt = ui::root_item(
+                &test.window,
+                "Working folder: C:\\data",
+                AccessibleRole::Text,
+            );
+            let rect = prompt.geometry();
+            let right = prompt.map_to_native_window(rect.origin).x + rect.width();
+            let gap = test.window.get_command_input_left() - right;
+            assert!(
+                (0.0..=4.5).contains(&gap),
+                "gap after >: {gap}, density {density}, font {font}"
+            );
+            render::snapshot(&test, &format!("command-prompt-{density}-{font}"));
+        }
+    }
+}
+
+#[test]
+fn long_working_folder_shows_a_literal_omission_marker_and_the_prompt_tail() {
+    let mut test = ui::TestUi::new();
+    let path = format!("C:\\Users\\{}\\文档", "long-folder\\".repeat(40));
+    configure(&mut test, &path);
+    test.draw();
+    let marker = ui::root_item(
+        &test.window,
+        "Working folder path shortened",
+        AccessibleRole::Text,
+    );
+    assert!(
+        ui::visible_text_values(marker)
+            .iter()
+            .any(|text| text == "...")
+    );
+    let text_right = test.window.get_command_path_text_left()
+        + test.window.get_command_path_natural_width()
+        - 8.0;
+    let view_right = test.window.get_command_path_left() + test.window.get_command_path_width();
+    assert!((text_right - view_right + 4.0).abs() <= 1.0);
+    assert_eq!(test.window.get_command_prompt(), format!("{path}>"));
+    render::snapshot(&test, "command-path-literal-ellipsis");
+}
+
+#[test]
 fn command_editor_and_controls_match_the_footer_across_themes_and_font_sizes() {
     let mut test = ui::TestUi::new();
     let path = format!("C:\\文档\\{}\\tail", "e\u{301}👩🏽‍💻".repeat(80));
     configure(&mut test, &path);
     for width in [1340, 1040] {
         test.resize(width, 820);
-        for scheme in 0..9 {
+        for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
             for density in 0..2 {
                 for font in [8, 11, 15, 32] {
                     test.window.invoke_apply_fonts("".into(), font, font);

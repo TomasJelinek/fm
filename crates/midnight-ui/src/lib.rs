@@ -2,21 +2,31 @@
 #![deny(unsafe_code)]
 mod action_icons;
 mod archive_options;
+mod argument_rows;
 mod checksum_windows;
 mod color_options;
 mod command_line;
 mod commander_presentation;
 mod copy_presentation;
 mod detail_attributes;
+mod dialog_focus;
+mod dialog_host;
+mod dialog_native;
+mod dialog_presentation;
+pub use dialog_native::configure_dialog_window_attributes;
 mod drag_bridge;
 mod drag_lifecycle;
+mod editor_options_presentation;
 mod error_presentation;
 mod file_key_bridge;
 mod file_keys;
+mod file_list_windows;
 mod filename_colors;
 mod find_windows;
 mod font_model;
+mod information_windows;
 mod job_presentation;
+mod job_speed;
 mod metadata_input;
 mod metadata_presentation;
 mod native_path_edit;
@@ -27,26 +37,36 @@ mod operation_presentation;
 mod panel_models;
 mod panel_pointer;
 mod panel_view_navigation;
+mod path_paste;
+mod path_paste_input;
+mod picker_window;
+pub use picker_window::native_path_picker_owner;
 mod plugin_options;
 mod presenter;
 mod scroll_input;
 mod search_input;
 mod selection_bridge;
 mod selection_rectangle;
+mod settings_picker_presentation;
 mod shell_bridge;
 mod shortcut_bridge;
 mod shortcut_editor;
 mod shortcut_input;
 mod size_presentation;
+mod thumbnail_content;
 mod thumbnail_presentation;
+mod thumbnail_refresh;
+pub use thumbnail_refresh::refresh_thumbnail_rows;
 mod time_presentation;
 mod tool_window_failure;
 mod tooltip;
 mod user_command_presentation;
 mod user_command_settings_presentation;
+pub use thumbnail_content::ThumbnailContent;
 pub use thumbnail_presentation::ThumbnailTarget;
+mod drive_information_presentation;
 mod volume_presentation;
-use command_line::{replace_command_selection, safe_path_context};
+use command_line::{command_directory_text, command_path_text, replace_command_selection};
 use midnight_core::*;
 pub use presenter::{DeferredDrop, Presenter, TabSummary};
 use slint::{ComponentHandle, Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
@@ -73,6 +93,7 @@ struct RowStructure {
     parent: usize,
     streaming: bool,
     view: u64,
+    tree_layout: Option<(TreeSessionId, TreeLayoutRevision)>,
 }
 
 impl RowStructure {
@@ -85,6 +106,9 @@ impl RowStructure {
             parent: pane.parent_offset(),
             streaming: pane.showing_stream(),
             view: pane.search.view_revision,
+            tree_layout: pane
+                .tree_view()
+                .map(|view| (view.stamp.session, view.layout_revision)),
         }
     }
 }
@@ -135,15 +159,15 @@ impl Model for Rows {
                 )
                 .into(),
                 name: "..".into(),
+                parent_entry: true,
                 prefix_end: 0,
                 compressed: false,
                 browsable_archive: false,
                 size: "".into(),
                 size_state: 0,
                 size_hint: "Parent folder".into(),
-                modified: "".into(),
                 kind: "Parent folder".into(),
-                icon: state.desktop.image(&IconKey::folder()),
+                icon: state.desktop.image(&IconKey::action(ActionIcon::Parent)),
                 directory: true,
                 selected: false,
                 cursor: pane.parent_cursor,
@@ -160,15 +184,15 @@ impl Model for Rows {
         let directory = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
         let (size, size_state, size_hint) = if entry.kind == EntryKind::Directory {
             size_presentation::folder_size(
-                pane.folder_sizes.get(&entry.path),
-                pane.entry_size_running(&entry.path),
-                pane.size_scan_attempted,
+                pane.folder_size(entry),
+                pane.folder_size_running(entry),
+                pane.size_scan_attempted && pane.tree_view().is_none(),
                 state.preferences.values.size_display,
                 &state.number_locale,
             )
         } else if entry.kind == EntryKind::DirectoryLink {
             (
-                "—".into(),
+                "<DIR>".into(),
                 0,
                 "Automatic size scans do not follow folder links.".into(),
             )
@@ -188,9 +212,9 @@ impl Model for Rows {
                 "File length from backend metadata.".into(),
             )
         };
-        let modified = time_presentation::modified(metadata)
-            .map(|value| format!("{} {}", value.date, value.time))
-            .unwrap_or_else(|| "—".into());
+        let (modified_date, modified_time) = time_presentation::modified(metadata)
+            .map(|value| (value.date, value.time))
+            .unwrap_or_else(|| ("—".into(), "—".into()));
         let kind = match entry.kind {
             EntryKind::Directory => "Folder".into(),
             EntryKind::DirectoryLink => "Folder link".into(),
@@ -206,22 +230,46 @@ impl Model for Rows {
         Some(FileRow {
             // Include intent and committed generations: a pending refresh may keep
             // the old rows visible, and a provider may recycle IDs at its commit.
-            identity: format!(
-                "{}:{}:{}:entry:{}",
-                pane.generation,
-                pane.displayed_generation().0,
-                pane.search.view_revision,
-                entry.id.0
-            )
-            .into(),
+            identity: pane.row_identity(entry).into(),
             name: entry.display_name.clone().into(),
+            parent_entry: false,
+            tree_depth: pane.tree_row(index).map_or(0, |row| row.depth as i32),
+            tree_disclosure: pane.tree_row(index).map_or_else(
+                || {
+                    i32::from(
+                        entry.kind == EntryKind::Directory && pane.root_disclosure_available(),
+                    )
+                },
+                |row| match row.disclosure {
+                    TreeDisclosure::None => 0,
+                    TreeDisclosure::Unknown => 1,
+                    TreeDisclosure::Loading => 2,
+                    TreeDisclosure::Collapsed => 3,
+                    TreeDisclosure::Expanded => 4,
+                    TreeDisclosure::Empty => 5,
+                    TreeDisclosure::Failed => 6,
+                },
+            ),
+            tree_error: pane
+                .tree_row(index)
+                .and_then(|row| row.error.as_deref())
+                .unwrap_or_default()
+                .into(),
+            tree_expanded: pane.tree_row(index).is_some_and(|row| row.expanded),
             prefix_end: i32::try_from(pane.search_prefix_end(index)).unwrap_or(0),
             compressed: metadata.compression == CompressionStatus::Compressed,
             browsable_archive: state.can_browse_archive(entry),
+            dim_icon: detail_attributes::dim_icon(metadata),
             size: size.into(),
             size_state,
             size_hint: size_hint.into(),
-            modified: modified.into(),
+            warning_revision: if size_state == 3 {
+                pane.folder_warning_revision(entry).into()
+            } else {
+                Default::default()
+            },
+            modified_date: modified_date.into(),
+            modified_time: modified_time.into(),
             kind: kind.into(),
             icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
                 state
@@ -256,10 +304,10 @@ impl Model for Rows {
 
 fn format_size(bytes: u64, locale: &NumberLocale) -> String {
     for (unit, divisor) in [
-        ("TB", 1u64 << 40),
-        ("GB", 1 << 30),
-        ("MB", 1 << 20),
-        ("KB", 1 << 10),
+        ("TiB", 1u64 << 40),
+        ("GiB", 1 << 30),
+        ("MiB", 1 << 20),
+        ("KiB", 1 << 10),
     ] {
         if bytes >= divisor {
             let tenths = (u128::from(bytes) * 10 + u128::from(divisor) / 2) / u128::from(divisor);
@@ -297,15 +345,22 @@ fn column_index(column: SortColumn) -> i32 {
 /// Release mutable presenter borrows first: Slint can synchronously read its row models.
 pub fn refresh(window: &MainWindow, presenter: &Presenter) {
     user_command_presentation::refresh(window, presenter);
-    window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
-    window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
     refresh_properties(window, presenter, true);
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
+    window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
+    window.set_left_can_measure_folders(presenter.panes[0].can_measure_folders());
+    window.set_right_can_measure_folders(presenter.panes[1].can_measure_folders());
     user_command_settings_presentation::refresh(window, presenter);
+    editor_options_presentation::refresh(window, presenter);
     window.invoke_refresh_find_windows();
     window.invoke_refresh_checksum_windows();
+    window.invoke_refresh_file_list_window();
+    window.invoke_refresh_file_list_viewer();
+    window.invoke_refresh_warning_viewer();
+    window.invoke_refresh_information_windows();
     archive_options::refresh(window, presenter);
     color_options::refresh(window, presenter);
     plugin_options::refresh(window, presenter);
@@ -317,36 +372,22 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     operation_presentation::refresh(window, presenter);
     window.set_action_icons(action_icons::palette(presenter));
     panel_models::refresh(window, presenter);
-    let mut choices = navigation_models::choices(presenter);
+    let mut choices = navigation_models::ordered_choices(presenter);
+    window.set_network_discovery_available(presenter.network_available);
     let locations = navigation_models::toolbar_choices(presenter, &choices);
-    let mut left_choice = presenter.navigation_choice_index(PaneId::Left);
-    let mut right_choice = presenter.navigation_choice_index(PaneId::Right);
-    if presenter
-        .panes
-        .iter()
-        .any(|pane| pane.visible_storage_kind() == StorageKind::Network)
-    {
-        let index = choices.len() as i32;
-        choices.push(NavigationChoiceRow {
-            identity: "network".into(),
-            label: "Network".into(),
-            compact_label: "Network".into(),
-            tooltip: "Network location".into(),
-            icon: presenter
-                .desktop
-                .image(&IconKey::action(ActionIcon::Network)),
-            kind: LocationRole::Network,
-        });
-        if presenter.panes[0].visible_storage_kind() == StorageKind::Network {
-            left_choice = index;
+    let selected_key = |pane: PaneId| {
+        if presenter.panes[pane.index()].visible_storage_kind() == StorageKind::Network {
+            return Some(SharedString::from(presenter.network_choice_token()));
         }
-        if presenter.panes[1].visible_storage_kind() == StorageKind::Network {
-            right_choice = index;
-        }
-    }
+        usize::try_from(presenter.navigation_choice_index(pane))
+            .ok()
+            .map(|index| SharedString::from(presenter.navigation_choice_token(index)))
+    };
+    let left_key = selected_key(PaneId::Left);
+    let right_key = selected_key(PaneId::Right);
     let hot_paths = panel_models::bookmark_choices(presenter);
     choices.extend(hot_paths.iter().cloned());
-    // Hot Paths live in menus; the compact toolbar contains only native targets.
+    // Hot Paths retain their explicit numbering and order after system locations.
     let as_other_key = presenter.shortcut_key("panel.as-other");
     choices.push(NavigationChoiceRow {
         identity: "other-panel".into(),
@@ -370,32 +411,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .image(&IconKey::action(ActionIcon::OpenPath)),
         kind: LocationRole::Documents,
     });
-    // Group display choices without changing their native identity tokens or the
-    // toolbar's original location indices. Separators are presentation only.
-    let left_key = usize::try_from(left_choice)
-        .ok()
-        .and_then(|index| choices.get(index))
-        .map(|choice| choice.identity.clone());
-    let right_key = usize::try_from(right_choice)
-        .ok()
-        .and_then(|index| choices.get(index))
-        .map(|choice| choice.identity.clone());
-    choices.sort_by_key(|choice| {
-        if choice.identity == "other-panel" {
-            return 3;
-        }
-        match choice.kind {
-            LocationRole::Drive | LocationRole::Network => 0,
-            LocationRole::HotPath => 2,
-            _ => 1,
-        }
-    });
     let position = |key: Option<SharedString>| {
         key.and_then(|key| choices.iter().position(|choice| choice.identity == key))
             .map_or(-1, |index| index as i32)
     };
-    left_choice = position(left_key);
-    right_choice = position(right_key);
+    let left_choice = position(left_key);
+    let right_choice = position(right_key);
     navigation_models::update(
         window.get_navigation_choices(),
         choices.clone(),
@@ -431,7 +452,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .map(|bookmark| BookmarkRow {
                 identity: bookmark.id.0.to_string().into(),
                 label: bookmark.name.as_str().into(),
-                path: bookmark.path.to_string_lossy().into_owned().into(),
+                path: bookmark.display_text().into(),
                 slot: i32::from(bookmark.slot.unwrap_or(0)),
             })
             .collect(),
@@ -476,6 +497,9 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         window.set_font_index(fonts.refresh(presenter));
     }
     window.set_font_list_ready(presenter.fonts_ready());
+    window.set_restored_panel_ratio(
+        f32::from(presenter.preferences.values.panel_split_basis_points) / 10_000.0,
+    );
     window.invoke_apply_fonts(
         presenter.preferences.values.font_family.as_str().into(),
         i32::from(presenter.preferences.values.desktop_font_size),
@@ -489,6 +513,21 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter.preferences.density_index(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
+    window.set_preferences_saving(presenter.preferences.saving);
+    window.set_preferences_ready(presenter.window_geometry_ready());
+    window.set_preferences_save_status(presenter.preferences_save_status().into());
+    window.set_preferences_save_failed(!presenter.preferences.save_error.is_empty());
+    let options = &presenter.preferences.options;
+    window.set_options_busy(options.accepting || options.saving);
+    window.set_options_committing(options.saving);
+    let feedback = options.feedback_revision.to_string();
+    if window.get_options_feedback_revision() != feedback {
+        window.set_options_feedback_revision(feedback.into());
+        if let Some(topic) = options.error_topic {
+            window.set_options_topic_index(topic);
+        }
+    }
+    window.set_options_open(options.open);
     window.set_editor_default_label(presenter.editor.default_label.as_str().into());
     window.set_editor_executable(
         presenter
@@ -523,6 +562,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_right_view_mode(mode_index(presenter.preferences.values.panel_view_modes[1]));
     window.set_thumbnails_enabled(presenter.preferences.values.thumbnails_enabled);
     window.set_thumbnails_network(presenter.preferences.values.thumbnails_network);
+    window.set_thumbnail_size(i32::from(presenter.preferences.values.thumbnail_size));
     window.set_quick_search_filter(presenter.preferences.values.quick_search_filter);
     window.set_active_pane(presenter.active.index() as i32);
     window.set_volumes_revision(presenter.volumes_revision);
@@ -583,7 +623,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .map_or(-1, |(i, _)| i as i32);
         let mut status = format!(
             "{} items  ·  {} selected",
-            p.rows().len(),
+            p.tree_view()
+                .map_or_else(|| p.rows().len(), |view| view.rows.len()),
             p.selected_count()
         );
         if p.size_scan.is_some() {
@@ -610,6 +651,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_left_volume(volume);
             window.set_left_status(status.into());
             window.set_left_error(error.into());
+            window.set_left_error_revision(p.error_revision().into());
             window.set_left_loading(p.loading);
             window.set_left_cursor(p.cursor_index().map_or(-1, |i| i as i32));
             window.set_left_sort(column_index(p.sort.column));
@@ -619,6 +661,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_right_volume(volume);
             window.set_right_status(status.into());
             window.set_right_error(error.into());
+            window.set_right_error_revision(p.error_revision().into());
             window.set_right_loading(p.loading);
             window.set_right_cursor(p.cursor_index().map_or(-1, |i| i as i32));
             window.set_right_sort(column_index(p.sort.column));
@@ -790,11 +833,33 @@ pub fn install(
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
+    let owner = dialog_host::DialogOwner::new(window);
+    let weak = window.as_weak();
+    owner.set_input_gate(move |blocked| {
+        if let Some(window) = weak.upgrade() {
+            window.set_dialog_input_blocked(blocked);
+            if blocked {
+                window.invoke_cancel_function_press();
+                window.invoke_release_function_press();
+                window.set_scroll_interaction_active(false);
+            }
+        }
+    });
+    let weak = window.as_weak();
+    owner.set_focus_fallback(move || {
+        if let Some(window) = weak.upgrade() {
+            window.invoke_focus_files();
+        }
+    });
+    information_windows::install(window, presenter.clone(), send.clone());
     shortcut_bridge::install(window, presenter.clone(), send.clone());
+    path_paste::install(window, presenter.clone(), send.clone());
     find_windows::install(window, presenter.clone(), send.clone());
     checksum_windows::install(window, presenter.clone(), send.clone());
+    file_list_windows::install(window, presenter.clone(), send.clone());
     user_command_presentation::install(window, presenter.clone(), send.clone());
     user_command_settings_presentation::install(window, presenter.clone(), send.clone());
+    editor_options_presentation::install(window, presenter.clone(), send.clone());
     job_presentation::install(window);
     plugin_options::install(window, presenter.clone(), send.clone());
     archive_options::install(window, presenter.clone(), send.clone());
@@ -838,6 +903,9 @@ pub fn install(
         if let Some((title, body)) = &p.desktop.notice {
             p.copy_viewer_text(format!("{title}\n\n{body}"), s);
         }
+    });
+    callback!(on_copy_panel_error, false, |_w, p, s, id, text| {
+        p.copy_panel_error(pane(id), text.as_str(), s);
     });
     callback!(on_mutation, |w, p, s, id, action| {
         let kind = match action {
@@ -905,6 +973,9 @@ pub fn install(
         p.decide_copy(token.as_str(), choice, name.to_string(), s);
         let _ = w;
     });
+    callback!(on_defer_copy, |_w, p, _s, token| {
+        p.defer_copy_decision(token.as_str());
+    });
     callback!(on_resolve_copy, |w, p, _s, token| {
         if let Some(conflict) = p
             .operations
@@ -915,13 +986,7 @@ pub fn install(
             metadata_presentation::show_conflict(&w, conflict, true);
             return;
         }
-        if p.copies
-            .conflicts
-            .iter()
-            .any(|c| token == format!("copy-job:{}", c.id.0))
-        {
-            w.invoke_show_copy_conflict();
-        }
+        p.resolve_copy_decision(token.as_str());
     });
     callback!(on_navigate, |w, p, s, id, text| {
         p.navigate_text(pane(id), text.as_str(), s);
@@ -930,13 +995,8 @@ pub fn install(
     callback!(on_navigation_choice, |w, p, s, id, token| {
         let navigated = if token == "other-panel" {
             p.navigate_as_other_panel(pane(id), s)
-        } else if token == "network" {
-            p.desktop.report(
-                "Network",
-                "Device discovery is not available yet. Enter a known network path in the path editor."
-                    .into(),
-            );
-            false
+        } else if token.starts_with("network:") {
+            p.choose_network_choice(pane(id), token.as_str(), s)
         } else if let Some(bookmark) = panel_models::bookmark_id(p, token.as_str()) {
             p.open_bookmark(pane(id), bookmark, s)
         } else {
@@ -978,6 +1038,10 @@ pub fn install(
     });
     callback!(on_remember_command_history_changed, |w, p, s, remember| {
         p.change_remember_command_history(remember, s);
+        let _ = w;
+    });
+    callback!(on_copy_verification_changed, |w, p, s, enabled| {
+        p.change_copy_verification(enabled, s);
         let _ = w;
     });
     callback!(on_command_history_clear, |w, p, s| {
@@ -1051,6 +1115,8 @@ pub fn install(
             0 => SelectionOperation::All,
             1 => SelectionOperation::Clear,
             2 => SelectionOperation::Invert,
+            3 => SelectionOperation::FilesOnly,
+            4 => SelectionOperation::InvertAll,
             _ => return,
         };
         let id = pane(id);
@@ -1129,6 +1195,20 @@ pub fn install(
             refresh_properties(&window, &state.borrow(), false);
         });
     }
+    callback!(
+        on_panel_warning_details,
+        false,
+        |_w, p, s, id, identity, tree| {
+            p.inspect_panel_warning(pane(id), identity.as_str(), tree, s);
+        }
+    );
+    callback!(on_panel_error_details, false, |_w, p, _s, id, text| {
+        p.inspect_panel_error(pane(id), text.as_str());
+    });
+    callback!(on_tree_disclosure, |w, p, s, id, identity| {
+        p.disclose_tree(pane(id), identity.as_str(), s);
+        let _ = w;
+    });
     callback!(on_open, |w, p, s, id, row| {
         let id = pane(id);
         p.active = id;
@@ -1232,21 +1312,34 @@ pub fn install(
             return;
         }
         let path = p.panes[pane(id).index()].display_path().to_owned();
-        insert_literal(&w, p, &path, false);
+        insert_literal(&w, p, &path, CommandInsertion::Directory);
     });
     callback!(on_insert_name, |w, p, _s| {
         if let Some(name) = p.focused_name(p.active) {
-            insert_literal(&w, p, &name, true);
+            insert_literal(&w, p, &name, CommandInsertion::Filename);
         }
     });
-    callback!(on_drive_info, |w, p, _s, id| {
-        p.drive_info(pane(id));
+    callback!(on_drive_info, |w, p, s, id| {
+        p.drive_info(pane(id), s);
         let _ = w;
     });
     callback!(on_options_opened, |w, p, s| {
+        p.begin_options();
+        p.settings_picker_context(w.get_options_topic_index(), s);
         p.request_fonts(s);
         p.request_default_editor(s);
         p.request_viewer_plugins(s);
+        let _ = w;
+    });
+    callback!(on_options_reset, |_w, p, s| {
+        p.reset_options(s);
+    });
+    callback!(on_options_accepted, |w, p, s| {
+        p.accept_options(s);
+        let _ = w;
+    });
+    callback!(on_options_cancelled, |w, p, s| {
+        p.cancel_options(s);
         let _ = w;
     });
     callback!(
@@ -1256,6 +1349,9 @@ pub fn install(
             let _ = w;
         }
     );
+    callback!(on_thumbnail_size_changed, |_w, p, s, size| {
+        p.change_thumbnail_size(size, s);
+    });
     callback!(on_editor_apply, |w, p, s, executable, arguments| {
         p.change_editor(executable.as_str(), arguments.as_str(), s);
         let _ = w;
@@ -1396,6 +1492,8 @@ pub fn install(
                     state.borrow_mut().shutdown_drag_drop(sender.as_ref());
                     window.invoke_close_find_windows();
                     window.invoke_close_checksum_windows();
+                    window.invoke_close_file_list_window();
+                    window.invoke_close_information_windows();
                     let _ = window.hide();
                 }
             }
@@ -1438,22 +1536,21 @@ pub fn install(
     window.invoke_focus_files();
 }
 
+enum CommandInsertion {
+    Directory,
+    Filename,
+}
+
 fn insert_literal(
     window: &MainWindow,
     presenter: &mut Presenter,
     path: &std::path::Path,
-    append: bool,
+    insertion: CommandInsertion,
 ) {
     window.invoke_focus_command();
     presenter.track_draft(!window.get_command_text().is_empty());
-    let Some(shell) = presenter.effective_shell() else {
-        return;
-    };
-    let mut draft = window.get_command_text().to_string();
-    let (anchor, cursor) = if append {
-        if !draft.is_empty() && !draft.ends_with([' ', '\t']) {
-            draft.push(' ');
-        }
+    let draft = window.get_command_text().to_string();
+    let (anchor, cursor) = if matches!(insertion, CommandInsertion::Filename) {
         let Ok(end) = i32::try_from(draft.len()) else {
             presenter
                 .desktop
@@ -1464,18 +1561,14 @@ fn insert_literal(
     } else {
         (window.get_command_anchor(), window.get_command_cursor())
     };
-    if !safe_path_context(&draft, anchor, cursor, shell) {
-        presenter.desktop.report(
-            "Place the caret between arguments",
-            "Insert a name or path outside quotes, between arguments, or replace a whole argument."
-                .into(),
-        );
-        return;
-    }
-    match quote_shell_path(path, shell) {
+    let token = match insertion {
+        CommandInsertion::Directory => command_directory_text(path),
+        CommandInsertion::Filename => command_path_text(path).map(std::borrow::Cow::Borrowed),
+    };
+    match token {
         Ok(token) => {
             let (text, offset) = replace_command_selection(&draft, anchor, cursor, &token);
-            presenter.bind_inserted_path(shell);
+            presenter.track_draft(!text.is_empty());
             window.invoke_set_command(text.into(), offset);
         }
         Err(error) => presenter.desktop.report("Cannot insert path", error.into()),

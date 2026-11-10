@@ -25,10 +25,12 @@ pub(crate) fn resolve(
                 "File selection cancelled.",
             ));
         }
-        if path.components().next_back() == Some(Component::ParentDir) {
+        if path.as_os_str().is_empty()
+            || path.components().next_back() == Some(Component::ParentDir)
+        {
             return Err(failure(
                 io::ErrorKind::InvalidInput,
-                "Parent navigation is not a file-operation target.",
+                "An empty path or parent navigation is not a file-operation target.",
             ));
         }
         let raw = path.as_os_str().as_encoded_bytes();
@@ -67,7 +69,9 @@ pub(crate) fn resolve(
     }
     if paths.is_empty() {
         return Err(failure(
-            io::ErrorKind::NotFound,
+            // This is validation of a frozen selection, not a transient missing
+            // filesystem object. Repeating it cannot discover different targets.
+            io::ErrorKind::InvalidInput,
             "No selected entries remain in the captured folder.",
         ));
     }
@@ -112,7 +116,7 @@ mod tests {
 
     #[test]
     fn parent_navigation_paths_are_rejected_before_native_file_actions() {
-        for name in ["..", "folder/.."] {
+        for name in ["", "..", "folder/.."] {
             let view = index(&[name]);
             let selected = SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap();
             assert!(resolve(&selected, &view, None, &Cancellation::default()).is_err());

@@ -33,6 +33,7 @@ struct SaveState {
 enum Capture {
     Paths(ChecksumRequest),
     Selected(SelectedChecksumRequest),
+    Verify(ChecksumVerifyRequest),
 }
 struct Start {
     capture: Capture,
@@ -99,6 +100,11 @@ impl Controller {
         // Reserve the entire bounded expansion before retaining a queued selection.
         let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
         self.admit(Capture::Selected(request), key, retention)
+    }
+    pub(crate) fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
+        let key = (request.job, request.generation);
+        let retention = checksum::reserve_verification(&request)?;
+        self.admit(Capture::Verify(request), key, retention)
     }
     fn admit(
         &self,
@@ -371,6 +377,12 @@ async fn run(
                         generation: start.key.1, update: ChecksumUpdate::Queued })), &stop, Some((&state, start.key))).await;
                     let key = start.key;
                     let cancel = start.cancel.clone();
+                    if let Capture::Verify(request) = start.capture {
+                        if let Err(error) = backend.verify_reserved(request, cancel, start.retention) {
+                            rejected(&outbox, key, error, &stop).await;
+                        }
+                        continue;
+                    }
                     let prepared = tokio::task::spawn_blocking(move || {
                         resolve(start.capture, &start.cancel).map(|request| (request, start.retention))
                     }).await;
@@ -429,6 +441,11 @@ async fn run(
 fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, FsError> {
     let request = match capture {
         Capture::Paths(request) => request,
+        Capture::Verify(_) => {
+            return Err(invalid(
+                "Verification capture cannot be used for calculation.",
+            ));
+        }
         Capture::Selected(selected) => {
             let paths = crate::file_targets::resolve(
                 &selected.files.selection,

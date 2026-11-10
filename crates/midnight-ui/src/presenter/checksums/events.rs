@@ -12,6 +12,11 @@ impl Presenter {
         };
         match event.update {
             ChecksumUpdate::Queued | ChecksumUpdate::Started => {}
+            ChecksumUpdate::Verifying(algorithm) => {
+                if let Ok(algorithms) = ChecksumAlgorithms::new(&[algorithm]) {
+                    s.algorithms = algorithms;
+                }
+            }
             ChecksumUpdate::Batch(batch) => {
                 let remaining = ChecksumLimits::default()
                     .max_rows

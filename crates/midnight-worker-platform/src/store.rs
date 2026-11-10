@@ -8,10 +8,10 @@ use std::{
 
 #[cfg(windows)]
 #[path = "store_windows.rs"]
-mod native;
+pub(crate) mod native;
 #[cfg(target_os = "linux")]
 #[path = "store_linux.rs"]
-mod native;
+pub(crate) mod native;
 
 pub struct Record {
     pub name: String,
@@ -53,6 +53,22 @@ impl Transaction {
 impl PrivateStore {
     pub fn open(path: &Path) -> io::Result<Self> {
         native::Root::open(path).map(Self)
+    }
+    /// Open one private cache bucket without traversing links or reparse points.
+    /// Only two lowercase hexadecimal characters are accepted. A read-only probe
+    /// never creates a directory; callers retain the parent store's transaction.
+    pub fn bucket(&self, prefix: &str, create: bool) -> io::Result<Option<Self>> {
+        if prefix.len() != 2
+            || !prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid cache bucket",
+            ));
+        }
+        self.0.bucket(prefix, create).map(|root| root.map(Self))
     }
     /// Backend only. The persistent lock inode is never renamed or removed.
     pub fn transaction(&self) -> io::Result<Transaction> {
@@ -130,6 +146,21 @@ impl PrivateStore {
     }
     pub fn records(&self) -> io::Result<Vec<Record>> {
         self.0.records()
+    }
+    /// Inspect one validated ordinary artifact without reading its payload.
+    pub fn record(&self, name: &str) -> io::Result<Option<Record>> {
+        check_name(name)?;
+        let file = match self.0.read(name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let metadata = file.metadata()?;
+        Ok(Some(Record {
+            name: name.into(),
+            bytes: metadata.len(),
+            modified: metadata.modified()?,
+        }))
     }
     pub fn remove(&self, name: &str) -> io::Result<()> {
         check_name(name)?;

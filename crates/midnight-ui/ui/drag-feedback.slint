@@ -1,11 +1,12 @@
 import { Theme } from "theme.slint";
 
-// Input-transparent feedback spans the receiving list, never an individual row.
+// Input-transparent caption; a folder destination is outlined by its own row.
 export component DragFeedback inherits Rectangle {
     in property <string> label;
-    border-width: 3px; border-color: Theme.active-frame;
+    in property <bool> highlight-panel: true;
+    border-width: root.highlight-panel ? 3px : 0px; border-color: Theme.active-frame;
     background: transparent;
-    accessible-role: text; accessible-label: "Copy into this panel";
+    accessible-role: text; accessible-label: root.label;
     Rectangle {
         x: 6px; y: 6px;
         width: min(parent.width - 12px, caption.preferred-width + 16px);

@@ -28,6 +28,9 @@ impl ClipboardService for NativeClipboard {
 }
 
 impl ClipboardSession for Session {
+    fn read_text(&mut self) -> Result<String, FsError> {
+        self.files()?.read_text()
+    }
     fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
         self.text.set_text(text).map_err(failure)
     }

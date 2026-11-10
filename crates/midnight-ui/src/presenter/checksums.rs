@@ -3,8 +3,24 @@ use super::*;
 
 mod events;
 mod output;
+mod picker;
+mod verification;
 
 pub(crate) const MAX_CHECKSUM_WINDOWS: usize = 4;
+pub(crate) const OUTPUT_ALGORITHMS: [ChecksumAlgorithm; 5] = [
+    ChecksumAlgorithm::Sha256,
+    ChecksumAlgorithm::Sha512,
+    ChecksumAlgorithm::Md5,
+    ChecksumAlgorithm::Sha1,
+    ChecksumAlgorithm::Crc32,
+];
+
+fn preferred_algorithm(algorithms: ChecksumAlgorithms) -> ChecksumAlgorithm {
+    OUTPUT_ALGORITHMS
+        .into_iter()
+        .find(|&a| algorithms.contains(a))
+        .unwrap_or(ChecksumAlgorithm::Sha256)
+}
 
 #[derive(Default)]
 pub(crate) struct ChecksumState {
@@ -28,6 +44,12 @@ pub(crate) struct ChecksumSession {
     pub save: Option<ChecksumSave>,
     pub save_message: String,
     pub suggested: PathBuf,
+    pub manifest_suggested: PathBuf,
+    pub verification: Option<PathBuf>,
+    pub verify_initial: bool,
+    pub destination_revision: u64,
+    pub manifest_revision: u64,
+    pub picker: Option<picker::Pending>,
     streamed: Vec<Arc<ChecksumRow>>,
 }
 
@@ -67,6 +89,9 @@ impl ChecksumSession {
         &self,
         algorithm: ChecksumAlgorithm,
     ) -> Option<ChecksumPartialAcknowledgement> {
+        if self.verification.is_some() {
+            return None;
+        }
         let run = self.run.as_ref()?;
         if !run.algorithms.contains(algorithm) {
             return None;
@@ -99,6 +124,9 @@ impl ChecksumState {
 
 impl Presenter {
     pub(crate) fn request_checksums(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if !self.tree_action_allowed(pane) {
+            return;
+        }
         if !self.panes[pane.index()].native_capabilities() {
             self.desktop.report("Checksums", "Checksums are available for native files.\nArchive member checksums are not available yet.".into());
             return;
@@ -111,7 +139,16 @@ impl Presenter {
                     .and_then(|id| p.entry_by_id(id))
                     .is_none_or(|e| e.kind != EntryKind::File))
         {
-            self.desktop.report("Checksums", "Select files, or select folders and enable Include subfolders in the checksum window.".into());
+            self.open_captured_checksums(
+                pane,
+                p.display_path().to_owned(),
+                SelectedFiles {
+                    selection: Arc::new(SelectionSnapshot::default()),
+                    view: Arc::new(DirectoryIndex::default()),
+                    fallback: None,
+                },
+                send,
+            );
             return;
         }
         self.request_selection_action(
@@ -142,11 +179,36 @@ impl Presenter {
         let id = ChecksumJobId(self.checksums.next_job.checked_add(1)?);
         self.checksums.next_job = id.0;
         let algorithms = self.preferences.values.checksum_algorithms;
+        let manifest = files
+            .fallback
+            .as_ref()
+            .filter(|path| {
+                if !files.selection.is_empty() {
+                    return false;
+                }
+                path.extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| {
+                        ChecksumAlgorithm::ALL
+                            .iter()
+                            .any(|a| extension.eq_ignore_ascii_case(a.extension()))
+                    })
+            })
+            .cloned();
+        let verify_initial =
+            manifest.is_some() || (files.selection.is_empty() && files.fallback.is_none());
+        let algorithm = preferred_algorithm(algorithms);
         self.checksums.sessions.insert(
             id,
             ChecksumSession {
                 revision: 0,
-                suggested: directory.join("checksums.txt"),
+                suggested: directory.join(format!("checksums.{}", algorithm.extension())),
+                manifest_suggested: manifest.unwrap_or_else(|| directory.join("checksums.sha256")),
+                verification: None,
+                verify_initial,
+                destination_revision: 0,
+                manifest_revision: 0,
+                picker: None,
                 directory,
                 files,
                 generation: ChecksumGeneration(0),
@@ -162,7 +224,9 @@ impl Presenter {
                 streamed: Vec::new(),
             },
         );
-        self.start_checksums(id, algorithms, false, send);
+        if !verify_initial {
+            self.start_checksums(id, algorithms, false, send);
+        }
         Some(id)
     }
 
@@ -176,7 +240,7 @@ impl Presenter {
         let Some(s) = self.checksums.session_mut(id) else {
             return false;
         };
-        if s.running || s.save.is_some() {
+        if s.running || s.save.is_some() || s.picker.is_some() {
             return false;
         }
         let Some(generation) = s.generation.0.checked_add(1).map(ChecksumGeneration) else {
@@ -196,7 +260,15 @@ impl Presenter {
             return false;
         }
         s.generation = generation;
+        s.verification = None;
         s.algorithms = algorithms;
+        if s.suggested
+            .file_stem()
+            .is_some_and(|name| name == "checksums")
+        {
+            s.suggested
+                .set_extension(preferred_algorithm(algorithms).extension());
+        }
         s.recursive = recursive;
         s.running = true;
         s.stopping = false;
@@ -236,6 +308,9 @@ impl Presenter {
         id: ChecksumJobId,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if !self.cancel_checksum_picker(id, send) {
+            return false;
+        }
         let Some(s) = self.checksums.session_mut(id) else {
             return true;
         };

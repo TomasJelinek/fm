@@ -1,27 +1,94 @@
 //! Viewer availability and next-start preferences; opening a viewer uses a frozen startup list.
 use super::*;
 
+fn filesystem_key(plugin: &FilesystemPluginInfo) -> String {
+    format!(
+        "{:?}:{:?}:{}:{}",
+        plugin.kind,
+        plugin.location,
+        plugin.id,
+        if plugin.id.is_empty() {
+            &plugin.status
+        } else {
+            ""
+        }
+    )
+}
+
 #[derive(Default)]
 pub(crate) struct ViewerPluginsState {
     pub(crate) catalog: Vec<ViewerPluginInfo>,
+    pub(crate) filesystems: Vec<FilesystemPluginInfo>,
+    pub(crate) filesystem_error: String,
+    pub(crate) filesystems_pending: bool,
+    pub(crate) filesystem_selected_key: String,
     pub(crate) error: String,
     pub(crate) pending: bool,
     pub(crate) startup_disabled: Option<Arc<[String]>>,
+    pub(crate) startup_associations: Arc<ViewerAssociations>,
     pub(crate) revision: u64,
+    pub(crate) selected_key: String,
+    pub(crate) extension_draft: Option<super::viewer_associations::ExtensionDraft>,
+    pub(crate) association_error: String,
+    pub(crate) extension_input_rejected: bool,
 }
 
 impl Presenter {
     pub(crate) fn viewer_plugin_settings_ready(&self) -> bool {
         self.editor_preferences_ready()
+            && !self.preferences.options.accepting
+            && !self.preferences.options.saving
+            && !self.operations.closing
     }
     pub(crate) fn request_viewer_plugins(&mut self, send: &dyn Fn(Command) -> bool) {
-        if !self.viewer_plugins.pending {
+        if !self.viewer_plugins.pending && !self.viewer_plugins.filesystems_pending {
             if send(Command::ListViewerPlugins) {
                 self.viewer_plugins.pending = true;
+                self.viewer_plugins.filesystems_pending = true;
                 self.viewer_plugins.error.clear();
+                self.viewer_plugins.filesystem_error.clear();
             } else {
                 self.viewer_plugins.error = "Plugin discovery is busy. Try Refresh again.".into();
             }
+        }
+    }
+
+    pub(super) fn filesystem_plugins_listed(
+        &mut self,
+        result: Result<Vec<FilesystemPluginInfo>, String>,
+    ) {
+        self.viewer_plugins.filesystems_pending = false;
+        let catalog = match result {
+            Ok(catalog) => {
+                self.viewer_plugins.filesystem_error.clear();
+                catalog
+            }
+            Err(error) => {
+                self.viewer_plugins.filesystem_error = error;
+                Vec::new()
+            }
+        };
+        self.retired.push(Box::new(mem::replace(
+            &mut self.viewer_plugins.filesystems,
+            catalog,
+        )));
+        self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
+    }
+
+    pub(crate) fn filesystem_plugin_selected(&self) -> Option<usize> {
+        self.viewer_plugins
+            .filesystems
+            .iter()
+            .position(|plugin| {
+                filesystem_key(plugin) == self.viewer_plugins.filesystem_selected_key
+            })
+            .or_else(|| (!self.viewer_plugins.filesystems.is_empty()).then_some(0))
+    }
+
+    pub(crate) fn select_filesystem_plugin(&mut self, index: usize) {
+        if let Some(plugin) = self.viewer_plugins.filesystems.get(index) {
+            self.viewer_plugins.filesystem_selected_key = filesystem_key(plugin);
+            self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
         }
     }
 
@@ -51,23 +118,16 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
-        if !self.editor_preferences_ready() {
+        if !self.viewer_plugin_settings_ready() {
             self.viewer_plugins.error =
                 "Saved preferences must load successfully before changing plugins.".into();
             return;
         }
         if validate_disabled_viewers(&[id.to_owned()]).is_err()
-            || (!self
-                .viewer_plugins
-                .catalog
+            || !self
+                .viewer_plugins_ordered()
                 .iter()
                 .any(|plugin| plugin.id == id)
-                && !self
-                    .preferences
-                    .values
-                    .disabled_viewer_plugins
-                    .iter()
-                    .any(|disabled| disabled == id))
         {
             self.viewer_plugins.error =
                 "This plugin is not in the current catalog. Refresh the list.".into();
@@ -114,8 +174,11 @@ mod tests {
         presenter.panes[0].cursor = Some(EntryId(1));
         presenter.panes[0].parent_cursor = false;
         presenter.viewer_plugins.catalog = vec![ViewerPluginInfo {
+            extensions: vec!["rs".into(), "py".into()],
+            fallback: false,
             id: "midnight.viewer.source".into(),
             name: "Source".into(),
+            description: String::new(),
             version: "1".into(),
             status: "Available".into(),
             location: path,

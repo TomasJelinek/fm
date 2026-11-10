@@ -7,6 +7,7 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Item {
     pub token: u64,
+    pub edge: u32,
     pub video: bool,
     pub selected: bool,
     pub hovered: bool,
@@ -16,6 +17,7 @@ pub struct Item {
 pub struct Work {
     pub generation: u64,
     pub token: u64,
+    pub edge: u32,
     pub frame: u8,
 }
 
@@ -23,8 +25,8 @@ pub struct Work {
 pub struct Scheduler {
     generation: u64,
     items: Vec<Item>,
-    completed: HashMap<u64, u8>,
-    failed_until: HashMap<u64, Instant>,
+    completed: HashMap<u64, [u32; midnight_thumbnail_api::MAX_ANIMATION_FRAMES as usize]>,
+    failed_until: HashMap<(u64, u32), Instant>,
     active: Vec<Work>,
     cursor: usize,
     hover_turn: bool,
@@ -33,7 +35,11 @@ pub struct Scheduler {
 impl Scheduler {
     /// Supply exactly the visible items; never an unbounded directory.
     pub fn set_view(&mut self, generation: u64, items: Vec<Item>) -> bool {
-        if items.len() > 256 {
+        if items.len() > 256
+            || items
+                .iter()
+                .any(|item| item.edge == 0 || item.edge > midnight_thumbnail_api::MAX_EDGE)
+        {
             return false;
         }
         if generation != self.generation {
@@ -46,29 +52,30 @@ impl Scheduler {
         self.completed
             .retain(|token, _| items.iter().any(|item| item.token == *token));
         self.failed_until
-            .retain(|token, _| items.iter().any(|item| item.token == *token));
+            .retain(|(token, _), _| items.iter().any(|item| item.token == *token));
         self.items = items;
         // Stale active jobs still consume capacity until the process really exits.
         true
     }
 
     fn pending(&self, item: Item) -> Option<Work> {
-        if self.failed_until.contains_key(&item.token)
+        if self.failed_until.contains_key(&(item.token, item.edge))
             || self.active.iter().any(|work| work.token == item.token)
         {
             return None;
         }
-        let mask = self.completed.get(&item.token).copied().unwrap_or(0);
+        let edges = self.completed.get(&item.token).copied().unwrap_or_default();
         let count = if item.video && (item.selected || item.hovered) {
             midnight_thumbnail_api::MAX_ANIMATION_FRAMES
         } else {
             1
         };
         (0..count)
-            .find(|frame| mask & (1 << frame) == 0)
+            .find(|frame| edges[usize::from(*frame)] < item.edge)
             .map(|frame| Work {
                 generation: self.generation,
                 token: item.token,
+                edge: item.edge,
                 frame,
             })
     }
@@ -107,6 +114,32 @@ impl Scheduler {
 
     /// Completion releases real worker capacity; stale/offscreen work never reaches presentation.
     pub fn complete(&mut self, work: Work, success: bool) -> bool {
+        self.complete_with_coverage(work, success.then_some(work.edge))
+    }
+
+    /// Retry an upload rejected by presentation after its available capacity changes.
+    pub fn retry_delivery(&mut self, work: Work, retained_edge: u32) -> bool {
+        if work.generation != self.generation
+            || work.frame >= midnight_thumbnail_api::MAX_ANIMATION_FRAMES
+            || work.edge == 0
+            || work.edge > midnight_thumbnail_api::MAX_EDGE
+            || retained_edge >= work.edge
+            || !self.items.iter().any(|item| item.token == work.token)
+        {
+            return false;
+        }
+        let Some(edges) = self.completed.get_mut(&work.token) else {
+            return false;
+        };
+        let completed = &mut edges[usize::from(work.frame)];
+        if *completed != work.edge {
+            return false;
+        }
+        *completed = retained_edge;
+        true
+    }
+
+    pub(crate) fn complete_with_coverage(&mut self, work: Work, coverage: Option<u32>) -> bool {
         let Some(index) = self.active.iter().position(|active| *active == work) else {
             return false;
         };
@@ -116,13 +149,20 @@ impl Scheduler {
         {
             return false;
         }
-        if success {
-            *self.completed.entry(work.token).or_default() |= 1 << work.frame;
+        if let Some(edge) = coverage {
+            let completed =
+                &mut self.completed.entry(work.token).or_default()[usize::from(work.frame)];
+            *completed = (*completed).max(edge);
+            self.items
+                .iter()
+                .any(|item| item.token == work.token && item.edge <= edge)
         } else {
-            self.failed_until
-                .insert(work.token, Instant::now() + Duration::from_secs(30));
+            self.failed_until.insert(
+                (work.token, work.edge),
+                Instant::now() + Duration::from_secs(30),
+            );
+            true
         }
-        true
     }
 
     /// Cancellation caused by a changed viewport is not a decoder failure or a negative cache hit.
@@ -143,6 +183,7 @@ mod tests {
             1,
             vec![Item {
                 token: 1,
+                edge: 96,
                 video: true,
                 selected: true,
                 hovered: false,

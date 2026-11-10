@@ -54,6 +54,98 @@ fn has_ink(pixel: slint::Rgb8Pixel, foreground: Color, background: Color) -> boo
 }
 
 #[test]
+fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selection_state() {
+    let mut test = ui::TestUi::new();
+    let rules = midnight_core::default_filename_colors();
+    let names = [
+        "Source main.rs",
+        "Video movie.mp4",
+        "Document report.pdf",
+        "Image photo.jpg",
+        "Executable app.exe",
+        "Spreadsheet table.csv",
+        "Audio music.flac",
+        "Archive backup.zip",
+        "Presentation slides.pptx",
+        "Plain text README.md",
+        "Font type.ttf",
+    ];
+    assert_eq!(rules.len(), names.len());
+    let window = test.window.clone_strong();
+    let presentation = window.global::<FilenameColorPresentation>();
+    for theme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
+        window.invoke_apply_preferences(theme, 0);
+        for active in [true, false] {
+            window.set_active_pane(if active { 0 } else { 1 });
+            for state in 0..4 {
+                let cursor = state == 1 || state == 3;
+                let selected = state >= 2;
+                let rows: Vec<_> = rules
+                    .iter()
+                    .zip(names)
+                    .enumerate()
+                    .map(|(index, (rule, name))| {
+                        let rgb = rule.style.foreground.unwrap();
+                        FileRow {
+                            identity: index.to_string().into(),
+                            name: name.into(),
+                            color_rule: true,
+                            custom_foreground: true,
+                            foreground: Color::from_rgb_u8(rgb.0, rgb.1, rgb.2),
+                            cursor,
+                            selected,
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+                window.set_left_rows(Rc::new(VecModel::from(rows)).into());
+                test.draw();
+                for (index, (rule, name)) in rules.iter().zip(names).enumerate() {
+                    let rgb = rule.style.foreground.unwrap();
+                    let base = Color::from_rgb_u8(rgb.0, rgb.1, rgb.2);
+                    let background = presentation.invoke_background(
+                        false,
+                        Color::default(),
+                        cursor,
+                        active,
+                        selected,
+                        index % 2 != 0,
+                    );
+                    let ink =
+                        presentation.invoke_foreground(true, base, background, selected, false);
+                    assert!(
+                        contrast(ink, background) >= 4.5,
+                        "{name}: theme {theme}, state {state}, active {active}"
+                    );
+                    let row = ui::root_item(&window, name, AccessibleRole::ListItem);
+                    let rect = row.geometry();
+                    let origin = row.map_to_native_window(rect.origin);
+                    // Inspect the filename region, excluding artwork and focus edges.
+                    let found = ((origin.y + 2.0) as usize
+                        ..(origin.y + rect.size.height - 2.0) as usize)
+                        .any(|y| {
+                            ((origin.x + 64.0) as usize..(origin.x + 230.0) as usize)
+                                .any(|x| has_ink(test.pixels[y * test.width + x], ink, background))
+                        });
+                    assert!(
+                        found,
+                        "actual filename ink: {name}, theme {theme}, state {state}, active {active}"
+                    );
+                }
+                if (active && state == 0 && matches!(theme, 0 | 2 | 17 | 21 | 22))
+                    || (theme == 0 && !active && state == 3)
+                {
+                    render::snapshot(
+                        &test,
+                        &format!("default-palette-theme-{theme}-state-{state}-active-{active}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn all_themes_states_and_views_render_readable_filename_colors_with_preserved_cues() {
     let mut test = ui::TestUi::new();
     let foreground = Color::from_rgb_u8(170, 90, 230);
@@ -78,7 +170,7 @@ fn all_themes_states_and_views_render_readable_filename_colors_with_preserved_cu
     test.window
         .set_left_rows(Rc::new(VecModel::from(rows)).into());
     let window = test.window.clone_strong();
-    for theme in 0..9 {
+    for theme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         test.window.invoke_apply_preferences(theme, 0);
         let presentation = window.global::<FilenameColorPresentation>();
         for base in [
@@ -284,6 +376,22 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
     midnight_ui::refresh(&test.window, &presenter.borrow());
     test.draw();
     assert!(!view.get_busy());
+    assert!(
+        !commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::SavePreferences { .. }))
+    );
+    assert_eq!(view.get_labels().row_count(), 2);
+    assert!(view.get_labels().row_data(0).unwrap().contains("文档*"));
+    render::snapshot(&test, "filename-colors-options");
+    ui::click_popup(&test.window, "Remove rule", AccessibleRole::Button);
+    test.draw();
+    assert_eq!(view.get_labels().row_count(), 1);
+    ui::click_popup(&test.window, "Discard changes", AccessibleRole::Button);
+    test.draw();
+    assert_eq!(view.get_labels().row_count(), 2);
+    ui::click_popup(&test.window, "OK", AccessibleRole::Button);
     let saved = commands
         .borrow()
         .iter()
@@ -294,11 +402,4 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
         .unwrap();
     assert_eq!(saved.filename_colors.len(), 2);
     assert_eq!(saved.filename_colors[0].expression, "文档*");
-    render::snapshot(&test, "filename-colors-options");
-    ui::click_popup(&test.window, "Remove rule", AccessibleRole::Button);
-    test.draw();
-    assert_eq!(view.get_labels().row_count(), 1);
-    ui::click_popup(&test.window, "Discard changes", AccessibleRole::Button);
-    test.draw();
-    assert_eq!(view.get_labels().row_count(), 2);
 }

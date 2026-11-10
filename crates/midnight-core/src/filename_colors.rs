@@ -14,26 +14,47 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
                 "*.ts;*.tsx;*.swift;*.sh;*.ps1;*.sql;*.html;*.css;*.scss;*.vue;*.svelte;*.lua;",
                 "*.pl;*.php;*.slint;*.toml;*.yaml;*.yml;*.json;*.xml;*.cmake;Makefile;Dockerfile"
             ),
-            RgbColor(70, 155, 215),
-        ),
-        (
-            "*.exe;*.com;*.bat;*.cmd;*.msi;*.appimage;*.run",
-            RgbColor(80, 170, 100),
-        ),
-        (
-            "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
-            RgbColor(185, 120, 210),
+            RgbColor(59, 130, 246),
         ),
         (
             "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",
-            RgbColor(220, 135, 65),
+            RgbColor(139, 92, 246),
         ),
         (
-            concat!(
-                "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.txt;*.md;*.rst;*.xls;*.xlsx;*.ods;",
-                "*.ppt;*.pptx;*.odp;*.epub;*.csv;*.tsv"
-            ),
-            RgbColor(60, 165, 165),
+            "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub",
+            RgbColor(100, 116, 139),
+        ),
+        (
+            "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
+            RgbColor(236, 72, 153),
+        ),
+        (
+            "*.exe;*.com;*.bat;*.cmd;*.msi;*.appimage;*.run",
+            RgbColor(249, 115, 22),
+        ),
+        (
+            "*.xls;*.xlsx;*.xlsm;*.xlsb;*.ods;*.csv;*.tsv",
+            RgbColor(34, 197, 94),
+        ),
+        (
+            "*.mp3;*.flac;*.wav;*.ogg;*.opus;*.m4a;*.aac;*.wma;*.aiff;*.aif;*.ape;*.mid;*.midi",
+            RgbColor(20, 184, 166),
+        ),
+        (
+            "*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.cab;*.iso",
+            RgbColor(217, 119, 6),
+        ),
+        (
+            "*.ppt;*.pptx;*.pptm;*.pps;*.ppsx;*.odp",
+            RgbColor(239, 68, 68),
+        ),
+        (
+            "*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*",
+            RgbColor(100, 116, 139),
+        ),
+        (
+            "*.ttf;*.otf;*.ttc;*.woff;*.woff2;*.eot;*.fon",
+            RgbColor(146, 64, 14),
         ),
     ]
     .into_iter()

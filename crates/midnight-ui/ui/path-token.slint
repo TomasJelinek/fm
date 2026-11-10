@@ -1,0 +1,53 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+import { PathPartRow } from "navigation-models.slint";
+
+// Shared by the full breadcrumb and its pinned leading components.
+export component PathToken inherits Rectangle {
+    in property <PathPartRow> part;
+    in property <int> revision;
+    in property <length> text-size;
+    in property <bool> highlighted;
+    callback selected(string);
+    callback copied(string);
+    callback hovered(bool);
+    width: caption.preferred-width;
+    background: root.highlighted ? Theme.hover : transparent;
+    border-radius: 2px;
+    accessible-role: button;
+    accessible-label: "Open " + root.part.prefix;
+    accessible-action-default => { root.selected(root.part.identity); }
+    caption := Text {
+        width: parent.width; height: parent.height;
+        text: root.part.label; color: root.highlighted ? Theme.accent : Theme.text;
+        font-size: root.text-size; vertical-alignment: center;
+    }
+    TouchArea {
+        private property <string> pressed-id;
+        private property <int> pressed-revision;
+        private property <bool> right-pressed;
+        changed has-hover => { root.hovered(self.has-hover); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                self.pressed-id = root.part.identity;
+                self.pressed-revision = root.revision;
+                self.right-pressed = event.button == PointerEventButton.right;
+            } else if event.kind == PointerEventKind.up
+                && event.button == PointerEventButton.right && self.right-pressed {
+                if self.pressed-id == root.part.identity
+                    && self.pressed-revision == root.revision && self.has-hover {
+                    root.copied(self.pressed-id);
+                }
+                self.right-pressed = false;
+            } else if event.kind == PointerEventKind.cancel {
+                self.pressed-id = ""; self.right-pressed = false;
+            }
+        }
+        clicked => {
+            if self.pressed-id == root.part.identity && self.pressed-revision == root.revision {
+                root.selected(self.pressed-id);
+            }
+        }
+    }
+    Tooltip { TipBody { text: "Open " + root.part.prefix + "\nRight-click copies this path."; } }
+}

@@ -5,8 +5,9 @@ use std::{io, path::Path};
 #[derive(Default)]
 pub struct NativeClipboard;
 
+#[derive(Default)]
 struct Session {
-    text: arboard::Clipboard,
+    text: Option<arboard::Clipboard>,
     files: Option<crate::file_clipboard::Files>,
 }
 
@@ -21,15 +22,25 @@ impl Session {
 
 impl ClipboardService for NativeClipboard {
     fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
-        arboard::Clipboard::new()
-            .map(|text| Box::new(Session { text, files: None }) as Box<dyn ClipboardSession>)
-            .map_err(failure)
+        // Bounded text/file reads choose their own native transport. Do not
+        // require an unrelated clipboard owner or X11 connection beforehand.
+        Ok(Box::new(Session::default()))
     }
 }
 
 impl ClipboardSession for Session {
+    fn read_text(&mut self) -> Result<String, FsError> {
+        crate::clipboard_text::read(self.files()?)
+    }
     fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
-        self.text.set_text(text).map_err(failure)
+        if self.text.is_none() {
+            self.text = Some(arboard::Clipboard::new().map_err(failure)?);
+        }
+        self.text
+            .as_mut()
+            .expect("text clipboard initialized")
+            .set_text(text)
+            .map_err(failure)
     }
     fn copy_files(&mut self, files: &FileClipboard) -> Result<(), FsError> {
         self.files()?.copy(files)
@@ -51,4 +62,15 @@ fn failure(error: arboard::Error) -> FsError {
         Path::new(""),
         io::Error::other(error.to_string()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn session_open_does_not_require_a_display_or_text_owner() {
+        // Also run with DISPLAY unset and an isolated, empty Wayland runtime.
+        // Read transport selection owns capability errors, not session construction.
+        assert!(NativeClipboard.open().is_ok());
+    }
 }

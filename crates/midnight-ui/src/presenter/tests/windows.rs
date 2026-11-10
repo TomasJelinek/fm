@@ -40,6 +40,7 @@ fn native_choice_tokens_preserve_unpaired_utf16_and_reject_display_alias_replace
     assert_eq!(first.to_string_lossy(), second.to_string_lossy());
     let mut p = Presenter::new(test_root(), test_root());
     let update = |path| Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![NavigationLocation {
             id: "desktop".into(),
@@ -176,4 +177,28 @@ fn submitting_unchanged_lossy_path_text_reuses_the_original_raw_path() {
             true
         })
     );
+}
+
+#[test]
+fn a_known_unc_share_does_not_depend_on_discovery_plugin_availability() {
+    for available in [false, true] {
+        let mut p = Presenter::new(test_root(), test_root());
+        p.network_available = available;
+        let share = r"\\server\shared\資料";
+        let sent = RefCell::new(Vec::new());
+        assert!(p.navigate_text(PaneId::Left, share, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        }));
+        assert!(sent.borrow().iter().any(|command| matches!(
+            command,
+            Command::Navigate { path, .. } if path == Path::new(share)
+        )));
+        assert!(
+            !sent
+                .borrow()
+                .iter()
+                .any(|command| matches!(command, Command::NetworkNavigate { .. }))
+        );
+    }
 }

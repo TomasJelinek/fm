@@ -19,7 +19,8 @@ The keyboard page contains:
 - Assign adds one alias without removing existing aliases; enforce the existing four
   aliases per action, canonical deduplication, native-editing and IME restrictions.
 - Restore command and Restore all defaults, with confirmation for the global reset.
-  Apply changes through the existing validated preference transaction and backend save.
+  Stage changes in the Options transaction; OK persists the complete session,
+  while Cancel restores its original shortcut mappings.
 
 Scopes remain defined by action behavior and text-sensitive key rules. The reference's
 arbitrary context chooser and Visual C++ scheme are not copied as inactive controls;
@@ -29,7 +30,8 @@ serialization version or multi-chord sequences are needed for this UI change.
 Polish settings overall with a larger bounded window, consistent topic navigation,
 aligned labels, readable section spacing and a fixed footer. The keyboard command
 list receives most of the available height; long errors scroll within their own card.
-Preserve immediate application of settings and explicit save-failure feedback.
+Preview settings immediately; preserve explicit save-failure feedback. The
+[OK/Cancel transaction](2026-11-08-options-transaction.md) governs all pages.
 
 Tests must use actual input events to verify capture never opens/deletes/executes,
 physical digits and AltGr remain correct, search preserves selected command identity,

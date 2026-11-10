@@ -11,6 +11,7 @@ use ui::{TestUi, click, click_popup, key};
 #[test]
 fn options_topics_keep_panel_preferences_and_appearance_readable() {
     let mut ui = TestUi::new();
+    ui.window.set_preferences_ready(true);
     let accepted = Rc::new(Cell::new((-1, -1)));
     let changed = accepted.clone();
     let weak = ui.window.as_weak();
@@ -93,14 +94,7 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     ui.options_topic(0);
     assert!(ui.window.get_quick_search_filter());
     assert!(ui.window.get_sizes_in_bytes());
-    key(&ui.window, Key::RightArrow);
-    key(&ui.window, Key::RightArrow);
-    assert_eq!(
-        ui.window.get_options_topic_index(),
-        2,
-        "repeated arrows reach Command"
-    );
-    ui.draw();
+    // Command history belongs to Panel; it must not require a separate page.
     click_popup(
         &ui.window,
         "Remember command history after restart",
@@ -109,7 +103,15 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     assert!(!ui.window.get_remember_command_history());
     click_popup(&ui.window, "Clear command history", AccessibleRole::Button);
     assert_eq!(cleared.get(), 1);
-    ui.options_topic(2);
+    ui.options_topic(0);
+    key(&ui.window, Key::RightArrow);
+    key(&ui.window, Key::RightArrow);
+    assert_eq!(
+        ui.window.get_options_topic_index(),
+        3,
+        "repeated arrows reach Keyboard without a Command page"
+    );
+    ui.draw();
     key(&ui.window, Key::LeftArrow);
     key(&ui.window, Key::LeftArrow);
     assert_eq!(
@@ -131,7 +133,7 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
         b: surface.blue(),
     };
     assert_eq!(ui.pixel(interior.0, interior.1), expected);
-    click_popup(&ui.window, "Done", AccessibleRole::Button);
+    click_popup(&ui.window, "Cancel", AccessibleRole::Button);
     ui.draw();
     assert!(
         !ui::has_popup(&ui.window),

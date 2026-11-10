@@ -196,3 +196,73 @@ async fn unavailable_service_and_monotonic_save_ids_reject_visibly() {
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn captured_manifest_verification_routes_through_the_actor_and_replaces_retained_generations()
+{
+    let temp = native_fixture::fixture();
+    let listed = temp.path().join("listed");
+    let unrelated = temp.path().join("unrelated");
+    fs::write(&listed, b"abc").unwrap();
+    fs::write(&unrelated, b"different content").unwrap();
+    let manifest = temp.path().join("captured.md5");
+    fs::write(&manifest, "900150983cd24fb0d6963f7d28e17f72 *listed\n").unwrap();
+    let service = Arc::new(LocalFileSystem::new(None));
+    let (send, commands) = mpsc::channel(16);
+    let (events, mut receive) = mpsc::channel(16);
+    let engine = tokio::spawn(
+        Engine::new(service.clone(), events)
+            .with_transfers(service)
+            .run(commands),
+    );
+    send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
+        ChecksumJobId(1),
+        ChecksumGeneration(1),
+        vec![unrelated],
+    ))))
+    .await
+    .unwrap();
+    let previous = completed(&mut receive, 1).await;
+    let request = |generation| ChecksumVerifyRequest {
+        job: ChecksumJobId(1),
+        generation: ChecksumGeneration(generation),
+        manifest: manifest.clone(),
+        limits: ChecksumLimits {
+            max_retained_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    };
+    send.send(Command::VerifyChecksumManifest(Box::new(request(2))))
+        .await
+        .unwrap();
+    let first = completed(&mut receive, 2).await;
+    assert_eq!(first.rows[0].path, listed);
+    assert_eq!(first.rows[0].state, ChecksumRowState::Verified);
+    send.send(Command::VerifyChecksumManifest(Box::new(request(3))))
+        .await
+        .unwrap();
+    send.send(Command::CancelChecksums {
+        job: ChecksumJobId(1),
+        generation: ChecksumGeneration(2),
+    })
+    .await
+    .unwrap();
+    let second = completed(&mut receive, 3).await;
+    assert_eq!(second.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(second.summary.progress.verified, 1);
+    send.send(Command::VerifyChecksumManifest(Box::new(request(2))))
+        .await
+        .unwrap();
+    loop {
+        if let Event::ChecksumRejected(rejected) = next(&mut receive).await {
+            assert_eq!(rejected.generation, ChecksumGeneration(2));
+            break;
+        }
+    }
+    drop((previous, first, second));
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(10), engine)
+        .await
+        .unwrap()
+        .unwrap();
+}

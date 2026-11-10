@@ -40,7 +40,10 @@ fn schema17_round_trips_ordered_native_commands_and_preserves_checksum_settings_
     let encoded = encode_preferences(preferences.clone()).unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(stored["version"], 17);
-    assert_eq!(stored["checksum_algorithms"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        stored["checksum_algorithms"],
+        serde_json::json!(["md5", "sha1", "sha256", "sha512", "crc32"])
+    );
     assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
     assert_eq!(
         encode_preferences(decode_preferences(&encoded).unwrap()).unwrap(),

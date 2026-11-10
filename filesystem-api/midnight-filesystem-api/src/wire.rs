@@ -2,8 +2,21 @@ use crate::*;
 use std::io::{Cursor, Read, Write};
 
 pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<()> {
+    write_message_with_protocol(writer, Protocol::V1, message)
+}
+
+pub fn write_message_with_protocol(
+    writer: &mut impl Write,
+    protocol: Protocol,
+    message: &Message,
+) -> io::Result<()> {
+    if protocol == Protocol::V2 {
+        streaming::validate(message)?;
+    } else if streaming::tag(message).is_some() {
+        return Err(invalid());
+    }
     let mut data = Vec::new();
-    data.extend(VERSION.to_le_bytes());
+    data.extend((protocol as u16).to_le_bytes());
     let tag: u8 = match message {
         Message::Open { .. } => 1,
         Message::Opened { .. } => 2,
@@ -15,6 +28,7 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
         Message::SourceData { .. } => 8,
         Message::Failed { .. } => 9,
         Message::Close { .. } => 10,
+        other => streaming::tag(other).ok_or_else(invalid)?,
     };
     data.push(tag);
     put64(&mut data, message.request());
@@ -46,6 +60,9 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
                     put64(&mut data, size);
                 }
                 data.push(u8::from(node.readable));
+                if protocol == Protocol::V2 {
+                    timestamp::write(&mut data, node.modified)?;
+                }
             }
             data.push(u8::from(*more));
         }
@@ -75,6 +92,7 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
             bytes(&mut data, message.as_bytes(), 4096)?;
         }
         Message::Close { .. } => {}
+        other => streaming::write(&mut data, other)?,
     }
     if data.len() > MAX_FRAME {
         return Err(invalid());
@@ -85,6 +103,13 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
 }
 
 pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
+    read_message_with_protocol(reader, Protocol::V1)
+}
+
+pub fn read_message_with_protocol(
+    reader: &mut impl Read,
+    protocol: Protocol,
+) -> io::Result<Message> {
     let length = u32le(reader)? as usize;
     if length > MAX_FRAME {
         return Err(invalid());
@@ -94,7 +119,7 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
     let mut data = Cursor::new(bytes.as_slice());
     let mut version = [0; 2];
     data.read_exact(&mut version)?;
-    if u16::from_le_bytes(version) != VERSION {
+    if u16::from_le_bytes(version) != protocol as u16 {
         return Err(invalid());
     }
     let tag = byte(&mut data)?;
@@ -152,6 +177,11 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
                         None
                     },
                     readable: boolean(&mut data)?,
+                    modified: if protocol == Protocol::V2 {
+                        timestamp::read(&mut data)?
+                    } else {
+                        None
+                    },
                 });
             }
             Message::Entries {
@@ -197,38 +227,48 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
             message: string(&mut data, 4096)?,
         },
         10 => Message::Close { request },
+        11..=21 if protocol == Protocol::V2 => streaming::read(tag, request, &mut data)?,
         _ => return Err(invalid()),
     };
     if data.position() != length as u64 {
         return Err(invalid());
     }
+    if protocol == Protocol::V2 {
+        streaming::validate(&message)?;
+    }
     Ok(message)
 }
 
-fn put64(out: &mut Vec<u8>, n: u64) {
+pub(crate) fn put64(out: &mut Vec<u8>, n: u64) {
     out.extend(n.to_le_bytes());
 }
-fn read_len(out: &mut Vec<u8>, n: u32) -> io::Result<()> {
+pub(crate) fn read_len(out: &mut Vec<u8>, n: u32) -> io::Result<()> {
     if n == 0 || n > MAX_READ {
         return Err(invalid());
     }
     out.extend(n.to_le_bytes());
     Ok(())
 }
-fn bytes(out: &mut Vec<u8>, value: &[u8], limit: usize) -> io::Result<()> {
-    if value.len() > limit {
+pub(crate) fn bytes(out: &mut Vec<u8>, value: &[u8], limit: usize) -> io::Result<()> {
+    if value.len() > limit
+        || out
+            .len()
+            .checked_add(4)
+            .and_then(|n| n.checked_add(value.len()))
+            .is_none_or(|n| n > MAX_FRAME)
+    {
         return Err(invalid());
     }
     out.extend((value.len() as u32).to_le_bytes());
     out.extend(value);
     Ok(())
 }
-fn byte(input: &mut impl Read) -> io::Result<u8> {
+pub(crate) fn byte(input: &mut impl Read) -> io::Result<u8> {
     let mut b = [0];
     input.read_exact(&mut b)?;
     Ok(b[0])
 }
-fn boolean(input: &mut impl Read) -> io::Result<bool> {
+pub(crate) fn boolean(input: &mut impl Read) -> io::Result<bool> {
     match byte(input)? {
         0 => Ok(false),
         1 => Ok(true),
@@ -240,19 +280,19 @@ fn u32le(input: &mut impl Read) -> io::Result<u32> {
     input.read_exact(&mut b)?;
     Ok(u32::from_le_bytes(b))
 }
-fn u64le(input: &mut impl Read) -> io::Result<u64> {
+pub(crate) fn u64le(input: &mut impl Read) -> io::Result<u64> {
     let mut b = [0; 8];
     input.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
 }
-fn bounded_len(input: &mut impl Read) -> io::Result<u32> {
+pub(crate) fn bounded_len(input: &mut impl Read) -> io::Result<u32> {
     let n = u32le(input)?;
     if n == 0 || n > MAX_READ {
         return Err(invalid());
     }
     Ok(n)
 }
-fn blob(input: &mut Cursor<&[u8]>, max: usize) -> io::Result<Vec<u8>> {
+pub(crate) fn blob(input: &mut Cursor<&[u8]>, max: usize) -> io::Result<Vec<u8>> {
     let n = u32le(input)? as usize;
     if n > max
         || n > input

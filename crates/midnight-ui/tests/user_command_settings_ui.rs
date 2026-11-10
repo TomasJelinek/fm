@@ -124,6 +124,38 @@ impl Harness {
             })
             .unwrap()
     }
+    fn rows(&self) -> Vec<midnight_ui::UserCommandSettingsRow> {
+        self.ui
+            .window
+            .global::<UserCommandSettingsView>()
+            .get_rows()
+            .iter()
+            .collect()
+    }
+}
+
+#[test]
+fn cancel_restores_applied_command_edits_and_order() {
+    let mut h = Harness::new();
+    h.open();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    view.invoke_move(view.get_token(), 1);
+    assert_eq!(h.rows()[0].id, "two");
+    h.text("Command name", "Previewed command name");
+    h.settle();
+    h.action("Apply Custom Command");
+    assert!(
+        h.rows()
+            .iter()
+            .any(|row| row.name == "Previewed command name")
+    );
+    assert_eq!(h.save_count(), 0);
+    h.action("Cancel");
+    h.open();
+    assert_eq!(h.rows()[0].id, "one");
+    assert_eq!(h.rows()[0].name, "First command");
+    assert_eq!(h.save_count(), 0);
 }
 
 #[test]
@@ -156,13 +188,13 @@ fn options_create_edit_reorder_delete_use_stable_ids_and_preserve_text_draft_on_
     let id = view.get_draft().id;
     h.action("Apply Custom Command");
     h.ui.draw();
-    assert_eq!(h.latest().user_commands.len(), 3);
-    assert_eq!(h.latest().user_commands[2].id.as_str(), id.as_str());
+    assert_eq!(h.rows().len(), 3);
+    assert_eq!(h.rows()[2].id.as_str(), id.as_str());
     h.action("Move Custom Command up");
     h.ui.draw();
-    assert_eq!(h.latest().user_commands[1].id.as_str(), id.as_str());
+    assert_eq!(h.rows()[1].id.as_str(), id.as_str());
     h.text("Command name", "Renamed without reset");
-    h.text("Custom Command arguments", "[");
+    h.text("Program executable (absolute path)", "");
     h.settle();
     let view = h.ui.window.global::<UserCommandSettingsView>();
     assert!(!view.get_can_apply());
@@ -179,6 +211,13 @@ fn options_create_edit_reorder_delete_use_stable_ids_and_preserve_text_draft_on_
     );
     h.action("Delete Custom Command");
     h.ui.draw();
+    assert_eq!(h.rows().len(), 2);
+    assert_eq!(
+        h.save_count(),
+        0,
+        "all page actions remain in the edit session"
+    );
+    h.action("OK");
     assert_eq!(h.latest().user_commands.len(), 2);
     assert!(
         h.commands
@@ -236,7 +275,7 @@ fn terminal_variable_preview_uses_unsaved_literal_script_and_does_not_save_or_ex
 fn editor_page_and_done_remain_accessible_in_narrow_layout_and_every_theme_density() {
     let mut h = Harness::new();
     h.open();
-    for theme in 0..9 {
+    for theme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         for density in 0..2 {
             h.ui.window.invoke_apply_preferences(theme, density);
             for (width, height) in [(1340, 820), (720, 500), (320, 200)] {
@@ -251,7 +290,7 @@ fn editor_page_and_done_remain_accessible_in_narrow_layout_and_every_theme_densi
                 assert_eq!(h.ui.window.get_options_topic_index(), 9);
                 let view = h.ui.window.global::<UserCommandSettingsView>();
                 assert_eq!(view.get_rows().row_count(), 2);
-                let done = ui::popup_item(&h.ui.window, "Done", AccessibleRole::Button);
+                let done = ui::popup_item(&h.ui.window, "Cancel", AccessibleRole::Button);
                 let rect = done.geometry();
                 let origin = done.map_to_native_window(rect.origin);
                 assert!(
@@ -264,7 +303,7 @@ fn editor_page_and_done_remain_accessible_in_narrow_layout_and_every_theme_densi
             }
         }
     }
-    h.action("Done");
+    h.action("Cancel");
 }
 
 #[test]
@@ -315,10 +354,9 @@ fn dragging_a_command_after_another_row_commits_one_ordered_preferences_transact
         .iter()
         .filter(|command| matches!(command, Command::SavePreferences { .. }))
         .count();
-    assert_eq!(count, 1, "one valid drag drop must save exactly once");
+    assert_eq!(count, 0, "dragging stages the order until OK");
     assert_eq!(
-        h.latest()
-            .user_commands
+        h.rows()
             .iter()
             .map(|command| command.id.as_str())
             .collect::<Vec<_>>(),

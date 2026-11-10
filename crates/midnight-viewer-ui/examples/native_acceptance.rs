@@ -47,6 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut open = Some(move |parent: &ViewerWindow| {
         opening_manager.open(
             ViewerLaunch {
+                associations: Default::default(),
+                tree: None,
+                generated: None,
+                preferences: Arc::new(Default::default()),
                 focused: paths[0].clone(),
                 view: Arc::new(DirectoryIndex::from_entries(&entries)),
                 entries,

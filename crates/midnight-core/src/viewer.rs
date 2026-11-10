@@ -1,17 +1,42 @@
 //! Viewer messages contain immutable snapshots; all file work belongs to the backend.
 use crate::{DirectoryIndex, Entry};
 use std::{path::PathBuf, sync::Arc};
+#[path = "viewer_tiles.rs"]
+mod tiles;
+pub use tiles::*;
+#[path = "viewer_associations.rs"]
+mod associations;
+pub use associations::ViewerAssociations;
+#[path = "viewer_names.rs"]
+mod names;
+pub use names::viewer_plugin_name;
 
 #[derive(Clone, Debug)]
 pub struct ViewerLaunch {
+    /// Startup-captured routing overrides; manifests and capabilities remain authoritative.
+    pub associations: Arc<ViewerAssociations>,
+    /// Host-generated immutable text; never reopened by a display pathname.
+    pub generated: Option<Arc<dyn crate::GeneratedTextSource>>,
+    /// Accepted choices captured before the first content frame.
+    pub preferences: Arc<crate::ViewerPreferences>,
     /// Provider-scoped focus for virtual content; `focused` is unused when present.
     pub archive: Option<ArchiveViewer>,
+    /// Exact adopted inline tree; normalized only by the viewer backend.
+    pub tree: Option<TreeViewer>,
     pub entries: Arc<[Entry]>,
     pub view: Arc<DirectoryIndex>,
     pub focused: PathBuf,
     pub basic: bool,
     /// Preferences captured at application startup. Changes take effect after restart.
     pub disabled_plugins: Arc<[String]>,
+}
+
+/// Immutable viewer scope for an adopted tree. Only visible regular root aliases are eligible.
+/// The launch entries/index must be the exact allocations in this projection's root.
+#[derive(Clone, Debug)]
+pub struct TreeViewer {
+    pub view: Arc<crate::TreeProjection>,
+    pub focused: crate::TreeRowId,
 }
 
 #[derive(Clone, Debug)]
@@ -23,11 +48,36 @@ pub struct ArchiveViewer {
 
 #[derive(Clone, Debug)]
 pub struct ViewerPluginInfo {
+    pub extensions: Vec<String>,
+    /// The original manifest declares a catch-all plain text viewer.
+    pub fallback: bool,
     pub id: String,
     pub name: String,
+    /// Functional details from metadata, separate from the short list title.
+    pub description: String,
     pub version: String,
     pub status: String,
     pub location: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilesystemPluginKind {
+    Native,
+    Archive,
+    Network,
+}
+
+/// A manifest-only catalog record. Installed means metadata/artifacts were
+/// validated; it does not assert that a library or worker has been loaded.
+#[derive(Clone, Debug)]
+pub struct FilesystemPluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// Diagnostics have no configurable provider identity or declared kind.
+    pub kind: Option<FilesystemPluginKind>,
+    pub location: Option<PathBuf>,
+    pub status: String,
 }
 
 pub fn validate_disabled_viewers(ids: &[String]) -> Result<(), &'static str> {
@@ -70,9 +120,20 @@ pub struct ViewerGeometry {
 
 /// Host-owned process image mode; independent from the native plugin ABI modes.
 pub const VIEWER_MODE_IMAGE: u16 = 5;
+/// Interactive browser surface; independent of semantic plugin ABI modes.
+pub const VIEWER_MODE_HTML: u16 = 6;
+/// Platform-neutral interactive surface contract shared by backend and presentation.
+pub use midnight_web_viewer_api as viewer_web;
 
 #[derive(Clone, Debug)]
 pub enum ViewerImageInput {
+    /// One atomic gesture anchored in the actually displayed source, independent
+    /// of a prefetched backend camera. The enclosing frame scopes its coordinates.
+    ViewZoom {
+        zoom: crate::ViewerZoomPreference,
+        source_anchor: [f64; 2],
+        viewport_anchor: [f32; 2],
+    },
     Fit,
     ActualPixels,
     Zoom {
@@ -83,10 +144,21 @@ pub enum ViewerImageInput {
         x: f32,
         y: f32,
     },
+    /// Latest absolute camera; older sequences and replaced surfaces are refused.
+    PanTo {
+        surface: ViewerSurfaceId,
+        sequence: u64,
+        origin: [f64; 2],
+    },
 }
 
 #[derive(Clone, Debug)]
 pub struct ViewerImageInfo {
+    pub surface: ViewerSurfaceId,
+    pub origin: [f64; 2],
+    pub visible_source: [f64; 2],
+    pub raster_scale: f64,
+    pub pan_sequence: u64,
     pub width: u32,
     pub height: u32,
     pub zoom: f64,
@@ -98,6 +170,11 @@ pub struct ViewerImageInfo {
 
 #[derive(Clone, Debug)]
 pub enum ViewerInput {
+    /// Browser input only; host validates authority-bearing commands separately.
+    Web {
+        frame: u64,
+        input: viewer_web::CommandKind,
+    },
     Resize(ViewerGeometry),
     Scroll {
         x: f32,
@@ -106,6 +183,13 @@ pub enum ViewerInput {
     /// Normalized file position. Actual anchors and offsets remain u64 on the backend.
     Seek(f64),
     Pan(f64),
+    /// Absolute scrollbar intent scoped to the currently displayed text context.
+    Position {
+        generation: u64,
+        sequence: u64,
+        horizontal: bool,
+        position: f64,
+    },
     NextFile,
     Mode(u16),
     /// Reflow Text/Source within the viewport; ignored by fixed-column modes.
@@ -140,6 +224,9 @@ pub enum ViewerInput {
 
 #[derive(Clone, Debug)]
 pub struct ViewerFrame {
+    pub generation: u64,
+    /// Vertical, horizontal; advanced only when matching content has been prepared.
+    pub position_sequence: [u64; 2],
     pub revision: u64,
     pub mode: u16,
     pub modes: Vec<u16>,
@@ -150,6 +237,8 @@ pub struct ViewerFrame {
     pub height: u32,
     /// Bounded premultiplied RGBA prepared by backend text or image workers.
     pub pixels: Arc<[u8]>,
+    /// Reusable immutable tiles; single-raster pixels is empty when present.
+    pub tiles: Option<Arc<[ViewerTile]>>,
     pub accessible_text: Arc<str>,
     pub position: f64,
     pub vertical_extent: f64,
@@ -161,7 +250,19 @@ pub struct ViewerFrame {
 
 #[derive(Clone, Debug)]
 pub enum ViewerOutput {
-    Frame(ViewerFrame),
+    WebState {
+        generation: u64,
+        policy: viewer_web::Policy,
+        zoom: f64,
+    },
+    /// Host-owned commands from an interactive viewer, after browser arbitration.
+    WebShortcut(viewer_web::HostShortcut),
+    Frame(Box<ViewerFrame>),
+    ImageUnavailable {
+        generation: u64,
+        surface: ViewerSurfaceId,
+        message: String,
+    },
     Status(String),
     CopyText(String),
     Closed,

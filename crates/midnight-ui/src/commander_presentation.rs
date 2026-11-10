@@ -26,6 +26,9 @@ pub(super) fn bind(
     callback!(on_open_comparison, |p, _s| {
         p.open_comparison();
     });
+    callback!(on_panel_split_changed, |p, s, ratio| {
+        p.change_panel_split(ratio, s);
+    });
     callback!(on_cancel_comparison, |p, s| {
         p.cancel_comparison(s);
     });
@@ -60,6 +63,15 @@ pub(super) fn bind(
     });
     callback!(on_cancel_panel_filter, |p, _s| {
         p.cancel_panel_filter();
+    });
+    callback!(on_clear_panel_filter, |p, s, id| {
+        if let Some(pane) = match id {
+            0 => Some(PaneId::Left),
+            1 => Some(PaneId::Right),
+            _ => None,
+        } {
+            p.clear_panel_filter(pane, s);
+        }
     });
     callback!(
         on_apply_panel_filter,

@@ -60,7 +60,8 @@ export global Theme {
     out property <length> hint-font: max(8px, font-size - (touch ? 3px : 1px));
     out property <length> icon-size: touch ? 20px : 14px;
     // Grow artwork inside the existing control and row bounds.
-    out property <length> file-icon-size: icon-size * 1.1;
+    // Fill the existing row, preserving one logical pixel on either edge.
+    out property <length> file-icon-size: row-height - 2px;
     out property <length> location-icon-size: touch ? 26px : 20px;
     out property <length> picker-location-icon-size: 18px * 1.1;
 }

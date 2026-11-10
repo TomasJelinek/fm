@@ -47,6 +47,7 @@ fn private_installed_runtime_passes_discovery_and_decodes_through_the_service() 
         generation: 1,
         targets: vec![Target {
             token: 1,
+            edge: 96,
             identity: b"fixture".to_vec(),
             extension: "avi".into(),
             selected: false,

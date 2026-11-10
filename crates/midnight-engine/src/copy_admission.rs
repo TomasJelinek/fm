@@ -38,12 +38,21 @@ impl Consumer {
 impl Drop for Consumer {
     fn drop(&mut self) {
         self.0.0.capacity.close();
-        self.0
-            .0
-            .slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        let mut retired =
+            std::mem::take(&mut *self.0.0.slots.lock().unwrap_or_else(|e| e.into_inner()));
+        for slot in &mut retired {
+            slot.payload.close();
+        }
+        // Close sends synchronously; defer only payload destruction.
+        // One bounded shutdown batch, including oneshot payloads that arrived
+        // after cancellation. Their receiver must also die on a blocking worker.
+        tokio::task::spawn_blocking(move || {
+            for mut slot in retired {
+                if let Ok(request) = slot.payload.try_recv() {
+                    drop(request.input.into_inner());
+                }
+            }
+        });
     }
 }
 
@@ -156,7 +165,7 @@ impl Reservation {
             .send(Request {
                 _capacity: capacity,
                 receipt,
-                input,
+                input: WorkerOwned::new(input),
             })
             .map_err(Box::new)
     }

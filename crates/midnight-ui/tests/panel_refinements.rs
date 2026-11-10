@@ -310,8 +310,8 @@ fn caption(item: ItemRc) -> ItemRc {
 }
 
 fn assert_compact_geometry(ui: &mut TestUi) {
-    for (density, original_icon, row_height, control_height, toolbar_height) in
-        [(0, 14.0, 22.0, 24.0, 34.0), (1, 20.0, 40.0, 40.0, 48.0)]
+    for (density, file_icon, row_height, control_height, toolbar_height) in
+        [(0, 20.0, 22.0, 24.0, 34.0), (1, 38.0, 40.0, 40.0, 48.0)]
     {
         ui.window.invoke_apply_preferences(0, density);
         ui.draw();
@@ -320,7 +320,7 @@ fn assert_compact_geometry(ui: &mut TestUi) {
         assert_eq!(theme.get_control_height(), control_height);
         assert_eq!(theme.get_toolbar_height(), toolbar_height);
         for (label, role, expected) in [
-            ("selected.rs", AccessibleRole::ListItem, original_icon * 1.1),
+            ("selected.rs", AccessibleRole::ListItem, file_icon),
             (
                 "Test drive",
                 AccessibleRole::Button,

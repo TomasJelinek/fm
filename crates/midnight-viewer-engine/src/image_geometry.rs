@@ -1,6 +1,6 @@
 //! Source-pixel image navigation, independent of native paths and UI scaling.
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ImageGeometry {
     pub width: u32,
     pub height: u32,
@@ -8,9 +8,53 @@ pub(crate) struct ImageGeometry {
     pub scale: f64,
     pub origin: [f64; 2],
     pub fitted: bool,
+    fit_upscale: bool,
 }
 
 impl ImageGeometry {
+    pub fn zoom_from(
+        &mut self,
+        zoom: midnight_core::ViewerZoomPreference,
+        source: [f64; 2],
+        anchor: [f32; 2],
+    ) -> bool {
+        if source.iter().any(|value| !value.is_finite())
+            || anchor.iter().any(|value| !value.is_finite())
+        {
+            return false;
+        }
+        match zoom {
+            midnight_core::ViewerZoomPreference::Fit => self.fit(),
+            _ => {
+                let Some(scale) = zoom
+                    .scale()
+                    .filter(|scale| (1.0 / 32768.0..=64.0).contains(scale))
+                else {
+                    return false;
+                };
+                let minimum = 1.0 / (32768.0 * self.raster_geometry().1);
+                self.scale = scale.clamp(minimum.min(64.0), 64.0);
+                for axis in 0..2 {
+                    self.origin[axis] = source[axis]
+                        - f64::from(anchor[axis]).clamp(0.0, f64::from(self.viewport[axis]))
+                            / self.scale;
+                }
+                self.fitted = false;
+                self.clamp_origin();
+            }
+        }
+        true
+    }
+    pub fn restore_zoom(&mut self, preference: midnight_core::ViewerZoomPreference) {
+        match preference {
+            midnight_core::ViewerZoomPreference::Fit => self.fit(),
+            midnight_core::ViewerZoomPreference::ActualPixels => self.actual(),
+            midnight_core::ViewerZoomPreference::ScaleBasisPoints(value) => {
+                self.zoom(f64::from(value) / 10_000.0 / self.scale, self.center())
+            }
+        }
+    }
+
     pub fn new(width: u32, height: u32, viewport: [u32; 2]) -> Self {
         let mut state = Self {
             width: width.max(1),
@@ -19,7 +63,15 @@ impl ImageGeometry {
             scale: 1.0,
             origin: [0.0; 2],
             fitted: true,
+            fit_upscale: false,
         };
+        state.fit();
+        state
+    }
+
+    pub fn document(width: u32, height: u32, viewport: [u32; 2]) -> Self {
+        let mut state = Self::new(width, height, viewport);
+        state.fit_upscale = true;
         state.fit();
         state
     }
@@ -27,7 +79,7 @@ impl ImageGeometry {
     pub fn fit(&mut self) {
         self.scale = (f64::from(self.viewport[0]) / f64::from(self.width))
             .min(f64::from(self.viewport[1]) / f64::from(self.height))
-            .min(1.0);
+            .min(if self.fit_upscale { 64.0 } else { 1.0 });
         self.origin = [0.0; 2];
         self.fitted = true;
         self.clamp_origin();
@@ -35,6 +87,19 @@ impl ImageGeometry {
 
     pub fn actual(&mut self) {
         self.zoom(1.0 / self.scale, self.center());
+    }
+
+    /// Start another document page without replacing the user's zoom choice.
+    /// Fit adapts to the page; manual scales retain their full runtime precision.
+    pub fn change_page(&mut self, width: u32, height: u32) {
+        self.width = width.max(1);
+        self.height = height.max(1);
+        self.origin = [0.0; 2];
+        if self.fitted {
+            self.fit();
+        } else {
+            self.clamp_origin();
+        }
     }
 
     pub fn resize(&mut self, viewport: [u32; 2]) {
@@ -73,6 +138,13 @@ impl ImageGeometry {
             }
         }
         self.clamp_origin();
+    }
+
+    pub fn pan_to(&mut self, origin: [f64; 2]) {
+        if origin.iter().all(|value| value.is_finite()) {
+            self.origin = origin;
+            self.clamp_origin();
+        }
     }
 
     pub fn seek(&mut self, axis: usize, position: f64) {
@@ -215,6 +287,44 @@ mod tests {
         image.fit();
         near(image.scale, 0.2);
         assert!(image.fitted);
+    }
+
+    #[test]
+    fn page_changes_preserve_exact_manual_scale_and_reset_scroll_with_valid_bounds() {
+        let mut page = ImageGeometry::document(400, 600, [160, 120]);
+        page.actual();
+        page.zoom(1.234567, page.center());
+        let scale = page.scale;
+        for (width, height) in [(1000, 400), (40, 60), (400, 600)] {
+            page.scroll([100_000.0; 2]);
+            page.change_page(width, height);
+            assert_eq!(page.scale, scale);
+            assert!(!page.fitted);
+            assert_eq!(page.viewport, [160, 120]);
+            assert_eq!((page.width, page.height), (width, height));
+            for axis in 0..2 {
+                near(page.origin[axis], (page.maximum(axis) / 2.0).min(0.0));
+                assert_eq!(page.metrics(axis).0, 0.0);
+            }
+        }
+        page.actual();
+        page.change_page(600, 800);
+        assert_eq!(page.scale, 1.0);
+        assert!(!page.fitted);
+        page.resize([200, 100]);
+        assert_eq!(page.scale, 1.0);
+    }
+
+    #[test]
+    fn page_changes_keep_fit_mode_and_adapt_to_different_page_dimensions() {
+        let mut page = ImageGeometry::document(400, 600, [160, 120]);
+        for (width, height, scale) in [(1000, 400, 0.16), (400, 600, 0.2), (40, 60, 2.0)] {
+            page.change_page(width, height);
+            assert!(page.fitted);
+            near(page.scale, scale);
+            assert_eq!(page.metrics(0), (0.0, 1.0));
+            assert_eq!(page.metrics(1), (0.0, 1.0));
+        }
     }
 
     #[test]

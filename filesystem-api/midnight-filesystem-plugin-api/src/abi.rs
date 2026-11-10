@@ -1,6 +1,6 @@
 //! Synchronous C declarations; pointers are borrowed only during calls unless leased.
 pub const ABI_MAJOR: u16 = 1;
-pub const ABI_MINOR: u16 = 1;
+pub const ABI_MINOR: u16 = 2;
 pub const KIND_FILESYSTEM: u32 = 2;
 pub const ENTRY_SYMBOL: &std::ffi::CStr = c"midnight_filesystem_entry_v1";
 pub type Status = u32;
@@ -20,6 +20,10 @@ pub const CAP_VOLUMES: u64 = 8;
 pub const CAP_STORAGE: u64 = 16;
 pub const CAP_NATIVE_ADDRESS: u64 = 32;
 pub const CAP_VOLUME_DETAILS: u64 = 64;
+/// Explicit navigation handoff; requires host minor version 2.
+pub const CAP_ACTIVATE: u64 = 128;
+pub const CAP_REFRESH: u64 = 256;
+pub const CAP_RESOLVE_TEXT: u64 = 512;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]

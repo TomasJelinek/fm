@@ -7,6 +7,9 @@ pub(crate) struct Frames {
 }
 
 impl Frames {
+    pub fn latest_revision(&self) -> u64 {
+        self.revision
+    }
     pub fn accepts(&self, frame: u64) -> bool {
         frame != 0 && frame >= self.minimum_input && frame <= self.revision
     }

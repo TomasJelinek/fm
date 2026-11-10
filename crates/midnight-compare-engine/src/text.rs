@@ -1,4 +1,4 @@
-use crate::{Frame, check_cancel};
+use crate::{FontChoices, Frame, check_cancel};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
@@ -21,6 +21,7 @@ pub(crate) struct TextComparison {
     rows: Vec<Row>,
     differences: Vec<usize>,
     renderer: TextRenderer,
+    fonts: Option<FontChoices>,
     pub top: usize,
     pub horizontal: f32,
     vertical_remainder: f32,
@@ -127,6 +128,7 @@ impl TextComparison {
             rows,
             differences,
             renderer: TextRenderer::default(),
+            fonts: None,
             top: 0,
             horizontal: 0.0,
             vertical_remainder: 0.0,
@@ -156,15 +158,27 @@ impl TextComparison {
                 .iter()
                 .rev()
                 .find(|row| **row < self.top)
-                .or(self.differences.last())
+                .or(self.differences.first())
         } else {
             self.differences
                 .iter()
                 .find(|row| **row > self.top)
-                .or(self.differences.first())
+                .or(self.differences.last())
         };
         if let Some(target) = target {
             self.top = *target;
+            self.vertical_remainder = 0.0;
+        }
+    }
+
+    pub fn difference_edge(&mut self, last: bool) {
+        if let Some(target) = if last {
+            self.differences.last()
+        } else {
+            self.differences.first()
+        } {
+            self.top = *target;
+            self.vertical_remainder = 0.0;
         }
     }
 
@@ -174,6 +188,19 @@ impl TextComparison {
         appearance: &ViewerAppearance,
         cancel: &AtomicBool,
     ) -> Result<Frame, String> {
+        if self.fonts.is_none() {
+            let families = midnight_viewer_render::monospace_families(|| {
+                cancel.load(std::sync::atomic::Ordering::Acquire)
+            })
+            .ok_or("Comparison cancelled.")?;
+            let selected = resolve_family(&families, &appearance.family);
+            self.fonts = Some(FontChoices { families, selected });
+        }
+        let family = self
+            .fonts
+            .as_ref()
+            .map(|fonts| fonts.selected.as_str())
+            .unwrap_or("monospace");
         let (width, height) = (geometry.width, geometry.height);
         let mut pixels = appearance
             .background
@@ -236,7 +263,8 @@ impl TextComparison {
                     appearance.background
                 };
                 let options = TextOptions {
-                    family: "monospace",
+                    family,
+                    literal_family: family != "monospace",
                     size: appearance.font_size,
                     scale: geometry.scale,
                     foreground: appearance.foreground,
@@ -280,22 +308,81 @@ impl TextComparison {
             )
         };
         Ok(Frame {
+            fonts: self.fonts.clone(),
             geometry_revision: 0,
             mode: None,
             width,
             height,
             pixels,
+            layers: None,
             accessible_text,
             status,
             image: false,
             position: self.top as f64 / self.rows.len().saturating_sub(1).max(1) as f64,
         })
     }
+
+    pub fn change_font(&mut self, family: &str) -> bool {
+        let Some(fonts) = self.fonts.as_mut() else {
+            return false;
+        };
+        if fonts.selected == family
+            || (family != "monospace" && !fonts.families.iter().any(|name| name == family))
+        {
+            return false;
+        }
+        fonts.selected = family.into();
+        true
+    }
+}
+
+fn resolve_family(families: &[String], preferred: &str) -> String {
+    if preferred == "monospace" {
+        return preferred.into();
+    }
+    families
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(preferred))
+        .or_else(|| {
+            families
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case("Consolas"))
+        })
+        .cloned()
+        .unwrap_or_else(|| "monospace".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn installed_choice_wins_and_missing_family_falls_back_to_consolas_then_monospace() {
+        let names = ["Cascadia Mono".into(), "Consolas".into()];
+        assert_eq!(resolve_family(&names, "Cascadia Mono"), "Cascadia Mono");
+        assert_eq!(resolve_family(&names, "consolas"), "Consolas");
+        assert_eq!(resolve_family(&names, "Missing Mono"), "Consolas");
+        assert_eq!(resolve_family(&names, "monospace"), "monospace");
+        assert_eq!(resolve_family(&[], "Consolas"), "monospace");
+    }
+
+    #[test]
+    fn changing_font_preserves_diff_and_rejects_proportional_or_unknown_families() {
+        let mut diff = TextComparison::new("a\nb\n", "A\nB\n", &AtomicBool::new(false)).unwrap();
+        diff.fonts = Some(FontChoices {
+            families: vec!["Consolas".into(), "Cascadia Mono".into()].into(),
+            selected: "Consolas".into(),
+        });
+        diff.top = 1;
+        diff.horizontal = 24.0;
+        assert!(!diff.change_font("Arial"));
+        assert!(!diff.change_font("Missing Mono"));
+        assert!(diff.change_font("Cascadia Mono"));
+        assert_eq!(diff.fonts.as_ref().unwrap().selected, "Cascadia Mono");
+        assert_eq!(diff.top, 1);
+        assert_eq!(diff.horizontal, 24.0);
+        assert_eq!(diff.rows.len(), 2);
+        assert!(diff.change_font("monospace"));
+    }
     #[test]
     fn aligns_insertions_and_replacements_without_losing_unicode() {
         let cancel = AtomicBool::new(false);
@@ -349,6 +436,36 @@ mod tests {
         assert_eq!(diff.top, 0);
         diff.seek(f64::NAN);
         assert_eq!(diff.top, 0);
+    }
+    #[test]
+    fn difference_navigation_stops_at_each_boundary_and_refocuses_after_scrolling() {
+        let mut diff = TextComparison::new(
+            "a\nb\nc\nd\ne\n",
+            "A\nb\nC\nd\nE\n",
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        diff.difference(true);
+        assert_eq!(diff.top, 0, "Previous must not wrap to the last group");
+        diff.difference(false);
+        assert_eq!(diff.top, 2);
+        diff.difference(false);
+        assert_eq!(diff.top, 4);
+        diff.difference_edge(false);
+        assert_eq!(diff.top, 0);
+        diff.difference_edge(true);
+        assert_eq!(diff.top, 4);
+        diff.difference(false);
+        assert_eq!(diff.top, 4, "Next must not wrap to the first group");
+        diff.scroll(-1);
+        diff.difference(false);
+        assert_eq!(diff.top, 4);
+        let mut empty = TextComparison::new("", "", &AtomicBool::new(false)).unwrap();
+        empty.difference(true);
+        empty.difference(false);
+        empty.difference_edge(false);
+        empty.difference_edge(true);
+        assert_eq!(empty.top, 0);
     }
     #[test]
     fn captured_source_change_is_rejected() {

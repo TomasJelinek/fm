@@ -1,9 +1,103 @@
 # Security and integrity requirements
 
-Security, lossless Unicode and verified copying are product requirements, not
-optional fast/slow modes. UI code handles input and presentation only. Filesystem
+Security, lossless Unicode and explicitly verified copying are product requirements.
+Full SHA-256 verification is enabled by default. The user may explicitly choose
+size plus three 64 KiB samples (first/middle/last; files up to 192 KiB fully compared).
+This weaker mode can miss corruption between samples; it never disables identity,
+source-change, I/O-error, sync, overwrite or publication checks. Jobs freeze the
+selected policy at admission and report which guarantee was checked. Native
+same-volume Move renames without reading contents. See the
+[current transfer contract](docs/superpowers/specs/2026-11-10-transfer-verification-and-native-move.md).
+UI code handles input and presentation only. Filesystem
 access, large sorts/indexes, checksum work, large-object reclamation and diagnostic
 file encoding/writes execute in backend workers.
+
+Copy stages are owned temporary objects on the destination filesystem: Windows uses
+an exclusive, directory-handle-relative `.me-` plus sixteen random hex characters;
+Linux uses unnamed `O_TMPFILE` inodes. Names are not operation authority. Cancellation
+waits for in-flight native I/O, then explicitly removes unpublished partial data
+before terminal progress. Cleanup failures must remain visible with their residual
+path, including when cancellation or construction failure was the original cause.
+Existing destination originals, unfinished sources and earlier completed files are
+preserved; a filesystem refusal cannot be reported as successful cleanup.
+
+The optional Chromium HTML viewer has a separate browser-process profile. CEF's
+renderer sandbox remains enabled; the decoder's single-process policy is not
+weakened. HTML starts offline with scripts disabled. Enabling online mode revokes
+all local relative resources and recreates the browser/context; scripts require
+explicit online permission. Captured main-document content can then be read and
+transmitted by scripts. Local paths, shell execution, downloads and permission
+prompts are unavailable to web content. The backend owns private session state,
+resource containment, process-tree budgets and cleanup. See the
+[interactive viewer contract](docs/developer/WEB_VIEWER_API.md).
+
+Checksum manifests are untrusted input. The checksum worker bounds encoded input,
+decoded text and retained rows, validates the whole document, and opens only named
+regular native files beneath the manifest's pinned directory. Absolute paths,
+parent traversal, aliases, malformed hashes and duplicate entries fail validation.
+Windows/Linux readers reject link ancestry and cross-device descendants and check
+file identity/revision around reads; changed or unreadable sources never become
+Verified. Calculation and verification remain cancellable, bounded background jobs.
+Native Open/Save choices only fill a draft. Saving uses exclusive staging and
+independent SHA-256 readback; it never silently replaces an existing manifest.
+SFV/CRC32, MD5 and SHA-1 support compatibility, not authenticity. A matching checksum
+does not establish the origin or trustworthiness of the manifest itself.
+
+## Captured inline-tree transfers
+
+F5/F6 capture exact acknowledged tree occurrences, an immutable Copy/Move intent
+and provider registrations before the dialog. Display paths and row numbers are never reinterpreted as operation
+authority. Four shared capture permits bound live drafts/in-flight ownership;
+confirmation separately enters the ordinary 32-job copy queue. Native identity
+is pinned during normal preparation and retained across Retry, not frozen at
+dialog creation. Archive revisions are checked through retained provider sources.
+Duplicate/overlapping roots and native destination ancestry are rejected before
+writes. The frozen verification policy and ordinary publication guarantees apply
+to copied data; same-volume native rename reads no file contents.
+Only successful root completions may remove their exact session's marks; delayed
+events cannot affect another navigation. Rejection, cancellation and shutdown
+release final provider ownership on backend workers. F6 accepts only native
+captures and uses native rename when qualified on the same volume. Cross-volume
+or merged children use verified per-file Move and postorder empty-directory cleanup. Mixed/virtual
+Move roots fail before source preparation or destination mutation. Native pins
+are dropped before their retained provider lease, including failed preparation;
+stage-cleanup tickets retain the provider without retaining source handles.
+
+Terminal transfers request read-only reconciliation of the native root and its
+already loaded native branches. Each listing and its application share the
+mutation gate, so temporary Move staging cannot become a published tree. Original
+admission snapshots remain immutable; current root file actions use a separate
+backend-built snapshot with validated identities. Failed listings retain known
+rows and show an error. This does not grant authority to display paths or enable
+unimplemented tree deletion or other destructive consumers. Native tree clipboard
+publication uses the separate captured-source contract below; virtual exports
+remain unsupported.
+
+Native manual refresh and batched filesystem notifications share that maintenance
+path. Only exactly acknowledged provider-resolved root/expanded-branch targets
+enter the scope; links and foreign providers are excluded. Two backend workers
+own bounded native batches and fair serial metadata polling. Unchanged commits
+reuse admission results, with paced failed retries. Successful reconciliation and
+its exact Commit acknowledge only captured dirty epochs, preserving later events.
+Navigation and terminal failure invalidate the old generation before asynchronous
+teardown; old callbacks, receipts and failures cannot act on newer navigation.
+
+## Network Neighborhood discovery
+
+Discovery runs only on bounded backend workers through a separately installed
+filesystem plugin. Device captions, service URIs and opaque discovery addresses
+never become native operation paths. Listing, metadata, restore and hover do not
+activate shares or prompt for credentials. Explicit activation must return a
+validated, OS-supplied absolute native path before ordinary file operations are
+enabled; failed activation preserves the discovery view. Known native share
+paths do not depend on discovery availability.
+
+No subnet/port scans or stored passwords are used. Cache entries, leases, worker
+slots and result pages have shared resource limits. Canceled or timed-out native
+calls retain their worker permit until they really return; cancellation does not
+spawn replacement workers or terminate OS threads. See the
+[network contract](docs/developer/NETWORK_FILESYSTEM.md) for platform and current
+authentication limitations.
 
 ## Current browsing and explicit-operation milestone
 
@@ -63,15 +157,13 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   against external filesystem replacement; future writes need stronger contracts.
 - The command editor is a separate explicit shell action. Only submitting Enter
   starts the configured system terminal on a backend worker, using the active
-  pane's captured working directory. Inserted paths are literal arguments:
-  simple Unicode paths remain bare, other tokens use shell-specific escaped
-  double quotes, without surrounding apostrophes. PowerShell numeric names and
-  smart quotes are preserved literally. CMD refuses unsafe percent/quote/line
-  break text and quoted paths ending in backslash (builtin/CRT ambiguity);
-  typed command text is intentionally executable shell syntax and is not logged.
-  Insertion requires a recognized standalone argument position; ambiguous quote
-  or expansion contexts are rejected. Intentional eval/sh -c user commands can
-  reinterpret arguments and are outside this literal-insertion guarantee.
+  pane's captured working directory. At the user's explicit request, path/name
+  shortcuts insert raw text with no generated quotes, escaping or separator
+  spaces. Actual filename spaces and shell characters are preserved. This is
+  editor insertion, not a shell-literal guarantee: the whole draft is intentional
+  shell syntax only when explicitly submitted. Names that cannot be represented
+  exactly or contain control characters are rejected unchanged. Command text
+  is not logged. Editing never launches a terminal.
   Nonempty drafts are bound to their shell grammar: a late preference or picker
   change cannot reinterpret an inserted PowerShell path as cmd code. Clear the
   draft before selecting an incompatible grammar. Explicit POSIX elevation keeps
@@ -91,9 +183,13 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Version 15 includes window geometry and monitor identity in addition to tabs,
-  panel modes, bookmarks, fonts, command history, shortcuts, filters, editor,
-  viewer, archive, preview and filename-color choices, with v1–14 migration.
+  Supported schemas through version 25 include window geometry, monitor identity
+  and a validated integer panel split ratio,
+  typed Network tabs, panel modes, native and archive bookmarks, fonts, command history, shortcuts,
+  filters, editor, viewer, archive, preview size and filename-color choices. Earlier
+  schemas migrate with explicit defaults; unsupported fields and versions fail
+  atomically. Viewer options store presentation choices, never query text,
+  document contents or per-file reading positions.
   Shortcut settings accept only known semantic action
   IDs and bounded key chords, never executable commands. Duplicate, malformed and
   overlapping bindings fail validation atomically. Native editor/IME chords cannot be
@@ -187,6 +283,23 @@ queues verified copying. Native identities are opened and pinned when that job
 starts. An external rename before then is not a snapshot of the original namespace.
 Clipboard payloads are untrusted: at most 4096 paths and 4MiB, with whole-request
 rejection of malformed/NUL/relative data. No shell command parses a filename.
+Adopted native trees capture the exact acknowledged projection and selection,
+or the focused occurrence when no items are marked. Parent/context rows never
+grant clipboard authority. Copy/Cut share four capture permits with F5/F6, retain
+provider registrations and pass an opaque `CapturedClipboardFiles` source to the
+bounded native clipboard worker. That worker resolves and revalidates every
+native target after opening the native clipboard, checks cancellation and intent
+before publication, and retains ownership through the OS write. Navigation cancels
+pending work; it cannot retract a native write that already completed. Rejection,
+stale replies and shutdown retire captured owners on backend workers.
+
+Native clipboard entries are raw names, not frozen native identities or mutation
+proofs. Duplicate/ancestor occurrences remain subject to ordinary Paste preflight.
+Archive or mixed captures fail as a whole before publication; neither archive
+display strings nor temporary extraction paths are exported. Native tree Paste
+uses the captured panel root, not its focused child, and preserves the clipboard's
+Copy/Move intent and ordinary Move confirmation. This grants no archive writes.
+
 Copying is serial and conservative on all storage classes in this milestone;
 one copy job and one native I/O step run at a time across the copy queue, including
 source reads, destination writes and independent verification reads. Cancellation
@@ -198,15 +311,18 @@ copying; an SSD at the other endpoint does not override this. SSD-to-SSD copying
 also remains serial today.
 
 Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
-through the ordinary Copy route is rejected. Explicit native Move backend
-routes support at most 64 ordinary file roots and a conservative 4 MiB
-proof-path reservation; directory, link, archive-member, duplicate-source and unsupported
-location batches are rejected whole before publication. F6/Cut presentation is
-separate from this backend capability. Windows removes each source only after
-that file's complete verified copy, capture, writer-quiescence and final proof.
-Linux finalization is Unsupported before publication: a lease probe cannot safely
-exclude an in-flight old-name open, and forced lease breaks prevent an indefinite
-exclusion promise. Copy remains available without silent fallback.
+through the ordinary Copy route is rejected. Explicit native Move accepts at most
+64 ordinary file/directory roots with a conservative 4 MiB active proof-path
+reservation. Links, archive members, duplicate/overlapping sources and unsupported
+locations are rejected before mutation. Qualified same-volume native Move uses
+held source/destination identities and no-replace rename without content reads,
+CRC or SHA computation. Whole-directory rename does not enumerate descendants.
+Same-volume errors never silently fall back to copying. Proven cross-volume moves
+and explicit directory merges use the per-file proof and postorder directory
+contract below, with explicit live-namespace and durability limits. F6 consumes native tree
+captures as well as flat selections; native tree Cut publishes Move intent through
+the clipboard capture contract above. Cut itself removes nothing. Copy remains
+available where Move is unsupported, without silent fallback.
 Copy supports files and ordinary directories; links/special files are rejected.
 Conflicts show source and target metadata and accept versioned Skip, Skip all for
 this job, another name, explicit recoverable replacement, directory merge, or
@@ -242,51 +358,79 @@ failure even if publication succeeded.
 Explicit RequireModifiedTime accepts at most 64 distinct native regular-file roots
 within the 4 MiB proof-path reservation. It captures metadata from retained source
 handles before data reads and preflights every source pin and owned destination
-stage before content writes. After the full SHA-256/readback gate, the exact stage
+stage before content writes. After the selected content-verification gate, the exact stage
 modified time is set, synced and independently read back without rounding
 tolerance. Value-specific precision failures happen on unpublished stages after
 data verification; earlier completed files may remain, but such a failure prevents
 removal of that source and stops subsequent Move work. Unsupported directories, links and virtual sources never
 silently downgrade to ContentOnly. Source write attributes are not requested;
 Windows adds WRITE_ATTRIBUTES only to owned required-metadata stages.
-Source/destination times supplement, never replace, full Move hashes and fresh
-native read guards. Published targets are never rewritten to hide a mismatch;
-late errors retain originals in recovery. Access/creation time, attributes,
+Source/destination times supplement, never replace, the selected content checks
+and fresh native read guards. Published targets are never rewritten to hide a mismatch;
+late pre-deletion errors restore originals without replacement. Access/creation time, attributes,
 permissions, ACLs, xattrs, streams and link preservation remain separate features.
 
-Recoverable Move preflight obtains source mutation authority separately from Copy,
+Copy-fallback Move preflight obtains source mutation authority separately from Copy,
 retains every actual source reader and empty stage, and verifies native source
 parents are protected before copying the batch. Windows requests DELETE upfront
-only for Move and rejects incompatible sharing or unsafe parent DACLs. Linux
+only for Move and rejects incompatible sharing; recovery/copy-fallback qualification
+also rejects unsafe parent DACLs. Metadata-only native rename preparation does not
+require content-read or directory-list rights. Linux
 requires owned/trusted-sticky source parents and effective mutation permissions.
 Shared inherited directories can be unsupported even on a supported filesystem;
 the failure suggests Copy and retains every source rather than weakening rights.
 
+The following proof rules concern copied source removal, not native rename.
 Only complete successful publication with every required durability step yields
 a Move proof. Per the explicit user policy, each file finishes before the next
-copy: a single 256 KiB buffer independently rehashes its held source and destination,
-checks native revisions/required metadata and exact destination binding, then
-captures that source under its original raw basename in protected recovery.
+copy: full mode uses a bounded buffer to independently rehash its held source and destination;
+explicit quick mode instead compares exact length and three 64 KiB samples,
+or the whole file at or below 192 KiB. Both modes check native revisions/required
+metadata and exact destination binding before temporarily staging that source
+under its raw basename in a protected sibling.
 Windows refuses hardlinks, readonly files and any alternate stream not verified
 by Copy. A read-oplock probe rejects existing writable mappings; the original
-Move handle continues denying write sharing. A second complete source/destination
-hash pass retains fresh read guards through the explicit finalization check.
-Normal exact-handle delete disposition uses image-section checks, no POSIX unlink
-or readonly override. All application source owners close before copying the next
-file. Open external readers may delay storage reclamation; no measured physical
+Move handle continues denying write sharing. The final source/destination
+validation retains fresh read guards through the explicit finalization check;
+full mode hashes all bytes, while quick mode uses the same declared samples.
+Exact-handle POSIX delete disposition uses image-section checks and no readonly
+override. All application DELETE/source owners close, then empty-stage cleanup
+runs before the next file. External readers may retain bytes after namespace
+removal; no measured physical
 space or parent-entry power-loss durability is promised.
 
-A skip retains that source. Failure or cancellation retains unfinished originals,
-possibly in recovery after capture; earlier completed moves stay completed and
+A skip retains that source. Every pre-deletion failure or cancellation after
+staging attempts a no-replace restore with an independent cleanup token. A new
+original-name winner is never clobbered. Earlier completed moves stay completed and
 published destinations are never rolled back. Drop never finalizes retained data.
-Structured outcomes distinguish actual unlink/delete-pending from retained recovery
-and removal durability uncertainty. Linux capture remains no-replace rename plus
-identity inspection/restoration, not compare-ID unlink; its source finalization
-stays disabled until writer exclusion is enforceable. No platform promises an
-immutable snapshot or batch rollback. Raw recovery mappings and captured parents
-are reported with bounded display samples and exact counts; no automatic recovery
-catalogue or restoration journal exists. Directory/link/provider Move remains
-unfinished and is not enabled by a root capture alone.
+Success retains no source copy or empty temporary stage. Failed restoration or
+empty-stage cleanup preserves all remaining data and reports exact exceptional
+paths. Cleanup never recursively deletes unexpected entries. Structured outcomes
+distinguish removal from residuals and durability uncertainty. Linux uses no-replace
+temporary staging and live-validated directory-relative unlink for owned,
+single-link regular files on qualified local ext filesystems with protected
+parents. A read lease is retained from preflight through final content validation
+and removal. Existing writers/mappings or observed lease breaks, revisions or
+binding changes refuse removal. A bounded dedicated thread blocks only its own
+SIGIO and owns thread-directed lease notifications; no process-wide handler is
+installed. The kernel can forcibly break a lease after its timeout, so arbitrary
+descheduling between the final check and unlink across that timeout is not an
+atomicity guarantee. See [the native race evidence](docs/verification/2026-11-08-ordinary-move.md).
+Unsupported Linux locations fail before publication without fallback. No platform promises an
+immutable snapshot or batch rollback. Windows ADS sharing/oplocks apply per stream;
+late qualification refuses unseen streams but does not claim whole-file CAS or
+isolation from malicious same-user/admin mutation. Raw residual mappings and
+changed parents are reported with bounded display samples and exact counts.
+There is no selectable source recovery product, catalogue or journal. Recursive
+copy-fallback/merge Move grants each child separate source-removal authority through its
+held parent. Verified regular files are removed individually; directories are
+removed postorder only after fresh source/destination identity checks and an
+empty-directory-only OS operation. Skips retain the affected source ancestors.
+Overlapping selected roots are rejected before writes. Traversal is bounded to
+64 roots, 128 active directory frames, 100,000 entries and a 4 MiB active path/proof
+budget. Links, mount crossings and generic provider Move remain unsupported.
+Directory identity validation is live on Linux, not atomic compare-and-unlink;
+see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
 
 1. Only supported ordinary file types are copied. Opened file identities and
    source/destination alias checks are used; no unchecked traversal of recursive
@@ -294,10 +438,12 @@ unfinished and is not enabled by a root capture alone.
 2. Use an exclusively created temporary destination on the target filesystem.
    Handle short reads/writes, propagate errors and retain ownership through
    outstanding I/O and cancellation. Never delete the existing target first.
-3. Hash the exact source bytes read, using SHA-256 in this implementation. Complete and
-   synchronize the writes, then perform a separate full read of the destination.
-   Compare both lengths and cryptographic digests. Hashing the outgoing buffer
-   twice, checking timestamps or comparing sizes alone is insufficient.
+3. By default hash the exact source bytes using SHA-256, synchronize writes and
+   independently read/hash the entire destination; compare length and digest.
+   Explicit quick mode instead captures first/middle/last64 KiB during source
+   streaming and compares those bytes after sync, plus exact length. Up to192 KiB
+   is compared entirely. Checking only size or hashing an outgoing buffer twice
+   does not satisfy either policy. Native same-volume rename copies no data.
 4. Reject any detected source change. Source metadata checks do not prove a
    point-in-time snapshot against concurrent writers; a stronger snapshot promise
    requires supported write exclusion or filesystem snapshots. In particular,
@@ -425,11 +571,22 @@ Linux creation timestamps are not editable. Unsupported operations fail explicit
 
 ## File drag and drop
 
-Incoming and internal file drops enter the same copy service as clipboard paste,
-with independent SHA-256 destination readback and no source deletion. Outgoing
-drags offer Copy only; the receiving application owns the copy and its integrity
-checks. A native "accepted" response means admission to the queue, not a completed
-or verified copy. Drag/drop never grants overwrite, Move or Link permission.
+Incoming native drops enter the same Copy service as clipboard paste. Internal
+folder drops also support Move through the ordinary transfer service: the backend
+resolves exact entry/provider captures and volume evidence, never UI path strings.
+Automatic drops move on a proven same volume and otherwise copy; Ctrl forces Copy,
+Shift forces Move. The verification policy is frozen at submission. Native rename
+does not read file contents; other moves verify each copied file before deleting
+its source. Link effects are unsupported and overwrite still requires consent.
+Windows outgoing OLE offers Copy|Move. Only the receiving app performs an external
+Move; bounded performed/logical feedback never authorizes this source to delete
+files. Explicit unoptimized source-cleanup requests report retained sources;
+missing or inconsistent completion reports remain unconfirmed. Positive reports
+are target claims, not our independent verification. Linux X11/XWayland outgoing
+transport and native incoming transport on both platforms remain Copy-only.
+The receiving app owns its transfer and integrity checks. A native "accepted" response means queue
+admission, not completed or verified work. See the
+[current drag contract](docs/superpowers/specs/2026-11-10-folder-drag-and-native-handoff.md).
 
 The native callback validates its captured destination/navigation/geometry against
 the current shared snapshot and immediately reserves actual capacity in the same
@@ -456,7 +613,10 @@ lifetimes and shared drop regions are invalidated synchronously before hide/clos
 navigation, modal UI, resize and DPI changes invalidate stale regions. Input-grab
 release belongs to narrowly scoped, per-OS UI bridges; COM/X11 data transfer runs
 on the thread-affine backend actor. Windows COM sources/targets are non-agile so
-calls remain in that actor's message-pumped STA.
+calls remain in that actor's message-pumped STA. During DoDragDrop only, the actor
+attaches to the validated same-process window thread's input queue and detaches
+on every exit. Arming the exact drag token precedes releasing UI pointer capture;
+synthetic release callbacks cannot cancel that handoff.
 
 Linux uses a verified worker-owned XDND proxy. The host window's XDND advertisement
 is removed while the proxy is installed, preventing normal legacy sources from
@@ -471,7 +631,13 @@ explicitly offers Copy; a Move-only offer is rejected.
 The [plugin interface design](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
 defines the implementation boundary. Basic text/binary, source and Markdown viewers
 are separate removable libraries under the installation's `viewers/` root. The
-`filesystems/` providers and migration of the OS-native filesystem remain planned.
+`filesystems/` contains independent archive workers and separate Windows/Linux
+native libraries. Native panel Browse/Stat/Storage and native F3 capture require
+the installed native provider, with no built-in fallback on provider failure.
+Writes, watches and other explicit host services have not yet migrated to generic
+provider capabilities. The native host shares the same protected installation
+checks as the viewer host; optional ABI1.1 volume details preserve unavailable
+fields and conservative physical-device classifications.
 
 - Native plugins run with application authority. Neither a C ABI nor capability
   validation isolates malicious code, memory faults or a stuck native parser.

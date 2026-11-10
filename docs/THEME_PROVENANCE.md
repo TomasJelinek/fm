@@ -15,6 +15,12 @@ this is not a claim about a global popularity ranking.
 | Verdant Light | `14` / `verdant-light` | Original pale green/white surfaces, graphite text, forest-green controls and restrained lime accents. No brand name, logo, code or artwork is included. |
 | Catppuccin Latte | `15` / `catppuccin-latte` | [catppuccin/catppuccin, commit d09787d](https://github.com/catppuccin/catppuccin/tree/d09787dd98ca6fba08af5ef2ae94a7e09f17daca), Latte reference palette; MIT, Copyright (c) 2021 Catppuccin. [Retained license](licenses/themes/catppuccin/LICENSE). |
 | Rosé Pine Dawn | `16` / `rose-pine-dawn` | Dawn variant from the same pinned Rosé Pine source and MIT license above. Warm paper surfaces, rose focus, pine folders and violet secondary accents. |
+| Paper Contrast | `17` / `paper-contrast` | Original cool paper, ink-blue text and blue-gray selection. |
+| Sandstone Contrast | `18` / `sandstone-contrast` | Original warm ivory, dark umber text and sand selection. |
+| Deep Ocean | `19` / `deep-ocean` | Original deep navy, pale cyan accents and warm selection markers. |
+| Graphite Contrast | `20` / `graphite-contrast` | Original graphite and plum surfaces, warm white text and peach accents. |
+| High Contrast Dark | `21` / `high-contrast-dark` | Original black/white palette with pale cyan folders and pale yellow selection markers. |
+| High Contrast Light | `22` / `high-contrast-light` | Original white/black palette with very dark semantic accents. |
 
 The removed `dos-commander` saved name is accepted only as a migration alias for
 Amber Terminal. Saving writes `amber-terminal`; DOS Commander is no longer a
@@ -38,3 +44,33 @@ is embedded. Existing native file icons keep their operating-system colors.
 Release packaging includes this record and all four retained licenses under
 `licenses/themes/`. The Cargo dependency inventory is unchanged by these palette
 additions because no dependency or feature selection changed.
+
+## Contrast additions, 9 November 2026
+
+The six contrast palettes are original semantic color choices. They include no
+third-party theme code, art, font or copied palette, so no new dependency, license
+or distribution notice is needed. Existing palette licenses remain unchanged.
+IDs 0–16 and their saved names retain their existing meanings.
+
+The preceding catalog's tested row text minima ranged from 4.58:1 to 6.73:1.
+An expanded audit also checks muted helper text on application surfaces, headers
+and hover states. Nine existing palettes needed stronger muted tokens; their
+other colors and identities are unchanged. The shared top toolbar now uses the
+semantic header color, including in light palettes whose control surface is white.
+
+Paper Contrast, Sandstone Contrast, Deep Ocean and Graphite Contrast target at
+least 7:1 for semantic row and control text. Both High Contrast palettes target
+at least 12:1, including helper text, while their primary black/white text reaches
+21:1. Selection and focus edges retain at least 3:1 against adjacent row fills.
+The selected row has a side stripe and stronger text weight; a selected cursor
+also has a top line. Those shapes preserve the distinction without requiring
+recognition of cyan/yellow or another color pair.
+
+The targets follow the W3C explanations of
+[enhanced text contrast](https://www.w3.org/WAI/WCAG22/Understanding/contrast-enhanced.html),
+[non-text contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html),
+and [use of color](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html).
+This is a semantic palette contract, not a whole-application WCAG conformance
+claim. Native file artwork and Slint's built-in widget styling retain their
+native light/dark behavior; user-defined filename colors have their separate
+contrast policy. Font size and touch density remain independent choices.

@@ -1,6 +1,14 @@
 import { Theme } from "theme.slint";
 import { NativeActionImage } from "action-icons.slint";
 import { ErrorGlyph } from "error-notice.slint";
+import { DialogResizeEdge } from "dialog-resize.slint";
+import { CloseButton } from "close-button.slint";
+
+// Each top-level native dialog sets this in its own component context. Its OS
+// titlebar supplies movement, resizing and X; embedded dialogs keep this header.
+export global DialogWindowStyle {
+    in-out property <bool> native-titlebar;
+}
 
 // A viewport-sized popup keeps its native lifetime and focus. Only the inner
 // rectangle moves: embedded Slint popups do not track x/y-only changes reliably.
@@ -9,32 +17,104 @@ export component DialogFrame inherits Rectangle {
     in property <length> desired-height;
     in property <bool> dismiss-on-outside;
     in property <bool> dim;
+    in property <length> minimum-body-width: 280px;
+    in property <length> minimum-body-height: 180px;
     callback dismiss();
     private property <length> offset-x;
     private property <length> offset-y;
+    private property <length> requested-width: -1px;
+    private property <length> requested-height: -1px;
+    private property <length> available-width: max(0px, root.width - 2 * root.margin);
+    private property <length> available-height: max(0px, root.height - 2 * root.margin);
+    private property <bool> resizing;
+    private property <int> resize-horizontal;
+    private property <int> resize-vertical;
+    private property <length> resize-left;
+    private property <length> resize-top;
+    private property <length> resize-width;
+    private property <length> resize-height;
     private property <length> margin: root.width < 400px || root.height < 280px ? 4px : 12px;
-    out property <length> body-width: min(root.desired-width, max(0px, root.width - 2 * root.margin));
-    out property <length> body-height: min(root.desired-height, max(0px, root.height - 2 * root.margin));
+    out property <length> body-width: min(root.requested-width < 0px ? root.desired-width : root.requested-width, root.available-width);
+    out property <length> body-height: min(root.requested-height < 0px ? root.desired-height : root.requested-height, root.available-height);
     out property <length> body-left: clamp((root.width - root.body-width) / 2 + root.offset-x,
         root.margin, max(root.margin, root.width - root.body-width - root.margin));
     out property <length> body-top: clamp((root.height - root.body-height) / 2 + root.offset-y,
         root.margin, max(root.margin, root.height - root.body-height - root.margin));
     min-width: 0px; min-height: 0px;
     background: root.dim ? #00000060 : transparent;
-    public function reset() { root.offset-x = 0px; root.offset-y = 0px; }
+    changed width => { root.resizing = false; }
+    changed height => { root.resizing = false; }
+    public function reset() {
+        root.offset-x = 0px; root.offset-y = 0px;
+        root.requested-width = -1px; root.requested-height = -1px;
+        root.resizing = false;
+    }
     public function move-by(dx: length, dy: length) {
+        root.resizing = false;
         root.offset-x = clamp(root.body-left + dx, root.margin,
             max(root.margin, root.width - root.body-width - root.margin)) - (root.width - root.body-width) / 2;
         root.offset-y = clamp(root.body-top + dy, root.margin,
             max(root.margin, root.height - root.body-height - root.margin)) - (root.height - root.body-height) / 2;
     }
+    function begin-resize(horizontal: int, vertical: int) {
+        root.resize-horizontal = horizontal; root.resize-vertical = vertical;
+        root.resize-left = root.body-left; root.resize-top = root.body-top;
+        root.resize-width = root.body-width; root.resize-height = root.body-height;
+        root.resizing = true;
+    }
+    function resize-by(dx: length, dy: length) {
+        if !root.resizing { return; }
+        let right = root.resize-left + root.resize-width;
+        let bottom = root.resize-top + root.resize-height;
+        let max-width = max(0px, root.resize-horizontal < 0
+            ? right - root.margin : root.width - root.margin - root.resize-left);
+        let max-height = max(0px, root.resize-vertical < 0
+            ? bottom - root.margin : root.height - root.margin - root.resize-top);
+        let width = root.resize-horizontal == 0 ? root.resize-width
+            : clamp(root.resize-width + root.resize-horizontal * dx,
+                min(root.minimum-body-width, max-width), max-width);
+        let height = root.resize-vertical == 0 ? root.resize-height
+            : clamp(root.resize-height + root.resize-vertical * dy,
+                min(root.minimum-body-height, max-height), max-height);
+        let left = root.resize-horizontal < 0 ? right - width : root.resize-left;
+        let top = root.resize-vertical < 0 ? bottom - height : root.resize-top;
+        root.requested-width = width; root.requested-height = height;
+        root.offset-x = left - (root.width - width) / 2;
+        root.offset-y = top - (root.height - height) / 2;
+    }
     TouchArea { clicked => { if root.dismiss-on-outside { root.dismiss(); } } }
     body := Rectangle {
         x: root.body-left; y: root.body-top;
         width: root.body-width; height: root.body-height;
+        clip: true;
         // Blank body areas must never activate the outside-dismiss surface.
         TouchArea {}
         @children
+        Path {
+            x: parent.width - 12px; y: parent.height - 12px;
+            width: 9px; height: 9px; viewbox-width: 10; viewbox-height: 10;
+            commands: "M 1 9 L 9 1 M 5 9 L 9 5";
+            stroke: Theme.secondary-text; stroke-width: 1px;
+        }
+        for edge in [
+            { horizontal: -1, vertical: 0 }, { horizontal: 1, vertical: 0 },
+            { horizontal: 0, vertical: -1 }, { horizontal: 0, vertical: 1 },
+            { horizontal: -1, vertical: -1 }, { horizontal: 1, vertical: -1 },
+            { horizontal: -1, vertical: 1 }, { horizontal: 1, vertical: 1 },
+        ] : DialogResizeEdge {
+            private property <length> corner: Theme.touch ? 20px : 12px;
+            private property <length> thickness: Theme.touch ? 10px : 6px;
+            horizontal: edge.horizontal; vertical: edge.vertical;
+            x: edge.horizontal == 0 ? self.corner : edge.horizontal < 0 ? 0px : parent.width - self.width;
+            y: edge.vertical == 0 ? self.corner : edge.vertical < 0 ? 0px : parent.height - self.height;
+            width: edge.horizontal == 0 ? max(0px, parent.width - 2 * self.corner)
+                : edge.vertical == 0 ? self.thickness : self.corner;
+            height: edge.vertical == 0 ? max(0px, parent.height - 2 * self.corner)
+                : edge.horizontal == 0 ? self.thickness : self.corner;
+            begin(horizontal, vertical) => { root.begin-resize(horizontal, vertical); }
+            resize-by(dx, dy) => { root.resize-by(dx, dy); }
+            finish => { root.resizing = false; }
+        }
     }
 }
 
@@ -48,24 +128,34 @@ export component DialogHeader inherits Rectangle {
     in property <bool> error;
     in property <length> text-size: max(20px, Theme.font-size + 4px);
     callback dragged(length, length);
-    height: max(root.compact ? 28px : 36px, root.text-size + 6px);
+    callback close();
+    in property <string> close-label: "Cancel dialog";
+    private property <length> close-size: max(root.compact ? 26px : 30px, Theme.font-size + 8px);
+    visible: !DialogWindowStyle.native-titlebar;
+    height: root.visible ? max(root.compact ? 28px : 36px, root.text-size + 6px, root.close-size) : 0px;
     min-width: 0px;
     HorizontalLayout {
+        x: 0px; y: 0px;
+        width: max(0px, parent.width - root.close-size - 8px);
         spacing: 10px; cross-axis-alignment: center;
         if root.error : ErrorGlyph {}
-        if root.native-icon.width > 0 || root.fallback-icon.width > 0 : NativeActionImage {
+        if !root.error && (root.native-icon.width > 0 || root.fallback-icon.width > 0) : NativeActionImage {
             native-icon: root.native-icon; fallback-icon: root.fallback-icon;
             width: root.compact ? 24px : 32px; height: self.width;
         }
         Text {
             text: root.title; color: root.foreground; font-size: root.text-size;
             font-weight: 600; overflow: elide; horizontal-stretch: 1;
+            vertical-alignment: center;
         }
         if root.detail != "" && root.width > 400px : Text {
             text: root.detail; color: Theme.secondary-text; font-size: Theme.small-font;
+            vertical-alignment: center;
         }
     }
     TouchArea {
+        x: 0px; y: 0px;
+        width: max(0px, parent.width - root.close-size - 8px);
         private property <length> anchor-x;
         private property <length> anchor-y;
         private property <bool> dragging;
@@ -80,5 +170,11 @@ export component DialogHeader inherits Rectangle {
         moved => {
             if self.pressed && self.dragging { root.dragged(self.mouse-x - self.anchor-x, self.mouse-y - self.anchor-y); }
         }
+    }
+    CloseButton {
+        x: parent.width - self.width; y: (parent.height - self.height) / 2;
+        width: root.close-size; height: root.close-size;
+        label: root.close-label;
+        clicked => { root.close(); }
     }
 }

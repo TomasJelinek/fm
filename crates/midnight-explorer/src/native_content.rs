@@ -1,7 +1,13 @@
 //! Shared application content authority. Factories defer all provider work to backend jobs.
 use midnight_native_filesystem_host::InstalledProvider;
 use midnight_thumbnail_host::service;
-use std::{io, path::PathBuf, sync::Arc, sync::atomic::Ordering};
+use std::{
+    collections::VecDeque,
+    io,
+    path::PathBuf,
+    sync::atomic::Ordering,
+    sync::{Arc, Mutex},
+};
 
 pub(crate) type Capture = midnight_viewer_engine::NativeCapture;
 
@@ -25,6 +31,65 @@ pub(crate) fn factory(filesystem: Arc<InstalledProvider>) -> Capture {
         filesystem
             .capture(path, &|| cancel.load(Ordering::Acquire))
             .map_err(|failure| format!("Native filesystem: {failure}"))
+    })
+}
+
+/// Viewer-only asset authority. Main content always comes from the installed filesystem plugin.
+/// Parent directory pins are shared across prefetched panel files, at most sixteen cache entries.
+pub(crate) fn factory_with_resources(
+    filesystem: Arc<InstalledProvider>,
+    directories: Arc<dyn midnight_core::TransferService>,
+) -> Capture {
+    type Directory = Arc<dyn midnight_core::TransferDirectory>;
+    let cache = Mutex::new(VecDeque::<(PathBuf, Directory)>::new());
+    Arc::new(move |path, cancel| {
+        let main = filesystem
+            .capture(path, &|| cancel.load(Ordering::Acquire))
+            .map_err(|failure| format!("Native filesystem: {failure}"))?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("Viewer closed".into());
+        }
+        let Some(parent) = path.parent() else {
+            return Ok(main);
+        };
+        // This is the original selected native parent, never CapturedFile.path() or a display name.
+        let cached = cache.lock().ok().and_then(|entries| {
+            entries
+                .iter()
+                .find(|(key, _)| key == parent)
+                .map(|(_, directory)| directory.clone())
+        });
+        let cancelled = midnight_core::Cancellation::default();
+        let directory = if let Some(directory) = cached
+            && directory.revalidate(&cancelled).is_ok()
+        {
+            Some(directory)
+        } else {
+            let prepared = directories
+                .prepare_checksum_directory(parent, &cancelled)
+                .ok();
+            if let Some(directory) = &prepared
+                && let Ok(mut entries) = cache.lock()
+            {
+                entries.retain(|(key, _)| key != parent);
+                entries.push_back((parent.to_path_buf(), directory.clone()));
+                while entries.len() > 16 {
+                    entries.pop_front();
+                }
+            }
+            prepared
+        };
+        if cancel.load(Ordering::Acquire) {
+            return Err("Viewer closed".into());
+        }
+        match directory.and_then(|directory| {
+            midnight_viewer_engine::captured_directory_resources(directory, main.clone()).ok()
+        }) {
+            Some(resources) => Ok(main.with_resources(resources)),
+            // A denied/unavailable scope never gains a native path fallback. The main document
+            // remains readable; the web broker reports unavailable relative resources on lookup.
+            None => Ok(main),
+        }
     })
 }
 

@@ -1,5 +1,5 @@
 use crate::Error;
-use std::{io, os::windows::ffi::OsStrExt, path::Path, ptr};
+use std::{io, os::windows::ffi::OsStrExt, path::Path, ptr, sync::OnceLock};
 use windows_sys::Win32::{
     Foundation::{GENERIC_ALL, GENERIC_WRITE, LocalFree},
     Security::{Authorization::*, *},
@@ -43,6 +43,52 @@ struct Identity {
     user: Vec<u64>,
     installer: [u32; 17],
 }
+
+fn cached_installer_sid(
+    cache: &OnceLock<[u32; 17]>,
+    resolve: impl FnOnce() -> Result<[u32; 17], Error>,
+) -> Result<[u32; 17], Error> {
+    if let Some(sid) = cache.get() {
+        return Ok(*sid);
+    }
+    // Only the fixed service's successfully resolved identifier is immutable.
+    // Never retain a token, descriptor, path decision, or failed resolution here.
+    let resolved = resolve()?;
+    Ok(*cache.get_or_init(|| resolved))
+}
+
+fn installer_sid() -> Result<[u32; 17], Error> {
+    static INSTALLER: OnceLock<[u32; 17]> = OnceLock::new();
+    cached_installer_sid(&INSTALLER, || {
+        let mut installer = [0u32; 17];
+        let mut length = 68;
+        let mut domain = [0u16; 256];
+        let mut domain_len = 256;
+        let mut kind = 0;
+        let name: Vec<_> = "NT SERVICE\\TrustedInstaller"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        // Resolve the fixed OS service SID locally; arbitrary account owners are not trusted.
+        // SAFETY: terminated local account name and correctly sized writable native outputs.
+        if unsafe {
+            LookupAccountNameW(
+                ptr::null(),
+                name.as_ptr(),
+                installer.as_mut_ptr().cast(),
+                &mut length,
+                domain.as_mut_ptr(),
+                &mut domain_len,
+                &mut kind,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(installer)
+    })
+}
+
 impl Identity {
     fn current() -> Result<Self, Error> {
         use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -66,31 +112,10 @@ impl Identity {
         {
             return Err(io::Error::last_os_error().into());
         }
-        let mut installer = [0u32; 17];
-        let mut length = 68;
-        let mut domain = [0u16; 256];
-        let mut domain_len = 256;
-        let mut kind = 0;
-        let name: Vec<_> = "NT SERVICE\\TrustedInstaller"
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
-        // Resolve the OS service SID locally; arbitrary service/account owners are not trusted.
-        if unsafe {
-            LookupAccountNameW(
-                ptr::null(),
-                name.as_ptr(),
-                installer.as_mut_ptr().cast(),
-                &mut length,
-                domain.as_mut_ptr(),
-                &mut domain_len,
-                &mut kind,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error().into());
-        }
-        Ok(Self { user, installer })
+        Ok(Self {
+            user,
+            installer: installer_sid()?,
+        })
     }
     fn user_sid(&self) -> PSID {
         // SAFETY: GetTokenInformation initialized the aligned TOKEN_USER and its contained SID.
@@ -260,6 +285,147 @@ pub(crate) fn protect_fixture(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_installer_sid_reuses_success_and_retries_failed_resolution() {
+        let cache = OnceLock::new();
+        let calls = std::cell::Cell::new(0);
+        assert!(
+            cached_installer_sid(&cache, || {
+                calls.set(calls.get() + 1);
+                Err(Error("transient account lookup failure".into()))
+            })
+            .is_err()
+        );
+        assert!(
+            cache.get().is_none(),
+            "failed account resolution must remain retryable"
+        );
+        let expected = [42; 17];
+        for _ in 0..4 {
+            assert_eq!(
+                cached_installer_sid(&cache, || {
+                    calls.set(calls.get() + 1);
+                    Ok(expected)
+                })
+                .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            calls.get(),
+            2,
+            "only failure and first success should resolve the fixed SID"
+        );
+    }
+
+    #[test]
+    fn warmed_identity_still_rechecks_file_and_ancestor_permissions() {
+        let base =
+            std::env::var_os("HOST_TEST_INSTALL_ROOT").expect("secure HOST_TEST_INSTALL_ROOT");
+        let root = tempfile::tempdir_in(base).unwrap();
+        protect_fixture(root.path()).unwrap();
+        let child = root.path().join("private");
+        std::fs::create_dir(&child).unwrap();
+        protect_fixture(&child).unwrap();
+        let file = child.join("library.dll");
+        std::fs::write(&file, b"fixture").unwrap();
+        let file = file.canonicalize().unwrap();
+        for _ in 0..4 {
+            crate::validate_plugin_path(&file).unwrap();
+        }
+        fixture_acl(&file, "D:P(A;;FA;;;WD)").unwrap();
+        let file_error = crate::validate_plugin_path(&file).unwrap_err();
+        assert!(file_error.to_string().contains("writable or replaceable"));
+        protect_fixture(&file).unwrap();
+        crate::validate_plugin_path(&file).unwrap();
+        fixture_acl(root.path(), "D:P(A;OICI;FA;;;WD)").unwrap();
+        let ancestor_error = crate::validate_plugin_path(&file).unwrap_err();
+        assert!(
+            ancestor_error
+                .to_string()
+                .contains("writable or replaceable")
+        );
+        protect_fixture(root.path()).unwrap();
+        crate::validate_plugin_path(&file).unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual cold/warm Windows trust attribution; requires private fixture root"]
+    fn profile_trust_validation() {
+        use std::time::Instant;
+        fn measure(name: &str, mut operation: impl FnMut()) {
+            let mut samples = Vec::new();
+            for _ in 0..50 {
+                let start = Instant::now();
+                operation();
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            let first = samples[0];
+            let sum: f64 = samples.iter().sum();
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "TRUST name={name} count=50 total_ms={sum:.3} first_ms={first:.3} median_ms={:.3}",
+                samples[25]
+            );
+        }
+        measure("trusted_installer_lookup", || {
+            let mut installer = [0u32; 17];
+            let mut length = 68;
+            let mut domain = [0u16; 256];
+            let mut domain_len = 256;
+            let mut kind = 0;
+            let name: Vec<_> = "NT SERVICE\\TrustedInstaller"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            // SAFETY: local account lookup with terminated name and correctly sized outputs.
+            assert_ne!(
+                unsafe {
+                    LookupAccountNameW(
+                        ptr::null(),
+                        name.as_ptr(),
+                        installer.as_mut_ptr().cast(),
+                        &mut length,
+                        domain.as_mut_ptr(),
+                        &mut domain_len,
+                        &mut kind,
+                    )
+                },
+                0,
+                "{}",
+                io::Error::last_os_error()
+            );
+        });
+        measure("fresh_identity", || {
+            std::hint::black_box(Identity::current().unwrap());
+        });
+        let base =
+            std::env::var_os("HOST_TEST_INSTALL_ROOT").expect("secure HOST_TEST_INSTALL_ROOT");
+        let root = tempfile::tempdir_in(base).unwrap();
+        protect_fixture(root.path()).unwrap();
+        let file = root.path().join("library.dll");
+        std::fs::write(&file, b"fixture").unwrap();
+        check(&file).unwrap();
+        let identity = Identity::current().unwrap();
+        println!("TRUST ancestors={}", file.ancestors().count());
+        measure("acl_ancestor_walk", || {
+            for (index, path) in file.ancestors().enumerate() {
+                check_one(
+                    path,
+                    &identity,
+                    if index == 0 {
+                        MODIFY_RIGHTS
+                    } else {
+                        RENAME_RIGHTS
+                    },
+                )
+                .unwrap();
+            }
+        });
+        measure("complete_check", || check(&file).unwrap());
+    }
+
     #[test]
     fn shared_writable_installation_root_is_rejected() {
         let base =

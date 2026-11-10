@@ -26,6 +26,11 @@ impl Reply {
             completion: None,
         })
     }
+    /// When publication loses a race with mount closure or refresh, the completion
+    /// may return `StaleReference` from `completion(true)` ONLY after fully rolling
+    /// back the unpublished resources. The SDK releases the encoded buffer and
+    /// reports `UNKNOWN_HANDLE` without poisoning unrelated mounts. Every other
+    /// error, and any failure of `completion(false)`, shuts down admission.
     pub fn owned(
         response: Response,
         completion: impl FnOnce(bool) -> Result<(), Failure> + Send + 'static,

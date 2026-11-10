@@ -5,6 +5,7 @@ use midnight_core::{
     FolderSize, FsError,
 };
 use std::{
+    io,
     mem::size_of,
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
@@ -14,7 +15,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const PENDING_PATH_BUDGET: usize = 16 * 1024 * 1024;
 
 mod batched;
+mod warnings;
+use crate::size_warnings::ReportLog;
 pub(crate) use batched::{IoBudget, compute_batched};
+use warnings::ScanReport;
 
 /// Local adapter contract permits a borrowed, scoped scheduling wrapper without
 /// adding a 'static requirement to its filesystem reference.
@@ -60,12 +64,13 @@ fn compute_with_budget(
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
     pending_path_budget: usize,
 ) {
+    let report = ReportLog::for_scan();
     for root in roots {
         if cancel.is_cancelled() {
             return;
         }
         if root.kind == EntryKind::Directory
-            && !scan_root(filesystem, root, cancel, emit, pending_path_budget)
+            && !scan_root(filesystem, root, cancel, emit, pending_path_budget, &report)
         {
             return;
         }
@@ -81,9 +86,14 @@ fn scan_root<F: ScanSource + ?Sized>(
     cancel: &Cancellation,
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
     pending_path_budget: usize,
+    report: &ReportLog,
 ) -> bool {
+    if cancel.is_cancelled() {
+        return false;
+    }
+    let report = ScanReport::new(report);
     let mut size = FolderSize::default();
-    if !emit(root.id, size) {
+    if !emit(root.id, size.clone()) {
         return false;
     }
     let mut last_progress = Instant::now();
@@ -94,6 +104,8 @@ fn scan_root<F: ScanSource + ?Sized>(
     while let Some(directory) = pending.pop() {
         pending_bytes = pending_bytes.saturating_sub(path_cost(&directory));
         if cancel.is_cancelled() {
+            report.finish(&mut size, true);
+            emit(root.id, size);
             return false;
         }
         let result = filesystem.read_directory(&directory, cancel, &mut |entry| {
@@ -101,7 +113,7 @@ fn scan_root<F: ScanSource + ?Sized>(
                 return false;
             }
             if !is_immediate_child(&directory, &entry.path) {
-                size.errors = size.errors.saturating_add(1);
+                report.issue(&mut size, &entry.path, "validate directory entry", io::ErrorKind::InvalidData, "Provider returned a path outside the immediate directory");
             } else {
                 match entry.kind {
                     EntryKind::Directory => {
@@ -115,21 +127,27 @@ fn scan_root<F: ScanSource + ?Sized>(
                             pending_bytes = pending_bytes.saturating_add(cost);
                             pending.push(entry.path);
                         } else {
-                            size.errors = size.errors.saturating_add(1);
+                            report.issue(&mut size, &entry.path, "queue directory", io::ErrorKind::OutOfMemory, "Directory frontier budget exhausted; this subtree was not counted");
                         }
                     }
                     EntryKind::File => match filesystem.entry_metadata(&entry.path) {
                         Ok(metadata) => match metadata.size {
                             Some(bytes) => {
-                                add_checked(&mut size.bytes, bytes, &mut size.errors);
-                                add_checked(&mut size.files, 1, &mut size.errors);
+                                if !add_checked(&mut size.bytes, bytes) {
+                                    report.issue(&mut size, &entry.path, "sum file lengths", io::ErrorKind::InvalidData, "Total byte count exceeds the supported integer range");
+                                }
+                                if !add_checked(&mut size.files, 1) {
+                                    report.issue(&mut size, &entry.path, "count files", io::ErrorKind::InvalidData, "File count exceeds the supported integer range");
+                                }
                             }
-                            None => size.errors = size.errors.saturating_add(1),
+                            None => report.issue(&mut size, &entry.path, "read file length", io::ErrorKind::InvalidData, "Provider metadata did not contain a file length"),
                         },
-                        Err(_) => size.errors = size.errors.saturating_add(1),
+                        Err(error) => report.provider_error(&mut size, &error, cancel),
                     },
                     EntryKind::Symlink | EntryKind::DirectoryLink => {
-                        add_checked(&mut size.skipped_links, 1, &mut size.errors);
+                        if !add_checked(&mut size.skipped_links, 1) {
+                            report.issue(&mut size, &entry.path, "count skipped links", io::ErrorKind::InvalidData, "Skipped link count exceeds the supported integer range");
+                        }
                     }
                     EntryKind::Other => {}
                 }
@@ -138,26 +156,35 @@ fn scan_root<F: ScanSource + ?Sized>(
                 return false;
             }
             if last_progress.elapsed() >= PROGRESS_INTERVAL {
-                receiver_open = emit(root.id, size);
+                report.publish(&mut size);
+                receiver_open = emit(root.id, size.clone());
                 last_progress = Instant::now();
             }
             receiver_open
         });
-        if cancel.is_cancelled() || !receiver_open {
+        if let Err(error) = result {
+            report.provider_error(&mut size, &error, cancel);
+        }
+        if !receiver_open {
             return false;
         }
-        if result.is_err() {
-            size.errors = size.errors.saturating_add(1);
+        if cancel.is_cancelled() {
+            report.finish(&mut size, true);
+            emit(root.id, size);
+            return false;
         }
         if last_progress.elapsed() >= PROGRESS_INTERVAL {
-            if !emit(root.id, size) {
+            report.publish(&mut size);
+            if !emit(root.id, size.clone()) {
                 return false;
             }
             last_progress = Instant::now();
         }
     }
-    size.finished = true;
-    !cancel.is_cancelled() && emit(root.id, size)
+    let cancelled = cancel.is_cancelled();
+    report.finish(&mut size, cancelled);
+    let accepted = emit(root.id, size);
+    !cancelled && accepted
 }
 
 fn path_cost(path: &Path) -> usize {
@@ -172,12 +199,15 @@ fn is_immediate_child(directory: &Path, child: &Path) -> bool {
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
-fn add_checked(counter: &mut u64, amount: u64, errors: &mut u64) {
+fn add_checked(counter: &mut u64, amount: u64) -> bool {
     match counter.checked_add(amount) {
-        Some(value) => *counter = value,
+        Some(value) => {
+            *counter = value;
+            true
+        }
         None => {
             *counter = u64::MAX;
-            *errors = errors.saturating_add(1);
+            false
         }
     }
 }
@@ -185,3 +215,7 @@ fn add_checked(counter: &mut u64, amount: u64, errors: &mut u64) {
 #[cfg(test)]
 #[path = "folder_sizes/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "folder_sizes/warning_tests.rs"]
+mod warning_tests;

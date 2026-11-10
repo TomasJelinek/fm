@@ -31,6 +31,26 @@ fn ready(source: &Path, directory: &Path) -> VerifiedFileCopy {
     copy
 }
 #[test]
+fn read_retry_seeks_the_retained_source_and_rejects_invalid_offsets_and_cancellation() {
+    let temp = fixture();
+    let path = temp.path().join("retry 文档");
+    fs::write(&path, b"abcdef").unwrap();
+    let cancel = Cancellation::default();
+    let mut source = WindowsFileSystem::new(None)
+        .prepare_transfer_source(&path, &cancel)
+        .unwrap();
+    assert!(source.supports_read_retry());
+    let mut bytes = [0; 4];
+    assert_eq!(source.read_chunk(&mut bytes, &cancel).unwrap(), 4);
+    source.retry_read_from(2, &cancel).unwrap();
+    assert_eq!(source.read_chunk(&mut bytes, &cancel).unwrap(), 4);
+    assert_eq!(&bytes, b"cdef");
+    assert!(source.retry_read_from(7, &cancel).is_err());
+    cancel.cancel();
+    assert!(source.retry_read_from(0, &cancel).is_err());
+    assert_eq!(fs::read(path).unwrap(), b"abcdef");
+}
+#[test]
 fn verifies_bytes_before_unicode_publication_and_never_removes_source() {
     let temp = fixture();
     let source = temp.path().join("source 🦀.bin");

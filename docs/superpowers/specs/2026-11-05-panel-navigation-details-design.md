@@ -38,7 +38,8 @@ The requested numbered tab shortcuts take precedence over Salamander assignments
   Unknown values remain unknown; partial directory totals remain visibly partial.
   Each field is hoverable and clicking copies its full displayed value through
   the backend clipboard service. Filename elision does not truncate copied text.
-- Group Options into Panel, Appearance and Command topics. Retain theme/font,
+- Group panel and command-line controls under General (10 November refinement),
+  with separate Appearance and Keyboard pages. Retain theme/font,
   Desktop/Touch density, search filtering and existing save/error behavior.
 - Put folder tabs below the drive toolbar. Ctrl+Shift+1…9 selects that numbered
   tab in the focused pane; missing tabs are a no-op. This supersedes numbered

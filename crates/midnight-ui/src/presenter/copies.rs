@@ -3,9 +3,16 @@ use super::*;
 
 #[derive(Default)]
 pub(crate) struct CopiesState {
+    pub(super) selection: copy_selection::CopySelections,
     pub(crate) draft: Option<copy_dialog::CopyDraft>,
+    pub(super) tree_pending: Option<tree_copy::Pending>,
     pub(crate) progress: Vec<Arc<CopyProgress>>,
     pub(crate) conflicts: Vec<Arc<CopyConflict>>,
+    pub(crate) failures: Vec<Arc<CopyFailure>>,
+    pub(super) decision_versions: HashMap<OperationId, u64>,
+    pub(super) deferred_decisions: HashSet<(OperationId, u64)>,
+    pub(super) selected_decision: Option<(OperationId, u64)>,
+    pub(super) automatic_jobs: automatic_jobs::AutomaticJobs,
 }
 
 impl Presenter {
@@ -21,11 +28,13 @@ impl Presenter {
         }
         let requested_roots = clipboard.paths.len() as u64;
         let target = destination.clone();
+        let verification = self.transfer_verification();
         self.submit_copy(
             destination,
             requested_roots,
             move |id| {
                 Command::EnqueueCopy(CopyRequest {
+                    verification,
                     id,
                     clipboard,
                     destination: target,
@@ -96,12 +105,10 @@ impl Presenter {
             return false;
         }
         self.operations.next_id = id.0;
-        self.copies.progress.push(Arc::new(CopyProgress::queued(
-            id,
-            destination,
-            requested_roots,
-            intent,
-        )));
+        self.track_copy_selection(id);
+        let mut progress = CopyProgress::queued(id, destination, requested_roots, intent);
+        progress.verification = self.transfer_verification();
+        self.copies.progress.push(Arc::new(progress));
         true
     }
 
@@ -112,6 +119,10 @@ impl Presenter {
         name: String,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if token.starts_with("copy-error:") {
+            self.decide_copy_failure(token, choice, send);
+            return;
+        }
         let Some(index) = self
             .copies
             .conflicts
@@ -138,12 +149,18 @@ impl Presenter {
             7 if conflict.can_merge => CopyChoice::Merge { all: true },
             _ => return,
         };
+        let id = conflict.id;
+        let cancelling = matches!(choice, CopyChoice::Cancel);
         if send(Command::DecideCopy(CopyDecision {
             id: conflict.id,
             version: conflict.version,
             choice,
         })) {
             self.copies.conflicts.remove(index);
+            self.copies.selected_decision = None;
+            if cancelling {
+                self.mark_copy_cancel_requested(id);
+            }
         }
     }
 
@@ -165,7 +182,21 @@ impl Presenter {
             .any(|p| p.id == id && !p.state.is_terminal())
             && send(Command::CancelCopy(id))
         {
+            self.mark_copy_cancel_requested(id);
             self.copies.conflicts.retain(|conflict| conflict.id != id);
+            self.copies.failures.retain(|failure| failure.id != id);
+            self.copies.deferred_decisions.retain(|(job, _)| *job != id);
+        }
+    }
+
+    pub(super) fn mark_copy_cancel_requested(&mut self, id: OperationId) {
+        if let Some(progress) = self
+            .copies
+            .progress
+            .iter_mut()
+            .find(|progress| progress.id == id && !progress.state.is_terminal())
+        {
+            Arc::make_mut(progress).state = CopyOperationState::CancelRequested;
         }
     }
 
@@ -174,40 +205,49 @@ impl Presenter {
             return Some(event);
         };
         match event {
+            CopyEvent::RootCompleted { id, source } => self.complete_copy_selection(id, source),
             CopyEvent::Conflict(conflict) => {
-                if !self.operations.closing
-                    && self
-                        .copies
-                        .progress
-                        .iter()
-                        .any(|p| p.id == conflict.id && !p.state.is_terminal())
-                {
-                    if let Some(old) = self
-                        .copies
-                        .conflicts
-                        .iter_mut()
-                        .find(|c| c.id == conflict.id)
-                    {
-                        if old.version < conflict.version {
-                            *old = conflict;
-                        }
-                    } else {
-                        self.copies.conflicts.push(conflict);
-                    }
+                if self.accept_copy_decision(conflict.id, conflict.version) {
+                    self.copies.conflicts.push(conflict);
+                }
+            }
+            CopyEvent::Failure(failure) => {
+                if self.accept_copy_decision(failure.id, failure.version) {
+                    self.copies.failures.push(failure);
                 }
             }
             CopyEvent::Progress(progress) => {
+                if progress.state.is_terminal() {
+                    self.forget_copy_selection(progress.id);
+                }
                 let old = self
                     .copies
                     .progress
                     .iter_mut()
                     .find(|p| p.id == progress.id)?;
-                if old.state.is_terminal() {
+                if old.state.is_terminal()
+                    || (old.state == CopyOperationState::CancelRequested
+                        && !progress.state.is_terminal())
+                {
                     return None;
                 }
-                if progress.state.is_terminal() {
+                self.copies.automatic_jobs.observe_copy(&progress);
+                if progress.state.is_terminal()
+                    || progress.state == CopyOperationState::CancelRequested
+                {
                     self.copies.conflicts.retain(|c| c.id != progress.id);
+                    self.copies
+                        .failures
+                        .retain(|failure| failure.id != progress.id);
+                    self.copies
+                        .deferred_decisions
+                        .retain(|(id, _)| *id != progress.id);
+                }
+                if progress.state.is_terminal() {
                     for pane in [PaneId::Left, PaneId::Right] {
+                        if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
+                            continue;
+                        }
                         if self.panes[pane.index()].native_capabilities()
                             && (self.panes[pane.index()].display_path()
                                 == progress.destination_directory
@@ -253,12 +293,12 @@ impl Presenter {
                                 },
                                 progress.message.clone(),
                             );
-                        } else {
+                        } else if progress.state != CopyOperationState::Completed {
                             self.desktop.inform(
                                 if progress.intent == TransferIntent::Copy {
                                     "Copy"
                                 } else {
-                                    "Recoverable Move"
+                                    "Move"
                                 },
                                 progress.message.clone(),
                             );
@@ -273,6 +313,13 @@ impl Presenter {
     }
 
     pub(super) fn trim_copy_history(&mut self) {
+        self.copies.selection.retain_live(&self.copies.progress);
+        self.copies.decision_versions.retain(|id, _| {
+            self.copies
+                .progress
+                .iter()
+                .any(|p| p.id == *id && !p.state.is_terminal())
+        });
         while self
             .copies
             .progress

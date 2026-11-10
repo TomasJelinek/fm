@@ -1,22 +1,49 @@
 //! Bounded native traversal; no UI or host filesystem calls live in this worker.
 #[path = "find_content.rs"]
 mod content;
+#[path = "find_duplicates.rs"]
+mod duplicates;
 use content::ContentMatch;
 use midnight_core::*;
-use midnight_platform_common::filter::CompiledFilter;
+#[path = "find_predicate.rs"]
+mod predicate;
 use std::{
     io,
     mem::size_of,
     path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime},
 };
 
-pub(crate) fn search(
+#[derive(Clone, Default)]
+pub(crate) struct CurrentDirectory(Arc<Mutex<Option<Arc<std::path::PathBuf>>>>);
+impl CurrentDirectory {
+    pub(crate) fn get(&self) -> Option<Arc<std::path::PathBuf>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+    fn set(&self, path: &Path) -> bool {
+        // Status resource bound, never path truncation or a replacement identity.
+        if path.as_os_str().as_encoded_bytes().len() > 1024 * 1024 {
+            return false;
+        }
+        let mut current = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if current.as_deref().is_none_or(|old| old != path) {
+            *current = Some(Arc::new(path.to_owned()));
+        }
+        true
+    }
+}
+
+pub(crate) fn search_with_location(
     service: &dyn FindService,
     request: &FindRequest,
     cancel: &Cancellation,
     emit: &mut dyn FnMut(FindUpdate) -> bool,
+    location: &CurrentDirectory,
+    accepted_at: SystemTime,
 ) -> FindSummary {
     let mut work = Work {
         request,
@@ -44,12 +71,7 @@ pub(crate) fn search(
         ));
         return work.finish();
     }
-    let filter = match CompiledFilter::new(&PanelFilter {
-        enabled: true,
-        mode: FilterMode::Masks,
-        expression: request.masks.clone(),
-        case_sensitive: request.name_case_sensitive,
-    }) {
+    let filter = match predicate::Predicate::new(request) {
         Ok(filter) => filter,
         Err(error) => {
             work.failed = true;
@@ -61,12 +83,34 @@ pub(crate) fn search(
             return work.finish();
         }
     };
+    let mut content = match request
+        .content
+        .as_ref()
+        .map(content::PreparedContent::new)
+        .transpose()
+    {
+        Ok(content) => content,
+        Err(message) => {
+            work.failed = true;
+            work.error(find_error(
+                Path::new(""),
+                io::ErrorKind::InvalidInput,
+                message,
+            ));
+            return work.finish();
+        }
+    };
     if !(work.emit)(FindUpdate::Started) {
         work.cancelled = true;
         return work.finish();
     }
+    let mut candidates = duplicates::Candidates::default();
     'roots: for root in &request.roots {
         if work.stopped() {
+            break;
+        }
+        if !location.set(root) {
+            work.budget(FindBudget::RetainedBytes);
             break;
         }
         let source = match service.open_find_source(root, cancel) {
@@ -95,7 +139,13 @@ pub(crate) fn search(
                 break 'roots;
             }
             let next = match stack.last_mut() {
-                Some((source, _)) => source.next_child(cancel),
+                Some((source, _)) => {
+                    if !location.set(&source.entry().path) {
+                        work.budget(FindBudget::RetainedBytes);
+                        break 'roots;
+                    }
+                    source.next_child(cancel)
+                }
                 None => break,
             };
             let child = match next {
@@ -149,16 +199,22 @@ pub(crate) fn search(
                 }
             }
             let entry = source.entry();
-            let mut matches = entry
-                .path
-                .file_name()
-                .is_some_and(|name| filter.matches(name));
-            if let Some(query) = &request.content {
+            let mut matches = filter.matches(entry)
+                && request.modified_within.is_none_or(|maximum| {
+                    entry.metadata.modified.is_some_and(|modified| {
+                        accepted_at
+                            .duration_since(modified)
+                            .is_ok_and(|age| age <= maximum)
+                    })
+                });
+            if request.duplicates {
+                matches &= entry.kind == EntryKind::File;
+            }
+            if let Some(content) = &mut content {
                 matches &= entry.kind == EntryKind::File;
                 if matches {
-                    matches = match content::matches(
+                    matches = match content.matches(
                         source.as_mut(),
-                        query,
                         request.limits,
                         &mut work.progress,
                         cancel,
@@ -183,6 +239,13 @@ pub(crate) fn search(
             if matches {
                 match source.revalidate(cancel) {
                     Ok(()) => {
+                        if request.duplicates {
+                            if !candidates.collect(source.entry(), &mut work) {
+                                break 'roots;
+                            }
+                            work.progress_if_due();
+                            continue;
+                        }
                         if work.progress.results >= request.limits.max_results as u64 {
                             work.budget(FindBudget::Results);
                             break 'roots;
@@ -198,6 +261,8 @@ pub(crate) fn search(
                         work.batch.push(Arc::new(FindResult {
                             id: FindResultId(work.progress.results),
                             entry: source.entry().clone(),
+                            duplicate_group: None,
+                            duplicate_group_size: 0,
                         }));
                         if work.batch.len() == FIND_BATCH_SIZE && !work.flush() {
                             break 'roots;
@@ -228,6 +293,9 @@ pub(crate) fn search(
             }
             work.progress_if_due();
         }
+    }
+    if request.duplicates && !work.stopped() {
+        candidates.examine(service, &mut work, location);
     }
     work.finish()
 }

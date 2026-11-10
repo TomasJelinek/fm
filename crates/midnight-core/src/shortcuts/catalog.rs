@@ -115,7 +115,12 @@ fn build() -> Vec<ShortcutDefinition> {
     );
     add("panel.zoom", "Zoom active panel", FilesAny, &["Ctrl+F11"]);
     add("files.view", "View focused file", FilesAny, &["F3"]);
-    add("files.find", "Find files and text", FilesAny, &["Alt+F7"]);
+    add(
+        "files.find",
+        "Find files and text",
+        FilesAny,
+        &["Ctrl+F", "Alt+F7"],
+    );
     add(
         "files.checksums",
         "Calculate checksums",
@@ -145,13 +150,25 @@ fn build() -> Vec<ShortcutDefinition> {
         "compare.next-difference",
         "Next comparison difference",
         ViewerContent,
-        &["F7"],
+        &["F7", "Alt+Down", "Alt+Right", "N"],
     );
     add(
         "compare.previous-difference",
         "Previous comparison difference",
         ViewerContent,
-        &["Shift+F7"],
+        &["Shift+F7", "Alt+Up", "Alt+Left", "P"],
+    );
+    add(
+        "compare.first-difference",
+        "First comparison difference",
+        ViewerContent,
+        &["Alt+Home"],
+    );
+    add(
+        "compare.last-difference",
+        "Last comparison difference",
+        ViewerContent,
+        &["Alt+End"],
     );
     add(
         "viewer.next-file",
@@ -289,13 +306,26 @@ fn build() -> Vec<ShortcutDefinition> {
         FilesAny,
         &["Insert"],
     );
-    add("selection.all", "Select all", FilesAny, &["Ctrl+A"]);
+    add(
+        "selection.all",
+        "Select all top-level files and folders",
+        FilesAny,
+        &["Ctrl+A", "Ctrl+Shift+A"],
+    );
+    add("files.make-list", "Make File List", FilesAny, &["Ctrl+M"]);
+    add("selection.files", "Select files only", FilesAny, &[]);
     add("selection.clear", "Clear selection", FilesAny, &["Ctrl+D"]);
     add(
         "selection.invert",
-        "Invert selection",
+        "Invert files only",
         FilesAny,
         &["Ctrl+I"],
+    );
+    add(
+        "selection.invert-all",
+        "Invert top-level files and folders",
+        FilesAny,
+        &["Ctrl+Shift+I"],
     );
     add("sort.name", "Sort by name", FilesAny, &["Ctrl+F3"]);
     add(
@@ -475,6 +505,19 @@ fn build() -> Vec<ShortcutDefinition> {
     add("app.help", "Help", Global, &["F1"]);
     add("app.user-menu", "User menu", Global, &["F9"]);
     add("app.main-menu", "Main menu", Global, &["F10"]);
+    add("app.options", "Options", Global, &[]);
+    add("app.jobs", "Operation jobs", Global, &[]);
+    add("app.about", "About Midnight Explorer", Global, &[]);
+    add(
+        "app.custom-commands",
+        "Configure Custom Commands",
+        Global,
+        &[],
+    );
+    add("bookmark.manage", "Manage Hot Paths", FilesAny, &[]);
+    add("view.brief", "Brief panel view", FilesAny, &[]);
+    add("view.detailed", "Detailed panel view", FilesAny, &[]);
+    add("view.thumbnails", "Thumbnail panel view", FilesAny, &[]);
     add("app.exit", "Exit application", Global, &["Alt+F4"]);
     add("network.connect", "Connect network drive", Global, &["F11"]);
     add(

@@ -1,11 +1,15 @@
+import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedCheckBox, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { ScrollView } from "std-widgets.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
 import { DialogHeader } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { DialogText } from "dialog-text.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { MetadataFileRow } from "metadata-list.slint";
+import { MetadataAttribute } from "metadata-attribute.slint";
 export { MetadataFileRow }
 
 export struct MetadataDraft {
@@ -17,16 +21,21 @@ export struct MetadataDraft {
     case-enabled: bool, case-mode: int, case-scope: int, recursive: bool,
 }
 
-component MetadataChoice inherits HorizontalLayout {
+component MetadataChoice inherits GridLayout {
     in property <string> label;
     in property <string> hint;
     in property <[string]> choices: ["Leave unchanged", "Set", "Clear"];
     in property <bool> enabled: true;
     in-out property <int> choice;
     callback edited();
-    spacing: 12px; cross-axis-alignment: center;
-    Text { text: root.label; color: Theme.text; font-size: Theme.font-size; width: max(160px, Theme.font-size * 7); }
+    in property <bool> narrow;
+    spacing: 12px;
+    Text { row: 0; col: 0; colspan: root.narrow ? 2 : 1;
+        text: root.label; color: Theme.text; font-size: Theme.font-size;
+        min-width: 0px; preferred-width: root.narrow ? 0px : max(160px, Theme.font-size * 7);
+        horizontal-stretch: root.narrow ? 1 : 0; }
     HintedComboBox {
+        row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 2 : 1;
         accessible-label: root.label;
         model: root.choices; current-index <=> root.choice;
         enabled: root.enabled; hint: root.hint;
@@ -67,44 +76,33 @@ component MetadataButton inherits Rectangle {
     }
 }
 
-component MetadataAttribute inherits HorizontalLayout {
-    in property <string> label;
-    in property <bool> enabled: true;
-    in property <[string]> choices: ["Leave", "Set", "Clear"];
-    in-out property <int> choice;
-    callback edited();
-    spacing: 8px; cross-axis-alignment: center;
-    Text { text: root.label; color: Theme.text; font-size: Theme.font-size; width: max(125px, Theme.font-size * 6); }
-    for caption[index] in root.choices : MetadataButton {
-        label: root.label + ": " + caption; caption: caption;
-        selected: root.choice == index; enabled: root.enabled;
-        choose => { root.choice = index; root.edited(); }
-    }
-}
-
-component MetadataTime inherits HorizontalLayout {
+component MetadataTime inherits GridLayout {
     in property <string> label;
     in property <bool> enabled;
     in-out property <int> mode;
     in-out property <string> value;
     callback edited();
-    spacing: 8px; cross-axis-alignment: center;
-    HintedCheckBox {
-        text: root.label; accessible-label: "Change " + root.label;
+    in property <bool> narrow;
+    spacing: 8px;
+    WrappingCheckBox {
+        row: 0; col: 0; colspan: root.narrow ? 2 : 1;
+        text: root.label; accessible-name: "Change " + root.label;
         checked: root.mode != 0; enabled: root.enabled;
-        width: max(150px, Theme.font-size * 8);
+        preferred-width: max(150px, Theme.font-size * 8);
         hint: "Enable this field to change its timestamp. Unchecked preserves the native value.";
         toggled => { root.mode = self.checked ? 1 : 0; root.edited(); }
     }
     HintedLineEdit {
+        row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
         accessible-label: root.label + " timestamp";
         enabled: root.enabled && root.mode != 0; text <=> root.value;
         horizontal-stretch: 1;
-        placeholder-text: root.mode == 2 ? "Now (captured at Preview)" : "2026-11-06T12:30:00+01:00";
+        placeholder-text: root.mode == 2 ? "Now (captured at review)" : "2026-11-06T12:30:00+01:00";
         hint: "ISO timestamp with an explicit UTC offset or Z. Ambiguous local times are rejected.";
         edited => { root.mode = 1; root.edited(); }
     }
     MetadataButton {
+        row: 0; col: 2;
         label: root.label + ": Now"; caption: "Now"; selected: root.mode == 2;
         enabled: root.enabled && root.mode != 0; horizontal-stretch: 0;
         choose => { root.mode = 2; root.value = ""; root.edited(); }
@@ -112,6 +110,7 @@ component MetadataTime inherits HorizontalLayout {
 }
 
 export component MetadataDialog inherits Rectangle {
+    accessible-role: groupbox; accessible-label: "Attributes, times and case";
     in property <image> native-icon;
     callback move-dialog(length, length);
     in property <string> token;
@@ -136,13 +135,41 @@ export component MetadataDialog inherits Rectangle {
     callback dirty();
     callback confirm(int);
     callback cancel();
+    callback dismiss-hints();
     private property <MetadataDraft> draft;
     private property <int> topic;
     private property <bool> draft-edited: true;
     private property <bool> has-reviewed: false;
+    private property <bool> review-requested;
+    private property <bool> reviewing;
+    private property <string> reviewed-revision;
+    private property <bool> narrow-fields: root.width < max(500px, Theme.font-size * 24);
+    changed height => {
+        // A compact viewport can fully clip the focused page field. Keep Escape
+        // reachable; Slint drops keyboard events aimed at an invisible item.
+        if root.height < 350px { footer.focus-dismiss(); }
+    }
     changed ready => { if root.ready { root.draft-edited = false; } }
-    changed preview-current => { if root.preview-current { root.draft-edited = false; root.has-reviewed = true; } }
-    function edited() { root.draft-edited = true; root.dirty(); }
+    changed preview-current => {
+        if root.preview-current {
+            root.draft-edited = false; root.has-reviewed = true;
+            if root.review-requested && !root.busy {
+                root.review-requested = false;
+                root.reviewed-revision = root.revision;
+                root.reviewing = true;
+                footer.focus-dismiss();
+            }
+        } else { root.reviewing = false; }
+    }
+    changed revision => {
+        if root.reviewing && root.reviewed-revision != root.revision {
+            root.reviewing = false;
+        }
+    }
+    function edited() {
+        root.draft-edited = true; root.review-requested = false; root.reviewing = false;
+        root.dirty();
+    }
     public function begin(case-enabled: bool) {
         root.draft = {
             read-only: 0, hidden: 0, system: 0, archive: 0, compressed: 0,
@@ -153,8 +180,9 @@ export component MetadataDialog inherits Rectangle {
         };
         root.draft-edited = true;
         root.has-reviewed = false;
+        root.review-requested = false; root.reviewing = false; root.reviewed-revision = "";
         root.topic = case-enabled ? 2 : 0;
-        cancel-button.focus();
+        footer.focus-dismiss();
     }
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px;
     border-radius: 6px;
@@ -166,32 +194,51 @@ export component MetadataDialog inherits Rectangle {
         }
         VerticalLayout {
             padding: root.height < 350px ? 6px : 16px; spacing: root.height < 350px ? 4px : 10px;
-            DialogHeader { title: "Attributes, times and case"; text-size: Theme.font-size * 1.2;
-                fallback-icon: FallbackIcons.attributes; compact: root.height < 350px;
+            DialogHeader { title: root.reviewing ? "Review changes" : "Attributes, times and case"; text-size: Theme.font-size * 1.2;
+                native-icon: root.native-icon; fallback-icon: FallbackIcons.attributes; compact: root.height < 350px;
+                close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
-            contents := ScrollView {
+            if root.reviewing : DialogText {
+                text: root.summary + "\n\n" + root.preview-text;
+                min-height: 0px; vertical-stretch: 1;
+            }
+            if !root.reviewing : ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: as-needed;
-                content-width: max(self.visible-width, 500px);
+                content-width: max(self.visible-width, Theme.font-size * 18);
                 VerticalLayout {
                     spacing: 10px; alignment: start;
             Text { text: root.summary; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-            DialogTabs { labels: ["Attributes", "Times", "Case", "Preview"]; current-index <=> root.topic; }
+            WrappingCheckBox {
+                text: "Include subfolders"; checked <=> root.draft.recursive;
+                hint: "Applies to Attributes, Times and Case together. Descendants are processed before their parent. Links and mount points are not followed. Large batches can exceed the explicit resource budget.";
+                toggled => { root.edited(); }
+            }
+            DialogTabs { labels: ["Attributes", "Times", "Case"]; current-index <=> root.topic;
+                changing => { root.dismiss-hints(); } }
             VerticalLayout {
                 VerticalLayout {
                     spacing: 10px; alignment: start;
                     if root.topic == 0 : VerticalLayout {
                         spacing: 10px; alignment: start;
                         if root.can-windows : VerticalLayout {
-                            spacing: 8px;
-                            MetadataAttribute { label: "Read-only"; choice <=> root.draft.read-only; edited => { root.edited(); } }
-                            MetadataAttribute { label: "Hidden"; choice <=> root.draft.hidden; edited => { root.edited(); } }
-                            MetadataAttribute { label: "System"; choice <=> root.draft.system; edited => { root.edited(); } }
-                            MetadataAttribute { label: "Archive"; choice <=> root.draft.archive; edited => { root.edited(); } }
+                            spacing: 6px;
+                            MetadataAttribute { label: "Read-only";
+                                enabled: mod(root.windows-mask, 2) >= 1;
+                                choice <=> root.draft.read-only; edited => { root.edited(); } }
+                            MetadataAttribute { label: "Hidden";
+                                enabled: mod(floor(root.windows-mask / 2), 2) >= 1;
+                                choice <=> root.draft.hidden; edited => { root.edited(); } }
+                            MetadataAttribute { label: "System";
+                                enabled: mod(floor(root.windows-mask / 4), 2) >= 1;
+                                choice <=> root.draft.system; edited => { root.edited(); } }
+                            MetadataAttribute { label: "Archive";
+                                enabled: mod(floor(root.windows-mask / 32), 2) >= 1;
+                                choice <=> root.draft.archive; edited => { root.edited(); } }
                         }
                         if root.can-unix : VerticalLayout {
                             spacing: 8px;
-                            HintedCheckBox {
+                            WrappingCheckBox {
                                 text: "Set permissions (octal)"; checked <=> root.draft.unix-edit;
                                 hint: "Three digits preserve setuid, setgid and sticky bits. Four digits explicitly replace them too.";
                                 toggled => { root.edited(); }
@@ -205,7 +252,7 @@ export component MetadataDialog inherits Rectangle {
                         }
                         MetadataAttribute {
                             label: "Compression"; enabled: root.can-compress;
-                            choices: ["Leave", "Compress", "Uncompress"];
+                            set-caption: "Compress"; clear-caption: "Uncompress";
                             choice <=> root.draft.compressed;
                             edited => { root.edited(); }
                         }
@@ -213,86 +260,75 @@ export component MetadataDialog inherits Rectangle {
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
                         Text { text: "Enable a field, then enter a date/time with UTC offset or choose Now."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-                        MetadataTime { label: "Modified"; enabled: root.can-modified; mode <=> root.draft.modified-mode; value <=> root.draft.modified-text; edited => { root.edited(); } }
-                        MetadataTime { label: "Created"; enabled: root.can-created; mode <=> root.draft.created-mode; value <=> root.draft.created-text; edited => { root.edited(); } }
-                        MetadataTime { label: "Accessed"; enabled: root.can-accessed; mode <=> root.draft.accessed-mode; value <=> root.draft.accessed-text; edited => { root.edited(); } }
-                        Text { text: "Now is captured once at Preview for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+                        MetadataTime { narrow: root.narrow-fields; label: "Modified"; enabled: root.can-modified; mode <=> root.draft.modified-mode; value <=> root.draft.modified-text; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-fields; label: "Created"; enabled: root.can-created; mode <=> root.draft.created-mode; value <=> root.draft.created-text; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-fields; label: "Accessed"; enabled: root.can-accessed; mode <=> root.draft.accessed-mode; value <=> root.draft.accessed-text; edited => { root.edited(); } }
+                        Text { text: "Now is captured once when reviewing, for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
                     }
                     if root.topic == 2 : VerticalLayout {
                         spacing: 12px; alignment: start;
-                        HintedCheckBox {
+                        WrappingCheckBox {
                             text: "Change filename case"; enabled: root.can-rename;
                             checked <=> root.draft.case-enabled;
                             hint: "Unicode-aware conversion. Existing destination names are never overwritten.";
                             toggled => { root.edited(); }
                         }
                         MetadataChoice {
-                            label: "Conversion"; enabled: root.can-rename && root.draft.case-enabled;
+                            narrow: root.narrow-fields;
+                            label: "Conversion"; enabled: root.can-rename && root.draft.case-enabled && !root.busy;
                             choices: ["lowercase", "UPPERCASE", "Mixed Case", "Mixed name.lower extension"];
                             choice <=> root.draft.case-mode;
                             hint: "Mixed case starts a word after a space or dot. The last suffix is the extension; dotfiles have no extension.";
                             edited => { root.edited(); }
                         }
                         MetadataChoice {
-                            label: "Apply to"; enabled: root.can-rename && root.draft.case-enabled;
+                            narrow: root.narrow-fields;
+                            label: "Apply to"; enabled: root.can-rename && root.draft.case-enabled && !root.busy;
                             choices: ["Whole filename", "Base name", "Extension"];
                             choice <=> root.draft.case-scope;
                             hint: "Native filename data outside the chosen component remains unchanged. Invalid Unicode in the chosen component is reported.";
                             edited => { root.edited(); }
                         }
                     }
-                    if root.topic == 3 : Text {
-                        text: root.preview-text; color: Theme.text;
-                        font-size: Theme.font-size; wrap: word-wrap;
-                    }
                 }
             }
-            HintedCheckBox {
-                text: "Include subfolders"; checked <=> root.draft.recursive;
-                hint: "Descendants are processed before their parent. Links and mount points are not followed. Large batches can exceed the explicit resource budget.";
-                toggled => { root.edited(); }
-            }
             Text {
-                text: root.busy ? "Preparing preview…" : root.draft-edited ? (root.has-reviewed ? "Draft changed; preview stale. Refresh to see current changes." : "Draft not previewed. Refresh or Preview changes to inspect it.") : root.list-status;
+                text: root.busy ? "Checking captured files…" : root.draft-edited ? (root.has-reviewed ? "Draft changed. Review it again before applying." : "Review changes before applying them.") : root.list-status;
                 color: root.draft-edited ? Theme.pending-size : Theme.secondary-text;
                 font-size: Theme.small-font; overflow: elide;
             }
             if root.error != "" : ErrorNotice {
                 text: root.error;
-                min-height: max(56px, Theme.font-size * 2);
-                preferred-height: max(80px, Theme.font-size * 2.5);
-                max-height: max(100px, Theme.font-size * 3);
+                minimum-notice-height: max(56px, Theme.font-size * 2);
+                preferred-notice-height: max(80px, Theme.font-size * 2.5);
+                maximum-notice-height: max(100px, Theme.font-size * 3);
             }
                 }
             }
-            HorizontalLayout {
-                spacing: 8px;
-                ScrollView {
-                    horizontal-stretch: 1; min-width: 0px;
-                    height: max(32px, Theme.control-height + (root.width < 600px ? 12px : 0px), refresh-button.preferred-height);
-                    horizontal-scrollbar-policy: as-needed;
-                    vertical-scrollbar-policy: always-off;
-                    HorizontalLayout { spacing: 8px;
-                refresh-button := HintedActionButton {
+            footer := DialogFooter {
+                compact-height: root.height < 350px;
+                dismiss-hint: "Close the editor without applying the draft (Escape).";
+                dismiss => { root.cancel(); }
+                if !root.reviewing : HintedActionButton {
                     text: "Refresh"; enabled: !root.busy;
-                    hint: "Read the captured files again and preview the current draft. This does not apply changes.";
-                    clicked => { root.preview(root.draft); }
+                    hint: "Read the captured files again and check the current draft. This does not apply changes.";
+                    clicked => { root.review-requested = false; root.preview(root.draft); }
                 }
-                HintedActionButton {
-                    text: "Preview changes"; enabled: !root.busy;
-                    hint: "Validate the draft and review the requested changes before Apply.";
-                    clicked => { root.topic = 3; root.preview(root.draft); }
+                if !root.reviewing : HintedActionButton {
+                    text: "Review changes"; enabled: !root.busy;
+                    hint: "Check the captured files and exact draft, then review the confirmation before Apply.";
+                    clicked => { root.review-requested = true; root.preview(root.draft); }
                 }
-                HintedActionButton {
-                    text: "Apply"; enabled: root.ready && !root.busy && !root.draft-edited;
+                if root.reviewing : HintedActionButton {
+                    text: "Back to editing";
+                    hint: "Keep this draft and return to its editable fields.";
+                    clicked => { root.dismiss-hints(); root.reviewing = false; root.review-requested = false; }
+                }
+                if root.reviewing : HintedActionButton {
+                    text: "Apply"; enabled: root.ready && root.preview-current && !root.busy
+                        && !root.draft-edited && root.reviewed-revision == root.revision;
                     hint: "Queue the exact reviewed draft. Conflicts offer Skip, Skip all or Cancel. Completed changes are retained if later steps fail.";
                     clicked => { root.confirm(0); }
-                }
-                    }
-                }
-                cancel-button := HintedActionButton {
-                    text: "Cancel"; hint: "Close the editor without applying the draft (Escape).";
-                    clicked => { root.cancel(); }
                 }
             }
         }

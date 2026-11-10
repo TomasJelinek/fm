@@ -1,4 +1,7 @@
 //! Real message-window layout, clipboard dispatch and focus behavior.
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -6,13 +9,93 @@ mod ui;
 
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole, window::WindowInner};
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
-use slint::{ComponentHandle, platform::Key};
+use midnight_ui::{MainWindow, Presenter, install, refresh};
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+};
 use std::{cell::RefCell, io, path::PathBuf, rc::Rc, sync::Arc};
+
+type NativeWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
+
+fn native_main() -> (MainWindow, NativeWindows) {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.show().unwrap();
+    (window, windows)
+}
+
+fn escape(window: &MinimalSoftwareWindow) {
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    window.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+}
+
+#[test]
+fn panel_error_copy_preserves_the_complete_diagnostic_and_uses_the_backend() {
+    let mut ui = ui::TestUi::new();
+    let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("errors");
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let capture = commands.clone();
+    install(
+        &ui.window,
+        presenter.clone(),
+        Rc::new(move |command| {
+            capture.borrow_mut().push(command);
+            true
+        }),
+    );
+    let error = format!(
+        "Archive unavailable\nPath\nD:\\資料\\{}\\example.zip",
+        "long-".repeat(100)
+    );
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Navigate {
+                pane: PaneId::Left,
+                navigation,
+                ..
+            } => Some(*navigation),
+            _ => None,
+        })
+        .unwrap();
+    presenter.borrow_mut().apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation,
+        error: FsError::from_io(
+            "archive navigation",
+            std::path::Path::new(""),
+            io::Error::other(error.clone()),
+        ),
+    });
+    refresh(&ui.window, &presenter.borrow());
+    let displayed = ui.window.get_left_error().to_string();
+    assert!(displayed.contains(&error));
+    for (width, height) in [(1340, 820), (320, 200)] {
+        ui.resize(width, height);
+        ui.draw();
+        commands.borrow_mut().clear();
+        ui::click_root(&ui.window, "Copy error details", AccessibleRole::Button);
+        assert!(commands.borrow().iter().any(|command| matches!(command,
+            Command::CopyText { text, .. } if text == &displayed
+        )));
+        assert!(commands.borrow().iter().all(|command| !matches!(
+            command,
+            Command::PrepareOperation(_) | Command::LaunchTerminal { .. }
+        )));
+    }
+}
 
 #[test]
 fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
-    let mut ui = ui::TestUi::new();
+    let (window, windows) = native_main();
     let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("errors");
     let path = root
         .join("資料")
@@ -22,7 +105,7 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
     let commands = Rc::new(RefCell::new(Vec::new()));
     let sink = commands.clone();
     install(
-        &ui.window,
+        &window,
         presenter.clone(),
         Rc::new(move |command| {
             sink.borrow_mut().push(command);
@@ -48,8 +131,8 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
         index: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,
     });
-    refresh(&ui.window, &presenter.borrow());
-    ui.window.invoke_open(0, 1);
+    refresh(&window, &presenter.borrow());
+    window.invoke_open(0, 1);
     let request = commands
         .borrow()
         .iter()
@@ -66,37 +149,39 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
             io::Error::other("Access denied\nThe application could not open this file."),
         )),
     });
-    refresh(&ui.window, &presenter.borrow());
-    ui.draw();
-    let body = ui.window.get_message_body().to_string();
+    refresh(&window, &presenter.borrow());
+    slint::platform::update_timers_and_animations();
+    assert_eq!(windows.borrow().len(), 2);
+    let notice = windows.borrow()[1].clone();
+    let body = window.get_message_body().to_string();
     assert!(
         body.contains(&format!("\nPath\n{}\n", path.display())),
         "{body}"
     );
-    assert!(ui.window.get_message_error());
-    ui::popup_item(&ui.window, "Error", AccessibleRole::Text);
-    for (scheme, density, width, height) in [(2, 0, 1340, 820), (1, 1, 1040, 650)] {
-        ui.window.set_theme_index(scheme);
-        ui.window.set_density_index(density);
-        ui.window.invoke_apply_preferences(scheme, density);
+    assert!(window.get_message_error());
+    for (scheme, density, width, height) in [(2, 0, 1340, 820), (1, 1, 1040, 650), (1, 1, 320, 200)]
+    {
+        window.invoke_preferences_changed(scheme, density, 0);
         slint::platform::update_timers_and_animations();
-        ui.resize(width, height);
-        let inner = WindowInner::from_pub(ui.window.window());
-        let popups = inner.active_popups();
-        let popup = popups.last().unwrap();
-        let texts = ui::text_values(ItemRc::new_root(popup.component.clone()));
+        modeless::draw(
+            &notice,
+            width,
+            height,
+            &format!("error-message-{scheme}-{density}"),
+        );
+        assert!(modeless::accessible_item(&notice, AccessibleRole::Text, "Error").is_some());
+        let inner = WindowInner::from_pub(notice.window());
+        let texts = ui::text_values(ItemRc::new_root(inner.component()));
         assert!(texts.iter().any(|text| text.as_str() == body));
-        drop(popups);
         for label in ["Copy details", "Close"] {
-            let item = ui::popup_item(&ui.window, label, AccessibleRole::Button);
+            let item = modeless::accessible_item(&notice, AccessibleRole::Button, label).unwrap();
             let geometry = item.geometry();
             let position = item.map_to_native_window(geometry.origin);
             assert!(position.y >= 0.0 && position.y + geometry.height() <= height as f32);
             assert!(position.x >= 0.0 && position.x + geometry.width() <= width as f32);
         }
-        render::snapshot(&ui, &format!("error-message-{scheme}-{density}"));
     }
-    ui::click_popup(&ui.window, "Copy details", AccessibleRole::Button);
+    modeless::click(&notice, "Copy details");
     assert!(
         commands
             .borrow()
@@ -104,32 +189,37 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
             .any(|command| matches!(command, Command::CopyText { text, .. }
         if text == &format!("Desktop action failed\n\n{body}")))
     );
-    assert!(ui::has_popup(&ui.window));
-    ui::key(&ui.window, Key::Escape);
-    ui.draw();
-    assert!(!ui::has_popup(&ui.window));
-    ui.window.hide().unwrap();
+    assert!(notice.window().is_visible());
+    assert!(!ui::has_popup(&window));
+    escape(&notice);
+    assert!(!notice.window().is_visible());
+    assert!(window.window().is_visible());
+    assert!(!window.get_dialog_input_blocked());
 }
 
 #[test]
 fn information_dialog_has_no_error_glyph() {
-    let mut ui = ui::TestUi::new();
-    ui.window.set_message_title("Drive information".into());
-    ui.window
-        .set_message_body("Path\nC:\\\n\nAvailable: 100 GB".into());
-    ui.window.set_message_error(false);
-    ui.window.set_message_generation(1);
+    let (window, windows) = native_main();
+    let path = PathBuf::from("notice-fixture");
+    install(
+        &window,
+        Rc::new(RefCell::new(Presenter::new(path.clone(), path))),
+        Rc::new(|_| true),
+    );
+    window.set_message_title("Drive information".into());
+    window.set_message_body("Path\nC:\\\n\nAvailable: 100 GB".into());
+    window.set_message_error(false);
+    window.set_message_generation(1);
     slint::platform::update_timers_and_animations();
-    ui.draw();
-    let inner = WindowInner::from_pub(ui.window.window());
-    let popups = inner.active_popups();
-    let texts = ui::text_values(ItemRc::new_root(popups.last().unwrap().component.clone()));
+    let notice = windows.borrow()[1].clone();
+    modeless::draw(&notice, 640, 420, "information-notice");
+    let inner = WindowInner::from_pub(notice.window());
+    let texts = ui::text_values(ItemRc::new_root(inner.component()));
     assert!(!texts.iter().any(|text| text.as_str() == "!"));
-    drop(popups);
-    ui::key(&ui.window, Key::Escape);
-    ui.draw();
-    assert!(!ui::has_popup(&ui.window));
-    ui.window.hide().unwrap();
+    assert!(modeless::accessible_item(&notice, AccessibleRole::Text, "Error").is_none());
+    escape(&notice);
+    assert!(!notice.window().is_visible());
+    assert!(window.window().is_visible());
 }
 
 #[test]
@@ -141,7 +231,7 @@ fn panel_error_has_a_readable_multiline_body_at_the_minimum_window_size() {
     ui.window.set_left_error(message.into());
     slint::platform::update_timers_and_animations();
     ui.resize(1040, 480);
-    ui::root_item(&ui.window, "Error", AccessibleRole::Text);
+    ui::root_item(&ui.window, "Show error details", AccessibleRole::Button);
     assert!(ui.window.get_left_list_height() >= 22.0);
     render::snapshot(&ui, "error-panel-minimum");
     ui.window.hide().unwrap();

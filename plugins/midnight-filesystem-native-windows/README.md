@@ -22,5 +22,13 @@ information are provided. Physical storage classification requires positive
 single-device, nonremovable ATA/SATA/NVMe and seek-penalty evidence. Other devices
 remain conservative. Rich capacity keeps actual filesystem total/free distinct
 from caller quotas. Reads are live metadata-validated regular files, not snapshots.
+Cloud data placeholders are readable when their retained handle reports a member
+of the Windows Cloud reparse-tag family without the name-surrogate bit. The
+provider opens the reparse point itself and checks its handle type/tag; symlinks,
+junctions, devices, directories and unrelated reparse providers remain refused.
+Identity, length and write/change revision checks still apply before/after reads.
+The optional `cloud_content` resident acceptance test requires one explicitly
+selected, already resident PNG through `MIDNIGHT_CLOUD_TEST_FILE`; normal tests
+also cover stale name replacement and junction refusal without cloud access.
 See [protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md) for bounds and
 explicit unsupported namespaces. Mutations and watching are outside this ABI.

@@ -78,3 +78,34 @@ fn huge_full_width_drag_compacts_and_sparse_drag_stops_at_explicit_budget() {
         vec![(0, 29_999_998)]
     );
 }
+#[test]
+fn point_hit_uses_same_column_major_and_row_major_layout_and_rejects_gutters() {
+    let grid = super::Grid {
+        mode: 0,
+        columns: 1,
+        page_rows: 10,
+        count: 42,
+        parent: 1,
+        width: 400.0,
+        row_height: 20.0,
+    };
+    assert_eq!(grid.row_at((25.0, 65.0)), Some(3));
+    assert_eq!(grid.row_at((0.0, 0.0)), Some(0));
+    assert_eq!(grid.row_at((400.0, 10.0)), None);
+    assert_eq!(grid.row_at((25.0, -1.0)), None);
+    assert_eq!(grid.row_at((25.0, f32::NAN)), None);
+    assert_eq!(grid.row_at((25.0, 1000.0)), None);
+    let brief = super::Grid {
+        mode: 1,
+        columns: 2,
+        ..grid
+    };
+    assert_eq!(brief.row_at((250.0, 65.0)), Some(13));
+    assert_eq!(brief.row_at((250.0, 205.0)), Some(30));
+    let thumbs = super::Grid {
+        mode: 2,
+        columns: 2,
+        ..grid
+    };
+    assert_eq!(thumbs.row_at((250.0, 65.0)), Some(7));
+}

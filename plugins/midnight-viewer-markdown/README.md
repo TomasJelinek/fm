@@ -12,8 +12,13 @@ inert text. Images are alt text only. No HTML renderer, browser, JavaScript,
 network request, image/font/style fetch or automatic link launch exists.
 Metadata permits only HTTP, HTTPS, mailto and local fragments, with no controls,
 whitespace or backslashes. The host must separately check any explicit action.
-Tables, task checkboxes, footnotes and other optional Markdown extensions are
-not enabled. Reference links resolve within the bounded parse window.
+GitHub-style pipe tables, task checkboxes and strikethrough are enabled. Tables
+carry per-cell left/center/right alignment, header metadata, inline styles and
+source anchors; the host supplies column layout and borders. Empty cells and
+escaped pipe characters are supported. Task markers are read-only `[x]` / `[ ]`
+text so they remain readable in user-selected fonts without emoji/ballot glyphs.
+Footnotes, mathematics and diagrams are not enabled. Reference links resolve
+within the bounded parse window.
 
 ## Correctness and limits
 
@@ -25,12 +30,24 @@ retains one actual boundary, never an interpolated offset. Entity/code
 normalization exposes exact event endpoints where interior boundaries cannot
 be established. Copy uses displayed text, not source bytes including markers.
 Uncached seeks look behind by four bytes after UTF-16 word alignment, then
-select actual decoded boundaries. Backward pages select a displayed suffix
-ending at or before the original source anchor. Text-mode search preserves
+select actual decoded boundaries. Semantic pages retain complete paragraphs
+and tables around the requested anchor when they fit the byte/block budgets;
+the host places the requested source position within that stable layout.
+Oversized blocks use bounded scalar-safe fragments. Text-mode search preserves
 visible Markdown markers, just as the Text-mode viewport does.
 
 Viewport reconstruction starts at a known complete top-level block boundary,
 keeps at most 256 checkpoints and rescans at most 32 KiB before its anchor.
+Checkpoints come from the rendering parser traversal; the same context is not
+parsed a second time just to collect its boundaries. Each session retains an
+LRU of up to 16 cropped semantic pages, with a 1 MiB retained-allocation budget.
+Revisiting a cached source anchor, direction and viewport budget needs no content
+read, decode or Markdown parse. Cache identity is the opened session/revision;
+close/reopen drops it, and cancellation still suppresses cached replies.
+A further single parsed context, bounded to 1 MiB, reuses already-read data for
+nearby anchors with different directions/budgets. Replacing that context evicts
+it; there is no whole-file preload or file-size limit. Ordinary Markdown source
+line endings become spaces; explicit hard breaks remain displayed newlines.
 Known fence/quote context therefore survives nearby random or sequential
 viewports. Distant uncached regions and parser-budget exhaustion use a plain
 paragraph fallback. Large unsupported contexts show their source markers
@@ -40,16 +57,27 @@ and search reuse a nearby fragment of the same bounded read and discard the
 unproven parser context rather than skipping the requested content.
 
 At most 64 KiB is read/decoded per operation. Emitted displayed text is at most
-8192 bytes, further limited by requested lines. Parser traversal stops at
-16384 events, nesting depth 16 or 256 blocks and falls back to plain text.
+8192 bytes and the public 512-block budget. Requested lines bound demand around
+the source anchor; completing an enclosing paragraph/table may add context.
+Paragraphs, headings, list items, rules and table rows each count as a displayed
+line even when their text has no literal newline. Later blocks outside the
+visible crop no longer downgrade a normal heading/table page to plain text.
+Parser traversal stops at 16384 events or nesting depth 16 and falls back to
+plain text.
+Tables support up to 64 columns; excessive columns use the readable plain-text
+fallback. Partial table rows preserve column positions and clipped decorations.
+The same bounded-context fallback applies to very large tables and distant
+uncached seeks. Older hosts ignore the optional table/strikethrough metadata and
+show the row text without rich decoration.
 The combined wire-item budget is checked too: dense documents first discard
 optional styles and link metadata, preserving displayed text and exact anchors
 so their visible content and search remain consistent.
 Only bounded input is handed to the upstream parser, whose individual parser
 step has no cancellation API; cancellation is checked before construction,
 between events, while decoding, and between SDK asynchronous reads. Four
-active operations and 16 sessions bound plugin scratch/model memory below
-16 MiB, in addition to the SDK's separately bounded queues.
+active operations and 16 sessions bound concurrent work. Their combined page
+caches retain at most 16 MiB of semantic allocations, in addition to bounded
+64 KiB parse contexts, parser/event scratch and the SDK's bounded queues.
 
 Search uses the same semantic reconstruction as the viewport and searches
 displayed text with source anchors. Streaming KMP retains only a query-sized
@@ -88,7 +116,10 @@ Build scripts write the actual native target and library filename. Installation
 touches only this package directory; deleting it removes Markdown routing at
 host startup. Tests include the public ABI, delayed/cancelled and short reads,
 huge offsets, malformed encodings, hostile content, exact Unicode/entity maps,
-cross-page search and Markdown fence context.
+cross-page search and Markdown fence context. Scroll regressions cover mixed
+headings, fenced code, lists and tables in both directions, identical revisited
+slices, no source rereads on cache hits, LRU eviction, changed viewport budgets,
+cancellation and new revisions after close/reopen.
 
 ## Dependency review and licensing
 

@@ -33,15 +33,23 @@ pub enum ChecksumAlgorithm {
     Sha1,
     Sha256,
     Sha512,
+    Crc32,
 }
 impl ChecksumAlgorithm {
-    pub const ALL: [Self; 4] = [Self::Md5, Self::Sha1, Self::Sha256, Self::Sha512];
+    pub const ALL: [Self; 5] = [
+        Self::Md5,
+        Self::Sha1,
+        Self::Sha256,
+        Self::Sha512,
+        Self::Crc32,
+    ];
     pub const fn bytes(self) -> usize {
         match self {
             Self::Md5 => 16,
             Self::Sha1 => 20,
             Self::Sha256 => 32,
             Self::Sha512 => 64,
+            Self::Crc32 => 4,
         }
     }
     pub const fn label(self) -> &'static str {
@@ -50,6 +58,16 @@ impl ChecksumAlgorithm {
             Self::Sha1 => "SHA-1",
             Self::Sha256 => "SHA-256",
             Self::Sha512 => "SHA-512",
+            Self::Crc32 => "CRC32",
+        }
+    }
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Md5 => "md5",
+            Self::Sha1 => "sha1",
+            Self::Sha256 => "sha256",
+            Self::Sha512 => "sha512",
+            Self::Crc32 => "sfv",
         }
     }
     const fn bit(self) -> u8 {
@@ -76,7 +94,7 @@ impl ChecksumAlgorithms {
         }
     }
     pub const fn all() -> Self {
-        Self(15)
+        Self(31)
     }
     pub fn contains(self, algorithm: ChecksumAlgorithm) -> bool {
         self.0 & algorithm.bit() != 0
@@ -203,6 +221,29 @@ impl ChecksumRequest {
     }
 }
 
+/// A captured native manifest. Expected digests are read and validated by the backend.
+#[derive(Clone, Debug)]
+pub struct ChecksumVerifyRequest {
+    pub job: ChecksumJobId,
+    pub generation: ChecksumGeneration,
+    pub manifest: PathBuf,
+    pub limits: ChecksumLimits,
+}
+impl ChecksumVerifyRequest {
+    /// Validate without filesystem access; whole-request admission is backend-owned.
+    pub fn validate(&self) -> Result<usize, &'static str> {
+        let request = ChecksumRequest {
+            job: self.job,
+            generation: self.generation,
+            targets: vec![self.manifest.clone().into()],
+            algorithms: ChecksumAlgorithms::default(),
+            recursive: false,
+            limits: self.limits,
+        };
+        request.validate()
+    }
+}
+
 /// Opaque shared quota ownership retained by every published row/run until it is dropped.
 pub struct ChecksumRetention {
     _owner: Arc<dyn Send + Sync>,
@@ -236,6 +277,9 @@ impl ChecksumDigest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChecksumRowState {
     Calculated,
+    Verified,
+    Mismatch,
+    Missing,
     SourceChanged,
     ReadError,
     Skipped,
@@ -249,26 +293,32 @@ pub struct ChecksumRow {
     pub kind: Option<EntryKind>,
     pub state: ChecksumRowState,
     pub bytes_read: u64,
-    /// Empty for every state except Calculated.
+    /// Complete actual digests for Calculated, Verified and Mismatch; empty on read failures.
     pub digests: Vec<ChecksumDigest>,
     pub error: Option<FsError>,
     pub retention: Arc<ChecksumRetention>,
 }
 impl ChecksumRow {
     pub fn digest(&self, algorithm: ChecksumAlgorithm) -> Option<&ChecksumDigest> {
-        (self.state == ChecksumRowState::Calculated)
-            .then(|| {
-                self.digests
-                    .iter()
-                    .find(|digest| digest.algorithm == algorithm)
-            })
-            .flatten()
+        matches!(
+            self.state,
+            ChecksumRowState::Calculated | ChecksumRowState::Verified | ChecksumRowState::Mismatch
+        )
+        .then(|| {
+            self.digests
+                .iter()
+                .find(|digest| digest.algorithm == algorithm)
+        })
+        .flatten()
     }
 }
 #[derive(Clone, Debug, Default)]
 pub struct ChecksumProgress {
     pub discovered: u64,
     pub calculated: u64,
+    pub verified: u64,
+    pub mismatched: u64,
+    pub missing: u64,
     pub skipped: u64,
     pub errors: u64,
     pub bytes_read: u64,
@@ -310,6 +360,8 @@ pub struct ChecksumRun {
 pub enum ChecksumUpdate {
     Queued,
     Started,
+    /// Emitted only after the complete manifest has been read and validated.
+    Verifying(ChecksumAlgorithm),
     Batch(Arc<[Arc<ChecksumRow>]>),
     Progress(ChecksumProgress),
     Finished(Arc<ChecksumRun>),

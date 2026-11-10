@@ -2,6 +2,7 @@ use super::*;
 
 fn saved_tabs(paths: &[&str], active: usize) -> PaneTabPreferences {
     PaneTabPreferences {
+        networks: Default::default(),
         archives: Default::default(),
         paths: paths.iter().map(|path| test_root().join(path)).collect(),
         active,

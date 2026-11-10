@@ -3,18 +3,14 @@ use midnight_core::{FileCompareLaunch, ViewerAppearance};
 use slint::{
     ComponentHandle,
     platform::{
-        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
+        Key, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
 use std::{rc::Rc, sync::Arc};
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>);
-impl Platform for TestPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
+mod support;
+use support::TestPlatform;
 
 #[test]
 fn actual_comparator_window_exposes_three_modes_and_always_closes_on_escape() {

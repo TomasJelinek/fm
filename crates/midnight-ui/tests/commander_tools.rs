@@ -38,9 +38,17 @@ fn control_f11_expands_active_pane_and_restores_split_ratio() {
     test.window.invoke_focus_files();
     test.draw();
     let width = test.window.get_left_list_width();
+    let panel_left = test.window.get_left_pane_left();
+    let panel_right = test.window.get_right_pane_left() + test.window.get_right_pane_width();
     ui::chord(&test.window, &[Key::Control], Key::F11);
     test.draw();
     assert!(test.window.get_left_list_width() > width + 200.0);
+    assert!(
+        (test.window.get_left_pane_width() - (panel_right - panel_left)).abs() < 0.1,
+        "zoom must fill the entire two-panel area"
+    );
+    assert_eq!(test.window.get_right_pane_width(), 0.0);
+    assert!(!ui::root_item(&test.window, "Panel splitter", AccessibleRole::Button).is_visible());
     ui::chord(&test.window, &[Key::Control], Key::F11);
     test.draw();
     assert!((test.window.get_left_list_width() - width).abs() < 0.1);
@@ -62,6 +70,7 @@ fn alt_history_wraps_without_changing_terminal_or_executing() {
         }),
     );
     p.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });

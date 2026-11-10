@@ -43,6 +43,44 @@ pub(crate) struct Clipboard {
 }
 
 impl Clipboard {
+    pub(crate) fn read_text(&mut self) -> Result<String, FsError> {
+        self.service_pending()?;
+        let owner = self.owner()?;
+        if owner == NONE || owner == self.window {
+            return Err(crate::clipboard_text::error(
+                "The clipboard contains no text.",
+            ));
+        }
+        for name in [
+            "UTF8_STRING",
+            "text/plain;charset=utf-8",
+            "text/plain",
+            "STRING",
+        ] {
+            let target = self
+                .connection
+                .intern_atom(false, name.as_bytes())
+                .map_err(error)?
+                .reply()
+                .map_err(error)?
+                .atom;
+            if let Some(bytes) = self.read_target(target)? {
+                if self.owner()? != owner {
+                    return Err(crate::clipboard_text::error(
+                        "The clipboard changed while its text was being read.",
+                    ));
+                }
+                return if name == "STRING" {
+                    Ok(bytes.into_iter().map(char::from).collect())
+                } else {
+                    crate::clipboard_text::decode(bytes)
+                };
+            }
+        }
+        Err(crate::clipboard_text::error(
+            "The clipboard contains no supported text format.",
+        ))
+    }
     pub(super) fn new() -> Result<Self, FsError> {
         let (connection, screen) = x11rb::connect(None).map_err(error)?;
         let window = connection.generate_id().map_err(error)?;

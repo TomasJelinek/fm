@@ -2,7 +2,7 @@
 use crate::*;
 
 fn bookmark_tooltip(presenter: &Presenter, bookmark: &midnight_core::Bookmark) -> String {
-    let mut text = format!("Hot Path\n{}", bookmark.path.display());
+    let mut text = format!("Hot Path\n{}", bookmark.display_text());
     if let Some(slot) = bookmark.slot {
         let keys = presenter.shortcut_hint(&format!("bookmark.open.{slot}"));
         if !keys.is_empty() {
@@ -27,8 +27,8 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
             label: bookmark
                 .slot
                 .map_or_else(
-                    || bookmark.path.to_string_lossy().into_owned(),
-                    |slot| format!("{}  {}", slot % 10, bookmark.path.display()),
+                    || bookmark.display_text(),
+                    |slot| format!("{}  {}", slot % 10, bookmark.display_text()),
                 )
                 .into(),
             compact_label: bookmark
@@ -75,6 +75,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_right_free_space(volume_presentation::panel_space(presenter, PaneId::Right).into());
     window.set_sizes_in_bytes(presenter.preferences.values.size_display == SizeDisplay::Bytes);
     window.set_remember_command_history(presenter.preferences.values.remember_command_history);
+    window.set_copy_checksum_verification(presenter.preferences.values.copy_checksum_verification);
     let mut hot_paths = bookmark_choices(presenter);
     hot_paths.push(NavigationChoiceRow {
         identity: "add-hot-path".into(),

@@ -18,7 +18,7 @@ while IFS= read -r -d '' source; do
     fi
 done < <(
     find "$project_root" -maxdepth 1 -type f -print0
-    for directory in crates scripts api plugins worker-api thumbnail-api filesystem-api image-viewer-api; do
+    for directory in crates scripts api plugins worker-api thumbnail-api filesystem-api image-viewer-api web-viewer-api; do
         if [[ -d "$project_root/$directory" ]]; then
             find "$project_root/$directory" -type f -print0
         fi

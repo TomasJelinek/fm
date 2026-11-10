@@ -1,8 +1,8 @@
 //! Actual engine navigation using the production app's native archive-capture callback.
 use super::*;
 use midnight_core::{
-    ArchiveAction, ArchiveAddress, ArchiveListing, ArchiveLocation, Cancellation, Command, Event,
-    FsError, NavigationId, PaneId, SortSpec,
+    ArchiveAction, ArchiveAddress, ArchiveFormat, ArchiveListing, ArchiveLocation, Cancellation,
+    Command, Event, FsError, NavigationId, PaneId, SortSpec,
 };
 use midnight_engine::Engine;
 use tokio::sync::mpsc;
@@ -90,7 +90,10 @@ async fn archive_navigation_and_legacy_restore_share_installed_native_authority(
     let listing = navigate(
         &commands,
         &mut events,
-        ArchiveAction::Open { path: path.clone() },
+        ArchiveAction::Open {
+            path: path.clone(),
+            format: ArchiveFormat::Gzip,
+        },
         1,
     )
     .await
@@ -152,9 +155,13 @@ async fn missing_native_plugin_rejects_new_and_restored_archive_open() {
     ));
     let (commands, mut events, task) = start(provider);
     for (index, action) in [
-        ArchiveAction::Open { path: path.clone() },
+        ArchiveAction::Open {
+            path: path.clone(),
+            format: ArchiveFormat::Gzip,
+        },
         ArchiveAction::List(ArchiveLocation::unavailable(ArchiveAddress {
             provider: "midnight.fs.archive".into(),
+            format: Some(ArchiveFormat::Gzip),
             container: path,
             source_version: vec![1],
             components: vec![],
@@ -170,6 +177,60 @@ async fn missing_native_plugin_rejects_new_and_restored_archive_open() {
             failure.to_string().contains("Native filesystem"),
             "{failure}"
         );
+    }
+    shutdown(commands, events, task).await;
+}
+
+#[tokio::test]
+#[ignore = "read-only timing; requires MIDNIGHT_ARCHIVE_TEST_SOURCE and protected runtime"]
+async fn measure_supplied_archive_through_production_capture() {
+    let path = PathBuf::from(std::env::var_os("MIDNIGHT_ARCHIVE_TEST_SOURCE").unwrap());
+    let format = midnight_core::archive_format(&path).expect("known archive suffix");
+    let provider = Arc::new(InstalledProvider::from_installation(installation(), None));
+    let (commands, mut events, task) = start(provider);
+    // Exclude package discovery from navigation, as in an already-started app.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while let Some(event) = events.recv().await {
+            if let Event::ArchiveAvailability(formats) = event {
+                assert!(formats.contains(&format));
+                return;
+            }
+        }
+        panic!("Missing archive availability");
+    })
+    .await
+    .unwrap();
+    for iteration in 0..3 {
+        let start = std::time::Instant::now();
+        let listing = navigate(
+            &commands,
+            &mut events,
+            ArchiveAction::Open {
+                path: path.clone(),
+                format,
+            },
+            iteration + 1,
+        )
+        .await
+        .unwrap();
+        eprintln!(
+            "iteration={iteration} production_open_and_list={:?} entries={}",
+            start.elapsed(),
+            listing.entries.len()
+        );
+        let start = std::time::Instant::now();
+        let listed = listing
+            .location
+            .mount
+            .as_ref()
+            .unwrap()
+            .list(listing.location.directory, &Cancellation::default())
+            .unwrap();
+        eprintln!("relist={:?} entries={}", start.elapsed(), listed.len());
+        assert_eq!(listing.location.address.container, path);
+        drop(listing);
+        // The previous supervisor reaps on its own backend thread.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
     shutdown(commands, events, task).await;
 }

@@ -18,9 +18,14 @@ The external command line is an explicit user-controlled shell action.
   on Windows, Terminal/Terminal(sudo) on POSIX. No process-wide cwd changes. Commands run
   only on explicit submit, with bounded launch capacity and background reaping.
 - Ctrl+[ and Ctrl+] insert left/right pane paths at the caret, replacing any
-  selection. Paths are quoted for the selected shell, byte-exact for Unicode;
-  PowerShell ASCII/curly apostrophes and POSIX apostrophes are escaped. No command
+  selection. At the user's updated request, paths are inserted as raw Unicode
+  text with no generated quotes, escaping or separator spaces. These shortcuts
+  and Ctrl+P end the directory with a native path separator, retaining an existing
+  trailing separator without duplication. Ctrl+Enter still appends just the
+  filename, so directory and filename insertions compose directly. No command
   launches on insertion. These shortcuts work from panels and the editor.
+- The command prompt keeps only 4 logical pixels between `>` and the editable
+  command in both densities; long working paths remain horizontally scrollable.
 - A nonempty draft is bound to the grammar used at its first edit/insertion.
   Late loaded defaults cannot reinterpret it; cross-grammar selection is rejected
   with clear-line guidance. POSIX Standard/Elevated changes keep the same grammar
@@ -112,7 +117,8 @@ Desktop commands/results use request IDs and the existing bounded message bridge
 Native properties may occupy their own bounded workers; they cannot starve
 navigation, icon work or terminal launches. Fallback properties are read-only
 backend metadata, never an implicit file launch. Terminal command text is never
-logged; stdin text is intentionally shell code, inserted filenames are literals.
+logged; submitted editor text is intentionally shell code. Path/name insertion
+only edits raw text and does not promise shell-literal interpretation.
 File activation has its own four-call budget and at most sixteen tracked desktop
 helpers; it cannot occupy navigation capacity. Windows uses Unicode
 `ShellExecuteExW(open)` with separate filename/parameter fields. Linux uses an
@@ -120,10 +126,10 @@ absolute system `xdg-open` or `gio open` executable with literal native argv and
 null standard streams. Helper failures are reported and children reaped on the
 backend. Late directory-link results require matching request/pane/navigation
 identity. Missing or special files fail without launching an alternative target.
-Literal insertion is restricted to recognized standalone argument boundaries.
-Ambiguous or quoted editor positions are rejected without changing the command;
-the application does not attempt to parse arbitrary shell programs. Deliberate
-user code such as eval/sh -c can reinterpret arguments, as in an ordinary shell.
+Raw insertion works at the caret or replaces the selected text, including inside
+user-entered quotes. Actual filename spaces and punctuation are preserved.
+Control characters and names that cannot be represented exactly are rejected.
+No shell is parsed or invoked by this editing action.
 
 ## Automatic filesystem refresh
 
@@ -160,8 +166,13 @@ user code such as eval/sh -c can reinterpret arguments, as in an ordinary shell.
 
 ## Appearance and preferences
 
-- Remove the entire top Midnight Explorer/About branding row. About stays in F10 Menu. Options
-  lives beside Run and in the menu; no replacement full-width header is added.
+- F10 exposes important implemented commands in grouped categories with effective
+  shortcut hints and shared availability rules; see the
+  [expanded main menu](2026-11-08-main-menu.md).
+- Remove the entire top Midnight Explorer/About branding row. About stays in F10
+  Menu and is also available from the moon icon at the top toolbar's right end.
+  The Options gear sits immediately to its left; both remain visible when the
+  panel tools scroll. No replacement full-width branding header is added.
 - Themes: Blue(default), neutral Dark, Light. One Slint Theme global owns semantic
   surfaces/text/focus/selection/error/disabled colors and the std-widget scheme.
 - Density: Desktop/mouse compact; Touch uses at least44 logical px for principal

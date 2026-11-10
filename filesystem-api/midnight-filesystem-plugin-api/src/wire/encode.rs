@@ -11,6 +11,8 @@ pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireEr
         | Request::VolumeLabel { address }
         | Request::VolumeInformation { address } => out.address(address)?,
         Request::Stat { mount, node }
+        | Request::Activate { mount, node }
+        | Request::Refresh { mount, node }
         | Request::Parent { mount, node }
         | Request::OpenRead { mount, node } => {
             out.u64(*mount)?;
@@ -47,6 +49,7 @@ pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireEr
             out.u32(*length)?;
         }
         Request::Volumes => {}
+        Request::ResolveText { text } => out.text(text)?,
     }
     Ok(out.bytes)
 }
@@ -55,6 +58,15 @@ pub fn encode_response(value: &Response, maximum: usize) -> Result<Vec<u8>, Wire
     validate::response(value)?;
     let mut out = Writer::new(maximum)?;
     match value {
+        Response::Activated(target) => {
+            out.u16(14)?;
+            let (kind, address) = match target {
+                ActivationTarget::WithinProvider(address) => (1, address),
+                ActivationTarget::Native(address) => (2, address),
+            };
+            out.u8(kind)?;
+            out.address(address)?;
+        }
         Response::Unit => out.u16(1)?,
         Response::Resolved { mount, node } => {
             out.u16(2)?;

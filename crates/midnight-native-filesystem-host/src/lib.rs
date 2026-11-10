@@ -12,10 +12,12 @@ mod content;
 mod discovery;
 mod ffi;
 mod installed;
+mod network;
+pub use network::NetworkProvider;
 mod revision;
 mod services;
 mod volumes;
-pub use discovery::{Catalog, Package};
+pub use discovery::{Catalog, Package, PackageKind};
 pub use installed::InstalledProvider;
 #[cfg(windows)]
 #[path = "paths_windows.rs"]
@@ -43,6 +45,13 @@ pub struct NativeProvider {
 impl NativeProvider {
     /// Load a discovered, compatible package. Revalidates trust at load time.
     pub fn open(package: &Package) -> Result<Self, Failure> {
+        if package.encoding != paths::ENCODING
+            || package.capabilities & midnight_filesystem_plugin_api::abi::CAP_NATIVE_ADDRESS == 0
+        {
+            return Err(discovery::invalid(
+                "A virtual discovery provider cannot supply native file access",
+            ));
+        }
         Ok(Self {
             transport: Arc::new(ffi::Instance::open(package)?),
             capabilities: package.capabilities,

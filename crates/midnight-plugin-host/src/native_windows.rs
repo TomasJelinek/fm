@@ -15,6 +15,8 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::LibraryLoader::*,
 };
+#[path = "native_windows_paths.rs"]
+mod paths;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Snapshot {
@@ -42,7 +44,7 @@ pub(crate) fn open_read(path: &Path) -> io::Result<File> {
         .read(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(paths::literal(path)?)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(

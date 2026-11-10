@@ -58,6 +58,68 @@ fn image_worker_packages_are_left_to_the_process_viewer_host() {
 }
 
 #[test]
+fn web_worker_packages_are_left_to_their_validating_process_host() {
+    let root = fixture_root();
+    let package = root.path().join("viewers/html");
+    std::fs::create_dir_all(&package).unwrap();
+    // Validation belongs to the web host, including malformed manifests. Native
+    // discovery must not invent a second missing-plugin.toml failure for it.
+    std::fs::write(package.join("web-viewer.json"), "{}").unwrap();
+    let runtime = Runtime::discover(root.path()).unwrap();
+    assert!(runtime.catalog().is_empty());
+    assert!(
+        runtime.diagnostics().is_empty(),
+        "{:?}",
+        runtime.diagnostics()
+    );
+}
+
+#[test]
+fn mixed_viewer_transports_are_always_unavailable() {
+    for manifests in [
+        ["plugin.toml", "web-viewer.json"],
+        ["image-viewer.json", "web-viewer.json"],
+    ] {
+        let root = fixture_root();
+        let directory = package(root.path(), "mixed", "viewer.mixed", "");
+        std::fs::remove_file(directory.join("plugin.toml")).unwrap();
+        for manifest in manifests {
+            if manifest == "plugin.toml" {
+                package(root.path(), "mixed", "viewer.mixed", "");
+            } else {
+                std::fs::write(directory.join(manifest), "{}").unwrap();
+            }
+        }
+        let runtime = Runtime::discover(root.path()).unwrap();
+        assert!(runtime.catalog().is_empty(), "accepted {manifests:?}");
+        assert_eq!(runtime.diagnostics().len(), 1, "{manifests:?}");
+    }
+}
+
+#[test]
+fn viewer_friendly_names_reject_controls_empty_and_oversized_metadata() {
+    for name in [
+        String::new(),
+        "   ".into(),
+        "unsafe\u{1b}name".into(),
+        "x".repeat(129),
+    ] {
+        let root = fixture_root();
+        // TOML literal strings preserve the control character for the parser's
+        // validation; either parser or metadata validation must reject it.
+        package(
+            root.path(),
+            "named",
+            "viewer.named",
+            &format!("name = '{name}'\n"),
+        );
+        let runtime = Runtime::discover(root.path()).unwrap();
+        assert!(runtime.catalog().is_empty(), "accepted name {name:?}");
+        assert_eq!(runtime.diagnostics().len(), 1);
+    }
+}
+
+#[test]
 fn packages_with_native_and_image_worker_entries_are_ambiguous() {
     let root = fixture_root();
     let package = package(root.path(), "ambiguous", "viewer.ambiguous", "");

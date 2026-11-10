@@ -188,7 +188,43 @@ These handles/revisions grant no mutation authority and cannot replace the
 application's stronger verified-copy/remove protocols.
 
 No Watch, write, delete, recursive traversal, authentication, executable launch
-or UI callbacks are defined by this service. macOS and aarch64 packages have not
-been implemented/qualified. Host composition must route listing and native F3
+or UI callbacks are defined by the native Browse/Read service. Host composition must route listing and native F3
 capture through loaded packages and disable those capabilities when a package is
 absent; the independent conformance tests alone do not establish host cutover.
+
+## Optional explicit activation, ABI minor 2
+
+Independent virtual providers may advertise `CAP_ACTIVATE = 128`. Their
+descriptor and manifest require host minor 2. Native providers do not advertise
+it and return Unsupported; all existing operation tags and C layouts remain
+unchanged. Operation 17 carries `(mount: u64, node: u64)` for an already-issued
+node, both nonzero. Hosts invoke it only for an explicit user navigation action,
+never restore, stat, listing, icons, previews or hover.
+
+Response tag 14 carries a one-byte target kind and an Address: kind 1 is
+WithinProvider (provider-owned address, never a native-path fallback); kind 2
+is Native (absolute Windows UTF-16LE or Unix-byte path). Opaque/relative/native
+NUL addresses fail codec validation. The host also verifies that native encoding
+matches its platform, retains original provider/back context until success, and
+uses its own native provider. It does not launch a shell or interpret a URL as a
+path. A failed handoff leaves the original virtual location visible.
+
+Additional failure codes 11–15 are Unavailable, Offline,
+AuthenticationRequired, MountRequired and TimedOut. The original 1–10 meanings
+remain unchanged. AuthenticationRequired requires an observed authentication
+challenge; PermissionDenied must not be guessed to mean a missing password.
+These messages carry no passwords or credentials. Network-provider policy and
+the later host broker determine permitted explicit connection actions; the ABI
+does not grant a virtual node mutation or content-read authority.
+
+`CAP_REFRESH = 256` admits operation 18, the same `(mount,node)` payload, returning
+Unit after invalidating the selected directory's TTL cache. It does not activate
+the location, mount a share or authenticate; later listings use new data. A late
+old listing cannot repopulate an explicitly invalidated cache generation.
+
+`CAP_RESOLVE_TEXT = 512` admits operation 19, one UTF-8 length-prefixed string of
+explicit user input (nonempty, no NUL). It returns the existing Resolved response.
+The plugin parses its own user-facing syntax without opening the endpoint. The
+host never constructs a provider's opaque storage codec or uses a display caption
+as an address. This allows manual server entry when discovery is unavailable.
+These capabilities also require host minor 2; no old operation is repurposed.

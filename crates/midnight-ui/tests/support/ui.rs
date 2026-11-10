@@ -44,6 +44,9 @@ impl TestUi {
         let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
         let window = MainWindow::new().unwrap();
+        // Bare widget tests represent a ready app; installing a real Presenter
+        // replaces this with its actual asynchronous preference-load state.
+        window.set_preferences_ready(true);
         midnight_ui::install_file_keys(&window);
         window.show().unwrap();
         window
@@ -74,17 +77,45 @@ impl TestUi {
     }
 
     pub fn draw(&mut self) {
+        // Settle deferred property-change callbacks as a native frame does.
+        slint::platform::update_timers_and_animations();
         self.native.draw_if_needed(|renderer| {
             renderer.render(&mut self.pixels, self.width);
         });
     }
 
     pub fn options_topic(&mut self, topic: i32) {
-        click_popup(
-            &self.window,
-            ["Panel", "Appearance", "Command", "Keyboard"][topic as usize],
-            AccessibleRole::Button,
-        );
+        let label = match topic {
+            0 => "General",
+            1 => "Appearance",
+            3 => "Keyboard",
+            4 => "Editors",
+            5 => "Plugins",
+            6 => "Previews",
+            7 => "Archives",
+            8 => "Colors",
+            9 => "Custom Commands",
+            _ => panic!("unsupported Options topic: {topic}"),
+        };
+        if let Some(button) = try_popup_item(&self.window, label, AccessibleRole::Button) {
+            click_item(&self.window, button);
+        } else {
+            let current = self.window.get_options_topic_index();
+            let current_index = if current >= 3 { current - 1 } else { current };
+            let target_index = if topic >= 3 { topic - 1 } else { topic };
+            click_popup(&self.window, "Options topic", AccessibleRole::Combobox);
+            for _ in 0..(target_index - current_index).abs() {
+                key(
+                    &self.window,
+                    if target_index > current_index {
+                        Key::DownArrow
+                    } else {
+                        Key::UpArrow
+                    },
+                );
+            }
+            key(&self.window, Key::Return);
+        }
         self.draw();
         assert_eq!(self.window.get_options_topic_index(), topic);
     }
@@ -99,15 +130,18 @@ pub fn click_popup(window: &MainWindow, label: &str, role: AccessibleRole) {
 }
 
 pub fn popup_item(window: &MainWindow, label: &str, role: AccessibleRole) -> ItemRc {
+    try_popup_item(window, label, role)
+        .unwrap_or_else(|| panic!("no accessible popup control: {label}"))
+}
+
+pub fn try_popup_item(window: &MainWindow, label: &str, role: AccessibleRole) -> Option<ItemRc> {
     let inner = WindowInner::from_pub(window.window());
     let popups = inner.active_popups();
     let popup = popups
         .iter()
         .rev()
-        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
-        .expect("an open control popup");
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))?;
     find(ItemRc::new_root(popup.component.clone()), label, role)
-        .unwrap_or_else(|| panic!("no accessible popup control: {label}"))
 }
 
 pub fn click_root(window: &MainWindow, label: &str, role: AccessibleRole) {
@@ -120,13 +154,23 @@ pub fn root_position(
     label: &str,
     role: AccessibleRole,
 ) -> slint::LogicalPosition {
-    let item = root_item(window, label, role);
+    try_root_position(window, label, role)
+        .unwrap_or_else(|| panic!("no accessible main control: {label}"))
+}
+
+pub fn try_root_position(
+    window: &MainWindow,
+    label: &str,
+    role: AccessibleRole,
+) -> Option<slint::LogicalPosition> {
+    let root = WindowInner::from_pub(window.window()).component();
+    let item = find(ItemRc::new_root(root), label, role)?;
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
-    slint::LogicalPosition::new(
+    Some(slint::LogicalPosition::new(
         origin.x + rect.size.width / 2.0,
         origin.y + rect.size.height / 2.0,
-    )
+    ))
 }
 
 pub fn root_item(window: &MainWindow, label: &str, role: AccessibleRole) -> ItemRc {
@@ -230,4 +274,20 @@ pub fn click(window: &MainWindow, x: f32, y: f32) {
     window
         .window()
         .dispatch_event(WindowEvent::PointerReleased { position, button });
+}
+
+pub fn pointer_button(
+    window: &MainWindow,
+    position: slint::LogicalPosition,
+    button: PointerEventButton,
+    pressed: bool,
+) {
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    window.window().dispatch_event(if pressed {
+        WindowEvent::PointerPressed { position, button }
+    } else {
+        WindowEvent::PointerReleased { position, button }
+    });
 }

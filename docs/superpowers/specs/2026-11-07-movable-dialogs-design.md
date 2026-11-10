@@ -1,5 +1,17 @@
 # Movable dialog headers
 
+## Superseding native-window requirement
+
+The later request requires every dialog to be resizable, have a top-right X with
+Cancel semantics, and move outside the main window onto another monitor. The
+embedded implementation described below cannot satisfy that requirement.
+[Current dialog ergonomics](../../developer/DIALOG_ERGONOMICS.md) and the
+[latest extension](2026-11-07-panel-viewer-followups.md#dialogs-and-settings)
+supersede the bounded-popup decision. Native window hosting is still being
+integrated; shared frame/X and resize component tests do not prove that migration.
+
+## Earlier embedded implementation (historical)
+
 The user requests dragging every dialog by its header. Keep the existing popup
 and embedded-modal lifetimes, keyboard focus, outside-click policy and callbacks.
 Menus, tooltips and native operating-system dialogs retain their existing behavior.
@@ -10,8 +22,9 @@ the position outside the dependency tracker. Only native popup windows explicitl
 subscribe to position changes. Do not depend on an x/y-only binding to move
 embedded popups. Keep each existing PopupWindow as a viewport-sized host and move
 its inner dialog body. Explicit outside-body dismissal preserves the previous
-outside-click policy. Replacing dialogs with native windows would unnecessarily
-change modality and platform behavior.
+outside-click policy. This was the earlier implementation choice; the subsequent
+native-window requirement intentionally changes its host while preserving the
+draft, backend-request and cancellation contracts.
 
 Hosts that previously dismissed on an outside click keep that native policy too,
 so clicking outside the application still dismisses them. Modal hosts keep

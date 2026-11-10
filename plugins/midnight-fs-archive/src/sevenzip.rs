@@ -1,23 +1,24 @@
 //! Metadata-only mounting; each requested compression block is verified atomically.
 use crate::*;
 use sevenz_rust2::{ArchiveEntry, BlockDecoder, EncoderMethod, Password};
-use std::io::Cursor;
+use std::io::{Seek, SeekFrom};
+
+const MAX_NEXT_HEADER: u64 = 64 * 1024 * 1024;
 
 #[cfg(test)]
 #[path = "sevenzip_tests.rs"]
 mod tests;
 
 pub(crate) struct Content {
-    source: Cursor<Vec<u8>>,
+    source: Reader,
     metadata: sevenz_rust2::Archive,
     members: HashMap<u64, usize>,
-    file_nodes: Vec<Option<u64>>,
+    empty: std::collections::HashSet<u64>,
 }
 
 impl Archive {
-    pub(crate) fn sevenzip(&mut self, source: Vec<u8>) -> Result<(), Error> {
-        let source_length = source.len() as u64;
-        let mut source = Cursor::new(source);
+    pub(crate) fn sevenzip(&mut self, mut source: Reader, source_length: u64) -> Result<(), Error> {
+        preflight_header(&mut source, source_length)?;
         // This parses and verifies the 7z index (including compressed headers), not bodies.
         let metadata =
             sevenz_rust2::Archive::read(&mut source, &Password::empty()).map_err(seven_error)?;
@@ -70,13 +71,15 @@ impl Archive {
         for entry in &metadata.files {
             let kind = kind(entry);
             let readable = kind == Kind::File && tree::safe_name(entry.name.as_bytes());
-            self.add(entry.name.as_bytes(), &entry.name, kind, None, readable)?;
+            let id = self.add(entry.name.as_bytes(), &entry.name, kind, None, readable)?;
+            if let Some(node) = self.nodes.get_mut((id - 2) as usize) {
+                node.modified = entry
+                    .has_last_modified_date
+                    .then(|| timestamps::filetime(u64::from(entry.last_modified_date)));
+            }
             if readable {
                 let id = self.indexed_size(entry.size)?;
                 file_nodes.push(Some(id));
-                if !entry.has_stream {
-                    self.contents.insert(id, Vec::new());
-                }
             } else {
                 file_nodes.push(None);
             }
@@ -86,9 +89,45 @@ impl Archive {
     }
 }
 
+fn preflight_header(source: &mut Reader, source_length: u64) -> Result<(), Error> {
+    source.seek(SeekFrom::Start(0))?;
+    let mut header = [0; 32];
+    source.read_exact(&mut header)?;
+    if header[..6] != [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c] {
+        return Err(Error::new(ErrorCode::Corrupt, "Invalid 7z signature"));
+    }
+    let mut offset = [0; 8];
+    offset.copy_from_slice(&header[12..20]);
+    let mut length = [0; 8];
+    length.copy_from_slice(&header[20..28]);
+    let offset = u64::from_le_bytes(offset);
+    let length = u64::from_le_bytes(length);
+    if length > MAX_NEXT_HEADER {
+        return Err(Error::new(
+            ErrorCode::Limit,
+            "7z metadata next header exceeds 64 MiB memory budget",
+        ));
+    }
+    if 32u64
+        .checked_add(offset)
+        .and_then(|start| start.checked_add(length))
+        .is_none_or(|end| end > source_length)
+    {
+        return Err(Error::new(
+            ErrorCode::Corrupt,
+            "7z next header range exceeds the captured source",
+        ));
+    }
+    // The pinned parser verifies header CRCs. Its optional recovery scan is bounded
+    // to 1 MiB. Encoded-header output and decoder dictionaries have no public limit
+    // hook; process memory containment remains necessary for those allocations.
+    source.seek(SeekFrom::Start(0))?;
+    Ok(())
+}
+
 impl Content {
     fn new(
-        mut source: Cursor<Vec<u8>>,
+        mut source: Reader,
         mut metadata: sevenz_rust2::Archive,
         original_nodes: Vec<Option<u64>>,
     ) -> Result<Self, Error> {
@@ -99,7 +138,7 @@ impl Content {
         let original_blocks = std::mem::take(&mut metadata.stream_map.file_block_index);
         let mut first = vec![0; metadata.blocks.len()];
         let mut counts = vec![0usize; metadata.blocks.len()];
-        let mut file_nodes = Vec::new();
+        let mut empty = std::collections::HashSet::new();
         let mut members = HashMap::new();
         for ((file, block), node) in original_files
             .into_iter()
@@ -107,6 +146,9 @@ impl Content {
             .zip(original_nodes)
         {
             if !file.has_stream {
+                if let Some(node) = node {
+                    empty.insert(node);
+                }
                 continue;
             }
             let block = block
@@ -122,7 +164,6 @@ impl Content {
             if let Some(id) = node {
                 members.insert(id, index);
             }
-            file_nodes.push(node);
             metadata.files.push(file);
             metadata.stream_map.file_block_index.push(Some(block));
         }
@@ -139,21 +180,30 @@ impl Content {
             source,
             metadata,
             members,
-            file_nodes,
+            empty,
         })
     }
 
     pub(crate) fn decode(
         &mut self,
         entry: u64,
-        limits: Limits,
-    ) -> Result<HashMap<u64, Vec<u8>>, Error> {
+        storage: Rc<dyn Storage>,
+    ) -> Result<storage::Content, Error> {
+        if self.empty.contains(&entry) {
+            return Stage::new(storage, StagePurpose::Member { entry }, Some(0), 0)?.finish();
+        }
         let index = *self.members.get(&entry).ok_or_else(corrupt_block)?;
         let block = self.metadata.stream_map.file_block_index[index].ok_or_else(corrupt_block)?;
         let mut file_index = self.metadata.stream_map.block_first_file_index[block];
         let block_size = self.metadata.blocks[block].get_unpack_size();
         let mut actual = 0u64;
-        let mut staged = HashMap::new();
+        let length = self.metadata.files[index].size;
+        let mut staged = Stage::new(
+            storage,
+            StagePurpose::Member { entry },
+            Some(length),
+            length,
+        )?;
         let mut failure = None;
         let password = Password::empty();
         BlockDecoder::new(1, block, &self.metadata, &password, &mut self.source)
@@ -161,21 +211,15 @@ impl Content {
                 let result = (|| {
                     // Even unsafe siblings must be drained to validate a solid block. Nothing
                     // enters the retained cache until every member and the block CRC succeed.
-                    let bytes = bounded_read(
-                        reader,
-                        limits
-                            .max_entry
-                            .min(limits.max_total.saturating_sub(actual)),
-                    )?;
-                    if bytes.len() as u64 != file.size {
+                    let count = if file_index == index {
+                        staged.copy(reader)?
+                    } else {
+                        staged.discard(reader)?
+                    };
+                    if count != file.size {
                         return Err(corrupt_block());
                     }
-                    actual = actual
-                        .checked_add(bytes.len() as u64)
-                        .ok_or_else(Error::limit)?;
-                    if let Some(id) = self.file_nodes.get(file_index).copied().flatten() {
-                        staged.insert(id, bytes);
-                    }
+                    actual = actual.checked_add(count).ok_or_else(Error::limit)?;
                     file_index += 1;
                     Ok(())
                 })();
@@ -191,10 +235,10 @@ impl Content {
         if let Some(error) = failure {
             return Err(error);
         }
-        if actual != block_size || !staged.contains_key(&entry) {
+        if actual != block_size {
             return Err(corrupt_block());
         }
-        Ok(staged)
+        staged.finish()
     }
 }
 

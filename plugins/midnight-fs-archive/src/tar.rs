@@ -1,54 +1,77 @@
-//! Seekable TAR metadata and checked ranges into one immutable backing buffer.
+//! Metadata-only TAR index and checked u64 ranges into a captured source or sealed scratch.
 use crate::*;
-use std::io::{Cursor, Seek, SeekFrom};
-use std::ops::Range;
-
+use std::{
+    io::{Seek, SeekFrom},
+    ops::Range,
+};
 pub(crate) struct Content {
-    source: Vec<u8>,
-    ranges: HashMap<u64, Range<usize>>,
+    source: Reader,
+    ranges: HashMap<u64, Range<u64>>,
+    scratch: Option<storage::Content>,
 }
-
 impl Content {
-    pub(crate) fn read(
-        &self,
+    pub(crate) fn prepare(
+        &mut self,
         entry: u64,
-        offset: u64,
-        length: u32,
-    ) -> Result<(Vec<u8>, bool), Error> {
+        storage: Rc<dyn Storage>,
+    ) -> Result<storage::Content, Error> {
         let range = self.ranges.get(&entry).ok_or_else(|| {
             Error::new(
                 ErrorCode::Unsupported,
                 "Archive member has no regular byte content",
             )
         })?;
-        read_slice(&self.source[range.clone()], offset, length)
+        let length = range.end - range.start;
+        if let Some(scratch) = self.scratch {
+            return Ok(storage::Content {
+                stage: scratch.stage,
+                offset: scratch.offset + range.start,
+                length,
+            });
+        }
+        self.source.seek(SeekFrom::Start(range.start))?;
+        let mut stage = Stage::new(
+            storage,
+            StagePurpose::Member { entry },
+            Some(length),
+            length,
+        )?;
+        stage.copy((&mut self.source).take(length))?;
+        stage.finish()
     }
 }
-
-// Cursor normally permits seeking past EOF. TAR's seek iterator treats that as a
-// clean end, so reject out-of-source skips, including padding of the final member.
-struct BoundedCursor<'a>(Cursor<&'a [u8]>);
-impl Read for BoundedCursor<'_> {
+struct BoundedReader {
+    reader: Reader,
+    length: u64,
+}
+impl Read for BoundedReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buffer)
+        self.reader.read(buffer)
     }
 }
-impl Seek for BoundedCursor<'_> {
-    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        let position = self.0.seek(position)?;
-        if position > self.0.get_ref().len() as u64 {
+impl Seek for BoundedReader {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = self.reader.seek(from)?;
+        if position > self.length {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
         Ok(position)
     }
 }
-
 impl Archive {
-    pub(crate) fn tar(&mut self, source: Vec<u8>) -> Result<(), Error> {
-        let mut archive = ::tar::Archive::new(BoundedCursor(Cursor::new(&source)));
+    pub(crate) fn tar(
+        &mut self,
+        source: Reader,
+        length: u64,
+        scratch: Option<storage::Content>,
+    ) -> Result<(), Error> {
+        let mut archive = ::tar::Archive::new(BoundedReader {
+            reader: source,
+            length,
+        });
         let mut ranges = HashMap::new();
         for entry in archive.entries_with_seek()? {
-            let entry = entry?;
+            let mut entry = entry?;
             let raw = entry.path_bytes().into_owned();
             let display = String::from_utf8_lossy(&raw).into_owned();
             let typ = entry.header().entry_type();
@@ -66,24 +89,26 @@ impl Archive {
             if size > self.limits.max_entry {
                 return Err(Error::limit());
             }
-            self.add(&raw, &display, kind, None, readable)?;
+            let modified = timestamps::tar_modified(&mut entry);
+            let id = self.add(&raw, &display, kind, None, readable)?;
+            if let Some(node) = self.nodes.get_mut((id - 2) as usize) {
+                node.modified = modified;
+            }
             if readable {
-                // Only regular, contiguous files use ranges. Sparse/special/link entries
-                // remain unreadable; GNU/PAX extension processing stays in tar-rs.
                 let start = entry.raw_file_position();
                 let end = start
                     .checked_add(size)
-                    .filter(|end| *end <= source.len() as u64)
+                    .filter(|end| *end <= length)
                     .ok_or_else(|| Error::new(ErrorCode::Corrupt, "Truncated TAR member"))?;
                 let id = self.indexed_size(size)?;
-                ranges.insert(
-                    id,
-                    usize::try_from(start).map_err(|_| Error::limit())?
-                        ..usize::try_from(end).map_err(|_| Error::limit())?,
-                );
+                ranges.insert(id, start..end);
             }
         }
-        self.tar_content = Some(Content { source, ranges });
+        self.tar_content = Some(Content {
+            source: archive.into_inner().reader,
+            ranges,
+            scratch,
+        });
         Ok(())
     }
 }

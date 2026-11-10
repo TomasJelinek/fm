@@ -1,14 +1,20 @@
 //! Read-only archive parsing. This code runs only inside the isolated worker.
+pub mod broker;
 mod formats;
 mod sevenzip;
+pub mod storage;
 mod streams;
 mod tar;
+mod timestamps;
 mod tree;
+use midnight_filesystem_api::StagePurpose;
 use midnight_filesystem_api::{ErrorCode, Format, Kind, MAX_BATCH, MAX_READ, Node};
+use std::rc::Rc;
 use std::{
     collections::HashMap,
     io::{self, Read},
 };
+use storage::{Content, Reader, Stage, Storage};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -22,12 +28,12 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_source: 64 * 1024 * 1024,
-            max_entry: 64 * 1024 * 1024,
-            max_total: 128 * 1024 * 1024,
+            max_source: u64::MAX,
+            max_entry: u64::MAX,
+            max_total: u64::MAX,
             max_entries: 100_000,
             max_names: 8 * 1024 * 1024,
-            max_ratio: 200,
+            max_ratio: u64::MAX,
         }
     }
 }
@@ -50,6 +56,14 @@ impl Error {
             "Archive exceeds the read-only worker budget",
         )
     }
+    pub(crate) fn storage(error: io::Error) -> Self {
+        let code = if error.kind() == io::ErrorKind::Interrupted {
+            ErrorCode::Cancelled
+        } else {
+            ErrorCode::Io
+        };
+        Self::new(code, error.to_string())
+    }
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,13 +78,14 @@ impl From<io::Error> for Error {
 }
 
 /// One bounded, immutable mount. ZIP members and 7z blocks are verified on first read.
-/// No extraction, path opening or host association is implemented here.
+/// Decoded bytes are staged through host capabilities; no native path is opened here.
 pub struct Archive {
     nodes: Vec<Node>,
-    contents: HashMap<u64, Vec<u8>>,
+    contents: HashMap<u64, Content>,
+    storage: Rc<dyn Storage>,
     directories: HashMap<(u64, Vec<u8>), u64>,
     children: HashMap<u64, Vec<usize>>,
-    zip: Option<zip::ZipArchive<std::io::Cursor<Vec<u8>>>>,
+    zip: Option<zip::ZipArchive<Reader>>,
     zip_members: HashMap<u64, usize>,
     tar_content: Option<tar::Content>,
     sevenzip_content: Option<sevenzip::Content>,
@@ -79,14 +94,34 @@ pub struct Archive {
     total: u64,
 }
 impl Archive {
+    /// Owned in-memory fixtures. The executable uses `open_stream` with the host broker.
     pub fn open(format: Format, source: Vec<u8>, limits: Limits) -> Result<Self, Error> {
-        if source.len() as u64 > limits.max_source {
+        let length = source.len() as u64;
+        Self::open_stream(
+            format,
+            Box::new(std::io::Cursor::new(source)),
+            length,
+            Rc::new(storage::MemoryStorage::default()),
+            limits,
+        )
+    }
+
+    /// Production entry point: source and decoded storage are host-brokered streams.
+    pub fn open_stream(
+        format: Format,
+        source: Box<dyn storage::ReadSeek>,
+        source_length: u64,
+        storage: Rc<dyn Storage>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        if source_length > limits.max_source {
             return Err(Error::limit());
         }
-        let source_length = source.len() as u64;
+        let source = std::io::BufReader::with_capacity(MAX_READ as usize, source);
         let mut result = Self {
             nodes: vec![],
             contents: HashMap::new(),
+            storage,
             directories: HashMap::new(),
             children: HashMap::new(),
             zip: None,
@@ -99,21 +134,11 @@ impl Archive {
         };
         match format {
             Format::Zip => result.zip(source)?,
-            Format::Tar => result.tar(source)?,
-            Format::Gzip | Format::TarGzip => {
-                let budget = limits
-                    .max_total
-                    .min((source.len() as u64).saturating_mul(limits.max_ratio));
-                let bytes =
-                    bounded_read(flate2::read::MultiGzDecoder::new(source.as_slice()), budget)?;
-                if format == Format::TarGzip {
-                    result.tar(bytes)?;
-                } else {
-                    result.add(b"content", "content", Kind::File, Some(bytes), true)?;
-                }
-            }
-            Format::SevenZip => result.sevenzip(source)?,
-            Format::Xz
+            Format::Tar => result.tar(source, source_length, None)?,
+            Format::SevenZip => result.sevenzip(source, source_length)?,
+            Format::Gzip
+            | Format::TarGzip
+            | Format::Xz
             | Format::TarXz
             | Format::Bzip2
             | Format::TarBzip2
@@ -122,11 +147,23 @@ impl Archive {
                 let budget = limits
                     .max_total
                     .min(source_length.saturating_mul(limits.max_ratio));
-                let bytes = streams::decode(format, &source, budget, limits.max_entry)?;
-                if matches!(format, Format::TarXz | Format::TarBzip2 | Format::TarZstd) {
-                    result.tar(bytes)?;
+                let mut stage =
+                    Stage::new(result.storage.clone(), StagePurpose::Scratch, None, budget)?;
+                streams::decode(format, source, &mut stage)?;
+                let content = stage.finish()?;
+                if matches!(
+                    format,
+                    Format::TarGzip | Format::TarXz | Format::TarBzip2 | Format::TarZstd
+                ) {
+                    let reader: Box<dyn storage::ReadSeek> =
+                        Box::new(storage::StoredReader::new(result.storage.clone(), content));
+                    result.tar(
+                        std::io::BufReader::with_capacity(MAX_READ as usize, reader),
+                        content.length,
+                        Some(content),
+                    )?;
                 } else {
-                    result.add(b"content", "content", Kind::File, Some(bytes), true)?;
+                    result.add(b"content", "content", Kind::File, Some(content), true)?;
                 }
             }
         }
@@ -160,6 +197,27 @@ impl Archive {
         if length == 0 || length > MAX_READ {
             return Err(Error::limit());
         }
+        let content = if let Some(content) = self.contents.get(&entry) {
+            *content
+        } else {
+            let content = self.prepare(entry)?;
+            self.contents.insert(entry, content);
+            content
+        };
+        let offset = offset.min(content.length);
+        let length = (content.length - offset).min(u64::from(length)) as u32;
+        let bytes = if length == 0 {
+            Vec::new()
+        } else {
+            self.storage
+                .read(content.stage, content.offset + offset, length)
+                .map_err(Error::storage)?
+        };
+        Ok((bytes, offset + u64::from(length) == content.length))
+    }
+
+    /// Complete format integrity checks before publishing a sealed content range.
+    pub fn prepare(&mut self, entry: u64) -> Result<Content, Error> {
         let node = self
             .node(entry)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Unknown archive member"))?;
@@ -170,63 +228,36 @@ impl Archive {
             ));
         }
         let declared_size = node.size;
-        if let Some(tar) = &self.tar_content {
-            return tar.read(entry, offset, length);
+        if let Some(content) = self.contents.get(&entry) {
+            return Ok(*content);
         }
-        if !self.contents.contains_key(&entry)
-            && let Some(sevenzip) = &mut self.sevenzip_content
-        {
-            // The whole requested block is staged and verified before any cache publication.
-            self.contents.extend(sevenzip.decode(entry, self.limits)?);
+        if let Some(tar) = &mut self.tar_content {
+            return tar.prepare(entry, self.storage.clone());
         }
-        if !self.contents.contains_key(&entry)
-            && let Some(index) = self.zip_members.get(&entry).copied()
-        {
+        if let Some(sevenzip) = &mut self.sevenzip_content {
+            return sevenzip.decode(entry, self.storage.clone());
+        }
+        if let Some(index) = self.zip_members.get(&entry).copied() {
             let zip = self
                 .zip
                 .as_mut()
                 .ok_or_else(|| Error::new(ErrorCode::Corrupt, "Missing ZIP source"))?;
-            let data = bounded_read(
-                zip.by_index(index).map_err(formats::zip_error)?,
-                self.limits.max_entry,
+            let mut stage = Stage::new(
+                self.storage.clone(),
+                StagePurpose::Member { entry },
+                declared_size,
+                declared_size.unwrap_or(u64::MAX),
             )?;
-            if Some(data.len() as u64) != declared_size {
-                return Err(Error::new(
-                    ErrorCode::Corrupt,
-                    "ZIP member length differs from its index",
-                ));
-            }
-            self.contents.insert(entry, data);
+            stage.copy(zip.by_index(index).map_err(formats::zip_error)?)?;
+            return stage.finish();
         }
-        let data = self
-            .contents
-            .get(&entry)
-            .ok_or_else(|| Error::new(ErrorCode::Unsupported, "Directory has no byte content"))?;
-        read_slice(data, offset, length)
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "Directory has no byte content",
+        ))
     }
 
     fn node(&self, id: u64) -> Option<&Node> {
         self.nodes.get(usize::try_from(id.checked_sub(2)?).ok()?)
-    }
-}
-
-fn read_slice(data: &[u8], offset: u64, length: u32) -> Result<(Vec<u8>, bool), Error> {
-    let start = usize::try_from(offset.min(data.len() as u64)).map_err(|_| Error::limit())?;
-    let end = start.saturating_add(length as usize).min(data.len());
-    Ok((data[start..end].to_vec(), end == data.len()))
-}
-
-pub(crate) fn bounded_read(mut reader: impl Read, limit: u64) -> Result<Vec<u8>, Error> {
-    let mut result = Vec::new();
-    let mut buffer = [0; 32 * 1024];
-    loop {
-        let length = reader.read(&mut buffer)?;
-        if length == 0 {
-            return Ok(result);
-        }
-        if result.len() as u64 + length as u64 > limit {
-            return Err(Error::limit());
-        }
-        result.extend_from_slice(&buffer[..length]);
     }
 }

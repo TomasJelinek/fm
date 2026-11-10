@@ -38,6 +38,7 @@ impl CopyDraft {
             }
             CopyDraftInput::Clipboard(_) => true,
             CopyDraftInput::Archive(_) => false,
+            CopyDraftInput::Tree(capture) => capture.metadata_available,
         }
     }
 }
@@ -45,8 +46,9 @@ impl CopyDraft {
 #[derive(Clone)]
 pub(super) enum CopyDraftInput {
     Native(SelectedFiles),
-    Archive(ArchiveCopyRequest),
+    Archive(Box<ArchiveCopyRequest>),
     Clipboard(Arc<FileClipboard>),
+    Tree(TreeTransferCapture),
 }
 
 impl CopyDraftInput {
@@ -61,6 +63,7 @@ impl CopyDraftInput {
                 .len()
                 .max(usize::from(files.fallback.is_some())),
             Self::Clipboard(files) => files.paths.len(),
+            Self::Tree(capture) => capture.root_count,
         }
     }
 
@@ -70,10 +73,19 @@ impl CopyDraftInput {
         destination: PathBuf,
         intent: TransferIntent,
         metadata: TransferMetadataPolicy,
+        verification: TransferVerification,
     ) -> Command {
         match self {
+            Self::Tree(capture) => Command::EnqueueCapturedTransfer(CapturedTransferRequest {
+                verification,
+                id,
+                sources: capture.sources,
+                destination,
+                metadata,
+            }),
             Self::Native(files) => {
                 let request = SelectedCopyRequest {
+                    verification,
                     id,
                     files,
                     destination,
@@ -84,19 +96,21 @@ impl CopyDraftInput {
                         intent,
                         metadata,
                     }))
-                } else if intent == TransferIntent::RecoverableMove {
+                } else if intent == TransferIntent::Move {
                     Command::EnqueueSelectedMove(request)
                 } else {
                     Command::EnqueueSelectedCopy(request)
                 }
             }
             Self::Archive(mut request) => {
+                request.verification = verification;
                 request.id = id;
                 request.destination = destination;
-                Command::EnqueueArchiveCopy(request)
+                Command::EnqueueArchiveCopy(*request)
             }
             Self::Clipboard(clipboard) => {
                 let request = ClipboardMoveRequest {
+                    verification,
                     id,
                     clipboard,
                     destination,
@@ -120,7 +134,7 @@ impl Presenter {
         self.request_transfer_dialog(pane, TransferIntent::Copy, send);
     }
     pub(crate) fn request_move_dialog(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
-        self.request_transfer_dialog(pane, TransferIntent::RecoverableMove, send);
+        self.request_transfer_dialog(pane, TransferIntent::Move, send);
     }
     fn request_transfer_dialog(
         &mut self,
@@ -130,19 +144,24 @@ impl Presenter {
     ) {
         if self.operations.closing
             || self.copies.draft.is_some()
+            || self.copies.tree_pending.is_some()
             || !self.native_action_allowed(pane.other())
         {
             return;
         }
+        if intent == TransferIntent::Move && self.panes[pane.index()].archive.is_some() {
+            self.desktop.report(
+                "Move unavailable",
+                "Archive members cannot be moved. Use Copy to extract them.".into(),
+            );
+            return;
+        }
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_transfer(pane, intent, send);
+            return;
+        }
         if self.panes[pane.index()].archive.is_some() {
-            if intent == TransferIntent::Copy {
-                self.request_archive_copy_dialog(pane);
-            } else {
-                self.desktop.report(
-                    "Move unavailable",
-                    "Archive members cannot be moved. Use Copy to extract them.".into(),
-                );
-            }
+            self.request_archive_copy_dialog(pane);
             return;
         }
         let context = CopyContext {
@@ -241,20 +260,26 @@ impl Presenter {
             draft.error = "Enter the full path of an existing destination folder.".into();
             return;
         }
-        let input = draft.input.clone();
         let intent = draft.intent;
-        if intent == TransferIntent::RecoverableMove && matches!(input, CopyDraftInput::Archive(_))
+        if let CopyDraftInput::Tree(capture) = &draft.input
+            && (capture.intent != intent || capture.sources.intent() != intent)
         {
-            draft.error = "Archive members cannot be moved. Use Copy to extract them.".into();
+            draft.error = "The operation cannot change after its sources are captured.".into();
             return;
         }
+        if intent == TransferIntent::Move && matches!(draft.input, CopyDraftInput::Archive(_)) {
+            draft.error = "These captured items support Copy only.".into();
+            return;
+        }
+        let input = draft.input.clone();
         let roots = input.roots() as u64;
         let target = destination.clone();
+        let verification = self.transfer_verification();
         if self.submit_transfer(
             destination,
             roots,
             intent,
-            move |id| input.command(id, target, intent, metadata),
+            move |id| input.command(id, target, intent, metadata, verification),
             send,
         ) {
             self.retire_copy_draft();
@@ -292,7 +317,8 @@ impl Presenter {
         };
         let destination = self.panes[pane.other().index()].display_path().to_owned();
         let source = archive.location.display_text();
-        let input = CopyDraftInput::Archive(ArchiveCopyRequest {
+        let input = CopyDraftInput::Archive(Box::new(ArchiveCopyRequest {
+            verification: midnight_core::TransferVerification::default(),
             id: OperationId(0), // Assigned only after the user submits the captured draft.
             location: archive.location.clone(),
             entries: p.entries.clone(),
@@ -300,7 +326,7 @@ impl Presenter {
             selected: archive.selected.clone(),
             fallback: focused.map(|entry| entry.id),
             destination: destination.clone(),
-        });
+        }));
         let request = self.desktop.request();
         self.copies.draft = Some(CopyDraft {
             token: format!("copy-draft:{}", request.0),
@@ -338,11 +364,12 @@ impl Presenter {
             destination,
             summary: format!("{} clipboard items", self.number_locale.format_u64(count)),
             error: String::new(),
-            intent: TransferIntent::RecoverableMove,
+            intent: TransferIntent::Move,
         });
     }
 
     pub(super) fn retire_copy_draft(&mut self) {
+        self.cancel_tree_transfer(None);
         if let Some(draft) = self.copies.draft.take() {
             self.retired.push(Box::new(draft));
         }

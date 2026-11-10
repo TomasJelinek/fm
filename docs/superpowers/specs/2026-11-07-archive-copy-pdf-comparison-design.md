@@ -6,9 +6,15 @@ own tests and depend only on public APIs. Platform implementations stay separate
 
 ## Decisions and alternatives
 
-- Profile listing and archive entry before optimizing. Archive Open currently
-  decodes every member; ZIP should index metadata first and decode on demand.
-  Preserve source identity validation, CRC checks, parser sandbox and limits.
+- Profile listing and archive entry before optimizing. ZIP indexes metadata and
+  decodes a member only when it is read. Extend that behavior to 7z: index the
+  header at Open, then decode and verify the requested solid block in full before
+  returning any member bytes. Cache only complete, verified blocks; duplicate
+  names retain independent ordinal identities. TAR indexes checked byte ranges
+  in its immutable backing buffer instead of copying every member's payload.
+  Compressed TAR still needs stream decompression to reach successive headers,
+  but does not copy those decoded payloads again. Preserve source identity
+  validation, CRC checks, parser sandbox and all declared/actual size limits.
 - Copy out through the existing background queue and verified transfer service,
   rather than introducing a second unsafe extraction path. Capture virtual
   source identities and the destination before confirmation. Use SHA-256 over
@@ -23,9 +29,27 @@ own tests and depend only on public APIs. Platform implementations stay separate
   remain compatible. PDF is a separately installed plugin, with no JavaScript,
   URL launching or unrestricted file access. Unsupported/encrypted documents
   produce a readable error. PDF fidelity limitations are documented.
+  Page navigation preserves the current manual zoom/100% scale exactly, including
+  mixed page sizes. Fit stays selected and adapts to each page; navigation resets
+  the scroll origin to the start of the page without changing zoom preferences.
 - Ctrl+Shift+C compares two selected regular files in the active panel; otherwise
-  one selected/focused regular file from each panel. Ambiguous selection is an
-  error. Image pairs use the existing sandbox decoder, with Side-by-Side, Swipe
+  it uses the active panel's single selected file or focused file. One explicit
+  opposite selection takes priority; with none, a backend worker finds the unique
+  exact native basename in the opposite panel's captured visible listing,
+  independently of its cursor. Missing, hidden, non-file or ambiguous matches
+  open a File A / File B form, preserving any unambiguous native file in its
+  original left/right slot. An empty, loading, parent, archive or ambiguous panel
+  also offers manual choice; it never supplies an arbitrary fallback cursor.
+  Each field accepts an absolute native path or Browse using the system picker.
+  Compare/Enter submits explicitly; invalid inputs remain editable. Cancel,
+  Escape and native close dismiss the comparator and cancel pending picking.
+  The form lives inside the resizable native comparator window, with scrollable
+  fields and reachable buttons at 320×200. Its toolbar action is available even
+  without a panel target. Picker, validation, identity capture and file reads
+  stay on the bounded backend; native paths survive display conversion unchanged.
+  Native case/Unicode normalization is not guessed; select the
+  opposite file explicitly to compare different names. Image pairs use the
+  existing sandbox decoder, with Side-by-Side, Swipe
   and Onion Skin modes. Other supported text pairs use a bounded, cancellable
   line diff. Both inputs are captured and validated, not reconstructed from labels.
 - Existing filename color rules take precedence over migration defaults. New or

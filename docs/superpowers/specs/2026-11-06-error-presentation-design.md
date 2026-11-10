@@ -17,6 +17,11 @@ filter/comparison/settings and metadata editors use the same bounded, scrollable
 Failed jobs show the error glyph and separately formatted error samples; ordinary
 progress and name-conflict decisions retain their own status.
 
+Panel errors also expose icon buttons to copy the complete diagnostic and dismiss
+the notice, including in the 320×200 compact layout. Clipboard access remains a
+backend command. Dismissing one occurrence does not hide a later error for another
+location or changed message; copying does not dismiss it.
+
 Reusing two small Slint components avoids duplicating layout across dialogs. Keeping
 the existing single-line diagnostic formatter is preferable to changing logging and
 all backend consumers. Tests cover actual failed actions, long Unicode paths, error

@@ -38,11 +38,16 @@ pub(crate) fn apply(
             anchor: Some(_),
             ..
         }
-    );
+    ) || matches!(input,ViewerImageInput::ViewZoom {zoom,..} if *zoom!=midnight_core::ViewerZoomPreference::Fit);
     if !frames.accepts(frame, anchored) {
         return false;
     }
     match input {
+        ViewerImageInput::ViewZoom {
+            zoom,
+            source_anchor,
+            viewport_anchor,
+        } => return view.zoom_from(*zoom, *source_anchor, *viewport_anchor),
         ViewerImageInput::Fit => view.fit(),
         ViewerImageInput::ActualPixels => view.actual(),
         ViewerImageInput::Zoom { factor, anchor } => view.zoom(
@@ -50,6 +55,7 @@ pub(crate) fn apply(
             anchor.map_or_else(|| view.center(), |anchor| anchor.map(f64::from)),
         ),
         ViewerImageInput::Drag { x, y } => view.scroll([-f64::from(*x), -f64::from(*y)]),
+        ViewerImageInput::PanTo { .. } => return false, // Surface/sequence checked by ImageView.
     }
     true
 }
@@ -134,5 +140,65 @@ mod tests {
                 anchor: Some([20.0, 30.0])
             }
         ));
+    }
+
+    #[test]
+    fn displayed_source_anchor_survives_prefetch_camera_zoom_bursts_and_refuses_old_coordinates() {
+        let mut view = ImageGeometry::new(4000, 3000, [600, 400]);
+        view.actual();
+        let displayed = [1200.0, 900.0];
+        let anchor = [100.0, 80.0];
+        let source = [
+            displayed[0] + f64::from(anchor[0]),
+            displayed[1] + f64::from(anchor[1]),
+        ];
+        view.pan_to([1456.0, 1156.0]); // Backend has prefetched a frontier ahead of presentation.
+        let mut frames = ImageFrames::default();
+        frames.painted(7);
+        frames.painted(8);
+        for scale in [12500, 15625] {
+            assert!(apply(
+                &mut view,
+                &frames,
+                7,
+                &ViewerImageInput::ViewZoom {
+                    zoom: midnight_core::ViewerZoomPreference::ScaleBasisPoints(scale),
+                    source_anchor: source,
+                    viewport_anchor: anchor
+                }
+            ));
+            for axis in 0..2 {
+                assert!(
+                    (view.origin[axis] + f64::from(anchor[axis]) / view.scale - source[axis]).abs()
+                        < 0.00001
+                );
+            }
+        }
+        frames.resized();
+        let before = view.clone();
+        assert!(!apply(
+            &mut view,
+            &frames,
+            8,
+            &ViewerImageInput::ViewZoom {
+                zoom: midnight_core::ViewerZoomPreference::ActualPixels,
+                source_anchor: source,
+                viewport_anchor: anchor
+            }
+        ));
+        assert_eq!(view, before);
+        let mut replacement = ImageFrames::default();
+        replacement.painted(9);
+        assert!(!apply(
+            &mut view,
+            &replacement,
+            8,
+            &ViewerImageInput::ViewZoom {
+                zoom: midnight_core::ViewerZoomPreference::ActualPixels,
+                source_anchor: source,
+                viewport_anchor: anchor
+            }
+        ));
+        assert_eq!(view, before);
     }
 }

@@ -52,6 +52,19 @@ fn only_visible_current_command_icons_enter_the_bounded_decoder_request() {
     assert!(p.custom_command_icon(&revision, "command-0").is_some());
     assert!(!p.receive_thumbnail(identity, 6, 1, 1, &[10, 20, 30, 255]));
     assert!(!p.receive_thumbnail(identity, 0, 97, 1, &[0; 388]));
+    assert_eq!(
+        targets[0].edge, 96,
+        "command artwork keeps its small request"
+    );
+    assert!(p.receive_thumbnail_at_resolution(identity, 0, 192, 96, 256, &vec![128; 192 * 96 * 4]));
+    assert_eq!(
+        p.custom_command_icon(&revision, "command-0")
+            .unwrap()
+            .size()
+            .width,
+        192,
+        "larger panel cache artifacts also serve the same command artwork source"
+    );
     assert!(!p.advance_thumbnail_animation());
 
     let changed = Arc::new(p.preferences.values.user_commands.as_ref().clone());
@@ -127,7 +140,8 @@ fn tooltip_bounds_unicode_folder_templates_and_omits_script_and_argument_values(
         arguments: vec!["private-argument".into()],
     };
     let hint = command_hint(&command, "Ctrl+Q");
-    assert!(hint.contains("[display truncated]"));
+    assert!(hint.contains("... [display truncated]"));
+    assert!(!hint.contains('…'));
     assert!(hint.contains("Program · Once"));
     assert!(hint.len() < 512);
     assert!(!hint.contains("private-"));

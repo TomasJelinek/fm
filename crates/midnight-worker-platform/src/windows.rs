@@ -1,5 +1,5 @@
 //! Capability-free AppContainer; only explicitly listed pipe handles are inherited.
-use crate::{Limits, Worker};
+use crate::{CpuBudget, ResourcePolicy, Worker};
 use std::{
     fs::{File, OpenOptions},
     io,
@@ -20,8 +20,8 @@ use windows_sys::Win32::{
 };
 
 pub struct Process {
-    process: OwnedHandle,
-    job: OwnedHandle,
+    pub(super) process: OwnedHandle,
+    pub(super) job: OwnedHandle,
 }
 
 impl Process {
@@ -56,7 +56,7 @@ impl Drop for Process {
     }
 }
 
-fn check(value: i32) -> io::Result<()> {
+pub(super) fn check(value: i32) -> io::Result<()> {
     if value == 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -64,7 +64,7 @@ fn check(value: i32) -> io::Result<()> {
     }
 }
 
-fn pipe() -> io::Result<(File, File)> {
+pub(super) fn pipe() -> io::Result<(File, File)> {
     let mut read = null_mut();
     let mut write = null_mut();
     let attributes = SECURITY_ATTRIBUTES {
@@ -89,9 +89,9 @@ impl Drop for Sid {
     }
 }
 
-struct Attributes(Vec<usize>);
+pub(super) struct Attributes(pub(super) Vec<usize>);
 impl Attributes {
-    fn new() -> io::Result<Self> {
+    pub(super) fn new() -> io::Result<Self> {
         let mut bytes = 0;
         // SAFETY: first call only obtains size; second has sufficiently aligned writable storage.
         unsafe {
@@ -106,7 +106,7 @@ impl Attributes {
             Ok(Self(storage))
         }
     }
-    fn set<T>(&mut self, key: u32, value: &T) -> io::Result<()> {
+    pub(super) fn set<T>(&mut self, key: u32, value: &T) -> io::Result<()> {
         // SAFETY: backing storage is initialized, value is valid and retained through CreateProcess.
         check(unsafe {
             UpdateProcThreadAttribute(
@@ -130,7 +130,7 @@ impl Drop for Attributes {
     }
 }
 
-pub(super) fn spawn(executable: &Path, limits: Limits) -> io::Result<Worker> {
+pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Worker> {
     let wide: Vec<_> = executable.as_os_str().encode_wide().chain([0]).collect();
     if wide[..wide.len() - 1].contains(&0) {
         return Err(io::Error::new(
@@ -215,11 +215,12 @@ pub(super) fn spawn(executable: &Path, limits: Limits) -> io::Result<Worker> {
     let mut budget = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     budget.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-        | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-        | JOB_OBJECT_LIMIT_PROCESS_TIME;
+        | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
     budget.BasicLimitInformation.ActiveProcessLimit = 1;
-    budget.BasicLimitInformation.PerProcessUserTimeLimit =
-        i64::from(limits.cpu_seconds) * 10_000_000;
+    if let CpuBudget::Seconds(seconds) = limits.cpu {
+        budget.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_TIME;
+        budget.BasicLimitInformation.PerProcessUserTimeLimit = i64::from(seconds) * 10_000_000;
+    }
     budget.ProcessMemoryLimit = usize::try_from(limits.memory_bytes).map_err(io::Error::other)?;
     // SAFETY: exact sized job information structure on a live owned job.
     check(unsafe {
@@ -285,7 +286,8 @@ pub(super) fn spawn(executable: &Path, limits: Limits) -> io::Result<Worker> {
     // SAFETY: CreateProcess succeeded and transferred both handles to this scope.
     let process_handle = unsafe { OwnedHandle::from_raw_handle(process.hProcess) };
     let thread = unsafe { OwnedHandle::from_raw_handle(process.hThread) };
-    // SAFETY: all handles are live; the worker is still suspended and cannot execute content parsing.
+    // SAFETY: all handles are live; the child stays suspended until containment succeeds.
+    // Normal nested-job assignment preserves inherited OS resource/security policy.
     if let Err(error) = check(unsafe {
         AssignProcessToJobObject(job.as_raw_handle(), process_handle.as_raw_handle())
     }) {

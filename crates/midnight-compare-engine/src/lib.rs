@@ -1,6 +1,8 @@
 //! Bounded, read-only text and image comparison. Every expensive operation runs on a worker.
 #![forbid(unsafe_code)]
 
+mod file_choice;
+mod image_cache;
 mod images;
 mod text;
 mod worker;
@@ -8,7 +10,11 @@ mod worker;
 #[cfg(test)]
 mod capture_tests;
 
-use midnight_core::{FileCompareLaunch, ViewerAppearance, ViewerGeometry};
+use midnight_core::{
+    Cancellation, FileCompareLaunch, PathPickerOwner, PathPickerService, ViewerAppearance,
+    ViewerGeometry,
+};
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -33,12 +39,27 @@ pub enum ImageMode {
 
 #[derive(Clone, Debug)]
 pub enum Input {
+    /// Explicit native paths, without shell expansion or implicit working directories.
+    Compare([PathBuf; 2]),
+    Browse {
+        side: usize,
+        paths: [PathBuf; 2],
+        owner: PathPickerOwner,
+    },
     Resize(ViewerGeometry, u64),
-    Scroll { x: f32, y: f32 },
+    Scroll {
+        x: f32,
+        y: f32,
+    },
     Seek(f64),
-    Difference { backwards: bool },
+    Difference {
+        backwards: bool,
+    },
+    DifferenceEdge {
+        last: bool,
+    },
+    FontFamily(String),
     Mode(ImageMode),
-    Amount(f64),
     Zoom(f64),
     ActualPixels,
     Fit,
@@ -46,20 +67,45 @@ pub enum Input {
 }
 
 pub struct Frame {
+    pub fonts: Option<FontChoices>,
     pub geometry_revision: u64,
     pub mode: Option<ImageMode>,
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    pub layers: Option<ImageLayers>,
     pub accessible_text: String,
     pub status: String,
     pub image: bool,
     pub position: f64,
 }
 
+pub use midnight_image_viewer_host::Frame as RasterFrame;
+
+/// Opaque, sampled source images. Clipping and opacity are presentation only.
+#[derive(Clone)]
+pub struct ImageLayers {
+    pub frames: [Arc<RasterFrame>; 2],
+}
+
+#[derive(Clone)]
+pub struct FontChoices {
+    pub families: Arc<[String]>,
+    pub selected: String,
+}
+
 pub enum Output {
+    ChooseFiles(FileChoice),
     Frame { frame: Frame, names: [String; 2] },
     Status(String),
+}
+
+/// Editable file choice. Empty paths denote unknown inputs; retain native identities in the UI.
+#[derive(Debug, Clone)]
+pub struct FileChoice {
+    pub paths: [PathBuf; 2],
+    pub message: String,
+    pub is_error: bool,
 }
 
 /// A latest-output slot bounds memory even when the UI is paused.
@@ -82,11 +128,13 @@ pub struct Service {
     handle: tokio::runtime::Handle,
     capture: NativeCapture,
     active: Arc<AtomicUsize>,
+    picker: Option<Arc<dyn PathPickerService>>,
 }
 
 pub struct Session {
     sender: SyncSender<Input>,
     cancelled: Arc<AtomicBool>,
+    picker_cancel: Cancellation,
     pub mailbox: Arc<Mailbox>,
     handle: tokio::runtime::Handle,
 }
@@ -96,6 +144,7 @@ impl Session {
         self.sender.try_send(input).is_ok()
     }
     pub fn close(&self) {
+        self.picker_cancel.cancel();
         self.cancelled.store(true, Ordering::Release);
         let _ = self.sender.try_send(Input::Close);
     }
@@ -133,7 +182,15 @@ impl Service {
             handle,
             capture,
             active: Arc::new(AtomicUsize::new(0)),
+            picker: None,
         }
+    }
+    pub fn with_path_picker(mut self, picker: Arc<dyn PathPickerService>) -> Self {
+        self.picker = Some(picker);
+        self
+    }
+    pub fn has_path_picker(&self) -> bool {
+        self.picker.is_some()
     }
     pub fn open(
         &self,
@@ -153,6 +210,11 @@ impl Service {
         let output = mailbox.clone();
         let stop = cancelled.clone();
         let capture = self.capture.clone();
+        let picker_cancel = Cancellation::default();
+        let picker = file_choice::Picker {
+            service: self.picker.clone(),
+            cancel: picker_cancel.clone(),
+        };
         self.handle.spawn_blocking(move || {
             let _permit = permit;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -166,6 +228,7 @@ impl Service {
                         factory: &capture,
                         cancel: &stop,
                     },
+                    picker,
                 )
             }))
             .unwrap_or_else(|_| Err("Comparison stopped after an internal error.".into()));
@@ -178,6 +241,7 @@ impl Service {
         Ok(Session {
             sender,
             cancelled,
+            picker_cancel,
             mailbox,
             handle: self.handle.clone(),
         })

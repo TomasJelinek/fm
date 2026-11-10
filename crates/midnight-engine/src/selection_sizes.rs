@@ -104,7 +104,7 @@ impl Observer {
         let scope = state.scope.as_mut()?;
         if scope.request.id != wanted
             || !same_cache(scope, cache)
-            || !scope.aggregate.update(path, sizes.get(path).copied())
+            || !scope.aggregate.update(path, sizes.get(path))
         {
             return None;
         }

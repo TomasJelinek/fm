@@ -3,7 +3,10 @@
 //! Winit uses the default create_child_window_adapter (None), so every app popup
 //! shares its host coordinates. Recheck this contract when upgrading Slint or
 //! adding a backend with native popup windows. This observer never consumes input.
-use crate::{ChecksumWindow, FindWindow, MainWindow, TooltipPlacement};
+use crate::{
+    AboutWindow, ChecksumWindow, FileListWindow, FindWindow, HelpWindow, MainWindow, NoticeWindow,
+    TooltipPlacement,
+};
 use i_slint_core::{
     items::TooltipArea,
     lengths::LogicalLength,
@@ -31,11 +34,19 @@ enum Target {
     Main(slint::Weak<MainWindow>),
     Find(slint::Weak<FindWindow>),
     Checksum(slint::Weak<ChecksumWindow>),
+    FileList(slint::Weak<FileListWindow>),
+    Help(slint::Weak<HelpWindow>),
+    About(slint::Weak<AboutWindow>),
+    Notice(slint::Weak<NoticeWindow>),
 }
 enum Host {
     Main(MainWindow),
     Find(FindWindow),
     Checksum(ChecksumWindow),
+    FileList(FileListWindow),
+    Help(HelpWindow),
+    About(AboutWindow),
+    Notice(NoticeWindow),
 }
 impl Target {
     fn upgrade(&self) -> Option<Host> {
@@ -43,6 +54,10 @@ impl Target {
             Self::Main(window) => window.upgrade().map(Host::Main),
             Self::Find(window) => window.upgrade().map(Host::Find),
             Self::Checksum(window) => window.upgrade().map(Host::Checksum),
+            Self::FileList(window) => window.upgrade().map(Host::FileList),
+            Self::Help(window) => window.upgrade().map(Host::Help),
+            Self::About(window) => window.upgrade().map(Host::About),
+            Self::Notice(window) => window.upgrade().map(Host::Notice),
         }
     }
 }
@@ -52,6 +67,10 @@ impl Host {
             Self::Main(window) => window.window(),
             Self::Find(window) => window.window(),
             Self::Checksum(window) => window.window(),
+            Self::FileList(window) => window.window(),
+            Self::Help(window) => window.window(),
+            Self::About(window) => window.window(),
+            Self::Notice(window) => window.window(),
         }
     }
     fn placement(&self) -> TooltipPlacement<'_> {
@@ -59,6 +78,10 @@ impl Host {
             Self::Main(window) => window.global::<TooltipPlacement>(),
             Self::Find(window) => window.global::<TooltipPlacement>(),
             Self::Checksum(window) => window.global::<TooltipPlacement>(),
+            Self::FileList(window) => window.global::<TooltipPlacement>(),
+            Self::Help(window) => window.global::<TooltipPlacement>(),
+            Self::About(window) => window.global::<TooltipPlacement>(),
+            Self::Notice(window) => window.global::<TooltipPlacement>(),
         }
     }
     fn synchronize(&self) -> bool {
@@ -74,6 +97,21 @@ pub(crate) fn install_find(window: &FindWindow) -> Result<(), PlatformError> {
 }
 pub(crate) fn install_checksum(window: &ChecksumWindow) -> Result<(), PlatformError> {
     register(Target::Checksum(window.as_weak()))
+}
+pub(crate) fn install_file_list(window: &FileListWindow) -> Result<(), PlatformError> {
+    register(Target::FileList(window.as_weak()))
+}
+pub(crate) fn install_help(window: &HelpWindow) -> Result<(), PlatformError> {
+    register(Target::Help(window.as_weak()))
+}
+pub(crate) fn install_about(window: &AboutWindow) -> Result<(), PlatformError> {
+    register(Target::About(window.as_weak()))
+}
+pub(crate) fn install_notice(window: &NoticeWindow) -> Result<(), PlatformError> {
+    register(Target::Notice(window.as_weak()))
+}
+pub(crate) fn synchronize_file_list(window: &FileListWindow) {
+    synchronize_host(window.window(), window.global::<TooltipPlacement>());
 }
 
 pub(crate) fn synchronize_checksum(window: &ChecksumWindow) {
@@ -185,6 +223,25 @@ fn register(target: Target) -> Result<(), PlatformError> {
 /// result requests one stock retry before the first paint, preserving ownership.
 pub(crate) fn synchronize(window: &MainWindow) -> bool {
     synchronize_host(window.window(), window.global::<TooltipPlacement>())
+}
+
+/// Retire hints before a structural UI change destroys their owning controls.
+/// Slint 1.18 materializes popup children while borrowing its popup list; a
+/// delegate destructor must not try to close a live tooltip during that borrow.
+pub(crate) fn dismiss(window: &slint::Window) {
+    // Also retire hover observers and their pending timers. Closing only visible
+    // popups lets a due timer recreate a hint before the next layout pass.
+    window.dispatch_event(WindowEvent::PointerExited);
+    let inner = WindowInner::from_pub(window);
+    let tooltips = inner
+        .active_popups()
+        .iter()
+        .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+        .map(|popup| popup.popup_id)
+        .collect::<Vec<_>>();
+    for tooltip in tooltips {
+        inner.close_popup(tooltip);
+    }
 }
 pub(crate) fn synchronize_find(window: &FindWindow) -> bool {
     synchronize_host(window.window(), window.global::<TooltipPlacement>())

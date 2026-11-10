@@ -1,0 +1,94 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+
+export struct SpeedChartData {
+    area: string, primary: string, verification: string,
+    speed: string, verification-speed: string, scale: string, history: string,
+    description: string, has-samples: bool, single-sample: bool, native-move: bool,
+    point-x: float, point-y: float, verification-y: float
+}
+
+export component OperationSpeedChart inherits Rectangle {
+    in property <SpeedChartData> chart;
+    in property <bool> deletion;
+    private property <bool> compact: root.height < 75px;
+    accessible-role: groupbox;
+    accessible-label: root.deletion ? "Deletion speed" : "Transfer speed";
+    accessible-value: root.chart.description;
+    min-width: 0px; min-height: 0px;
+    VerticalLayout {
+        spacing: root.compact ? 2px : 5px;
+        HorizontalLayout {
+            spacing: 8px; cross-axis-alignment: center;
+            Rectangle { width: 8px; height: 8px; background: Theme.active-frame; }
+            Text {
+                text: root.deletion ? "Deleted: " + (root.chart.speed == "" ? "0 items/s" : root.chart.speed)
+                    : root.chart.native-move ? "Renamed: " + root.chart.speed
+                    : "Write: " + (root.chart.speed == "" ? "0 B/s" : root.chart.speed);
+                color: Theme.strong-text; font-size: Theme.small-font; overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if !root.deletion && !root.chart.native-move : Rectangle { width: 10px; height: 2px; background: Theme.pending-size; }
+            if !root.deletion && !root.chart.native-move : Text {
+                text: "Verify: " + (root.chart.verification-speed == "" ? "0 B/s" : root.chart.verification-speed);
+                color: Theme.strong-text; font-size: Theme.small-font; overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+        plot := Rectangle {
+            vertical-stretch: 1; min-height: 14px; clip: true;
+            background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+            for level in 3 : Rectangle {
+                x: 1px; y: parent.height * (level + 1) / 4;
+                width: parent.width - 2px; height: 1px; background: Theme.frame.with-alpha(0.35);
+            }
+            for column in 5 : Rectangle {
+                x: parent.width * (column + 1) / 6; y: 1px;
+                height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
+            }
+            if root.chart.has-samples : Path {
+                x: 1px; y: 2px; width: parent.width - 2px; height: parent.height - 4px;
+                viewbox-width: 1000; viewbox-height: 100; fit: fill;
+                commands: root.chart.area; fill: Theme.active-frame.with-alpha(0.25);
+            }
+            if root.chart.has-samples : Path {
+                x: 1px; y: 2px; width: parent.width - 2px; height: parent.height - 4px;
+                viewbox-width: 1000; viewbox-height: 100; fit: fill;
+                commands: root.chart.primary; fill: transparent;
+                stroke: Theme.active-frame; stroke-width: 1.5px;
+            }
+            if root.chart.has-samples && !root.deletion && !root.chart.native-move : Path {
+                x: 1px; y: 2px; width: parent.width - 2px; height: parent.height - 4px;
+                viewbox-width: 1000; viewbox-height: 100; fit: fill;
+                commands: root.chart.verification; fill: transparent;
+                stroke: Theme.pending-size; stroke-width: 1.5px;
+            }
+            if root.chart.single-sample : Rectangle {
+                x: clamp(parent.width * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
+                y: clamp(parent.height * root.chart.point-y / 100 - 2px, 2px, parent.height - 6px);
+                width: 4px; height: 4px; border-radius: 2px; background: Theme.active-frame;
+            }
+            if root.chart.single-sample && !root.deletion && !root.chart.native-move : Rectangle {
+                x: clamp(parent.width * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
+                y: clamp(parent.height * root.chart.verification-y / 100 - 2px, 2px, parent.height - 6px);
+                width: 4px; height: 4px; border-radius: 2px;
+                border-width: 1px; border-color: Theme.pending-size; background: Theme.pane-background;
+            }
+            if !root.chart.has-samples && !root.compact : Text {
+                text: "Waiting for activity"; color: Theme.secondary-text;
+                horizontal-alignment: center; vertical-alignment: center;
+                font-size: Theme.small-font;
+            }
+        }
+        if !root.compact : HorizontalLayout {
+            Text { text: root.chart.history; color: Theme.secondary-text; font-size: Theme.small-font; horizontal-stretch: 1; }
+            Text { text: root.chart.scale == "" ? "" : "Scale: " + root.chart.scale; color: Theme.secondary-text; font-size: Theme.small-font; }
+        }
+    }
+    Tooltip { TipBody {
+        text: root.deletion
+            ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds."
+            : root.chart.native-move ? "Native renames per second. A whole renamed folder counts once; descendants are not enumerated and no content is copied. The graph retains the entire operation."
+            : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. Current labels show the latest measured interval, not a completion percentage.";
+    } }
+}

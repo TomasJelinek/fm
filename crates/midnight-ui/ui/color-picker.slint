@@ -1,0 +1,88 @@
+import { ScrollView, Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { ColorPickerControls } from "color-picker-controls.slint";
+
+// The scrollable editor and fixed footer are shared by the popup and fixtures.
+export component ColorPicker inherits Rectangle {
+    in property <color> initial;
+    callback accepted(color);
+    callback cancelled();
+    min-width: 0px; min-height: 0px;
+    init => { root.reset-color(root.initial); }
+    public function reset-color(value: color) {
+        controls.set-color(value);
+        scroll.content-y = 0px; scroll.content-x = 0px;
+    }
+    public function focus-default() { use-color.focus(); }
+    forward-focus: use-color;
+    VerticalLayout {
+        spacing: 8px;
+        scroll := ScrollView {
+            min-width: 0px; min-height: 0px; vertical-stretch: 1;
+            horizontal-scrollbar-policy: as-needed;
+            // Flickable measures direct layouts, not reusable layout components.
+            VerticalLayout {
+                padding-right: 14px; padding-bottom: 14px;
+                controls := ColorPickerControls { }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.frame; }
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                background: controls.current; border-width: 1px; border-color: Theme.frame;
+                min-width: 0px; max-width: Theme.control-height * 2;
+                horizontal-stretch: 1; height: Theme.control-height;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            use-color := Button {
+                text: "Use color"; min-height: Theme.control-height;
+                clicked => { root.accepted(controls.current); }
+            }
+            Button {
+                text: "Cancel"; min-height: Theme.control-height;
+                clicked => { root.cancelled(); }
+            }
+        }
+    }
+}
+
+export component ColorPickerDialog inherits Rectangle {
+    in property <string> title;
+    in property <color> initial;
+    in property <int> generation;
+    callback accepted(color);
+    callback cancelled();
+    callback moved(length, length);
+    function reset() { picker.reset-color(root.initial); picker.focus-default(); }
+    init => { root.reset(); }
+    changed generation => { root.reset(); }
+    background: Theme.surface; border-radius: 8px;
+    border-color: Theme.active-frame; border-width: 1px;
+    forward-focus: scope;
+    scope := FocusScope {
+        forward-focus: picker;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.cancelled(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: root.height < 350px ? 6px : 12px;
+            spacing: root.height < 350px ? 4px : 10px;
+            DialogHeader {
+                title: root.title; compact: root.height < 350px;
+                fallback-icon: FallbackIcons.options;
+                close => { root.cancelled(); }
+                dragged(dx, dy) => { root.moved(dx, dy); }
+            }
+            picker := ColorPicker {
+                initial: root.initial;
+                vertical-stretch: 1;
+                accepted(value) => { root.accepted(value); }
+                cancelled => { root.cancelled(); }
+            }
+        }
+    }
+}

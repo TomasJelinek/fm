@@ -50,6 +50,7 @@ fn font_options_keep_family_and_density_bases_independent() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
     midnight_ui::install_file_keys(&window);
     let theme = window.global::<Theme>();
     window.invoke_apply_fonts("".into(), 11, 15);
@@ -183,7 +184,11 @@ fn font_options_keep_family_and_density_bases_independent() {
     pixels.resize(1040 * 480, slint::Rgb8Pixel::default());
     let exits = Rc::new(Cell::new(0));
     let captured = exits.clone();
-    window.on_exit(move || captured.set(captured.get() + 1));
+    window.on_function_action(move |action, _| {
+        if action == "app.exit" {
+            captured.set(captured.get() + 1);
+        }
+    });
     window.invoke_apply_fonts("".into(), 32, 32);
     for density in 0..2 {
         window.invoke_apply_preferences(0, density);
@@ -208,24 +213,28 @@ fn font_options_keep_family_and_density_bases_independent() {
         assert!(window.get_options_left() >= 0.0 && window.get_options_top() >= 0.0);
         assert!(window.get_options_left() + window.get_options_width() <= 1040.0);
         assert!(window.get_options_top() + window.get_options_height() <= height as f32);
-        ui::click_popup(&window, "Done", AccessibleRole::Button);
+        ui::click_popup(&window, "Cancel", AccessibleRole::Button);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
         assert!(
             !ui::has_popup(&window),
-            "Done must stay visible at 32px; density={density}"
+            "Cancel must stay visible at 32px; density={density}"
         );
         window.invoke_focus_files();
         key(&window, Key::F10);
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1040);
         });
-        click(
-            &window,
-            940.0,
-            height as f32 - 75.0 - 12.0 - theme.get_control_height() / 2.0,
-        );
+        ui::click_popup(&window, "Menu category", AccessibleRole::Combobox);
+        for _ in 0..5 {
+            ui::key(&window, Key::DownArrow);
+        }
+        ui::key(&window, Key::Return);
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1040);
+        });
+        ui::click_popup(&window, "Exit", AccessibleRole::Button);
         assert_eq!(
             exits.get(),
             density + 1,

@@ -3,6 +3,74 @@ use midnight_filesystem_plugin_api::*;
 use midnight_filesystem_plugin_sdk::{CallContext, native::NativeAdapter};
 use std::{fs::File, os::windows::io::AsRawHandle, path::PathBuf};
 use windows_sys::Win32::Storage::FileSystem::*;
+use windows_sys::Win32::System::SystemServices::{IO_REPARSE_TAG_CLOUD, IO_REPARSE_TAG_CLOUD_MASK};
+
+/// Inspect the retained handle, including when Windows exposes cloud placeholders.
+/// Cloud data is supplied by its filter on this same file; name-surrogate tags
+/// (links/mounts) and every other reparse provider remain unsupported.
+pub fn require_readable_file(file: &File) -> Result<(), Failure> {
+    let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
+    // SAFETY: the file owns its live handle; the output has exactly the declared capacity.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(Failure::from_io(std::io::Error::last_os_error()));
+    }
+    // SAFETY: GetFileType only inspects the retained handle.
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
+        || info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        || (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            && !cloud_content_tag(info.ReparseTag))
+    {
+        return Err(Failure::new(
+            ErrorCode::Unsupported,
+            "Read requires a regular file or a cloud data placeholder, never a link.",
+        ));
+    }
+    Ok(())
+}
+
+fn cloud_content_tag(tag: u32) -> bool {
+    // The name-surrogate bit denotes another named entity, not cloud data.
+    tag & 0x2000_0000 == 0 && tag & !IO_REPARSE_TAG_CLOUD_MASK == IO_REPARSE_TAG_CLOUD
+}
+
+#[cfg(test)]
+mod cloud_tests {
+    use super::*;
+    use windows_sys::Win32::System::SystemServices::{
+        IO_REPARSE_TAG_APPEXECLINK, IO_REPARSE_TAG_CLOUD_1, IO_REPARSE_TAG_CLOUD_F,
+        IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_PROJFS, IO_REPARSE_TAG_SYMLINK,
+    };
+
+    #[test]
+    fn cloud_family_is_explicit_and_never_admits_a_name_surrogate() {
+        for tag in [
+            IO_REPARSE_TAG_CLOUD,
+            IO_REPARSE_TAG_CLOUD_1,
+            IO_REPARSE_TAG_CLOUD_F,
+        ] {
+            assert!(cloud_content_tag(tag));
+            assert!(!cloud_content_tag(tag | 0x2000_0000));
+        }
+        for tag in [
+            0,
+            IO_REPARSE_TAG_MOUNT_POINT,
+            IO_REPARSE_TAG_SYMLINK,
+            IO_REPARSE_TAG_APPEXECLINK,
+            IO_REPARSE_TAG_PROJFS,
+            0x8000_1234,
+        ] {
+            assert!(!cloud_content_tag(tag));
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {

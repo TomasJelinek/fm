@@ -16,6 +16,15 @@ pub(crate) fn install(window: &MainWindow) {
 }
 
 pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
+    p.job_charts.retain(
+        p.copies.progress.iter().map(|job| (false, job.id)).chain(
+            p.operations
+                .progress
+                .iter()
+                .filter(|job| matches!(job.kind, MutationKind::Delete(_)))
+                .map(|job| (true, job.id)),
+        ),
+    );
     let mut rows: Vec<_> = p
         .operations
         .progress
@@ -107,13 +116,19 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
                 .min(1.0)) as f32
         },
         icon: p.desktop.image(&IconKey::action(icon)),
+        speed_chart: if matches!(progress.kind, MutationKind::Delete(_)) {
+            p.job_charts
+                .get(progress.id, true, &progress.throughput, &p.number_locale)
+        } else {
+            Default::default()
+        },
         kind,
     }
 }
 
 fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
     use CopyOperationState as S;
-    let moving = progress.intent == TransferIntent::RecoverableMove;
+    let moving = progress.intent == TransferIntent::Move;
     let title = if moving { "Move" } else { "Copy" };
     let state = match progress.state {
         S::Queued => "Queued",
@@ -122,7 +137,13 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             CopyOperationPhase::Planning => "Reading folders",
             CopyOperationPhase::Copying => "Copying",
             CopyOperationPhase::Syncing => "Saving",
-            CopyOperationPhase::Verifying => "Verifying SHA-256",
+            CopyOperationPhase::Verifying => {
+                if progress.verification == TransferVerification::FullSha256 {
+                    "Verifying SHA-256"
+                } else {
+                    "Verifying size and samples"
+                }
+            }
             CopyOperationPhase::Publishing => "Finishing",
             CopyOperationPhase::ValidatingBeforeMove => "Checking before Move",
             CopyOperationPhase::CapturingSources => "Preparing source removal",
@@ -135,23 +156,34 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         S::CompletedWithErrors => "Completed with errors",
         S::Failed => "Failed",
     };
-    let summary = format!(
+    let mut summary = format!(
         "{} files · {} skipped · {} errors",
         p.number_locale.format_u64(progress.files_completed),
         p.number_locale.format_u64(progress.skipped),
         p.number_locale.format_u64(progress.failed)
     );
+    if progress.native_entries_moved != 0 {
+        summary = format!(
+            "{} renamed · {summary}",
+            p.number_locale.format_u64(progress.native_entries_moved)
+        );
+    }
+    let verification_label = if progress.verification == TransferVerification::FullSha256 {
+        "SHA-256"
+    } else {
+        "size + first/middle/last 64 KiB; gaps not checked"
+    };
     let mut detail = format!(
-        "{title}\n{state}\n\n{summary}\n{} folders created\n{} bytes copied\n{} bytes verified (SHA-256)",
+        "{title}\n{state}\n\n{summary}\n{} folders created\n{} bytes copied\n{} bytes verified ({verification_label})",
         p.number_locale.format_u64(progress.directories_created),
         p.number_locale.format_u64(progress.copied_bytes),
         p.number_locale.format_u64(progress.verified_bytes)
     );
     if moving {
-        detail.push_str(&format!("\n{} additional source/target bytes checked\n{} source files removed\n{} source recovery objects retained",
+        detail.push_str(&format!("\n{} additional source/target bytes checked\n{} source files removed\n{} temporary source locations need attention",
             p.number_locale.format_u64(progress.validation_bytes),
             p.number_locale.format_u64(progress.source_files_removed),
-            p.number_locale.format_u64(progress.source_recovery_count)));
+            p.number_locale.format_u64(progress.source_residual_count)));
         if progress.source_delete_pending > 0 {
             detail.push_str(&format!(
                 "\n{} source removals accepted by Windows; open handles may delay storage release",
@@ -160,25 +192,25 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         }
         if progress.source_removal_durability_unconfirmed > 0 {
             detail.push_str(&format!(
-                "\n{} source removals without a confirmed directory durability flush",
+                "\n{} source namespace changes without a confirmed directory durability flush",
                 p.number_locale
                     .format_u64(progress.source_removal_durability_unconfirmed)
             ));
         }
-        for recovery in &progress.source_recoveries {
+        for recovery in &progress.source_residuals {
             detail.push_str(&format!(
-                "\n\nOriginal source\n{}\nRecovery\n{}\n{}",
+                "\n\nOriginal source\n{}\nTemporary location\n{}\n{}",
                 recovery.source.display(),
-                recovery.recovery.path.display(),
+                recovery.temporary.path.display(),
                 if recovery.matched_source {
-                    "Original identity retained"
+                    "Source restoration failed; original retained here"
                 } else {
-                    "Identity conflict: inspect recovery"
+                    "Temporary cleanup failed; inspect this location"
                 }
             ));
         }
-        if progress.source_recovery_count > progress.source_recoveries.len() as u64 {
-            detail.push_str("\nAdditional originals remain in their source recovery folders.");
+        if progress.source_residual_count > progress.source_residuals.len() as u64 {
+            detail.push_str("\nAdditional temporary source locations need attention.");
         }
     }
     if let Some(path) = &progress.current_path {
@@ -192,6 +224,15 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         detail.push_str(&format!("\n\n{}", progress.message));
     }
     error_presentation::append_issues(&mut detail, &progress.errors);
+    let failure = p
+        .copies
+        .failures
+        .iter()
+        .find(|failure| failure.id == progress.id);
+    if let Some(failure) = failure {
+        detail.push_str("\n\nWaiting for your decision\n\n");
+        detail.push_str(&copy_presentation::failure_details(failure));
+    }
     append_recovery(&mut detail, progress, p);
     OperationRow {
         identity: format!("copy-job:{}", progress.id.0).into(),
@@ -204,8 +245,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             .copies
             .conflicts
             .iter()
-            .any(|conflict| conflict.id == progress.id),
-        failed: progress.failed > 0
+            .any(|conflict| conflict.id == progress.id)
+            || failure.is_some(),
+        failed: failure.is_some()
+            || progress.failed > 0
             || !progress.errors.is_empty()
             || matches!(progress.state, S::Failed | S::CompletedWithErrors),
         active: !progress.state.is_terminal(),
@@ -218,6 +261,9 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             ActionIcon::Copy
         })),
         kind: 0,
+        speed_chart: p
+            .job_charts
+            .get(progress.id, false, &progress.throughput, &p.number_locale),
     }
 }
 
@@ -234,7 +280,7 @@ fn append_recovery(detail: &mut String, progress: &CopyProgress, p: &Presenter) 
     }
     if progress.recovery_count > progress.recovery_paths.len() as u64 {
         detail.push_str(
-            "\nAdditional recovery files are retained in the source or destination recovery folders.",
+            "\nAdditional displaced destination files are retained in destination recovery folders.",
         );
     }
 }

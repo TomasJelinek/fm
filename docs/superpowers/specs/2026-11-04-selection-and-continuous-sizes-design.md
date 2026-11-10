@@ -7,11 +7,20 @@ enabling file-writing operations or changing platform boundaries.
 
 ## Selection
 
-Ctrl+A selects all real entries, Ctrl+D clears selection, and Ctrl+I inverts it
-in the focused file pane. The synthetic parent `..` is never selected. The
+Ctrl+A selects all real entries, Ctrl+D clears selection, and Ctrl+I inverts
+**files only** in the focused pane, preserving both selected and unselected
+folders and directory links. Archives remain file entries in their parent
+listing; archive members use the same selection policy. The synthetic parent
+`..` is never selected. This matches Salamander's `InvertSelection(FALSE)` with
+directory inclusion disabled (`src/fileswn1.cpp:1785`). The
 opposite pane, cursor, paths, sort and command draft remain unchanged. Exact
-Control-only chords apply in file lists; path/command/options editors retain
+selection chords apply in file lists; path/command/options editors retain
 normal text editing, including Ctrl+A.
+
+Ctrl+Shift+A is the separate configurable `selection.files` action: replace the
+selection with displayed non-directory entries, deselecting folders and directory
+links. Ctrl+A continues to include those folders. Both actions are exposed in the
+F10 Selection category and Options → Keyboard, without numeric-keypad defaults.
 
 An authoritative backend selection controller serializes bulk and individual
 toggle intents for each pane. Idle actors await commands asynchronously; each
@@ -27,10 +36,15 @@ after a refresh are not selected implicitly.
 Requests/results carry navigation and selection revisions. Rapid all→invert,
 repeated hotkeys, mouse toggles and navigation must preserve intent order;
 stale results never overwrite newer work or another tab. Queue refusal is
-visible and does not silently change selection. Bulk all/invert requested
-during progressive loading may wait for that listing's completion; they never
-block input or apply after leaving the location. Individual streaming toggles
-and failed-navigation restoration retain their existing semantics.
+visible and does not silently change selection. Streaming selection tracks
+independent file/folder transformations and reports typed defaults for unseen
+rows. Invert affects only the file transformation; All/Clear affect both.
+Explicit snapshot bits override those defaults. The UI applies the same policy
+immediately to visible rows and later arrivals without scanning the listing.
+Final rebase resolves all paths; actions never block input or apply after leaving
+the location. Individual streaming toggles and failed-navigation restoration
+retain their existing semantics. Filtered views constrain inversion to their
+captured entries; the action remains user configurable.
 
 Rebasing selection across sorted/refreshed listings and expanding selected paths
 for Properties belongs to backend workers. Existing bounded queues, cancellation

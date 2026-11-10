@@ -89,7 +89,16 @@ impl Form {
         }
         form
     }
+    #[cfg(test)]
     pub(crate) fn command(&self, original: Option<&UserCommand>) -> Result<UserCommand, String> {
+        self.command_with_native(original, None, None)
+    }
+    pub(crate) fn command_with_native(
+        &self,
+        original: Option<&UserCommand>,
+        executable: Option<&Path>,
+        icon: Option<&Path>,
+    ) -> Result<UserCommand, String> {
         let id = UserCommandId::new(self.id.clone()).map_err(str::to_owned)?;
         if original.is_some_and(|original| original.id != id) {
             return Err("This command draft is obsolete. Select the command again.".into());
@@ -123,7 +132,11 @@ impl Form {
                     _ => None,
                 });
                 UserCommandInvocation::Program {
-                    executable: literal(&self.executable, self.executable_edited, old)?,
+                    executable: match executable.filter(|p| p.to_string_lossy() == self.executable)
+                    {
+                        Some(path) => path.to_path_buf(),
+                        None => literal(&self.executable, self.executable_edited, old)?,
+                    },
                     arguments: arguments(&self.arguments)?,
                 }
             }
@@ -142,11 +155,17 @@ impl Form {
             icon: if self.icon.is_empty() {
                 None
             } else {
-                Some(literal(
-                    &self.icon,
-                    self.icon_edited,
-                    original.and_then(|c| c.icon.as_deref()),
-                )?)
+                Some(
+                    if let Some(path) = icon.filter(|p| p.to_string_lossy() == self.icon) {
+                        path.to_path_buf()
+                    } else {
+                        literal(
+                            &self.icon,
+                            self.icon_edited,
+                            original.and_then(|c| c.icon.as_deref()),
+                        )?
+                    },
+                )
             },
             working_directory: self.working_directory.clone(),
             launch,

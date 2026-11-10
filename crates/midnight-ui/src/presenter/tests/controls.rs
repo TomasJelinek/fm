@@ -68,6 +68,7 @@ fn location_buttons_restore_a_drive_independently_for_each_pane() {
     let home = test_root().join("home");
     let mut p = Presenter::new(drive.clone(), drive.clone());
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             NavigationLocation {
@@ -120,6 +121,7 @@ fn submitted_command_freezes_cwd_and_blocks_repeat_until_result() {
     let mut p = Presenter::new(left, right.clone());
     p.active = PaneId::Right;
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![],
     });
@@ -237,7 +239,7 @@ fn progressive_folder_sizes_ignore_other_scans_and_cancel_on_navigation() {
         navigation: generation,
         scan: FolderSizeScanId(scan.0 + 1),
         entry: EntryId(7),
-        size,
+        size: size.clone(),
     });
     assert!(p.panes[0].folder_sizes.is_empty());
     p.apply(Event::FolderSizeUpdated {
@@ -245,7 +247,7 @@ fn progressive_folder_sizes_ignore_other_scans_and_cancel_on_navigation() {
         navigation: generation,
         scan,
         entry: EntryId(7),
-        size,
+        size: size.clone(),
     });
     assert_eq!(
         p.panes[0].folder_sizes[&PathBuf::from("folder")].bytes,
@@ -263,7 +265,7 @@ fn progressive_folder_sizes_ignore_other_scans_and_cancel_on_navigation() {
         navigation: generation,
         scan,
         entry: EntryId(7),
-        size,
+        size: size.clone(),
     });
     assert!(p.panes[0].folder_sizes.is_empty());
 }
@@ -326,6 +328,7 @@ fn preference_loading_is_global_and_does_not_disturb_navigation() {
 fn loaded_windows_shell_is_frozen_in_the_explicit_terminal_request() {
     let mut p = Presenter::new("left".into(), "right".into());
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });

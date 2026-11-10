@@ -3,6 +3,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::io::{self, Read, Write};
+mod policy;
+mod startup;
+pub use policy::{CpuBudget, ResourcePolicy};
+pub use startup::{read_policy_ready, write_policy};
 
 #[cfg(windows)]
 #[path = "windows.rs"]
@@ -57,20 +61,8 @@ pub fn read_ready(reader: &mut impl Read) -> io::Result<()> {
 
 /// Enter/verify the OS restriction and acknowledge it. Never continue decoding after an error.
 pub fn enter(reader: &mut impl Read, writer: &mut impl Write) -> io::Result<()> {
-    let mut header = [0; 16];
-    reader.read_exact(&mut header)?;
-    if &header[..4] != b"MWS1" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid worker startup",
-        ));
-    }
-    let limits = Limits {
-        memory_bytes: u64::from_le_bytes(header[4..12].try_into().map_err(io::Error::other)?),
-        cpu_seconds: u32::from_le_bytes(header[12..16].try_into().map_err(io::Error::other)?),
-    }
-    .validate()?;
-    platform::restrict(limits)?;
-    writer.write_all(b"MWR1")?;
+    let (policy, ready) = startup::read(reader)?;
+    platform::restrict(policy)?;
+    writer.write_all(ready)?;
     writer.flush()
 }

@@ -35,7 +35,13 @@ pub fn fixtures(output: &Path, existing: Option<&Path>) -> io::Result<Vec<PathBu
         ("text.txt", text.into_bytes()),
         ("binary.bin", vec![0, 1, 2, 255, b'A']),
         ("source.rs", b"// Source color acceptance\nfn main() {\n    let number = 42;\n    println!(\"Hello source\");\n}\n".to_vec()),
-        ("markdown.md", b"# Heading\n\nHello **world**!\n\n- first item\n- second item\n\nA [link](https://example.invalid/) stays inert.\n".to_vec()),
+        ("markdown.md", format!("{}{}", concat!(
+            "# Heading\n\nHello **world**!\n\n",
+            "| Name | Count | Status |\n| :--- | ---: | :---: |\n",
+            "| **Café 世界** | 42 | `ready` |\n| Empty | | ~~old~~ |\n\n",
+            "- [x] Done\n- [ ] Pending\n\n",
+            "A [link](https://example.invalid/) stays inert.\n"
+        ), (0..500).map(|index| format!("\n\n## Scroll section {index}\n\nParagraph **bold** with `code` café.\n\n> A quotation.\n\n```rust\nlet value = {index};\n```\n")).collect::<String>()).into_bytes()),
         ("image.bmp", bitmap()),
         ("document.pdf", pdf()),
     ];

@@ -9,6 +9,7 @@ const IMAGE_CACHE_CAPACITY: usize = 256;
 pub(crate) struct DesktopState {
     pub(crate) shell: Option<ShellFlavor>,
     pub(crate) locations: Vec<NavigationLocation>,
+    pub(crate) network_position: Option<usize>,
     pub(crate) error: String,
     pub(crate) status: String,
     pub(crate) notice: Option<(String, String)>,
@@ -99,7 +100,9 @@ impl DesktopState {
 impl Presenter {
     pub(super) fn apply_desktop(&mut self, event: Event) -> Option<Event> {
         match event {
+            Event::VolumeInformationLoaded(loaded) => self.volume_information_loaded(*loaded),
             Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
+            Event::FilesystemPluginsListed(result) => self.filesystem_plugins_listed(result),
             Event::EditorDefaultResolved(result) => self.editor_default_resolved(result),
             Event::FontFamiliesLoaded(result) => self.apply_font_families(result),
             Event::PreferencesLoaded(result) => {
@@ -111,8 +114,13 @@ impl Presenter {
             // The app coordinates watch hints through refresh_if_changed so
             // they cannot trigger nested sends while apply owns this state.
             Event::DirectoryChanged { .. } => {}
-            Event::DesktopContext { shell, locations } => {
+            Event::DesktopContext {
+                shell,
+                locations,
+                network_position,
+            } => {
                 self.desktop.shell = Some(shell);
+                self.desktop.network_position = Some(network_position);
                 self.track_draft(self.desktop.draft_nonempty);
                 self.retired.push(Box::new(mem::replace(
                     &mut self.desktop.locations,
@@ -129,6 +137,7 @@ impl Presenter {
                 self.retired.push(Box::new(pixels));
             }
             Event::DesktopActionFinished { request, result } => {
+                self.tree_clipboard_finished(request);
                 if !self.desktop.requests.remove(&request) {
                     return None;
                 }
@@ -174,6 +183,21 @@ impl Presenter {
                             self.desktop.open_directories[pane.index()] = Some((navigation, path));
                         }
                     }
+                    Ok(DesktopActionResult::OpenDirectoryTarget {
+                        pane,
+                        navigation,
+                        path,
+                        target,
+                    }) => {
+                        if opened == Some((pane, navigation, path))
+                            && self.panes[pane.index()].generation == navigation.0
+                            && target.is_absolute()
+                            && !target.as_os_str().as_encoded_bytes().contains(&0)
+                        {
+                            self.desktop.open_directories[pane.index()] =
+                                Some((navigation, target));
+                        }
+                    }
                     Err(error) => self.desktop.report(
                         "Desktop action failed",
                         crate::error_presentation::describe(&error),
@@ -188,7 +212,7 @@ impl Presenter {
                 size,
             } => {
                 let p = &mut self.panes[pane.index()];
-                if p.size_scan == Some(scan)
+                if (p.size_scan == Some(scan) || p.cancelled_size_scan == Some(scan))
                     && let Some(scope) = &p.size_scan_scope
                     && scope.navigation == navigation
                     && scope.path == p.display_path()
@@ -201,7 +225,10 @@ impl Presenter {
                     && p.index.by_path.contains_key(path)
                     && scope.contains(path)
                 {
-                    p.folder_sizes.insert(path.clone(), size);
+                    self.retired
+                        .push(Box::new(p.folder_sizes.insert(path.clone(), size)));
+                } else {
+                    self.retired.push(Box::new(size));
                 }
             }
             Event::FolderSizesFinished {
@@ -217,7 +244,10 @@ impl Presenter {
                     })
                 {
                     p.size_scan = None;
-                    self.retired.push(Box::new(p.size_scan_scope.take()));
+                    p.cancelled_size_scan = cancelled.then_some(scan);
+                    if !cancelled {
+                        self.retired.push(Box::new(p.size_scan_scope.take()));
+                    }
                     self.desktop.status = if cancelled {
                         "Folder size scan cancelled; unfinished sizes are partial"
                     } else {
@@ -237,14 +267,43 @@ impl Presenter {
         path: PathBuf,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        self.activate_native(pane, path, false, send)
+    }
+
+    pub(super) fn open_native_directory(
+        &mut self,
+        pane: PaneId,
+        path: PathBuf,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        self.activate_native(pane, path, true, send)
+    }
+
+    fn activate_native(
+        &mut self,
+        pane: PaneId,
+        path: PathBuf,
+        directory_only: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
         let request = self.desktop.request();
         let navigation = NavigationId(self.panes[pane.index()].generation);
-        if !send(Command::OpenEntry {
-            request,
-            pane,
-            navigation,
-            path: path.clone(),
-        }) {
+        let command = if directory_only {
+            Command::ResolveDirectoryLink {
+                request,
+                pane,
+                navigation,
+                path: path.clone(),
+            }
+        } else {
+            Command::OpenEntry {
+                request,
+                pane,
+                navigation,
+                path: path.clone(),
+            }
+        };
+        if !send(command) {
             self.desktop
                 .report("Open queue busy", "Try opening the entry again.".into());
             return false;
@@ -366,6 +425,14 @@ impl Presenter {
     }
 
     pub(crate) fn folder_sizes(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.tree_folder_sizes(pane, send);
+            return;
+        }
+        if self.panes[pane.index()].archive.is_some() {
+            self.archive_folder_sizes(pane, send);
+            return;
+        }
         if !self.native_action_allowed(pane) {
             return;
         }
@@ -427,13 +494,15 @@ impl Presenter {
             self.retired
                 .push(Box::new(mem::take(&mut p.entry_size_scans)));
             p.size_scan = Some(scan);
-            p.size_scan_scope = Some(SizeScanScope {
-                navigation,
-                path: p.path.clone(),
-                entries: p.entries.clone(),
-                index: p.index.clone(),
-                selection: selection.clone(),
-            });
+            p.cancelled_size_scan = None;
+            self.retired
+                .push(Box::new(p.size_scan_scope.replace(SizeScanScope {
+                    navigation,
+                    path: p.path.clone(),
+                    entries: p.entries.clone(),
+                    index: p.index.clone(),
+                    selection: selection.clone(),
+                })));
             p.size_scan_attempted |= selection.is_none();
         } else {
             self.desktop

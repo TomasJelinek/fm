@@ -1,71 +1,16 @@
-import { Button, ListView, TextEdit } from "std-widgets.slint";
-import { HintedCheckBox, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { Button, ListView } from "std-widgets.slint";
+import { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow } from "user-command-models.slint";
+import { UserCommandForm } from "user-command-form.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
-
-export struct UserCommandSettingsRow { id: string, name: string, summary: string, enabled: bool, selected: bool }
-export struct UserCommandSettingsForm {
-    id: string, name: string, enabled: bool, toolbar-label: string, icon: string, icon-edited: bool,
-    working-directory: string, kind: int, launch: int, executable: string, executable-edited: bool,
-    arguments: string, script: string, shell: int, active-path: bool, other-path: bool,
-    file-path: bool, file-name: bool, file-stem: bool, file-extension: bool,
-}
-export global UserCommandSettingsView {
-    in property <string> revision;
-    in property <string> draft-revision;
-    in property <string> rows-revision;
-    in property <string> token;
-    in property <string> configuration-revision;
-    in property <string> drag-token;
-    in property <bool> drag-active;
-    in property <[UserCommandSettingsRow]> rows;
-    in property <bool> ready;
-    in property <bool> has-draft;
-    in property <int> selected-index: -1;
-    in-out property <bool> dirty;
-    in-out property <bool> can-apply;
-    in-out property <bool> can-preview;
-    in property <bool> can-up;
-    in property <bool> can-down;
-    in property <bool> can-delete;
-    in property <string> error;
-    in property <string> validation;
-    in property <string> status;
-    in-out property <UserCommandSettingsForm> draft;
-    callback select(string);
-    callback new-command();
-    callback delete(string);
-    callback move(string, int);
-    callback edit-started(string);
-    callback validate(string, UserCommandSettingsForm);
-    callback apply(string, UserCommandSettingsForm);
-    callback cancel();
-    callback preview(string, UserCommandSettingsForm) -> bool;
-    callback insert-variable(string, UserCommandSettingsForm, int, int) -> bool;
-    callback drag-begin(string) -> string;
-    callback drag-end(string, int, bool) -> bool;
-    callback drag-cancel();
-}
-
-component TextField inherits VerticalLayout {
-    in property <string> label;
-    in property <string> hint;
-    in-out property <string> value;
-    callback edited();
-    spacing: 3px;
-    Text { text: root.label; color: Theme.text; font-size: Theme.font-size; }
-    HintedLineEdit {
-        text <=> root.value; accessible-label: root.label; hint: root.hint;
-        edited => { root.edited(); }
-    }
-}
+export { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow }
 export component UserCommandOptions inherits VerticalLayout {
+    in property <bool> narrow;
     in property <length> viewport-left;
     in property <length> viewport-top;
     in property <length> viewport-width;
     in property <length> viewport-height;
-    callback preview-started();
     private property <bool> checking;
     private property <string> gesture-token;
     private property <string> gesture-id;
@@ -85,7 +30,10 @@ export component UserCommandOptions inherits VerticalLayout {
     changed selected-index => { root.reveal-selection(); }
     changed configuration-revision => { root.clear-gesture(); }
     changed drag-active => { if !root.drag-active { root.clear-gesture(); } }
-    changed command-row-height => { if root.gesture-token != "" { root.abort-gesture(); } }
+    changed command-row-height => {
+        if root.gesture-token != "" { root.abort-gesture(); }
+        root.reveal-selection();
+    }
     init => { UserCommandSettingsView.drag-cancel(); }
     function clear-gesture() {
         root.gesture-token = ""; root.gesture-id = ""; root.moving = false;
@@ -136,7 +84,7 @@ export component UserCommandOptions inherits VerticalLayout {
     function edited() {
         UserCommandSettingsView.dirty = true;
         UserCommandSettingsView.can-apply = false; UserCommandSettingsView.can-preview = false;
-        root.checking = true; UserCommandSettingsView.edit-started(UserCommandSettingsView.token);
+        root.checking = true; UserCommandSettingsView.draft-edited(UserCommandSettingsView.token, UserCommandSettingsView.draft);
         validate.running = true;
         validate.restart();
     }
@@ -147,11 +95,11 @@ export component UserCommandOptions inherits VerticalLayout {
             UserCommandSettingsView.validate(UserCommandSettingsView.token, UserCommandSettingsView.draft);
         }
     }
-    Text { text: "Custom Commands"; color: Theme.strong-text; font-size: Theme.font-size; }
+    Text { text: "Menu contents"; color: Theme.strong-text; font-size: Theme.font-size; }
     Text { text: UserCommandSettingsView.ready ? "Configure commands here. Run them explicitly from the command toolbar or an assigned shortcut." : "Loading saved options…";
         color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
     list-focus := FocusScope {
-        height: min(160px, Theme.row-height * 4 + 4px);
+        height: root.command-row-height * clamp(UserCommandSettingsView.rows.length, 1, 3) + 2px;
         key-pressed(event) => {
             if UserCommandSettingsView.dirty || UserCommandSettingsView.rows.length == 0 { return reject; }
             if event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End {
@@ -190,6 +138,7 @@ export component UserCommandOptions inherits VerticalLayout {
       command-list := ListView {
         width: parent.width; height: parent.height;
         horizontal-scrollbar-policy: always-off;
+        changed visible-height => { root.reveal-selection(); }
         accessible-label: "Configured Custom Commands"; accessible-item-count: UserCommandSettingsView.rows.length;
         for row[index] in UserCommandSettingsView.rows : Rectangle {
             width: command-list.visible-width; height: root.command-row-height;
@@ -214,103 +163,27 @@ export component UserCommandOptions inherits VerticalLayout {
       }
     }
     if UserCommandSettingsView.rows.length == 0 : Text { text: "No Custom Commands configured."; color: Theme.secondary-text; font-size: Theme.small-font; }
-    if UserCommandSettingsView.dirty : Text { text: "Apply or cancel the draft before reordering commands."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-    HorizontalLayout {
+    if UserCommandSettingsView.dirty : Text { text: "Save or discard the draft before reordering commands."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+    GridLayout {
         spacing: 6px;
         Button { text: "New"; accessible-label: "New Custom Command";
+            row: 0; col: 0;
             enabled: UserCommandSettingsView.ready && !UserCommandSettingsView.dirty && UserCommandSettingsView.rows.length < 128;
             clicked => { UserCommandSettingsView.new-command(); } }
         Button { text: "Delete"; accessible-label: "Delete Custom Command";
+            row: 0; col: 1;
             enabled: UserCommandSettingsView.ready && UserCommandSettingsView.can-delete && !UserCommandSettingsView.dirty;
             clicked => { UserCommandSettingsView.delete(UserCommandSettingsView.token); } }
         Button { text: "Up"; accessible-label: "Move Custom Command up";
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 2;
             enabled: UserCommandSettingsView.can-up && !UserCommandSettingsView.dirty;
             clicked => { UserCommandSettingsView.move(UserCommandSettingsView.token, -1); } }
         Button { text: "Down"; accessible-label: "Move Custom Command down";
+            row: root.narrow ? 1 : 0; col: root.narrow ? 1 : 3;
             enabled: UserCommandSettingsView.can-down && !UserCommandSettingsView.dirty;
             clicked => { UserCommandSettingsView.move(UserCommandSettingsView.token, 1); } }
     }
-    if UserCommandSettingsView.has-draft : VerticalLayout {
-        spacing: 8px; alignment: start;
-        TextField { label: "Command name"; value <=> UserCommandSettingsView.draft.name;
-            hint: "Name shown in command choices and Keyboard settings. Duplicate names are allowed."; edited => { root.edited(); } }
-        HintedCheckBox { text: "Enabled"; checked <=> UserCommandSettingsView.draft.enabled;
-            hint: "Disabled commands remain stored and can be previewed, but cannot execute."; toggled => { root.edited(); } }
-        TextField { label: "Toolbar label (optional)"; value <=> UserCommandSettingsView.draft.toolbar-label;
-            hint: "Optional text beside the toolbar icon."; edited => { root.edited(); } }
-        TextField { label: "Icon image (optional absolute path)"; value <=> UserCommandSettingsView.draft.icon;
-            hint: "Use a supported image such as PNG or JPEG. Missing or unsupported images use the Run icon.";
-            edited => { UserCommandSettingsView.draft.icon-edited = true; root.edited(); } }
-        HorizontalLayout {
-            spacing: 6px;
-            HintedComboBox { model: ["Program", "Terminal"]; current-index <=> UserCommandSettingsView.draft.kind;
-                accessible-label: "Custom Command type"; hint: "Program passes separate literal arguments. Terminal runs your literal script.";
-                selected(value) => { root.edited(); } }
-            HintedComboBox { model: ["Single", "Per item"]; current-index <=> UserCommandSettingsView.draft.launch;
-                accessible-label: "Custom Command execution mode"; hint: "Single binds file variables to focus. Per item binds them to each captured selected item.";
-                selected(value) => { root.edited(); } }
-        }
-        TextField { label: "Working folder"; value <=> UserCommandSettingsView.draft.working-directory;
-            hint: "One absolute path or scalar template, for example ${active.path}. No shell cd command is created."; edited => { root.edited(); } }
-        if UserCommandSettingsView.draft.kind == 0 : VerticalLayout {
-            spacing: 6px; alignment: start;
-            TextField { label: "Program executable (absolute path)"; value <=> UserCommandSettingsView.draft.executable;
-                hint: "A configured executable path. Program mode does not use a shell or the browsed folder's PATH.";
-                edited => { UserCommandSettingsView.draft.executable-edited = true; root.edited(); } }
-            Text { text: "Arguments (JSON list)"; color: Theme.text; font-size: Theme.font-size; }
-            TextEdit { text <=> UserCommandSettingsView.draft.arguments; accessible-label: "Custom Command arguments";
-                font-size: Theme.font-size; height: max(72px, Theme.font-size * 4); wrap: no-wrap; edited => { root.edited(); } }
-            Text { text: "Each item is one argument, including empty items. Example: [\"--\", \"${file.path}\"]. ${selected.paths} must be a whole item in Single mode. $$ inserts a literal $.";
-                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-        }
-        if UserCommandSettingsView.draft.kind == 1 : VerticalLayout {
-            spacing: 6px; alignment: start;
-            HintedComboBox { model: ["PowerShell", "POSIX shell", "Command Prompt (unavailable)"]; current-index <=> UserCommandSettingsView.draft.shell;
-                accessible-label: "Custom Command shell"; hint: "Choose the syntax of this literal script. The backend reports unavailable platform shells."; selected(value) => { root.edited(); } }
-            Text { text: "Literal terminal script"; color: Theme.text; font-size: Theme.font-size; }
-            TextEdit { text <=> UserCommandSettingsView.draft.script; accessible-label: "Custom Command script";
-                font-size: Theme.font-size; height: max(96px, Theme.font-size * 5); wrap: no-wrap; edited => { root.edited(); } }
-            Text { text: "Script text is not template-expanded. Required context values arrive as environment data. The picker inserts a quoted reference and declares it below.";
-                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-            Text { text: "Required context"; color: Theme.text; font-size: Theme.font-size; }
-            for label[index] in ["Active folder", "Other folder", "File path", "File name", "File stem", "File extension"] : HintedCheckBox {
-                text: label;
-                checked: index == 0 ? UserCommandSettingsView.draft.active-path : index == 1 ? UserCommandSettingsView.draft.other-path
-                    : index == 2 ? UserCommandSettingsView.draft.file-path : index == 3 ? UserCommandSettingsView.draft.file-name
-                    : index == 4 ? UserCommandSettingsView.draft.file-stem : UserCommandSettingsView.draft.file-extension;
-                hint: "Require this captured scalar context value. A missing value rejects the entire launch.";
-                toggled => {
-                    if index == 0 { UserCommandSettingsView.draft.active-path = self.checked; }
-                    else if index == 1 { UserCommandSettingsView.draft.other-path = self.checked; }
-                    else if index == 2 { UserCommandSettingsView.draft.file-path = self.checked; }
-                    else if index == 3 { UserCommandSettingsView.draft.file-name = self.checked; }
-                    else if index == 4 { UserCommandSettingsView.draft.file-stem = self.checked; }
-                    else { UserCommandSettingsView.draft.file-extension = self.checked; }
-                    root.edited();
-                }
-            }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            variable := HintedComboBox { model: ["Active folder", "Other folder", "File path", "File name", "File stem", "File extension", "Selected paths"];
-                current-index: 0; accessible-label: "Custom Command variable"; hint: "Choose a captured value to insert."; min-width: 0px; horizontal-stretch: 1; }
-            target := HintedComboBox { model: ["Working folder", "Program argument", "Terminal script"]; current-index: 1;
-                accessible-label: "Variable insertion target"; hint: "Program arguments are appended as complete items. Terminal insertion declares its required context."; min-width: 0px; horizontal-stretch: 1; }
-            Button { text: "Insert"; accessible-label: "Insert Custom Command variable";
-                clicked => { if UserCommandSettingsView.insert-variable(UserCommandSettingsView.token, UserCommandSettingsView.draft, target.current-index, variable.current-index) { root.edited(); } } }
-        }
-        if root.checking : Text { text: "Checking command…"; color: Theme.secondary-text; font-size: Theme.small-font; }
-        if UserCommandSettingsView.validation != "" : ErrorNotice { text: UserCommandSettingsView.validation; }
-        HorizontalLayout {
-            spacing: 6px;
-            Button { text: "Apply"; accessible-label: "Apply Custom Command"; enabled: UserCommandSettingsView.ready && UserCommandSettingsView.can-apply && !root.checking;
-                clicked => { validate.stop(); UserCommandSettingsView.apply(UserCommandSettingsView.token, UserCommandSettingsView.draft); } }
-            Button { text: "Cancel"; accessible-label: "Cancel Custom Command draft"; enabled: UserCommandSettingsView.dirty;
-                clicked => { validate.stop(); UserCommandSettingsView.cancel(); } }
-            Button { text: "Preview"; accessible-label: "Preview Custom Command"; enabled: UserCommandSettingsView.ready && UserCommandSettingsView.can-preview && !root.checking;
-                clicked => { if UserCommandSettingsView.preview(UserCommandSettingsView.token, UserCommandSettingsView.draft) { root.preview-started(); } } }
-        }
-    }
+    if UserCommandSettingsView.has-draft : UserCommandForm { narrow: root.narrow; edited => { root.edited(); } }
     if UserCommandSettingsView.error != "" : ErrorNotice { text: UserCommandSettingsView.error; }
     if UserCommandSettingsView.status != "" : Text { text: UserCommandSettingsView.status; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
 }

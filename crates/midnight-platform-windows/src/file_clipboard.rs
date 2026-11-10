@@ -213,6 +213,12 @@ pub(super) struct Files {
 }
 
 impl Files {
+    pub(super) fn read_text(&mut self) -> Result<String, FsError> {
+        let _lock = ClipboardLock::open(self.window)?;
+        let bytes = read_format(windows_sys::Win32::System::Ole::CF_UNICODETEXT as u32)?
+            .ok_or_else(|| error("The clipboard contains no Unicode text."))?;
+        crate::clipboard_text::decode(&bytes)
+    }
     pub(super) fn new() -> Result<Self, FsError> {
         static CLASS: OnceLock<Result<u16, String>> = OnceLock::new();
         let class = windows_sys::w!("MidnightExplorerFileClipboardOwner");

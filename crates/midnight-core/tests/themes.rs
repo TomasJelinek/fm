@@ -25,7 +25,25 @@ fn modern_and_retro_themes_append_without_reusing_saved_ids() {
         assert_eq!(PreferenceTheme::from_index(index), Some(theme));
         assert_eq!(theme.storage_name(), name);
     }
-    assert_eq!(PreferenceTheme::ALL.len(), 17);
+    assert_eq!(PreferenceTheme::ALL.len(), 23);
+}
+
+#[test]
+fn contrast_themes_append_with_stable_storage_names() {
+    for (index, name) in [
+        (17, "paper-contrast"),
+        (18, "sandstone-contrast"),
+        (19, "deep-ocean"),
+        (20, "graphite-contrast"),
+        (21, "high-contrast-dark"),
+        (22, "high-contrast-light"),
+    ] {
+        let theme = PreferenceTheme::from_storage_name(name)
+            .unwrap_or_else(|| panic!("missing saved theme {name}"));
+        assert_eq!(theme.index(), index);
+        assert_eq!(PreferenceTheme::from_index(index), Some(theme));
+        assert_eq!(theme.storage_name(), name);
+    }
 }
 
 #[test]
@@ -69,7 +87,7 @@ fn theme_catalog_keeps_original_ids_and_appends_stable_names() {
 
 #[test]
 fn unknown_theme_ids_and_names_are_never_silently_coerced() {
-    for index in [i32::MIN, -1, 17, 99, i32::MAX] {
+    for index in [i32::MIN, -1, 23, 99, i32::MAX] {
         assert_eq!(PreferenceTheme::from_index(index), None);
     }
     for name in ["", "future-theme", "Nord", "gruvbox_dark", "dracula "] {

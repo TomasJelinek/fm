@@ -1,14 +1,13 @@
 //! User-visible preferences; native storage belongs to backend platform services.
-use crate::{CommandHistoryEntry, FsError, ShortcutBinding, ShortcutMap, validate_command_history};
+use crate::{
+    Bookmark, CommandHistoryEntry, FsError, MAX_BOOKMARKS, ShortcutBinding, ShortcutMap,
+    validate_command_history,
+};
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
     sync::Arc,
 };
-
-/// Stable callback identity; names and displayed paths are never identifiers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BookmarkId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TabId(pub u64);
@@ -22,6 +21,7 @@ pub struct PaneTabPreferences {
     pub paths: Vec<PathBuf>,
     pub active: usize,
     pub archives: BTreeMap<usize, crate::ArchiveAddress>,
+    pub networks: BTreeMap<usize, crate::NetworkAddress>,
 }
 
 impl PaneTabPreferences {
@@ -32,6 +32,12 @@ impl PaneTabPreferences {
         for (index, address) in &self.archives {
             if *index >= self.paths.len() {
                 return Err("Archive tab address must refer to a saved tab.");
+            }
+            address.validate()?;
+        }
+        for (index, address) in &self.networks {
+            if *index >= self.paths.len() || self.archives.contains_key(index) {
+                return Err("Network tab address must refer to one saved non-archive tab.");
             }
             address.validate()?;
         }
@@ -46,41 +52,6 @@ impl PaneTabPreferences {
             .any(|path| !path.is_absolute() || path.as_os_str().as_encoded_bytes().contains(&0))
         {
             return Err("Tab paths must be absolute native paths without NUL.");
-        }
-        Ok(())
-    }
-}
-
-/// Native locations are stored losslessly. Future providers need a separate
-/// location representation rather than interpreting these paths as URLs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Bookmark {
-    pub id: BookmarkId,
-    pub name: String,
-    pub path: PathBuf,
-    /// Salamander hot path: 1 through 9, and 10 for the zero key.
-    pub slot: Option<u8>,
-}
-
-pub const MAX_BOOKMARKS: usize = 64;
-pub const MAX_BOOKMARK_NAME_BYTES: usize = 512;
-
-impl Bookmark {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.id.0 == 0 {
-            return Err("Bookmark identity must be nonzero.");
-        }
-        if self.name.trim().is_empty()
-            || self.name.len() > MAX_BOOKMARK_NAME_BYTES
-            || self.name.chars().any(char::is_control)
-        {
-            return Err("Bookmark name must contain 1 to 512 UTF-8 bytes without controls.");
-        }
-        if !self.path.is_absolute() || self.path.as_os_str().as_encoded_bytes().contains(&0) {
-            return Err("Bookmark path must be an absolute native path without NUL.");
-        }
-        if self.slot.is_some_and(|slot| !(1..=10).contains(&slot)) {
-            return Err("Bookmark hot path slot must be between 1 and 10.");
         }
         Ok(())
     }
@@ -107,11 +78,17 @@ pub enum PreferenceTheme {
     VerdantLight = 14,
     CatppuccinLatte = 15,
     RosePineDawn = 16,
+    PaperContrast = 17,
+    SandstoneContrast = 18,
+    DeepOcean = 19,
+    GraphiteContrast = 20,
+    HighContrastDark = 21,
+    HighContrastLight = 22,
 }
 
 impl PreferenceTheme {
     /// Stable picker order. Replaced names retain a storage migration alias.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 23] = [
         Self::Blue,
         Self::Dark,
         Self::Light,
@@ -129,6 +106,12 @@ impl PreferenceTheme {
         Self::VerdantLight,
         Self::CatppuccinLatte,
         Self::RosePineDawn,
+        Self::PaperContrast,
+        Self::SandstoneContrast,
+        Self::DeepOcean,
+        Self::GraphiteContrast,
+        Self::HighContrastDark,
+        Self::HighContrastLight,
     ];
 
     pub const fn index(self) -> i32 {
@@ -160,6 +143,12 @@ impl PreferenceTheme {
             Self::VerdantLight => "verdant-light",
             Self::CatppuccinLatte => "catppuccin-latte",
             Self::RosePineDawn => "rose-pine-dawn",
+            Self::PaperContrast => "paper-contrast",
+            Self::SandstoneContrast => "sandstone-contrast",
+            Self::DeepOcean => "deep-ocean",
+            Self::GraphiteContrast => "graphite-contrast",
+            Self::HighContrastDark => "high-contrast-dark",
+            Self::HighContrastLight => "high-contrast-light",
         }
     }
 
@@ -205,12 +194,20 @@ pub enum PanelViewMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserPreferences {
     pub user_commands: Arc<Vec<crate::UserCommand>>,
+    /// Accepted Make File List templates and output choices; draft edits are not saved.
+    pub file_list: crate::FileListPreferences,
     /// Algorithm choices for new checksum windows; recursion is deliberately not persisted.
     pub checksum_algorithms: crate::ChecksumAlgorithms,
     pub window_geometry: Option<crate::WindowGeometry>,
+    /// Normal left panel width as 1..=9999 basis points; panel zoom is transient.
+    pub panel_split_basis_points: u16,
     /// Per-extension archive browsing choices; absent keys use the catalog default.
     pub archive_association_overrides: BTreeMap<String, bool>,
+    /// User-defined literal suffixes mapped to an installed archive decoder format.
+    pub archive_custom_extensions: BTreeMap<String, crate::ArchiveFormat>,
     pub disabled_viewer_plugins: Vec<String>,
+    pub viewer_associations: Arc<crate::ViewerAssociations>,
+    pub viewer: crate::ViewerPreferences,
     pub editor: crate::EditorPreferences,
     pub theme: PreferenceTheme,
     pub density: UiDensity,
@@ -223,6 +220,8 @@ pub struct UserPreferences {
     pub quick_search_filter: bool,
     pub size_display: SizeDisplay,
     pub remember_command_history: bool,
+    /// Full SHA-256 for new Copy/Move jobs; false checks length and three64 KiB samples.
+    pub copy_checksum_verification: bool,
     /// Newest first; exact command text is unique even across different shells.
     pub command_history: Vec<CommandHistoryEntry>,
     pub bookmarks: Vec<Bookmark>,
@@ -233,6 +232,8 @@ pub struct UserPreferences {
     pub thumbnails_enabled: bool,
     /// Network sources require an explicit user choice independently of the master enable switch.
     pub thumbnails_network: bool,
+    /// Square thumbnail artwork edge in logical pixels; decoding resolves physical pixels separately.
+    pub thumbnail_size: u16,
     /// Only deviations from the application shortcut catalog are persisted.
     pub shortcuts: Vec<ShortcutBinding>,
     pub panel_filters: [crate::PanelFilter; 2],
@@ -243,15 +244,23 @@ pub struct UserPreferences {
 pub const FONT_SIZE_MIN: u16 = 8;
 pub const FONT_SIZE_MAX: u16 = 32;
 pub const MAX_FONT_FAMILY_BYTES: usize = 512;
+pub const DEFAULT_PANEL_SPLIT_BASIS_POINTS: u16 = 5000;
+pub const DEFAULT_THUMBNAIL_SIZE: u16 = 72;
+pub const THUMBNAIL_SIZES: [u16; 7] = [48, 64, 72, 96, 128, 192, 256];
 
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             user_commands: Arc::new(Vec::new()),
+            file_list: crate::FileListPreferences::default(),
             checksum_algorithms: crate::ChecksumAlgorithms::default(),
             window_geometry: None,
+            panel_split_basis_points: DEFAULT_PANEL_SPLIT_BASIS_POINTS,
             archive_association_overrides: BTreeMap::new(),
+            archive_custom_extensions: BTreeMap::new(),
             disabled_viewer_plugins: Vec::new(),
+            viewer_associations: Arc::default(),
+            viewer: crate::ViewerPreferences::default(),
             editor: crate::EditorPreferences::default(),
             theme: PreferenceTheme::default(),
             density: UiDensity::default(),
@@ -262,12 +271,14 @@ impl Default for UserPreferences {
             quick_search_filter: false,
             size_display: SizeDisplay::default(),
             remember_command_history: true,
+            copy_checksum_verification: true,
             command_history: Vec::new(),
             bookmarks: Vec::new(),
             tabs: Default::default(),
             panel_view_modes: Default::default(),
             thumbnails_enabled: true,
             thumbnails_network: false,
+            thumbnail_size: DEFAULT_THUMBNAIL_SIZE,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),
             filename_colors: crate::default_filename_colors().into(),
@@ -296,7 +307,7 @@ impl UserPreferences {
         let mut unique: Vec<Bookmark> = Vec::with_capacity(self.bookmarks.len());
         let mut changed = false;
         for bookmark in self.bookmarks.drain(..) {
-            if let Some(existing) = unique.iter_mut().find(|old| old.path == bookmark.path) {
+            if let Some(existing) = unique.iter_mut().find(|old| old.same_location(&bookmark)) {
                 if existing.slot.is_none() {
                     existing.slot = bookmark.slot;
                 }
@@ -331,6 +342,24 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if let Err(error) = self.file_list.validate() {
+            message = Some(error);
+        }
+        if !THUMBNAIL_SIZES.contains(&self.thumbnail_size) {
+            message =
+                Some("Thumbnail size must be 48, 64, 72, 96, 128, 192 or 256 logical pixels.");
+        }
+        if !(1..10_000).contains(&self.panel_split_basis_points) {
+            message = Some("Panel split must be between 1 and 9999 basis points.");
+        }
+        if let Err(error) = self.viewer.validate() {
+            message = Some(error);
+        }
+        if let Err(error) =
+            crate::validate_archive_custom_extensions(&self.archive_custom_extensions)
+        {
+            message = Some(error);
+        }
         if let Some(geometry) = &self.window_geometry
             && let Err(error) = geometry.validate()
         {
@@ -344,6 +373,9 @@ impl UserPreferences {
             message = Some(
                 "Archive associations must use known lowercase extensions without a leading dot.",
             );
+        }
+        if let Err(error) = self.viewer_associations.validate() {
+            message = Some(error);
         }
         if let Err(error) = crate::validate_disabled_viewers(&self.disabled_viewer_plugins) {
             message = Some(error);
@@ -373,7 +405,7 @@ impl UserPreferences {
         }
         let mut ids = HashSet::new();
         let mut slots = HashSet::new();
-        let mut paths = HashSet::new();
+        let mut locations: Vec<&Bookmark> = Vec::new();
         for bookmark in &self.bookmarks {
             if let Err(error) = bookmark.validate() {
                 message = Some(error);
@@ -387,10 +419,11 @@ impl UserPreferences {
                 message = Some("Bookmark hot path slots must be unique.");
                 break;
             }
-            if !paths.insert(&bookmark.path) {
+            if locations.iter().any(|old| old.same_location(bookmark)) {
                 message = Some("Bookmark paths must be unique.");
                 break;
             }
+            locations.push(bookmark);
         }
         match message {
             Some(message) => Err(FsError::from_io(

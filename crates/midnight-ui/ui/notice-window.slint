@@ -1,0 +1,31 @@
+import { DialogWindow } from "dialog-window.slint";
+import { NoticeDialog } from "notice-dialog.slint";
+import { Theme } from "theme.slint";
+
+export component NoticeWindow inherits DialogWindow {
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    preferred-width: max(520px, Theme.font-size * 24);
+    preferred-height: clamp(body-measure.preferred-height
+        + max(Theme.control-height, Theme.font-size * 2) + 100px, 200px, 440px);
+    in property <string> message-title;
+    title: root.message-title;
+    in property <string> body;
+    in property <bool> error;
+    in property <int> generation;
+    callback copy-details();
+    body-measure := Text {
+        visible: false; accessible-role: none; width: root.preferred-width - 56px;
+        text: root.body; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    NoticeDialog {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        preferred-width: 0px; preferred-height: 0px;
+        title: root.title; body: root.body; error: root.error; generation: root.generation;
+        copy-details => { root.copy-details(); }
+        close => { root.request-dismiss(); }
+    }
+}

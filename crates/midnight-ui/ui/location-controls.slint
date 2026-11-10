@@ -14,13 +14,15 @@ export component CompactLocationButton inherits Rectangle {
     in property <string> identity;
     in property <int> model-revision;
     in property <string> hint;
+    in property <string> accessible-name: root.hint;
+    in property <bool> enabled: true;
     in property <bool> selected;
     in property <bool> is-drive;
     private property <bool> numbered-hot-path: root.kind == LocationRole.hot-path && root.compact-label != "";
     callback clicked();
     callback context-menu(float, float, bool, bool);
     width: root.is-drive
-        ? max(Theme.touch ? 56px : 46px, caption.preferred-width + (Theme.touch ? 40px : 26px))
+        ? max(Theme.tool-width, caption.x + caption.preferred-width + (Theme.touch ? 8px : 4px))
         : Theme.tool-width;
     height: Theme.control-height;
     horizontal-stretch: 0;
@@ -32,14 +34,16 @@ export component CompactLocationButton inherits Rectangle {
         : area.has-hover ? Theme.hover : transparent;
     forward-focus: focus;
     accessible-role: button;
-    accessible-label: root.hint;
+    accessible-label: root.accessible-name;
+    accessible-enabled: root.enabled;
     accessible-checkable: true;
     accessible-checked: root.selected;
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { if root.enabled { root.clicked(); } }
 
     LocationImage {
         visible: !root.numbered-hot-path;
         native-icon: root.icon; kind: root.kind;
+        opacity: root.enabled ? 1 : 0.4;
         width: Theme.location-icon-size;
         height: self.width;
         x: root.is-drive ? (Theme.touch ? 8px : 4px) - (self.width - Theme.icon-size) / 2
@@ -53,13 +57,14 @@ export component CompactLocationButton inherits Rectangle {
         x: root.numbered-hot-path ? 0px : Theme.touch ? 32px : 22px;
         width: root.numbered-hot-path ? root.width : max(0px, root.width - self.x - (Theme.touch ? 8px : 4px));
         height: root.height;
-        color: Theme.text;
+        color: root.enabled ? Theme.text : Theme.muted-text;
         font-size: Theme.font-size;
         vertical-alignment: center;
         horizontal-alignment: root.numbered-hot-path ? center : left;
         overflow: elide;
     }
     focus := FocusScope {
+        enabled: root.enabled;
         key-pressed(event) => {
             if event.text == Key.Return || event.text == " " {
                 root.clicked();
@@ -68,6 +73,7 @@ export component CompactLocationButton inherits Rectangle {
             reject
         }
         area := TouchArea {
+            enabled: root.enabled;
             private property <string> pressed-identity;
             private property <int> pressed-revision;
             private property <bool> right-pressed;

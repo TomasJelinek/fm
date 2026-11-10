@@ -8,6 +8,26 @@ use std::{
 struct Fake {
     calls: AtomicUsize,
 }
+
+#[test]
+fn activation_capability_requires_new_host_but_old_native_descriptors_do_not() {
+    let old = descriptor::<Fake>();
+    assert_eq!(old.header.minimum_host_minor, 0);
+    let mut table = Api::default();
+    // SAFETY: live aligned caller-owned output table with its exact capacity.
+    let status = unsafe {
+        entry::<Fake>(
+            &mut table,
+            size_of::<Api>() as u32,
+            "network.test",
+            "0.1.0",
+            CAP_BROWSE | CAP_ACTIVATE,
+        )
+    };
+    assert_eq!(status, OK);
+    assert_eq!(table.header.minimum_host_minor, 2);
+    table.validate(size_of::<Api>() as u32).unwrap();
+}
 impl Filesystem for Fake {
     fn create(_: Config) -> Result<Self, Failure> {
         Ok(Self {
@@ -317,6 +337,45 @@ fn active_call_keeps_owner_alive_and_holds_admission_until_actual_return() {
 }
 
 struct CleanupFailure;
+struct RetiredPublication;
+impl Filesystem for RetiredPublication {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
+        if matches!(request, Request::Volumes) {
+            Ok(Reply::owned(Response::Unit, |published| {
+                if published {
+                    Err(Failure::new(
+                        ErrorCode::StaleReference,
+                        "Mount retired; resources rolled back",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }))
+        } else {
+            Reply::stateless(Response::Unit)
+        }
+    }
+}
+#[test]
+fn retired_publication_releases_buffer_without_poisoning_unrelated_requests() {
+    let api = descriptor::<RetiredPublication>();
+    let instance = create_instance(&api, Config::default());
+    let (status, buffer) = invoke(&api, instance, Request::Volumes, Cancellation::default());
+    assert_eq!(status, UNKNOWN_HANDLE);
+    assert_eq!(buffer.id, 0);
+    let (status, buffer) = invoke(
+        &api,
+        instance,
+        Request::CloseMount { mount: 1 },
+        Cancellation::default(),
+    );
+    assert_eq!(status, OK);
+    assert_eq!(release(&api, instance, buffer.id), OK);
+    assert_eq!(destroy(&api, instance), OK);
+}
 impl Filesystem for CleanupFailure {
     fn create(_: Config) -> Result<Self, Failure> {
         Ok(Self)

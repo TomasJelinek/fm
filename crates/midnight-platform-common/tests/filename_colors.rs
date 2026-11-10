@@ -155,7 +155,7 @@ fn invalid_disabled_expressions_and_excessive_rules_fail_atomically() {
 fn defaults_color_common_file_categories_and_preserve_folder_theme() {
     let preferences =
         decode_preferences(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
-    assert_eq!(preferences.filename_colors.len(), 5);
+    assert_eq!(preferences.filename_colors.len(), 11);
     let compiled = CompiledFilenameColors::new(&preferences.filename_colors).unwrap();
     let categories = ["main.RS", "app.exe", "photo.jpg", "movie.mp4", "report.pdf"];
     let colors: std::collections::HashSet<_> = categories
@@ -170,6 +170,46 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
         })
         .collect();
     assert_eq!(colors.len(), categories.len());
+    for (names, expected) in [
+        (
+            &["main.RS", "Makefile", "config.json", "README.rs"][..],
+            "#3b82f6",
+        ),
+        (&["movie.MP4", "clip.mkv"][..], "#8b5cf6"),
+        (&["report.pdf", "letter.docx", "book.epub"][..], "#64748b"),
+        (&["photo.jpg", "vector.svg", "image.avif"][..], "#ec4899"),
+        (
+            &["app.exe", "installer.msi", "program.AppImage"][..],
+            "#f97316",
+        ),
+        (
+            &["table.xlsx", "data.CSV", "table.tsv", "sheet.ods"][..],
+            "#22c55e",
+        ),
+        (&["music.mp3", "sound.flac", "track.ogg"][..], "#14b8a6"),
+        (
+            &["backup.zip", "archive.7z", "source.tar.gz"][..],
+            "#d97706",
+        ),
+        (&["slides.pptx", "talk.odp"][..], "#ef4444"),
+        (
+            &[
+                "readme.txt",
+                "README",
+                "README.md",
+                "README.release",
+                "notes.rst",
+            ][..],
+            "#64748b",
+        ),
+        (&["type.ttf", "font.otf", "web.woff2"][..], "#92400e"),
+    ] {
+        for name in names {
+            let style = compiled.style(name.as_ref(), EntryKind::File).unwrap();
+            assert_eq!(style.foreground.unwrap().hex(), expected, "{name}");
+            assert_eq!(style.background, None, "keep theme state backgrounds");
+        }
+    }
     assert!(
         compiled
             .style("folder.rs".as_ref(), EntryKind::Directory)
@@ -204,6 +244,9 @@ fn deleting_all_presets_survives_restart() {
 #[cfg(unix)]
 #[path = "support/filename_colors_unix.rs"]
 mod native;
+
 #[cfg(windows)]
 #[path = "support/filename_colors_windows.rs"]
 mod native;
+#[path = "support/filename_palette.rs"]
+mod palette;
