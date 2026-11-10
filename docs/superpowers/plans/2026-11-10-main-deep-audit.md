@@ -45,16 +45,21 @@ findings, reproductions and remaining verification gaps.
 
 ## Execution and evidence
 
-- [ ] Inventory every tracked source/test/build/documentation file and assign ownership.
-- [ ] Record clean baseline build, normal test results and per-test runtime.
-- [ ] Audit all core/engine sources, contracts, structures and tests.
-- [ ] Audit platform common/facade/Windows/Linux sources and native test boundaries.
-- [ ] Audit UI/application sources, model costs, callback lifetime and tests.
-- [ ] Reproduce concrete findings; apply focused fixes and meaningful regressions.
-- [ ] Measure data-structure alternatives and test-runtime improvements.
-- [ ] Review dependencies, scripts, CI and all maintained documentation claims.
-- [ ] Run final Windows and available Linux checks, lint, formatting and source limits.
-- [ ] Independently review fixes and publish evidence with explicit platform gaps.
+- [x] Inventory every tracked source/test/build/documentation file and assign ownership.
+- [x] Record clean baseline build, normal test results and per-test runtime.
+- [x] Audit all core/engine sources, contracts, structures and tests.
+- [x] Audit platform common/facade/Windows/Linux sources and native test boundaries.
+- [x] Audit UI/application sources, model costs, callback lifetime and tests.
+- [x] Reproduce concrete findings; apply focused fixes and meaningful regressions.
+- [x] Measure data-structure alternatives and test-runtime improvements.
+- [x] Review dependencies, scripts, CI and all maintained documentation claims.
+- [x] Run final Windows and available Linux checks, lint, formatting and source limits.
+- [x] Independently review fixes and publish evidence with explicit platform gaps.
 
 The current user request authorizes investigation, fixes and verification. Routine
 implementation choices and baseline failures do not require a new approval round.
+
+Completed 11 November 2026. See the [audit report](../../verification/main-audit.md)
+for findings, per-test timing records and explicit native/platform qualification
+limits. Source corrections are recorded in commit
+`962ebb5049f51d7b2e268c213fb4436d5308b621`.

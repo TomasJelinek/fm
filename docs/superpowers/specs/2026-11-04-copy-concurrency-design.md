@@ -2,8 +2,10 @@
 
 Datum: 4. listopadu 2026
 
-Stav: **návrh, bez implementace**. Copy/Move/Delete zůstávají vypnuté. Tento
-doplněk zpřesňuje oddíly 8, 9, 17 a 25 hlavního návrhu; nemění `SECURITY.md` ani
+Stav: **návrh kopírování/přesunu, bez implementace**. Copy/Move zůstávají vypnuté.
+Mazání již používá potvrzovanou backendovou frontu; její rozšíření o ověřené kopie
+zůstává budoucí prací. Tento doplněk zpřesňuje oddíly 8, 9, 17 a 25 hlavního návrhu;
+nemění `SECURITY.md` ani
 povinné ověření každého souboru. Číselné výchozí limity jsou doporučení návrhu,
 která se musí ověřit měřením, nikoli tvrzení o naměřeném výkonu aplikace.
 
