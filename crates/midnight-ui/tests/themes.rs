@@ -33,6 +33,11 @@ fn readable(theme: &Theme<'_>, name: &str) {
         21..=22 => 12.0,
         _ => 4.5,
     };
+    let row_minimum = if matches!(theme.get_scheme(), 23..=25) {
+        7.0
+    } else {
+        minimum
+    };
     for foreground in [
         theme.get_text(),
         theme.get_strong_text(),
@@ -51,8 +56,8 @@ fn readable(theme: &Theme<'_>, name: &str) {
             theme.get_selected_background(),
         ] {
             assert!(
-                contrast(foreground, background) >= minimum,
-                "{name}: row text {foreground:?} on {background:?}, minimum {minimum}"
+                contrast(foreground, background) >= row_minimum,
+                "{name}: row text {foreground:?} on {background:?}, minimum {row_minimum}"
             );
         }
     }
@@ -164,7 +169,11 @@ fn all_themes_are_selectable_and_keep_text_readable() {
         "Graphite Contrast",
         "High Contrast Dark",
         "High Contrast Light",
+        "Slate Blue",
+        "Slate Teal",
+        "Slate Violet",
     ];
+    assert_eq!(choices.len(), midnight_core::PreferenceTheme::ALL.len());
     let accepted = Rc::new(Cell::new(0));
     let changed = accepted.clone();
     let weak = test.window.as_weak();
@@ -270,7 +279,7 @@ fn all_themes_are_selectable_and_keep_text_readable() {
                 (background.red(), background.green(), background.blue()),
                 "{name}: top toolbar background must follow the theme",
             );
-            if index >= 21 {
+            if matches!(index, 21..=22) {
                 high_contrast_selection_marks(&test);
             }
             render::snapshot(&test, &format!("palette-{index}-density-{density}-panel"));

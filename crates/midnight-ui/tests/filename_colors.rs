@@ -105,37 +105,45 @@ fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selec
                 for (index, (rule, name)) in rules.iter().zip(names).enumerate() {
                     let rgb = rule.style.foreground.unwrap();
                     let base = Color::from_rgb_u8(rgb.0, rgb.1, rgb.2);
-                    let background = presentation.invoke_background(
-                        false,
-                        Color::default(),
-                        cursor,
-                        active,
-                        selected,
-                        index % 2 != 0,
-                    );
-                    let ink =
-                        presentation.invoke_foreground(true, base, background, selected, false);
-                    assert!(
-                        contrast(ink, background) >= 4.5,
-                        "{name}: theme {theme}, state {state}, active {active}"
-                    );
-                    let row = ui::root_item(&window, name, AccessibleRole::ListItem);
-                    let rect = row.geometry();
-                    let origin = row.map_to_native_window(rect.origin);
-                    // Inspect the filename region, excluding artwork and focus edges.
-                    let found = ((origin.y + 2.0) as usize
-                        ..(origin.y + rect.size.height - 2.0) as usize)
-                        .any(|y| {
-                            ((origin.x + 64.0) as usize..(origin.x + 230.0) as usize)
-                                .any(|x| has_ink(test.pixels[y * test.width + x], ink, background))
-                        });
-                    assert!(
-                        found,
-                        "actual filename ink: {name}, theme {theme}, state {state}, active {active}"
-                    );
+                    for alternate in [false, true] {
+                        let background = presentation.invoke_background(
+                            false,
+                            Color::default(),
+                            cursor,
+                            active,
+                            selected,
+                            alternate,
+                        );
+                        let ink =
+                            presentation.invoke_foreground(true, base, background, selected, false);
+                        assert!(
+                            contrast(ink, background) >= 4.5,
+                            "{name}: theme {theme}, state {state}, active {active}, alternate {alternate}"
+                        );
+                        // Check every category against both stripes, then inspect
+                        // the ink on the stripe used by its rendered fixture row.
+                        if alternate != (index % 2 != 0) {
+                            continue;
+                        }
+                        let row = ui::root_item(&window, name, AccessibleRole::ListItem);
+                        let rect = row.geometry();
+                        let origin = row.map_to_native_window(rect.origin);
+                        // Inspect the filename region, excluding artwork and focus edges.
+                        let found = ((origin.y + 2.0) as usize
+                            ..(origin.y + rect.size.height - 2.0) as usize)
+                            .any(|y| {
+                                ((origin.x + 64.0) as usize..(origin.x + 230.0) as usize).any(|x| {
+                                    has_ink(test.pixels[y * test.width + x], ink, background)
+                                })
+                            });
+                        assert!(
+                            found,
+                            "actual filename ink: {name}, theme {theme}, state {state}, active {active}"
+                        );
+                    }
                 }
-                if (active && state == 0 && matches!(theme, 0 | 2 | 17 | 21 | 22))
-                    || (theme == 0 && !active && state == 3)
+                if (active && state == 0 && matches!(theme, 0 | 2 | 17 | 21..=25))
+                    || (matches!(theme, 0 | 23..=25) && !active && state == 3)
                 {
                     render::snapshot(
                         &test,

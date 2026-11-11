@@ -39,7 +39,7 @@ export global ThemePalettes {
         "One Dark", "Rosé Pine", "Norton Commander", "Amber Terminal",
         "Verdant Light", "Catppuccin Latte", "Rosé Pine Dawn",
         "Paper Contrast", "Sandstone Contrast", "Deep Ocean", "Graphite Contrast",
-        "High Contrast Dark", "High Contrast Light"
+        "High Contrast Dark", "High Contrast Light", "Slate Blue", "Slate Teal", "Slate Violet"
     ];
     pure public function colors(index: int) -> ThemeColors {
         // Dark
@@ -811,6 +811,45 @@ export global ThemePalettes {
                 error-text: #200000,
                 selection-background: #000000,
                 selection-text: #ffffff,
+            };
+        }
+        // Slate variants share neutral charcoal surfaces; only focus and selection carry hue.
+        if index >= 23 && index <= 25 {
+            let accent = index == 24 ? #67d7c4 : index == 25 ? #c5a3f1 : #72b8eb;
+            let active-header = index == 24 ? #243a35 : index == 25 ? #342e40 : #263844;
+            let cursor = index == 24 ? #29443f : index == 25 ? #3b354b : #2c4050;
+            let selected = index == 24 ? #283d38 : index == 25 ? #352f42 : #293946;
+            return {
+                light: false,
+                window-background: #16191e,
+                pane-background: #1f2228,
+                alternate-row: #242830,
+                surface: #282d35,
+                secondary-surface: #1b1e24,
+                header: #16191e,
+                active-header: active-header,
+                frame: #858f9e,
+                active-frame: accent,
+                hover: #343b45,
+                text: #edf1f5,
+                strong-text: #ffffff,
+                secondary-text: #cdd6e0,
+                muted-text: #b5c0ce,
+                pending-size: #ffe0a3,
+                accent: accent,
+                directory-text: #d6e6f4,
+                selected-text: #ffffff,
+                search-match: #9ee6d2,
+                compression-mark: #cad8ff,
+                cursor-background: cursor,
+                inactive-cursor: #30353e,
+                selected-background: selected,
+                selected-edge: accent,
+                cursor-edge: accent,
+                error-background: #432b32,
+                error-text: #ffd4dc,
+                selection-background: accent,
+                selection-text: #16191e,
             };
         }
         // Blue

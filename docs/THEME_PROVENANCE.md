@@ -1,8 +1,8 @@
 # Theme palette provenance
 
-The themes added on 8–9 November 2026 extend Midnight Explorer's semantic
+The themes added on 8–11 November 2026 extend Midnight Explorer's semantic
 palette catalog without adding a library, editor plugin, font or icon package.
-The modern choices are established community editor palettes selected for variety;
+The referenced community editor palettes were selected for variety;
 this is not a claim about a global popularity ranking.
 
 | Theme | Stable ID / saved name | Palette reference and license |
@@ -21,6 +21,9 @@ this is not a claim about a global popularity ranking.
 | Graphite Contrast | `20` / `graphite-contrast` | Original graphite and plum surfaces, warm white text and peach accents. |
 | High Contrast Dark | `21` / `high-contrast-dark` | Original black/white palette with pale cyan folders and pale yellow selection markers. |
 | High Contrast Light | `22` / `high-contrast-light` | Original white/black palette with very dark semantic accents. |
+| Slate Blue | `23` / `slate-blue` | Original neutral charcoal surfaces, near-white text and bright blue accents, informed by the user's visual reference. |
+| Slate Teal | `24` / `slate-teal` | The same original neutral Slate surfaces with teal accents. |
+| Slate Violet | `25` / `slate-violet` | The same original neutral Slate surfaces with violet accents. |
 
 The removed `dos-commander` saved name is accepted only as a migration alias for
 Amber Terminal. Saving writes `amber-terminal`; DOS Commander is no longer a
@@ -74,3 +77,27 @@ This is a semantic palette contract, not a whole-application WCAG conformance
 claim. Native file artwork and Slint's built-in widget styling retain their
 native light/dark behavior; user-defined filename colors have their separate
 contrast policy. Font size and touch density remain independent choices.
+
+## Slate variants, 11 November 2026
+
+Slate Blue, Slate Teal and Slate Violet share a neutral charcoal body, darker
+chrome, raised gray controls, near-white main text and readable secondary text.
+Their blue, teal and violet accents distinguish focus, selection and active
+controls while the base surfaces remain neutral. All three use dark native
+widgets. IDs 0–22, their saved names and the Blue default remain unchanged.
+
+The user-supplied screenshot informed the surface hierarchy and blue accent of
+Slate Blue. These are original semantic color choices; no screenshot pixels,
+external palette, theme code, artwork, font or icon package is copied. The teal
+and violet variants use that same original base. No dependency, feature selection
+or third-party license notice changes.
+
+Filename categories retain their existing semantic hues rather than adopting the
+theme accent. The shared contrast adjustment derives their displayed foreground
+from the actual ordinary, alternate, selected and active/inactive focused row
+background. Its 4.5:1 text target and existing selection/focus markers also apply
+to the Slate variants; stored base colors and custom rules are unchanged. See the
+[filename-color contract](developer/FILENAME_COLOR_OPTIONS.md#default-category-palette).
+
+Measured contrast, rendered filename checks and build evidence are recorded in
+[the Slate verification report](verification/2026-11-11-slate-themes.md).

@@ -84,11 +84,14 @@ pub enum PreferenceTheme {
     GraphiteContrast = 20,
     HighContrastDark = 21,
     HighContrastLight = 22,
+    SlateBlue = 23,
+    SlateTeal = 24,
+    SlateViolet = 25,
 }
 
 impl PreferenceTheme {
     /// Stable picker order. Replaced names retain a storage migration alias.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 26] = [
         Self::Blue,
         Self::Dark,
         Self::Light,
@@ -112,6 +115,9 @@ impl PreferenceTheme {
         Self::GraphiteContrast,
         Self::HighContrastDark,
         Self::HighContrastLight,
+        Self::SlateBlue,
+        Self::SlateTeal,
+        Self::SlateViolet,
     ];
 
     pub const fn index(self) -> i32 {
@@ -149,6 +155,9 @@ impl PreferenceTheme {
             Self::GraphiteContrast => "graphite-contrast",
             Self::HighContrastDark => "high-contrast-dark",
             Self::HighContrastLight => "high-contrast-light",
+            Self::SlateBlue => "slate-blue",
+            Self::SlateTeal => "slate-teal",
+            Self::SlateViolet => "slate-violet",
         }
     }
 

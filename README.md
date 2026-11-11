@@ -403,9 +403,10 @@ editor scope and shortcuts reserved for later stages.
   semantic application vectors and native colors remain intact.
 - The top toolbar's Options gear groups settings by topic, including Panel, Appearance, Command,
   Keyboard and Custom Commands. It offers readable
-  or exact-byte sizes, history persistence/Clear, Blue, Dark, Light, Dracula, Nord,
-  Gruvbox Dark, Catppuccin Mocha, Solarized Light, Carbon Green, Desktop/Touch spacing, an installed
-  font family and independent Desktop/Touch base sizes (8–32px). Preview
+  or exact-byte sizes, history persistence/Clear, 26 themes including Slate Blue,
+  Slate Teal and Slate Violet, Desktop/Touch spacing, an installed font family and
+  independent Desktop/Touch base sizes (8–32px). The [theme design](docs/superpowers/specs/2026-11-06-theme-expansion-design.md)
+  and [palette provenance](docs/THEME_PROVENANCE.md) describe the catalog. Preview
   is immediate and reversible. **OK** validates all pages, saves asynchronously
   and closes after success. **Cancel**, Escape and X discard all edits and restore
   previewed theme, spacing and fonts. Validation or save errors keep Options open.

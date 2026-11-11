@@ -118,3 +118,31 @@ text at 4.5:1 contrast, and focus/selection/control boundaries at 3:1. Exercise 
 real Options picker and render panels at both desktop and touch densities, cover
 legacy-name migration and unknown-name rejection, and retain upstream MIT notices
 in release packages. No new runtime or Cargo dependency is needed.
+
+## Neutral Slate variants, 11 November 2026
+
+Append **Slate Blue** (23, `slate-blue`), **Slate Teal** (24, `slate-teal`) and
+**Slate Violet** (25, `slate-violet`). Preserve IDs 0–22, their persisted names,
+the DOS Commander migration alias and the Blue default. The shared catalog now
+contains 26 choices, using the existing settings field, live Options preview and
+Cancel rollback.
+
+Use the supplied visual reference as the direction for an original neutral dark
+palette: a charcoal body around `#1f2228`, darker chrome, raised gray panels,
+near-white main text, readable secondary text and a bright blue accent. Teal and
+violet variants keep the same neutral base and change the accent family. All
+three use dark native widgets and the existing semantic roles for controls,
+folders, search, errors, focus and selection. Geometry, fonts and native file
+artwork are unchanged. No external palette or screenshot pixels are copied, and
+no dependency is added. Record the original choices in [palette provenance](../../THEME_PROVENANCE.md#slate-variants-11-november-2026).
+
+Keep filename categories in their existing semantic hues. Reuse the shared
+actual-row foreground adjustment for ordinary/alternate rows and all selected,
+focused and inactive combinations; do not replace category colors with a single
+Slate accent. Stored category colors and custom rules retain their meaning.
+
+Extend settings, presenter and actual Options-picker coverage to all 26 themes
+and both densities. Require at least 4.5:1 for row/control/helper text and 3:1 for
+control, focus and selection edges against adjacent surfaces. Render the three
+new variants and exercise filename categories across every focus/selection state.
+Record measured results separately from these design targets.

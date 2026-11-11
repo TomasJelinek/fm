@@ -2,7 +2,7 @@ use midnight_core::{UiDensity, UserPreferences};
 use midnight_platform_common::settings::{decode_preferences, encode_preferences};
 use std::{fs, io, path::Path};
 
-const THEME_NAMES: [&str; 23] = [
+const THEME_NAMES: [&str; 26] = [
     "blue",
     "dark",
     "light",
@@ -26,6 +26,9 @@ const THEME_NAMES: [&str; 23] = [
     "graphite-contrast",
     "high-contrast-dark",
     "high-contrast-light",
+    "slate-blue",
+    "slate-teal",
+    "slate-violet",
 ];
 
 #[test]

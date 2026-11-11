@@ -58,6 +58,10 @@ black or white by the smallest RGB change that reaches 4.5:1 against the actual
 row background. This includes alternating rows, selection, focus and inactive
 focus in every theme. Existing selection backgrounds and focus edges remain in
 place. The displayed color can therefore differ from the stored base swatch.
+The neutral [Slate themes](../THEME_PROVENANCE.md#slate-variants-11-november-2026)
+use the same policy: categories retain their semantic hues, with foregrounds
+adjusted for each actual row state rather than recolored to blue, teal or violet
+just because that is the active theme's accent.
 
 Loading a saved document upgrades only an exact match for the historical five-rule
 preset. Any customization preserves the whole list, including its order, disabled

@@ -59,7 +59,7 @@ fn every_early_theme_preview_survives_delayed_load_without_losing_other_settings
 
 #[test]
 fn invalid_theme_callback_indices_retain_the_existing_blue_fallback() {
-    for index in [-1, 23, i32::MAX] {
+    for index in [-1, PreferenceTheme::ALL.len() as i32, i32::MAX] {
         let mut presenter = Presenter::new("left".into(), "right".into());
         presenter.preferences_loaded(Ok(UserPreferences {
             theme: PreferenceTheme::Nord,
