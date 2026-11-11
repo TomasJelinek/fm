@@ -101,7 +101,13 @@ pub(super) async fn prepare_job(
                 )));
             }
         };
-        if waiter.cancel.is_cancelled() || !retryable_error(&error) || version == u64::MAX {
+        // Before admission, recorded errors are owned-stage cleanup residuals.
+        // A fresh attempt cannot erase them or accumulate more abandoned stages.
+        if waiter.cancel.is_cancelled()
+            || snapshot(waiter.status).failed != 0
+            || !retryable_error(&error)
+            || version == u64::MAX
+        {
             drop_preparation(preparation).await;
             return Err(Box::new(failed(waiter.status, error, waiter.cancel)));
         }

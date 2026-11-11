@@ -3,6 +3,7 @@ use midnight_core::*;
 fn bookmark(format: Option<ArchiveFormat>) -> Bookmark {
     let root = std::env::current_dir().unwrap();
     Bookmark {
+        network: None,
         id: BookmarkId(1),
         name: "member".into(),
         path: root.clone(),

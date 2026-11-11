@@ -38,7 +38,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 28;
+const CURRENT_PREFERENCES_VERSION: u32 = 29;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -312,6 +312,12 @@ struct StoredBookmark {
         skip_serializing_if = "Option::is_none"
     )]
     archive: Option<StoredArchiveAddress>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    network: Option<StoredNetworkAddress>,
     slot: Option<u8>,
 }
 
@@ -415,10 +421,17 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         (3..=CURRENT_PREFERENCES_VERSION, Some(bookmarks)) => bookmarks
             .into_iter()
             .map(|bookmark| {
+                if stored.version < 29 && bookmark.network.is_some() {
+                    return Err(invalid("Network bookmarks require preferences version 29"));
+                }
                 if stored.version < 19 && bookmark.archive.is_some() {
                     return Err(invalid("archive bookmarks require preferences version 19"));
                 }
                 Ok(Bookmark {
+                    network: bookmark
+                        .network
+                        .map(StoredNetworkAddress::into_address)
+                        .transpose()?,
                     id: BookmarkId(bookmark.id),
                     name: bookmark.name,
                     path: bookmark.path.into_path()?,
@@ -583,7 +596,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
     let mut preferences = UserPreferences {
         copy_checksum_verification: match (stored.version, stored.copy_checksum_verification) {
             (1..=27, None) => true,
-            (28, Some(enabled)) => enabled,
+            (28..=CURRENT_PREFERENCES_VERSION, Some(enabled)) => enabled,
             _ => {
                 return Err(invalid(
                     "missing or unexpected copy verification preference",
@@ -687,7 +700,11 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         crate::filter::CompiledPanelFilter::new(filter).map_err(|error| invalid(error.message))?;
     }
     // An explicit empty list must survive restart; omitted legacy rules mean presets.
-    let verification_choices = !preferences.copy_checksum_verification;
+    let network_bookmarks = preferences
+        .bookmarks
+        .iter()
+        .any(|bookmark| bookmark.network.is_some());
+    let verification_choices = network_bookmarks || !preferences.copy_checksum_verification;
     let association_choices = verification_choices
         || *preferences.viewer_associations != midnight_core::ViewerAssociations::default();
     let file_list_choices = association_choices
@@ -739,7 +756,8 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
-        copy_checksum_verification: verification_choices.then_some(false),
+        copy_checksum_verification: verification_choices
+            .then_some(preferences.copy_checksum_verification),
         viewer_associations: association_choices
             .then(|| preferences.viewer_associations.as_ref().into()),
         file_list: file_list_choices.then(|| preferences.file_list.into()),
@@ -773,7 +791,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if verification_choices {
+        version: if network_bookmarks {
+            29
+        } else if verification_choices {
             28
         } else if association_choices {
             27
@@ -909,6 +929,7 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
                     name: bookmark.name,
                     path: NativePath::from_path(bookmark.path),
                     archive: bookmark.archive.map(StoredArchiveAddress::from_address),
+                    network: bookmark.network.map(StoredNetworkAddress::from_address),
                     slot: bookmark.slot,
                 })
                 .collect(),
@@ -1058,6 +1079,7 @@ mod tests {
         assert_eq!(
             decoded.bookmarks[0],
             Bookmark {
+                network: None,
                 archive: None,
                 id: BookmarkId(7),
                 name: "Original name".into(),
@@ -1094,6 +1116,7 @@ mod tests {
             .join("x".repeat(70_000));
         let preferences = UserPreferences {
             bookmarks: vec![Bookmark {
+                network: None,
                 archive: None,
                 id: BookmarkId(u64::MAX),
                 name: "資料 e\u{301} 🧪".into(),
@@ -1165,6 +1188,7 @@ mod tests {
     fn aggregate_storage_limit_rejects_oversized_paths_without_truncating_them() {
         let preferences = UserPreferences {
             bookmarks: vec![Bookmark {
+                network: None,
                 archive: None,
                 id: BookmarkId(1),
                 name: "Large".into(),

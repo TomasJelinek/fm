@@ -378,7 +378,7 @@ async fn real_self_and_hardlink_conflicts_cannot_replace_the_source() {
     harness
         .enqueue(
             3,
-            &[source_directory.clone()],
+            std::slice::from_ref(&source_directory),
             &child,
             TransferVerification::default(),
             false,

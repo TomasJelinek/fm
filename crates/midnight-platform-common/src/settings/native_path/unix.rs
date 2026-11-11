@@ -81,6 +81,7 @@ mod tests {
         let path = PathBuf::from(OsString::from_vec(b"/tmp/\xff\xfe".to_vec()));
         let preferences = midnight_core::UserPreferences {
             bookmarks: vec![midnight_core::Bookmark {
+                network: None,
                 archive: None,
                 id: midnight_core::BookmarkId(1),
                 name: "Raw".into(),

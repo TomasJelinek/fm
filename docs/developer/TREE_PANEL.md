@@ -181,6 +181,31 @@ Expanded branches currently contain directories only. This integration does not
 grant content or mutation authority to arbitrary descendant display paths; future
 files inside attached containers need a typed provider capture before admission.
 
+## External editor from expanded panels
+
+F4 captures the focused ordinary native root file while folders are expanded.
+Selection does not replace the caret target. Expanded branches remain folder-only;
+this action does not add descendant file rows or permit editing a directory, link,
+archive member, parent row or filter-only context ancestor.
+
+`TreeEditorRequest` carries the exact acknowledged projection and occurrence.
+The model worker resolves that occurrence through its retained provider context;
+UI captions, display paths and original root IDs never become native paths. A
+bounded captured source retains the registration, request/navigation cancellation
+and one permit from the existing four-slot tree action pool. The presenter checks
+the original pane, projection, request and returned occurrence before sending the
+captured launch. Switching the active pane cannot retarget it; source navigation,
+projection replacement or application close cancels pending work. Queue pressure
+retains one pending editor intent with its original settings.
+
+Resolution, native regular-file validation, spawning and final provider disposal
+run on backend workers, including shutdown before an async delivery task starts.
+Existing process/launch limits and literal executable/argv handling remain. Raw
+absolute provider paths retain valid internal `..` components; parent navigation
+itself is rejected. An external editor receives a live path, so later filesystem
+replacement and the editor's own modifications are outside a file-manager
+transaction. See the [editor qualification](../verification/2026-11-11-tree-external-editor.md).
+
 ## Copy from expanded panels
 
 F5 captures the exact acknowledged tree selection on a backend worker before

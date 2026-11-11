@@ -9,6 +9,7 @@ pub(crate) struct EditorState {
     pub(crate) draft: Option<super::editor_draft::Draft>,
     pub(crate) dirty: bool,
     pending: bool,
+    pub(super) tree: Option<super::tree_editor::Pending>,
 }
 
 impl Presenter {
@@ -97,14 +98,15 @@ impl Presenter {
     }
 
     pub(crate) fn edit_file(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
-        if !self.tree_action_allowed(pane) {
-            return;
-        }
         if !self.native_action_allowed(pane) {
             return;
         }
         if !self.editor_preferences_ready() {
             self.desktop.report("Cannot open editor", "Saved editor settings are not available. Wait for settings to load, or resolve the settings error before editing.".into());
+            return;
+        }
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_editor(pane, send);
             return;
         }
         let Some(launch) = self.viewer_launch(pane, false) else {

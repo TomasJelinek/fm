@@ -41,10 +41,33 @@ Tokio blocking workers, bounded admission and navigation-generation fencing.
 `Entry::native_path()` returns `None` for both archive and network virtual entries;
 native selection indexes exclude them. UI controls never perform discovery.
 
-Network tabs persist the provider ID and opaque bytes, not live handles, credentials,
-caption-derived paths or cached rows. Missing plugins leave saved Network tabs
-unavailable. Known UNC paths or already-mounted shares still use the native provider.
-Discovery Hot Paths are not implemented; native share Hot Paths remain supported.
+Network tabs and discovery Hot Paths persist provider IDs and opaque addresses.
+The provider contract forbids credentials in these addresses. The versioned codec
+stores only the provider ID, opaque bytes and presentation label; the bookmark's
+native return location is a separate field. It stores no live handles or cached
+rows and never interprets the label as a UNC path or URI. Known UNC paths and
+already-mounted shares continue to use native Hot Paths.
+
+Discovery Hot Paths use preferences schema 29 and the existing version-1 Network
+address codec. Native/archive bookmarks retain their existing representation;
+older preferences remain readable. The schema preserves all other settings,
+including either value of copy checksum verification. Unknown address fields and
+versions, invalid addresses, mixed archive/Network locations and duplicate shortcut
+slots are rejected. The existing 4 MiB aggregate settings bound still applies.
+
+A Network Hot Path is identified by provider ID plus opaque bytes. Caption or
+native-return-folder changes do not create a different location; re-adding a
+published location refreshes its display while preserving the saved identity and
+shortcut. An unfinished Network request cannot be saved as a guessed address.
+Hot Path keys, reassignment and removal use the ordinary effective shortcut map.
+
+Reopening sends `Browse`, never `Activate` or `Parse`, through the same typed
+location machinery as restored tabs. Before the first publication it displays an
+empty Network location with native operations disabled. Missing providers and
+stale-address failures preserve that unavailable location and saved bookmark;
+late replies cannot replace a newer navigation. Refused queue admission preserves
+the previously displayed pane. See the [Hot Path verification record](../verification/2026-11-11-network-hot-paths.md)
+for the tested boundaries and remaining native-network qualification limits.
 
 Choose **Network Neighborhood** in either panel's drive dropdown or drive bar.
 Both controls place it directly after all drives and before local special folders;

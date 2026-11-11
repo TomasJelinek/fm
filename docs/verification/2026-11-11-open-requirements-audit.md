@@ -85,3 +85,42 @@ These are **unverified**, not evidence that the implementation is broken:
   validated Go-to-file workflow.
 
 No production or test source was changed by this audit. This report was added, and the inspected stale statements in FEATURE_STATUS.md and IMPLEMENTATION_BACKLOG.md were corrected without claiming new runtime qualification.
+
+## Subsequent implementation on 11 November
+
+The table above records the original read-only baseline. Later work closes the
+following bounded portions; it does not close the overall implementation goal:
+
+- TREE-01: [F4 from an adopted tree](2026-11-11-tree-external-editor.md) captures
+  the focused ordinary native file. Mutation, metadata, checksum, comparison,
+  context-menu and container consumers retain their separate guards and backlog.
+- NET-01: [discovery Hot Paths](2026-11-11-network-hot-paths.md) persist opaque
+  addresses and configured numbered shortcuts. Interactive Linux authentication
+  and live SMB/GVfs qualification remain separate.
+- Transfer reliability: [stage Retry and cleanup retention](2026-11-11-transfer-stage-retry.md)
+  fixes demonstrated orphaned-stage and lost-diagnostic paths without expanding
+  metadata/link capabilities or changing verification/source-removal policy.
+
+## Next scoped work from parallel source review
+
+No implementation or runtime qualification is claimed for these two investigations:
+
+- DIALOG-02: the next coherent slice in the accepted native-window plan is the
+  shared Rename/Create/Delete confirmation body plus Copy/Move drafts. Reuse
+  `DialogHost` ownership and a new native `OperationWindow`, with separate exact
+  operation-ID and draft-token adapters. Validate stale close callbacks before
+  cancellation; preserve child edits/caret/metadata state across refreshes and
+  show queue-admission errors in the child (current Notices belong to MainWindow).
+  Migrate conflicts with Jobs afterward because their Later/Cancel/reopen lifetime
+  is a distinct contract. Qualify actual child Enter/Escape/X, small layouts,
+  failed-show cleanup and outside-owner movement, not only the shared host.
+- MEDIA-01: archive thumbnail `Member::read_at` intentionally uses an independent
+  cancellation token. Ordinary archive exchange cancellation kills the shared
+  worker, so merely forwarding viewport cancellation would also break browsing.
+  Add a negotiated cooperative read path that aborts bounded staging exchanges,
+  drains the matching cancellation acknowledgement, and discards only that
+  request's spool while preserving the mount, scratch data and cached members.
+  Preserve hard watchdog/invalid-message termination and legacy worker behavior.
+  Avoid injecting ordinary `io::Interrupted` into archive source reads: the
+  existing staging copy/discard loops retry that condition. Tests must cancel ZIP
+  and solid-7z work and then prove another read succeeds on the same mount.

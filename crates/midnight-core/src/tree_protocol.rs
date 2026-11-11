@@ -229,6 +229,7 @@ pub enum TreeCommand {
         row: TreeRowId,
     },
     Clipboard(crate::TreeClipboardRequest),
+    Edit(crate::TreeEditorRequest),
     Transfer(crate::TreeTransferRequest),
     Sizes(crate::TreeSizeCommand),
     /// Root-ready and this request may arrive in either order. Both root Arcs must match.
@@ -271,6 +272,11 @@ pub enum TreeNavigationTarget {
 /// Nest under `Event::Tree(Box<TreeEvent>)` when the production presenter is connected.
 #[derive(Clone, Debug)]
 pub enum TreeEvent {
+    EditorCaptured {
+        stamp: TreeViewStamp,
+        request: TreeRequestId,
+        result: Result<Arc<dyn crate::CapturedEditorFile>, TreeDiagnostic>,
+    },
     DropDirectoryCaptured {
         stamp: TreeViewStamp,
         request: TreeRequestId,

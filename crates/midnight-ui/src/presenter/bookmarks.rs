@@ -1,4 +1,4 @@
-//! Durable native/archive hot paths. Persistence uses the existing settings worker.
+//! Durable native/archive/Network hot paths. Persistence uses the existing settings worker.
 use super::*;
 
 impl Presenter {
@@ -14,32 +14,44 @@ impl Presenter {
         slot: Option<u8>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if self.panes[pane.index()].network.is_some() || self.panes[pane.index()].network_request {
-            self.desktop.inform("Hot Path", "Open a shared folder to bookmark its native path. Network discovery locations are retained in tabs.".into());
+        if self.panes[pane.index()].network_request {
+            self.desktop.inform(
+                "Hot Path",
+                "Wait for Network navigation to finish before saving this location.".into(),
+            );
             return false;
         }
         let displayed = &self.panes[pane.index()];
+        let network = displayed
+            .network
+            .as_ref()
+            .map(|state| state.address.clone());
         let archive = displayed
             .archive
             .as_ref()
             .map(|state| state.location.address.clone());
-        let path = archive
-            .as_ref()
-            .and_then(|address| address.container.parent())
-            .unwrap_or_else(|| displayed.display_path())
-            .to_owned();
+        let path = displayed.network.as_ref().map_or_else(
+            || {
+                archive
+                    .as_ref()
+                    .and_then(|address| address.container.parent())
+                    .unwrap_or_else(|| displayed.display_path())
+                    .to_owned()
+            },
+            |network| network.origin.clone(),
+        );
         if slot.is_some_and(|slot| !(1..=10).contains(&slot)) {
             return false;
         }
         if let Some(existing) = self
             .bookmarks()
             .iter()
-            .find(|bookmark| bookmark.matches_location(&path, archive.as_ref()))
+            .find(|bookmark| bookmark.matches_location(&path, archive.as_ref(), network.as_ref()))
         {
             let id = existing.id;
             // Re-adding a freshly opened revision refreshes the locator while
             // keeping its identity, name and existing shortcut.
-            if existing.archive != archive {
+            if existing.archive != archive || existing.network != network {
                 let mut preferences = self.preferences.values.clone();
                 if let Some(saved) = preferences
                     .bookmarks
@@ -47,6 +59,7 @@ impl Presenter {
                     .find(|saved| saved.id == id)
                 {
                     saved.archive = archive;
+                    saved.network = network;
                 }
                 self.update_preferences(preferences, send);
             }
@@ -76,6 +89,7 @@ impl Presenter {
             return false;
         };
         let bookmark = Bookmark {
+            network,
             archive,
             id,
             name,
@@ -111,7 +125,9 @@ impl Presenter {
         let Some(bookmark) = self.bookmarks().iter().find(|bookmark| bookmark.id == id) else {
             return false;
         };
-        if let Some(address) = bookmark.archive.clone() {
+        if let Some(address) = bookmark.network.clone() {
+            self.open_network_address(pane, bookmark.path.clone(), address, send)
+        } else if let Some(address) = bookmark.archive.clone() {
             self.open_archive_address(pane, address, send)
         } else {
             self.navigate(pane, bookmark.path.clone(), None, send)
@@ -201,11 +217,15 @@ impl Presenter {
             return false;
         }
         let path = self.panes[pane.index()].display_path().to_owned();
-        let mut name = path
-            .file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .into_owned();
+        let mut name = self.panes[pane.index()].network.as_ref().map_or_else(
+            || {
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            },
+            |network| network.address.display.clone(),
+        );
         if name.len() > MAX_BOOKMARK_NAME_BYTES
             || name.trim().is_empty()
             || name.chars().any(char::is_control)

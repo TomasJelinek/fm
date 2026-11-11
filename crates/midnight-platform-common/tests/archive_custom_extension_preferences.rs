@@ -82,6 +82,7 @@ fn typed_decoder_persists_without_custom_rule_in_saved_tab_and_bookmark() {
     expected.tabs[0].paths = vec![root];
     expected.tabs[0].archives.insert(0, address.clone());
     expected.bookmarks.push(Bookmark {
+        network: None,
         id: BookmarkId(1),
         name: "Archive".into(),
         path: address.container.parent().unwrap().to_owned(),

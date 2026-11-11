@@ -102,7 +102,7 @@ fn every_duplicate_sort_keeps_group_members_adjacent() {
                 vec![1, 2, 3, 4]
             }
         );
-        for pair in ordered.ids.chunks_exact(2) {
+        for pair in ordered.ids.as_chunks::<2>().0 {
             assert_eq!(
                 rows[pair[0].0 as usize - 1].duplicate_group,
                 rows[pair[1].0 as usize - 1].duplicate_group

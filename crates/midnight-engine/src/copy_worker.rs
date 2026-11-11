@@ -126,10 +126,7 @@ impl Job {
         move_job::check_bounds(&request)?;
         let mut job = Self::prepare(request, service, cancel, status)?;
         let _permit = move_job::permit(&job.cancel, &job.progress.destination_directory)?;
-        let pins = metadata_job::pins(&job.roots, &job.cancel)?;
-        let stages =
-            metadata_job::stages(&job.roots, &job.destination, metadata, false, &job.cancel)?;
-        job.metadata = Some(metadata_job::MetadataWork { pins, stages });
+        job.prepare_metadata(metadata)?;
         Ok(job)
     }
     pub(super) fn prepare_move_with_metadata(
@@ -328,10 +325,7 @@ impl Job {
                     "Required modified time accepts at most 64 roots.",
                 ));
             }
-            let pins = metadata_job::pins(&job.roots, &job.cancel)?;
-            let stages =
-                metadata_job::stages(&job.roots, &job.destination, metadata, false, &job.cancel)?;
-            job.metadata = Some(metadata_job::MetadataWork { pins, stages });
+            job.prepare_metadata(metadata)?;
         }
         Ok(job)
     }
@@ -795,26 +789,26 @@ impl Job {
                         .revalidate(&self.cancel)?;
                 }
                 let stage = if let Some(move_work) = self.move_work.as_mut() {
-                    if let Some(stage) = move_work.stages.remove(&source.entry().identity) {
-                        stage
-                    } else {
-                        let mut stage = if move_work.metadata_policy
-                            == TransferMetadataPolicy::ContentOnly
-                        {
+                    let mut stage =
+                        if let Some(stage) = move_work.stages.remove(&source.entry().identity) {
+                            stage
+                        } else if move_work.metadata_policy == TransferMetadataPolicy::ContentOnly {
                             work.destination.stage_file(&self.cancel)?
                         } else {
                             work.destination
                                 .stage_file_with_metadata(move_work.metadata_policy, &self.cancel)?
                         };
-                        if let Err(failure) = stage
-                            .rewind_for_validation(&self.cancel)
-                            .and_then(|guard| guard.revalidate(&self.cancel))
-                        {
-                            stage.cleanup()?;
-                            return Err(failure);
-                        }
-                        stage
+                    if let Err(failure) = stage
+                        .rewind_for_validation(&self.cancel)
+                        .and_then(|guard| guard.revalidate(&self.cancel))
+                    {
+                        // Retain this exact owned stage through Retry. Discarding
+                        // it here can hide a cleanup refusal and accumulate a new
+                        // orphan on every attempt. Skip/Cancel use normal cleanup.
+                        move_work.stages.insert(source.entry().identity, stage);
+                        return Err(failure);
                     }
+                    stage
                 } else {
                     if let Some(metadata) = self.metadata.as_mut() {
                         metadata
@@ -1104,7 +1098,7 @@ impl Job {
             if let Some(current) = &self.current
                 && let Err(error) = move_work.discard(current.entry().identity)
             {
-                self.record(error);
+                self.record_cleanup_error(error);
             }
         }
         self.drop_current();

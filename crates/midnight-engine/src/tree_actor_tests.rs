@@ -3,6 +3,9 @@ use crate::providers::{MountedFilesystem, ProviderEntry, ProviderTarget};
 use midnight_core::{EntryId, EntryKind, EntryMetadata, NavigationId, NodeToken, PaneId};
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicUsize};
 
+#[path = "tree_editor_capture_tests.rs"]
+mod editor_capture_tests;
+
 #[path = "tree_refresh_tests.rs"]
 mod refresh_tests;
 

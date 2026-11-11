@@ -549,16 +549,37 @@ fn cancelled(status: &Status) -> CopyProgress {
     progress
 }
 fn failed(status: &Status, error: FsError, cancel: &Cancellation) -> CopyProgress {
-    if cancel.is_cancelled() {
-        let mut progress = cancelled(status);
-        if error.kind != io::ErrorKind::Interrupted {
-            progress.message.push_str(&format!("\n{error}"));
-            retain_error(&mut progress, error, true);
-        }
-        progress
+    let mut progress = snapshot(status);
+    let cancelled = cancel.is_cancelled();
+    progress.state = if cancelled {
+        CopyOperationState::Cancelled
     } else {
-        rejected_progress(snapshot(status), error)
+        CopyOperationState::Failed
+    };
+    if (!cancelled || error.kind != io::ErrorKind::Interrupted)
+        && !progress.errors.iter().any(|retained| {
+            retained.operation == error.operation
+                && retained.path == error.path
+                && retained.kind == error.kind
+                && retained.message == error.message
+        })
+    {
+        retain_error(&mut progress, error, true);
     }
+    // Metadata preflight can already have retained the exact cleanup diagnostic.
+    // Preserve it once, including when cancellation arrives during retirement.
+    progress.message = progress
+        .errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if cancelled {
+        progress
+            .message
+            .insert_str(0, "Copy cancelled; source data was retained.\n");
+    }
+    progress
 }
 
 fn retain_error(progress: &mut CopyProgress, error: FsError, critical: bool) {

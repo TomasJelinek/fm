@@ -186,6 +186,7 @@ mod tests {
         let saved = UserPreferences {
             font_family: "Stored 文档 🧪".into(),
             bookmarks: vec![Bookmark {
+                network: None,
                 archive: None,
                 id: BookmarkId(1),
                 name: "Previously saved".into(),

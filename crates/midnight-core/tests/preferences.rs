@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 fn bookmark() -> Bookmark {
     Bookmark {
+        network: None,
         archive: None,
         id: BookmarkId(1),
         name: "文档 e\u{301} 🧪".into(),

@@ -139,6 +139,7 @@ impl Presenter {
             }
             Event::DesktopActionFinished { request, result } => {
                 self.tree_clipboard_finished(request);
+                self.tree_editor_finished(request);
                 if !self.desktop.requests.remove(&request) {
                     return None;
                 }

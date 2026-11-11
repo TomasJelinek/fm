@@ -14,6 +14,41 @@ impl MetadataWork {
             .collect()
     }
 }
+/// Preflight may retry only if every abandoned owned stage was cleaned.
+/// This is private engine state; native error kinds and paths remain unchanged.
+pub(super) struct StageFailure {
+    pub(super) error: FsError,
+    pub(super) cleanup_failed: bool,
+}
+impl Job {
+    pub(super) fn prepare_metadata(
+        &mut self,
+        metadata: TransferMetadataPolicy,
+    ) -> Result<(), FsError> {
+        let pins = pins(&self.roots, &self.cancel)?;
+        let stages = match stages(
+            &self.roots,
+            &self.destination,
+            metadata,
+            false,
+            &self.cancel,
+        ) {
+            Ok(stages) => stages,
+            Err(failure) => {
+                if failure.cleanup_failed {
+                    self.record_cleanup_error(failure.error.clone());
+                    // Preparation has no surviving Job to retain these stages.
+                    // Publish the bounded residual diagnostics before its drop;
+                    // the async admission loop must not offer another attempt.
+                    self.store_progress();
+                }
+                return Err(failure.error);
+            }
+        };
+        self.metadata = Some(MetadataWork { pins, stages });
+        Ok(())
+    }
+}
 pub(super) fn pins(
     roots: &VecDeque<Box<dyn TransferSource>>,
     cancel: &Cancellation,
@@ -44,7 +79,7 @@ pub(super) fn stages(
     metadata: TransferMetadataPolicy,
     proof: bool,
     cancel: &Cancellation,
-) -> Result<HashMap<TransferIdentity, Box<dyn StagedTransferFile>>, FsError> {
+) -> Result<HashMap<TransferIdentity, Box<dyn StagedTransferFile>>, StageFailure> {
     let mut stages: HashMap<_, Box<dyn StagedTransferFile>> = HashMap::new();
     for source in roots {
         if source.entry().item.kind == EntryKind::Directory
@@ -93,7 +128,8 @@ pub(super) fn stages(
                         }
                     }
                 }
-                return Err(match cleanup_failure {
+                let cleanup_failed = cleanup_failure.is_some();
+                let error = match cleanup_failure {
                     Some(mut cleanup) => {
                         // Preserve the first residual's native classification and
                         // path; a real refusal must not look like plain cancellation.
@@ -103,6 +139,10 @@ pub(super) fn stages(
                         cleanup
                     }
                     None => failure,
+                };
+                return Err(StageFailure {
+                    error,
+                    cleanup_failed,
                 });
             }
         }

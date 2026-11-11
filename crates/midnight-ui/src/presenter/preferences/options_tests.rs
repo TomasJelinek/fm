@@ -351,6 +351,7 @@ fn reset_preserves_user_content_and_commits_defaults_only_after_ok() {
         shell: ShellFlavor::PowerShell,
     }];
     p.preferences.values.bookmarks = vec![Bookmark {
+        network: None,
         id: BookmarkId(1),
         name: "Saved".into(),
         path: std::env::temp_dir().join("saved hot path"),

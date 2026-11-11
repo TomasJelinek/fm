@@ -426,3 +426,6 @@ fn archive_move_capture_rejects_before_transfer_preparation() {
     assert!(matches!(result, Err(ProviderError::Unsupported)));
     assert_eq!(std::fs::read(lookalike).unwrap(), b"native winner");
 }
+
+#[path = "tree_editor_archive_tests.rs"]
+mod editor_tests;

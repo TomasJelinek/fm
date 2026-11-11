@@ -58,6 +58,7 @@ mod tree_clipboard;
 mod tree_controller;
 mod tree_copy;
 mod tree_diagnostics;
+mod tree_editor;
 mod tree_projection;
 mod tree_roots;
 mod tree_selection;
@@ -710,6 +711,7 @@ impl Engine {
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
                         Some(Command::ResolveDefaultEditor) => desktop.resolve_editor(self.editor.clone(), &mut tasks).await,
                         Some(Command::EditFile { request, path, editor }) => desktop.edit_file(self.editor.clone(), request, path, editor, &mut tasks).await,
+                        Some(Command::EditCapturedFile { request, source, editor, cancel }) => desktop.edit_captured_file(self.editor.clone(), request, source, editor, cancel, &mut tasks).await,
                         Some(Command::ListFontFamilies) => {
                             fonts.list();
                         }

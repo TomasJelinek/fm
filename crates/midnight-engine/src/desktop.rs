@@ -14,6 +14,9 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "desktop_editor.rs"]
+mod editor;
+
 const ICON_CAPACITY: usize = 256;
 const MAX_TERMINALS: usize = 8;
 const MAX_OPEN_HELPERS: usize = 16;
@@ -343,60 +346,6 @@ impl Desktop {
                 Err(cause) => (Err(worker_error("find editor", Path::new(""), cause)), None),
             };
             outbox.send(Event::EditorDefaultResolved(result)).await;
-        });
-    }
-
-    pub(crate) async fn edit_file(
-        &self,
-        services: Option<Arc<dyn EditorService>>,
-        request: DesktopRequestId,
-        path: PathBuf,
-        editor: EditorPreferences,
-        tasks: &mut JoinSet<()>,
-    ) {
-        let Some(services) = services else {
-            self.editor_failure(request, "External editing is unavailable.")
-                .await;
-            return;
-        };
-        let Ok(permit) = self.open_budget.clone().try_acquire_owned() else {
-            self.editor_failure(request, "Editor launch is busy. Try again.")
-                .await;
-            return;
-        };
-        let Ok(slot) = self.terminal_slots.clone().try_acquire_owned() else {
-            self.editor_failure(
-                request,
-                "Eight terminal, editor or Custom Command processes are active.",
-            )
-            .await;
-            return;
-        };
-        let children = self.children.clone();
-        let outbox = self.outbox.clone();
-        tasks.spawn(async move {
-            let target = path.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                (services.launch_editor(&target, &editor), permit)
-            })
-            .await;
-            let (result, _permit) = match result {
-                Ok((Ok(child), permit)) => {
-                    let _ = children
-                        .send(TrackedChild {
-                            child,
-                            _slot: slot,
-                            completion: None,
-                        })
-                        .await;
-                    (Ok(DesktopActionResult::EditorStarted), Some(permit))
-                }
-                Ok((Err(error), permit)) => (Err(error), Some(permit)),
-                Err(error) => (Err(worker_error("external editor", &path, error)), None),
-            };
-            outbox
-                .send(Event::DesktopActionFinished { request, result })
-                .await;
         });
     }
 

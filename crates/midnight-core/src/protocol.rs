@@ -203,6 +203,12 @@ pub enum Command {
     LoadPreferences,
     ListFontFamilies,
     ResolveDefaultEditor,
+    EditCapturedFile {
+        request: DesktopRequestId,
+        source: Arc<dyn crate::CapturedEditorFile>,
+        editor: crate::EditorPreferences,
+        cancel: crate::Cancellation,
+    },
     EditFile {
         request: DesktopRequestId,
         path: PathBuf,

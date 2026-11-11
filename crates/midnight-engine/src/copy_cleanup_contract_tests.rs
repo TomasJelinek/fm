@@ -276,6 +276,7 @@ fn cancelled_metadata_probe_promotes_cleanup_failure_over_interrupted() {
     ) else {
         panic!("cancelled metadata probe succeeded")
     };
+    let error = error.error;
     assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
     assert_eq!(error.path, stage);
     assert!(error.message.contains("probe metadata"));

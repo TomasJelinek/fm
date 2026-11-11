@@ -289,6 +289,13 @@ impl Worker {
                     .capture_drop_directory(view, *row, *request, &self.copy_capacity, cancel)
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
             })),
+            TreeCommand::Edit(request) => Ok(Some(TreeEvent::EditorCaptured {
+                stamp: request.view.stamp,
+                request: request.request,
+                result: session
+                    .capture_editor(request, &self.copy_capacity, cancel)
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+            })),
             TreeCommand::Clipboard(request) => Ok(Some(TreeEvent::Clipboard {
                 stamp: request.view.stamp,
                 request: request.request,

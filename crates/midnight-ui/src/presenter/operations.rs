@@ -217,6 +217,7 @@ impl Presenter {
         self.shutdown_drag_drop(send);
         self.retire_metadata();
         self.operations.closing = true;
+        self.cancel_tree_editor(None);
         self.retire_warning_viewer();
         self.operations.pending = None;
         self.operations.preview = None;

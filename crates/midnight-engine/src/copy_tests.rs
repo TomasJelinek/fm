@@ -22,6 +22,8 @@ mod native_moves;
 mod queue;
 #[path = "copy_replacement_tests.rs"]
 mod replacement;
+#[path = "copy_stage_retry_tests.rs"]
+mod stage_retry;
 #[path = "copy_throughput_tests.rs"]
 mod throughput;
 #[path = "tree_copy_tests.rs"]

@@ -44,6 +44,7 @@ fn explicit_default_panel_mode_wins_over_late_loaded_choice() {
 
 fn stored_bookmark(id: u64, slot: Option<u8>) -> Bookmark {
     Bookmark {
+        network: None,
         archive: None,
         id: BookmarkId(id),
         name: format!("Saved {id}"),

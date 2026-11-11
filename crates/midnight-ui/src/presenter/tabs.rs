@@ -345,6 +345,44 @@ impl Presenter {
         true
     }
 
+    /// Reopen a discovery address without activation or caption-to-path conversion.
+    /// Missing providers retain this typed unavailable location, as restored tabs do.
+    pub(super) fn open_network_address(
+        &mut self,
+        pane: PaneId,
+        origin: PathBuf,
+        address: NetworkAddress,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if address.validate().is_err()
+            || !origin.is_absolute()
+            || origin.as_os_str().as_encoded_bytes().contains(&0)
+        {
+            return false;
+        }
+        let current = &self.panes[pane.index()];
+        let Some(navigation) = current.generation.checked_add(1).map(NavigationId) else {
+            return false;
+        };
+        let mut location =
+            TabLocation::from_saved(origin, None, Some(address.clone()), current.sort);
+        if !send(location.command(pane, navigation)) {
+            self.panes[pane.index()].set_error(
+                "Network navigation queue is busy. Try again.",
+                &mut self.retired,
+            );
+            return false;
+        }
+        let outgoing = self.replace_pane_location(pane, &mut location, send);
+        self.retired.push(Box::new(outgoing));
+        self.navigation_accepted(pane, navigation, location.path, None, send);
+        self.panes[pane.index()].network_request = true;
+        self.panes[pane.index()].network_pending = Some(NetworkAction::Browse(address));
+        self.tab_session_changed(pane, send);
+        drag_drop::invalidate(&self.drag_drop.targets);
+        true
+    }
+
     fn replace_pane_location(
         &mut self,
         pane: PaneId,

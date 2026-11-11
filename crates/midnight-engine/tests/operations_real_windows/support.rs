@@ -193,11 +193,11 @@ impl Harness {
             loop {
                 if let Event::Copy(event) = self.events.recv().await.expect("engine channel closed")
                 {
-                    if let CopyEvent::Progress(progress) = &event {
-                        if progress.state.is_terminal() {
-                            self.terminal_order.push(progress.id.0);
-                            self.terminals.insert(progress.id.0, progress.clone());
-                        }
+                    if let CopyEvent::Progress(progress) = &event
+                        && progress.state.is_terminal()
+                    {
+                        self.terminal_order.push(progress.id.0);
+                        self.terminals.insert(progress.id.0, progress.clone());
                     }
                     return event;
                 }

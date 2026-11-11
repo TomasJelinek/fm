@@ -5,6 +5,7 @@ use midnight_platform_common::settings::{decode_preferences, encode_preferences}
 fn bookmark(format: Option<ArchiveFormat>) -> Bookmark {
     let parent = std::env::current_dir().unwrap();
     Bookmark {
+        network: None,
         id: BookmarkId(1),
         name: "folder".into(),
         path: parent.clone(),

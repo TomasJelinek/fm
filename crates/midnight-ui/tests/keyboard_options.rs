@@ -525,6 +525,7 @@ fn numbered_hot_paths_activate_from_both_popups_and_keep_the_origin_pane() {
     let mut h = Harness::with_bookmarks(
         &[],
         vec![Bookmark {
+            network: None,
             archive: None,
             id: BookmarkId(1),
             name: "Saved".into(),
@@ -562,6 +563,7 @@ fn popup_hot_paths_honor_remapping_other_panel_and_unassigned_slots() {
     let mut h = Harness::with_bookmarks(
         &[("bookmark.open.1", &["Ctrl+Alt+Y"])],
         vec![Bookmark {
+            network: None,
             archive: None,
             id: BookmarkId(1),
             name: "Saved".into(),
@@ -605,6 +607,7 @@ fn popup_hot_paths_reject_replaced_choices_and_preserve_volume_binding_priority(
     let mut h = Harness::with_bookmarks(
         &[("panel.as-other", &["Digit1"])],
         vec![Bookmark {
+            network: None,
             archive: None,
             id: BookmarkId(1),
             name: "Saved".into(),

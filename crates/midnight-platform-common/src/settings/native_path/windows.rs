@@ -96,6 +96,7 @@ mod tests {
         let path = PathBuf::from(OsString::from_wide(&[0x43, 0x3a, 0x5c, 0xd800]));
         let preferences = midnight_core::UserPreferences {
             bookmarks: vec![midnight_core::Bookmark {
+                network: None,
                 archive: None,
                 id: midnight_core::BookmarkId(1),
                 name: "Raw".into(),

@@ -281,6 +281,7 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
         Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             theme: PreferenceTheme::Light,
             bookmarks: vec![Bookmark {
+                network: None,
                 archive: None,
                 id: BookmarkId(40),
                 name: "Stored".into(),
@@ -341,6 +342,7 @@ fn removed_loaded_identity_is_never_reused_by_a_later_bookmark() {
     let mut p = Presenter::new(test_root(), test_root());
     p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
         bookmarks: vec![Bookmark {
+            network: None,
             archive: None,
             id: BookmarkId(500),
             name: "Loaded".into(),

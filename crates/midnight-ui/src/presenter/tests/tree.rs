@@ -582,6 +582,8 @@ fn tree_rows_cannot_become_flat_mutation_or_clipboard_authority() {
     );
     p.focus_display_row(PaneId::Left, 2);
     let send = |_: Command| panic!("tree occurrence escaped into a flat operation");
+    p.preferences_loaded(Ok(UserPreferences::default()));
+    p.edit_file(PaneId::Left, &send); // Focused descendant is a directory, never an editor target.
     p.start_operation(
         PaneId::Left,
         MutationKind::Delete(DeleteMode::Permanent),
@@ -950,7 +952,7 @@ fn refused_insert_toggle_keeps_the_same_occurrence_focused_for_retry() {
 }
 
 #[test]
-fn adopted_tree_root_file_can_launch_viewer_without_enabling_editor() {
+fn adopted_tree_root_file_can_launch_viewer_and_capture_editor() {
     let (mut p, root) = fixture();
     p.preferences_loaded(Ok(UserPreferences::default()));
     let mut entry = root.entries[1].clone();
@@ -1019,8 +1021,23 @@ fn adopted_tree_root_file_can_launch_viewer_without_enabling_editor() {
     p.panes[0].search.pending = true;
     assert!(p.viewer_launch(PaneId::Left, false).is_none());
     p.panes[0].search.pending = false;
+    let commands = RefCell::new(Vec::new());
     p.edit_file(PaneId::Left, &|command| {
         assert!(!matches!(command, Command::EditFile { .. }));
+        commands.borrow_mut().push(command);
         true
     });
+    let commands = commands.borrow();
+    let [Command::Tree(command)] = commands.as_slice() else {
+        panic!("typed editor capture required");
+    };
+    let TreeCommand::Edit(request) = command.as_ref() else {
+        panic!("editor capture required");
+    };
+    assert_eq!(
+        request.row,
+        TreeRowId(42),
+        "the occurrence is not original EntryId(11)"
+    );
+    assert!(Arc::ptr_eq(&request.view, p.panes[0].tree_view().unwrap()));
 }

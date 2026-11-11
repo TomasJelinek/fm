@@ -171,3 +171,129 @@ async fn editor_rejections_keep_backpressure_when_event_consumer_stops() {
         "rejected editor launches must stay bounded while the UI is stalled"
     );
 }
+
+#[derive(Debug)]
+struct Captured {
+    path: PathBuf,
+    cancel_during_resolve: bool,
+    resolved: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+    dropped: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+}
+impl CapturedEditorFile for Captured {
+    fn stamp(&self) -> TreeViewStamp {
+        TreeViewStamp {
+            pane: PaneId::Left,
+            navigation: NavigationId(3),
+            session: TreeSessionId(4),
+            revision: TreeRevision(5),
+        }
+    }
+    fn row(&self) -> TreeRowId {
+        TreeRowId(6)
+    }
+    fn resolve(&self, cancel: &Cancellation) -> Result<PathBuf, FsError> {
+        self.resolved
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
+        if self.cancel_during_resolve {
+            cancel.cancel();
+            return Ok(self.path.clone());
+        }
+        if cancel.is_cancelled() {
+            Err(FsError::from_io(
+                "captured editor",
+                &self.path,
+                io::ErrorKind::Interrupted.into(),
+            ))
+        } else {
+            Ok(self.path.clone())
+        }
+    }
+}
+impl Drop for Captured {
+    fn drop(&mut self) {
+        self.dropped
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captured_tree_editor_resolves_and_retires_only_on_workers_including_rejection() {
+    for (available, cancelled, during) in [
+        (true, false, false),
+        (true, true, false),
+        (false, false, false),
+        (true, false, true),
+    ] {
+        let service = Arc::new(Service::default());
+        let (commands, receiver) = mpsc::channel(8);
+        let (sender, mut events) = mpsc::channel(64);
+        let mut engine = Engine::new(service.clone(), sender);
+        if available {
+            engine = engine.with_editor(service.clone());
+        }
+        let task = tokio::spawn(engine.run(receiver));
+        let resolved = Arc::new(Mutex::new(Vec::new()));
+        let dropped = Arc::new(Mutex::new(Vec::new()));
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("exact 文档 & $HOME.txt");
+        let cancel = Cancellation::default();
+        if cancelled {
+            cancel.cancel();
+        }
+        commands
+            .send(Command::EditCapturedFile {
+                request: DesktopRequestId(67),
+                source: Arc::new(Captured {
+                    path: path.clone(),
+                    cancel_during_resolve: during,
+                    resolved: resolved.clone(),
+                    dropped: dropped.clone(),
+                }),
+                editor: EditorPreferences::default(),
+                cancel,
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let Event::DesktopActionFinished { request, result } = event {
+                assert_eq!(request, DesktopRequestId(67));
+                let error = result.unwrap_err();
+                if available && !cancelled && !during {
+                    assert!(error.to_string().contains("configured program missing"));
+                }
+                break;
+            }
+        }
+        let owner = std::thread::current().id();
+        {
+            let resolution = resolved.lock().unwrap();
+            assert_eq!(resolution.len(), usize::from(available && !cancelled));
+            assert!(resolution.iter().all(|thread| *thread != owner));
+        }
+        {
+            let drops = dropped.lock().unwrap();
+            assert_eq!(drops.len(), 1, "source must retire before terminal result");
+            assert_ne!(drops[0], owner);
+        }
+        {
+            let calls = service.calls.lock().unwrap();
+            assert_eq!(calls.len(), usize::from(available && !cancelled && !during));
+            if let Some((actual, _, thread)) = calls.first() {
+                assert_eq!(actual, &path);
+                assert_ne!(*thread, owner);
+            }
+        }
+        commands.send(Command::Shutdown).await.unwrap();
+        drop(events);
+        task.await.unwrap();
+    }
+}

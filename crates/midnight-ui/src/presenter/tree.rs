@@ -108,6 +108,7 @@ impl Presenter {
     pub(super) fn clear_tree(&mut self, pane: PaneId, navigation: Option<NavigationId>) {
         self.cancel_tree_transfer(Some(pane));
         self.cancel_tree_clipboard(Some(pane));
+        self.cancel_tree_editor(Some(pane));
         self.cancel_tree_drag(Some(pane));
         if self.filter_dialog.open && self.filter_dialog.pane == pane {
             self.cancel_panel_filter();
@@ -371,6 +372,7 @@ impl Presenter {
         }
         self.flush_tree_transfer(send);
         self.flush_tree_clipboard(send);
+        self.flush_tree_editor(send);
         self.flush_tree_drag(send);
     }
 
@@ -462,6 +464,9 @@ impl Presenter {
             | TreeEvent::Clipboard {
                 result: Err(error), ..
             }
+            | TreeEvent::EditorCaptured {
+                result: Err(error), ..
+            }
             | TreeEvent::DropDirectoryCaptured {
                 result: Err(error), ..
             } => Some(error),
@@ -471,6 +476,13 @@ impl Presenter {
             self.retired.push(Box::new(content.clone()));
         }
         match event {
+            TreeEvent::EditorCaptured {
+                stamp,
+                request,
+                result,
+            } => {
+                self.tree_editor_captured(stamp, request, result, send);
+            }
             TreeEvent::DropDirectoryCaptured {
                 stamp,
                 request,

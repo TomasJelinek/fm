@@ -61,6 +61,7 @@ mod tree_capture;
 mod tree_clipboard;
 mod tree_copy;
 mod tree_drag;
+mod tree_editor;
 mod tree_options;
 #[cfg(test)]
 mod tree_options_tests;
