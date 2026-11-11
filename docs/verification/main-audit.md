@@ -351,3 +351,33 @@ Local evidence index: `agents/{engine,platforms,ui}.md`,
 `collections/selected-paths-report.md`, `ui-performance-{before,after}.log`,
 `ui-parallel.log`, `windows-trash-tests.log`, `cargo-audit.json`,
 `docs-final-links/links.json`, and the corresponding final rerun artifacts.
+
+## Windows CI follow-up — 11 November 2026
+
+The Windows CI run for `54dd660` timed out after 15 seconds in the batched
+PowerShell argument test. Investigation found that the shell-test helper waited
+for process exit before draining its stdout/stderr pipes. A fresh owned fixture
+writing 128 KiB to each stream reproduced a pipe-backpressure deadlock: the old
+helper failed after 15.03 seconds. The original 33 PowerShell cases emit only
+3,010 ASCII bytes with CRLF, so this reproduction proves a helper defect but
+does not establish the precise cause of that historical hosted-runner timeout.
+
+The helper now drains both streams concurrently, retains at most 1 MiB per
+stream plus one overflow-detection byte, and drains/discards excess output before
+reporting its capture-limit error. The unchanged 15-second deadline still kills
+and reaps the direct child. Timeout diagnostics now include bounded stdout and
+stderr excerpts. These are trusted test fixtures, not a general process-tree
+supervisor or an application execution change. All 33 argument cases, markers,
+byte comparisons and sentinels remain unchanged.
+
+The affected Windows target passed **6 active tests and 2 ignored subprocess
+entry points** with normal parallelism (2.48 s) and serial timing (2.769 s).
+The new pipe regression took 0.047 s, capture-limit/drain regression 0.001 s,
+PowerShell round trip 0.847 s and CMD round trips 1.872 s in that serial run.
+The ignored child entry points are invoked explicitly by their parent tests.
+Strict core all-target Clippy, workspace formatting and `git diff --check`
+passed. Earlier full-suite counts and CSV measurements above remain unchanged;
+this is a focused follow-up, and hosted CI must independently qualify the fix.
+Local evidence is under this audit checkout's
+`_build/qa/thumbnailer-settings/audit-ci-{failure,shell-red,shell-green,shell-clippy}.log`
+and `audit-ci-shell-timings.jsonl`. No dependency or production code changed.
