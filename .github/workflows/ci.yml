@@ -279,7 +279,13 @@ jobs:
             /rust-toolchain.toml
       - name: Linux local-only GIO test runtime
         if: matrix.provider == 'network' && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libglib2.0-0t64
+        run: |
+          # Hosted Ubuntu already includes GIO. Avoid network/package updates
+          # when this local-only test dependency is installed.
+          if ! dpkg-query -W -f='${db:Status-Status}' libglib2.0-0t64 2>/dev/null | grep -qx installed; then
+            sudo apt-get update --error-on=any
+            sudo apt-get install -y --no-install-recommends libglib2.0-0t64
+          fi
       - name: Build and test with public filesystem API only
         shell: pwsh
         run: |
@@ -408,19 +414,36 @@ jobs:
       - name: Linux prerequisites
         if: runner.os == 'Linux'
         run: |
-          # Avoid the runner's Azure mirror, which intermittently fails DNS.
-          # Use signed official Ubuntu repositories for this job only.
+          # Canonical DNS outages can affect all *.ubuntu.com mirrors together.
+          # Keep the job-local source file and Ubuntu signature checks; fall back
+          # to kernel.org on an independent domain, never to unsigned packages.
           sources="$GITHUB_WORKSPACE/_build/ci-ubuntu.list"
-          printf '%s\n' \
-            'deb https://archive.ubuntu.com/ubuntu noble main universe' \
-            'deb https://archive.ubuntu.com/ubuntu noble-updates main universe' \
-            'deb https://security.ubuntu.com/ubuntu noble-security main universe' > "$sources"
           apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
-                       -o Acquire::Retries=3 -o Acquire::https::Timeout=20)
-          sudo apt-get "${apt_options[@]}" update --error-on=any
-          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends \
-            pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
-            libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth
+                       -o Acquire::Retries=2 -o Acquire::https::Timeout=20)
+          installed=false
+          for mirror in https://archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu; do
+            host=${mirror#https://}; host=${host%%/*}
+            if ! timeout 10 getent ahostsv4 "$host" > /dev/null; then
+              echo "::warning::Ubuntu mirror DNS unavailable: $host; trying next mirror"
+              continue
+            fi
+            printf '%s\n' \
+              "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble main universe" \
+              "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble-updates main universe" \
+              "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $mirror noble-security main universe" > "$sources"
+            if sudo apt-get "${apt_options[@]}" update --error-on=any &&
+               sudo apt-get "${apt_options[@]}" install -y --no-install-recommends \
+                 pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
+                 libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth; then
+              installed=true
+              break
+            fi
+            echo "::warning::Ubuntu packages unavailable from $host; trying next mirror"
+          done
+          if [[ "$installed" != true ]]; then
+            echo '::error::Unable to install authenticated Ubuntu build prerequisites'
+            exit 1
+          fi
       - name: Install pinned toolchain
         run: rustup show
       - name: Format
