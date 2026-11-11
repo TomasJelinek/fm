@@ -612,3 +612,41 @@ fn published_default_selection_cannot_be_reseeded_differently_at_the_same_revisi
         &f.session.publication().unwrap().selection
     ));
 }
+
+#[test]
+fn clear_files_only_in_expanded_tree_preserves_explicit_nested_folder_marks() {
+    let mut f = expanded_fixture();
+    let view = f.session.projection().clone();
+    for (position, row) in view.rows.iter().enumerate() {
+        f.session
+            .select(&request(
+                &view,
+                position as u64 + 1,
+                TreeSelectionAction::Toggle(row.id),
+            ))
+            .unwrap();
+    }
+    f.session
+        .select(&request(
+            &view,
+            view.rows.len() as u64 + 1,
+            TreeSelectionAction::Bulk(SelectionOperation::ClearFilesOnly),
+        ))
+        .unwrap();
+    let selected = f.session.publication().unwrap().selection;
+    assert_eq!(selected.file_count(), 0);
+    assert_eq!(
+        selected.folder_count(),
+        3,
+        "preserve both top-level folders and the marked descendant"
+    );
+    for row in view.rows.iter() {
+        assert_eq!(
+            selected.contains_row(row.id),
+            matches!(
+                row.entry.kind,
+                midnight_core::EntryKind::Directory | midnight_core::EntryKind::DirectoryLink
+            )
+        );
+    }
+}

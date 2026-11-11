@@ -79,6 +79,7 @@ impl Presenter {
             SelectionAction::Bulk(
                 SelectionOperation::All
                 | SelectionOperation::FilesOnly
+                | SelectionOperation::ClearFilesOnly
                 | SelectionOperation::Invert
                 | SelectionOperation::InvertAll,
             ) => Some(true),

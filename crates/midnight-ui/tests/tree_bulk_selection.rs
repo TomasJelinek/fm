@@ -52,32 +52,84 @@ fn exercise(pane: PaneId, archive: bool) {
     selected(&h, &["z.txt"]);
     settle(&mut h, &["z.txt"]);
 
-    for modifiers in [vec![Key::Control], vec![Key::Control, Key::Shift]] {
-        ui::chord(&h.ui.window, &modifiers, "a");
-        selected(&h, &["folder", "root.txt"]);
-        settle(&mut h, &["folder", "root.txt"]);
-        ui::chord(&h.ui.window, &[Key::Control], "i");
-        selected(&h, &["folder"]);
-        settle(&mut h, &["folder"]);
-    }
+    ui::chord(&h.ui.window, &[Key::Control], "a");
+    selected(&h, &["root.txt"]);
+    settle(&mut h, &["root.txt"]);
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
+    selected(&h, &["folder", "root.txt"]);
+    settle(&mut h, &["folder", "root.txt"]);
+    ui::chord(&h.ui.window, &[Key::Control], "d");
+    selected(&h, &["folder"]);
+    settle(&mut h, &["folder"]);
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
+    selected(&h, &[]);
+    settle(&mut h, &[]);
 }
 
 #[test]
-fn native_left_tree_shortcuts_preserve_nested_marks_only_when_inverting() {
+fn native_left_tree_shortcuts_distinguish_files_and_all_entries() {
     exercise(PaneId::Left, false);
 }
 
 #[test]
-fn native_right_tree_shortcuts_preserve_nested_marks_only_when_inverting() {
+fn native_right_tree_shortcuts_distinguish_files_and_all_entries() {
     exercise(PaneId::Right, false);
 }
 
 #[test]
-fn archive_left_tree_shortcuts_preserve_nested_marks_only_when_inverting() {
+fn archive_left_tree_shortcuts_distinguish_files_and_all_entries() {
     exercise(PaneId::Left, true);
 }
 
 #[test]
-fn archive_right_tree_shortcuts_preserve_nested_marks_only_when_inverting() {
+fn archive_right_tree_shortcuts_distinguish_files_and_all_entries() {
     exercise(PaneId::Right, true);
+}
+
+fn clear_nested_files(pane: PaneId, archive: bool) {
+    let mut h = Harness::with_sizes(pane, archive);
+    h.ui.window.invoke_activate(pane.index() as i32);
+    // Inline branches display folders only; a file-only child has no expansion arrow.
+    assert!(h.view.as_ref().unwrap().rows.iter().any(|row| {
+        row.entry.display_name == "large" && row.depth > 0 && row.entry.kind == EntryKind::Directory
+    }));
+    for name in ["folder", "large", "root.txt"] {
+        let index = h.rows().iter().position(|row| row.name == name).unwrap();
+        h.ui.window
+            .invoke_row_click(pane.index() as i32, index as i32, true, false);
+    }
+    settle(&mut h, &["folder", "large", "root.txt"]);
+    h.ui.window.invoke_focus_files();
+    ui::chord(&h.ui.window, &[Key::Control], "d");
+    selected(&h, &["folder", "large"]);
+    settle(&mut h, &["folder", "large"]);
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
+    selected(&h, &[]);
+    settle(&mut h, &[]);
+    ui::chord(&h.ui.window, &[Key::Control], "a");
+    selected(&h, &["root.txt"]);
+    settle(&mut h, &["root.txt"]);
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
+    selected(&h, &["folder", "root.txt"]);
+    settle(&mut h, &["folder", "root.txt"]);
+}
+
+#[test]
+fn native_left_clear_files_preserves_nested_folders() {
+    clear_nested_files(PaneId::Left, false);
+}
+
+#[test]
+fn native_right_clear_files_preserves_nested_folders() {
+    clear_nested_files(PaneId::Right, false);
+}
+
+#[test]
+fn archive_left_clear_files_preserves_nested_folders() {
+    clear_nested_files(PaneId::Left, true);
+}
+
+#[test]
+fn archive_right_clear_files_preserves_nested_folders() {
+    clear_nested_files(PaneId::Right, true);
 }

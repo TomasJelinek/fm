@@ -7,7 +7,9 @@ enabling file-writing operations or changing platform boundaries.
 
 ## Selection
 
-Ctrl+A selects all real entries, Ctrl+D clears selection, and Ctrl+I inverts
+Ctrl+A selects top-level files only, Ctrl+Shift+A includes top-level folders.
+Ctrl+D deselects files while preserving folders; Ctrl+Shift+D clears all selection.
+Ctrl+I inverts
 **files only** in the focused pane, preserving both selected and unselected
 folders and directory links. Archives remain file entries in their parent
 listing; archive members use the same selection policy. The synthetic parent
@@ -17,10 +19,12 @@ opposite pane, cursor, paths, sort and command draft remain unchanged. Exact
 selection chords apply in file lists; path/command/options editors retain
 normal text editing, including Ctrl+A.
 
-Ctrl+Shift+A is the separate configurable `selection.files` action: replace the
-selection with displayed non-directory entries, deselecting folders and directory
-links. Ctrl+A continues to include those folders. Both actions are exposed in the
-F10 Selection category and Options → Keyboard, without numeric-keypad defaults.
+Ctrl+A is the configurable `selection.files` action: replace selection with
+displayed top-level non-directory entries, clearing folders and nested marks.
+Ctrl+Shift+A uses `selection.all`, including top-level folders and directory links.
+Ctrl+D uses `selection.clear-files`, removing displayed file marks at any depth;
+Ctrl+Shift+D uses `selection.clear`, removing every mark. All four actions appear
+in F10 → Selection and Options → Keyboard without numeric-keypad defaults.
 
 An authoritative backend selection controller serializes bulk and individual
 toggle intents for each pane. Idle actors await commands asynchronously; each
@@ -38,7 +42,8 @@ repeated hotkeys, mouse toggles and navigation must preserve intent order;
 stale results never overwrite newer work or another tab. Queue refusal is
 visible and does not silently change selection. Streaming selection tracks
 independent file/folder transformations and reports typed defaults for unseen
-rows. Invert affects only the file transformation; All/Clear affect both.
+rows. Invert and ClearFilesOnly affect only the file transformation;
+All/Clear affect both.
 Explicit snapshot bits override those defaults. The UI applies the same policy
 immediately to visible rows and later arrivals without scanning the listing.
 Final rebase resolves all paths; actions never block input or apply after leaving

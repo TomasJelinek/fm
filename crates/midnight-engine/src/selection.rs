@@ -347,6 +347,11 @@ impl State {
                             *word = !directories;
                         }
                     }
+                    SelectionOperation::ClearFilesOnly => {
+                        for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
+                            *word &= directories;
+                        }
+                    }
                     SelectionOperation::Clear => bits.fill(0),
                     SelectionOperation::Invert => {
                         for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
@@ -443,6 +448,20 @@ impl State {
                         deferred.files = Transform::All;
                         deferred.folders = Transform::None;
                         deferred.toggles.clear();
+                    }
+                    SelectionOperation::ClearFilesOnly => {
+                        deferred.files = Transform::None;
+                        // Directory exceptions and their inherited defaults must survive;
+                        // file toggles must not resurrect marks after the final rebase.
+                        let directories = &deferred.directories;
+                        let basis = deferred.base.basis();
+                        deferred.toggles.retain(|path| {
+                            directories.contains(path)
+                                || basis
+                                    .by_path
+                                    .get(path)
+                                    .is_some_and(|id| basis.is_directory(*id))
+                        });
                     }
                     SelectionOperation::Clear => {
                         deferred.files = Transform::None;

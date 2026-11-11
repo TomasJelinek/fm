@@ -1176,9 +1176,10 @@ pixelové rolování s jemným dosednutím na řádek a ikony jednotlivých disk
 upřesňuje [podrobný návrh](2026-11-04-navigation-and-appearance-design.md), včetně
 testů, ukládání nastavení a omezení této etapy.
 
-Zkratky výběru: Ctrl+A vybrat vše, Ctrl+D zrušit výběr a Ctrl+I invertovat výběr
-pouze souborů aktivního panelu (také uvnitř archivu). Výběr složek a odkazů na
-složky zůstává beze změny. Hromadné výpočty běží v backendu; UI čte sdílený neměnný
+Zkratky výběru: Ctrl+A vybere soubory hlavní úrovně, Ctrl+Shift+A také složky.
+Ctrl+D odznačí pouze soubory a zachová složky; Ctrl+Shift+D zruší celý výběr.
+Ctrl+I invertuje pouze soubory aktivního panelu (také uvnitř archivu), se zachováním
+výběru složek a odkazů na složky. Hromadné výpočty běží v backendu; UI čte sdílený neměnný
 bitový snapshot a potvrzuje odpovídající kontext a revizi výběru. Editory si
 zachovají běžné Ctrl+A pro text. Úplná aktuální mapa je v
 [KEYBOARD_SHORTCUTS.md](../../KEYBOARD_SHORTCUTS.md).
@@ -1981,15 +1982,17 @@ adresáře i oba formáty. Podrobnosti:
 
 ### Výběr všeho a samostatný výběr souborů (9. listopadu 2026)
 
-Ctrl+A označí všechny zobrazené soubory i složky v aktivním panelu, včetně
-directory links/junctions. Samostatná akce `selection.files` / Select files only
-má výchozí zkratku Ctrl+Shift+A na běžné klávesnici a nahradí výběr pouze
-zobrazenými nesložkovými položkami; dříve označené složky odznačí. Položka `..`
+Ctrl+Shift+A označí zobrazené soubory i složky hlavní úrovně aktivního panelu,
+včetně directory links/junctions. Samostatná akce `selection.files` / Select files
+only má výchozí zkratku Ctrl+A na běžné klávesnici a nahradí výběr pouze soubory
+hlavní úrovně; dříve označené složky a vnořené řádky odznačí.
+Ctrl+D (`selection.clear-files`) odznačí soubory a zachová označené složky;
+Ctrl+Shift+D (`selection.clear`) zruší celý výběr. Položka `..`
 a pomocné neoznačitelné řádky stromu nejsou nikdy součástí výběru. Platí to také
 pro filtrované seznamy, archivy a rozbalené větve. Ctrl+I nadále invertuje pouze
 soubory a označení složek zachová.
 
-Obě akce jsou ve F10 → Selection a lze je přemapovat v Options → Keyboard.
+Všechny čtyři akce jsou ve F10 → Selection a lze je přemapovat v Options → Keyboard.
 Existující uživatelské mapování má přednost před novou výchozí zkratkou.
 Pole pro zadávání textu si ponechávají vlastní chování Ctrl+A. UI poskytne
 okamžitou zpětnou vazbu; backend zpracuje neměnné snapshoty a postupně
@@ -2119,11 +2122,13 @@ a čas (Time) mají samostatné sloupce s pevnými společnými hranami; UI pou�
 oddělená lokalizovaná pole z backendu, nikdy nerozděluje formátovaný text podle
 mezer. Oba časové sloupce řadí podle původního úplného času změny.
 
-Aktualizované zkratky výběru: Ctrl+A i Ctrl+Shift+A označí všechny soubory
-a složky hlavní úrovně panelu. Ctrl+I invertuje jen soubory, Ctrl+Shift+I
-invertuje soubory i složky hlavní úrovně. Řádek `..` nikdy není cílem výběru.
-Samostatná akce pro výběr pouze souborů zůstává v menu a lze jí přiřadit vlastní
-zkratku. Výslovná uživatelská přemapování mají nad novými výchozími zkratkami přednost.
+Aktualizované zkratky výběru (11. listopadu): Ctrl+A označí pouze soubory hlavní
+úrovně, Ctrl+Shift+A také složky. Ctrl+D odznačí soubory včetně výslovně označených
+vnořených souborů a zachová složky, Ctrl+Shift+D zruší celý výběr. Ctrl+I invertuje
+jen soubory, Ctrl+Shift+I soubory i složky hlavní úrovně. Řádek `..` nikdy není
+cílem výběru. Všechny akce lze přemapovat a F10 zobrazuje jejich aktuální účinné
+zkratky včetně změn za běhu. Výslovná uživatelská přemapování mají nad novými
+výchozími zkratkami přednost.
 
 ### Podrobnosti výstrah v panelech
 

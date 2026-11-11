@@ -327,9 +327,9 @@ graphics runtime and fonts; it does not establish production GPU performance.
 See the [complete current keyboard map](docs/KEYBOARD_SHORTCUTS.md), including
 editor scope and shortcuts reserved for later stages.
 
-- Ctrl+A / Ctrl+D: select all / clear selection in the focused file pane.
-  Ctrl+A includes folders; Ctrl+Shift+A selects files only and deselects folders.
-  Ctrl+I inverts files only, preserving selection of folders and directory links.
+- Ctrl+A selects top-level files only; Ctrl+Shift+A includes top-level folders.
+  Ctrl+D deselects files while preserving selected folders; Ctrl+Shift+D clears all.
+  Ctrl+I inverts files only; Ctrl+Shift+I inverts top-level files and folders.
   This works inside archives too. The parent `..` is excluded; text editors retain
   normal editing. These shortcuts can be reassigned in Options.
 - Type in the file pane to search filename prefixes, always Unicode

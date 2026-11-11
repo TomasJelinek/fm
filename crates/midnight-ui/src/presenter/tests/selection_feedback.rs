@@ -553,3 +553,139 @@ fn failed_destination_does_not_transfer_its_deferred_default_to_restored_rows() 
     assert!(!p.panes[0].selection_deferred.any());
     assert!(visible(&p).is_empty());
 }
+
+#[test]
+fn clear_files_previews_preserve_folder_marks_and_rejected_requests() {
+    let mut p = loaded();
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let offset = p.panes[0].parent_offset();
+    for row in [0, 1, 3, 5] {
+        p.select_row_modified(PaneId::Left, offset + row, true, false, &send);
+    }
+    let initial = request(&commands);
+    ack(&mut p, &initial, 0b10_1011);
+    assert_eq!(visible(&p), [0, 1, 3, 5]);
+    assert!(!p.bulk_selection(PaneId::Left, SelectionOperation::ClearFilesOnly, &|_| false));
+    assert_eq!(visible(&p), [0, 1, 3, 5]);
+    assert!(p.bulk_selection(PaneId::Left, SelectionOperation::ClearFilesOnly, &send));
+    assert_eq!(visible(&p), [0]);
+    let cleared = request(&commands);
+    assert!(matches!(
+        cleared.action,
+        SelectionAction::Bulk(SelectionOperation::ClearFilesOnly)
+    ));
+    ack(&mut p, &cleared, 1);
+    assert_eq!(visible(&p), [0]);
+}
+
+#[test]
+fn clear_files_streaming_keeps_folder_selection_pending_for_reconciliation() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let navigation = begin(&mut p, PaneId::Left, "left");
+    let entries = vec![
+        file_entry(1, "left/a"),
+        Entry::new(EntryId(2), "left/folder".into(), EntryKind::DirectoryLink),
+    ];
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: entries.clone(),
+    });
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let offset = p.panes[0].parent_offset();
+    for row in 0..2 {
+        p.select_row_modified(PaneId::Left, offset + row, true, false, &send);
+    }
+    let initial = request(&commands);
+    let basis = Arc::new(DirectoryIndex::from_entries(&entries));
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: initial.revision,
+        selection: Arc::new(SelectionSnapshot::from_bits(basis.clone(), vec![3]).unwrap()),
+        deferred: SelectionDefaults::NONE,
+    });
+    assert!(!p.panes[0].selection_pending_bulk);
+    p.bulk_selection(PaneId::Left, SelectionOperation::ClearFilesOnly, &send);
+    let clear = request(&commands);
+    assert!(p.panes[0].selection_pending_bulk);
+    assert_eq!(visible(&p), [1]);
+    commands.borrow_mut().clear();
+    p.focus_display_row(PaneId::Left, offset);
+    p.copy_files(PaneId::Left, &send);
+    assert!(
+        commands.borrow().is_empty(),
+        "Copy cannot use a partial listing or cursor fallback"
+    );
+    assert!(
+        p.selection_actions[0].is_none(),
+        "an incomplete bulk selection cannot capture an action"
+    );
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation,
+        entries: vec![
+            file_entry(3, "left/b"),
+            Entry::new(EntryId(4), "left/later".into(), EntryKind::Directory),
+        ],
+    });
+    assert_eq!(visible(&p), [1]);
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation,
+        revision: clear.revision,
+        selection: Arc::new(SelectionSnapshot::from_bits(basis, vec![2]).unwrap()),
+        deferred: SelectionDefaults::NONE,
+    });
+    assert_eq!(visible(&p), [1]);
+    p.copy_files(PaneId::Left, &send);
+    assert!(
+        commands.borrow().is_empty(),
+        "the listing still needs final reconciliation"
+    );
+    let entries: Arc<[Entry]> = vec![
+        file_entry(1, "left/a"),
+        Entry::new(EntryId(2), "left/folder".into(), EntryKind::DirectoryLink),
+        file_entry(3, "left/b"),
+        Entry::new(EntryId(4), "left/later".into(), EntryKind::Directory),
+    ]
+    .into();
+    // The installed event adapter requests reconciliation after the listing commits.
+    p.apply_with_sender(
+        Event::ListingFinished {
+            pane: PaneId::Left,
+            navigation,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        },
+        &send,
+    );
+    let rebase = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Selection(request) if matches!(request.action, SelectionAction::Rebase) => {
+                Some(request.clone())
+            }
+            _ => None,
+        })
+        .expect("listing completion must request selection reconciliation");
+    let folder_position = rebase.view.as_ref().unwrap().by_id[&EntryId(2)];
+    ack(&mut p, &rebase, 1 << folder_position);
+    commands.borrow_mut().clear();
+    p.copy_files(PaneId::Left, &send);
+    let sent = commands.borrow();
+    let Some(Command::CopyFiles { files, .. }) = sent.last() else {
+        panic!("Copy must use the reconciled selection");
+    };
+    assert_eq!(files.selection.len(), 1);
+    assert!(files.selection.contains_path(Path::new("left/folder")));
+}

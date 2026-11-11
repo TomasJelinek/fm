@@ -163,6 +163,7 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "selection.all" => FileKey::Bulk(0),
         "selection.files" => FileKey::Bulk(3),
         "selection.clear" => FileKey::Bulk(1),
+        "selection.clear-files" => FileKey::Bulk(5),
         "selection.invert" => FileKey::Bulk(2),
         "selection.invert-all" => FileKey::Bulk(4),
         "sort.name" => FileKey::Sort(0),
@@ -313,9 +314,9 @@ mod tests {
                 true,
                 false,
                 false,
-                FileKey::Bulk(0),
+                FileKey::Bulk(3),
             ),
-            ("D".into(), true, false, false, FileKey::Bulk(1)),
+            ("D".into(), true, false, false, FileKey::Bulk(5)),
             ("i".into(), true, false, false, FileKey::Bulk(2)),
             (Key::F3.into(), true, false, false, FileKey::Sort(0)),
             (Key::F4.into(), true, false, false, FileKey::Sort(3)),
@@ -345,6 +346,7 @@ mod tests {
             ),
             (Key::Return.into(), true, false, true, FileKey::Properties),
             ("a".into(), true, true, false, FileKey::Bulk(0)),
+            ("d".into(), true, true, false, FileKey::Bulk(1)),
             ("i".into(), true, true, false, FileKey::Bulk(4)),
         ] {
             assert_eq!(
@@ -401,7 +403,7 @@ mod tests {
         );
         assert_eq!(
             route(&event("a", true, false, false), true, true),
-            FileKey::Bulk(0)
+            FileKey::Bulk(3)
         );
         assert_eq!(
             route(&event(Key::Tab, false, true, false), false, false),

@@ -449,6 +449,8 @@ impl ShortcutMap {
                         | "files.checksums"
                         | "files.compare"
                         | "selection.files"
+                        | "selection.clear-files"
+                        | "selection.clear"
                         | "selection.invert-all"
                         | "files.make-list"
                         | "viewer.document-next"

@@ -1117,6 +1117,7 @@ pub fn install(
             2 => SelectionOperation::Invert,
             3 => SelectionOperation::FilesOnly,
             4 => SelectionOperation::InvertAll,
+            5 => SelectionOperation::ClearFilesOnly,
             _ => return,
         };
         let id = pane(id);

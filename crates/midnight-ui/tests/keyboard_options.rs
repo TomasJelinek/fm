@@ -935,3 +935,69 @@ fn restoring_unchanged_defaults_also_discards_the_unsaved_editor_draft() {
         "Ctrl+C"
     );
 }
+
+#[test]
+fn remapped_clear_files_uses_effective_binding_and_preserves_editor_focus() {
+    let h = Harness::new(&[("selection.clear-files", &["Ctrl+Alt+Y"])]);
+    ui::chord(&h.ui.window, &[Key::Control], "d");
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::Selection(_)))
+    );
+    h.commands.borrow_mut().clear();
+    ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "y");
+    assert!(
+        matches!(h.commands.borrow().last(), Some(Command::Selection(request))
+        if matches!(request.action, SelectionAction::Bulk(SelectionOperation::ClearFilesOnly)))
+    );
+    h.commands.borrow_mut().clear();
+    h.ui.window.invoke_set_command("editable text".into(), 13);
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
+    ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "y");
+    assert!(
+        h.commands.borrow().is_empty(),
+        "text focus cannot clear panel marks"
+    );
+}
+
+#[test]
+fn saved_legacy_select_and_clear_bindings_keep_their_original_operations() {
+    let h = Harness::new(&[
+        ("selection.all", &["Ctrl+A"]),
+        ("selection.clear", &["Ctrl+D"]),
+    ]);
+    for (key, operation) in [
+        ("a", SelectionOperation::All),
+        ("d", SelectionOperation::Clear),
+    ] {
+        h.commands.borrow_mut().clear();
+        ui::chord(&h.ui.window, &[Key::Control], key);
+        let sent = h.commands.borrow();
+        let selections = sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::Selection(request) => Some(&request.action),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selections.len(),
+            1,
+            "a saved chord dispatches exactly one action"
+        );
+        assert!(matches!(selections[0], SelectionAction::Bulk(actual) if *actual == operation));
+    }
+    h.commands.borrow_mut().clear();
+    for key in ["a", "d"] {
+        ui::chord(&h.ui.window, &[Key::Control, Key::Shift], key);
+    }
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::Selection(_))),
+        "explicit legacy bindings replace the new default aliases"
+    );
+}

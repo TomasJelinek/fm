@@ -1,12 +1,14 @@
 use midnight_core::*;
 
 #[test]
-fn selection_shortcuts_distinguish_top_level_all_and_two_inversion_scopes() {
+fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert() {
     let map = ShortcutMap::new(&[]).unwrap();
     for context in [ShortcutContext::Files, ShortcutContext::Search] {
         for (key, expected) in [
-            ("Ctrl+A", "selection.all"),
+            ("Ctrl+A", "selection.files"),
             ("Ctrl+Shift+A", "selection.all"),
+            ("Ctrl+D", "selection.clear-files"),
+            ("Ctrl+Shift+D", "selection.clear"),
             ("Ctrl+I", "selection.invert"),
             ("Ctrl+Shift+I", "selection.invert-all"),
         ] {
@@ -17,7 +19,10 @@ fn selection_shortcuts_distinguish_top_level_all_and_two_inversion_scopes() {
             );
         }
     }
-    assert!(map.bindings("selection.files").unwrap().is_empty());
+    assert_eq!(
+        map.bindings("selection.files").unwrap()[0].display(),
+        "Ctrl+A"
+    );
     for context in [
         ShortcutContext::Command,
         ShortcutContext::Other,
@@ -77,7 +82,7 @@ fn selection_new_default_aliases_preserve_explicit_assignments_and_hints() {
             .iter()
             .map(ShortcutChord::display)
             .collect::<Vec<_>>(),
-        ["Ctrl+A"]
+        Vec::<String>::new()
     );
     assert!(map.bindings("selection.invert-all").unwrap().is_empty());
     assert!(
@@ -800,7 +805,7 @@ fn reassigned_file_actions_preserve_clipboard_keys_in_filename_search() {
     let map = ShortcutMap::new(&[]).unwrap();
     assert_eq!(
         action(&map, "Ctrl+A", ShortcutContext::Search),
-        Some("selection.all".into())
+        Some("selection.files".into())
     );
     assert_eq!(
         action(&map, "Shift+Delete", ShortcutContext::Search),
@@ -826,4 +831,60 @@ fn make_file_list_uses_configurable_control_m_without_stealing_editor_input() {
         action(&custom, "Ctrl+Shift+M", ShortcutContext::Files).as_deref(),
         Some("files.make-list")
     );
+}
+
+#[test]
+fn changed_selection_defaults_preserve_explicit_legacy_assignments() {
+    for (key, saved_action, default_action) in [
+        ("Ctrl+A", "selection.all", "selection.files"),
+        ("Ctrl+D", "selection.clear", "selection.clear-files"),
+        ("Ctrl+Shift+D", "files.rename", "selection.clear"),
+    ] {
+        let saved = ShortcutBinding {
+            action: saved_action.into(),
+            keys: vec![key.into()],
+        };
+        let map = ShortcutMap::new(std::slice::from_ref(&saved)).unwrap();
+        assert_eq!(
+            action(&map, key, ShortcutContext::Files).as_deref(),
+            Some(saved_action)
+        );
+        assert!(
+            map.bindings(default_action).unwrap().is_empty(),
+            "{default_action} must not advertise the suppressed {key}"
+        );
+        assert!(
+            ShortcutMap::new(&[
+                saved,
+                ShortcutBinding {
+                    action: default_action.into(),
+                    keys: vec![key.into()]
+                }
+            ])
+            .is_err()
+        );
+    }
+    let map = ShortcutMap::new(&[ShortcutBinding {
+        action: "selection.clear-files".into(),
+        keys: vec![],
+    }])
+    .unwrap();
+    assert_eq!(action(&map, "Ctrl+D", ShortcutContext::Files), None);
+    assert_eq!(
+        action(&map, "Ctrl+Shift+D", ShortcutContext::Files).as_deref(),
+        Some("selection.clear")
+    );
+}
+
+#[test]
+fn clear_files_only_never_changes_directory_selection() {
+    for selected in [false, true] {
+        assert_eq!(
+            SelectionOperation::ClearFilesOnly.selects(true, selected),
+            selected
+        );
+        assert!(!SelectionOperation::ClearFilesOnly.selects(false, selected));
+        assert!(!SelectionOperation::Clear.selects(true, selected));
+        assert!(!SelectionOperation::Clear.selects(false, selected));
+    }
 }

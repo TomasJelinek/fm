@@ -308,13 +308,29 @@ fn build() -> Vec<ShortcutDefinition> {
     );
     add(
         "selection.all",
-        "Select all top-level files and folders",
+        "Select files and folders",
         FilesAny,
-        &["Ctrl+A", "Ctrl+Shift+A"],
+        &["Ctrl+Shift+A"],
     );
     add("files.make-list", "Make File List", FilesAny, &["Ctrl+M"]);
-    add("selection.files", "Select files only", FilesAny, &[]);
-    add("selection.clear", "Clear selection", FilesAny, &["Ctrl+D"]);
+    add(
+        "selection.files",
+        "Select files only",
+        FilesAny,
+        &["Ctrl+A"],
+    );
+    add(
+        "selection.clear-files",
+        "Deselect files only",
+        FilesAny,
+        &["Ctrl+D"],
+    );
+    add(
+        "selection.clear",
+        "Deselect files and folders",
+        FilesAny,
+        &["Ctrl+Shift+D"],
+    );
     add(
         "selection.invert",
         "Invert files only",

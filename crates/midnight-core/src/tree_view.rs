@@ -147,7 +147,7 @@ pub struct TreeDisplayRow {
 
 impl TreeDisplayRow {
     /// Shared bulk-selection policy for backend state and immediate UI feedback.
-    /// Select All replaces selection with top-level rows. Invert All changes
+    /// Select All and Files Only replace selection with top-level rows. Invert All changes
     /// only top-level rows and preserves explicitly marked descendants.
     pub fn bulk_selected(&self, operation: SelectionOperation, selected: bool) -> bool {
         if !self.selectable || self.context_only {
@@ -155,7 +155,7 @@ impl TreeDisplayRow {
         }
         if self.depth != 0 {
             match operation {
-                SelectionOperation::All => return false,
+                SelectionOperation::All | SelectionOperation::FilesOnly => return false,
                 SelectionOperation::InvertAll => return selected,
                 _ => {}
             }

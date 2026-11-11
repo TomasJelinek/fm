@@ -58,7 +58,8 @@ the actual report-file regressions missed by the earlier exact-anchor test.
 
 Inline tree background checks now batch without false queue-exhaustion errors;
 Network follows the drives before local special folders on both navigation surfaces.
-Ctrl+A selects only top-level panel entries, clearing nested marks. See
+Ctrl+A selects only top-level files; Ctrl+Shift+A includes top-level folders.
+Both replace selection and clear nested marks. See
 [tree scheduling](verification/2026-11-09-tree-budget.md) and
 [tree selection](verification/2026-11-09-tree-select-all.md).
 
@@ -83,9 +84,13 @@ and [measured scope](verification/2026-11-10-tree-clipboard.md).
 The settings polish merges Panel/Command into General, reuses ordered argument
 editors and compact priority actions, and separates viewer/filesystem catalogs.
 Panel metadata now aligns date and time independently; Windows Hidden/System
-attributes dim file and folder artwork. Both Ctrl+A and Ctrl+Shift+A select
-top-level files and folders; Ctrl+Shift+I inverts them. See the
-[qualification and deployment status](verification/2026-11-10-settings-polish.md).
+attributes dim file and folder artwork. Ctrl+A selects top-level files only;
+Ctrl+Shift+A includes folders. Ctrl+D deselects files while preserving folder
+marks, and Ctrl+Shift+D clears all selection. Ctrl+Shift+I inverts top-level
+files and folders. F10 reads effective shortcuts from current settings, including
+remaps, removed aliases and restored defaults while the menu is open. See the
+[current selection/menu verification](verification/2026-11-11-selection-and-live-menu.md)
+and [settings qualification](verification/2026-11-10-settings-polish.md).
 
 Native, archive and expanded-tree size scans now retain clickable yellow warning
 reports. Red listing errors expose full details separately from Retry/Collapse.

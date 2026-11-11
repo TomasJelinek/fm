@@ -173,8 +173,10 @@ cached images. Paths, labels and icons are not interchangeable identities.
 
 ## Verification obligations
 
-Selection mapping: Ctrl+A select all, Ctrl+D clear all, Ctrl+I invert the active
-panel's file selection, preserving folders and directory links. These bindings are scoped to file lists; editors retain
+Selection mapping: Ctrl+A selects top-level files only; Ctrl+Shift+A includes
+folders. Ctrl+D clears file marks while preserving folder marks; Ctrl+Shift+D
+clears all selection. Ctrl+I inverts files, preserving folders and directory
+links. These bindings are scoped to file lists; editors retain
 normal text selection. Backend selection snapshots and scan continuity are
 specified in [the current extension](2026-11-04-selection-and-continuous-sizes-design.md).
 Salamander's Ctrl+Num+/Num-/Num* aliases remain candidates for a later stage.

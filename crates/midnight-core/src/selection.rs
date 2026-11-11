@@ -10,8 +10,10 @@ pub enum SelectionOperation {
     /// Select visible top-level entries, including folders and directory links.
     /// Inline trees apply their depth policy before this per-kind policy.
     All,
-    /// Replace selection with visible non-directory entries.
+    /// Replace selection with visible top-level non-directory entries.
     FilesOnly,
+    /// Clear visible non-directory entries while preserving folder and directory-link marks.
+    ClearFilesOnly,
     Clear,
     /// Invert non-directory entries; preserve folders and directory links.
     Invert,
@@ -25,6 +27,7 @@ impl SelectionOperation {
         match self {
             Self::All => true,
             Self::FilesOnly => !directory,
+            Self::ClearFilesOnly => directory && selected,
             Self::Clear => false,
             Self::Invert => selected ^ !directory,
             Self::InvertAll => !selected,

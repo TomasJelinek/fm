@@ -22,6 +22,25 @@ fn invert_files_preserves_folders_for_loaded_and_streaming_listings() {
     let index = Arc::new(DirectoryIndex::from_entries(&rows));
     for streaming in [false, true] {
         for (operations, expected) in [
+            (vec![SelectionOperation::ClearFilesOnly], 0b000001),
+            (
+                vec![SelectionOperation::All, SelectionOperation::ClearFilesOnly],
+                0b000011,
+            ),
+            (
+                vec![
+                    SelectionOperation::FilesOnly,
+                    SelectionOperation::ClearFilesOnly,
+                ],
+                0,
+            ),
+            (
+                vec![
+                    SelectionOperation::ClearFilesOnly,
+                    SelectionOperation::Invert,
+                ],
+                0b111101,
+            ),
             (vec![SelectionOperation::All], 0b111111),
             (vec![SelectionOperation::FilesOnly], 0b111100),
             (
@@ -238,4 +257,99 @@ fn invert_files_in_archive_preserves_folders_and_respects_filtered_view() {
             .into_iter()
             .collect()
     );
+}
+
+#[test]
+fn clear_files_only_retains_streaming_folder_exceptions_and_unknown_row_defaults() {
+    let rows = entries();
+    let index = Arc::new(DirectoryIndex::from_entries(&rows));
+    let mut state = State::default();
+    state
+        .apply(&request(
+            1,
+            None,
+            SelectionAction::Bulk(SelectionOperation::All),
+        ))
+        .unwrap();
+    for (revision, row, directory) in [(2, 0, true), (3, 3, false)] {
+        let mut toggle = request(
+            revision,
+            None,
+            SelectionAction::Toggle(rows[row].path.clone()),
+        );
+        toggle.toggle_directory = directory;
+        state.apply(&toggle).unwrap();
+    }
+    let (partial, defaults) = state
+        .apply(&request(
+            4,
+            None,
+            SelectionAction::Bulk(SelectionOperation::ClearFilesOnly),
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(
+        !partial.contains_path(&rows[0].path),
+        "a toggled-off folder must remain off"
+    );
+    assert!(!partial.contains_path(&rows[3].path));
+    assert_eq!(
+        defaults,
+        SelectionDefaults {
+            files: false,
+            directories: true
+        }
+    );
+    let (complete, _) = state
+        .apply(&request(5, Some(index), SelectionAction::Rebase))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        complete.bits(),
+        &[0b000010],
+        "retain directory-link default without restoring cleared file exceptions"
+    );
+}
+
+#[test]
+fn clear_files_only_preserves_known_directory_links_across_partial_words() {
+    let rows: Vec<_> = (0..66)
+        .map(|i| {
+            Entry::new(
+                EntryId(i),
+                format!("entry-{i}").into(),
+                if i % 2 == 0 {
+                    EntryKind::DirectoryLink
+                } else {
+                    EntryKind::File
+                },
+            )
+        })
+        .collect();
+    let view = Arc::new(DirectoryIndex::from_entries(&rows));
+    for streaming in [false, true] {
+        let mut state = State::default();
+        state
+            .apply(&request(
+                1,
+                Some(view.clone()),
+                SelectionAction::Bulk(SelectionOperation::All),
+            ))
+            .unwrap();
+        state
+            .apply(&request(
+                2,
+                (!streaming).then(|| view.clone()),
+                SelectionAction::Bulk(SelectionOperation::ClearFilesOnly),
+            ))
+            .unwrap();
+        let (selected, defaults) = state
+            .apply(&request(3, Some(view.clone()), SelectionAction::Rebase))
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.bits(), &[0x5555_5555_5555_5555, 1]);
+        assert_eq!(selected.len(), 33);
+        assert_eq!(selected.folder_count(), 33);
+        assert_eq!(defaults, SelectionDefaults::NONE);
+    }
 }

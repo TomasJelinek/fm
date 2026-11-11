@@ -90,9 +90,10 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+F2 | Attributes, times and filename-case editor for the captured selection |
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
-| Ctrl+A | Select all displayed top-level files and folders in the focused pane; exclude `..` and nested rows of expanded branches |
-| Ctrl+Shift+A | Select all displayed top-level files and folders; same action as Ctrl+A |
-| Ctrl+D | Clear selection in the focused file pane |
+| Ctrl+A | Select displayed top-level files only; deselect folders and nested rows |
+| Ctrl+Shift+A | Select displayed top-level files and folders; exclude `..` and nested rows |
+| Ctrl+D | Deselect files; preserve selected folders and directory links |
+| Ctrl+Shift+D | Clear all selection in the focused pane |
 | Ctrl+I | Invert file selection in the focused pane; preserve selected and unselected folders, including directory links |
 | Ctrl+Shift+I | Invert top-level files and folders; preserve nested tree marks |
 | Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens Move confirmation |
@@ -348,7 +349,7 @@ their ordinary Ctrl+A behavior. The requested Ctrl+D takes precedence over
 Total Commander's bookmark meaning. During progressive listing, all/invert may
 wait for that listing to complete; input remains responsive.
 
-Select all (`selection.all`) uses both Ctrl+A and Ctrl+Shift+A. It replaces
+Select files and folders (`selection.all`) uses Ctrl+Shift+A. It replaces
 selection with displayed top-level files and folders, clearing nested tree marks.
 Invert files only (`selection.invert`, Ctrl+I) toggles displayed files, including
 expanded descendants, while preserving folders. Invert files and folders
@@ -356,9 +357,13 @@ expanded descendants, while preserving folders. Invert files and folders
 preserves nested marks. The synthetic parent and context-only ancestors remain
 unselectable.
 
-Select files only (`selection.files`) remains available in Options → Keyboard
-and F10 → Selection without a default shortcut. It replaces selection with
-visible files. These actions work in filtered lists and archives. Directory
+Select files only (`selection.files`, Ctrl+A) replaces selection with displayed
+top-level files, clearing folder and nested marks. Deselect files only
+(`selection.clear-files`, Ctrl+D) clears displayed file marks, including nested
+files, while preserving selected folders and directory links. Deselect files and
+folders (`selection.clear`, Ctrl+Shift+D) clears every mark. All four actions are
+available in F10 → Selection and Options → Keyboard, including filtered lists
+and archives. Directory
 links/junctions count as folders; archive containers in native listings count as
 files. Explicitly selecting nested rows by click or range remains available.
 Existing user-assigned shortcuts take precedence over new default bindings.

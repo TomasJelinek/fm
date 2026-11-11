@@ -126,12 +126,19 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
     window.invoke_action(0, 0);
     commands.borrow_mut().clear();
     for (key, shift, operation, expected) in [
-        ("a", false, SelectionOperation::All, [true, true]),
+        ("a", false, SelectionOperation::FilesOnly, [true, false]),
+        ("A", true, SelectionOperation::All, [true, true]),
+        (
+            "d",
+            false,
+            SelectionOperation::ClearFilesOnly,
+            [false, true],
+        ),
+        ("a", false, SelectionOperation::FilesOnly, [true, false]),
         ("A", true, SelectionOperation::All, [true, true]),
         ("i", true, SelectionOperation::InvertAll, [false, false]),
         ("i", true, SelectionOperation::InvertAll, [true, true]),
-        ("a", false, SelectionOperation::All, [true, true]),
-        ("d", false, SelectionOperation::Clear, [false, false]),
+        ("d", true, SelectionOperation::Clear, [false, false]),
         ("i", false, SelectionOperation::Invert, [true, false]),
         ("i", false, SelectionOperation::Invert, [false, false]),
     ] {
@@ -170,7 +177,7 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
         assert_eq!(window.get_command_text(), "echo draft");
     }
     window.invoke_action(1, 0);
-    control(&window, "a");
+    chord(&window, "a", true);
     selection::acknowledge(
         &presenter,
         &commands,

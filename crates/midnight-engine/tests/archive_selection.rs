@@ -85,3 +85,48 @@ fn changed_archive_extent_fails_without_silent_partial_selection() {
         .is_err()
     );
 }
+
+#[test]
+fn clear_files_only_preserves_selected_archive_folders_links_and_hidden_marks() {
+    let mut entries = entries();
+    for (entry, kind) in entries.iter_mut().zip([
+        EntryKind::Directory,
+        EntryKind::DirectoryLink,
+        EntryKind::File,
+        EntryKind::File,
+        EntryKind::Symlink,
+        EntryKind::Other,
+    ]) {
+        entry.kind = kind;
+        entry.virtual_node.as_mut().unwrap().kind = kind;
+    }
+    let visible = [
+        entries[0].clone(),
+        entries[1].clone(),
+        entries[2].clone(),
+        entries[4].clone(),
+        entries[5].clone(),
+    ];
+    let view = DirectoryIndex::from_entries(&visible);
+    assert!(view.by_path.is_empty());
+    for selected_link in [false, true] {
+        let mut prior: HashSet<_> = entries.iter().map(|entry| entry.id).collect();
+        if !selected_link {
+            prior.remove(&entries[1].id);
+        }
+        let result = archive_selection::apply(
+            &entries,
+            &view,
+            &prior,
+            ArchiveSelectionAction::Bulk(SelectionOperation::ClearFilesOnly),
+        )
+        .unwrap();
+        let mut expected = HashSet::from([entries[0].id, entries[3].id]);
+        if selected_link {
+            expected.insert(entries[1].id);
+        }
+        assert_eq!(*result.selected, expected);
+        assert_eq!(result.totals.files(), 1);
+        assert_eq!(result.totals.folders(), 1 + usize::from(selected_link));
+    }
+}

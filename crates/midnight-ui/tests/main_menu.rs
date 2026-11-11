@@ -33,9 +33,10 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
         "Create empty file…",
         "Move to Trash…",
         "Delete permanently…",
-        "Select all",
+        "Select files and folders",
         "Select files only",
-        "Deselect all",
+        "Deselect files only",
+        "Deselect files and folders",
         "Invert files only",
         "Invert files and folders",
         "Find files…",
@@ -160,34 +161,185 @@ fn category_makes_application_actions_reachable_and_close_never_runs_them() {
     ui::key(&test.window, Key::Escape);
 }
 
-#[test]
-fn menu_hints_use_the_users_remapped_shortcuts() {
+fn shortcut_menu(bindings: &[(&str, &[&str])]) -> ui::TestUi {
     use midnight_core::{Event, ShortcutBinding, UserPreferences};
     let mut test = ui::TestUi::new();
     let presenter = Rc::new(RefCell::new(midnight_ui::Presenter::new(
         std::env::temp_dir(),
         std::env::temp_dir(),
     )));
+    let preferences = UserPreferences {
+        shortcuts: bindings
+            .iter()
+            .map(|(action, keys)| ShortcutBinding {
+                action: (*action).into(),
+                keys: keys.iter().map(|key| (*key).into()).collect(),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    preferences.validate().unwrap();
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
-            shortcuts: vec![ShortcutBinding {
-                action: "files.rename".into(),
-                keys: vec!["Ctrl+Alt+R".into()],
-            }],
-            ..Default::default()
-        }))));
+        .apply(Event::PreferencesLoaded(Ok(Box::new(preferences))));
     midnight_ui::install(&test.window, presenter.clone(), Rc::new(|_| true));
     midnight_ui::refresh(&test.window, &presenter.borrow());
-    test.window.invoke_show_app_menu(2);
+    test.window.set_left_can_target_cursor(true);
+    test.window.invoke_focus_files();
+    ui::key(&test.window, Key::F10);
     test.draw();
-    let rename = ui::popup_item(&test.window, "Rename…", AccessibleRole::Button);
     assert!(
-        ui::visible_text_values(rename)
-            .iter()
-            .any(|text| text.contains("Ctrl+Alt+R"))
+        ui::has_popup(&test.window),
+        "F10 must open the existing menu"
+    );
+    test
+}
+
+fn menu_shortcut(test: &ui::TestUi, label: &str) -> Vec<String> {
+    let item = ui::popup_item(&test.window, label, AccessibleRole::Button);
+    ui::visible_text_values(item)
+        .into_iter()
+        .filter(|text| !text.is_empty() && text != label)
+        .map(|text| text.to_string())
+        .collect()
+}
+
+#[test]
+fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_scope() {
+    let mut test = shortcut_menu(&[]);
+    ui::key(&test.window, Key::Escape);
+    test.window.set_active_pane(1);
+    let selections = Rc::new(RefCell::new(Vec::new()));
+    let captured = selections.clone();
+    test.window.on_bulk_selection(move |pane, operation| {
+        captured.borrow_mut().push((pane, operation));
+    });
+    for (label, shortcut, operation) in [
+        ("Select files and folders", "Ctrl+Shift+A", 0),
+        ("Select files only", "Ctrl+A", 3),
+        ("Deselect files only", "Ctrl+D", 5),
+        ("Deselect files and folders", "Ctrl+Shift+D", 1),
+    ] {
+        test.window.invoke_show_app_menu(2);
+        test.draw();
+        category(&mut test, 2);
+        assert_eq!(menu_shortcut(&test, label), [shortcut], "{label}");
+        render::snapshot(&test, "main-menu-selection-defaults");
+        ui::click_popup(&test.window, label, AccessibleRole::Button);
+        test.draw();
+        assert!(!ui::has_popup(&test.window));
+        assert_eq!(selections.borrow().last(), Some(&(1, operation)), "{label}");
+    }
+    assert_eq!(*selections.borrow(), [(1, 0), (1, 3), (1, 5), (1, 1)]);
+}
+
+#[test]
+fn menu_hints_use_remapped_shortcuts_and_update_while_the_menu_stays_open() {
+    let mut test = shortcut_menu(&[("files.rename", &["Ctrl+Alt+R"])]);
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+R"]);
+    test.window
+        .invoke_keyboard_apply("files.rename".into(), "Ctrl+Alt+T".into());
+    test.draw();
+    assert!(ui::has_popup(&test.window));
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+T"]);
+    render::snapshot(&test, "main-menu-live-remapped");
+
+    test.window
+        .invoke_keyboard_apply("files.rename".into(), "".into());
+    test.draw();
+    assert!(ui::has_popup(&test.window));
+    assert!(
+        menu_shortcut(&test, "Rename…").is_empty(),
+        "an unassigned command must not advertise its old key or the default F2"
+    );
+    render::snapshot(&test, "main-menu-unassigned");
+
+    test.window.invoke_keyboard_restore("files.rename".into());
+    test.draw();
+    assert!(ui::has_popup(&test.window));
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
+    ui::key(&test.window, Key::Escape);
+    assert!(!ui::has_popup(&test.window));
+}
+
+#[test]
+fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_it() {
+    let mut test = shortcut_menu(&[]);
+    assert_eq!(
+        menu_shortcut(&test, "Deselect files and folders"),
+        ["Ctrl+Shift+D"]
+    );
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
+    // A newly introduced default yields to an explicit user assignment. Existing
+    // defaults such as Edit/F4 still require their conflicting binding to be removed.
+    test.window
+        .invoke_keyboard_apply("files.rename".into(), "Ctrl+Shift+D".into());
+    test.draw();
+    assert!(
+        test.window.get_keyboard_error().is_empty(),
+        "{}",
+        test.window.get_keyboard_error()
+    );
+    assert!(ui::has_popup(&test.window));
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Shift+D"]);
+    assert!(
+        menu_shortcut(&test, "Deselect files and folders").is_empty(),
+        "the suppressed default must not advertise a chord now assigned to Rename"
+    );
+    test.window.invoke_keyboard_restore_all();
+    test.draw();
+    assert!(ui::has_popup(&test.window));
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
+    assert_eq!(
+        menu_shortcut(&test, "Deselect files and folders"),
+        ["Ctrl+Shift+D"]
     );
     ui::key(&test.window, Key::Escape);
+}
+
+#[test]
+fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
+    use i_slint_core::{
+        item_tree::ItemRc,
+        window::{WindowInner, WindowKind},
+    };
+    use slint::{ComponentHandle, platform::WindowEvent};
+    let mut test = shortcut_menu(&[("files.rename", &["Ctrl+Alt+R", "F2"])]);
+    assert_eq!(
+        menu_shortcut(&test, "Rename…"),
+        ["F2"],
+        "the menu column uses the preferred function key, not all aliases"
+    );
+    let rename = ui::popup_item(&test.window, "Rename…", AccessibleRole::Button);
+    let rect = rename.geometry();
+    let origin = rename.map_to_native_window(rect.origin);
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(
+                origin.x + rect.width() / 2.0,
+                origin.y + rect.height() / 2.0,
+            ),
+        });
+    std::thread::sleep(std::time::Duration::from_millis(650));
+    test.draw();
+    let text = {
+        let inner = WindowInner::from_pub(test.window.window());
+        let popups = inner.active_popups();
+        let tooltip = popups
+            .iter()
+            .find(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+            .expect("hovering the menu row must show its actual tooltip");
+        ui::visible_text_values(ItemRc::new_root(tooltip.component.clone()))
+    };
+    assert!(
+        text.iter().any(|text| text == "Rename… (Ctrl+Alt+R / F2)"),
+        "the rendered hint must include both effective aliases: {text:?}"
+    );
+    render::snapshot(&test, "main-menu-alias-tooltip");
+    drop(rename);
+    ui::key(&test.window, Key::Escape);
+    assert!(!ui::has_popup(&test.window));
 }
 
 #[test]

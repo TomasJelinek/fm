@@ -554,3 +554,36 @@ fn viewport_and_diagnostics_are_bounded_and_keep_unicode() {
     assert!(error.as_str().ends_with('東') || error.as_str().ends_with('京'));
     assert!(TreeDiagnostic::new("slow provider").as_str() == "slow provider");
 }
+
+#[test]
+fn file_only_bulk_policy_never_selects_expanded_descendants_and_clear_preserves_folders() {
+    for depth in [0, 1, 2] {
+        for kind in [
+            EntryKind::Directory,
+            EntryKind::DirectoryLink,
+            EntryKind::File,
+            EntryKind::Symlink,
+            EntryKind::Other,
+        ] {
+            let mut item = row(7, "marked", kind);
+            item.depth = depth;
+            let directory = matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink);
+            for selected in [false, true] {
+                assert_eq!(
+                    item.bulk_selected(SelectionOperation::FilesOnly, selected),
+                    depth == 0 && !directory,
+                    "{kind:?} at depth {depth}"
+                );
+                assert_eq!(
+                    item.bulk_selected(SelectionOperation::ClearFilesOnly, selected),
+                    directory && selected,
+                    "{kind:?} at depth {depth}"
+                );
+                assert!(!item.bulk_selected(SelectionOperation::Clear, selected));
+            }
+            item.context_only = true;
+            assert!(!item.bulk_selected(SelectionOperation::FilesOnly, false));
+            assert!(!item.bulk_selected(SelectionOperation::ClearFilesOnly, true));
+        }
+    }
+}
