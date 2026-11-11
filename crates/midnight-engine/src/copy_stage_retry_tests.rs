@@ -12,6 +12,7 @@ struct Control {
     fail_probe: AtomicBool,
     refuse_cleanup: AtomicBool,
     writes: AtomicUsize,
+    cancel_discovery: AtomicBool,
 }
 struct Service {
     native: moves::CrossDeviceService,
@@ -23,7 +24,12 @@ impl TransferService for Service {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        self.native.prepare_transfer_source(path, cancel)
+        let source = self.native.prepare_transfer_source(path, cancel)?;
+        if self.control.cancel_discovery.load(Ordering::SeqCst) {
+            Ok(Box::new(CancelDiscoverySource(source)))
+        } else {
+            Ok(source)
+        }
     }
     fn prepare_move_source(
         &self,
@@ -48,6 +54,45 @@ impl TransferService for Service {
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
         self.prepare_transfer_destination(path, cancel)
+    }
+}
+struct CancelDiscoverySource(Box<dyn TransferSource>);
+impl TransferSource for CancelDiscoverySource {
+    fn entry(&self) -> &TransferEntry {
+        self.0.entry()
+    }
+    fn native_identity(&self) -> Option<TransferIdentity> {
+        self.0.native_identity()
+    }
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.revalidate(cancel)
+    }
+    fn prepare_modified_time(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferModifiedTimePin>, FsError> {
+        self.0.prepare_modified_time(cancel)
+    }
+    fn read_chunk(&mut self, bytes: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
+        self.0.read_chunk(bytes, cancel)
+    }
+    fn next_child(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        self.0.next_child(cancel)
+    }
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        _: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        cancel.cancel();
+        Err(FsError::from_io(
+            "fixture discovery",
+            &self.entry().item.path,
+            io::ErrorKind::Interrupted.into(),
+        ))
     }
 }
 struct Directory {
@@ -598,4 +643,49 @@ fn stage_probe_skip_keeps_cleanup_receipt_after_full_error_history() {
         b"original retained source"
     );
     assert_eq!(fixture.control.writes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cancelled_discovery_retains_prepared_stage_cleanup_receipt() {
+    let mut fixture = Fixture::new();
+    drop(fixture.job.take());
+    fixture.control.fail_probe.store(false, Ordering::SeqCst);
+    fixture
+        .control
+        .cancel_discovery
+        .store(true, Ordering::SeqCst);
+    let mut harness = Harness::new(Some(Arc::new(Service {
+        native: moves::CrossDeviceService(midnight_platform::LocalFileSystem::new(None)),
+        control: fixture.control.clone(),
+    })));
+    harness
+        .controller
+        .enqueue_metadata(MetadataTransferRequest {
+            input: MetadataTransferInput::Paths(request(
+                1,
+                std::slice::from_ref(&fixture.source),
+                &fixture.destination,
+            )),
+            intent: TransferIntent::Copy,
+            metadata: TransferMetadataPolicy::RequireModifiedTime,
+        })
+        .await;
+    let done = harness.terminal(1).await;
+    harness.close().await;
+    assert_eq!(done.state, CopyOperationState::Cancelled);
+    assert_eq!(fixture.control.created.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.control.writes.load(Ordering::SeqCst), 0);
+    assert!(
+        done.errors
+            .iter()
+            .any(|error| error.path == fixture.first_stage()
+                && error.message.contains("owned stage retained")),
+        "{done:?}"
+    );
+    assert!(fixture.first_stage().exists());
+    assert_eq!(
+        fs::read(&fixture.source).unwrap(),
+        b"original retained source"
+    );
+    assert!(!fixture.destination.join("source").exists());
 }

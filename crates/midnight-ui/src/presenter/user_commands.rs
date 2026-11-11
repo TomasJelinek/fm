@@ -1,4 +1,4 @@
-//! Captured command activations and bounded launch receipts. No parsing or process I/O.
+//! Captured command activations and session launch receipts. No parsing or process I/O.
 use super::*;
 
 #[derive(Default)]
@@ -270,7 +270,6 @@ impl Presenter {
                 }
             }
             self.command_launches.jobs.push(job);
-            self.trim_command_history();
             true
         } else {
             self.report_user_command_error(
@@ -411,38 +410,11 @@ impl Presenter {
                 job.summary = Some(summary);
             }
         }
-        if job.finished
-            && (job.error.is_some()
-                || job
-                    .summary
-                    .as_ref()
-                    .is_some_and(|summary| summary.cancelled))
-        {
-            self.copies.automatic_jobs.retain_attention();
-        }
         if let Some((title, message)) = failure {
             let origin = job.settings_preview.clone();
             self.report_user_command_error(origin.as_ref(), title, message);
         }
-        self.trim_command_history();
         None
-    }
-
-    fn trim_command_history(&mut self) {
-        while self
-            .command_launches
-            .jobs
-            .iter()
-            .filter(|j| j.finished)
-            .count()
-            > 16
-        {
-            let Some(index) = self.command_launches.jobs.iter().position(|j| j.finished) else {
-                break;
-            };
-            self.retired
-                .push(Box::new(self.command_launches.jobs.remove(index)));
-        }
     }
 }
 

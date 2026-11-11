@@ -11,6 +11,19 @@ struct Pending {
 pub(super) struct State {
     pending: Option<Pending>,
     ready: Option<ViewerLaunch>,
+    diagnostic: Option<PendingDiagnostic>,
+    notice_source: Option<NoticeSource>,
+}
+
+struct PendingDiagnostic {
+    context: String,
+    request: DesktopRequestId,
+    cancel: Cancellation,
+    generation: i32,
+}
+struct NoticeSource {
+    generation: i32,
+    content: Arc<dyn GeneratedTextSource>,
 }
 
 pub(super) struct PanelError {
@@ -87,15 +100,28 @@ impl Presenter {
         }
     }
 
-    pub(crate) fn inspect_panel_error(&mut self, pane: PaneId, text: &str) {
+    pub(crate) fn inspect_panel_error(
+        &mut self,
+        pane: PaneId,
+        text: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         let p = &self.panes[pane.index()];
+        let visible = if p.error.is_empty() {
+            &self.volumes_error
+        } else {
+            &p.error
+        };
+        if self.operations.closing || text.is_empty() || text != visible {
+            return;
+        }
         if let Some(details) = &p.error_details
             && details.generation == p.generation
             && details.text == text
             && p.error == text
         {
             let content = details.content.clone();
-            self.show_generated_diagnostic("Panel error details.txt".into(), content);
+            self.show_diagnostic_notice("Panel error", text.to_owned(), content, send);
         } else {
             self.retire_warning_viewer();
             self.desktop.report("Panel error", text.to_owned());
@@ -141,8 +167,9 @@ impl Presenter {
                     return;
                 };
                 if let Some(content) = error.details().cloned() {
-                    let title = format!("Folder error - {}.txt", entry.display_name);
-                    self.show_generated_diagnostic(title, content);
+                    let mut body = format!("{}\n\nFolder\n", error.as_str());
+                    crate::error_presentation::append_path(&mut body, &entry.path);
+                    self.show_diagnostic_notice("Folder listing error", body, content, send);
                 } else {
                     let mut body = error.as_str().to_owned();
                     body.push_str("\n\nFolder\n");
@@ -165,8 +192,12 @@ impl Presenter {
                 return;
             };
             if let Some(content) = row.error_details.clone() {
-                let title = format!("Folder error - {}.txt", row.entry.display_name);
-                self.show_generated_diagnostic(title, content);
+                let mut body = format!(
+                    "{}\n\nPath\n",
+                    row.error.as_deref().unwrap_or("Folder listing failed")
+                );
+                crate::error_presentation::append_path(&mut body, &row.entry.path);
+                self.show_diagnostic_notice("Folder listing error", body, content, send);
                 return;
             }
             if let Some(error) = &row.error {
@@ -268,10 +299,161 @@ impl Presenter {
     }
 
     pub(super) fn retire_warning_viewer(&mut self) {
+        if let Some(pending) = self.panel_warnings.diagnostic.take() {
+            pending.cancel.cancel();
+        }
+        self.retired
+            .push(Box::new(self.panel_warnings.notice_source.take()));
         if let Some(pending) = self.panel_warnings.pending.take() {
             pending.cancel.cancel();
         }
         self.retired
             .push(Box::new(self.panel_warnings.ready.take()));
+    }
+}
+
+impl Presenter {
+    fn show_diagnostic_notice(
+        &mut self,
+        title: &str,
+        body: String,
+        content: Arc<dyn GeneratedTextSource>,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.retire_warning_viewer();
+        self.desktop
+            .report(title, format!("{body}\n\nLoading full details…"));
+        let generation = self.desktop.notice_generation;
+        let request = self.desktop.request();
+        let cancel = Cancellation::default();
+        if send(Command::ReadDiagnosticText {
+            request,
+            content: content.clone(),
+            cancel: cancel.clone(),
+        }) {
+            self.panel_warnings.diagnostic = Some(PendingDiagnostic {
+                context: body,
+                request,
+                cancel,
+                generation,
+            });
+            self.panel_warnings.notice_source = Some(NoticeSource {
+                generation,
+                content,
+            });
+        } else {
+            self.retired.push(Box::new(content));
+            self.desktop.report(
+                title,
+                format!("{body}\n\nThe details queue is busy. Try again."),
+            );
+        }
+    }
+
+    pub(super) fn apply_diagnostic_text(
+        &mut self,
+        request: DesktopRequestId,
+        result: Result<DiagnosticTextPreview, FsError>,
+    ) {
+        if self
+            .panel_warnings
+            .diagnostic
+            .as_ref()
+            .is_none_or(|pending| pending.request != request)
+        {
+            self.retired.push(Box::new(result));
+            return;
+        }
+        let pending = self
+            .panel_warnings
+            .diagnostic
+            .take()
+            .expect("matched diagnostic request");
+        if self.operations.closing
+            || pending.cancel.is_cancelled()
+            || pending.generation != self.desktop.notice_generation
+            || self.desktop.notice.is_none()
+        {
+            self.dismiss_diagnostic_notice(pending.generation);
+            self.retired.push(Box::new(result));
+            return;
+        }
+        let body = match result {
+            Ok(preview)
+                if preview.text.len() <= DIAGNOSTIC_PREVIEW_BYTES
+                    && preview.total_bytes >= preview.text.len() as u64 =>
+            {
+                if preview.truncated {
+                    let copy = if preview.total_bytes <= 4 * 1024 * 1024 {
+                        "Copy details copies the complete report."
+                    } else {
+                        "The complete report exceeds the 4 MiB clipboard limit."
+                    };
+                    format!(
+                        "{}\n\nShowing {} of {} bytes. {copy}",
+                        preview.text,
+                        preview.text.len(),
+                        preview.total_bytes
+                    )
+                } else {
+                    preview.text
+                }
+            }
+            Ok(_) => "The diagnostic returned an invalid bounded preview.".into(),
+            Err(error) => format!(
+                "Could not load full details.\n\n{}",
+                crate::error_presentation::describe(&error)
+            ),
+        };
+        // Refresh the existing modal; do not create a new notice generation or viewer.
+        self.desktop.notice.as_mut().expect("current notice").1 =
+            format!("{}\n\n{body}", pending.context);
+    }
+
+    pub(crate) fn copy_notice_details(&mut self, send: &dyn Fn(Command) -> bool) {
+        let content = self
+            .panel_warnings
+            .notice_source
+            .as_ref()
+            .filter(|source| {
+                source.generation == self.desktop.notice_generation && self.desktop.notice.is_some()
+            })
+            .map(|source| source.content.clone());
+        if let Some(content) = content {
+            let request = self.desktop.request();
+            if send(Command::CopyGeneratedText {
+                request,
+                content,
+                cancel: Cancellation::default(),
+            }) {
+                self.desktop.requests.insert(request);
+            } else {
+                self.desktop
+                    .report("Clipboard queue busy", "Try copying again.".into());
+            }
+        } else if let Some((title, body)) = &self.desktop.notice {
+            self.copy_viewer_text(format!("{title}\n\n{body}"), send);
+        }
+    }
+
+    pub(crate) fn dismiss_diagnostic_notice(&mut self, generation: i32) {
+        if self
+            .panel_warnings
+            .diagnostic
+            .as_ref()
+            .is_some_and(|pending| pending.generation == generation)
+            && let Some(pending) = self.panel_warnings.diagnostic.take()
+        {
+            pending.cancel.cancel();
+        }
+        if self
+            .panel_warnings
+            .notice_source
+            .as_ref()
+            .is_some_and(|source| source.generation == generation)
+        {
+            self.retired
+                .push(Box::new(self.panel_warnings.notice_source.take()));
+        }
     }
 }

@@ -1,3 +1,5 @@
+#[path = "support/render.rs"]
+mod render;
 #[path = "support/ui.rs"]
 mod ui;
 use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
@@ -24,6 +26,7 @@ fn editor_rows_save_literals_once_retain_draft_across_pages_and_consume_f4() {
     p.borrow_mut()
         .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             editor: EditorPreferences {
+                rules: Vec::new(),
                 executable: Some(std::env::current_exe().unwrap()),
                 arguments: vec!["{file}".into(), "--original".into()],
             },
@@ -54,6 +57,10 @@ fn editor_rows_save_literals_once_retain_draft_across_pages_and_consume_f4() {
     h.draw();
     ui::click_popup(&h.window, "Add argument", AccessibleRole::Button);
     h.draw();
+    ui::popup_item(&h.window, "Editor new argument", AccessibleRole::TextInput).accessible_action(
+        &AccessibilityAction::SetValue("new literal argument".into()),
+    );
+    h.draw();
     // A different topic must not prevent OK from validating the retained editor draft.
     h.window.set_options_topic_index(0);
     h.draw();
@@ -70,7 +77,7 @@ fn editor_rows_save_literals_once_retain_draft_across_pages_and_consume_f4() {
     assert_eq!(values.len(), 1);
     assert_eq!(
         values[0].editor.arguments,
-        ["{file}", " --literal=\"文档\" & ", ""]
+        ["{file}", " --literal=\"文档\" & ", "new literal argument"]
     );
     assert!(!h.window.global::<EditorOptionsView>().get_dirty());
     assert!(
@@ -104,4 +111,101 @@ fn editor_rows_save_literals_once_retain_draft_across_pages_and_consume_f4() {
         edits.borrow().is_empty(),
         "F4 while typing must not launch an editor"
     );
+}
+
+#[test]
+fn ordered_rule_form_retains_fallback_and_cancel_restores_all_associations() {
+    let mut h = ui::TestUi::new();
+    let root = std::env::current_dir().unwrap();
+    let p = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let sent = commands.clone();
+    install(
+        &h.window,
+        p.clone(),
+        Rc::new(move |command| {
+            sent.borrow_mut().push(command);
+            true
+        }),
+    );
+    let fallback = std::env::current_exe().unwrap();
+    p.borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+            editor: EditorPreferences {
+                executable: Some(fallback.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }))));
+    refresh(&h.window, &p.borrow());
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(4);
+    h.draw();
+    let window = h.window.clone_strong();
+    let view = window.global::<EditorOptionsView>();
+    view.invoke_action(0);
+    let mut form = view.get_draft();
+    form.expression = "*.txt;*.md".into();
+    form.use_default = false;
+    form.executable = fallback.to_string_lossy().as_ref().into();
+    form.working_directory = root.to_string_lossy().as_ref().into();
+    view.invoke_edit(form);
+    view.invoke_argument(1, 0, "literal two words".into());
+    view.invoke_action(0);
+    let mut form = view.get_draft();
+    form.mode = 1;
+    form.expression = r"\.rs$".into();
+    form.enabled = false;
+    view.invoke_edit(form);
+    view.invoke_action(2);
+    assert_eq!(view.get_selected(), 0);
+    h.window.set_options_topic_index(0);
+    h.draw();
+    h.window.set_options_topic_index(4);
+    h.draw();
+    assert_eq!(view.get_rule_count(), 2);
+    ui::click_popup(&h.window, "OK", AccessibleRole::Button);
+    h.draw();
+    let (saved, revision) = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::SavePreferences {
+                preferences,
+                revision,
+            } => Some((preferences.clone(), *revision)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(saved.editor.executable, Some(fallback));
+    assert_eq!(saved.editor.rules[0].expression, r"\.rs$");
+    assert!(!saved.editor.rules[0].enabled);
+    assert_eq!(
+        saved.editor.rules[1].arguments,
+        ["{file}", "literal two words"]
+    );
+    assert_eq!(saved.editor.rules[1].working_directory, Some(root));
+    p.borrow_mut().apply(Event::PreferencesSaved {
+        revision,
+        result: Ok(()),
+    });
+    refresh(&h.window, &p.borrow());
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(4);
+    h.draw();
+    view.invoke_action(0);
+    assert_eq!(view.get_rule_count(), 3);
+    ui::click_popup(&h.window, "Cancel", AccessibleRole::Button);
+    h.draw();
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(4);
+    h.draw();
+    assert_eq!(view.get_rule_count(), 2);
+    view.invoke_select(1);
+    h.draw();
+    render::snapshot(&h, "editor-rules-priority-and-program");
+    assert!(commands.borrow().iter().all(|command| !matches!(
+        command,
+        Command::EditFile { .. } | Command::ExecuteUserCommand(_)
+    )));
 }

@@ -189,7 +189,7 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
         (&["music.mp3", "sound.flac", "track.ogg"][..], "#14b8a6"),
         (
             &["backup.zip", "archive.7z", "source.tar.gz"][..],
-            "#d97706",
+            "#eab308",
         ),
         (&["slides.pptx", "talk.odp"][..], "#ef4444"),
         (

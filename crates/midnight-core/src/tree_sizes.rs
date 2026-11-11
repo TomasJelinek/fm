@@ -42,6 +42,7 @@ pub enum TreeSizeCommand {
 pub struct TreeSizeSnapshot {
     pub stamp: TreeViewStamp,
     pub version: u64,
+    pub column_samples: crate::SizeColumnSamples,
     values: HashMap<TreeRowId, FolderSize>,
     running: HashSet<TreeRowId>,
 }
@@ -56,7 +57,12 @@ impl TreeSizeSnapshot {
         if values.len() > TreeProjection::MAX_ROWS || running.len() > TreeProjection::MAX_ROWS {
             return Err("Tree size snapshot exceeds its row budget.");
         }
+        let mut column_samples = crate::SizeColumnSamples::default();
+        for value in values.values() {
+            column_samples.observe(value.bytes);
+        }
         Ok(Self {
+            column_samples,
             stamp,
             version,
             values,

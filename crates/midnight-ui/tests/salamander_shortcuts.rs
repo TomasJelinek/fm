@@ -137,6 +137,19 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     window.on_insert_name(move || captured.set(captured.get() + 1));
     chord(&window, &[Key::Control], Key::Return);
     assert_eq!(names.get(), 1);
+    let full_paths = Rc::new(Cell::new(0));
+    let captured = full_paths.clone();
+    window.on_insert_full_path(move || captured.set(captured.get() + 1));
+    chord(&window, &[Key::Control, Key::Shift], "P");
+    assert_eq!(
+        full_paths.get(),
+        1,
+        "Ctrl+Shift+P inserts the focused full path"
+    );
+    assert!(
+        paths.borrow().is_empty(),
+        "Full path must not insert the directory twice"
+    );
     chord(&window, &[Key::Control], "p");
     assert_eq!(*paths.borrow(), vec![1]);
     window.set_active_pane(0);
@@ -188,6 +201,12 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     );
     chord(&window, &[Key::Control], "p");
     assert_eq!(*paths.borrow(), vec![1, 0, 1]);
+    chord(&window, &[Key::Control, Key::Shift], "P");
+    assert_eq!(
+        full_paths.get(),
+        2,
+        "Full path also works from the command edit"
+    );
     chord(&window, &[Key::Control], Key::Return);
     assert_eq!(
         names.get(),

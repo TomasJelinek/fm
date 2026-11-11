@@ -303,6 +303,11 @@ fn partial_size_error_stays_beside_the_number_in_a_wide_panel() {
 fn directory_names_use_empty_size_space_without_moving_metadata_or_file_names() {
     let mut test = ui::TestUi::new();
     test.window.set_sizes_in_bytes(true);
+    // This fixture exercises borrowing an actually wide measured size column.
+    test.window
+        .set_left_size_column_sample("999 999 999 999".into());
+    test.window
+        .set_left_date_column_sample("provider-date".into());
     test.window.set_left_rows(ModelRc::new(VecModel::from(vec![
         FileRow {
             identity: "provider".into(),
@@ -384,4 +389,48 @@ fn directory_names_use_empty_size_space_without_moving_metadata_or_file_names() 
         assert!((text_bounds(&test, "Size").1 - text_bounds(&test, "17499").1).abs() < 1.0);
     }
     render::snapshot(&test, "panel-directory-name-space");
+}
+
+#[test]
+fn measured_metadata_columns_leave_spare_space_to_names_and_keep_ext_near_name() {
+    let mut test = ui::TestUi::new();
+    localized_rows(&mut test);
+    test.resize(2000, 900);
+    for font in [11, 18, 24] {
+        test.window.invoke_apply_fonts("".into(), font, font);
+        test.draw();
+        let adapter: Rc<dyn WindowAdapter> = test.native.clone();
+        for caption in ["5. listopadu 2026", "12:34:56 PM"] {
+            let item = rendered_text(&test, caption);
+            let rect = item.geometry();
+            let natural = item
+                .borrow()
+                .as_ref()
+                .layout_info(Orientation::Horizontal, rect.height(), &adapter, &item)
+                .preferred;
+            assert!(
+                rect.width() >= natural,
+                "locale text must fit: {caption}, {font}"
+            );
+            assert!(
+                rect.width() <= natural + 10.0,
+                "metadata should use measured text, not oversized em widths: {caption}, {font}, {} vs {natural}",
+                rect.width()
+            );
+        }
+        let name = text_bounds(&test, "Name");
+        let extension = text_bounds(&test, "Ext");
+        assert!(
+            extension.0 >= name.0 && extension.0 - name.1 < 35.0,
+            "Ext must be immediately beside Name: {name:?}, {extension:?}"
+        );
+        let before = text_bounds(&test, "5. listopadu 2026");
+        test.window.set_left_sort(3);
+        test.draw();
+        assert_eq!(
+            text_bounds(&test, "5. listopadu 2026"),
+            before,
+            "changing sort indicators must not resize metadata"
+        );
+    }
 }

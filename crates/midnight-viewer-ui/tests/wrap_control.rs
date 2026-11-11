@@ -165,7 +165,13 @@ fn changing_text_page_width_keeps_viewport_and_active_vertical_drag_stable() {
     };
     let requested = Rc::new(RefCell::new(Vec::new()));
     let received = requested.clone();
-    window.on_seek(move |position| received.borrow_mut().push(position));
+    window.on_drag_seek(move |horizontal, position| {
+        assert!(
+            !horizontal,
+            "the captured vertical thumb must keep its axis"
+        );
+        received.borrow_mut().push(position);
+    });
     window
         .window()
         .dispatch_event(WindowEvent::PointerMoved { position: at(0.2) });

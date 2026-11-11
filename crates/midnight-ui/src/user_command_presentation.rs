@@ -274,6 +274,8 @@ pub(crate) fn job_rows(p: &Presenter) -> Vec<OperationRow> {
                 icon: p.desktop.image(&IconKey::action(ActionIcon::Run)),
                 kind: 6,
                 speed_chart: Default::default(),
+                completed: job.finished && job.error.is_none(),
+                ..Default::default()
             }
         })
         .collect()

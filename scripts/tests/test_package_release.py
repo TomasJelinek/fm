@@ -211,5 +211,24 @@ class IndependentPluginNoticeTests(unittest.TestCase):
                     self.assertTrue(any(path.is_file() and path.stat().st_size > 0 for path in directory.iterdir()))
 
 
+class AuthorizationHelperPackageTests(unittest.TestCase):
+    def test_exact_sibling_helper_is_required_copied_and_hashed(self):
+        root = Path(__file__).resolve().parents[2] / "_build" / "tmp"
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as temporary:
+            source = Path(temporary) / "source"
+            stage = Path(temporary) / "stage"
+            source.mkdir()
+            stage.mkdir()
+            with self.assertRaises(FileNotFoundError):
+                packaging.copy_authorization_helper(stage, source / "me.exe", "x86_64-pc-windows-msvc")
+            helper = source / "midnight-elevated-listing.exe"
+            helper.write_bytes(b"owned test helper")
+            record = packaging.copy_authorization_helper(stage, source / "me.exe", "x86_64-pc-windows-msvc")
+            self.assertEqual((stage / helper.name).read_bytes(), helper.read_bytes())
+            self.assertEqual(record["sha256"], hashlib.sha256(helper.read_bytes()).hexdigest())
+            self.assertTrue(record["executable"])
+
+
 if __name__ == "__main__":
     unittest.main()

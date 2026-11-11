@@ -14,6 +14,7 @@ use std::{
 mod archive_associations;
 mod archive_extensions;
 mod checksums;
+mod editor_rules;
 mod file_list;
 mod user_commands;
 mod viewer_associations;
@@ -38,7 +39,7 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 29;
+const CURRENT_PREFERENCES_VERSION: u32 = 30;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,6 +155,12 @@ struct StoredPreferences {
     shortcuts: Option<Vec<StoredShortcut>>,
     #[serde(default, deserialize_with = "present")]
     panel_filters: Option<[StoredPanelFilter; 2]>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    panel_filter_history: Option<Vec<StoredPanelFilter>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -166,6 +173,12 @@ struct StoredPreviews {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredEditor {
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    rules: Option<Vec<editor_rules::StoredEditorRule>>,
     executable: Option<NativePath>,
     arguments: Vec<String>,
 }
@@ -177,6 +190,22 @@ struct StoredPanelFilter {
     mode: String,
     expression: String,
     case_sensitive: bool,
+}
+
+impl From<midnight_core::PanelFilter> for StoredPanelFilter {
+    fn from(filter: midnight_core::PanelFilter) -> Self {
+        Self {
+            enabled: filter.enabled,
+            mode: match filter.mode {
+                midnight_core::FilterMode::Masks => "masks",
+                midnight_core::FilterMode::Regex => "regex",
+                midnight_core::FilterMode::Expression => "expression",
+            }
+            .into(),
+            expression: filter.expression,
+            case_sensitive: filter.case_sensitive,
+        }
+    }
 }
 
 impl StoredPanelFilter {
@@ -582,6 +611,7 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         (9..=CURRENT_PREFERENCES_VERSION, Some(editor)) => midnight_core::EditorPreferences {
             executable: editor.executable.map(NativePath::into_path).transpose()?,
             arguments: editor.arguments,
+            rules: editor_rules::decode(stored.version, editor.rules)?,
         },
         (9..=CURRENT_PREFERENCES_VERSION, None) => {
             return Err(invalid("missing editor preferences"));
@@ -686,17 +716,33 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
         thumbnail_size,
         shortcuts,
         panel_filters,
+        panel_filter_history: match (stored.version, stored.panel_filter_history) {
+            (1..=29, None) => Vec::new(),
+            (30.., Some(filters)) if filters.len() <= midnight_core::MAX_PANEL_FILTER_HISTORY => {
+                filters
+                    .into_iter()
+                    .map(|filter| filter.into_filter(stored.version))
+                    .collect::<io::Result<Vec<_>>>()?
+            }
+            _ => return Err(invalid("missing or unexpected panel filter history")),
+        },
     };
     preferences.deduplicate_bookmarks();
     preferences.validate().map_err(invalid)?;
+    crate::editor_rules::validate(&preferences.editor).map_err(invalid)?;
     Ok(preferences)
 }
 
 pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
     preferences.validate().map_err(invalid)?;
+    crate::editor_rules::validate(&preferences.editor).map_err(invalid)?;
     crate::filename_colors::CompiledFilenameColors::new(&preferences.filename_colors)
         .map_err(invalid)?;
-    for filter in &preferences.panel_filters {
+    for filter in preferences
+        .panel_filters
+        .iter()
+        .chain(&preferences.panel_filter_history)
+    {
         crate::filter::CompiledPanelFilter::new(filter).map_err(|error| invalid(error.message))?;
     }
     // An explicit empty list must survive restart; omitted legacy rules mean presets.
@@ -704,7 +750,10 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         .bookmarks
         .iter()
         .any(|bookmark| bookmark.network.is_some());
-    let verification_choices = network_bookmarks || !preferences.copy_checksum_verification;
+    let rule_choices =
+        !preferences.editor.rules.is_empty() || !preferences.panel_filter_history.is_empty();
+    let verification_choices =
+        rule_choices || network_bookmarks || !preferences.copy_checksum_verification;
     let association_choices = verification_choices
         || *preferences.viewer_associations != midnight_core::ViewerAssociations::default();
     let file_list_choices = association_choices
@@ -791,7 +840,9 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if network_bookmarks {
+        version: if rule_choices {
+            30
+        } else if network_bookmarks {
             29
         } else if verification_choices {
             28
@@ -844,22 +895,25 @@ pub fn encode_preferences(preferences: UserPreferences) -> io::Result<Vec<u8>> {
         }),
         disabled_viewer_plugins: Some(preferences.disabled_viewer_plugins),
         editor: Some(StoredEditor {
+            rules: rule_choices.then(|| {
+                preferences
+                    .editor
+                    .rules
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            }),
             executable: preferences.editor.executable.map(NativePath::from_path),
             arguments: preferences.editor.arguments,
         }),
-        panel_filters: Some(preferences.panel_filters.map(|filter| {
-            StoredPanelFilter {
-                enabled: filter.enabled,
-                mode: match filter.mode {
-                    midnight_core::FilterMode::Masks => "masks",
-                    midnight_core::FilterMode::Regex => "regex",
-                    midnight_core::FilterMode::Expression => "expression",
-                }
-                .into(),
-                expression: filter.expression,
-                case_sensitive: filter.case_sensitive,
-            }
-        })),
+        panel_filters: Some(preferences.panel_filters.map(StoredPanelFilter::from)),
+        panel_filter_history: rule_choices.then(|| {
+            preferences
+                .panel_filter_history
+                .into_iter()
+                .map(StoredPanelFilter::from)
+                .collect()
+        }),
         shortcuts: Some(
             preferences
                 .shortcuts

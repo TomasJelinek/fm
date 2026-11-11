@@ -82,6 +82,9 @@ mod tests {
     use std::collections::HashSet;
     fn mutation(id: u64, state: OperationState) -> OperationProgress {
         OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
             id: OperationId(id),
             kind: MutationKind::Delete(DeleteMode::Permanent),
             state,

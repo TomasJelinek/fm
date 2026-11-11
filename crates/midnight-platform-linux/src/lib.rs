@@ -19,6 +19,8 @@ mod file_drag_drop;
 mod user_commands;
 pub use clipboard::NativeClipboard;
 pub use file_drag_drop::NativeFileDragDrop;
+#[cfg(test)]
+mod discovery_tests;
 mod find;
 mod fonts;
 mod icons;

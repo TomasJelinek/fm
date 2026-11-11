@@ -5,6 +5,7 @@ mod capture;
 mod capture_archive;
 mod capture_generated;
 mod capture_tree;
+mod catalog_startup;
 mod content_resources;
 pub use content_resources::captured_directory_resources;
 #[cfg(test)]
@@ -65,7 +66,14 @@ pub struct Service {
     windows: Arc<AtomicUsize>,
     raster_budget: Arc<raster_budget::Budget>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
+    catalog_preparation: Arc<catalog_startup::Preparation>,
 }
+
+type Catalogs = (
+    Arc<Runtime>,
+    Arc<[midnight_image_viewer_host::Provider]>,
+    Arc<[midnight_web_viewer_host::Provider]>,
+);
 
 pub struct WindowSession {
     sender: SyncSender<worker::Message>,
@@ -157,7 +165,21 @@ impl Service {
             windows: Arc::new(AtomicUsize::new(0)),
             raster_budget: Arc::new(raster_budget::Budget::default()),
             fonts: Arc::new(OnceLock::new()),
+            catalog_preparation: Arc::default(),
         }
+    }
+
+    /// Schedule installation-only preparation before native window creation. This never captures
+    /// content or chooses a viewport. One service admits at most one speculative startup task;
+    /// ordinary opening uses the same cache locks and reports any discovery failure normally.
+    pub fn prepare_catalogs(&self) {
+        self.catalog_preparation.start(|| {
+            let service = self.clone();
+            self.handle.spawn_blocking(move || {
+                let _ =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.catalogs()));
+            });
+        });
     }
 
     pub fn open(
@@ -198,52 +220,7 @@ impl Service {
                 {
                     let _ = service.fonts.set(names);
                 }
-                let runtime = {
-                    let mut loaded = service.runtime.lock().unwrap_or_else(|e| e.into_inner());
-                    if loaded.is_none() {
-                        let executable = midnight_plugin_host::installed_executable()
-                            .map_err(|e| e.to_string())?;
-                        let directory = executable.parent().ok_or("Executable has no directory")?;
-                        *loaded = Some(Arc::new(
-                            Runtime::discover(directory).map_err(|e| e.to_string())?,
-                        ));
-                    }
-                    loaded.as_ref().unwrap().clone()
-                };
-                let images = {
-                    let mut loaded = service
-                        .images
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    if loaded.is_none() {
-                        let executable = midnight_plugin_host::installed_executable()
-                            .map_err(|error| error.to_string())?;
-                        // Invalid process packages expose no feature. Options reports discovery diagnostics.
-                        *loaded = Some(
-                            midnight_image_viewer_host::discover(&executable)
-                                .unwrap_or_default()
-                                .into(),
-                        );
-                    }
-                    loaded.as_ref().unwrap().clone()
-                };
-                let web = {
-                    let mut loaded = service
-                        .web
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    if loaded.is_none() {
-                        let executable = midnight_plugin_host::installed_executable()
-                            .map_err(|error| error.to_string())?;
-                        *loaded = Some(
-                            midnight_web_viewer_host::discover_with_diagnostics(&executable)
-                                .map(|discovery| discovery.providers)
-                                .unwrap_or_default()
-                                .into(),
-                        );
-                    }
-                    loaded.as_ref().unwrap().clone()
-                };
+                let (runtime, images, web) = service.catalogs()?;
                 worker::run(
                     worker::Services {
                         runtime,
@@ -276,6 +253,57 @@ impl Service {
             preferences,
             fonts: self.fonts.clone(),
         })
+    }
+
+    fn catalogs(&self) -> Result<Catalogs, String> {
+        // The existing cache locks also serialize cold initialization across windows.
+        // One service starts at most two temporary discovery workers, not two per window.
+        let mut runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut images = self
+            .images
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut web = self.web.lock().unwrap_or_else(|error| error.into_inner());
+        if let (Some(runtime), Some(images), Some(web)) = (&*runtime, &*images, &*web) {
+            return Ok((runtime.clone(), images.clone(), web.clone()));
+        }
+        let executable =
+            midnight_plugin_host::installed_executable().map_err(|error| error.to_string())?;
+        let directory = executable.parent().ok_or("Executable has no directory")?;
+        let cached_images = images.clone();
+        let cached_web = web.clone();
+        let catalogs = catalog_startup::parallel(
+            || match runtime.as_ref() {
+                Some(runtime) => Ok(runtime.clone()),
+                None => Runtime::discover(directory)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string()),
+            },
+            || {
+                Ok(cached_images.unwrap_or_else(|| {
+                    // Invalid process packages expose no feature. Options retains discovery diagnostics.
+                    midnight_image_viewer_host::discover(&executable)
+                        .unwrap_or_default()
+                        .into()
+                }))
+            },
+            || {
+                Ok(cached_web.unwrap_or_else(|| {
+                    midnight_web_viewer_host::discover_with_diagnostics(&executable)
+                        .map(|discovery| discovery.providers)
+                        .unwrap_or_default()
+                        .into()
+                }))
+            },
+        )?;
+        *runtime = Some(catalogs.0.clone());
+        *images = Some(catalogs.1.clone());
+        *web = Some(catalogs.2.clone());
+        // Routing still sees all three catalogs together, preserving cross-transport duplicate IDs.
+        Ok(catalogs)
     }
 
     /// Large presentation snapshots must also be freed off the event loop.

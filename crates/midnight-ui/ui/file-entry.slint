@@ -11,7 +11,7 @@ export component FileEntry inherits Rectangle {
     in property <FileRow> item;
     in property <int> source-index;
     in property <int> view-mode;
-    in property <int> thumbnail-size: 72;
+    in property <int> thumbnail-size: 96;
     in property <bool> active;
     in property <bool> touch-contact;
     in property <bool> drop-highlight;
@@ -50,9 +50,8 @@ export component FileEntry inherits Rectangle {
     private property <length> tree-slot: Theme.touch ? 26px : 20px;
     private property <length> name-width: max(0px, root.width - 24px
         - (root.view-mode == 0 ? root.size-column-width + root.date-column-width + root.time-column-width + 24px : 0px));
-    // Exact-byte columns reserve fifteen em even when a directory only shows
-    // <DIR>. Lend the unused leading space to its name, keeping the size value,
-    // warning and all metadata at their established column positions.
+    // Lend unused leading size space to a directory name while preserving
+    // the measured size value, warning and shared metadata column positions.
     private property <length> directory-name-space: root.view-mode == 0 && item.directory
         ? max(0px, root.size-column-width - size-measure.preferred-width
             - (item.size-state == 3 ? max(12px, min(20px, Theme.small-font)) + 4px : 0px))

@@ -21,6 +21,21 @@ debug application passed backend, software-UI and native-UI startup
 checks with its protected plugin runtime. Linux compilation passed; Linux native
 frame pacing has not been qualified in this update.
 
+The settings follow-up adds ordered wildcard/regex editor associations, a recent
+panel-filter history, measured metadata column widths and Ctrl+Shift+P for the
+focused native full path. Options has a pinned plugin rescan action, alphabetic
+themes and a 96 px thumbnail default; existing explicit preferences are preserved.
+Forms share their themed title/icon/divider, including compact Rename. See the
+[settings qualification](verification/2026-11-11-settings-ui-follow-up.md).
+
+The Markdown follow-up fixes large-table scroll anchors and adds BAT/CMD syntax
+highlighting. Rich tables that exceed the bounded document transport use wrapped
+plain presentation instead of partial table geometry. Catalog discovery now runs
+in parallel and starts before native viewer construction. This improves measured
+loading paths without removing plugin trust checks. Current timings and remaining
+high-DPI/GPU costs are recorded in the [scrolling](verification/2026-11-11-viewer-scrolling.md)
+and [image loading](verification/2026-11-11-image-loading.md) reports.
+
 The current transfer update is available in the qualified Windows debug build:
 whole-operation speed charts, native same-volume Move without
 content copying, and Options → General full SHA-256 verification (default on).
@@ -111,7 +126,11 @@ folders clear only when their complete subtree succeeds. See
 
 Copy/Move also has versioned Retry/Skip/Cancel I/O error decisions with safe
 retained-object checkpoints. Automatic progress closes on success; manually
-opened Jobs and its recent history remain. Unsupported checkpoints cannot be
+opened Jobs and session history remain. The 11 November follow-up separates the
+Jobs ledger from per-operation Copy/Move/Delete progress, shares the progress/speed
+chart UI, and makes X/Escape cancel the exact operation. Pause/discovery and native
+window regressions are undergoing integrated qualification; see the
+[progress contract](developer/OPERATION_PROGRESS.md). Unsupported checkpoints cannot be
 retried optimistically. See [error recovery verification](verification/2026-11-08-transfer-errors.md).
 The 11 November retry correction retains one owned pre-copy stage across Move
 retries, keeps failed-cleanup paths in bounded history, and refuses a fresh

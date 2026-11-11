@@ -99,6 +99,7 @@ impl Presenter {
                     .get(&scope.path)
                     .is_some_and(|previous| previous.finished && !size.finished);
                 if !keep_final {
+                    p.folder_column_samples.observe(size.bytes);
                     self.retired
                         .push(Box::new(p.folder_sizes.insert(scope.path.clone(), size)));
                 } else {

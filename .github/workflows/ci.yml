@@ -517,7 +517,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optimized release build
-        run: cargo build -p midnight-explorer --release --locked
+        run: cargo build -p midnight-explorer -p midnight-elevation --release --locked
       - name: Install independently built viewer and filesystem packages beside executable
         shell: pwsh
         run: |
@@ -533,6 +533,8 @@ jobs:
           $name = if ($IsWindows) { 'me.exe' } else { 'me' }
           $executable = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
           Copy-Item -LiteralPath "_build/release/$name" -Destination $executable
+          $helper = if ($IsWindows) { 'midnight-elevated-listing.exe' } else { 'midnight-elevated-listing' }
+          Copy-Item -LiteralPath "_build/release/$helper" -Destination (Join-Path $env:HOST_TEST_INSTALL_ROOT $helper)
           if ($IsWindows) {
             $process = Start-Process -FilePath $executable -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw 'Installed native filesystem smoke failed' }

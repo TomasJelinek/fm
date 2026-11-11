@@ -78,7 +78,7 @@ fn modified_dates_outside_the_portable_calendar_render_unknown_but_keep_raw_time
 }
 
 #[test]
-fn directory_links_have_folder_appearance_without_queued_or_target_sizes() {
+fn directory_links_have_folder_appearance_and_queued_target_size() {
     let root = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
     let mut entry = Entry::new(
@@ -97,10 +97,10 @@ fn directory_links_have_folder_appearance_without_queued_or_target_sizes() {
     let row = Rows::new(presenter, PaneId::Left).row_data(0).unwrap();
     assert!(row.directory);
     assert_eq!(row.kind.as_str(), "Folder link");
-    assert_eq!(row.size.as_str(), "<DIR>");
+    assert_eq!(row.size.as_str(), "…");
     assert_eq!(row.modified_date.as_str(), "27. 6. 2024");
     assert_eq!(row.modified_time.as_str(), "15:26:30");
-    assert_eq!(row.size_state, 0);
+    assert_eq!(row.size_state, 1);
     assert!(
         row.compressed,
         "compression may coexist with a native link-overlay icon"

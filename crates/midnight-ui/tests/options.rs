@@ -76,7 +76,10 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     );
     ui.options_topic(1);
     click_popup(&ui.window, "Theme", AccessibleRole::Combobox);
-    key(&ui.window, Key::DownArrow);
+    // Alphabetic display order, independent of the persisted Dark theme ID.
+    for _ in 0..4 {
+        key(&ui.window, Key::DownArrow);
+    }
     key(&ui.window, Key::Return);
     ui.draw();
     assert_eq!(

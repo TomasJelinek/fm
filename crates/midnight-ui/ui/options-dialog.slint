@@ -75,7 +75,8 @@ export component OptionsBody inherits Rectangle {
     in property <bool> command-history-empty;
     in property <bool> thumbnails-enabled;
     in property <bool> thumbnails-network;
-    in property <int> thumbnail-size: 72;
+    in property <int> thumbnail-size: 96;
+    in property <string> thumbnail-cache-location;
     callback preferences-changed(int, int, int);
     callback font-options-changed(int, int, int, int);
     callback search-filter-changed(bool);
@@ -148,7 +149,6 @@ export component OptionsBody inherits Rectangle {
             native-icon: root.action-icons.options; fallback-icon: FallbackIcons.options;
             close => { root.close-options(); }
             dragged(dx, dy) => { root.move-dialog(dx, dy); } }
-        Rectangle { height: 1px; background: Theme.frame; }
         if root.narrow : HintedComboBox {
             accessible-label: "Options topic";
             model: OptionsTopics.titles;
@@ -174,7 +174,7 @@ export component OptionsBody inherits Rectangle {
               // Fluent scrollbars overlay the reported visible width. Keep
               // rightmost actions out of their pointer/input region.
               padding-right: FluentScrollMetrics.overlay-size;
-              padding-bottom: root.topic-index == 9 || root.topic-index == 4 || root.topic-index == 5 || root.topic-index == 7 || root.topic-index == 8 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
+              padding-bottom: root.topic-index == 9 || root.topic-index == 4 || root.topic-index == 7 || root.topic-index == 8 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
               if root.topic-index == 5 : PluginOptions { available-height: content.visible-height; }
               if root.topic-index == 8 : ColorOptions {
                 // Responsive columns must not depend on their own layout's minimum width.
@@ -201,6 +201,7 @@ export component OptionsBody inherits Rectangle {
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
                 thumbnail-size: root.thumbnail-size;
+                thumbnail-cache-location: root.thumbnail-cache-location;
                 size-changed(size) => { root.thumbnail-size-changed(size); }
                 changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
                 clear-cache => { root.thumbnail-clear-cache(); }
@@ -247,7 +248,7 @@ export component OptionsBody inherits Rectangle {
                     HintedActionButton {
                         text: root.narrow ? "Clear history" : "Clear command history";
                         accessible-label: "Clear command history"; enabled: !root.command-history-empty;
-                        native-icon: root.action-icons.delete; fallback-icon: FallbackIcons.delete;
+                        fallback-icon: FallbackIcons.close; removal-icon: true;
                         min-height: Theme.control-height;
                         hint: "Remove remembered commands when Options is saved. Cancel restores history. The current command draft is unchanged.";
                         clicked => { root.command-history-clear(); }
@@ -258,9 +259,9 @@ export component OptionsBody inherits Rectangle {
                 spacing: 10px; alignment: start;
                 theme := OptionPicker {
                     narrow: root.narrow;
-                    label: "Theme"; model: ThemePalettes.names; current-index: root.theme-index;
+                    label: "Theme"; model: ThemePalettes.names; current-index: ThemePalettes.positions[root.theme-index];
                     hint: "Preview a color theme. OK saves it; Cancel restores the previous theme.";
-                    selected(index) => { root.preferences-changed(index, root.density-index, 0); }
+                    selected(index) => { root.preferences-changed(ThemePalettes.ids[index], root.density-index, 0); }
                 }
                 density := OptionPicker {
                     narrow: root.narrow;

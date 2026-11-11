@@ -601,10 +601,15 @@ fn tree_rows_cannot_become_flat_mutation_or_clipboard_authority() {
                 if request.fallback == Some(TreeRowId(11)))));
         true
     });
-    p.request_checksums(PaneId::Left, &send);
+    p.request_checksums(PaneId::Left, &|command| {
+        assert!(matches!(command, Command::Tree(command)
+            if matches!(command.as_ref(), TreeCommand::Checksums(request)
+                if request.fallback == Some(TreeRowId(11)))));
+        true
+    });
     assert!(
         p.checksums.sessions.is_empty(),
-        "tree selection cannot become an empty checksum fallback"
+        "tree selection must wait for its backend capture, never an empty flat fallback"
     );
     assert!(p.desktop.notice.is_some());
     assert!(

@@ -1,4 +1,4 @@
-//! Loading feedback remains visible before the backend sends its first page.
+//! Loading feedback is delayed without delaying the backend request or changing row geometry.
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -8,7 +8,12 @@ use i_slint_core::{item_tree::ItemRc, window::WindowInner};
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{ComponentHandle, Model};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 fn visible_text(window: &midnight_ui::MainWindow) -> Vec<slint::SharedString> {
     let inner = WindowInner::from_pub(window.window());
@@ -17,7 +22,8 @@ fn visible_text(window: &midnight_ui::MainWindow) -> Vec<slint::SharedString> {
 
 #[test]
 fn installed_navigation_shows_loading_with_parent_rows_refresh_rows_and_pending_network() {
-    let mut test = ui::TestUi::new();
+    let clock = Rc::new(Cell::new(Duration::ZERO));
+    let mut test = ui::TestUi::with_clock(Some(clock.clone()));
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = root.join("delayed folder");
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
@@ -64,6 +70,20 @@ fn installed_navigation_shows_loading_with_parent_rows_refresh_rows_and_pending_
         "the parent row is already present"
     );
     assert!(
+        !visible_text(&test.window)
+            .iter()
+            .any(|text| text == &native_loading)
+    );
+    clock.set(clock.get() + Duration::from_millis(499));
+    test.draw();
+    assert!(
+        !visible_text(&test.window)
+            .iter()
+            .any(|text| text == &native_loading)
+    );
+    clock.set(clock.get() + Duration::from_millis(1));
+    test.draw();
+    assert!(
         visible_text(&test.window)
             .iter()
             .any(|text| text == &native_loading)
@@ -97,6 +117,13 @@ fn installed_navigation_shows_loading_with_parent_rows_refresh_rows_and_pending_
     test.draw();
     assert_eq!(test.window.get_left_list_top(), list_top);
     assert_eq!(test.window.get_left_list_height(), list_height);
+    assert!(
+        !visible_text(&test.window)
+            .iter()
+            .any(|text| text == &native_loading)
+    );
+    clock.set(clock.get() + Duration::from_millis(500));
+    test.draw();
     render::snapshot(&test, "navigation-loading-refresh");
     assert!(
         test.window.get_left_rows().row_count() > 1,
@@ -165,6 +192,13 @@ fn installed_navigation_shows_loading_with_parent_rows_refresh_rows_and_pending_
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].kind, midnight_ui::LocationRole::Network);
     assert!(
+        !visible_text(&test.window)
+            .iter()
+            .any(|text| text == &format!("Loading {NETWORK_NEIGHBORHOOD_LABEL}…"))
+    );
+    clock.set(clock.get() + Duration::from_millis(500));
+    test.draw();
+    assert!(
         visible_text(&test.window)
             .iter()
             .any(|text| text == &format!("Loading {NETWORK_NEIGHBORHOOD_LABEL}…"))
@@ -174,4 +208,147 @@ fn installed_navigation_shows_loading_with_parent_rows_refresh_rows_and_pending_
     test.window.invoke_insert_path(0);
     test.window.invoke_insert_name();
     assert_eq!(test.window.get_command_text(), "keep draft");
+}
+
+#[test]
+fn denied_folder_open_restores_cursor_and_exact_viewport_after_layout_settles() {
+    let mut test = ui::TestUi::new();
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+    presenter
+        .borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let captured = calls.clone();
+    install(
+        &test.window,
+        presenter.clone(),
+        Rc::new(move |command| {
+            captured.borrow_mut().push(command);
+            true
+        }),
+    );
+    let latest_navigation = || {
+        calls
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: PaneId::Left,
+                    navigation,
+                    ..
+                } => Some(*navigation),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let entries: Arc<[Entry]> = (0..200)
+        .map(|index| {
+            Entry::new(
+                EntryId(index + 1),
+                root.join(format!("folder-{index:03}")),
+                EntryKind::Directory,
+            )
+        })
+        .collect::<Vec<_>>()
+        .into();
+    presenter.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation: latest_navigation(),
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    });
+    refresh(&test.window, &presenter.borrow());
+    test.draw();
+    test.window.invoke_row_click(0, 81, false, false);
+    test.window.invoke_scroll_selection(0, 100000.0);
+    test.window
+        .invoke_scroll_selection(0, -77.0 * test.window.get_left_view_row_height());
+    for _ in 0..3 {
+        test.draw();
+    }
+    let offset = test.window.get_left_list_content_y();
+    assert!(offset < -1000.0);
+    assert_eq!(test.window.get_left_cursor(), 81);
+    for route in 0..2 {
+        let previous = latest_navigation();
+        test.window.invoke_focus_files();
+        if route == 0 {
+            let point = ui::root_position(
+                &test.window,
+                "folder-080",
+                i_slint_core::items::AccessibleRole::ListItem,
+            );
+            ui::click(&test.window, point.x, point.y);
+            ui::click(&test.window, point.x, point.y);
+        } else {
+            ui::key(&test.window, slint::platform::Key::Return);
+        }
+        let failed = latest_navigation();
+        assert_ne!(
+            failed, previous,
+            "route {route} must issue a new navigation"
+        );
+        test.draw();
+        assert!(test.window.get_left_loading());
+        presenter.borrow_mut().apply(Event::ListingFailed {
+            pane: PaneId::Left,
+            navigation: failed,
+            error: FsError::from_io(
+                "list",
+                &root.join("folder-080"),
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access denied"),
+            ),
+        });
+        refresh(&test.window, &presenter.borrow());
+        for frame in 0..5 {
+            test.draw();
+            assert_eq!(test.window.get_left_cursor(), 81);
+            assert!(
+                (test.window.get_left_list_content_y() - offset).abs() < 0.5,
+                "denied navigation moved the viewport on frame {frame}: before={offset}, after={}",
+                test.window.get_left_list_content_y(),
+            );
+        }
+        assert!(test.window.get_left_error().contains("Access denied"));
+        assert_eq!(test.window.get_left_path().as_str(), root.to_string_lossy());
+    }
+    render::snapshot(&test, "navigation-denied-preserved-viewport");
+    test.window
+        .invoke_scroll_selection(0, -test.window.get_left_view_row_height());
+    test.draw();
+    let scrolled = test.window.get_left_list_content_y();
+    assert!(scrolled < offset);
+    refresh(&test.window, &presenter.borrow());
+    test.draw();
+    assert_eq!(
+        test.window.get_left_list_content_y(),
+        scrolled,
+        "a later refresh must not undo the user's scroll"
+    );
+    let stale = latest_navigation();
+    test.window.invoke_open(0, 81);
+    presenter.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation: latest_navigation(),
+        index: Arc::new(DirectoryIndex::from_entries(&[])),
+        entries: Arc::from([]),
+    });
+    refresh(&test.window, &presenter.borrow());
+    for _ in 0..3 {
+        test.draw();
+    }
+    assert_eq!(test.window.get_left_list_content_y(), 0.0);
+    assert!(test.window.get_left_error().is_empty());
+    presenter.borrow_mut().apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: stale,
+        error: FsError::from_io("list", &root, std::io::Error::other("stale denial")),
+    });
+    refresh(&test.window, &presenter.borrow());
+    test.draw();
+    assert_eq!(test.window.get_left_list_content_y(), 0.0);
+    assert!(test.window.get_left_error().is_empty());
+    render::snapshot(&test, "navigation-denied-then-success");
 }

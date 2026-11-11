@@ -1,5 +1,12 @@
 # Third-party libraries and licenses
 
+The directory authorization helper adds a project-owned crate and reuses the pinned
+`getrandom` 0.3.4 (MIT OR Apache-2.0), `windows-sys` 0.61.2 (MIT OR Apache-2.0),
+and `libc` 0.2 (MIT OR Apache-2.0) dependencies already present in the inventory.
+Its Windows API feature selection adds no new package/version and enables only
+native filesystem, process, named-pipe, security and shell declarations. The helper
+contains no plugin discovery or loading entry point. Existing notices apply.
+
 Make File List adds no third-party library or enabled feature. Its engine reuses
 the workspace's `midnight-worker-platform` private spool and existing transfer,
 clipboard, native picker and viewer services.

@@ -174,6 +174,8 @@ fn all_themes_are_selectable_and_keep_text_readable() {
         "Slate Violet",
     ];
     assert_eq!(choices.len(), midnight_core::PreferenceTheme::ALL.len());
+    let mut choices: Vec<_> = choices.into_iter().enumerate().collect();
+    choices.sort_by_key(|(_, name)| name.to_lowercase());
     let accepted = Rc::new(Cell::new(0));
     let changed = accepted.clone();
     let weak = test.window.as_weak();
@@ -230,14 +232,23 @@ fn all_themes_are_selectable_and_keep_text_readable() {
         test.window.set_density_index(density);
         test.window.invoke_apply_preferences(0, density);
         test.window.invoke_apply_fonts("".into(), 11, 15);
-        for (index, name) in choices.iter().enumerate() {
+        let mut current_position = 1usize; // Blue in the alphabetic picker.
+        for (position, (index, name)) in choices.iter().enumerate() {
             test.window.invoke_show_options();
             test.draw();
             test.options_topic(1);
             ui::click_popup(&test.window, "Theme", AccessibleRole::Combobox);
-            if index > 0 {
-                ui::key(&test.window, Key::DownArrow);
+            for _ in 0..position.abs_diff(current_position) {
+                ui::key(
+                    &test.window,
+                    if position < current_position {
+                        Key::UpArrow
+                    } else {
+                        Key::DownArrow
+                    },
+                );
             }
+            current_position = position;
             ui::key(&test.window, Key::Return);
             test.draw();
             // Fluent animates foregrounds and borders for 150–200 ms. Capture
@@ -245,7 +256,7 @@ fn all_themes_are_selectable_and_keep_text_readable() {
             std::thread::sleep(std::time::Duration::from_millis(250));
             slint::platform::update_timers_and_animations();
             test.draw();
-            assert_eq!(accepted.get(), index as i32, "picker must offer {name}");
+            assert_eq!(accepted.get(), *index as i32, "picker must offer {name}");
             let theme = test.window.global::<Theme>();
             assert_eq!(
                 theme.get_light(),

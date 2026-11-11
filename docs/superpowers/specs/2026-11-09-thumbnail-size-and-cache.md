@@ -1,7 +1,7 @@
 # Configurable thumbnail size and persistent cache layout
 
 Options → Previews offers thumbnail image edges of 48, 64, 72, 96, 128, 192 and
-256 logical pixels. The default remains 72, preserving the existing panel layout.
+256 logical pixels. The default is 96 (updated 11 November); saved explicit sizes remain unchanged.
 The setting is shared by both panels, saved with OK, reverted with Cancel and
 included in Reset to defaults. It changes thumbnail tiles, not detailed-list row
 height or toolbar artwork. Text/control sizing continues to follow font and density.

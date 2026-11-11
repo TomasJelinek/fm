@@ -20,6 +20,8 @@ mod user_command_environment;
 mod user_command_terminal_tests;
 mod user_commands;
 pub use clipboard::NativeClipboard;
+#[cfg(test)]
+mod discovery_tests;
 mod find;
 mod fonts;
 mod icons;

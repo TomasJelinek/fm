@@ -252,6 +252,7 @@ fn partial_network_listing_replaces_preview_but_keeps_loading_until_completion()
     let NetworkUpdate::Listing { listing, .. } = listing(1) else {
         unreachable!()
     };
+    p.panes[0].folder_column_samples.observe(u64::MAX);
     for done in [false, true] {
         p.apply(Event::NetworkUpdated {
             pane: PaneId::Left,
@@ -265,6 +266,7 @@ fn partial_network_listing_replaces_preview_but_keeps_loading_until_completion()
         assert_eq!(p.panes[0].display_location_text(), address(1).display);
         assert_eq!(p.panes[0].display_len(), 1);
         assert_eq!(p.panes[0].loading, !done);
+        assert_eq!(p.panes[0].folder_column_samples.maximum(), None);
         assert!(!p.panes[0].native_capabilities());
     }
 }

@@ -309,6 +309,7 @@ fn run_window(
     let engine = runtime.spawn(
         Engine::with_wakeup(filesystem.clone(), event_sender, notify.clone())
             .with_archive_capture(native_content::archive(filesystem.clone()))
+            .with_elevated_directories(Arc::new(midnight_elevation::ElevatedDirectories))
             .with_navigation_fallback(local.clone())
             .with_shell_menu(local.clone())
             .with_path_picker(local.clone())

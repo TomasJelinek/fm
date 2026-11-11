@@ -486,23 +486,32 @@ impl Composite {
                 .max(0.0)
                 .max(y - part.origin[1] - part.page.height())
         };
+        let crosses =
+            |part: &&PlacedPage| y >= part.origin[1] && y < part.origin[1] + part.page.height();
+        // At an exact cell bottom, distance is zero for both the ended cell and
+        // a taller neighbor. Prefer real coverage before the nearest-gap fallback.
         let part = self
             .parts
             .iter()
-            .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+            .find(crosses)
+            .or_else(|| {
+                self.parts
+                    .iter()
+                    .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+            })
             .ok_or(LayoutError::InvalidRange)?;
         let (range, top) = part.page.line_at_y(y - part.origin[1])?;
         let mut range = range.start + part.range.start..range.end + part.range.start;
         if let Some(row) = &part.table_row {
-            // A table's visual line spans all its cells. Returning only the
-            // leftmost cell truncates later columns at backward page boundaries.
-            // Keep each cell's visual line, rather than its whole source range,
-            // so a byte-cropped giant cell still makes progress in both directions.
-            for cell in self
-                .parts
-                .iter()
-                .filter(|cell| cell.table_row.as_ref() == Some(row) && !cell.range.is_empty())
-            {
+            // Only cells crossing this visual line contribute source anchors.
+            // line_at_y clamps outside a cell, so including a short ended cell
+            // would pin the forward/backward anchor while a taller cell scrolls.
+            for cell in self.parts.iter().filter(|cell| {
+                cell.table_row.as_ref() == Some(row)
+                    && !cell.range.is_empty()
+                    && y >= cell.origin[1]
+                    && y < cell.origin[1] + cell.page.height()
+            }) {
                 let (line, _) = cell.page.line_at_y(y - cell.origin[1])?;
                 range.start = range.start.min(cell.range.start + line.start);
                 range.end = range.end.max(cell.range.start + line.end);

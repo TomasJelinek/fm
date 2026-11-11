@@ -64,3 +64,25 @@ fn same_path_aliases_remain_distinct_after_network() {
             .all(|item| item.path.as_os_str() == OsStr::new("raw/../same 文档"))
     );
 }
+
+#[test]
+fn named_volumes_precede_raw_mount_paths_without_mutating_paths() {
+    let labels = ["/media/usb/", "Zulu", "/", "Alpha", "/home/"];
+    let input = labels
+        .iter()
+        .map(|label| location(label, label, LocationKind::Volume))
+        .collect();
+    let (ordered, _) = locations(input, None).unwrap();
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha", "Zulu", "/", "/home/", "/media/usb/"]
+    );
+    assert!(
+        ordered
+            .iter()
+            .all(|item| item.path == Path::new("raw/../same 文档"))
+    );
+}

@@ -33,14 +33,18 @@ export struct ThemeColors {
 }
 
 export global ThemePalettes {
+    // Display order is independent from the stable persisted palette IDs.
     out property <[string]> names: [
-        "Blue", "Dark", "Light", "Dracula", "Nord", "Gruvbox Dark",
-        "Catppuccin Mocha", "Solarized Light", "Carbon Green", "Tokyo Night",
-        "One Dark", "Rosé Pine", "Norton Commander", "Amber Terminal",
-        "Verdant Light", "Catppuccin Latte", "Rosé Pine Dawn",
-        "Paper Contrast", "Sandstone Contrast", "Deep Ocean", "Graphite Contrast",
-        "High Contrast Dark", "High Contrast Light", "Slate Blue", "Slate Teal", "Slate Violet"
+        "Amber Terminal", "Blue", "Carbon Green", "Catppuccin Latte",
+        "Catppuccin Mocha", "Dark", "Deep Ocean", "Dracula",
+        "Graphite Contrast", "Gruvbox Dark", "High Contrast Dark", "High Contrast Light",
+        "Light", "Nord", "Norton Commander", "One Dark",
+        "Paper Contrast", "Rosé Pine", "Rosé Pine Dawn", "Sandstone Contrast",
+        "Slate Blue", "Slate Teal", "Slate Violet", "Solarized Light",
+        "Tokyo Night", "Verdant Light"
     ];
+    out property <[int]> ids: [13, 0, 8, 15, 6, 1, 19, 3, 20, 5, 21, 22, 2, 4, 12, 10, 17, 11, 16, 18, 23, 24, 25, 7, 9, 14];
+    out property <[int]> positions: [1, 5, 12, 7, 13, 9, 4, 23, 2, 24, 15, 17, 14, 0, 25, 3, 18, 16, 19, 6, 8, 10, 11, 20, 21, 22];
     pure public function colors(index: int) -> ThemeColors {
         // Dark
         if index == 1 {

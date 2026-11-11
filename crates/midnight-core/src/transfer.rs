@@ -103,6 +103,23 @@ pub trait TransferService: Send + Sync {
 /// A regular file or directory opened without following the selected entry's links.
 /// Iteration opens at most one child per call. Retain directory sources on the traversal stack.
 pub trait TransferSource: Send {
+    /// Metadata-only independent traversal of this pinned source. Never consumes its copy
+    /// iterator, reads file contents, follows links or grants mutation authority.
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        if self.entry().item.kind == crate::EntryKind::Directory {
+            return Err(transfer_unsupported(
+                &self.entry().item.path,
+                "recursive discovery is unavailable",
+            ));
+        }
+        visit(&self.entry().item);
+        Ok(())
+    }
     /// Seek the retained regular file during a guarded validation pass, including
     /// after source capture changed its name. Return its current exact length.
     /// Never reopen the original pathname; the caller retains/rechecks the guard

@@ -7,6 +7,7 @@ import { CompactLocationButton } from "location-controls.slint";
 import { PanelList } from "panel-list.slint";
 import { SelectionRectangle } from "selection-rectangle.slint";
 import { FileEntry } from "file-entry.slint";
+import { FileColumnHeading } from "file-column-heading.slint";
 import { FileRow, TreePress } from "file-models.slint";
 import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRow, LocationRole } from "navigation-models.slint";
 import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
@@ -61,7 +62,7 @@ export component FilePane inherits Rectangle {
     in property <int> volume-index;
     in property <[FileRow]> rows;
     in property <int> view-mode;
-    in property <int> thumbnail-size: 72;
+    in property <int> thumbnail-size: 96;
     out property <string> hovered-row;
     in property <string> view-mode-label;
     in property <string> sort-label;
@@ -80,6 +81,14 @@ export component FilePane inherits Rectangle {
     // these counts until their integer values actually change.
     private property <int> repeated-columns: root.view-columns;
     private property <int> repeated-bands: root.band-count;
+    private property <bool> navigation-viewport-valid;
+    private property <bool> navigation-viewport-active;
+    private property <string> navigation-viewport-path;
+    private property <string> navigation-viewport-context;
+    private property <string> navigation-viewport-query;
+    private property <length> navigation-viewport-x;
+    private property <length> navigation-viewport-y;
+    private property <int> navigation-viewport-cursor: -1;
     private property <bool> cursor-reveal-active;
     private property <string> reveal-path;
     private property <string> reveal-context;
@@ -87,35 +96,102 @@ export component FilePane inherits Rectangle {
     private property <length> reveal-content-height: list.content-height;
     private property <length> reveal-visible-height: list.visible-height;
     private property <length> reveal-content-y: list.content-y;
+    private property <length> navigation-content-x: list.content-x;
+    private property <length> navigation-content-width: list.content-width;
+    private property <length> navigation-visible-width: list.visible-width;
+    changed navigation-content-x => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+    }
+    changed navigation-content-width => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+    }
+    changed navigation-visible-width => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+    }
     changed reveal-content-height => {
-        if root.cursor-reveal-active { root.finish-cursor-reveal(); }
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+        else if root.cursor-reveal-active { root.finish-cursor-reveal(); }
     }
     changed reveal-visible-height => {
-        if root.cursor-reveal-active { root.finish-cursor-reveal(); }
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+        else if root.cursor-reveal-active { root.finish-cursor-reveal(); }
     }
     changed reveal-content-y => {
-        if root.cursor-reveal-active { root.finish-cursor-reveal(); }
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+        else if root.cursor-reveal-active { root.finish-cursor-reveal(); }
     }
-    changed path => { if root.reveal-path != root.path { root.cursor-reveal-active = false; } }
-    changed search-context => { if root.reveal-context != root.search-context { root.cursor-reveal-active = false; } }
-    changed cursor-index => { if root.reveal-cursor-index != root.cursor-index { root.cursor-reveal-active = false; } }
+    changed path => {
+        root.reset-loading-feedback();
+        if root.reveal-path != root.path { root.cursor-reveal-active = false; }
+        if root.navigation-viewport-path != root.path { root.navigation-viewport-active = false; }
+    }
+    changed search-context => {
+        if root.reveal-context != root.search-context { root.cursor-reveal-active = false; }
+        if root.navigation-viewport-context != root.search-context {
+            root.navigation-viewport-active = false;
+        }
+    }
+    changed search-query => {
+        if root.navigation-viewport-query != root.search-query {
+            root.navigation-viewport-active = false;
+        }
+    }
+    changed cursor-index => {
+        if root.reveal-cursor-index != root.cursor-index { root.cursor-reveal-active = false; }
+        if root.navigation-viewport-active && root.navigation-viewport-cursor != root.cursor-index {
+            root.navigation-viewport-active = false;
+        }
+    }
     in property <[LocationRow]> locations;
     in property <string> status;
     in property <string> error;
     in property <string> error-revision;
+    in property <bool> can-elevate;
+    callback retry-directory-elevated();
     in property <bool> loading;
+    private property <bool> loading-feedback;
+    function reset-loading-feedback() {
+        loading-delay.stop();
+        root.loading-feedback = false;
+        if root.loading { loading-delay.start(); loading-delay.restart(); }
+    }
+    changed loading => { root.reset-loading-feedback(); }
+    loading-delay := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => { self.stop(); root.loading-feedback = root.loading; }
+    }
     in property <bool> scroll-interaction-active;
     in property <int> cursor-index: -1;
     in property <int> sort-column;
     in property <bool> descending;
     in property <bool> sizes-in-bytes;
-    // Keep metadata columns inside narrow split panes. Exact byte values remain
-    // available in the copyable status field when the list must elide them.
-    private property <length> size-column-width: min(
-        root.sizes-in-bytes ? max(126px, Theme.small-font * 15) : 78px,
-        root.width < 390px ? max(56px, root.width * 0.19) : max(78px, root.width - 310px));
-    private property <length> date-column-width: min(max(86px, Theme.small-font * 9), max(52px, root.list-grid-width * 0.20));
-    private property <length> time-column-width: min(max(80px, Theme.small-font * 9), max(50px, root.list-grid-width * 0.18));
+    in property <string> size-column-sample: "1 024 KB";
+    in property <string> date-column-sample: "2000-12-28";
+    in property <string> time-column-sample: "23:58:58";
+    // Bounded backend samples use the same font as the rendered metadata. These
+    // measurements never depend on the viewport or instantiate extra file rows.
+    size-metric := Text { visible: false; text: root.size-column-sample; font-size: Theme.small-font; }
+    date-metric := Text { visible: false; text: root.date-column-sample; font-size: Theme.small-font; }
+    time-metric := Text { visible: false; text: root.time-column-sample; font-size: Theme.small-font; }
+    size-title-metric := Text { visible: false; text: "Size"; font-size: Theme.small-font; }
+    date-title-metric := Text { visible: false; text: "Modified"; font-size: Theme.small-font; }
+    time-title-metric := Text { visible: false; text: "Time"; font-size: Theme.small-font; }
+    private property <length> desired-size-width: max(size-metric.preferred-width + 4px,
+        size-title-metric.preferred-width + Theme.icon-size + 5px);
+    private property <length> desired-date-width: max(date-metric.preferred-width + 4px,
+        date-title-metric.preferred-width + Theme.icon-size + 5px);
+    private property <length> desired-time-width: max(time-metric.preferred-width + 4px,
+        time-title-metric.preferred-width + 4px);
+    // Preserve a usable name column at narrow splits; the copyable details retain exact values.
+    private property <length> metadata-budget: max(0px,
+        root.list-grid-width - max(90px, root.list-grid-width * 0.30) - 48px);
+    private property <float> metadata-scale: min(1,
+        root.metadata-budget / max(1px, root.desired-size-width + root.desired-date-width + root.desired-time-width));
+    private property <length> size-column-width: min(root.desired-size-width,
+        max(Theme.icon-size + 3px, root.desired-size-width * root.metadata-scale));
+    private property <length> date-column-width: root.desired-date-width * root.metadata-scale;
+    private property <length> time-column-width: root.desired-time-width * root.metadata-scale;
     in-out property <string> search-query;
     in property <string> search-context;
     in property <bool> search-pending;
@@ -241,7 +317,35 @@ export component FilePane inherits Rectangle {
     border-radius: 5px;
 
     public function focus-list() { path-input.finish-edit(); search.focus-input(); }
+    public function remember-navigation-viewport() {
+        root.navigation-viewport-path = root.path;
+        root.navigation-viewport-x = list.content-x;
+        root.navigation-viewport-y = list.content-y;
+        root.navigation-viewport-cursor = root.cursor-index;
+        root.navigation-viewport-valid = true;
+        root.navigation-viewport-active = false;
+    }
+    public function finish-navigation-viewport(failed: bool) {
+        root.navigation-viewport-active = failed && root.navigation-viewport-valid
+            && root.path == root.navigation-viewport-path;
+        root.navigation-viewport-valid = false;
+        if root.navigation-viewport-active {
+            root.navigation-viewport-context = root.search-context;
+            root.navigation-viewport-query = root.search-query;
+            root.cursor-reveal-active = false;
+            list.cancel-scroll-settle();
+            root.settle-navigation-viewport();
+        }
+    }
+    function settle-navigation-viewport() {
+        list.content-x = clamp(root.navigation-viewport-x,
+            min(0px, list.visible-width - list.content-width), 0px);
+        list.content-y = clamp(root.navigation-viewport-y,
+            min(0px, list.visible-height - list.content-height), 0px);
+    }
     public function scroll-selection(delta: float) {
+        root.navigation-viewport-valid = false;
+        root.navigation-viewport-active = false;
         root.cursor-reveal-active = false;
         list.cancel-scroll-settle();
         list.content-y = clamp(list.content-y + delta * 1px,
@@ -264,6 +368,8 @@ export component FilePane inherits Rectangle {
     changed band-count => { root.repeated-bands = root.band-count; }
     changed view-rows => { if root.view-mode == 1 { root.reveal-cursor(); } }
     changed view-mode => {
+        root.navigation-viewport-valid = false;
+        root.navigation-viewport-active = false;
         // A narrow Brief/Thumbnails view can keep the previous column count.
         root.repeated-columns = root.view-columns;
         root.repeated-bands = root.band-count;
@@ -277,6 +383,10 @@ export component FilePane inherits Rectangle {
             : band * root.view-columns + column;
     }
     public function reveal-cursor() {
+        if root.navigation-viewport-active {
+            root.settle-navigation-viewport();
+            return;
+        }
         list.cancel-scroll-settle();
         // Model reset precedes retained-repeater layout, and a newly appearing
         // scrollbar can shrink the viewport later. The SDK can also normalize
@@ -464,7 +574,7 @@ export component FilePane inherits Rectangle {
                         text-size: root.minimal ? min(24px, Theme.font-size) : Theme.font-size;
                         x: 0px; y: 0px; width: parent.width; height: parent.height;
                         path: root.path; parts: root.path-parts;
-                        hint: "Folder path: " + root.path + "\n" + root.status + (root.loading ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. " + ShortcutHints.hint("Focus path editor", "panel.path");
+                        hint: "Folder path: " + root.path + "\n" + root.status + (root.loading-feedback ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. " + ShortcutHints.hint("Focus path editor", "panel.path");
                         navigate(path) => { root.activate(); root.navigate(path); root.focus-list(); }
                         selected-part(identity) => { root.activate(); root.path-part(identity); root.focus-list(); }
                         copy-part(identity) => { root.activate(); root.path-copy(identity); }
@@ -507,51 +617,42 @@ export component FilePane inherits Rectangle {
                 // layout would otherwise center itself inside the header.
                 x: 0px; width: root.list-grid-width;
                 padding-left: 12px; padding-right: 12px; spacing: 8px;
-                // Name and Ext share the filename area. Keep full filenames and the
-                // Size/Modified alignment, while routing by stable sort IDs, not position.
-                for heading in [
-                    { title: "Name", column: 0 }, { title: "Extension", column: 3 },
-                    { title: "Size", column: 1 }, { title: "Modified", column: 2 },
-                    { title: "Time", column: 2 }
-                ] : Rectangle {
-                    private property <bool> sorted: root.sort-column == heading.column;
-                    private property <length> filename-header-space: max(0px,
-                        column-headings.width - root.size-column-width - root.date-column-width - root.time-column-width - 56px);
-                    private property <length> fixed-width: heading.column == 3
-                        ? min(max(48px, Theme.small-font * 3 + Theme.icon-size + 3px), self.filename-header-space * 0.45)
-                        : heading.column == 1 ? root.size-column-width
-                        : heading.title == "Time" ? root.time-column-width : root.date-column-width;
-                    clip: true;
-                    horizontal-stretch: heading.column == 0 ? 1 : 0;
-                    min-width: heading.column == 0 ? 0px : self.fixed-width;
-                    max-width: heading.column == 0 ? root.list-grid-width : self.fixed-width;
-                    preferred-width: heading.column == 0 ? 120px : self.fixed-width;
-                    heading-content := Rectangle {
-                        private property <bool> show-direction: root.sort-column == heading.column && heading.title != "Time";
-                        Text {
-                            x: parent.show-direction && heading.column == 1 ? Theme.icon-size + 3px : 0px;
-                            width: max(0px, parent.width - (parent.show-direction ? Theme.icon-size + 3px : 0px));
-                            height: parent.height;
-                            text: heading.column == 3 ? "Ext" : heading.title;
-                            color: root.sort-column == heading.column ? Theme.accent : Theme.secondary-text;
-                            font-size: Theme.small-font; vertical-alignment: center;
-                            horizontal-alignment: heading.column == 1 ? right : left; overflow: elide;
+                Rectangle {
+                    horizontal-stretch: 1; min-width: 0px;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        FileColumnHeading {
+                            title: "Name"; sort-label: "Name";
+                            width: min(self.natural-width, max(0px, (root.list-grid-width - root.size-column-width - root.date-column-width - root.time-column-width - 48px) * 0.55));
+                            icons: root.action-icons; sorted: root.sort-column == 0;
+                            descending: root.descending;
+                            activate => { root.activate(); root.sort(0); }
                         }
-                        if heading-content.show-direction : NativeActionImage {
-                            x: heading.column == 1 ? 0px : parent.width - self.width;
-                            y: (parent.height - self.height) / 2;
-                            native-icon: root.descending ? root.action-icons.sort-descending : root.action-icons.sort-ascending;
-                            fallback-icon: root.descending ? FallbackIcons.sort-descending : FallbackIcons.sort-ascending;
-                            width: Theme.icon-size; height: Theme.icon-size;
+                        FileColumnHeading {
+                            title: "Ext"; sort-label: "Extension";
+                            width: min(self.natural-width, max(0px, (root.list-grid-width - root.size-column-width - root.date-column-width - root.time-column-width - 48px) * 0.45 - 8px));
+                            icons: root.action-icons; sorted: root.sort-column == 3;
+                            descending: root.descending;
+                            activate => { root.activate(); root.sort(3); }
                         }
                     }
-                    accessible-role: button;
-                    accessible-label: "Sort by " + (heading.title == "Time" ? "Modified time" : heading.title);
-                    accessible-value: self.sorted ? (root.descending ? "Descending" : "Ascending") : "Not sorted";
-                    accessible-action-default => { root.activate(); root.sort(heading.column); }
-                    TouchArea { clicked => { root.activate(); root.sort(heading.column); } }
-                    Tooltip { TipBody { text: "Sort by " + (heading.title == "Time" ? "Modified date and time" : heading.title) + (root.sort-column == heading.column ? (root.descending ? " · descending; click for ascending" : " · ascending; click for descending") : " · click for ascending"); } }
                 }
+                for heading in [
+                    { title: "Size", column: 1 }, { title: "Modified", column: 2 },
+                    { title: "Time", column: 2 }
+                ] : FileColumnHeading {
+                    title: heading.title;
+                    sort-label: heading.title == "Time" ? "Modified time" : heading.title;
+                    width: heading.column == 1 ? root.size-column-width
+                        : heading.title == "Time" ? root.time-column-width : root.date-column-width;
+                    horizontal-stretch: 0;
+                    align-right: heading.column == 1;
+                    show-direction: heading.title != "Time";
+                    icons: root.action-icons; sorted: root.sort-column == heading.column;
+                    descending: root.descending;
+                    activate => { root.activate(); root.sort(heading.column); }
+                }
+
             }
         }
         Rectangle {
@@ -585,7 +686,11 @@ export component FilePane inherits Rectangle {
             list := PanelList {
                 row-height: root.row-height;
                 interaction-active: root.scroll-interaction-active || SelectionRectangle.pane == root.pane-id;
-                user-scrolled => { root.cursor-reveal-active = false; }
+                user-scrolled => {
+                    root.cursor-reveal-active = false;
+                    root.navigation-viewport-valid = false;
+                    root.navigation-viewport-active = false;
+                }
                 for band in root.repeated-bands : Rectangle {
                     width: root.list-grid-width;
                     height: root.row-height;
@@ -650,7 +755,7 @@ export component FilePane inherits Rectangle {
                 color: Theme.muted-text; font-size: 13px; horizontal-alignment: center; vertical-alignment: center;
             }
             // Overlay the pending notice: refresh must not move rows or reset scrolling.
-            if root.loading : Rectangle {
+            if root.loading && root.loading-feedback : Rectangle {
                 x: 8px; y: max(0px, parent.height - self.height - 8px);
                 width: max(0px, parent.width - 16px);
                 height: max(30px, Theme.font-size + 18px);
@@ -677,6 +782,8 @@ export component FilePane inherits Rectangle {
         if root.error != "" : ErrorNotice {
             text: root.error; context-key: root.path + "\n" + root.error-revision; details-enabled: true;
             details => { root.activate(); root.error-details(root.error); }
+            retry-enabled: root.can-elevate;
+            retry-authorized => { root.activate(); root.retry-directory-elevated(); }
             compact: root.minimal; copy-enabled: true;
             minimum-notice-height: root.minimal ? Theme.small-font + 2px : max(60px, Theme.font-size * 2.5);
             preferred-notice-height: root.minimal ? Theme.small-font + 2px : max(100px, Theme.font-size * 4);

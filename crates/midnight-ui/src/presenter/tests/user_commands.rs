@@ -334,3 +334,72 @@ fn jobs_clear_finished_commands_preserves_active_and_error_receipts() {
     assert!(!p.command_launches.jobs[0].finished);
     assert!(!p.take_retired().is_empty());
 }
+
+#[test]
+fn completed_command_history_survives_active_admission_until_explicit_clear() {
+    let (mut p, _) = loaded(false);
+    let mut completed = Vec::new();
+    for _ in 0..40 {
+        assert!(
+            p.request_user_command(PaneId::Left, "test-command", false, &|command| {
+                assert!(matches!(command, Command::ExecuteUserCommand(_)));
+                true
+            })
+        );
+        let job = p.command_launches.jobs.last().unwrap();
+        let id = job.id;
+        let command = job.command.clone();
+        completed.push(id);
+        p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+            request: id,
+            command,
+            update: UserCommandUpdate::Finished(UserCommandSummary {
+                planned: 1,
+                started: 1,
+                not_started: 0,
+                cancelled: false,
+                error: None,
+            }),
+        })));
+    }
+    assert_eq!(p.command_launches.jobs.len(), 40);
+    assert!(p.command_launches.jobs.iter().all(|job| job.finished));
+    assert_eq!(
+        p.command_launches
+            .jobs
+            .iter()
+            .map(|job| job.id)
+            .collect::<Vec<_>>(),
+        completed
+    );
+
+    for _ in 0..32 {
+        assert!(p.request_user_command(PaneId::Left, "test-command", false, &|_| true));
+    }
+    assert!(
+        !p.request_user_command(PaneId::Left, "test-command", false, &|_| {
+            panic!("the active launch limit must still reject another launch")
+        })
+    );
+    assert_eq!(p.command_launches.jobs.len(), 72);
+    p.clear_finished_jobs(false);
+    assert_eq!(p.command_launches.jobs.len(), 32);
+    assert!(p.command_launches.jobs.iter().all(|job| !job.finished));
+    assert!(
+        p.command_launches
+            .jobs
+            .iter()
+            .all(|job| !completed.contains(&job.id))
+    );
+
+    p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+        request: completed[0],
+        command: UserCommandId::new("test-command").unwrap(),
+        update: UserCommandUpdate::Started {
+            index: 99,
+            process_id: 100,
+        },
+    })));
+    assert_eq!(p.command_launches.jobs.len(), 32);
+    assert!(p.command_launches.jobs.iter().all(|job| job.started == 0));
+}

@@ -519,7 +519,6 @@ impl Presenter {
         self.drag_drop.rejected.push_back(token);
         if let Some(progress) = self.copies.progress.iter_mut().find(|p| p.id == id) {
             Arc::make_mut(progress).state = CopyOperationState::Cancelled;
-            self.copies.automatic_jobs.observe_copy(progress);
         }
         self.copies.conflicts.retain(|conflict| conflict.id != id);
         self.trim_copy_history();
@@ -533,7 +532,6 @@ impl Presenter {
             self.drag_drop.rejected.push_back(token);
             if let Some(progress) = self.copies.progress.iter_mut().find(|p| p.id == id) {
                 Arc::make_mut(progress).state = CopyOperationState::Cancelled;
-                self.copies.automatic_jobs.observe_copy(progress);
             }
         }
         self.trim_copy_history();

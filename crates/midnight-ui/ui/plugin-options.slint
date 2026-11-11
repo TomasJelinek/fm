@@ -1,6 +1,6 @@
 import { FallbackIcons } from "action-icons.slint";
 import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
-import { ListView, LineEdit } from "std-widgets.slint";
+import { ListView, LineEdit, ScrollView } from "std-widgets.slint";
 import { TipBody } from "controls.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { Theme } from "theme.slint";
@@ -151,7 +151,6 @@ component ReadOnlyPluginCatalog inherits VerticalLayout {
             text: root.current.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
         }
         Text { text: root.current.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
-        Text { text: root.current.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
         if root.current.location != "" : Text {
             text: root.current.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
         }
@@ -162,12 +161,25 @@ component ReadOnlyPluginCatalog inherits VerticalLayout {
     }
 }
 
-export component PluginOptions inherits VerticalLayout {
+export component PluginOptions inherits Rectangle {
     in property <length> available-height: 580px;
     private property <int> section;
-    private property <int> visible-rows: clamp(floor((root.available-height - 240px) / (Theme.control-height + 2px)), 2, 8);
+    // Give the installed catalog the space it needs first. Details share the
+    // page's scrolling area; they must not reserve hundreds of empty pixels.
+    private property <int> visible-rows: max(2, floor(
+        (root.available-height - 3 * Theme.control-height - 24px) / (Theme.control-height + 2px)));
     private property <ViewerPluginRow> selected: ViewerPluginsView.rows[ViewerPluginsView.selected];
-    spacing: 8px; alignment: start;
+    height: max(0px, root.available-height);
+    VerticalLayout {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        spacing: 8px;
+    ScrollView {
+        min-height: 0px; vertical-stretch: 1;
+        horizontal-scrollbar-policy: always-off;
+        content-width: self.visible-width;
+        VerticalLayout {
+            spacing: 8px; alignment: start;
+            padding-right: FluentScrollMetrics.overlay-size;
     DialogTabs { labels: ["Viewers", "Filesystems", "Thumbnailers"]; current-index <=> root.section; }
     if root.section == 0 : VerticalLayout {
         spacing: 8px; alignment: start;
@@ -215,7 +227,6 @@ export component PluginOptions inherits VerticalLayout {
                 text: root.selected.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
             }
             Text { text: root.selected.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
-            Text { text: root.selected.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
             Text { text: root.selected.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
         }
         if ViewerPluginsView.restart-needed : Text {
@@ -242,6 +253,8 @@ export component PluginOptions inherits VerticalLayout {
         selected-row(index) => { ViewerPluginsView.select-thumbnailer(index); }
     }
     if ViewerPluginsView.error != "" : ErrorNotice { text: ViewerPluginsView.error; }
+        }
+    }
     HorizontalLayout {
         Rectangle { horizontal-stretch: 1; }
         HintedActionButton {
@@ -251,5 +264,6 @@ export component PluginOptions inherits VerticalLayout {
             hint: "Rescan all installed viewer, filesystem and thumbnailer packages.";
             clicked => { ViewerPluginsView.refresh(); }
         }
+    }
     }
 }

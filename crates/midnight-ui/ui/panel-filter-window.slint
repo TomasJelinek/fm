@@ -15,7 +15,7 @@ export component PanelFilterWindow inherits DialogWindow {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
     preferred-width: max(540px, Theme.font-size * 28);
-    preferred-height: max(280px, Theme.control-height * 5 + 100px);
+    preferred-height: max(320px, Theme.control-height * 6 + 100px);
     FocusScope {
         width: root.width; height: root.height;
         capture-key-pressed(event) => { root.dialog-input-blocked ? accept : reject }

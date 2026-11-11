@@ -1,5 +1,9 @@
 //! Read-only cold-start attribution. Run beside the installed plugin catalog.
-//! Default order mirrors Service::open; --render-first isolates cold font shaping.
+//! --parallel uses the production bounded discovery workers; --render-first isolates font shaping.
+// This diagnostic exercises discovery; UI preparation admission is covered by engine tests.
+#[allow(dead_code)]
+#[path = "../src/catalog_startup.rs"]
+mod catalog_startup;
 use midnight_viewer_render::{TextOptions, TextRenderer, Viewport};
 use std::{error::Error, time::Instant};
 
@@ -48,7 +52,11 @@ fn render(pass: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn catalogs(pass: &str) -> Result<(), Box<dyn Error>> {
+fn catalogs(
+    pass: &str,
+    application: Option<&std::path::Path>,
+    parallel: bool,
+) -> Result<(), Box<dyn Error>> {
     let fonts = timed(pass, "installed_font_families", || {
         midnight_viewer_render::installed_families(|| false)
     });
@@ -56,8 +64,13 @@ fn catalogs(pass: &str) -> Result<(), Box<dyn Error>> {
         "CATALOG pass={pass} fonts={}",
         fonts.as_ref().map_or(0, |f| f.len())
     );
+    if parallel {
+        return concurrent_catalogs(pass, application);
+    }
     let executable = timed(pass, "installed_executable_text", || {
-        midnight_plugin_host::installed_executable()
+        application.map_or_else(midnight_plugin_host::installed_executable, |path| {
+            Ok(path.to_owned())
+        })
     })?;
     let directory = executable.parent().ok_or("Executable has no directory")?;
     let runtime = timed(pass, "text_catalog", || {
@@ -69,14 +82,18 @@ fn catalogs(pass: &str) -> Result<(), Box<dyn Error>> {
         runtime.diagnostics().len()
     );
     let executable = timed(pass, "installed_executable_image", || {
-        midnight_plugin_host::installed_executable()
+        application.map_or_else(midnight_plugin_host::installed_executable, |path| {
+            Ok(path.to_owned())
+        })
     })?;
     let images = timed(pass, "image_catalog", || {
         midnight_image_viewer_host::discover(&executable)
     })?;
     println!("CATALOG pass={pass} image={}", images.len());
     let executable = timed(pass, "installed_executable_web", || {
-        midnight_plugin_host::installed_executable()
+        application.map_or_else(midnight_plugin_host::installed_executable, |path| {
+            Ok(path.to_owned())
+        })
     })?;
     let web = timed(pass, "web_catalog", || {
         midnight_web_viewer_host::discover_with_diagnostics(&executable)
@@ -85,20 +102,70 @@ fn catalogs(pass: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn concurrent_catalogs(
+    pass: &str,
+    application: Option<&std::path::Path>,
+) -> Result<(), Box<dyn Error>> {
+    let executable = application
+        .map_or_else(midnight_plugin_host::installed_executable, |path| {
+            Ok(path.to_owned())
+        })?;
+    let directory = executable.parent().ok_or("Executable has no directory")?;
+    let (native, images, web) = timed(pass, "parallel_catalogs", || {
+        catalog_startup::parallel(
+            || {
+                timed(pass, "text_catalog", || {
+                    midnight_plugin_host::Runtime::discover(directory)
+                })
+                .map(|catalog| catalog.catalog().len())
+                .map_err(|error| error.to_string())
+            },
+            || {
+                timed(pass, "image_catalog", || {
+                    midnight_image_viewer_host::discover(&executable)
+                })
+                .map(|catalog| catalog.len())
+                .map_err(|error| error.to_string())
+            },
+            || {
+                timed(pass, "web_catalog", || {
+                    midnight_web_viewer_host::discover_with_diagnostics(&executable)
+                })
+                .map(|catalog| catalog.providers.len())
+                .map_err(|error| error.to_string())
+            },
+        )
+    })?;
+    println!("CATALOG pass={pass} text={native} image={images} web={web}");
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let render_first = match std::env::args().nth(1).as_deref() {
-        None => false,
-        Some("--render-first") => true,
-        _ => return Err("Usage: startup_phases [--render-first]".into()),
-    };
-    println!("STARTUP render_first={render_first}");
+    let mut render_first = false;
+    let mut parallel = false;
+    let mut application = None;
+    for argument in std::env::args_os().skip(1) {
+        if argument == "--render-first" {
+            render_first = true;
+        } else if argument == "--parallel" {
+            parallel = true;
+        } else if application.is_none() {
+            application = Some(std::path::PathBuf::from(argument).canonicalize()?);
+        } else {
+            return Err(
+                "Usage: startup_phases [--render-first] [--parallel] [application-executable]"
+                    .into(),
+            );
+        }
+    }
+    println!("STARTUP render_first={render_first} parallel={parallel}");
     for pass in ["cold", "warm"] {
         let started = Instant::now();
         if render_first {
             render(pass)?;
-            catalogs(pass)?;
+            catalogs(pass, application.as_deref(), parallel)?;
         } else {
-            catalogs(pass)?;
+            catalogs(pass, application.as_deref(), parallel)?;
             render(pass)?;
         }
         println!(

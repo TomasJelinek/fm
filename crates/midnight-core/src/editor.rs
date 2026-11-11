@@ -1,9 +1,11 @@
 //! Explicit external-editor configuration. Neither executable nor argv uses shell syntax.
-use crate::{FsError, TerminalProcess};
+use crate::{FilterMode, FsError, PanelFilter, TerminalProcess};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
 };
+
+pub const MAX_EDITOR_RULES: usize = 64;
 
 pub const MAX_EDITOR_ARGUMENTS: usize = 64;
 pub const MAX_EDITOR_ARGUMENT_BYTES: usize = 32 * 1024;
@@ -13,6 +15,8 @@ pub struct EditorPreferences {
     /// None asks the backend for its safe platform default.
     pub executable: Option<PathBuf>,
     pub arguments: Vec<String>,
+    /// First enabled matching rule wins; these legacy fields remain the fallback.
+    pub rules: Vec<EditorRule>,
 }
 
 impl Default for EditorPreferences {
@@ -20,12 +24,19 @@ impl Default for EditorPreferences {
         Self {
             executable: None,
             arguments: vec!["{file}".into()],
+            rules: Vec::new(),
         }
     }
 }
 
 impl EditorPreferences {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.rules.len() > MAX_EDITOR_RULES {
+            return Err("At most 64 editor rules are supported.");
+        }
+        for rule in &self.rules {
+            rule.validate()?;
+        }
         if let Some(executable) = &self.executable {
             if !executable.is_absolute() || executable.as_os_str().as_encoded_bytes().contains(&0) {
                 return Err("Editor executable must be an absolute native path without NUL.");
@@ -52,6 +63,67 @@ impl EditorPreferences {
     }
 }
 
+/// Ordered filename association. Pattern compilation is restricted to backend workers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorRule {
+    pub enabled: bool,
+    pub mode: FilterMode,
+    pub expression: String,
+    pub case_sensitive: bool,
+    pub executable: Option<PathBuf>,
+    pub arguments: Vec<String>,
+    /// None retains the safe executable-directory default.
+    pub working_directory: Option<PathBuf>,
+}
+
+impl Default for EditorRule {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: FilterMode::Masks,
+            expression: "*".into(),
+            case_sensitive: false,
+            executable: None,
+            arguments: vec!["{file}".into()],
+            working_directory: None,
+        }
+    }
+}
+
+impl EditorRule {
+    pub fn filter(&self) -> PanelFilter {
+        PanelFilter {
+            // Disabled rules still require syntactically valid saved patterns.
+            enabled: true,
+            mode: self.mode,
+            expression: self.expression.clone(),
+            case_sensitive: self.case_sensitive,
+        }
+    }
+
+    /// Validate bounded data only; regex compilation belongs to the backend.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.mode == FilterMode::Expression {
+            return Err("Editor rules support wildcards or regular expressions.");
+        }
+        if self.expression.trim().is_empty() {
+            return Err("Enter a filename pattern for each editor rule.");
+        }
+        self.filter().validate_bounds()?;
+        if let Some(directory) = &self.working_directory
+            && (!directory.is_absolute() || directory.as_os_str().as_encoded_bytes().contains(&0))
+        {
+            return Err("Editor working directory must be an absolute native path without NUL.");
+        }
+        EditorPreferences {
+            executable: self.executable.clone(),
+            arguments: self.arguments.clone(),
+            rules: Vec::new(),
+        }
+        .validate()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorCommand {
     pub executable: PathBuf,
@@ -64,6 +136,7 @@ impl EditorCommand {
         EditorPreferences {
             executable: Some(self.executable.clone()),
             arguments: self.arguments.clone(),
+            rules: Vec::new(),
         }
         .validate()?;
         if !file.is_absolute() || file.as_os_str().as_encoded_bytes().contains(&0) {
@@ -134,14 +207,17 @@ mod tests {
             EditorPreferences {
                 executable: Some(exe.clone()),
                 arguments: vec!["prefix{file}".into()],
+                rules: Vec::new(),
             },
             EditorPreferences {
                 executable: Some(exe.clone()),
                 arguments: vec!["{file}".into(), "x\0y".into()],
+                rules: Vec::new(),
             },
             EditorPreferences {
                 executable: Some(exe),
                 arguments: vec!["{file}".into(); MAX_EDITOR_ARGUMENTS + 1],
+                rules: Vec::new(),
             },
         ] {
             assert!(value.validate().is_err(), "accepted {value:?}");
@@ -154,7 +230,8 @@ mod tests {
         assert!(
             EditorPreferences {
                 executable: None,
-                arguments: vec!["--ignored".into(), "{file}".into()]
+                arguments: vec!["--ignored".into(), "{file}".into()],
+                rules: Vec::new(),
             }
             .validate()
             .is_err()

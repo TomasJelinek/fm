@@ -42,7 +42,7 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
         ),
         (
             "*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.cab;*.iso",
-            RgbColor(217, 119, 6),
+            RgbColor(234, 179, 8),
         ),
         (
             "*.ppt;*.pptx;*.pptm;*.pps;*.ppsx;*.odp",

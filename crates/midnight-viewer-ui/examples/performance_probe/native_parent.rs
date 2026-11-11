@@ -10,8 +10,8 @@ use std::{
 slint::slint! {
     export component ProbeParent inherits Window {
         title: "Viewer diagnostic parent";
-        width: 1000px;
-        height: 700px;
+        preferred-width: 1000px;
+        preferred-height: 700px;
         background: #191d25;
     }
 }
@@ -20,12 +20,30 @@ pub(super) fn run<T: 'static>(
     native_parent: bool,
     setup: impl FnOnce(WindowPlacement) -> Result<T, Box<dyn std::error::Error>> + 'static,
 ) -> Result<T, Box<dyn std::error::Error>> {
+    let size = std::env::var("MIDNIGHT_VIEWER_PROBE_SIZE")
+        .ok()
+        .and_then(|value| {
+            let (width, height) = value.split_once('x')?;
+            Some(slint::LogicalSize::new(
+                width.parse().ok()?,
+                height.parse().ok()?,
+            ))
+        })
+        .filter(|size| {
+            (320.0..=4096.0).contains(&size.width) && (240.0..=4096.0).contains(&size.height)
+        })
+        .unwrap_or(slint::LogicalSize::new(1000.0, 700.0));
     if !native_parent {
-        let running = setup(slint::LogicalSize::new(1000.0, 700.0).into())?;
+        let running = setup(size.into())?;
         slint::run_event_loop()?;
         return Ok(running);
     }
     let parent = ProbeParent::new()?;
+    parent.window().set_size(size);
+    parent.window().on_close_requested(|| {
+        eprintln!("probe_exit native_parent_close_requested=true");
+        slint::CloseRequestResponse::HideWindow
+    });
     parent.show()?;
     let waiting = parent.as_weak();
     let result = Rc::new(RefCell::new(None));

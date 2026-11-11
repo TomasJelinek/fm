@@ -171,6 +171,12 @@ foreach ($name in @('basic', 'source', 'markdown')) {
 }
 $files = New-Object 'System.Collections.Generic.List[string]'
 $files.Add($executable)
+$authorizationHelper = Join-Path $SourceDirectory 'midnight-elevated-listing.exe'
+if (-not (Test-Path -LiteralPath $authorizationHelper -PathType Leaf)) {
+    throw 'Build input must contain the dedicated midnight-elevated-listing.exe helper'
+}
+Assert-PlainPath $authorizationHelper
+$files.Add($authorizationHelper)
 $pending = New-Object 'System.Collections.Generic.Stack[string]'
 $pending.Push($viewers)
 foreach ($kind in @('filesystems', 'thumbnailers')) {

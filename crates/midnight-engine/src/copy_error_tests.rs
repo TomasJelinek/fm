@@ -130,6 +130,7 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
     assert_eq!(done.state, CopyOperationState::Completed);
     assert_eq!(done.files_completed, 1);
     assert_eq!(done.copied_bytes, bytes.len() as u64);
+    assert_eq!(done.completed_bytes, bytes.len() as u64);
     assert_eq!(done.verified_bytes, bytes.len() as u64);
     assert_eq!(done.failed, 0);
     assert_eq!(fs::read(destination.join("source.bin")).unwrap(), bytes);

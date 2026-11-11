@@ -457,3 +457,7 @@ mod tests {
         assert!(check(&child).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "trust_windows_batch_tests.rs"]
+mod batch_tests;

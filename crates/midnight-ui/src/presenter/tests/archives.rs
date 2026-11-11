@@ -54,6 +54,7 @@ pub(super) fn archive_pane() -> Presenter {
         node(4, "same.txt", EntryKind::File),
     ]
     .into();
+    p.panes[0].folder_column_samples.observe(u64::MAX);
     p.apply(Event::ArchiveListed {
         pane: PaneId::Left,
         navigation: nav,
@@ -64,6 +65,12 @@ pub(super) fn archive_pane() -> Presenter {
         }),
     });
     p
+}
+
+#[test]
+fn archive_listing_clears_native_folder_column_samples() {
+    let p = archive_pane();
+    assert_eq!(p.panes[0].folder_column_samples.maximum(), None);
 }
 
 #[test]

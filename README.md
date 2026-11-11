@@ -42,10 +42,11 @@ Explicitly opened files use host associations,
 and explicitly submitted shell commands run with
 the selected user/sudo permissions. F3 opens an installed internal viewer; Alt+F3 forces
 plain text, and F4 opens the configured external editor. Ctrl+C/Ctrl+V copies files and ordinary folders through a
-background queue with independent SHA-256 destination readback. Existing names
+background queue with independent SHA-256 destination readback by default. Existing names
 prompt for Skip, a different name, explicit folder Merge or recoverable Replace;
 replacement retains the displaced original. F6 and Ctrl+X/Ctrl+V use ordinary
-Move on qualified Windows NTFS and Linux ext storage: independently verify each
+Move on qualified Windows NTFS and Linux ext storage. Same-volume moves use native
+rename without reading file contents. Cross-volume moves independently verify each
 destination, then delete that exact source before continuing. Recursive ordinary
 folders use the same per-file checks and remove emptied source folders last.
 There is no source-recovery mode or journal. See the
@@ -55,10 +56,19 @@ required modified-time preservation currently accepts regular files only.
 See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
 
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
-an unavailable destination or a full disk. Retry preserves full checksum checks;
+an unavailable destination or a full disk. Retry preserves the verification policy captured when the job started;
 Skip All applies only to the same error type and phase in that job. Decide later
-keeps the pending decision in Jobs. Successful transfers close automatically
-opened progress; manually opened Jobs stays open, and the recent job record remains.
+keeps the pending decision available from Jobs. Copy, Move and Delete share one
+progress-window component, with a separate modeless window for each operation.
+The speed chart also shows overall completion; current-file writes have their own
+meter. Discovery precedes known totals, and Pause/Resume waits for safe backend
+checkpoints. ETA remains Calculating when its work estimate is unavailable.
+X, Escape and Cancel operation request cancellation of that exact job, including
+cleanup of unpublished temporary files; they never mean silent background work.
+Successful automatically opened progress closes. Manually reopened progress and
+manually opened Jobs stay open. All job receipts remain for the session until
+explicitly cleared; Jobs is the ledger and opens individual progress windows.
+See [operation progress behavior and limits](docs/developer/OPERATION_PROGRESS.md).
 See [error recovery and validation](docs/verification/2026-11-08-transfer-errors.md).
 
 Mouse file dragging uses the same verified copy queue for drops into either panel's
@@ -129,6 +139,14 @@ override. Cargo's checked-in configuration puts compiled and generated output
 under `_build/`. The build helpers also keep their child processes'
 temporary files under `_build/tmp/`.
 
+Permission-denied native folders offer an explicit authorized listing retry using
+Windows UAC or Linux polkit (`pkexec` and a desktop authorization agent). The build
+helpers also build `midnight-elevated-listing` alongside the host; keep its `.exe`
+on Windows, or native executable on Linux, in the same protected installation.
+This one-shot helper lists the requested directory only, loads no plugins and
+does not elevate ordinary file operations, change ACLs or store passwords. See
+[the authorization boundary](docs/verification/2026-11-11-directory-authorization.md).
+
 ### Windows x64
 
 Install the Visual Studio **Desktop development with C++** workload, including
@@ -148,8 +166,8 @@ Host-only commands with a normal Rust installation (native filesystem and viewer
 must also be built with the helpers above):
 
 ```powershell
-cargo build -p midnight-explorer --locked
-cargo build -p midnight-explorer --locked --release
+cargo build -p midnight-explorer -p midnight-elevation --locked
+cargo build -p midnight-explorer -p midnight-elevation --locked --release
 ```
 
 The default build is debug. The frame rendering libraries use optimization level 2
@@ -248,8 +266,8 @@ Build using the POSIX helper, or build only the host with Cargo:
 ./build.sh
 ./build.sh release
 
-cargo build -p midnight-explorer --locked
-cargo build -p midnight-explorer --locked --release
+cargo build -p midnight-explorer -p midnight-elevation --locked
+cargo build -p midnight-explorer -p midnight-elevation --locked --release
 ```
 
 Run in a graphical desktop session with X11 or Wayland and working graphics
@@ -288,6 +306,8 @@ build, from the repository root:
 
 ```sh
 install -Dm755 _build/release/me "$HOME/.local/bin/me"
+install -Dm755 _build/release/midnight-elevated-listing \
+    "$HOME/.local/bin/midnight-elevated-listing"
 mkdir -p "$HOME/.local/bin/viewers"
 cp -R _build/release/viewers/. "$HOME/.local/bin/viewers/"
 install -Dm644 packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop \
@@ -482,7 +502,7 @@ editor scope and shortcuts reserved for later stages.
   counted just to open the confirmation.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
   The Options gear is at the right of the top toolbar; Jobs shows the operation
-  queue, progress and cancellation.
+  queue and session history; Open displays the selected operation's progress.
 - Hold Ctrl to show the effective Ctrl+F1–F12 captions and actions in the footer.
   Remapped or disabled shortcuts are reflected in this layer. Ctrl+F11 expands
   the active panel across the entire panels area, completely hiding the other
@@ -692,7 +712,7 @@ independent budgets.
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build -p midnight-explorer --locked
+cargo build -p midnight-explorer -p midnight-elevation --locked
 cargo run -p midnight-explorer -- --smoke-test
 cargo run -p midnight-explorer -- --ui-smoke-test --software
 ```

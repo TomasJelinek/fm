@@ -15,7 +15,19 @@ use windows_sys::Win32::{
 const MAX_UNITS: usize = 4 * 1024 * 1024;
 
 pub(crate) fn snapshot(overrides: &[(String, OsString)]) -> io::Result<Vec<u16>> {
-    let mut inherited = std::env::vars_os().collect::<Vec<_>>();
+    snapshot_with_inherited(std::env::vars_os().collect(), overrides)
+}
+
+pub(crate) fn snapshot_with_inherited(
+    mut inherited: Vec<(OsString, OsString)>,
+    overrides: &[(String, OsString)],
+) -> io::Result<Vec<u16>> {
+    // Native Shell menu initialization can introduce this non-drive private key.
+    // Do not serialize it as a custom child variable. Keep malformed values so the
+    // strict block encoder still rejects NUL; fixed caller overrides are checked later.
+    inherited.retain(|(key, value)| {
+        key.as_os_str() != std::ffi::OsStr::new("=::") || value.encode_wide().any(|unit| unit == 0)
+    });
     // CreateProcess does not propagate per-drive cwd records with a custom block.
     // GetFullPathNameW("X:") is the documented non-mutating way to retrieve them.
     for letter in b'A'..=b'Z' {

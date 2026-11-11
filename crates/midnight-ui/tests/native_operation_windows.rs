@@ -361,8 +361,11 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             drop(commands);
             h.assert_closed(&child);
             // This synthetic sink has no terminal progress reply. Close the
-            // distinct modeless Jobs child through its real Escape route.
-            assert!(h.main.get_operations_visible());
+            // distinct modeless progress child through its real Escape route.
+            assert!(
+                !h.main.get_operations_visible(),
+                "progress is independent from Jobs"
+            );
             let jobs: Vec<_> = h
                 .windows
                 .borrow()
@@ -374,12 +377,12 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             assert_eq!(
                 jobs.len(),
                 1,
-                "only Jobs remains after the form is accepted"
+                "only progress remains after the form is accepted"
             );
             assert!(!Rc::ptr_eq(&child, &jobs[0]), "Jobs has its own adapter");
             modeless::draw(&jobs[0], 720, 500, "transfer-jobs");
             assert!(
-                modeless::accessible_item(&jobs[0], AccessibleRole::Button, "Copy details")
+                modeless::accessible_item(&jobs[0], AccessibleRole::Button, "Cancel operation")
                     .is_some()
             );
             key(&jobs[0], Key::Escape);
@@ -628,6 +631,74 @@ fn native_operation_client_paints_the_native_icon_and_distinct_fallback_artwork(
             width as usize,
             height as usize,
             &format!("native-operation-icon-{width}x{height}"),
+        );
+    }
+}
+
+#[test]
+fn trash_and_permanent_delete_share_modeless_progress_and_close_means_cancel() {
+    let h = Harness::new();
+    for action in [1, 2] {
+        let (id, confirmation) = h.operation(PaneId::Left, action);
+        assert_eq!(
+            h.main.get_operations().row_count(),
+            (action - 1) as usize,
+            "an unconfirmed delete must not appear in Jobs"
+        );
+        key(&confirmation, Key::Return);
+        h.assert_closed(&confirmation);
+        assert!(matches!(h.commands.borrow().as_slice(),
+            [Command::ConfirmOperation { id: actual, new_name: None }] if *actual == id));
+        let children: Vec<_> = h
+            .windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .filter(|window| window.window().is_visible())
+            .cloned()
+            .collect();
+        assert_eq!(
+            children.len(),
+            1,
+            "each confirmed delete gets its own progress window"
+        );
+        let progress = &children[0];
+        assert!(!h.main.get_dialog_input_blocked());
+        assert!(
+            !h.main.get_operations_visible(),
+            "the Jobs ledger is independent"
+        );
+        modeless::draw(progress, 640, 420, "delete-progress");
+        assert_visible(progress, "Deletion speed", AccessibleRole::Groupbox);
+        assert_visible(
+            progress,
+            "Overall progress",
+            AccessibleRole::ProgressIndicator,
+        );
+        h.commands.borrow_mut().clear();
+        modeless::click(progress, "Pause");
+        assert!(matches!(h.commands.borrow().as_slice(),
+            [Command::SetOperationPaused { id: actual, paused: true }] if *actual == id));
+        h.commands.borrow_mut().clear();
+        h.accepting.set(false);
+        progress
+            .window()
+            .dispatch_event(WindowEvent::CloseRequested);
+        assert!(
+            progress.window().is_visible(),
+            "a refused cancel must not hide live work"
+        );
+        assert!(h.commands.borrow().is_empty());
+        h.accepting.set(true);
+        key(progress, Key::Escape);
+        assert!(!progress.window().is_visible());
+        assert!(matches!(h.commands.borrow().as_slice(),
+            [Command::CancelOperation(actual)] if *actual == id));
+        assert!(
+            h.main
+                .get_operations()
+                .iter()
+                .any(|row| row.identity == id.0.to_string() && row.state == "Cancelling")
         );
     }
 }

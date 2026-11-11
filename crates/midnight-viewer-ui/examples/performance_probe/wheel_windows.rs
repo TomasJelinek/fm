@@ -32,6 +32,18 @@ pub(super) fn send(
             // SAFETY: The borrowed handle belongs to this live probe window. Posted
             // messages carry integers, retain no pointers, and perform no file work.
             timeline.record("wheel_enqueue", f64::from(delta));
+            if std::env::var_os("MIDNIGHT_VIEWER_PROBE_FOCUS_CLICK").is_some() {
+                static CLICKED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !CLICKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    // SAFETY: Integer pointer messages target only this live probe window.
+                    unsafe {
+                        PostMessageW(hwnd, 0x0200, 0, (x | y << 16) as isize);
+                        PostMessageW(hwnd, 0x0201, 1, (x | y << 16) as isize);
+                        PostMessageW(hwnd, 0x0202, 0, (x | y << 16) as isize);
+                    }
+                }
+            }
             let sent = unsafe {
                 PostMessageW(hwnd, 0x0200, 0, (x | y << 16) as isize) != 0
                     && PostMessageW(hwnd, 0x020A, (delta as u16 as usize) << 16, 0) != 0

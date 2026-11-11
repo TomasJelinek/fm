@@ -37,6 +37,7 @@ fn exercise(command: bool) {
     ];
     let preferences = UserPreferences {
         editor: EditorPreferences {
+            rules: Vec::new(),
             executable: Some(executable.clone()),
             arguments: original.clone(),
         },
@@ -130,6 +131,24 @@ fn exercise(command: bool) {
         [" \"literal 文档\" & ", placeholder, "文档 two words"]
     );
     action(&mut test, "Add argument");
+    assert_eq!(
+        values(&test, command).len(),
+        3,
+        "starting an edit must not add an empty argv item"
+    );
+    ui::popup_item(
+        &test.window,
+        &format!("{prefix} new argument"),
+        AccessibleRole::TextInput,
+    )
+    .accessible_action(&AccessibilityAction::SetValue("new literal".into()));
+    test.draw();
+    assert_eq!(values(&test, command).last().unwrap(), "new literal");
+    action(&mut test, "Remove argument");
+    action(&mut test, "Add argument");
+    // An empty argument is still supported, but must be added explicitly.
+    ui::key(&test.window, Key::Return);
+    test.draw();
     selected(&test, 4);
     editor_value(&test, 4, "");
     assert_eq!(values(&test, command).last().unwrap(), "");

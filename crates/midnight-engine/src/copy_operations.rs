@@ -206,7 +206,7 @@ impl Controller {
             publish(&self.outbox, rejected_progress(progress, error)).await;
             return;
         }
-        let cancel = self.cancel.child();
+        let cancel = self.cancel.pausable_child();
         let status = Arc::new(Mutex::new(progress.clone()));
         let waiting = Arc::new(AtomicU64::new(0));
         let (decisions, decision_receiver) = mpsc::channel(8);
@@ -275,6 +275,21 @@ impl Controller {
             let _ = job.decisions.try_send(decision);
         }
     }
+    pub(crate) async fn set_paused(&self, id: OperationId, paused: bool) {
+        let progress = {
+            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(job) = registry.get(&id) else { return };
+            let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
+            if job.cancel.is_cancelled() || progress.state.is_terminal() {
+                return;
+            }
+            job.cancel.set_pause_requested(paused);
+            progress.pause_requested = job.cancel.pause_requested();
+            progress.paused = job.cancel.is_paused();
+            progress.clone()
+        };
+        publish(&self.outbox, progress).await;
+    }
     pub(crate) fn cancel(&self, id: OperationId) {
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = registry.get(&id) {
@@ -285,6 +300,8 @@ impl Controller {
             {
                 return;
             }
+            progress.pause_requested = false;
+            progress.paused = false;
             progress.state = CopyOperationState::CancelRequested;
             crate::operation_throughput::stop(&mut progress.throughput);
             if self
@@ -382,6 +399,7 @@ async fn run_input(
     io_budget: &Arc<Semaphore>,
 ) -> CopyProgress {
     let status = request.status.clone();
+    let cancel = request.cancel.clone();
     let throughput = Mutex::new(Tracker::default());
     let pending = execute_input(request, service, outbox, io_budget, &throughput);
     tokio::pin!(pending);
@@ -391,11 +409,15 @@ async fn run_input(
         tokio::select! {
             progress = &mut pending => {
                 let mut progress = progress;
+                progress.pause_requested = false;
+                progress.paused = false;
                 throughput.lock().unwrap_or_else(|e| e.into_inner()).copy(&mut progress);
                 return progress;
             },
             _ = timer.tick() => {
-                let progress = sample_throughput(&status, &throughput);
+                let changed = refresh_pause(&status, &cancel);
+                let progress = sample_throughput(&status, &throughput)
+                    .or_else(|| changed.then(|| snapshot(&status)));
                 if let Some(progress) = progress
                     && outbox.sender.try_send(Event::Copy(CopyEvent::Progress(Arc::new(progress)))).is_ok()
                 {
@@ -449,6 +471,10 @@ async fn execute_input(
         outbox,
         throughput,
     };
+    if !wait_for_pause(&cancel, &status, outbox, throughput).await {
+        retire(command.into_inner()).await;
+        return cancelled(&status);
+    }
     let mut job = match prepare_job(command.into_inner(), service, io_budget, &mut waiter).await {
         Ok(job) => job,
         Err(progress) => return *progress,
@@ -464,10 +490,17 @@ async fn execute_input(
     sample_throughput(&status, throughput);
     publish(outbox, snapshot(&status)).await;
     loop {
+        if !wait_for_pause(&cancel, &status, outbox, throughput).await {
+            break;
+        }
         // Cancellation cannot abort an OS call or relinquish its permit early.
         let Some(permit) = acquire(io_budget, &cancel).await else {
             break;
         };
+        // Pause may have arrived while waiting for the shared I/O permit.
+        if !wait_for_pause(&cancel, &status, outbox, throughput).await {
+            break;
+        }
         let executed = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let step = job.step();
@@ -521,13 +554,48 @@ async fn execute_input(
     }
 }
 
+fn refresh_pause(status: &Status, cancel: &Cancellation) -> bool {
+    let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
+    let requested = !progress.state.is_terminal() && cancel.pause_requested();
+    let paused = requested && cancel.is_paused();
+    let changed = (progress.pause_requested, progress.paused) != (requested, paused);
+    progress.pause_requested = requested;
+    progress.paused = paused;
+    changed
+}
+async fn wait_for_pause(
+    cancel: &Cancellation,
+    status: &Status,
+    outbox: &Outbox,
+    throughput: &Mutex<Tracker>,
+) -> bool {
+    loop {
+        let ready = cancel.pause_checkpoint();
+        let changed = refresh_pause(status, cancel);
+        if changed || ready {
+            sample_throughput(status, throughput);
+        }
+        if changed {
+            publish(outbox, snapshot(status)).await;
+        }
+        if ready || cancel.is_cancelled() {
+            return ready;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn snapshot(status: &Status) -> CopyProgress {
     status.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 fn set_state(status: &Status, state: CopyOperationState) {
     status.lock().unwrap_or_else(|e| e.into_inner()).state = state;
 }
-async fn publish(outbox: &Outbox, progress: CopyProgress) {
+async fn publish(outbox: &Outbox, mut progress: CopyProgress) {
+    if progress.state.is_terminal() {
+        progress.pause_requested = false;
+        progress.paused = false;
+    }
     outbox
         .send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
         .await;

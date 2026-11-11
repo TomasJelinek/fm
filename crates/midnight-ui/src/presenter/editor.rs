@@ -71,6 +71,7 @@ impl Presenter {
         let editor = EditorPreferences {
             executable,
             arguments,
+            rules: self.preferences.values.editor.rules.clone(),
         };
         if let Err(error) = editor.validate() {
             self.editor.error = error.into();

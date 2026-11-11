@@ -12,7 +12,9 @@ mod comparison;
 mod copy_fence;
 mod copy_operations;
 mod desktop;
+mod diagnostic_text;
 mod drag_drop;
+mod elevation;
 mod entry_sizes;
 mod file_list_actor;
 mod file_list_output;
@@ -141,6 +143,7 @@ impl Request {
 }
 
 pub struct Engine {
+    elevation: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
     archive_capture: Option<ArchiveCapture>,
     navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
     user_commands: Option<Arc<dyn midnight_core::UserCommandService>>,
@@ -233,6 +236,7 @@ impl Engine {
         wakeup: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         Self {
+            elevation: None,
             archive_capture: None,
             navigation_fallback: None,
             user_commands: None,
@@ -255,6 +259,15 @@ impl Engine {
                 wakeup,
             },
         }
+    }
+
+    /// Only explicit retries of correlated denied navigations can invoke this service.
+    pub fn with_elevated_directories(
+        mut self,
+        service: Arc<dyn midnight_core::ElevatedDirectoryService>,
+    ) -> Self {
+        self.elevation = Some(service);
+        self
     }
 
     /// Native archive container reads require this explicit backend provider authority.
@@ -355,6 +368,7 @@ impl Engine {
         let network_budget = Arc::new(Semaphore::new(1));
         let mut locale_requested = false;
         let mut requests: [Option<Request>; 2] = [None, None];
+        let denied_navigations = elevation::DeniedNavigations::default();
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
         let mut find = find::Controller::new(
@@ -506,6 +520,17 @@ impl Engine {
                     desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks);
                 }
                 command = commands.recv() => {
+                    let mut elevated = None;
+                    let offer_elevation = self.elevation.is_some() && matches!(&command, Some(Command::Navigate { .. }));
+                    let command = match command {
+                        Some(Command::RetryDirectoryWithElevation { pane, denied_navigation, navigation }) => {
+                            let Some(service) = self.elevation.clone() else { continue; };
+                            let Some((path, sort)) = denied_navigations.consume(pane, denied_navigation, navigation) else { continue; };
+                            elevated = Some(service);
+                            Some(Command::Navigate { pane, navigation, path, sort })
+                        }
+                        command => command,
+                    };
                     let navigation_request = match &command {
                         Some(Command::Navigate { pane, navigation, .. }
                             | Command::Refresh { pane, navigation, .. }
@@ -517,6 +542,7 @@ impl Engine {
                     if let Some((pane, navigation)) = navigation_request {
                         if navigation_high_water[pane.index()].is_some_and(|old| navigation <= old) { continue; }
                         navigation_high_water[pane.index()] = Some(navigation);
+                        denied_navigations.begin(pane, navigation);
                         folder_presence.cancel(pane);
                     }
                     let resort = matches!(&command, Some(Command::Resort { .. }));
@@ -530,6 +556,7 @@ impl Engine {
                         _ => None,
                     };
                     match command {
+                        Some(Command::RetryDirectoryWithElevation { .. }) => unreachable!("normalized above"),
                         Some(Command::RunFileList(request))=>{
                             let (id,generation)=(request.id,request.generation);
                             if let Err(error)=file_lists.start(*request,&mut tasks){
@@ -543,6 +570,7 @@ impl Engine {
                         }
                         Some(Command::CancelFileList{id,generation})=>file_lists.cancel(id,generation),
                         Some(Command::CopyGeneratedText{request,content,cancel})=>clipboard.copy_generated(request,content,cancel,&mut tasks).await,
+                        Some(Command::ReadDiagnosticText { request, content, cancel }) => size_warning_requests.preview(request, content, cancel, &mut tasks).await,
                         Some(Command::OpenSizeWarnings { request, report, cancel }) => size_warning_requests.open(request, report, cancel, &mut tasks).await,
                         Some(Command::PreviewUserCommand(request)) => {
                             let (request_id, command) = (request.id, request.command.clone());
@@ -703,6 +731,8 @@ impl Engine {
                         Some(Command::EnqueueCapturedTransfer(request)) => copies.enqueue_captured(request).await,
                         Some(Command::DecideCopy(decision)) => copies.decide(decision).await,
                         Some(Command::CancelCopy(id)) => copies.cancel(id),
+                        Some(Command::SetCopyPaused { id, paused }) => copies.set_paused(id, paused).await,
+                        Some(Command::SetOperationPaused { id, paused }) => operations.set_paused(id, paused).await,
                         Some(Command::AttachDragDrop { host, targets }) => drag_drop.attach(host, targets, &mut tasks).await,
                         Some(Command::DetachDragDrop { host_generation }) => drag_drop.detach(host_generation),
                         Some(Command::PrepareDrag { id, pane, navigation, files }) => drag_drop.prepare(id, pane, navigation, files).await,
@@ -931,6 +961,7 @@ impl Engine {
                             let listing_snapshots = snapshots.clone();
                             let selection_stream = selection.streaming.clone();
                             let navigation_fallback = self.navigation_fallback.clone();
+                            let denied_navigations = denied_navigations.clone();
                             let listing = tasks.spawn(async move {
                                 if !outbox.send(Event::ListingStarted { pane, navigation, path: listing_path.clone() }).await { return; }
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
@@ -943,7 +974,7 @@ impl Engine {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback });
+                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback });
                                 }).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -1033,6 +1064,9 @@ async fn retire_commands(commands: mpsc::Receiver<Command>) {
 }
 
 struct ListingTask {
+    elevated: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
+    offer_elevation: bool,
+    denied_navigations: elevation::DeniedNavigations,
     navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
     selection_stream: streaming_selection::StreamingSelections,
     filesystem: Arc<dyn FileSystem>,
@@ -1051,6 +1085,9 @@ struct ListingTask {
 
 fn list_directory(task: ListingTask) {
     let ListingTask {
+        elevated,
+        offer_elevation,
+        denied_navigations,
         navigation_fallback,
         selection_stream,
         filesystem,
@@ -1087,7 +1124,7 @@ fn list_directory(task: ListingTask) {
     let mut icon_types = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
-    let result = filesystem.read_directory(&path, &cancel, &mut |mut entry| {
+    let mut emit = |mut entry: Entry| {
         if cancel.is_cancelled() {
             return false;
         }
@@ -1112,16 +1149,49 @@ fn list_directory(task: ListingTask) {
             );
         }
         true
-    });
+    };
+    let result = if let Some(service) = &elevated {
+        service.read_directory(&path, &cancel, &mut emit)
+    } else {
+        filesystem.read_directory(&path, &cancel, &mut emit)
+    };
     if cancel.is_cancelled() {
         return;
     }
     if let Err(error) = result {
         listing_failed(&snapshots, pane, navigation);
+        if offer_elevation
+            && error.kind == std::io::ErrorKind::PermissionDenied
+            && path.is_absolute()
+            && denied_navigations.record(pane, navigation, &path, sort)
+        {
+            if outbox.blocking_send(
+                Event::ListingFailed {
+                    pane,
+                    navigation,
+                    error,
+                },
+                &cancel,
+            ) {
+                outbox.blocking_send(
+                    Event::DirectoryElevationAvailable {
+                        pane,
+                        navigation,
+                        path,
+                    },
+                    &cancel,
+                );
+            }
+            return;
+        }
         let event = match navigation_fallback::next_path(
             &path,
             &error,
-            navigation_fallback.as_deref(),
+            if elevated.is_some() {
+                None
+            } else {
+                navigation_fallback.as_deref()
+            },
             &cancel,
         ) {
             Ok(Some(path)) => Event::ListingFallback {
@@ -1163,7 +1233,7 @@ fn list_directory(task: ListingTask) {
         if cancel.is_cancelled() {
             return;
         }
-        if filesystem.listing_metadata_complete(entry) {
+        if elevated.is_some() || filesystem.listing_metadata_complete(entry) {
             continue;
         }
         // A file can disappear or become unreadable while the directory is open.

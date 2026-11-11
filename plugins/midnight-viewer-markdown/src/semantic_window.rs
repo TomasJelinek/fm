@@ -45,7 +45,7 @@ pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPa
         let group = &groups[index];
         let blocks = &page.blocks[group.clone()];
         let group_bytes: usize = blocks.iter().map(|block| block.text.text.len()).sum();
-        if bytes + group_bytes > window.max_bytes.min(8192)
+        if bytes + group_bytes > window.max_bytes.min(65536)
             || selected.len() + group.len() > MAX_BLOCKS
         {
             let pivot_range = &groups[pivot];

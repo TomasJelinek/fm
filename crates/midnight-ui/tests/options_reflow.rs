@@ -148,6 +148,7 @@ fn editor_resize_preserves_the_field_instance_its_caret_and_the_complete_draft()
         executable: "ABC".into(),
         arguments: "[\"文档 two words\",\"\"]".into(),
         use_default: false,
+        ..Default::default()
     });
     test.window.invoke_show_options();
     test.window.set_options_topic_index(4);

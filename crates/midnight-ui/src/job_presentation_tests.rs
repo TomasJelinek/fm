@@ -28,7 +28,11 @@ fn copy_keeps_full_source_destination_and_verification_without_inventing_a_perce
     let p = Presenter::new("left".into(), "right".into());
     let progress = progress(1);
     let row = copy(&p, &progress);
-    assert!(!row.determinate);
+    assert!(
+        !row.determinate,
+        "no metadata discovery result is available yet"
+    );
+    assert_eq!(row.progress, 0.0);
     assert!(
         row.detail.contains(
             &progress
@@ -126,6 +130,9 @@ fn copy_and_mutation_jobs_share_chronological_order_and_stable_identity() {
     let mut p = Presenter::new("left".into(), "right".into());
     p.copies.progress = vec![Arc::new(progress(1)), Arc::new(progress(3))];
     p.operations.progress.push(Arc::new(OperationProgress {
+        pause_requested: false,
+        paused: false,
+        discovery: Default::default(),
         id: OperationId(2),
         throughput: Arc::default(),
         kind: MutationKind::Rename,
@@ -182,7 +189,11 @@ fn move_reports_exceptional_original_locations_and_never_claims_source_space_was
             .contains("Temporary location\nsource/.midnight-recovery-test/Žluťoučký.txt")
     );
     assert!(!row.failed);
-    assert!(!row.determinate);
+    assert!(
+        !row.determinate,
+        "no metadata discovery result is available yet"
+    );
+    assert_eq!(row.progress, 0.0);
 }
 
 #[test]
@@ -205,4 +216,195 @@ fn move_reports_removed_sources_separately_from_retained_and_pending_storage() {
         row.detail
             .contains("1 source namespace changes without a confirmed")
     );
+}
+
+#[test]
+fn progress_distinguishes_root_completion_from_file_write_and_verification() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(7);
+    value.requested_roots = 4;
+    value.completed_roots = 1;
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Complete,
+        scope: DiscoveryScope::SelectedRoots,
+        files: 4,
+        ..Default::default()
+    };
+    value.current_file_size = Some(1_000);
+    value.current_file_copied = 500;
+    let row = copy(&p, &value);
+    assert_eq!(row.progress, 0.25);
+    assert_eq!(row.file_progress, 0.5);
+    assert!(row.file_determinate && row.active && !row.completed);
+    assert_eq!(row.progress_label, "25% complete");
+    value.current_file_copied = 1_000;
+    value.phase = CopyOperationPhase::Verifying;
+    let row = copy(&p, &value);
+    assert_eq!(row.file_progress, 1.0);
+    assert_eq!(row.progress, 0.25, "a written file is not yet committed");
+    assert!(row.state.contains("Verifying"));
+    value.current_file_size = None;
+    assert!(!copy(&p, &value).file_determinate);
+}
+
+#[test]
+fn discovered_totals_keep_recursive_counts_and_exact_bytes_in_copy_details() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(8);
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Complete,
+        scope: DiscoveryScope::Recursive,
+        files: 23,
+        directories: 4,
+        bytes: Some(123_456),
+        message: String::new(),
+    };
+    let row = copy(&p, &value);
+    assert!(row.detail.contains("Discovered totals"));
+    assert!(
+        row.detail
+            .contains("Selected items and discovered folder contents")
+    );
+    assert!(
+        row.detail
+            .contains("Files and other entries: 23\nFolders: 4")
+    );
+    assert!(row.detail.contains(&format!(
+        "Logical file bytes: {} bytes",
+        p.number_locale.format_u64(123_456)
+    )));
+    value
+        .discovery
+        .unavailable("Source membership changed after discovery.");
+    let row = copy(&p, &value);
+    assert!(!row.detail.contains("Discovered totals"));
+    assert!(
+        row.detail
+            .contains("Source membership changed after discovery.")
+    );
+}
+
+#[test]
+fn delete_details_mark_selected_root_scope_and_unknown_bytes_explicitly() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = OperationProgress {
+        id: OperationId(9),
+        kind: MutationKind::Delete(DeleteMode::Trash),
+        state: OperationState::Running,
+        pause_requested: false,
+        paused: false,
+        total: 3,
+        completed: 0,
+        failed: 0,
+        processed_entries: 0,
+        current_path: None,
+        source_directory: "source".into(),
+        renamed_to: None,
+        message: String::new(),
+        errors: vec![],
+        throughput: Arc::default(),
+        discovery: OperationDiscovery {
+            state: DiscoveryState::Complete,
+            scope: DiscoveryScope::SelectedRoots,
+            files: 1,
+            directories: 2,
+            bytes: None,
+            message: String::new(),
+        },
+    };
+    let row = mutation(&p, &value);
+    assert!(
+        row.detail
+            .contains("Selected items only; folder contents were not counted")
+    );
+    assert!(
+        row.detail
+            .contains("Files and other entries: 1\nFolders: 2")
+    );
+    assert!(row.detail.contains("Logical file bytes: Unknown"));
+    value.discovery.state = DiscoveryState::Scanning;
+    assert!(!mutation(&p, &value).detail.contains("Discovered totals"));
+    value
+        .discovery
+        .unavailable("Directory metadata could not be read.");
+    let row = mutation(&p, &value);
+    assert!(!row.detail.contains("Discovered totals"));
+    assert!(row.detail.contains("Directory metadata could not be read."));
+}
+
+#[test]
+#[ignore = "opt-in history projection timing; run alone with --ignored --nocapture"]
+fn benchmark_warm_job_history_projection() {
+    use std::{hint::black_box, time::Instant};
+    const ITERATIONS: u32 = 8;
+    for count in [1_000, 10_000] {
+        for detailed in [false, true] {
+            let mut p = Presenter::new("left".into(), "right".into());
+            let samples: Arc<[ThroughputSample]> = (0..240)
+                .map(|index| ThroughputSample {
+                    start_millis: index * 250,
+                    elapsed_millis: (index + 1) * 250,
+                    transfer_per_second: 100_000.0 + index as f64,
+                    verification_per_second: 80_000.0,
+                    items_per_second: 0.0,
+                })
+                .collect();
+            for index in 0..count {
+                let mut value = progress(index as u64);
+                value.state = CopyOperationState::Completed;
+                value.current_path = None;
+                value.completed_bytes = 1000;
+                value.completed_directories = 3;
+                value.copied_bytes = 1000;
+                value.verified_bytes = 1000;
+                value.discovery = OperationDiscovery {
+                    state: DiscoveryState::Complete,
+                    files: 2,
+                    directories: 3,
+                    bytes: Some(1000),
+                    ..Default::default()
+                };
+                if detailed {
+                    value.state = CopyOperationState::CompletedWithErrors;
+                    value.failed = 16;
+                    value.errors = (0..16)
+                        .map(|error| {
+                            FsError::from_io(
+                                "copy files",
+                                &PathBuf::from(format!("source/資料/{index}/entry-{error}")),
+                                io::Error::other("retained failure detail ".repeat(12)),
+                            )
+                        })
+                        .collect();
+                    value.throughput = Arc::new(OperationThroughput {
+                        samples: samples.clone(),
+                        ..Default::default()
+                    });
+                }
+                p.copies.progress.push(Arc::new(value));
+            }
+            // Populate chart caches before measuring unchanged history projection.
+            assert_eq!(rows(&p).len(), count);
+            for changing in [false, true] {
+                let started = Instant::now();
+                for tick in 0..ITERATIONS {
+                    if changing {
+                        let active = Arc::make_mut(p.copies.progress.last_mut().unwrap());
+                        active.state = CopyOperationState::Running;
+                        active.completed_bytes = 0;
+                        active.completed_directories = 0;
+                        active.files_completed = 0;
+                        active.current_file_size = Some(1000);
+                        active.current_file_copied = u64::from(tick) * 10;
+                    }
+                    drop(black_box(rows(black_box(&p))));
+                }
+                eprintln!(
+                    "job-history rows={count} detailed={detailed} one_active={changing} \
+                     iterations={ITERATIONS} mean_ms={:.3}",
+                    started.elapsed().as_secs_f64() * 1000.0 / f64::from(ITERATIONS)
+                );
+            }
+        }
+    }
 }

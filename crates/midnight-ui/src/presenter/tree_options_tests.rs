@@ -135,6 +135,7 @@ fn tree_filter_ok_waits_for_application_receipt() {
     });
     assert!(!p.filter_dialog.open);
     assert!(!p.preferences.values.panel_filters[0].enabled);
+    assert!(p.preferences.values.panel_filter_history.is_empty());
     assert!(!p.panes[0].search.panel_filter.enabled);
     assert!(Arc::ptr_eq(&original, p.panes[0].tree_view().unwrap()));
     assert!(
@@ -1214,4 +1215,16 @@ fn tree_prefix_filter_preference_keeps_matching_caret_and_replaces_hidden_caret(
         );
         assert!(p.panes[0].search_allows_activation());
     }
+}
+
+#[test]
+fn tree_filter_history_waits_for_successful_correlated_publication() {
+    let mut p = fixture();
+    let request = enqueue(&mut p);
+    assert!(p.preferences.values.panel_filter_history.is_empty());
+    p.apply_with_sender(receipt(&request), &|_| true);
+    assert_eq!(
+        p.preferences.values.panel_filter_history,
+        vec![request.options.filter]
+    );
 }

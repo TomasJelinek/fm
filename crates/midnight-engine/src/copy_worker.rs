@@ -6,6 +6,8 @@ use std::{
     ffi::OsString,
     path::Component,
 };
+#[path = "copy_discovery.rs"]
+mod discovery;
 #[path = "copy_failures.rs"]
 mod failures;
 #[path = "copy_metadata_worker.rs"]
@@ -26,6 +28,8 @@ struct Frame {
     destination: Arc<dyn TransferDirectory>,
     retain_source: bool,
     enumeration_complete: bool,
+    failed_before: u64,
+    skipped_before: u64,
 }
 struct RootCompletion {
     source: CompletedCopySource,
@@ -340,8 +344,10 @@ impl Job {
             .iter()
             .filter_map(|source| source.native_identity())
             .collect();
+        let mut progress = snapshot(&status);
+        progress.requested_roots = roots.len() as u64;
         Self {
-            progress: snapshot(&status),
+            progress,
             status,
             cancel,
             destination,
@@ -411,6 +417,7 @@ impl Job {
             && root.failed == self.progress.failed
             && root.skipped == self.progress.skipped
         {
+            self.progress.completed_roots += 1;
             self.completed_root = Some(root.source);
         }
         self.progress.state = if self.cancel.is_cancelled() {
@@ -423,8 +430,34 @@ impl Job {
     }
 
     fn store_progress(&mut self) {
+        if let Some(work) = &self.current {
+            self.progress.current_path = Some(work.entry.item.path.clone());
+        }
+        self.progress.current_destination = self
+            .current
+            .as_ref()
+            .map(|work| work.destination.path().join(&work.name));
+        // Derive both fields from the same retained work item. Skip, Retry, native
+        // rename and terminal cleanup cannot leave bytes associated with another path.
+        self.progress.current_file_size = self
+            .current
+            .as_ref()
+            .and_then(|work| work.copy.as_ref().and(work.entry.item.metadata.size));
+        self.progress.current_file_copied = self
+            .current
+            .as_ref()
+            .and_then(|work| work.copy.as_ref())
+            .map_or(0, VerifiedFileCopy::copied_bytes);
+        self.progress.current_file_verified = self
+            .current
+            .as_ref()
+            .and_then(|work| work.copy.as_ref())
+            .map_or(0, VerifiedFileCopy::verified_bytes);
+        self.check_discovery_progress();
         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
         self.progress.throughput = status.throughput.clone();
+        self.progress.pause_requested = self.cancel.pause_requested();
+        self.progress.paused = self.cancel.is_paused();
         if self.cancel.is_cancelled() {
             self.progress.state = CopyOperationState::CancelRequested;
             crate::operation_throughput::stop(&mut self.progress.throughput);
@@ -572,6 +605,7 @@ impl Job {
                         .enumeration_complete = true;
                     let frame = self.stack.last().expect("completed traversal frame");
                     let retaining = frame.retain_source;
+                    let completed_before = (frame.failed_before, frame.skipped_before);
                     if let Some(mut move_work) = self.move_work.take() {
                         let entry = frame.source.entry().clone();
                         let result = if frame.retain_source {
@@ -592,6 +626,9 @@ impl Job {
                             return self
                                 .wait_for_failure(error, failures::Context::DirectoryRemoval);
                         }
+                    }
+                    if completed_before == (self.progress.failed, self.progress.skipped) {
+                        self.progress.completed_directories += 1;
                     }
                     self.stack.pop();
                     return Step::Continue;
@@ -680,6 +717,8 @@ impl Job {
                     destination,
                     retain_source: false,
                     enumeration_complete: false,
+                    failed_before: self.progress.failed,
+                    skipped_before: self.progress.skipped,
                 });
                 Step::Continue
             }
@@ -893,6 +932,7 @@ impl Job {
                 &publication,
                 TransferPublication::Published(_) | TransferPublication::Replaced { .. }
             );
+            let completed_before = self.progress.files_completed;
             match publication {
                 TransferPublication::Published(_) => self.progress.files_completed += 1,
                 TransferPublication::Replaced { recovery, .. } => {
@@ -920,6 +960,19 @@ impl Job {
                     );
                     self.record(error);
                 }
+            }
+            if self.progress.files_completed > completed_before {
+                self.progress.completed_bytes = self
+                    .progress
+                    .completed_bytes
+                    .checked_add(work.entry.item.metadata.size.unwrap_or(0))
+                    .ok_or_else(|| {
+                        error(
+                            &self.progress.destination_directory,
+                            io::ErrorKind::InvalidData,
+                            "Completed logical byte total overflow.",
+                        )
+                    })?;
             }
             if proof_eligible && let Some(move_work) = self.move_work.as_mut() {
                 let proof = work
@@ -1130,6 +1183,7 @@ impl Job {
         if let Some(error) = current_cleanup {
             self.record_cleanup_error(error);
         }
+        self.finish_discovery();
         // Keep heartbeat status nonterminal until owned native resources finish
         // dropping. The async caller publishes the returned terminal state only
         // after this worker and its I/O/mutation permits have been released.

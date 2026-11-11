@@ -41,6 +41,7 @@ impl TestUi {
             height: 820,
         }
     }
+    #[allow(dead_code)] // Used by small_window; jobs_dialog exercises the default size.
     pub fn resize(&mut self, width: usize, height: usize) {
         self.width = width;
         self.height = height;

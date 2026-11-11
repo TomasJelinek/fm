@@ -80,6 +80,13 @@ fn order<T>(
         let (right_section, right_label, right_id, right_path) = fields(right);
         left_section
             .cmp(&right_section)
+            // Named volumes precede raw mount-path labels within their section.
+            // This is presentation semantics, independent of the host path parser.
+            .then_with(|| {
+                left_label
+                    .starts_with('/')
+                    .cmp(&right_label.starts_with('/'))
+            })
             .then_with(|| {
                 compare_collated_text(
                     left_key.as_deref(),

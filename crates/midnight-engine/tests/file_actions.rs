@@ -67,7 +67,9 @@ async fn receive(events: &mut mpsc::Receiver<Event>) -> Event {
             let event = events.recv().await.unwrap();
             if !matches!(
                 event,
-                Event::IconLoaded { .. } | Event::ArchiveAvailability(_)
+                Event::IconLoaded { .. }
+                    | Event::ArchiveAvailability(_)
+                    | Event::NetworkAvailability(_)
             ) {
                 return event;
             }

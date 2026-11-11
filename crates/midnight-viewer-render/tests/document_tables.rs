@@ -286,17 +286,86 @@ fn table_paging_ranges_include_later_cells_and_keep_wrapped_cell_progress() {
                     .line_at_y(((caret.y0 + caret.y1) / 2.0) as f32)
                     .unwrap();
                 assert!(range.start >= start && range.end <= end);
-                if !suffix.is_empty() {
-                    assert_eq!(range.end, end, "backward paging must retain the later cell");
+                if !suffix.is_empty() && index == end - 1 {
+                    assert_eq!(range.end, end, "the visible later cell must be retained");
                 }
             }
-            if suffix.is_empty() {
-                assert!(
-                    first_line.end < end,
-                    "backward paging through a tall cell must progress"
-                );
-            }
+            assert!(
+                if suffix.is_empty() {
+                    first_line.end < end
+                } else {
+                    last_line.end < end
+                },
+                "an ended short cell must not pin the backward anchor"
+            );
             assert_eq!(page.selected_text(start..end).unwrap(), &text[start..end]);
+        }
+    }
+}
+
+#[test]
+fn an_ended_first_cell_does_not_pin_a_taller_later_cell_scroll_anchor() {
+    use midnight_viewer_render::{DocumentBlock, DocumentKind, DocumentStyle};
+
+    let text = format!(
+        "id\t{}",
+        "later cell wraps over many visual lines ".repeat(40)
+    );
+    let rows = [TableRow {
+        range: 0..text.len(),
+        header: false,
+        cells: vec![
+            TableCell {
+                range: 0..2,
+                alignment: CellAlignment::Left,
+            },
+            TableCell {
+                range: 3..text.len(),
+                alignment: CellAlignment::Left,
+            },
+        ],
+    }];
+    let blocks = [DocumentBlock {
+        range: 0..text.len(),
+        kind: DocumentKind::Paragraph,
+        depth: 0,
+    }];
+    let options = TextOptions {
+        wrap_width: Some(320.0),
+        ..TextOptions::default()
+    };
+    let mut renderer = TextRenderer::default();
+    for github in [false, true] {
+        let page = if github {
+            renderer.layout_document(
+                &text,
+                &options,
+                &DocumentStyle {
+                    colors: &[],
+                    styles: &[],
+                    tables: &rows,
+                    blocks: &blocks,
+                    background: [255; 4],
+                    start_of_document: true,
+                },
+            )
+        } else {
+            renderer.layout_with_tables(&text, &options, &[], &[], &rows)
+        }
+        .unwrap();
+        let short = page.caret_geometry(0).unwrap();
+        let middle = page.caret_geometry(text.len() * 3 / 4).unwrap();
+        assert!(middle.y0 > short.y1);
+        for y in [short.y1 as f32, ((middle.y0 + middle.y1) / 2.0) as f32] {
+            let (range, _) = page.line_at_y(y).unwrap();
+            assert!(
+                range.start > 3,
+                "the short first cell must not pin the forward anchor at {y}"
+            );
+            assert!(
+                range.end < text.len(),
+                "the later cell retains visual-line boundaries"
+            );
         }
     }
 }

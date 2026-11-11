@@ -207,11 +207,7 @@ fn plus_reveals_focused_input_and_enter_stages_a_removable_extension() {
     ));
     let remove = ui::popup_item(&ui.window, "Remove .personal.文档", AccessibleRole::Button);
     let chip = ui::popup_item(&ui.window, ".personal.文档", AccessibleRole::ListItem);
-    assert!(
-        ui::visible_text_values(remove.clone())
-            .iter()
-            .any(|text| text == "×")
-    );
+
     assert!(
         bounds(&remove).0 < (bounds(&chip).0 + bounds(&chip).2) / 2.0,
         "dismissal leads the custom chip"

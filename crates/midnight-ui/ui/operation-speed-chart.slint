@@ -11,6 +11,13 @@ export struct SpeedChartData {
 export component OperationSpeedChart inherits Rectangle {
     in property <SpeedChartData> chart;
     in property <bool> deletion;
+    in property <bool> overall-progress;
+    in property <bool> determinate;
+    in property <float> progress;
+    in property <string> progress-label;
+    in property <string> waiting-label: "Waiting for activity";
+    private property <float> history-fraction: root.overall-progress && root.determinate
+        ? clamp(root.progress, 0, 1) : 1;
     private property <bool> compact: root.height < 75px;
     accessible-role: groupbox;
     accessible-label: root.deletion ? "Deletion speed" : "Transfer speed";
@@ -38,6 +45,16 @@ export component OperationSpeedChart inherits Rectangle {
         plot := Rectangle {
             vertical-stretch: 1; min-height: 14px; clip: true;
             background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+            if root.overall-progress : Rectangle {
+                accessible-role: progress-indicator; accessible-label: "Overall progress";
+                accessible-value: root.progress-label;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                Rectangle {
+                    x: 0px; y: 0px;
+                    width: parent.width * (root.determinate ? clamp(root.progress, 0, 1) : 0);
+                    height: parent.height; background: Theme.active-frame.with-alpha(0.16);
+                }
+            }
             for level in 3 : Rectangle {
                 x: 1px; y: parent.height * (level + 1) / 4;
                 width: parent.width - 2px; height: 1px; background: Theme.frame.with-alpha(0.35);
@@ -47,35 +64,35 @@ export component OperationSpeedChart inherits Rectangle {
                 height: parent.height - 2px; width: 1px; background: Theme.frame.with-alpha(0.25);
             }
             if root.chart.has-samples : Path {
-                x: 1px; y: 2px; width: parent.width - 2px; height: parent.height - 4px;
+                x: 1px; y: 2px; width: max(1px, (parent.width - 2px) * root.history-fraction); height: parent.height - 4px;
                 viewbox-width: 1000; viewbox-height: 100; fit: fill;
-                commands: root.chart.area; fill: Theme.active-frame.with-alpha(0.25);
+                commands: root.chart.area; fill: Theme.active-frame.with-alpha(root.overall-progress ? 0.65 : 0.25);
             }
             if root.chart.has-samples : Path {
-                x: 1px; y: 2px; width: parent.width - 2px; height: parent.height - 4px;
+                x: 1px; y: 2px; width: max(1px, (parent.width - 2px) * root.history-fraction); height: parent.height - 4px;
                 viewbox-width: 1000; viewbox-height: 100; fit: fill;
                 commands: root.chart.primary; fill: transparent;
                 stroke: Theme.active-frame; stroke-width: 1.5px;
             }
             if root.chart.has-samples && !root.deletion && !root.chart.native-move : Path {
-                x: 1px; y: 2px; width: parent.width - 2px; height: parent.height - 4px;
+                x: 1px; y: 2px; width: max(1px, (parent.width - 2px) * root.history-fraction); height: parent.height - 4px;
                 viewbox-width: 1000; viewbox-height: 100; fit: fill;
                 commands: root.chart.verification; fill: transparent;
                 stroke: Theme.pending-size; stroke-width: 1.5px;
             }
             if root.chart.single-sample : Rectangle {
-                x: clamp(parent.width * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
+                x: clamp((parent.width - 2px) * root.history-fraction * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
                 y: clamp(parent.height * root.chart.point-y / 100 - 2px, 2px, parent.height - 6px);
                 width: 4px; height: 4px; border-radius: 2px; background: Theme.active-frame;
             }
             if root.chart.single-sample && !root.deletion && !root.chart.native-move : Rectangle {
-                x: clamp(parent.width * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
+                x: clamp((parent.width - 2px) * root.history-fraction * root.chart.point-x / 1000 - 2px, 2px, parent.width - 6px);
                 y: clamp(parent.height * root.chart.verification-y / 100 - 2px, 2px, parent.height - 6px);
                 width: 4px; height: 4px; border-radius: 2px;
                 border-width: 1px; border-color: Theme.pending-size; background: Theme.pane-background;
             }
             if !root.chart.has-samples && !root.compact : Text {
-                text: "Waiting for activity"; color: Theme.secondary-text;
+                text: root.waiting-label; color: Theme.secondary-text;
                 horizontal-alignment: center; vertical-alignment: center;
                 font-size: Theme.small-font;
             }

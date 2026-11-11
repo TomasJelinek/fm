@@ -181,3 +181,30 @@ cancellation and stale replies. Check wide and narrow windows in light/dark
 themes and increased font/density. Run a harmless explicit custom command to
 verify that displayed argument choices match actual argv. Record measured viewer
 latencies; reduced CPU cost alone is not evidence of instant scrolling.
+
+
+## Settings and forms, 11 November follow-up
+
+Options initially requests more vertical space and remains bounded by the current
+window/work area. Plugin catalogs scroll independently of the single pinned
+Rescan all plugins action. The full package path replaces the redundant plugin ID
+line. Previews shows the cache location resolved by the backend, above Clear cache;
+new settings use 96 logical pixels for the thumbnail's longest side.
+
+All confirmation/form bodies retain a themed icon, title and divider, including
+native modal hosts. Rename derives initial height after applying its final text
+and font at the intended width. Cancelled operations retain existing lifetime and
+job admission rules. Header close, Escape and Cancel use the same cancellation.
+Small list controls share compact padding and centered glyphs; remove/clear actions
+use the same red cross in history, cache and custom archive extensions.
+
+The theme picker sorts labels alphabetically but translates to stable saved IDs.
+Archive preset filenames use a yellow base, with existing contrast derivation for
+every theme and selection state. Only an exact previous preset migrates; custom
+or reordered color rules are retained. Find places Whole words beside Containing
+text. Native mount-path labels sort after named volumes within their section;
+paths themselves are never rewritten by sorting.
+
+Ctrl+Shift+P appends the focused native item's full path to the command draft,
+without quoting or added spacing. Virtual providers never expose backing temp
+files through this action.

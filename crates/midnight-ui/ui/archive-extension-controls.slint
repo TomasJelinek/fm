@@ -1,5 +1,5 @@
-import { HintedLineEdit } from "hinted-inputs.slint";
-import { NavigationButton } from "navigation-controls.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 
 // Custom assignments have one action: remove. The complete extension stays visible.
@@ -9,15 +9,15 @@ export component ArchiveExtensionChip inherits Rectangle {
     in property <length> available-width;
     callback remove();
     width: min(root.available-width, remove-button.width + caption.preferred-width + 16px);
-    height: max(Theme.control-height + 4px, caption.preferred-height + 8px);
+    height: max(36px, Theme.control-height + 4px, caption.preferred-height + 8px);
     background: Theme.secondary-surface;
     border-width: 1px; border-color: Theme.frame; border-radius: 6px;
     accessible-role: list-item;
     accessible-label: "." + root.extension;
-    remove-button := NavigationButton {
-        x: 2px; y: 2px; width: Theme.control-height; height: Theme.control-height;
-        label: "×"; identity: root.extension; enabled: root.enabled;
-        label-color: Theme.light ? #a32020 : #ffa4a4;
+    remove-button := HintedActionButton {
+        x: 2px; y: 2px; width: max(32px, Theme.control-height); height: max(32px, Theme.control-height);
+        fallback-icon: FallbackIcons.close; removal-icon: true; compact: true; enabled: root.enabled;
+        background: transparent; border-color: transparent;
         accessible-label: "Remove ." + root.extension;
         hint: "Remove ." + root.extension + " from this archive format. OK saves the change.";
         clicked => { root.remove(); }

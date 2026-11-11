@@ -110,6 +110,11 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         thumbnail_size: 192,
         shortcuts: vec![],
         panel_filters: Default::default(),
+        panel_filter_history: vec![PanelFilter {
+            enabled: true,
+            expression: "*.rs;*.md".into(),
+            ..Default::default()
+        }],
         filename_colors: Default::default(),
     };
     let mut expected = saved.clone();
@@ -289,9 +294,13 @@ fn failed_initial_read_blocks_saves_that_could_replace_unknown_saved_bookmarks()
 fn explicit_same_index_default_font_preserves_loaded_sizes_and_other_preferences() {
     let mut p = Presenter::new(test_root(), test_root());
     p.apply(Event::FontFamiliesLoaded(Ok(vec!["Installed".into()])));
-    p.change_fonts(0, 11, 15, 0, &|_| {
-        panic!("default-font preview must wait for the read")
-    });
+    p.change_fonts(
+        0,
+        UserPreferences::default().desktop_font_size.into(),
+        15,
+        0,
+        &|_| panic!("default-font preview must wait for the read"),
+    );
     p.apply_with_sender(
         Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             font_family: "Stored custom".into(),

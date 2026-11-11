@@ -11,6 +11,7 @@ mod controls;
 mod copy_completion;
 pub(super) mod copy_dialog;
 mod drag_drop;
+mod elevation;
 mod file_actions;
 mod filename_colors;
 mod folder_presence;

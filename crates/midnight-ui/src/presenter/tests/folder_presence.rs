@@ -199,3 +199,59 @@ fn flat_presence_request_is_bounded_to_the_viewport_not_the_whole_listing() {
     assert_eq!(request.visible[0], p.panes[0].entries[20].id);
     assert_eq!(*request.visible.last().unwrap(), p.panes[0].entries[275].id);
 }
+
+#[test]
+fn red_folder_error_icon_uses_modal_details_instead_of_a_viewer() {
+    #[derive(Debug)]
+    struct BackendOnly;
+    impl GeneratedTextSource for BackendOnly {
+        fn length(&self) -> u64 {
+            panic!("UI must not inspect diagnostic storage")
+        }
+        fn read_at(&self, _: u64, _: &mut [u8]) -> io::Result<usize> {
+            panic!("UI must not read diagnostic storage")
+        }
+    }
+    let mut p = ready();
+    p.viewer_plugins.startup_disabled = Some(Arc::from([]));
+    let request = request(&mut p);
+    let mut snapshot = result(&request);
+    snapshot.values = vec![
+        (
+            EntryId(1),
+            FolderPresence::Unavailable(TreeDiagnostic::with_details(
+                "Access denied",
+                Arc::new(BackendOnly),
+            )),
+        ),
+        (EntryId(2), FolderPresence::HasFolders),
+    ]
+    .into();
+    p.apply(Event::FolderPresence(snapshot));
+    let identity = p.panes[0].row_identity(&p.panes[0].entries[0]);
+    let full_path = p.panes[0].entries[0].path.to_string_lossy().into_owned();
+    let sent = RefCell::new(None);
+    p.inspect_panel_warning(PaneId::Left, &identity, true, &|command| {
+        *sent.borrow_mut() = Some(command);
+        true
+    });
+    let Command::ReadDiagnosticText { request, .. } = sent.into_inner().unwrap() else {
+        panic!("red error icon must request the application's modal details");
+    };
+    assert!(p.take_warning_viewer().is_none());
+    let (title, body) = p.desktop.notice.as_ref().unwrap();
+    assert_eq!(title, "Folder listing error");
+    assert!(body.contains("Access denied") && body.contains(&full_path));
+    let full = "Provider details without a repeated path".to_owned();
+    p.apply(Event::DiagnosticTextReady {
+        request,
+        result: Ok(DiagnosticTextPreview {
+            text: full.clone(),
+            total_bytes: full.len() as u64,
+            truncated: false,
+        }),
+    });
+    let body = &p.desktop.notice.as_ref().unwrap().1;
+    assert!(body.contains(&full) && body.contains(&full_path) && body.contains("Access denied"));
+    assert!(p.take_warning_viewer().is_none());
+}

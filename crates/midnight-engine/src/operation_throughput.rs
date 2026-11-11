@@ -264,7 +264,7 @@ impl Tracker {
         progress.throughput = self.sampler.observe(
             self.started.elapsed(),
             copy_counters(progress),
-            progress.state == CopyOperationState::Running,
+            progress.state == CopyOperationState::Running && !progress.paused,
         );
     }
 
@@ -276,7 +276,7 @@ impl Tracker {
                     items: progress.processed_entries,
                     ..Counters::default()
                 },
-                progress.state == OperationState::Running,
+                progress.state == OperationState::Running && !progress.paused,
             );
         }
     }

@@ -29,13 +29,13 @@ set "TEMP=%CD%\_build\tmp"
 set "TMP=%TEMP%"
 where cargo >nul 2>nul
 if errorlevel 1 goto local_cargo
-call cargo build -p midnight-explorer --locked %MIDNIGHT_BUILD_PROFILE%
+call cargo build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
 :local_cargo
 if not exist ".tools\cargo\bin\cargo.exe" goto missing_cargo
-powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer --locked %MIDNIGHT_BUILD_PROFILE%
+powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 

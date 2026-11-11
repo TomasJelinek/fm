@@ -60,7 +60,12 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    fn crop(&self, page: DocumentPage) -> DocumentPage {
+    fn crop(&self, mut page: DocumentPage) -> DocumentPage {
+        // Scalar paging cannot preserve a table's column measurements. Render
+        // oversized units as wrapped row text rather than unstable partial tables.
+        for block in &mut page.blocks {
+            block.table = None;
+        }
         if self.backwards {
             crop_backward(page, self.anchor, self.max_bytes.min(8192), self.max_lines)
         } else {
@@ -98,6 +103,12 @@ pub(crate) fn render_context(
 
 pub(crate) fn crop_context(raw: DocumentPage, window: &Window) -> Option<DocumentPage> {
     let mut page = crate::semantic_window::crop(raw, window).unwrap_or_else(|raw| window.crop(raw));
+    if !fits_wire(&mut page) {
+        // A complete layout unit can fit the read budget while exceeding the
+        // public exact-anchor/item budget. Preserve exact selection boundaries
+        // and use the same bounded prose fallback as an oversized raw unit.
+        page = window.crop(page);
+    }
     fits_wire(&mut page).then_some(page)
 }
 
@@ -135,6 +146,7 @@ fn render_raw(
     let mut strike = 0u8;
     let mut images = 0u8;
     let mut columns = Vec::new();
+    let mut table_start = 0;
     let mut pending_link: Option<(u32, String)> = None;
     for (count, (event, range)) in parser(&decoded.text).into_offset_iter().enumerate() {
         if cancelled() {
@@ -152,6 +164,7 @@ fn render_raw(
                 match tag {
                     Tag::Table(alignments) => {
                         flush(&mut active, &mut page);
+                        table_start = page.blocks.len();
                         if alignments.len() > MAX_TABLE_COLUMNS {
                             return Some(plain(decoded, revision, eof));
                         }
@@ -264,6 +277,13 @@ fn render_raw(
                     TagEnd::TableHead | TagEnd::TableRow => flush(&mut active, &mut page),
                     TagEnd::Table => {
                         flush(&mut active, &mut page);
+                        // The parser closes an unfinished table at the raw read
+                        // boundary too. Its missing rows could change every column.
+                        if !eof && range.end == decoded.text.len() {
+                            for block in &mut page.blocks[table_start..] {
+                                block.table = None;
+                            }
+                        }
                         columns.clear();
                     }
                     TagEnd::Paragraph

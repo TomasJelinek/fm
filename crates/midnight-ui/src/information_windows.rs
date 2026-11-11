@@ -45,6 +45,7 @@ trait InformationWindow: ComponentHandle + DialogThemeTarget + Sized + 'static {
     fn bind_actions(&self, _main: &MainWindow, _windows: &Windows, _session: DialogSession) {}
     fn initialize(&self, main: &MainWindow);
     fn refresh(&self, _main: &MainWindow) {}
+    fn closed(&self, _main: &MainWindow) {}
     fn generation(_main: &MainWindow) -> Option<i32> {
         None
     }
@@ -108,6 +109,9 @@ information_window!(
     },
     fn generation(main: &MainWindow) -> Option<i32> {
         Some(main.get_message_generation())
+    },
+    fn closed(&self, main: &MainWindow) {
+        main.invoke_diagnostic_notice_closed(self.get_generation());
     },
     fn bind_actions(&self, main: &MainWindow, windows: &Windows, session: DialogSession) {
         let weak = main.as_weak();
@@ -270,7 +274,12 @@ fn open<C: InformationWindow>(
     window.initialize(main);
     window.bind_actions(main, windows, session);
     let weak = Rc::downgrade(windows);
+    let main_weak = main.as_weak();
+    let dismissed = window.as_weak();
     window.on_dismiss(move || {
+        if let (Some(main), Some(window)) = (main_weak.upgrade(), dismissed.upgrade()) {
+            window.closed(&main);
+        }
         if let Some(windows) = weak.upgrade() {
             dismiss::<C>(&windows, session);
         }

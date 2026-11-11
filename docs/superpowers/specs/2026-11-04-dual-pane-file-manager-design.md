@@ -8,6 +8,14 @@ se zarovnávají na řádek až po skončení pohybu. Podmínkou ověření je k
 správných souřadnic také měření snímků a kontrola skutečně vykreslených pixelů;
 backend nadále načítá pouze omezené části dokumentů.
 
+Nastavení dále rozšiřuje [doplnění z 11. listopadu](../../verification/2026-11-11-settings-ui-follow-up.md):
+editory používají seřazená zapínatelná pravidla Masks/Regex a původní editor jako
+fallback; historie filtrů ukládá 100 jedinečných úspěšně použitých výrazů.
+Náhledy mají výchozí delší stranu 96 logických px a ukazují skutečnou cestu cache.
+Motivy jsou v nabídce abecedně, jejich uložené identifikátory se nemění.
+Ctrl+Shift+P vkládá úplnou nativní cestu zaměřené položky do příkazového řádku.
+Sloupce Size/Modified/Time používají omezené vzorky metadat a měření skutečným
+fontem; šířky se při posouvání nepřepočítávají průchodem celého seznamu.
 Přetahování souborů rozšiřuje [návrh folder-drop](2026-11-10-folder-drag-and-native-handoff.md):
 cílem může být složka přímo v panelu i zachycená nativní větev stromu. Výchozí
 akce podle Průzkumníka je přesun na stejném svazku, jinak kopie; Ctrl vynutí
@@ -1493,13 +1501,16 @@ Obnova celého výchozího mapování vyžaduje potvrzení v editoru. Kontext ur
 příkaz a pravidla pro editaci textu; nabízíme pouze skutečně implementované
 kontexty a mapování. Podrobnosti: [návrh editoru](2026-11-07-keyboard-options-design.md).
 
-Jobs používá virtualizovaný seznam operací a samostatný detail vybrané úlohy.
+Jobs používá virtualizovaný seznam operací. Copy, Move a Delete mají samostatná
+nemodální okna průběhu se společnou UI komponentou; Jobs → Open je znovu otevře.
 Výběr je určen stabilním ID, takže jej nezmění průběžná aktualizace ani nová
 úloha. Zobrazuje ikonu, stav, fázi, úplné cesty a známé počty/bajty. Kopie bez
 známého celkového objemu neukazuje odhadnutá procenta. Skutečná chyba má výraznou
 ikonu; čekání na rozhodnutí není chyba. Cancel, Resolve, Copy details a Close
 jsou ve spodní řadě; kopírování detailu používá backend schránky. Zavření okna
-ponechá úlohy běžet a stisk akce sám okno nezavírá.
+Jobs ponechá úlohy běžet. Zavření okna konkrétního průběhu přes X nebo Escape
+naopak ruší právě tuto operaci. Pokud backend příkaz nepřijme, okno zůstane
+otevřené s chybou a možností opakovat Cancel.
 
 Nabídka disků obsahuje navíc Pictures, Videos, Music, uživatelský TEMP a dostupné
 osobní/pracovní účty OneDrive. Windows cesty pocházejí z Known Folders a registrací
@@ -2194,8 +2205,8 @@ soubor. Číselný časový slib závisí na naměřeném úložišti a prostře
 
 ### Graf rychlosti Copy, Move a Delete
 
-Detail vybrané úlohy v Jobs i automaticky otevřený průběh obsahují společný graf
-rychlosti inspirovaný Průzkumníkem Windows. Copy/Move zobrazují skutečně zapsané
+Samostatná okna průběhu Copy, Move i Delete obsahují společný graf rychlosti
+inspirovaný Průzkumníkem Windows. Jobs zobrazuje seznam a otevírá tato okna. Copy/Move zobrazují skutečně zapsané
 bajty/s a samostatnou křivku ověřovacích čtení, včetně dodatečných kontrol Move.
 Jednotky jsou KiB/s, MiB/s atd. Delete zobrazuje zpracované položky/s včetně
 ohlášených adresářů; systémový koš může hlásit pouze kořenové vybrané položky.
@@ -2211,8 +2222,11 @@ rychlostí posledního intervalu. Čekání, zrušení a dokončení zobrazují 
 aktuální rychlost; již běžící systémové volání může po žádosti o zrušení dokončit
 skutečnou práci, která se do historie stále započítá. Dokončený graf zůstává
 součástí existujícího záznamu Jobs v aktuální relaci. Krátká operace má viditelný
-bod i bez celého měřicího intervalu. Graf není procentem dokončení ani měřením
-fyzické propustnosti disku. UI pouze formátuje omezené vzorky a přizpůsobuje graf
+bod i bez celého měřicího intervalu. Výška křivky není procentem dokončení ani
+měřením fyzické propustnosti disku. Samostatná vodorovná výplň grafu vyjadřuje
+celkové dokončení podle zjištěných počtů/objemu; historie se vejde do této
+vyplněné části. Neznámý rozsah má neurčitý indikátor a stav Discovering.
+Viz [společný průběh operací](../../developer/OPERATION_PROGRESS.md). UI pouze formátuje omezené vzorky a přizpůsobuje graf
 tématu a velikosti okna; nemění bezpečnostní ani kontrolní podmínky operací.
 Podrobnosti: [návrh grafu](2026-11-10-operation-speed-chart-design.md).
 

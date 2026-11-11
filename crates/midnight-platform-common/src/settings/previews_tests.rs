@@ -57,7 +57,7 @@ fn preview_schema_rejects_missing_null_wrong_type_and_old_version_fields() {
 #[test]
 fn thumbnail_size_migrates_legacy_settings_and_roundtrips_each_supported_size() {
     let legacy = encode_preferences(UserPreferences::default()).unwrap();
-    assert_eq!(decode_preferences(&legacy).unwrap().thumbnail_size, 72);
+    assert_eq!(decode_preferences(&legacy).unwrap().thumbnail_size, 96);
     for size in [48, 64, 72, 96, 128, 192, 256] {
         let preferences = UserPreferences {
             thumbnail_size: size,
@@ -66,7 +66,7 @@ fn thumbnail_size_migrates_legacy_settings_and_roundtrips_each_supported_size() 
         let bytes = encode_preferences(preferences.clone()).unwrap();
         assert_eq!(decode_preferences(&bytes).unwrap(), preferences);
         let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(document["version"], if size == 72 { 10 } else { 25 });
+        assert_eq!(document["version"], if size == 96 { 10 } else { 25 });
     }
 }
 

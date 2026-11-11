@@ -104,8 +104,14 @@ impl Harness {
         );
         assert_eq!(
             self.ui.visible_count(),
-            2,
-            "Jobs and Decision have separate native adapters"
+            self.ui
+                .window
+                .get_operations()
+                .iter()
+                .filter(|row| row.active)
+                .count()
+                + 1,
+            "Each active operation has its own progress window, plus this decision"
         );
         assert!(!self.ui.window.get_dialog_input_blocked());
         assert!(

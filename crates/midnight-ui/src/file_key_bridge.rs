@@ -92,6 +92,7 @@ pub(crate) fn dispatch_window(window: &MainWindow, pane: i32, action: WindowActi
             }
         }
         A::InsertName => window.invoke_insert_name(),
+        A::InsertFullPath => window.invoke_insert_full_path(),
         A::InsertPath(position) => window.invoke_insert_path(if position < 0 {
             window.get_active_pane()
         } else {

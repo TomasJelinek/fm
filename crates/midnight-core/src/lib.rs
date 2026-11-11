@@ -1,5 +1,10 @@
 #![forbid(unsafe_code)]
 
+mod discovery;
+pub use discovery::*;
+mod elevation;
+pub use elevation::*;
+
 mod archive;
 mod archive_extensions;
 mod archive_format;
@@ -11,6 +16,7 @@ mod command_history;
 mod compare;
 mod copy_operation;
 mod desktop;
+mod diagnostic_text;
 mod editor;
 mod entry;
 mod file_clipboard;
@@ -25,6 +31,7 @@ mod find;
 mod folder_presence;
 mod folder_size;
 mod localization;
+mod metadata_columns;
 mod metadata_edit;
 mod mutation;
 mod network;
@@ -77,6 +84,7 @@ pub use command_history::*;
 pub use compare::*;
 pub use copy_operation::*;
 pub use desktop::*;
+pub use diagnostic_text::*;
 pub use editor::*;
 pub use entry::*;
 pub use file_clipboard::*;
@@ -95,6 +103,7 @@ pub use find::*;
 pub use folder_presence::*;
 pub use folder_size::*;
 pub use localization::*;
+pub use metadata_columns::*;
 pub use metadata_edit::*;
 pub use mutation::*;
 pub use network::*;

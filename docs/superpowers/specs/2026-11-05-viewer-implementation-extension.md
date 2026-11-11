@@ -100,8 +100,13 @@ creation refreshes/focuses the new entry; opening an editor remains an explicit 
 action. Test cancellation, Unicode, a replaced parent and concurrent name creation.
 
 F4 opens the focused regular local file using a backend platform service. Settings
-contain an executable and an argument list, with `{file}` as a whole argument;
-the raw native path is passed directly, never interpolated into a shell command.
+contain ordered, enabled wildcard/regex associations. The first matching enabled
+rule chooses the program, literal argument list and optional working directory;
+the previous custom/system editor remains the final fallback. `{file}` is a whole
+argument, and the raw native path is passed directly, never interpolated into a
+shell command. Patterns compile on the backend; Options preserves its OK/Cancel
+transaction. See [editor associations](../../verification/2026-11-11-editor-rules.md)
+for precedence, raw-path handling, migration and argument editing.
 Configuration cannot come from the directory being viewed. Invalid/missing editor
 configuration reports an error without substituting an unrelated program.
 

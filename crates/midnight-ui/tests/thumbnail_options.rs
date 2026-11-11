@@ -89,14 +89,14 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
     ui.draw();
     let original_height = ui.window.get_left_view_row_height();
     let original_columns = ui.window.get_left_view_columns();
-    assert_eq!(ui.window.get_thumbnail_size(), 72);
+    assert_eq!(ui.window.get_thumbnail_size(), 96);
     assert_eq!(
         artwork_edge(ui::root_item(
             &ui.window,
             "preview-fixture.png",
             AccessibleRole::ListItem
         )),
-        72.0
+        96.0
     );
     sent.borrow_mut().clear();
     for cancel in [true, false] {
@@ -104,7 +104,7 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
         ui.window.invoke_show_options();
         ui.draw();
         ui::click_popup(&ui.window, "Thumbnail size", AccessibleRole::Combobox);
-        for size in [96, 128, 192, 256] {
+        for size in [128, 192, 256] {
             ui::key(&ui.window, Key::DownArrow);
             assert_eq!(ui.window.get_thumbnail_size(), size);
         }
@@ -113,11 +113,11 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
         assert_eq!(ui.window.get_thumbnail_size(), 256);
         assert_eq!(
             ui.window.get_left_view_row_height(),
-            original_height + 184.0
+            original_height + 160.0
         );
         assert_eq!(
             ui.window.get_right_view_row_height(),
-            original_height + 184.0
+            original_height + 160.0
         );
         assert!(ui.window.get_left_view_columns() < original_columns);
         assert_eq!(
@@ -152,7 +152,7 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
         );
         ui.draw();
         if cancel {
-            assert_eq!(ui.window.get_thumbnail_size(), 72);
+            assert_eq!(ui.window.get_thumbnail_size(), 96);
             assert_eq!(ui.window.get_left_view_row_height(), original_height);
         }
     }
@@ -197,7 +197,7 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
     ui.draw();
     ui::click_popup(&ui.window, "Reset to defaults", AccessibleRole::Button);
     ui.draw();
-    assert_eq!(ui.window.get_thumbnail_size(), 72);
+    assert_eq!(ui.window.get_thumbnail_size(), 96);
     ui::click_popup(&ui.window, "Cancel", AccessibleRole::Button);
     ui.draw();
     assert_eq!(ui.window.get_thumbnail_size(), 256);

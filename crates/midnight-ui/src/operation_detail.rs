@@ -32,6 +32,9 @@ mod tests {
     fn late_failure_stays_visible_when_current_path_and_outcome_sample_have_moved_on() {
         let failed_path = PathBuf::from("parent/子目录/too-many-children");
         let progress = OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
             id: OperationId(1),
             throughput: Default::default(),
             kind: MutationKind::EditMetadata,

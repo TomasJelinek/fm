@@ -16,6 +16,7 @@ no host-source, other-plugin, Slint, filesystem-open or network dependency.
 | TypeScript | ts, tsx, mts, cts |
 | Python | py, pyw |
 | POSIX shell / Bash / Zsh | sh, bash, zsh |
+| Windows batch / CMD | bat, cmd |
 | JSON | json |
 | TOML | toml |
 | Java | java |

@@ -56,17 +56,19 @@ fn window(request: &Viewport) -> markdown::Window {
     markdown::Window {
         anchor: request.source_anchor,
         backwards: request.backwards,
-        max_bytes: request.max_bytes.min(8192) as usize,
+        max_bytes: request.max_bytes.min(65536) as usize,
         max_lines: request.max_lines as usize,
     }
 }
 
 pub fn plan(session: &Session, viewport: &Viewport) -> (u64, u32, u64) {
     let metadata = lock(&session.metadata);
-    let limit = viewport.max_bytes.min(8192) as u64;
+    let limit = viewport.max_bytes.min(65536) as u64;
     let upper = viewport.source_anchor.max(metadata.bom);
     let anchor = if viewport.backwards {
-        upper.saturating_sub(limit * 4 + 8).max(metadata.bom)
+        upper
+            .saturating_sub((limit * 4 + 8).min(32776))
+            .max(metadata.bom)
     } else {
         upper
     };
@@ -158,9 +160,9 @@ pub fn viewport(
         let page = markdown::crop_context(raw.clone(), &window).unwrap_or_else(|| {
             let plain = markdown::plain(&decoded, session.revision, page_eof);
             if request.backwards {
-                markdown::crop_backward(plain, upper, window.max_bytes, window.max_lines)
+                markdown::crop_backward(plain, upper, window.max_bytes.min(8192), window.max_lines)
             } else {
-                markdown::crop(plain, anchor, window.max_bytes, window.max_lines)
+                markdown::crop(plain, anchor, window.max_bytes.min(8192), window.max_lines)
             }
         });
         let mut hints = lock(&session.hints);

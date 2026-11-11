@@ -86,6 +86,10 @@ impl Drop for Run {
     }
 }
 fn fixture() -> tempfile::TempDir {
+    // WSL's mounted Windows volume cannot enforce the native 0700 mutation storage contract.
+    #[cfg(target_os = "linux")]
+    let root = std::env::temp_dir().join("_build/midnight-rename");
+    #[cfg(not(target_os = "linux"))]
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
     fs::create_dir_all(&root).unwrap();
     let root = fs::canonicalize(root).unwrap();

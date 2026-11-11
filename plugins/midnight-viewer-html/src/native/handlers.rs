@@ -14,6 +14,12 @@ fn emit_layers(doc: &Document) {
     };
     let rgba = doc.layers.lock().ok().and_then(|layers| layers.frame());
     if let Some(rgba) = rgba {
+        #[cfg(feature = "diagnostic-timing")]
+        crate::trace::record(
+            crate::trace::Event::LayersCopied,
+            surface.width.into(),
+            surface.height.into(),
+        );
         doc.emit(api::EventKind::Frame(api::Frame {
             viewport_revision: surface.revision,
             // CEF accepts inputs asynchronously; OnPaint does not supply their renderer
@@ -88,6 +94,8 @@ wrap_render_handler! {
                 return;
             }
             if type_ != PaintElementType::VIEW { return; }
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::record(crate::trace::Event::PaintBegin, width as u64, height as u64);
             let Ok(mut surface) = self.doc.surface.lock() else { return; };
             // Check native dimensions before forming the borrowed slice or allocating pixels.
             let Ok(viewport) = self.doc.viewport.lock() else { return; };
@@ -102,6 +110,8 @@ wrap_render_handler! {
             let bgra = unsafe { std::slice::from_raw_parts(buffer, length) };
             let revision = surface.revision;
             if let Some(rgba) = surface.paint_cropped(revision, width as u32, height as u32, bgra) {
+                #[cfg(feature = "diagnostic-timing")]
+                crate::trace::record(crate::trace::Event::PaintConverted, width as u64, height as u64);
                 if let Ok(mut layers) = self.doc.layers.lock() { layers.base(surface.width, surface.height, rgba); }
                 drop(surface);
                 emit_layers(&self.doc);

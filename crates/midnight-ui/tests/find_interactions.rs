@@ -438,6 +438,7 @@ fn pointer_and_keyboard_query_survives_resize_stop_and_restart() {
     click_control(&native, AccessibleRole::Checkbox, "Containing text");
     type_input(&native, "Text to find", "Žluťoučký 日本語");
     click_control(&native, AccessibleRole::Checkbox, "Match case");
+    click_control(&native, AccessibleRole::Checkbox, "Whole words");
     click_control(&native, AccessibleRole::Button, "More options");
     modeless::draw(&native, 860, 620, "find-query-more");
     click_control(&native, AccessibleRole::Checkbox, "Modified within");
@@ -447,7 +448,6 @@ fn pointer_and_keyboard_query_survives_resize_stop_and_restart() {
     key(native.as_ref(), Key::Return);
     modeless::draw(&native, 860, 620, "find-query-minutes");
     click_control(&native, AccessibleRole::Checkbox, "Identical files");
-    click_control(&native, AccessibleRole::Checkbox, "Whole words");
     click_control(&native, AccessibleRole::Button, "Fewer options");
     modeless::draw(&native, 860, 620, "find-query-active-summary");
     modeless::click(&native, "Find");

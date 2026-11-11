@@ -13,24 +13,7 @@ mod handlers;
 mod input;
 mod resources;
 
-pub(super) struct Output {
-    controls: mpsc::SyncSender<api::Event>,
-    frame: Mutex<Option<api::Event>>,
-    failed: AtomicBool,
-}
-
-impl Output {
-    fn emit(&self, header: api::Header, kind: api::EventKind) {
-        let event = api::Event { header, kind };
-        if matches!(event.kind, api::EventKind::Frame(_)) {
-            if let Ok(mut frame) = self.frame.lock() {
-                *frame = Some(event);
-            }
-        } else if self.controls.try_send(event).is_err() {
-            self.failed.store(true, Ordering::Release);
-        }
-    }
-}
+use crate::output::Output;
 
 pub(super) struct Document {
     header: api::Header,
@@ -142,6 +125,12 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         layers: Mutex::new(crate::surface::Layers::default()),
         mouse_buttons: AtomicU64::new(0),
     });
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::record(
+        crate::trace::Event::ContextStart,
+        command.header.document,
+        0,
+    );
     let mut context = request_context_create_context(
         Some(&RequestContextSettings {
             cookieable_schemes_exclude_defaults: 1,
@@ -177,6 +166,12 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         Some(&mut context),
     )
     .ok_or("sandboxed Chromium browser creation failed")?;
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::record(
+        crate::trace::Event::ContextReady,
+        command.header.document,
+        0,
+    );
     document.emit(api::EventKind::Ready);
     Ok(BrowserInstance {
         browser,
@@ -186,6 +181,12 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
 }
 
 fn close(instance: BrowserInstance) -> Result<(), &'static str> {
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::record(
+        crate::trace::Event::Closing,
+        instance.document.header.document,
+        0,
+    );
     instance.document.retire();
     if let Some(host) = instance.browser.host() {
         host.close_browser(1);
@@ -216,6 +217,8 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
             return 70;
         }
     };
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::start(std::path::Path::new(&profile));
     let settings = Settings {
         no_sandbox: 0,
         windowless_rendering_enabled: 1,
@@ -238,36 +241,39 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
         );
         return 70;
     }
+    #[cfg(feature = "diagnostic-timing")]
+    crate::trace::record(crate::trace::Event::Initialized, 0, 0);
     let (tx, rx) = mpsc::sync_channel::<api::Command>(64);
-    let (event_tx, event_rx) = mpsc::sync_channel::<api::Event>(64);
-    let output = Arc::new(Output {
-        controls: event_tx,
-        frame: Mutex::new(None),
-        failed: AtomicBool::new(false),
-    });
+    let (output, mut events) = crate::output::channel();
     let writer_output = output.clone();
     let writer = std::thread::spawn(move || {
         let mut stdout = std::io::stdout().lock();
         let mut sequence = 0u64;
-        loop {
-            let event = match event_rx.recv_timeout(Duration::from_millis(5)) {
-                Ok(event) => Some(event),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    writer_output.frame.lock().ok().and_then(|mut f| f.take())
-                }
-                Err(_) => break,
+        while let Some(mut event) = events.next(&writer_output) {
+            sequence += 1;
+            event.header.sequence = sequence;
+            let closed = matches!(event.kind, api::EventKind::Closed);
+            #[cfg(feature = "diagnostic-timing")]
+            let frame_bytes = if let api::EventKind::Frame(frame) = &event.kind {
+                crate::trace::record(
+                    crate::trace::Event::WireBegin,
+                    sequence,
+                    frame.rgba.len() as u64,
+                );
+                Some(frame.rgba.len() as u64)
+            } else {
+                None
             };
-            if let Some(mut event) = event {
-                sequence += 1;
-                event.header.sequence = sequence;
-                let closed = matches!(event.kind, api::EventKind::Closed);
-                if api::write_message(&mut stdout, &api::Message::Event(event)).is_err() {
-                    writer_output.failed.store(true, Ordering::Release);
-                    break;
-                }
-                if closed {
-                    break;
-                }
+            if api::write_message(&mut stdout, &api::Message::Event(event)).is_err() {
+                writer_output.failed.store(true, Ordering::Release);
+                break;
+            }
+            #[cfg(feature = "diagnostic-timing")]
+            if let Some(bytes) = frame_bytes {
+                crate::trace::record(crate::trace::Event::WireEnd, sequence, bytes);
+            }
+            if closed {
+                break;
             }
         }
     });

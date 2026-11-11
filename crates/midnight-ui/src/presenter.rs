@@ -1,7 +1,6 @@
 use midnight_core::*;
 mod archive_sizes;
 mod archives;
-mod automatic_jobs;
 mod bookmarks;
 pub(crate) mod checksums;
 #[cfg(test)]
@@ -34,6 +33,7 @@ mod find_unix_tests;
 mod find_windows_tests;
 mod folder_presence;
 mod fonts;
+mod job_controls;
 mod job_history;
 pub(crate) mod keyboard;
 pub(crate) mod keyboard_editor;
@@ -151,6 +151,7 @@ pub(crate) struct Pane {
     pub(crate) cursor: Option<EntryId>,
     pub(crate) parent_cursor: bool,
     pub(crate) folder_sizes: HashMap<PathBuf, FolderSize>,
+    pub(crate) folder_column_samples: SizeColumnSamples,
     pub(crate) size_scan: Option<FolderSizeScanId>,
     cancelled_size_scan: Option<FolderSizeScanId>,
     pub(crate) size_scan_scope: Option<SizeScanScope>,
@@ -179,6 +180,7 @@ pub(crate) struct Pane {
     pub(crate) history: Vec<PathBuf>,
     pub(crate) history_index: Option<usize>,
     pub(crate) error: String,
+    elevation_retry: Option<(NavigationId, PathBuf)>,
     error_details: Option<panel_warnings::PanelError>,
     error_revision: u64,
     pub(crate) loading: bool,
@@ -222,6 +224,7 @@ pub struct Presenter {
     pub(crate) keyboard: keyboard::KeyboardState,
     pub(crate) operations: operations::OperationsState,
     pub(crate) job_charts: crate::job_speed::Charts,
+    pub(crate) job_rows: crate::job_row_cache::Rows,
     pub(crate) metadata: metadata::MetadataState,
     pub(crate) comparison: comparison::ComparisonState,
     pub(crate) filter_dialog: filter::FilterDialogState,
@@ -276,6 +279,7 @@ impl Presenter {
             keyboard: keyboard::KeyboardState::default(),
             operations: operations::OperationsState::default(),
             job_charts: crate::job_speed::Charts::default(),
+            job_rows: crate::job_row_cache::Rows::default(),
             metadata: metadata::MetadataState::default(),
             comparison: comparison::ComparisonState::default(),
             filter_dialog: filter::FilterDialogState::default(),
@@ -387,6 +391,7 @@ impl Presenter {
             p.retire_stream(&mut self.retired);
             p.cursor = None;
             p.parent_cursor = false;
+            p.folder_column_samples = SizeColumnSamples::default();
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             p.size_scan = None;
             self.retired
@@ -414,6 +419,51 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         self.navigate_impl(pane, path, history, false, send)
+    }
+
+    pub(crate) fn can_retry_directory_elevated(&self, pane: PaneId) -> bool {
+        let p = &self.panes[pane.index()];
+        !p.loading
+            && !p.error.is_empty()
+            && p.pending.is_none()
+            && p.elevation_retry
+                .as_ref()
+                .is_some_and(|(navigation, _)| navigation.0 == p.generation)
+    }
+
+    pub(crate) fn retry_directory_elevated(
+        &mut self,
+        pane: PaneId,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        if !self.can_retry_directory_elevated(pane) {
+            return;
+        }
+        let (denied_navigation, path) = self.panes[pane.index()]
+            .elevation_retry
+            .clone()
+            .expect("validated receipt");
+        if self.navigate(pane, path, None, &|command| {
+            let command = match command {
+                Command::Navigate {
+                    pane, navigation, ..
+                }
+                | Command::Refresh {
+                    pane, navigation, ..
+                }
+                | Command::Resort {
+                    pane, navigation, ..
+                } => Command::RetryDirectoryWithElevation {
+                    pane,
+                    denied_navigation,
+                    navigation,
+                },
+                command => command,
+            };
+            send(command)
+        }) {
+            self.panes[pane.index()].elevation_retry = None;
+        }
     }
 
     fn navigate_impl(
@@ -541,6 +591,7 @@ impl Presenter {
                 .push(Box::new(mem::take(&mut p.entry_size_scans)));
         }
         if !same_location || (!resort && p.size_scan.is_none() && p.entry_size_scans.is_empty()) {
+            p.folder_column_samples = SizeColumnSamples::default();
             self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             p.size_scan_attempted = false;
         }
@@ -721,6 +772,23 @@ impl Presenter {
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        if let Event::DirectoryElevationAvailable {
+            pane,
+            navigation,
+            path,
+        } = event
+        {
+            let p = &mut self.panes[pane.index()];
+            if p.generation == navigation.0
+                && !p.loading
+                && !p.error.is_empty()
+                && p.pending.is_none()
+                && path.is_absolute()
+            {
+                p.elevation_retry = Some((navigation, path));
+            }
+            return;
+        }
         if let Event::FolderPresence(result) = event {
             self.apply_folder_presence(result);
             return;
@@ -732,6 +800,10 @@ impl Presenter {
         } = event
         {
             self.apply_rectangle_summary(pane, token, totals);
+            return;
+        }
+        if let Event::DiagnosticTextReady { request, result } = event {
+            self.apply_diagnostic_text(request, result);
             return;
         }
         if let Event::SizeWarningsReady { request, result } = event {
@@ -1515,6 +1587,7 @@ impl Pane {
             entries: Arc::from([]),
             cursor: None,
             folder_sizes: HashMap::new(),
+            folder_column_samples: SizeColumnSamples::default(),
             size_scan: None,
             cancelled_size_scan: None,
             size_scan_scope: None,
@@ -1543,6 +1616,7 @@ impl Pane {
             history: vec![],
             history_index: None,
             error: String::new(),
+            elevation_retry: None,
             error_details: None,
             error_revision: 0,
             loading: false,

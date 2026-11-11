@@ -19,6 +19,8 @@ slint::slint! {
         in-out property <string> error;
         in-out property <string> occurrence;
         in-out property <bool> compact;
+        in-out property <bool> can-authorize;
+        out property <int> authorization-count;
         out property <bool> showing: notice.showing;
         out property <length> notice-height: notice.height;
         out property <int> dismiss-count;
@@ -30,6 +32,8 @@ slint::slint! {
                 text: root.error; context-key: root.occurrence;
                 copy-enabled: true;
                 compact: root.compact;
+                retry-enabled: root.can-authorize;
+                retry-authorized => { root.authorization-count += 1; }
                 minimum-notice-height: root.compact ? 12px : 60px;
                 preferred-notice-height: root.compact ? 12px : 100px;
                 maximum-notice-height: root.compact ? 12px : 160px;
@@ -210,4 +214,56 @@ fn close_collapses_notice_but_new_occurrences_remain_visible() {
     ui::draw(&native, 320, 200, "error-close-empty");
     assert!(!window.get_showing());
     assert_eq!(window.get_notice_height(), 0.0);
+}
+
+#[test]
+fn authorization_retry_requires_an_explicit_current_error_gesture() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(ui::Windows(windows.clone()))).unwrap();
+    let window = NoticeFixture::new().unwrap();
+    window.set_error("Access denied\nPath\nC:/private".into());
+    window.set_occurrence("request-1".into());
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    ui::draw(&native, 320, 230, "authorization-unavailable");
+    assert!(
+        ui::accessible_item(&native, AccessibleRole::Button, "Retry with authorization").is_none()
+    );
+    window.set_can_authorize(true);
+    ui::draw(&native, 320, 230, "authorization-available");
+    assert_eq!(
+        window.get_authorization_count(),
+        0,
+        "showing an error must never authorize"
+    );
+    ui::click(&native, "Retry with authorization");
+    assert_eq!(window.get_authorization_count(), 1);
+    let item =
+        ui::accessible_item(&native, AccessibleRole::Button, "Retry with authorization").unwrap();
+    let rect = item.geometry();
+    let origin = item.map_to_native_window(rect.origin);
+    let position = slint::LogicalPosition::new(
+        origin.x + rect.size.width / 2.0,
+        origin.y + rect.size.height / 2.0,
+    );
+    native.window().dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+    window.set_occurrence("request-2".into());
+    native
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+    assert_eq!(
+        window.get_authorization_count(),
+        1,
+        "rebound error must reject old press"
+    );
+    window.set_compact(true);
+    ui::draw(&native, 320, 230, "authorization-compact");
+    ui::click(&native, "Retry with authorization");
+    assert_eq!(window.get_authorization_count(), 2);
 }

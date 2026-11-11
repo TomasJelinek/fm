@@ -144,3 +144,37 @@ fn raw_path() -> PathBuf {
     text.extend(b"/raw-\xff");
     std::ffi::OsString::from_vec(text).into()
 }
+
+#[test]
+fn selected_rule_program_and_directory_keep_raw_paths_and_reject_late_selection() {
+    let mut p = loaded();
+    p.editor_rule_action(0);
+    let path = raw_path();
+    let id = request(&mut p, Target::Editor);
+    p.settings_path_picked(id, Ok(Some(path.clone())));
+    let id = request(&mut p, Target::EditorWorkingDirectory);
+    p.settings_path_picked(id, Ok(Some(path.clone())));
+    p.save_editor_draft(&|_| true);
+    assert_eq!(
+        p.preferences.values.editor.rules[0].executable,
+        Some(path.clone())
+    );
+    assert_eq!(
+        p.preferences.values.editor.rules[0].working_directory,
+        Some(path.clone())
+    );
+    p.select_editor_rule(0);
+    let id = request(&mut p, Target::EditorWorkingDirectory);
+    p.editor_rule_action(0);
+    p.settings_path_picked(id, Ok(Some(std::env::current_dir().unwrap())));
+    assert!(
+        p.editor_draft()
+            .selected_form()
+            .native_working_directory
+            .is_none()
+    );
+    assert_eq!(
+        p.editor_draft().rules[0].native_working_directory,
+        Some(path)
+    );
+}

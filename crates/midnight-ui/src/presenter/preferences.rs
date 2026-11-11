@@ -66,6 +66,7 @@ pub(super) struct EditedFields {
     pub(super) thumbnails_network: bool,
     pub(super) thumbnail_size: bool,
     pub(super) panel_filters: [bool; 2],
+    pub(super) panel_filter_history: bool,
     pub(super) shortcuts: bool,
     pub(super) filename_colors: bool,
     pub(super) checksum_algorithms: bool,
@@ -323,6 +324,11 @@ impl Presenter {
                     }
                     if edited.panel_view_modes[slot] {
                         loaded.panel_view_modes[slot] = local.panel_view_modes[slot];
+                    }
+                }
+                if edited.panel_filter_history {
+                    for filter in local.panel_filter_history.iter().rev() {
+                        super::filter::remember_history(&mut loaded.panel_filter_history, filter);
                     }
                 }
                 if edited.command_history_cleared {
@@ -651,6 +657,8 @@ impl Presenter {
             || preferences.panel_filters != previous.panel_filters;
         edited.quick_search_filter |=
             preferences.quick_search_filter != previous.quick_search_filter;
+        edited.panel_filter_history |=
+            preferences.panel_filter_history != previous.panel_filter_history;
         edited.size_display |= preferences.size_display != previous.size_display;
         edited.copy_checksum_verification |=
             preferences.copy_checksum_verification != previous.copy_checksum_verification;

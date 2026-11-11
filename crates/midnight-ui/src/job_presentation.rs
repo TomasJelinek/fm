@@ -1,6 +1,9 @@
 //! Bounded job snapshots and selection; paths and counters are never read from the filesystem here.
 use crate::*;
 
+#[path = "job_progress_meter.rs"]
+mod meter;
+
 #[cfg(test)]
 #[path = "job_presentation_tests.rs"]
 mod tests;
@@ -24,6 +27,15 @@ pub(crate) fn find(rows: ModelRc<OperationRow>, identity: SharedString) -> i32 {
 }
 
 pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
+    use crate::job_row_cache::Key;
+    p.job_rows.retain(
+        p.copies.progress.iter().map(|job| Key::Copy(job.id)).chain(
+            p.operations
+                .progress
+                .iter()
+                .map(|job| Key::Mutation(job.id)),
+        ),
+    );
     p.job_charts.retain(
         p.copies.progress.iter().map(|job| (false, job.id)).chain(
             p.operations
@@ -38,12 +50,12 @@ pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
         .progress
         .iter()
         .filter(|progress| !p.operations.unconfirmed.contains(&progress.id))
-        .map(|progress| (progress.id, mutation(p, progress)))
+        .map(|progress| (progress.id, cached_mutation(p, progress)))
         .chain(
             p.copies
                 .progress
                 .iter()
-                .map(|progress| (progress.id, copy(p, progress))),
+                .map(|progress| (progress.id, cached_copy(p, progress))),
         )
         .collect();
     rows.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
@@ -53,7 +65,75 @@ pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
         .collect()
 }
 
+fn cached_copy(p: &Presenter, progress: &std::sync::Arc<CopyProgress>) -> OperationRow {
+    let failure = p
+        .copies
+        .failures
+        .iter()
+        .find(|failure| failure.id == progress.id);
+    let mut row = p.job_rows.get(
+        crate::job_row_cache::Snapshot::Copy(progress, failure),
+        &p.number_locale,
+        || copy(p, progress),
+    );
+    // Icons and conflicts arrive independently of progress snapshots. Theme styling
+    // remains a Slint binding; never freeze asynchronous artwork or decision state.
+    row.icon = p
+        .desktop
+        .image(&IconKey::action(copy_artwork(progress.intent)));
+    row.attention = copy_attention(p, progress.id);
+    row
+}
+fn cached_mutation(p: &Presenter, progress: &std::sync::Arc<OperationProgress>) -> OperationRow {
+    let metadata = p
+        .operations
+        .metadata_results
+        .iter()
+        .find(|result| result.id == progress.id);
+    let mut row = p.job_rows.get(
+        crate::job_row_cache::Snapshot::Mutation(progress, metadata),
+        &p.number_locale,
+        || mutation(p, progress),
+    );
+    row.icon = p
+        .desktop
+        .image(&IconKey::action(mutation_artwork(progress.kind).0));
+    row.attention = mutation_attention(p, progress.id);
+    row
+}
+fn copy_attention(p: &Presenter, id: OperationId) -> bool {
+    p.copies.conflicts.iter().any(|conflict| conflict.id == id)
+        || p.copies.failures.iter().any(|failure| failure.id == id)
+}
+fn mutation_attention(p: &Presenter, id: OperationId) -> bool {
+    p.operations
+        .metadata_conflicts
+        .iter()
+        .any(|conflict| conflict.id == id)
+        || p.operations
+            .rename_conflicts
+            .iter()
+            .any(|conflict| conflict.id == id)
+}
+fn copy_artwork(intent: TransferIntent) -> ActionIcon {
+    if intent == TransferIntent::Move {
+        ActionIcon::Move
+    } else {
+        ActionIcon::Copy
+    }
+}
+fn mutation_artwork(kind: MutationKind) -> (ActionIcon, i32) {
+    match kind {
+        MutationKind::Rename => (ActionIcon::Rename, 2),
+        MutationKind::EditMetadata => (ActionIcon::Properties, 5),
+        MutationKind::CreateFile => (ActionIcon::NewFile, 4),
+        MutationKind::CreateDirectory => (ActionIcon::NewFolder, 3),
+        MutationKind::Delete(_) => (ActionIcon::Delete, 1),
+    }
+}
+
 fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
+    let meter = meter::deletion(progress, &p.number_locale);
     let state = match progress.state {
         OperationState::Preparing => "Preparing",
         OperationState::AwaitingConfirmation => "Awaiting confirmation",
@@ -65,13 +145,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         OperationState::CompletedWithErrors => "Completed with errors",
         OperationState::Failed => "Failed",
     };
-    let (icon, kind) = match progress.kind {
-        MutationKind::Rename => (ActionIcon::Rename, 2),
-        MutationKind::EditMetadata => (ActionIcon::Properties, 5),
-        MutationKind::CreateFile => (ActionIcon::NewFile, 4),
-        MutationKind::CreateDirectory => (ActionIcon::NewFolder, 3),
-        MutationKind::Delete(_) => (ActionIcon::Delete, 1),
-    };
+    let (icon, kind) = mutation_artwork(progress.kind);
     let metadata = p
         .operations
         .metadata_results
@@ -84,6 +158,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         operation_presentation::title(progress.kind),
         operation_detail::detail(progress, &metadata)
     );
+    append_discovery(&mut detail, &progress.discovery, &p.number_locale);
     if !progress.message.is_empty() {
         detail.push_str(&format!("\n\n{}", progress.message));
     }
@@ -107,15 +182,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         detail: detail.into(),
         cancellable: !progress.state.is_terminal()
             && progress.state != OperationState::CancelRequested,
-        attention: p
-            .operations
-            .metadata_conflicts
-            .iter()
-            .any(|conflict| conflict.id == progress.id)
-            || p.operations
-                .rename_conflicts
-                .iter()
-                .any(|conflict| conflict.id == progress.id),
+        attention: mutation_attention(p, progress.id),
         failed: progress.failed > 0
             || !progress.errors.is_empty()
             || matches!(
@@ -123,13 +190,27 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
                 OperationState::Failed | OperationState::CompletedWithErrors
             ),
         active: !progress.state.is_terminal(),
-        determinate: progress.total > 0,
-        progress: if progress.total == 0 {
-            0.0
-        } else {
-            ((progress.completed.saturating_add(progress.failed) as f64 / progress.total as f64)
-                .min(1.0)) as f32
-        },
+        completed: progress.state == OperationState::Completed,
+        pausable: matches!(progress.kind, MutationKind::Delete(_))
+            && !progress.state.is_terminal()
+            && progress.state != OperationState::CancelRequested,
+        pause_requested: progress.pause_requested,
+        paused: progress.paused,
+        discovering: meter.discovering,
+        current_path: progress
+            .current_path
+            .as_ref()
+            .map_or_else(SharedString::default, |path| {
+                path.display().to_string().into()
+            }),
+        remaining: meter.remaining,
+        eta: meter.eta,
+        progress_label: meter.label,
+        file_determinate: false,
+        file_progress: 0.0,
+        file_progress_label: SharedString::default(),
+        determinate: meter.determinate,
+        progress: meter.fraction,
         icon: p.desktop.image(&IconKey::action(icon)),
         speed_chart: if matches!(progress.kind, MutationKind::Delete(_)) {
             p.job_charts
@@ -142,6 +223,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
 }
 
 fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
+    let meter = meter::copy(progress, &p.number_locale);
     use CopyOperationState as S;
     let moving = progress.intent == TransferIntent::Move;
     let title = if moving { "Move" } else { "Copy" };
@@ -231,10 +313,14 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
     if let Some(path) = &progress.current_path {
         detail.push_str(&format!("\n\nCurrent source\n{}", path.display()));
     }
+    if let Some(path) = &progress.current_destination {
+        detail.push_str(&format!("\n\nCurrent destination\n{}", path.display()));
+    }
     detail.push_str(&format!(
         "\n\nDestination\n{}",
         progress.destination_directory.display()
     ));
+    append_discovery(&mut detail, &progress.discovery, &p.number_locale);
     if !progress.message.is_empty() {
         detail.push_str(&format!("\n\n{}", progress.message));
     }
@@ -253,15 +339,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         identity: format!("copy-job:{}", progress.id.0).into(),
         title: title.into(),
         state: state.into(),
-        summary: summary.into(),
+        summary: summary.clone().into(),
         detail: detail.into(),
         cancellable: !progress.state.is_terminal() && progress.state != S::CancelRequested,
-        attention: p
-            .copies
-            .conflicts
-            .iter()
-            .any(|conflict| conflict.id == progress.id)
-            || failure.is_some(),
+        attention: copy_attention(p, progress.id),
         failed: (progress.state.is_terminal()
             && (progress.source_residual_count > 0
                 || progress.source_removal_durability_unconfirmed > 0))
@@ -270,14 +351,44 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             || !progress.errors.is_empty()
             || matches!(progress.state, S::Failed | S::CompletedWithErrors),
         active: !progress.state.is_terminal(),
-        // Recursive byte totals are unknown. Never present a guessed completion percentage.
-        determinate: false,
-        progress: 0.0,
-        icon: p.desktop.image(&IconKey::action(if moving {
-            ActionIcon::Move
-        } else {
-            ActionIcon::Copy
-        })),
+        completed: progress.state == S::Completed,
+        pausable: !progress.state.is_terminal() && progress.state != S::CancelRequested,
+        pause_requested: progress.pause_requested,
+        paused: progress.paused,
+        discovering: meter.discovering,
+        current_path: progress
+            .current_path
+            .as_ref()
+            .map_or_else(SharedString::default, |path| {
+                path.display().to_string().into()
+            }),
+        remaining: meter.remaining,
+        eta: meter.eta,
+        determinate: meter.determinate,
+        progress: meter.fraction,
+        progress_label: meter.label,
+        file_determinate: progress.current_file_size.is_some(),
+        file_progress: progress.current_file_size.map_or(0.0, |size| {
+            if size == 0 {
+                1.0
+            } else {
+                (progress.current_file_copied as f64 / size as f64).min(1.0) as f32
+            }
+        }),
+        file_progress_label: progress.current_file_size.map_or_else(
+            SharedString::default,
+            |size| {
+                format!(
+                    "Current file written: {} / {} bytes",
+                    p.number_locale.format_u64(progress.current_file_copied),
+                    p.number_locale.format_u64(size)
+                )
+                .into()
+            },
+        ),
+        icon: p
+            .desktop
+            .image(&IconKey::action(copy_artwork(progress.intent))),
         kind: 0,
         speed_chart: p
             .job_charts
@@ -300,5 +411,34 @@ fn append_recovery(detail: &mut String, progress: &CopyProgress, p: &Presenter) 
         detail.push_str(
             "\nAdditional displaced destination files are retained in destination recovery folders.",
         );
+    }
+}
+
+fn append_discovery(detail: &mut String, discovery: &OperationDiscovery, locale: &NumberLocale) {
+    if discovery.state == DiscoveryState::Complete {
+        let scope = match discovery.scope {
+            DiscoveryScope::Recursive => "Selected items and discovered folder contents",
+            DiscoveryScope::SelectedRoots => {
+                "Selected items only; folder contents were not counted"
+            }
+        };
+        let bytes = discovery.bytes.map_or_else(
+            || "Unknown".to_owned(),
+            |bytes| {
+                format!(
+                    "{} bytes ({})",
+                    locale.format_u64(bytes),
+                    format_size(bytes, locale)
+                )
+            },
+        );
+        detail.push_str(&format!(
+            "\n\nDiscovered totals\nScope: {scope}\nFiles and other entries: {}\nFolders: {}\nLogical file bytes: {bytes}",
+            locale.format_u64(discovery.files),
+            locale.format_u64(discovery.directories)
+        ));
+    }
+    if !discovery.message.is_empty() {
+        detail.push_str(&format!("\n\nDiscovery\n{}", discovery.message));
     }
 }

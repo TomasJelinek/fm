@@ -22,6 +22,7 @@ try {
     $source = Join-Path $testRoot 'source'
     New-Item -ItemType Directory -Path $source | Out-Null
     [IO.File]::WriteAllText((Join-Path $source 'me.exe'), 'registered executable fixture')
+    [IO.File]::WriteAllText((Join-Path $source 'midnight-elevated-listing.exe'), 'authorization helper fixture')
     foreach ($name in @('basic', 'source', 'markdown')) {
         $package = Join-Path $source "viewers/midnight-viewer-$name"
         New-Item -ItemType Directory -Path $package -Force | Out-Null

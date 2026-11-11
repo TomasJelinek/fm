@@ -130,6 +130,9 @@ fn created_file_refresh(p: &mut Presenter, destination: PathBuf) {
 fn created_entry_refresh(p: &mut Presenter, destination: PathBuf, kind: MutationKind) {
     p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
             id: OperationId(1),
             throughput: Arc::default(),
             kind,

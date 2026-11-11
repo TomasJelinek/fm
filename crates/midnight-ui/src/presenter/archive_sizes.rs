@@ -50,6 +50,16 @@ impl State {
 }
 
 impl Pane {
+    pub(crate) fn folder_column_samples(&self) -> Option<&SizeColumnSamples> {
+        if self.tree_view().is_some() {
+            return self.tree.sizes.column_samples();
+        }
+        if let Some(archive) = &self.archive {
+            return Some(&archive.sizes.snapshot.column_samples);
+        }
+        Some(&self.folder_column_samples)
+    }
+
     fn archive_size_root(&self, pane: PaneId) -> Option<TreeRootSnapshot> {
         if self.loading || self.archive_request || self.tree_view().is_some() {
             return None;

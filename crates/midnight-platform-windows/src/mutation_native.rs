@@ -397,7 +397,7 @@ fn collect_child_names(
         }
         let mut offset = 0usize;
         loop {
-            if cancel.is_cancelled() {
+            if !cancel.wait_if_paused() {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "deletion cancelled",

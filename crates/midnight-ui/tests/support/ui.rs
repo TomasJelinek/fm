@@ -15,7 +15,7 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 #[cfg(windows)]
 #[path = "windows_keys.rs"]
@@ -30,6 +30,15 @@ impl Platform for TestPlatform {
         Ok(self.0.clone())
     }
 }
+struct ClockPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
+impl Platform for ClockPlatform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        Ok(self.0.clone())
+    }
+    fn duration_since_start(&self) -> Duration {
+        self.1.get()
+    }
+}
 
 pub struct TestUi {
     pub window: MainWindow,
@@ -41,8 +50,17 @@ pub struct TestUi {
 
 impl TestUi {
     pub fn new() -> Self {
+        Self::with_clock(None)
+    }
+
+    pub fn with_clock(clock: Option<Rc<Cell<Duration>>>) -> Self {
         let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-        slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+        let platform: Box<dyn Platform> = if let Some(clock) = clock {
+            Box::new(ClockPlatform(native.clone(), clock))
+        } else {
+            Box::new(TestPlatform(native.clone()))
+        };
+        slint::platform::set_platform(platform).unwrap();
         let window = MainWindow::new().unwrap();
         // Bare widget tests represent a ready app; installing a real Presenter
         // replaces this with its actual asynchronous preference-load state.

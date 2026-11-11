@@ -21,6 +21,8 @@ mod image;
 mod position;
 #[path = "worker_raster.rs"]
 mod raster;
+#[path = "scroll_trace.rs"]
+mod scroll_trace;
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
@@ -580,10 +582,17 @@ impl Worker {
         if let Some(previous) = self.viewport_request.take() {
             session.cancel(previous);
         }
+        let _ = scroll_trace::begin("request", anchor);
         match session.viewport(messages::Viewport {
             source_anchor: anchor,
             backwards,
-            max_bytes: if self.binary { 4096 } else { 12 * 1024 },
+            max_bytes: if self.binary {
+                4096
+            } else if self.mode == viewer::MODE_DOCUMENT {
+                64 * 1024
+            } else {
+                12 * 1024
+            },
             max_lines,
         }) {
             Ok(id) => {
@@ -1094,7 +1103,10 @@ impl Worker {
         self.frames.invalidate();
         let requested_anchor = self.anchor;
         self.anchor = page.start;
-        match self.layout_page(&page) {
+        let started = scroll_trace::begin("layout", page.start);
+        let layout = self.layout_page(&page);
+        scroll_trace::end("layout", started);
+        match layout {
             Ok(shaped) => {
                 let restored = self
                     .continuation
@@ -1181,6 +1193,7 @@ impl Worker {
         if self.positions.uncompleted_page() {
             return Ok(());
         }
+        let started = scroll_trace::begin("paint", self.anchor);
         self.prepare_gutter()?;
         let retained = if self.retained_active() {
             let Some(snapshot) = self.retained_pixels()? else {
@@ -1229,6 +1242,7 @@ impl Worker {
             }
             (raster.width, raster.height, Arc::from(raster.rgba), None)
         };
+        scroll_trace::end("paint", started);
         let revision = self.frames.painted()?;
         // BOM bytes and hidden Markdown delimiters do not create a scrollable
         // remainder when the plugin reports that the entire file is present.

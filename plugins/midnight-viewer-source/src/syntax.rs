@@ -12,6 +12,7 @@ pub enum Language {
     TypeScript,
     Python,
     Shell,
+    Batch,
     Json,
     Toml,
     Java,
@@ -53,6 +54,7 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "ts" | "tsx" | "mts" | "cts" => Some(TypeScript),
         "py" | "pyw" => Some(Python),
         "sh" | "bash" | "zsh" => Some(Shell),
+        "bat" | "cmd" => Some(Batch),
         "json" => Some(Json),
         "toml" => Some(Toml),
         "java" => Some(Java),
@@ -157,7 +159,7 @@ pub fn highlight(
                     if escaped {
                         escaped = false;
                         at += text[at..].chars().next().unwrap().len_utf8();
-                    } else if bytes[at] == b'\\' {
+                    } else if bytes[at] == b'\\' && language != Language::Batch {
                         escaped = true;
                         at += 1;
                     } else if bytes[at..].starts_with(&[quote; 3][..count as usize]) {
@@ -221,7 +223,15 @@ pub fn highlight(
                         | Language::Ruby
                         | Language::Yaml
                 );
-                if (c_style && bytes[at..].starts_with(b"//"))
+                let batch_comment = language == Language::Batch
+                    && (bytes[at..].starts_with(b"::")
+                        || (bytes
+                            .get(at..at + 3)
+                            .is_some_and(|word| word.eq_ignore_ascii_case(b"rem"))
+                            && bytes.get(at + 3).is_none_or(u8::is_ascii_whitespace)))
+                    && batch_command_start(&text[..at]);
+                if batch_comment
+                    || (c_style && bytes[at..].starts_with(b"//"))
                     || (hash_style && bytes[at] == b'#')
                     || (language == Language::Sql && bytes[at..].starts_with(b"--"))
                 {
@@ -239,7 +249,8 @@ pub fn highlight(
                     at += 2 + hashes as usize;
                     current.mode = Mode::Raw(hashes);
                     STYLE_STRING
-                } else if matches!(bytes[at], b'"' | b'\'')
+                } else if bytes[at] == b'"'
+                    || (language != Language::Batch && bytes[at] == b'\'')
                     || (matches!(language, Language::JavaScript | Language::TypeScript)
                         && bytes[at] == b'`')
                 {
@@ -294,6 +305,13 @@ pub fn highlight(
     Some(spans)
 }
 
+fn batch_command_start(prefix: &str) -> bool {
+    prefix
+        .rsplit(['\n', '&', '|', '(', ')'])
+        .next()
+        .is_some_and(|part| part.trim().trim_start_matches('@').is_empty())
+}
+
 fn raw_start(bytes: &[u8]) -> Option<u8> {
     let mut hashes = 0;
     while bytes.get(1 + hashes) == Some(&b'#') {
@@ -328,6 +346,9 @@ fn keyword(language: Language, token: &str) -> bool {
         Language::Shell => {
             "case do done elif else esac fi for function if in select then time until while"
         }
+        Language::Batch => {
+            "assoc break call cd chdir cls color copy date del dir do echo else endlocal equ errorlevel exist exit for ftype geq goto gtr if in leq lss md mkdir move neq not path pause popd prompt pushd rd rem ren rename rmdir set setlocal shift start time title type ver verify vol"
+        }
         Language::Json => "false null true",
         Language::Toml => "false true inf nan",
         Language::Java => {
@@ -354,7 +375,7 @@ fn keyword(language: Language, token: &str) -> bool {
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
     };
     words.split_ascii_whitespace().any(|word| {
-        if language == Language::Sql {
+        if matches!(language, Language::Sql | Language::Batch) {
             word.eq_ignore_ascii_case(token)
         } else {
             word == token

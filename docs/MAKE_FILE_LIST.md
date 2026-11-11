@@ -26,9 +26,7 @@ last 30 unique successfully used templates are remembered.
 | `$(FileSize)` | Ungrouped decimal bytes; `<DIR>` for an unmeasured folder |
 | `$(FileDate)` / `$(FileTime)` | Modification date/time formatted using the system locale |
 | `$(FileAttributes)` | Compact Windows attribute letters or Linux octal permissions |
-| `$(FileDOSName)` | Reserved compatible short-name field; currently `-` |
 | `$(Drive)` / `$(Path)` | Drive/share and remaining directory path, with a final separator |
-| `$(DOSPath)` | Currently the normal directory path fallback |
 | `$(CRLF)` / `$(CR)` / `$(LF)` / `$(TAB)` | Literal line endings and tab |
 
 Variable names are case-insensitive. `$(FileName:max)` aligns to the longest
@@ -62,3 +60,7 @@ Directory traversal is not implicit: this feature lists the captured visible ite
 
 See the [design](superpowers/specs/2026-11-09-make-file-list-design.md) for the
 backend contracts and the [feature status](FEATURE_STATUS.md) for validation scope.
+
+DOS/8.3 name support is removed. Existing saved `$(FileDOSName)` and `$(DOSPath)`
+tokens remain accepted only as migration aliases for the full Unicode filename
+and directory path. They are no longer offered by the variable picker.

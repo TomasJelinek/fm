@@ -12,7 +12,6 @@ pub(crate) struct CopiesState {
     pub(super) decision_versions: HashMap<OperationId, u64>,
     pub(super) deferred_decisions: HashSet<(OperationId, u64)>,
     pub(super) selected_decision: Option<(OperationId, u64)>,
-    pub(super) automatic_jobs: automatic_jobs::AutomaticJobs,
 }
 
 impl Presenter {
@@ -235,7 +234,6 @@ impl Presenter {
                 {
                     return None;
                 }
-                self.copies.automatic_jobs.observe_copy(&progress);
                 if progress.state.is_terminal()
                     || progress.state == CopyOperationState::CancelRequested
                 {
@@ -324,22 +322,6 @@ impl Presenter {
                 .iter()
                 .any(|p| p.id == *id && !p.state.is_terminal())
         });
-        while self
-            .copies
-            .progress
-            .iter()
-            .filter(|p| p.state.is_terminal())
-            .count()
-            > 16
-        {
-            let index = self
-                .copies
-                .progress
-                .iter()
-                .position(|p| p.state.is_terminal())
-                .unwrap();
-            self.copies.progress.remove(index);
-        }
     }
 }
 

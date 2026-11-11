@@ -125,6 +125,7 @@ fn cancelled_shared_archive_reads_retain_both_real_worker_slots_until_they_drain
         retries: HashMap::new(),
         stopped: false,
         clear_cache: false,
+        cache_location: None,
         notice: None,
     }));
     let (started_tx, started) = mpsc::sync_channel(4);

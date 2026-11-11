@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { FileRow, TreePress } from "file-models.slint";
+import { FallbackIcons } from "action-icons.slint";
 
 // Separate input ownership keeps expansion out of selection, drag and activation.
 export component TreeDisclosure inherits Rectangle {
@@ -22,9 +23,15 @@ export component TreeDisclosure inherits Rectangle {
     accessible-label: root.label + root.item.name;
     accessible-enabled: root.available;
     accessible-action-default => { if root.available { root.disclose(root.item.identity); } }
-    Text {
+    if !root.expanded && root.item.tree-disclosure == 6 : Image {
+        source: FallbackIcons.refresh; colorize: Theme.secondary-text;
+        width: min(16px, parent.width); height: min(16px, parent.height);
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        image-fit: contain; accessible-role: none;
+    }
+    if root.expanded || root.item.tree-disclosure != 6 : Text {
         text: root.expanded ? "−" : root.item.tree-disclosure == 3 ? "+"
-            : root.item.tree-disclosure == 1 ? "›" : root.item.tree-disclosure == 2 ? "…" : "↻";
+            : root.item.tree-disclosure == 1 ? "›" : "…";
         color: Theme.secondary-text;
         font-size: Theme.font-size;
         horizontal-alignment: center; vertical-alignment: center;

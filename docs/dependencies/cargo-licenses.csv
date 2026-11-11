@@ -169,7 +169,7 @@ futures-util,0.3.34,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crat
 generic-array,0.14.7,MIT,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,
 gethostname,1.1.0,Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 getrandom,0.2.17,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
-getrandom,0.3.4,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,midnight-platform-windows
+getrandom,0.3.4,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,midnight-elevation; midnight-platform-windows
 getrandom,0.4.3,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; renderer-tests,Linux; Windows,
 gif,0.14.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; image-viewer; thumbnail-image,Linux; Windows,
 gl_generator,0.14.0,Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
@@ -265,7 +265,7 @@ lazy_static,1.5.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates
 lazy_static,1.5.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 libbz2-rs-sys,0.2.6,bzip2-1.0.6,registry+https://github.com/rust-lang/crates.io-index,archive; html-viewer,Linux; Windows,
 libc,0.2.186,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
-libc,0.2.191,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; html-viewer; image-viewer; image-viewer-api; native-linux; native-macos; pdf-viewer; thumbnail-api; thumbnail-image; thumbnail-video; worker-api,Linux; Windows; macOS arm64; macOS x86-64,midnight-filesystem-native-linux; midnight-filesystem-native-macos; midnight-platform-linux; midnight-plugin-host; midnight-worker-sdk
+libc,0.2.191,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; html-viewer; image-viewer; image-viewer-api; native-linux; native-macos; pdf-viewer; thumbnail-api; thumbnail-image; thumbnail-video; worker-api,Linux; Windows; macOS arm64; macOS x86-64,midnight-elevation; midnight-filesystem-native-linux; midnight-filesystem-native-macos; midnight-platform-linux; midnight-plugin-host; midnight-worker-sdk
 libloading,0.8.9,ISC,registry+https://github.com/rust-lang/crates.io-index,app; network; renderer-tests; thumbnail-video,Linux; Windows,midnight-filesystem-network
 libm,0.2.16,MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 linebender_resource_handle,0.1.1,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; pdf-viewer; renderer-tests,Linux; Windows,
@@ -464,7 +464,7 @@ synstructure,0.14.0,MIT,registry+https://github.com/rust-lang/crates.io-index,ap
 sys-locale,0.3.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 taffy,0.10.1,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 tar,0.4.46,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; archive; html-viewer,Linux; Windows,midnight-api-package; midnight-fs-archive
-tempfile,3.27.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,midnight-compare-engine; midnight-engine; midnight-filesystem-host; midnight-native-filesystem-host; midnight-platform; midnight-platform-common; midnight-platform-linux; midnight-platform-windows; midnight-plugin-host; midnight-thumbnail-host; midnight-viewer-engine; midnight-web-viewer-host; midnight-worker-platform
+tempfile,3.27.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,midnight-compare-engine; midnight-elevation; midnight-engine; midnight-filesystem-host; midnight-native-filesystem-host; midnight-platform; midnight-platform-common; midnight-platform-linux; midnight-platform-windows; midnight-plugin-host; midnight-thumbnail-host; midnight-viewer-engine; midnight-web-viewer-host; midnight-worker-platform
 text-size,1.1.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 thiserror,1.0.69,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 thiserror,2.0.18,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
@@ -569,7 +569,7 @@ windows-numerics,0.3.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/c
 windows-result,0.4.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,
 windows-strings,0.5.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,
 windows-sys,0.52.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,
-windows-sys,0.61.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; html-viewer; image-viewer; image-viewer-api; native-windows; network; pdf-viewer; thumbnail-api; thumbnail-image; thumbnail-video; worker-api,Linux; Windows,midnight-filesystem-native-windows; midnight-filesystem-network; midnight-platform-windows; midnight-plugin-host; midnight-ui; midnight-worker-platform; midnight-worker-sdk
+windows-sys,0.61.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; html-viewer; image-viewer; image-viewer-api; native-windows; network; pdf-viewer; thumbnail-api; thumbnail-image; thumbnail-video; worker-api,Linux; Windows,midnight-elevation; midnight-filesystem-native-windows; midnight-filesystem-network; midnight-platform-windows; midnight-plugin-host; midnight-ui; midnight-worker-platform; midnight-worker-sdk
 windows-targets,0.52.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,
 windows-threading,0.2.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,
 windows_x86_64_msvc,0.52.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Windows,

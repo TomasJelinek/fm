@@ -465,6 +465,12 @@ fn build() -> Vec<ShortcutDefinition> {
         &["Ctrl+Enter"],
     );
     add(
+        "command.insert-full-path",
+        "Append focused full path to command",
+        FilesOrCommand,
+        &["Ctrl+Shift+P"],
+    );
+    add(
         "command.insert-path",
         "Insert active panel path into command",
         FilesOrCommand,

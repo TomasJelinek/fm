@@ -2,10 +2,11 @@
 export global ActionAvailability {
     pure public function enabled(action: string, native: bool, cursor: bool, selection: bool, network: bool, folder-sizes: bool) -> bool {
         return action != "" && (!action.starts-with("network.") || network)
-            && ((action == "files.rename" || action == "files.view" || action == "files.view-basic" || action == "files.edit" || action == "command.insert-name") ? cursor : true)
+            && ((action == "files.rename" || action == "files.view" || action == "files.view-basic" || action == "files.edit" || action == "command.insert-name" || action == "command.insert-full-path") ? cursor : true)
             && ((action == "files.copy-to" || action == "files.move-to" || action == "files.copy" || action == "files.cut" || action == "files.trash" || action == "files.delete" || action == "files.attributes" || action == "files.case" || action == "files.properties" || action == "files.compare") ? selection : true)
             && (action != "panel.folder-sizes" || folder-sizes)
             && (action != "files.make-list" || selection)
+            && (action != "command.insert-full-path" || native)
             && (native || !action.starts-with("files.") || action == "files.view" || action == "files.view-basic" || action == "files.copy-to" || action == "files.make-list");
     }
 }

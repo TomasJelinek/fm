@@ -173,6 +173,7 @@ fn native_jobs_keeps_normal_action_heights_artwork_and_compact_close() {
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     for (scheme, density, font) in appearances() {
+        window.show().unwrap();
         window.invoke_apply_preferences(scheme, density, "".into(), font, font);
         let pixels = render(
             &native,
@@ -189,12 +190,12 @@ fn native_jobs_keeps_normal_action_heights_artwork_and_compact_close() {
         painted_icon(&pixels, "Jobs row");
         render(&native, 320, 200, "native-jobs-compact");
         inside(&native, "Close");
+        input::key(&native, Key::Escape);
+        assert!(
+            !window.window().is_visible(),
+            "compact Jobs Escape must dismiss at scheme {scheme}, density {density}, font {font}"
+        );
     }
-    input::key(&native, Key::Escape);
-    assert!(
-        !window.window().is_visible(),
-        "compact Jobs Escape must dismiss its native body"
-    );
 }
 
 #[test]

@@ -94,7 +94,7 @@ the disk cache per user, outside executable/plugin directories and `_build`:
 
 New records are partitioned as `v1/ab/<hash>.mtc`, with lazy two-hex-character
 buckets and backward-compatible reads of flat records. Options → Previews now
-offers 48–256 logical pixels (default 72). Resolution upgrades preserve cached
+offers 48–256 logical pixels (default 96, updated 11 November). Resolution upgrades preserve cached
 fallbacks, reuse sufficient larger frames and do not clear the whole cache.
 The [size and cache contract](2026-11-09-thumbnail-size-and-cache.md) specifies
 shared budgets, retained-image behavior and safe bucket access.

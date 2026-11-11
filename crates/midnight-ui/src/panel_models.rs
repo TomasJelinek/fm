@@ -67,6 +67,7 @@ fn history_choices(presenter: &Presenter, pane: PaneId, forward: bool) -> Vec<Na
 }
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
+    crate::metadata_column_presentation::refresh(window, presenter);
     window.set_left_can_target_cursor(presenter.can_target_cursor(PaneId::Left));
     window.set_right_can_target_cursor(presenter.can_target_cursor(PaneId::Right));
     window.set_left_can_target_selection(presenter.can_target_selection(PaneId::Left));

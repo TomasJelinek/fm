@@ -80,37 +80,6 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     refresh_draft(window, presenter);
-    let owner = window
-        .get_operations_auto_copy()
-        .parse::<u64>()
-        .ok()
-        .map(OperationId);
-    presenter.sync_automatic_copy_jobs(owner);
-    if owner.is_some_and(|id| presenter.may_close_automatic_copy_jobs(id)) {
-        window.invoke_close_operations();
-        presenter.sync_automatic_copy_jobs(None);
-    }
-    if let Some(progress) = presenter.copies.progress.last() {
-        let token: SharedString = progress.id.0.to_string().into();
-        if window.get_copy_latest() != token {
-            window.set_copy_latest(token.clone());
-            if !progress.state.is_terminal()
-                && !presenter.operations.closing
-                && presenter.operations.preview.is_none()
-                && presenter.copies.draft.is_none()
-                && presenter.active_copy_decision().is_none()
-            {
-                window.invoke_show_copy_operations(token);
-                presenter.sync_automatic_copy_jobs(
-                    window
-                        .get_operations_auto_copy()
-                        .parse::<u64>()
-                        .ok()
-                        .map(OperationId),
-                );
-            }
-        }
-    }
     if let Some((id, version)) = presenter.active_rename_decision() {
         if presenter.operations.preview.is_none()
             && presenter.copies.draft.is_none()

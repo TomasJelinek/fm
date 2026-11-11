@@ -114,6 +114,9 @@ fn install_service(
             if !window.window().is_visible() {
                 return;
             }
+            if let Some(path) = service.take_cache_location() {
+                window.set_thumbnail_cache_location(path.to_string_lossy().as_ref().into());
+            }
             let left_hover = window.get_left_hovered_row();
             let right_hover = window.get_right_hovered_row();
             let ranges = [

@@ -261,6 +261,18 @@ fn open(
         retry: slint::Timer::default(),
     };
     update_warning(&record, main);
+    // Adapter construction may have captured the empty form's default size.
+    // Evaluate wrapping at the final width before the first native presentation.
+    let width = record.window.get_initial_width();
+    record
+        .window
+        .window()
+        .set_size(slint::LogicalSize::new(width, 300.0));
+    let height = record.window.get_initial_height();
+    record
+        .window
+        .window()
+        .set_size(slint::LogicalSize::new(width, height));
     record.host.show(record.window.window())?;
     record.window.invoke_begin();
     Ok(record)

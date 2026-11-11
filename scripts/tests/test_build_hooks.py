@@ -72,7 +72,7 @@ class BuildHookTests(unittest.TestCase):
     def test_success_builds_application_then_viewers_for_same_profile(self):
         code, calls = self.run_build()
         self.assertEqual(code, 0, self.build_output)
-        expected = ["cargo build -p midnight-explorer --locked --release", "native release",
+        expected = ["cargo build -p midnight-explorer -p midnight-elevation --locked --release", "native release",
                     "network release", "viewer release"]
         if os.name == "nt":
             expected.append("deploy release")
@@ -81,7 +81,7 @@ class BuildHookTests(unittest.TestCase):
     def test_application_failure_skips_viewer_build(self):
         code, calls = self.run_build(app_exit="35")
         self.assertEqual(code, 35)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release"])
+        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release"])
 
     def test_viewer_failure_is_returned_to_caller(self):
         code, calls = self.run_build(viewer_exit="43")
@@ -91,7 +91,7 @@ class BuildHookTests(unittest.TestCase):
     def test_native_failure_skips_viewers_and_private_deployment(self):
         code, calls = self.run_build(native_exit="41")
         self.assertEqual(code, 41, self.build_output)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release",
+        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
                                  "native release"])
 
     def test_invalid_profile_does_not_start_any_build(self):
@@ -102,14 +102,14 @@ class BuildHookTests(unittest.TestCase):
     def test_network_failure_skips_viewers_and_private_deployment(self):
         code, calls = self.run_build(network_exit="42")
         self.assertEqual(code, 42, self.build_output)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release",
+        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
                                  "native release", "network release"])
 
     @unittest.skipUnless(os.name == "nt", "Windows private deployment hook")
     def test_deployment_failure_is_returned_after_app_and_viewers(self):
         code, calls = self.run_build(deploy_exit="47")
         self.assertEqual(code, 47, self.build_output)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer --locked --release",
+        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
                                  "native release", "network release", "viewer release", "deploy release"])
 
 

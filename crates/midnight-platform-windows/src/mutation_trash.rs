@@ -64,8 +64,13 @@ fn recycle_shell(
         let destination: IShellItem =
             SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)
                 .map_err(|e| failure("open Windows Recycle Bin", path, io::Error::other(e)))?;
-        revalidate()?;
+        // Wait before the final path identity check. Pausing after revalidation
+        // would extend the Shell's unavoidable path-based race for the entire pause.
         checked(cancel, path)?;
+        revalidate()?;
+        if cancel.is_cancelled() {
+            return Err(failure("recycle", path, io::ErrorKind::Interrupted.into()));
+        }
         transfer
             .RecycleItem(&source, &destination, 0)
             .map_err(|error| recycle_error(path, error))

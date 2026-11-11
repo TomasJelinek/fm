@@ -29,6 +29,7 @@ mod font_model;
 mod hot_path_windows;
 mod information_windows;
 mod job_presentation;
+mod job_row_cache;
 mod job_speed;
 mod jobs_windows;
 mod metadata_input;
@@ -65,6 +66,7 @@ mod thumbnail_content;
 mod thumbnail_presentation;
 mod thumbnail_refresh;
 pub use thumbnail_refresh::refresh_thumbnail_rows;
+mod metadata_column_presentation;
 mod time_presentation;
 mod tool_window_failure;
 mod tooltip;
@@ -578,6 +580,14 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_quick_search_filter(presenter.preferences.values.quick_search_filter);
     window.set_active_pane(presenter.active.index() as i32);
     window.set_volumes_revision(presenter.volumes_revision);
+    // Capture presentation before a pending listing can shrink the virtualized model.
+    // Only a terminal backend result for this pane can finish this snapshot.
+    let was_loading = [window.get_left_loading(), window.get_right_loading()];
+    for (index, loading) in was_loading.into_iter().enumerate() {
+        if !loading && presenter.panes[index].loading {
+            window.invoke_remember_navigation_viewport(index as i32);
+        }
+    }
     let mut reveal = [false; 2];
     for (index, model) in [window.get_left_rows(), window.get_right_rows()]
         .iter()
@@ -662,6 +672,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_left_path(location.into());
             window.set_left_volume(volume);
             window.set_left_status(status.into());
+            window.set_left_can_elevate(presenter.can_retry_directory_elevated(PaneId::Left));
             window.set_left_error(error.into());
             window.set_left_error_revision(p.error_revision().into());
             window.set_left_loading(p.loading);
@@ -672,6 +683,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_right_path(location.into());
             window.set_right_volume(volume);
             window.set_right_status(status.into());
+            window.set_right_can_elevate(presenter.can_retry_directory_elevated(PaneId::Right));
             window.set_right_error(error.into());
             window.set_right_error_revision(p.error_revision().into());
             window.set_right_loading(p.loading);
@@ -798,6 +810,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     if reveal[1] {
         window.invoke_reveal_right();
     }
+    for (index, loading) in was_loading.into_iter().enumerate() {
+        let pane = &presenter.panes[index];
+        if loading && !pane.loading {
+            window.invoke_finish_navigation_viewport(index as i32, !pane.error.is_empty());
+        }
+    }
     tooltip::synchronize(window);
 }
 
@@ -920,9 +938,17 @@ pub fn install(
         let _ = w;
     });
     callback!(on_copy_message, false, |_w, p, s| {
-        if let Some((title, body)) = &p.desktop.notice {
-            p.copy_viewer_text(format!("{title}\n\n{body}"), s);
+        p.copy_notice_details(s);
+    });
+    callback!(
+        on_diagnostic_notice_closed,
+        false,
+        |_w, p, _s, generation| {
+            p.dismiss_diagnostic_notice(generation);
         }
+    );
+    callback!(on_retry_directory_elevated, |_w, p, s, id| {
+        p.retry_directory_elevated(pane(id), s);
     });
     callback!(on_copy_panel_error, false, |_w, p, s, id, text| {
         p.copy_panel_error(pane(id), text.as_str(), s);
@@ -980,6 +1006,9 @@ pub fn install(
                 s,
             );
         }
+    });
+    callback!(on_pause_job, false, |_w, p, s, token, paused| {
+        p.set_job_paused(token.as_str(), paused, s);
     });
     callback!(on_clear_finished_jobs, |_w, p, _s, without_errors| {
         p.clear_finished_jobs(without_errors);
@@ -1251,8 +1280,8 @@ pub fn install(
             p.inspect_panel_warning(pane(id), identity.as_str(), tree, s);
         }
     );
-    callback!(on_panel_error_details, false, |_w, p, _s, id, text| {
-        p.inspect_panel_error(pane(id), text.as_str());
+    callback!(on_panel_error_details, false, |_w, p, s, id, text| {
+        p.inspect_panel_error(pane(id), text.as_str(), s);
     });
     callback!(on_tree_disclosure, |w, p, s, id, identity| {
         p.disclose_tree(pane(id), identity.as_str(), s);
@@ -1366,6 +1395,11 @@ pub fn install(
     callback!(on_insert_name, |w, p, _s| {
         if let Some(name) = p.focused_name(p.active) {
             insert_literal(&w, p, &name, CommandInsertion::Filename);
+        }
+    });
+    callback!(on_insert_full_path, |w, p, _s| {
+        if let Some(path) = p.focused_full_path(p.active) {
+            insert_literal(&w, p, &path, CommandInsertion::Filename);
         }
     });
     callback!(on_drive_info, |w, p, s, id| {

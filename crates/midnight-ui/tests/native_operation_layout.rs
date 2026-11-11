@@ -108,3 +108,41 @@ fn native_operation_layout_preserves_long_unicode_content_and_action_bounds() {
         }
     }
 }
+
+#[test]
+fn rename_initial_height_fits_its_summary_without_a_large_empty_body() {
+    let mut test = ui::TestUi::new();
+    test.window
+        .invoke_apply_preferences(3, 0, "Segoe UI".into(), 12, 15);
+    test.window.set_kind(0);
+    test.window.set_title_text("Rename".into());
+    test.window.set_confirm_text("Rename".into());
+    test.window.set_has_name(true);
+    test.window.set_input_label("New name".into());
+    test.window.set_initial_name("Picture 文档.jpg".into());
+    test.window
+        .set_body("Current item\nC:\\Users\\user\\Pictures\\Backgrounds\\Picture 文档.jpg".into());
+    test.resize(test.window.get_initial_width().round() as usize, 300);
+    let height = test.window.get_initial_height().ceil() as usize;
+    assert!(
+        (220..=360).contains(&height),
+        "Unexpected initial rename height {height}"
+    );
+    test.resize(test.width, height);
+    test.window.invoke_begin();
+    test.draw();
+    for (label, role) in [
+        ("Rename", AccessibleRole::Button),
+        ("Cancel", AccessibleRole::Button),
+        ("New name", AccessibleRole::TextInput),
+    ] {
+        inside(&test, ui::root_item(&test.window, label, role), label);
+    }
+    let root = ItemRc::new_root(WindowInner::from_pub(test.window.window()).component());
+    inside(
+        &test,
+        find_text(root, "Rename").expect("The form needs an internal title"),
+        "title",
+    );
+    ui::snapshot(&test, "rename-content-sized");
+}

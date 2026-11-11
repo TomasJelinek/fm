@@ -2,7 +2,11 @@
 #[path = "support/ui.rs"]
 mod ui;
 
-use i_slint_core::{item_tree::ItemRc, items::AccessibleRole};
+use i_slint_core::{
+    accessibility::AccessibilityAction,
+    item_tree::ItemRc,
+    items::{AccessibleRole, ImageItem},
+};
 use midnight_ui::{FileRow, MainWindow};
 use slint::{
     ComponentHandle, Model, VecModel,
@@ -31,6 +35,53 @@ fn pointer(window: &MainWindow, position: slint::LogicalPosition, pressed: bool)
 
 fn button(window: &MainWindow, label: &str) -> ItemRc {
     ui::root_item(window, label, AccessibleRole::Button)
+}
+
+fn visible_image(item: ItemRc) -> Option<ItemRc> {
+    if item.is_visible() && item.downcast::<ImageItem>().is_some() {
+        return Some(item);
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if let Some(image) = visible_image(item) {
+            return Some(image);
+        }
+    }
+    None
+}
+
+fn assert_retry_svg(target: &ItemRc) {
+    assert!(
+        ui::visible_text_values(target.clone()).is_empty(),
+        "retry must not depend on a font glyph"
+    );
+    let image = visible_image(target.clone()).expect("retry has visible image artwork");
+    let source = image.downcast::<ImageItem>().unwrap();
+    let actual = source
+        .as_pin_ref()
+        .source()
+        .to_rgba8()
+        .expect("retry image renders");
+    let expected = slint::Image::load_from_svg_data(include_bytes!("../ui/icons/refresh.svg"))
+        .unwrap()
+        .to_rgba8()
+        .unwrap();
+    assert_eq!(actual.size(), expected.size());
+    assert_eq!(
+        actual.as_bytes(),
+        expected.as_bytes(),
+        "retry must use the refresh SVG"
+    );
+    assert!(actual.as_slice().iter().any(|pixel| pixel.a > 0));
+    let rect = image.geometry();
+    let origin = image.map_to_native_window(rect.origin);
+    let target_origin = target.map_to_native_window(target.geometry().origin);
+    assert!(rect.width() > 0.0 && rect.width() <= 16.0);
+    assert!(rect.height() > 0.0 && rect.height() <= 16.0);
+    assert!(origin.x >= target_origin.x && origin.y >= target_origin.y);
+    assert!(origin.x + rect.width() <= target_origin.x + target.geometry().width());
+    assert!(origin.y + rect.height() <= target_origin.y + target.geometry().height());
 }
 
 #[test]
@@ -139,6 +190,11 @@ fn disclosure_states_and_deep_indent_preserve_row_geometry() {
     let mut ui = ui::TestUi::new();
     let rows = folders();
     ui.window.set_left_rows(rows.clone().into());
+    let retries = Rc::new(RefCell::new(Vec::new()));
+    let captured = retries.clone();
+    ui.window.on_tree_disclosure(move |pane, identity| {
+        captured.borrow_mut().push((pane, identity.to_string()));
+    });
     for mode in 0..3 {
         ui.window.set_left_view_mode(mode);
         ui.draw();
@@ -149,7 +205,7 @@ fn disclosure_states_and_deep_indent_preserve_row_geometry() {
             (2, false, "Loading folders in Folder 文档", "…"),
             (3, false, "Expand folders in Folder 文档", "+"),
             (4, true, "Collapse folders in Folder 文档", "−"),
-            (6, false, "Retry folders in Folder 文档", "↻"),
+            (6, false, "Retry folders in Folder 文档", ""),
             (6, true, "Collapse folders in Folder 文档", "−"),
         ] {
             let mut row = rows.row_data(0).unwrap();
@@ -159,11 +215,22 @@ fn disclosure_states_and_deep_indent_preserve_row_geometry() {
             rows.set_row_data(0, row);
             ui.draw();
             let target = button(&ui.window, label);
-            assert!(
-                ui::visible_text_values(target.clone())
-                    .iter()
-                    .any(|text| text == glyph)
-            );
+            if state == 6 && !expanded {
+                assert_retry_svg(&target);
+                let before = retries.borrow().len();
+                target.accessible_action(&AccessibilityAction::Default);
+                assert_eq!(retries.borrow().len(), before + 1);
+                assert_eq!(
+                    retries.borrow().last().unwrap(),
+                    &(0, "opaque occurrence:17".into())
+                );
+            } else {
+                assert!(
+                    ui::visible_text_values(target.clone())
+                        .iter()
+                        .any(|text| text == glyph)
+                );
+            }
             let row = ui::root_item(&ui.window, "Folder 文档", AccessibleRole::ListItem);
             assert_eq!(row.geometry(), baseline, "mode={mode}, state={state}");
             let origin = target.map_to_native_window(target.geometry().origin);

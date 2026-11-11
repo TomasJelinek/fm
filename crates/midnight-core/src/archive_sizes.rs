@@ -47,11 +47,17 @@ pub enum ArchiveSizeCommand {
 pub struct ArchiveSizeSnapshot {
     pub mount: u64,
     pub version: u64,
+    pub column_samples: crate::SizeColumnSamples,
     values: HashMap<VirtualEntryId, FolderSize>,
 }
 impl ArchiveSizeSnapshot {
     pub fn new(mount: u64, version: u64, values: HashMap<VirtualEntryId, FolderSize>) -> Self {
+        let mut column_samples = crate::SizeColumnSamples::default();
+        for value in values.values() {
+            column_samples.observe(value.bytes);
+        }
         Self {
+            column_samples,
             mount,
             version,
             values,

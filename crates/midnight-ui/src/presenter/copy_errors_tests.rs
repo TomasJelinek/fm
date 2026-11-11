@@ -11,7 +11,6 @@ fn presenter() -> Presenter {
         "destination".into(),
         &|_| true,
     );
-    p.sync_automatic_copy_jobs(Some(OperationId(1)));
     p
 }
 
@@ -164,64 +163,6 @@ fn successful_transfer_keeps_terminal_history_without_a_completion_notice() {
                 .detail
                 .contains("Saved and verified")
         );
-    }
-}
-
-#[test]
-fn automatic_jobs_close_only_after_success_without_active_or_attention_jobs() {
-    let mut p = presenter();
-    let id = p.copies.progress[0].id;
-    assert!(!p.may_close_automatic_copy_jobs(id));
-    let mut done = (*p.copies.progress[0]).clone();
-    done.state = CopyOperationState::Completed;
-    p.apply(Event::Copy(CopyEvent::Progress(Arc::new(done))));
-    assert!(p.may_close_automatic_copy_jobs(id));
-    p.start_copy(
-        FileClipboard {
-            paths: vec!["source/next".into()],
-            intent: FileClipboardIntent::Copy,
-        },
-        "destination".into(),
-        &|_| true,
-    );
-    assert!(
-        !p.may_close_automatic_copy_jobs(id),
-        "another live job needs the panel"
-    );
-    let mut next = (*p.copies.progress[1]).clone();
-    next.state = CopyOperationState::Cancelled;
-    p.apply(Event::Copy(CopyEvent::Progress(Arc::new(next))));
-    assert!(
-        !p.may_close_automatic_copy_jobs(id),
-        "cancellation keeps the panel visible"
-    );
-}
-
-#[test]
-fn automatic_jobs_ignore_old_errors_but_preserve_current_errors_and_cancellation() {
-    for state in [
-        CopyOperationState::Cancelled,
-        CopyOperationState::CompletedWithErrors,
-        CopyOperationState::Failed,
-    ] {
-        let mut p = presenter();
-        let mut terminal = (*p.copies.progress[0]).clone();
-        terminal.state = state;
-        p.apply(Event::Copy(CopyEvent::Progress(Arc::new(terminal))));
-        assert!(!p.may_close_automatic_copy_jobs(OperationId(1)));
-        p.start_copy(
-            FileClipboard {
-                paths: vec!["source/next".into()],
-                intent: FileClipboardIntent::Copy,
-            },
-            "destination".into(),
-            &|_| true,
-        );
-        let mut done = (*p.copies.progress[1]).clone();
-        p.sync_automatic_copy_jobs(Some(OperationId(2)));
-        done.state = CopyOperationState::Completed;
-        p.apply(Event::Copy(CopyEvent::Progress(Arc::new(done))));
-        assert!(p.may_close_automatic_copy_jobs(OperationId(2)));
     }
 }
 

@@ -31,6 +31,7 @@ fn options_with_sender(
     install(&ui.window, p.clone(), send);
     let preferences = UserPreferences {
         editor: EditorPreferences {
+            rules: Vec::new(),
             executable: Some(std::env::current_exe().unwrap()),
             arguments,
         },

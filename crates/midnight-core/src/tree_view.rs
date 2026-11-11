@@ -465,6 +465,7 @@ fn root_bytes(root: &TreeRootSnapshot) -> usize {
 
 fn directory_bytes(index: &DirectoryIndex) -> usize {
     size_of::<DirectoryIndex>()
+        .saturating_add(index.column_samples.retained_bytes())
         .saturating_add(ARC_HEADER)
         .saturating_add(map_bytes(&index.by_id))
         .saturating_add(map_bytes(&index.by_path))

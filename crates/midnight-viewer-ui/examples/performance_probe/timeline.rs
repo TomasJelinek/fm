@@ -23,6 +23,7 @@ struct Row {
     position: f32,
     displayed: f32,
     tile_y: f32,
+    horizontal_extent: f32,
     pending: bool,
     retained: bool,
     presentation: &'static str,
@@ -72,6 +73,9 @@ impl Trace {
             tile_y: window
                 .as_ref()
                 .map_or(f32::NAN, |window| window.get_tile_offset_y()),
+            horizontal_extent: window
+                .as_ref()
+                .map_or(f32::NAN, |window| window.get_horizontal_extent()),
             pending: window
                 .as_ref()
                 .is_some_and(|window| window.get_position_pending()),
@@ -99,9 +103,9 @@ impl Trace {
         }
         std::iter::once(format!("timeline_origin_utc_ms={:.3}", state.utc_ms)).chain(
             state.rows.iter().map(|row| format!(
-                "timeline at_ms={:.3} stage={} kind={} position={:.9} displayed={:.9} tile_y={:.6} pending={} retained={} raster_y_logical={:.4} raster_uploads={} tile_uploads={} extra={:.3} presentation={}",
+                "timeline at_ms={:.3} stage={} kind={} position={:.9} displayed={:.9} tile_y={:.6} pending={} retained={} raster_y_logical={:.4} raster_uploads={} tile_uploads={} extra={:.3} presentation={} horizontal_extent={:.9}",
                 row.elapsed_ms, row.stage, row.kind, row.position, row.displayed,
-                row.tile_y, row.pending, row.retained, row.raster_y, row.raster_uploads, row.tile_uploads, row.extra, row.presentation
+                row.tile_y, row.pending, row.retained, row.raster_y, row.raster_uploads, row.tile_uploads, row.extra, row.presentation, row.horizontal_extent
             ))
         ).collect()
     }

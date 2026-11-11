@@ -42,6 +42,29 @@ pub struct PreparedRenameReplacement {
 /// No operation may silently replace another entry or fall back from trash to
 /// permanent deletion. OS limitations must be returned as errors.
 pub trait PreparedMutation: Send + Sync {
+    /// Read-only discovery through the retained native identity; no recursive links or writes.
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        if !cancel.wait_if_paused() {
+            return Err(FsError::from_io(
+                "discover operation",
+                &self.item().path,
+                std::io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        if self.item().kind == EntryKind::Directory {
+            return Err(FsError::from_io(
+                "discover operation",
+                &self.item().path,
+                std::io::ErrorKind::Unsupported.into(),
+            ));
+        }
+        visit(self.item());
+        Ok(())
+    }
     fn item(&self) -> &MutationItem;
     fn metadata_snapshot(&self, cancel: &Cancellation) -> Result<crate::MetadataSnapshot, FsError> {
         let _ = cancel;

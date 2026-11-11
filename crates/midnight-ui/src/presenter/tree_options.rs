@@ -139,7 +139,9 @@ impl Presenter {
             return;
         }
         let p = &mut self.panes[pane.index()];
+        let mut record_history = false;
         if let Some(pending) = p.tree.options.pending.take() {
+            record_history = matches!(pending.origin, Origin::FilterApply);
             if !matches!(pending.origin, Origin::Sort | Origin::Search) {
                 self.retired.push(Box::new(p.tree.options.retry.take()));
             }
@@ -151,8 +153,14 @@ impl Presenter {
         p.set_error("", &mut self.retired);
         self.desktop.status = "Tree options applied".into();
         self.tree_search_applied(pane, options.search);
-        if self.preferences.values.panel_filters[pane.index()] != options.filter {
+        if record_history || self.preferences.values.panel_filters[pane.index()] != options.filter {
             let mut preferences = self.preferences.values.clone();
+            if record_history {
+                super::filter::remember_history(
+                    &mut preferences.panel_filter_history,
+                    &options.filter,
+                );
+            }
             preferences.panel_filters[pane.index()] = options.filter;
             self.update_preferences(preferences, send);
         }

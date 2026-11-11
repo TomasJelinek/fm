@@ -10,14 +10,15 @@ mod unix;
 mod windows;
 
 fn base_document() -> Value {
-    serde_json::from_slice(
-        &encode_preferences(UserPreferences {
-            thumbnail_size: 96,
-            ..Default::default()
-        })
-        .unwrap(),
-    )
-    .unwrap()
+    let mut preferences = UserPreferences::default();
+    preferences
+        .file_list
+        .remember("$(FileName)$(TAB)$(FileSize)$(CRLF)")
+        .unwrap();
+    let document: Value =
+        serde_json::from_slice(&encode_preferences(preferences).unwrap()).unwrap();
+    assert_eq!(document["version"], 26);
+    document
 }
 
 fn file_list() -> Value {
@@ -33,6 +34,7 @@ fn file_list() -> Value {
 fn file_list_version_26_roundtrips_history_unicode_destination_and_existing_choices() {
     let mut document = base_document();
     document["version"] = 26.into();
+    document["thumbnail_size"] = 96.into();
     document["file_list"] = file_list();
     let decoded = decode_preferences(&serde_json::to_vec(&document).unwrap())
         .expect("version 26 Make File List preferences");
@@ -48,6 +50,7 @@ fn file_list_version_26_roundtrips_history_unicode_destination_and_existing_choi
 fn file_list_strict_schema_rejects_missing_null_malformed_and_premature_fields() {
     let mut valid = base_document();
     valid["version"] = 26.into();
+    valid["thumbnail_size"] = 96.into();
     valid["file_list"] = file_list();
     for value in [
         Value::Null,
@@ -89,7 +92,7 @@ fn file_list_legacy_defaults_keep_minimal_versions_and_new_schema_preserves_requ
         };
         let bytes = encode_preferences(preferences.clone()).unwrap();
         let document: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(document["version"], if size == 72 { 10 } else { 25 });
+        assert_eq!(document["version"], if size == 96 { 10 } else { 25 });
         assert!(document.get("file_list").is_none());
         assert_eq!(decode_preferences(&bytes).unwrap(), preferences);
     }
@@ -101,7 +104,7 @@ fn file_list_legacy_defaults_keep_minimal_versions_and_new_schema_preserves_requ
     let bytes = encode_preferences(preferences.clone()).unwrap();
     let mut document: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(document["version"], 26);
-    assert_eq!(document["thumbnail_size"], 72);
+    assert_eq!(document["thumbnail_size"], 96);
     assert_eq!(decode_preferences(&bytes).unwrap(), preferences);
     document.as_object_mut().unwrap().remove("thumbnail_size");
     assert!(decode_preferences(&serde_json::to_vec(&document).unwrap()).is_err());

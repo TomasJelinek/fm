@@ -58,9 +58,13 @@ pub struct OperationProgress {
     pub id: OperationId,
     pub kind: MutationKind,
     pub state: OperationState,
+    /// A request is acknowledged only at a safe backend checkpoint.
+    pub pause_requested: bool,
+    pub paused: bool,
     /// Top-level accepted targets; not the unknown recursive number of entries.
     pub total: u64,
     pub completed: u64,
+    pub discovery: crate::OperationDiscovery,
     pub failed: u64,
     /// Removed nodes for deletion; the final entry for rename/create (not intermediate dirs).
     pub processed_entries: u64,

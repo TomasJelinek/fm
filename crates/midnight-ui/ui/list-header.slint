@@ -28,7 +28,8 @@ export component ListHeader inherits HorizontalLayout {
     for index in root.action-indices : HintedActionButton {
         text: ["+", "−", "↑", "↓"][index];
         accessible-label: root.action-labels[index]; hint: root.action-hints[index];
-        width: Theme.control-height + 4px; height: Theme.control-height; horizontal-stretch: 0;
+        compact: true;
+        width: max(32px, Theme.control-height + 4px); height: max(32px, Theme.control-height); horizontal-stretch: 0;
         enabled: root.enabled && (index == 0 ? root.can-add : index == 1 ? root.can-remove : index == 2 ? root.can-move-up : root.can-move-down);
         clicked => { root.action(index); }
     }

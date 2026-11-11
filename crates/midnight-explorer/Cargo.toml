@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 midnight-core.workspace = true
 midnight-engine.workspace = true
+midnight-elevation = { path = "../midnight-elevation" }
 midnight-platform.workspace = true
 midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
 midnight-ui.workspace = true

@@ -265,6 +265,13 @@ impl LeasedSource {
     }
 }
 impl TransferSource for LeasedSource {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.source.discover(cancel, visit)
+    }
     fn entry(&self) -> &TransferEntry {
         self.source.entry()
     }

@@ -2667,6 +2667,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "midnight-elevation"
+version = "0.2.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "libc",
+ "midnight-core",
+ "midnight-plugin-host",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "midnight-engine"
 version = "0.2.0"
 dependencies = [
@@ -2700,6 +2712,7 @@ dependencies = [
  "midnight-compare-engine",
  "midnight-compare-ui",
  "midnight-core",
+ "midnight-elevation",
  "midnight-engine",
  "midnight-filesystem-host",
  "midnight-native-filesystem-host",

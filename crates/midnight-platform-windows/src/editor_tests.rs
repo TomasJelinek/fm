@@ -21,6 +21,7 @@ fn preview_preserves_unicode_spaces_and_metacharacters_without_a_shell() {
     fs::write(&file, b"text").unwrap();
     let executable = std::env::current_exe().unwrap();
     let preferences = EditorPreferences {
+        rules: Vec::new(),
         executable: Some(executable.clone()),
         arguments: vec![
             "--literal={file}".into(),
@@ -51,6 +52,7 @@ fn missing_program_and_batch_files_fail_without_default_fallback() {
             fs::write(&executable, b"echo wrong").unwrap();
         }
         let preferences = EditorPreferences {
+            rules: Vec::new(),
             executable: Some(executable),
             ..Default::default()
         };
@@ -65,6 +67,7 @@ fn missing_program_and_batch_files_fail_without_default_fallback() {
 fn directories_missing_files_and_nonlocal_paths_are_rejected_before_launch() {
     let directory = tempfile::tempdir().unwrap();
     let preferences = EditorPreferences {
+        rules: Vec::new(),
         executable: Some(std::env::current_exe().unwrap()),
         ..Default::default()
     };
@@ -86,6 +89,7 @@ fn safe_harness_child_is_started_without_opening_a_desktop_editor() {
     let file = directory.path().join("文档 & $HOME .txt");
     fs::write(&file, b"test").unwrap();
     let preferences = EditorPreferences {
+        rules: Vec::new(),
         executable: Some(std::env::current_exe().unwrap()),
         arguments: vec!["--list".into(), "{file}".into()],
     };
@@ -104,4 +108,63 @@ fn safe_harness_child_is_started_without_opening_a_desktop_editor() {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+#[test]
+fn selected_editor_rule_controls_program_argv_and_working_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("文档 & $HOME.txt");
+    fs::write(&file, b"text").unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let preferences = EditorPreferences {
+        executable: Some(directory.path().join("fallback-must-not-run.exe")),
+        rules: vec![midnight_core::EditorRule {
+            expression: "*.txt".into(),
+            executable: Some(executable.clone()),
+            arguments: vec!["literal two words".into(), "{file}".into(), "".into()],
+            working_directory: Some(directory.path().to_owned()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let command = prepare(&WindowsFileSystem::new(None), &file, &preferences).unwrap();
+    assert_eq!(command.get_program(), executable.as_os_str());
+    assert_eq!(command.get_current_dir(), Some(directory.path()));
+    assert_eq!(
+        command.get_args().map(OsString::from).collect::<Vec<_>>(),
+        vec![
+            OsString::from("literal two words"),
+            file.into_os_string(),
+            OsString::new()
+        ]
+    );
+}
+
+#[test]
+fn unpaired_utf16_filename_uses_fallback_without_lossy_matching() {
+    use std::os::windows::ffi::OsStringExt;
+    let file = std::env::current_dir().unwrap().join(OsString::from_wide(&[
+        0xd800,
+        b'.' as u16,
+        b't' as u16,
+        b'x' as u16,
+        b't' as u16,
+    ]));
+    let executable = std::env::current_exe().unwrap();
+    let preferences = EditorPreferences {
+        executable: Some(executable.clone()),
+        rules: vec![midnight_core::EditorRule {
+            expression: "*.txt".into(),
+            executable: Some(executable.with_file_name("must-not-match.exe")),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let selected = midnight_platform_common::editor_rules::select(&preferences, &file).unwrap();
+    let command = selected.command.unwrap();
+    assert_eq!(command.executable, executable);
+    assert_eq!(
+        command.arguments_for(&file).unwrap(),
+        vec![file.into_os_string()]
+    );
 }

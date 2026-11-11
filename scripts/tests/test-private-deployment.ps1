@@ -21,6 +21,7 @@ New-Item -ItemType Directory -Path $testRoot, $source | Out-Null
 Protect-NewFixture $testRoot
 try {
     [IO.File]::WriteAllText((Join-Path $source 'me.exe'), 'executable fixture')
+    [IO.File]::WriteAllText((Join-Path $source 'midnight-elevated-listing.exe'), 'authorization helper fixture')
     foreach ($name in @('basic', 'source', 'markdown')) {
         $package = Join-Path $source "viewers/midnight-viewer-$name"
         New-Item -ItemType Directory -Path "$package/notices" -Force | Out-Null
@@ -33,6 +34,10 @@ try {
     & $deploy -SourceDirectory $source -Destination $destination | Out-Null
     if ((Get-FileHash "$destination/me.exe").Hash -ne (Get-FileHash "$source/me.exe").Hash) {
         throw 'Executable contents changed during deployment'
+    }
+    if ((Get-FileHash "$destination/midnight-elevated-listing.exe").Hash -ne
+        (Get-FileHash "$source/midnight-elevated-listing.exe").Hash) {
+        throw 'Authorization helper contents changed during deployment'
     }
     if (Test-Path -LiteralPath "$destination/unrelated.pdb") { throw 'Unrelated artifact copied' }
     foreach ($name in @('basic', 'source', 'markdown')) {

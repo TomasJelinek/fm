@@ -152,6 +152,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+Alt+number or Shift+Alt+number | Open the numbered bookmark in the other pane |
 | Ctrl+Shift+Plus | Add the current folder once, using the first free numbered slot |
 | Ctrl+Enter in files or command editor | Append the focused basename to the end of the command draft and focus the command editor |
+| Ctrl+Shift+P in files or command editor | Append the focused native item's complete path, including filename, and focus the command editor; no added quotes or spaces |
 | Ctrl+P in files or command editor | Insert the active pane path, ending in a native path separator, at the command selection |
 | Ctrl+[ / Ctrl+] (also with Shift) | Insert the left / right pane path, ending in a native path separator, at the command selection |
 | Ctrl+Space | Available to the input method (IME); Ctrl+P inserts the path |

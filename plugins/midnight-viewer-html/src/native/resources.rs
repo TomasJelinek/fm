@@ -8,7 +8,7 @@ mod tests {
 
     #[test]
     fn canceled_resolution_releases_late_resource_without_releasing_main_authority() {
-        let (controls, events) = mpsc::sync_channel(8);
+        let (output, events) = crate::output::channel();
         let viewport = api::Viewport {
             revision: 1,
             width: 1,
@@ -30,11 +30,7 @@ mod tests {
             viewport: Mutex::new(viewport),
             surface: Mutex::new(crate::surface::Surface::new(1, 1, 1).unwrap()),
             layers: Mutex::new(crate::surface::Layers::default()),
-            output: Arc::new(Output {
-                controls,
-                frame: Mutex::new(None),
-                failed: AtomicBool::new(false),
-            }),
+            output,
             active: AtomicBool::new(true),
             closed: AtomicBool::new(false),
             finding: Mutex::new(crate::find::FindQueue::default()),
@@ -70,7 +66,7 @@ mod tests {
             },
         );
         assert_eq!(
-            events.try_recv().unwrap().kind,
+            events.controls.try_recv().unwrap().kind,
             api::EventKind::ResourceRelease { resource: 42 }
         );
         reply(
@@ -96,7 +92,7 @@ mod tests {
                 reason: "canceled".into(),
             },
         );
-        assert!(events.try_recv().is_err());
+        assert!(events.controls.try_recv().is_err());
     }
 }
 

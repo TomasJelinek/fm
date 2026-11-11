@@ -11,7 +11,7 @@ use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{
-    ComponentHandle,
+    ComponentHandle, Model,
     platform::{Key, PointerEventButton, WindowAdapter, WindowEvent},
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
@@ -370,8 +370,12 @@ fn copy_conflict_native_choices_cancel_and_later_keep_exact_job_identity() {
     h.refresh();
     assert_eq!(
         h.ui.visible_count(),
-        1,
-        "only Jobs remains; refresh must not reopen the decision"
+        h.ui.window
+            .get_operations()
+            .iter()
+            .filter(|row| row.active)
+            .count(),
+        "operation progress remains; refresh must not reopen the deferred decision"
     );
     h.ui.window
         .invoke_resolve_copy(format!("copy-job:{}", id.0).into());
@@ -512,7 +516,10 @@ fn copy_progress_can_take_focus_from_a_fallback_menu_without_reentrant_borrow() 
             intent: FileClipboardIntent::Copy,
         }),
     });
-    assert!(h.ui.window.get_operations_visible());
+    assert!(
+        !h.ui.window.get_operations_visible(),
+        "copy owns separate progress"
+    );
     let children: Vec<_> = h
         .windows
         .borrow()

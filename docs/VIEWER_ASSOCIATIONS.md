@@ -3,9 +3,9 @@
 Open **Options > Plugins** to select a viewer and edit which extensions it handles.
 Enter literal suffixes separated by spaces, commas or semicolons, for example
 `rs; py; custom.txt`. Leading `.` or `*.` is accepted and normalized. Matching
-ignores case. **Manifest defaults** removes that viewer's override.
+ignores case. **Reset** removes that viewer's override.
 
-The list includes text, source, Markdown, image, PDF and Chromium HTML viewers when installed.
+The list includes text, source, Markdown, image, PDF and HTML viewers when installed.
 Move a viewer higher in the priority list to prefer it when more than one viewer
 matches the same suffix. A longer compound suffix takes precedence over a shorter
 suffix. Editing associations changes routing, not what a decoder can actually read.
@@ -20,3 +20,6 @@ restart the application to apply them. Plugin manifests are never modified.
 
 The [routing design](superpowers/specs/2026-11-09-viewer-associations.md) describes
 validation, precedence and the separation between preferences and plugin capabilities.
+
+The Plugins page also lists installed filesystem and thumbnailer packages in
+separate tabs. Rescan all plugins refreshes all three catalogs from one action.

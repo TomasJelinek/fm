@@ -11,6 +11,8 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+#[path = "delete_pause_tests.rs"]
+mod pause;
 #[path = "operation_summary_tests.rs"]
 mod summary;
 #[path = "delete_throughput_tests.rs"]

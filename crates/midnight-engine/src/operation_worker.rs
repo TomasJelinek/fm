@@ -1,4 +1,6 @@
 use super::*;
+#[path = "operation_discovery.rs"]
+mod discovery;
 use std::{
     ffi::OsString,
     io,
@@ -25,8 +27,11 @@ pub(super) fn initial(request: &PrepareOperation) -> OperationProgress {
         id: request.id,
         kind: request.kind,
         state: OperationState::Preparing,
+        pause_requested: false,
+        paused: false,
         total: 0,
         completed: 0,
+        discovery: Default::default(),
         failed: 0,
         processed_entries: 0,
         throughput: Arc::default(),
@@ -51,6 +56,8 @@ pub(super) fn failed_status(status: &Status, error: FsError) -> OperationProgres
     } else {
         OperationState::Failed
     };
+    progress.pause_requested = false;
+    progress.paused = false;
     progress.failed = u64::from(progress.state == OperationState::Failed);
     progress.message = error.to_string();
     progress.errors.push(error);
@@ -280,9 +287,10 @@ impl Job {
             return super::rename::execute(self, outbox);
         }
         let mut progress = self.progress();
+        self.discover_deletion(&mut progress);
         let count = progress.total as usize;
         for index in 0..count {
-            if self.cancel.is_cancelled() {
+            if !self.cancel.wait_if_paused() {
                 break;
             }
             let path = self
@@ -314,11 +322,16 @@ impl Job {
                 MutationKind::Delete(mode) => self.targets[index]
                     .delete(mode, &self.cancel, &mut |path| {
                         progress.processed_entries += 1;
+                        if progress.discovery.state == DiscoveryState::Complete
+                            && progress.discovery.entries().is_some_and(|total| progress.processed_entries > total) {
+                            progress.discovery.unavailable("The source changed after discovery; total progress is unavailable.");
+                        }
                         progress.current_path = Some(path.to_owned());
                         // Publish counters to the timer even if the next native call stalls.
                         // Only the timer builds and sends bounded display snapshots.
                         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
                         status.processed_entries = progress.processed_entries;
+                        status.discovery = progress.discovery.clone();
                         status.current_path = progress.current_path.clone();
                     })
                     .map(|()| None),
@@ -341,6 +354,16 @@ impl Job {
             }
             self.store_progress(&mut progress);
         }
+        if progress.completed == progress.total
+            && progress.failed == 0
+            && progress.discovery.state == DiscoveryState::Complete
+            && progress.discovery.scope == DiscoveryScope::Recursive
+            && progress.discovery.entries() != Some(progress.processed_entries)
+        {
+            progress.discovery.unavailable(
+                "Completed work differs from the metadata discovery snapshot; the source changed.",
+            );
+        }
         progress.state = if progress.completed == progress.total {
             OperationState::Completed
         } else if self.cancel.is_cancelled() {
@@ -350,6 +373,8 @@ impl Job {
         } else {
             OperationState::Failed
         };
+        progress.pause_requested = false;
+        progress.paused = false;
         progress.message = progress
             .errors
             .iter()
@@ -367,6 +392,8 @@ impl Job {
     fn store_progress(&self, progress: &mut OperationProgress) {
         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
         progress.throughput = status.throughput.clone();
+        progress.pause_requested = self.cancel.pause_requested();
+        progress.paused = self.cancel.is_paused();
         if self.cancel.is_cancelled() {
             progress.state = OperationState::CancelRequested;
         }

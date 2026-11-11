@@ -146,6 +146,9 @@ mod tests {
     fn presenter() -> Presenter {
         let mut p = Presenter::new("left".into(), "right".into());
         p.operations.progress.push(Arc::new(OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
             id: OperationId(3),
             kind: MutationKind::Rename,
             state: OperationState::Running,

@@ -22,9 +22,9 @@ TMPDIR="$build_root/_build/tmp"
 export TMPDIR
 
 if [ "$build_profile" = release ]; then
-    cargo build -p midnight-explorer --locked --release
+    cargo build -p midnight-explorer -p midnight-elevation --locked --release
 else
-    cargo build -p midnight-explorer --locked
+    cargo build -p midnight-explorer -p midnight-elevation --locked
 fi
 bash scripts/build-native-filesystem.sh "$build_profile"
 bash scripts/build-network-filesystem.sh "$build_profile"

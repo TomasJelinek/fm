@@ -91,6 +91,7 @@ impl Preparation {
             } => worker::Job::prepare_archive(destination, sources, &self.service, cancel, status),
         }?;
         job.set_verification(self.input.verification);
+        job.prepare_discovery();
         if let Some(retention) = &self.input._retention {
             job.set_drop_retention(retention.clone());
         }
@@ -345,6 +346,14 @@ impl SharedSource {
 }
 
 impl TransferSource for SharedSource {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        self.source()?.discover(cancel, visit)
+    }
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }

@@ -5,12 +5,15 @@ import { NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { ErrorGlyph } from "error-notice.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
-import { OperationSpeedChart, SpeedChartData } from "operation-speed-chart.slint";
+import { SpeedChartData } from "operation-speed-chart.slint";
 
 export struct OperationRow {
     identity: string, title: string, detail: string, summary: string, state: string,
     cancellable: bool, attention: bool, failed: bool, active: bool,
-    determinate: bool, progress: float, icon: image, kind: int, speed-chart: SpeedChartData
+    completed: bool, determinate: bool, progress: float, progress-label: string,
+    pausable: bool, pause-requested: bool, paused: bool, discovering: bool,
+    current-path: string, remaining: string, eta: string,
+    file-determinate: bool, file-progress: float, file-progress-label: string, icon: image, kind: int, speed-chart: SpeedChartData
 }
 
 export global JobsView {
@@ -53,148 +56,152 @@ component JobRow inherits Rectangle {
     area := TouchArea { clicked => { root.select(); } }
 }
 
+component FinishedJobButton inherits HintedActionButton {
+    in property <[OperationRow]> rows;
+    in property <bool> without-errors;
+    callback clear-finished(bool);
+    text: root.without-errors ? "Clear finished without errors" : "Clear all finished";
+    enabled: JobsView.has-finished(root.rows, root.without-errors);
+    hint: root.without-errors ? "Remove finished jobs without errors and keep jobs that need attention."
+        : "Remove all finished jobs from this session's history.";
+    clicked => { root.clear-finished(root.without-errors); }
+}
+
+component FinishedJobActions inherits ScrollView {
+    in property <[OperationRow]> rows;
+    callback clear-finished(bool);
+    min-width: 0px;
+    height: max(Theme.control-height, clear-all.preferred-height) + 12px;
+    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+    HorizontalLayout {
+        alignment: start; spacing: 8px;
+        clear-all := FinishedJobButton {
+            rows: root.rows;
+            clear-finished(value) => { root.clear-finished(value); }
+        }
+        FinishedJobButton {
+            rows: root.rows; without-errors: true;
+            clear-finished(value) => { root.clear-finished(value); }
+        }
+    }
+}
+
 export component OperationsBody inherits Rectangle {
     in property <[OperationRow]> rows;
     in property <string> requested-identity;
     private property <string> selected-identity;
-    public function select-job(identity: string) { root.selected-identity = identity; list-focus.focus(); }
-    changed requested-identity => { root.select-job(root.requested-identity); }
     private property <int> selected-index: JobsView.find(root.rows, root.selected-identity);
     private property <OperationRow> selected: root.rows[root.selected-index];
+    private property <bool> compact: root.height < 350px;
     callback cancel(string);
     callback resolve(string);
     callback copy-details(string);
+    callback open-progress(string);
     callback clear-finished(bool);
-    function repair-selection() {
-        root.selected-identity = root.rows.length == 0 ? "" : root.rows[JobsView.find(root.rows, root.selected-identity)].identity;
-    }
     callback close();
     callback move-dialog(length, length);
-    private property <bool> compact: root.height < 350px;
-    background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
-    init => {
-        if root.requested-identity != "" { root.selected-identity = root.requested-identity; }
-        else if root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
+    public function select-job(identity: string) {
+        root.selected-identity = identity;
         list-focus.focus();
     }
-    changed rows => {
-        root.repair-selection();
+    changed requested-identity => { root.select-job(root.requested-identity); }
+    init => {
+        root.selected-identity = root.requested-identity;
+        list-focus.focus();
     }
+    background: Theme.surface;
+    border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.close(); return accept; }
             reject
         }
         VerticalLayout {
-            padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 12px;
+            padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 10px;
             DialogHeader {
-                title: "Jobs"; compact: root.compact; text-size: Theme.font-size * 1.25;
+                title: "Jobs"; compact: root.compact;
                 fallback-icon: FallbackIcons.folder-sizes;
-                close-label: "Close dialog"; close => { root.close(); }
                 detail: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations";
+                close-label: "Close dialog"; close => { root.close(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            Rectangle { height: 1px; background: Theme.frame; }
-            ScrollView {
-                min-width: 0px; min-height: 0px; vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
-                content-width: self.visible-width;
-                changed content-y => {
-                    // A fully clipped focus target cannot receive Escape in
-                    // Slint. Keep dismissal focused once the list scrolls away.
-                    if list-focus.has-focus && list-frame.absolute-position.y + list-frame.height
-                        <= self.absolute-position.y { footer.focus-dismiss(); }
+            list-frame := Rectangle {
+                min-height: 20px; min-width: 0px; vertical-stretch: 1;
+                background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+                clip: true;
+                list-focus := FocusScope {
+                    key-pressed(event) => {
+                        if root.rows.length == 0 { return reject; }
+                        if event.text == Key.Return {
+                            root.open-progress(root.selected.identity); return accept;
+                        }
+                        if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                            let next = clamp(root.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, root.rows.length - 1);
+                            root.selected-identity = root.rows[next].identity;
+                            let row-height = max(Theme.control-height * 1.7, Theme.font-size * 3.5);
+                            let top = next * row-height;
+                            if top < -jobs.content-y { jobs.content-y = -top; }
+                            else if top + row-height > -jobs.content-y + jobs.visible-height {
+                                jobs.content-y = min(0px, jobs.visible-height - top - row-height);
+                            }
+                            return accept;
+                        }
+                        reject
+                    }
+                    jobs := ListView {
+                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                        horizontal-scrollbar-policy: always-off;
+                        for job in root.rows : JobRow {
+                            job: job; selected: job.identity == root.selected.identity;
+                            width: jobs.visible-width;
+                            select => { list-focus.focus(); root.selected-identity = job.identity; }
+                        }
+                    }
                 }
-                VerticalLayout {
-                    padding-right: 8px; spacing: root.compact ? 6px : 12px; alignment: start;
-                    list-frame := Rectangle {
-                        height: max(Theme.control-height * 1.7, Theme.font-size * 3.5)
-                            * clamp(root.rows.length, 1, root.compact ? 1 : 3) + 2px;
-                        background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
-                        list-focus := FocusScope {
-                            key-pressed(event) => {
-                                if root.rows.length == 0 { return reject; }
-                                if event.text == Key.DownArrow || event.text == Key.UpArrow {
-                                    let next = clamp(root.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, root.rows.length - 1);
-                                    root.selected-identity = root.rows[next].identity;
-                                    let top = next * max(Theme.control-height * 1.7, Theme.font-size * 3.5);
-                                    if top < -jobs.content-y { jobs.content-y = -top; }
-                                    else if top + Theme.font-size * 3.5 > -jobs.content-y + jobs.visible-height {
-                                        jobs.content-y = min(0px, jobs.visible-height - top - max(Theme.control-height * 1.7, Theme.font-size * 3.5));
-                                    }
-                                    return accept;
-                                }
-                                reject
-                            }
-                            jobs := ListView {
-                                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-                                horizontal-scrollbar-policy: always-off;
-                                for job in root.rows : JobRow {
-                                    job: job; selected: job.identity == root.selected.identity; width: jobs.visible-width;
-                                    select => { list-focus.focus(); root.selected-identity = job.identity; }
-                                }
-                            }
-                        }
-                        if root.rows.length == 0 : Text {
-                            text: "No background operations"; color: Theme.secondary-text; font-size: Theme.font-size;
-                            horizontal-alignment: center; vertical-alignment: center;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 10px; cross-axis-alignment: center;
-                        if root.selected.failed : ErrorGlyph { }
-                        Text { text: root.selected.title; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
-                        Text { text: root.selected.state; color: root.selected.failed ? Theme.error-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
-                    }
-                    if root.selected.determinate : Rectangle {
-                        height: 6px; border-radius: 3px; background: Theme.secondary-surface;
-                        Rectangle { width: parent.width * clamp(root.selected.progress, 0, 1); border-radius: 3px; background: Theme.active-frame; }
-                    }
-                    if root.selected-index >= 0 && (root.selected.kind == 0 || root.selected.kind == 1) : OperationSpeedChart {
-                        chart: root.selected.speed-chart;
-                        deletion: root.selected.kind == 1;
-                        height: max(110px, Theme.font-size * 5);
-                    }
-                    Text {
-                        text: root.selected.detail; color: Theme.text; font-size: Theme.font-size;
-                        min-width: 0px; wrap: char-wrap;
-                    }
+                if root.rows.length == 0 : Text {
+                    text: "No background operations"; color: Theme.secondary-text;
+                    font-size: Theme.font-size;
+                    horizontal-alignment: center; vertical-alignment: center;
                 }
             }
-            Rectangle { height: 1px; background: Theme.frame; }
-            ScrollView {
-                min-width: 0px;
-                height: max(Theme.control-height, clear-all.preferred-height) + 12px;
-                horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
-                HorizontalLayout {
-                    alignment: start; spacing: 8px;
-                    clear-all := HintedActionButton {
-                        text: "Clear all finished";
-                        enabled: JobsView.has-finished(root.rows, false);
-                        hint: "Remove all finished jobs from this session's history.";
-                        clicked => { root.clear-finished(false); root.repair-selection(); }
-                    }
-                    HintedActionButton {
-                        text: "Clear finished without errors";
-                        enabled: JobsView.has-finished(root.rows, true);
-                        hint: "Remove finished jobs without errors and keep jobs that need attention.";
-                        clicked => { root.clear-finished(true); root.repair-selection(); }
-                    }
-                }
+            if !root.compact : FinishedJobActions {
+                rows: root.rows;
+                clear-finished(without-errors) => { root.clear-finished(without-errors); }
             }
             footer := DialogFooter {
-                compact-height: root.height < 280px;
+                compact-height: root.compact;
                 dismiss-text: "Close";
                 dismiss-hint: "Close Jobs (Escape). Background operations continue.";
                 dismiss => { root.close(); }
-                HintedActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy;
-                    enabled: root.selected-index >= 0; hint: "Copy the selected job's full details and retained errors.";
-                    clicked => { root.copy-details(root.selected.identity); } }
-                HintedActionButton { text: "Cancel job"; fallback-icon: FallbackIcons.close;
-                    enabled: root.selected.cancellable; hint: "Request cancellation of this job. Completed changes are retained.";
-                    clicked => { root.cancel(root.selected.identity); } }
-                if root.selected.attention : HintedActionButton { text: "Resolve";
-                    hint: "Review the decision needed by this job."; clicked => { root.resolve(root.selected.identity); } }
+                HintedActionButton {
+                    text: "Open"; enabled: root.selected-index >= 0;
+                    hint: "Open this operation's progress or retained details (Enter).";
+                    clicked => { root.open-progress(root.selected.identity); }
+                }
+                HintedActionButton {
+                    text: "Copy details"; fallback-icon: FallbackIcons.copy;
+                    enabled: root.selected-index >= 0;
+                    hint: "Copy the selected job's full details and retained errors.";
+                    clicked => { root.copy-details(root.selected.identity); }
+                }
+                HintedActionButton {
+                    text: "Cancel job"; fallback-icon: FallbackIcons.close;
+                    enabled: root.selected.cancellable;
+                    hint: "Request cancellation of this job. Completed changes are retained.";
+                    clicked => { root.cancel(root.selected.identity); }
+                }
+                if root.compact : FinishedJobButton {
+                    rows: root.rows;
+                    clear-finished(value) => { root.clear-finished(value); }
+                }
+                if root.compact : FinishedJobButton {
+                    rows: root.rows; without-errors: true;
+                    clear-finished(value) => { root.clear-finished(value); }
+                }
+                if root.selected.attention : HintedActionButton {
+                    text: "Resolve"; hint: "Review the decision needed by this job.";
+                    clicked => { root.resolve(root.selected.identity); }
+                }
             }
         }
     }

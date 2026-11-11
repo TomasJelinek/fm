@@ -138,7 +138,11 @@ impl Controller {
             publish(&self.outbox, &progress).await;
             return;
         }
-        let cancel = self.cancel.child();
+        let cancel = if matches!(request.kind, MutationKind::Delete(_)) {
+            self.cancel.pausable_child()
+        } else {
+            self.cancel.child()
+        };
         let status = Arc::new(Mutex::new(progress.clone()));
         self.registry
             .lock()
@@ -242,6 +246,24 @@ impl Controller {
     }
     pub(crate) async fn decide_rename(&self, decision: CopyDecision) {
         let _ = self.sender.send(Message::DecideRename(decision)).await;
+    }
+    pub(crate) async fn set_paused(&self, id: OperationId, paused: bool) {
+        let progress = {
+            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(job) = registry.get(&id) else { return };
+            let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
+            if !matches!(progress.kind, MutationKind::Delete(_))
+                || progress.state.is_terminal()
+                || job.cancel.is_cancelled()
+            {
+                return;
+            }
+            job.cancel.set_pause_requested(paused);
+            progress.pause_requested = job.cancel.pause_requested();
+            progress.paused = job.cancel.is_paused();
+            progress.clone()
+        };
+        publish(&self.outbox, &progress).await;
     }
     pub(crate) fn cancel(&self, id: OperationId) {
         if let Some(job) = self
@@ -458,9 +480,16 @@ async fn run(
             .values()
             .filter_map(|job| {
                 let mut progress = job.status.lock().unwrap_or_else(|e| e.into_inner());
+                let requested = !progress.state.is_terminal() && job.cancel.pause_requested();
+                let paused = requested && job.cancel.is_paused();
+                let changed = (progress.pause_requested, progress.paused) != (requested, paused);
+                progress.pause_requested = requested;
+                progress.paused = paused;
                 if job.cancel.is_cancelled() && progress.state == OperationState::Running {
                     progress.state = OperationState::CancelRequested;
                     crate::operation_throughput::stop(&mut progress.throughput);
+                    Some(progress.clone())
+                } else if changed {
                     Some(progress.clone())
                 } else {
                     None
@@ -522,6 +551,7 @@ async fn run(
                 let mut throughput = crate::operation_throughput::Tracker::default();
                 throughput.deletion(&mut status.lock().unwrap_or_else(|e| e.into_inner()));
                 let worker_output = output.clone();
+                let worker_cancel = job.cancel.clone();
                 let pending = tokio::task::spawn_blocking(move || {
                     let _permit = permit;
                     job.execute(worker_output)
@@ -533,6 +563,8 @@ async fn run(
                     tokio::select! {
                         result = &mut pending => {
                             let mut progress = result.unwrap_or_else(|error| worker::panicked(&status, error.to_string()));
+                            progress.pause_requested = false;
+                            progress.paused = false;
                             throughput.deletion(&mut progress);
                             break Ok(progress);
                         },
@@ -540,8 +572,13 @@ async fn run(
                             let progress = {
                                 let mut progress = status.lock().unwrap_or_else(|e| e.into_inner());
                                 let previous = progress.throughput.clone();
+                                let requested = worker_cancel.pause_requested();
+                                let paused = requested && worker_cancel.is_paused();
+                                let changed = (progress.pause_requested, progress.paused) != (requested, paused);
+                                progress.pause_requested = requested;
+                                progress.paused = paused;
                                 throughput.deletion(&mut progress);
-                                (!Arc::ptr_eq(&previous, &progress.throughput)).then(|| progress.clone())
+                                (changed || !Arc::ptr_eq(&previous, &progress.throughput)).then(|| progress.clone())
                             };
                             if let Some(progress) = progress
                                 && output.sender.try_send(Event::Operation(OperationEvent::Progress(Arc::new(progress)))).is_ok()

@@ -17,6 +17,7 @@ export component ArgumentEditor inherits VerticalLayout {
     callback remove(int);
     callback move(int, int);
     private property <int> selected: -1;
+    private property <bool> adding;
     private property <int> value-choice;
     private property <int> count: root.values.length;
     private property <string> selected-value: root.selected >= 0 && root.selected < root.count ? root.values[root.selected] : "";
@@ -31,7 +32,9 @@ export component ArgumentEditor inherits VerticalLayout {
     changed selected-value => {
         // Editing assigns LineEdit.text and replaces its binding. Synchronize
         // later row changes without resetting the caret for an unchanged edit.
-        if argument-value.text != root.selected-value { argument-value.text = root.selected-value; }
+        if !root.adding && argument-value.text != root.selected-value {
+            argument-value.text = root.selected-value;
+        }
     }
     changed row-height => { root.reveal-selection(); }
     function reveal-selection() {
@@ -44,34 +47,40 @@ export component ArgumentEditor inherits VerticalLayout {
     }
     function select-row(index: int) {
         if !root.enabled || index < 0 || index >= root.count { return; }
-        root.selected = index; list-focus.focus();
+        root.adding = false; root.selected = index;
+        argument-value.text = root.selected-value; list-focus.focus();
+    }
+    function begin-argument() {
+        if !root.enabled || root.count >= 64 { return; }
+        root.adding = true; argument-value.text = ""; argument-value.focus();
     }
     function append(value: string) {
         if !root.enabled || root.count >= 64 { return; }
-        root.add(value); root.selected = root.count - 1;
+        root.adding = false; root.add(value); root.selected = root.count - 1;
+        argument-value.text = root.selected-value; argument-value.focus();
     }
     function remove-selected() {
-        if !root.enabled || root.selected < 0 || root.selected >= root.count { return; }
+        if !root.enabled || root.adding || root.selected < 0 || root.selected >= root.count { return; }
         let index = root.selected;
         root.remove(index); root.selected = min(index, root.count - 1);
     }
     function move-selected(direction: int) {
         let index = root.selected;
         let next = index + direction;
-        if !root.enabled || index < 0 || index >= root.count || next < 0 || next >= root.count { return; }
+        if !root.enabled || root.adding || index < 0 || index >= root.count || next < 0 || next >= root.count { return; }
         root.move(index, direction); root.selected = next;
     }
     ListHeader {
         title: "Arguments";
-        hint: "Each row is one literal argument. Spaces, quotes and empty arguments are preserved. Select a row to edit it.";
+        hint: "Each row is one literal argument. Quotes are part of the value, not shell quoting. Select a row to edit it.";
         enabled: root.enabled;
-        can-add: root.count < 64; can-remove: root.selected >= 0;
-        can-move-up: root.selected > 0;
-        can-move-down: root.selected >= 0 && root.selected + 1 < root.count;
+        can-add: root.count < 64; can-remove: !root.adding && root.selected >= 0;
+        can-move-up: !root.adding && root.selected > 0;
+        can-move-down: !root.adding && root.selected >= 0 && root.selected + 1 < root.count;
         action-labels: ["Add argument", "Remove argument", "Move argument up", "Move argument down"];
-        action-hints: ["Append an empty argument (Insert)", "Remove the selected argument (Delete)", "Move the selected argument up (Alt+Up)", "Move the selected argument down (Alt+Down)"];
+        action-hints: ["Start a new argument and type its value (Insert)", "Remove the selected argument (Delete)", "Move the selected argument up (Alt+Up)", "Move the selected argument down (Alt+Down)"];
         action(index) => {
-            if index == 0 { root.append(""); }
+            if index == 0 { root.begin-argument(); }
             else if index == 1 { root.remove-selected(); }
             else { root.move-selected(index == 2 ? -1 : 1); }
         }
@@ -84,7 +93,7 @@ export component ArgumentEditor inherits VerticalLayout {
             enabled: root.enabled;
             key-pressed(event) => {
                 if !root.enabled { return reject; }
-                if event.text == Key.Insert { root.append(""); return accept; }
+                if event.text == Key.Insert { root.begin-argument(); return accept; }
                 if event.text == Key.Delete { root.remove-selected(); return accept; }
                 if root.count == 0 { return reject; }
                 if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
@@ -115,7 +124,7 @@ export component ArgumentEditor inherits VerticalLayout {
                     Text {
                         x: 8px;
                         width: max(0px, parent.width - 16px - (rows.content-height > rows.visible-height ? FluentScrollMetrics.overlay-size : 0px));
-                        text: (index + 1) + ". " + (value == "" ? "(empty argument)" : value);
+                        text: (index + 1) + ". " + (value == "" ? "\"\" (empty string)" : value);
                         color: parent.selected ? Theme.selected-text : Theme.text;
                         font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
                     }
@@ -131,12 +140,24 @@ export component ArgumentEditor inherits VerticalLayout {
     }
     argument-value := HintedLineEdit {
         text: root.selected-value;
-        enabled: root.enabled && root.selected >= 0;
-        accessible-label: root.label-prefix + " argument " + (root.selected + 1);
-        placeholder-text: root.selected >= 0 ? "Empty argument" : "Select an argument";
-        hint: "Edit the selected literal argument. Spaces, quotes and an empty value are preserved.";
+        enabled: root.enabled && (root.adding || root.selected >= 0);
+        accessible-label: root.adding ? root.label-prefix + " new argument"
+            : root.label-prefix + " argument " + (root.selected + 1);
+        placeholder-text: root.adding ? "Type a new argument…"
+            : root.selected >= 0 ? "Empty string" : "Select an argument";
+        hint: root.adding ? "Typing adds one argument. Enter on a blank value adds an empty string."
+            : "Edit one literal argument. Spaces stay inside it; quotes are literal characters.";
         min-width: 0px; horizontal-stretch: 1;
-        edited => { if root.selected >= 0 { root.edit(root.selected, self.text); } }
+        edited => {
+            if root.adding {
+                if self.text != "" { root.append(self.text); }
+            } else if root.selected >= 0 { root.edit(root.selected, self.text); }
+        }
+        accepted => { if root.adding { root.append(self.text); } }
+    }
+    Text {
+        text: "One row = one argument. Spaces stay together; quotes are literal. No shell expansion.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
     }
     GridLayout {
         spacing: 6px;

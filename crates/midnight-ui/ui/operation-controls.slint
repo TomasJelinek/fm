@@ -1,8 +1,7 @@
 import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton, HintedCheckBox } from "hinted-inputs.slint";
-import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
-import { NativeActionImage } from "action-icons.slint";
+import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
@@ -31,9 +30,6 @@ export component OperationDialog inherits Rectangle {
     callback cancel();
     callback move-dialog(length, length);
     private property <bool> compact: root.height < 280px;
-    private property <bool> summary-icon-visible: DialogWindowStyle.native-titlebar
-        && (root.native-icon.width > 0 || root.fallback-icon.width > 0);
-    private property <length> summary-icon-size: root.compact ? 24px : 32px;
     function focus-primary() {
         // A Fluent button's zero-width focus point sits at its left edge.
         // Keep keyboard input outside the scrolled content when that edge can
@@ -43,15 +39,15 @@ export component OperationDialog inherits Rectangle {
     // Size the initial presentation from its actual wrapped summary. Resizing
     // remains independent in DialogFrame; editing never recreates the input.
     out property <length> preferred-dialog-height: clamp(
-        32px + (DialogWindowStyle.native-titlebar ? 0px : max(36px, Theme.font-size * 1.2 + 6px))
-        + min(280px, max(summary-measure.preferred-height, root.summary-icon-visible ? root.summary-icon-size : 0px))
+        42px + max(36px, Theme.font-size * 1.2 + 6px)
+        + min(280px, summary-measure.preferred-height)
         + (root.has-name ? max(Theme.control-height, name.preferred-height) + 12px : 0px)
         + (root.has-name && root.input-label != "" ? Theme.font-size * 1.5 + 12px : 0px)
         + (root.option-visible ? max(Theme.control-height, option.preferred-height) + 24px : 0px)
         + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
     summary-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.width - 48px - (root.summary-icon-visible ? root.summary-icon-size + 8px : 0px));
+        width: max(1px, root.width - 48px);
         text: (root.warning != "" ? root.warning + "\n\n" : "") + root.body;
         font-size: Theme.font-size; wrap: word-wrap;
     }
@@ -119,15 +115,8 @@ export component OperationDialog inherits Rectangle {
             }
             Rectangle {
                 vertical-stretch: 1; min-height: 0px; background: transparent; clip: true;
-                // The OS titlebar replaces the embedded header, but the action
-                // artwork still belongs beside the operation summary.
-                if root.summary-icon-visible : NativeActionImage {
-                    x: 0px; y: 0px; width: root.summary-icon-size;
-                    height: min(root.summary-icon-size, parent.height);
-                    native-icon: root.native-icon; fallback-icon: root.fallback-icon;
-                }
                 DialogText {
-                    x: root.summary-icon-visible ? root.summary-icon-size + 8px : 0px;
+                    x: 0px;
                     y: 0px; width: max(0px, parent.width - self.x); height: parent.height;
                     text: (root.compact && root.warning != "" ? root.warning + "\n\n" : "") + root.body;
                     min-height: 0px;

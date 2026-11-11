@@ -262,6 +262,7 @@ impl Presenter {
                         self.retired.push(Box::new(mem::take(&mut p.selected)));
                         self.retired.push(Box::new(mem::take(&mut p.streaming)));
                         self.retired.push(Box::new(mem::take(&mut p.metadata)));
+                        p.folder_column_samples = SizeColumnSamples::default();
                         self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
                         p.selection_preview.clear();
                         p.selection_rebase_pending = false;

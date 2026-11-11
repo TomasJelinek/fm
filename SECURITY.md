@@ -137,8 +137,16 @@ opened descendant handles. See [Windows guarantees](crates/midnight-platform-win
 and the Linux mutation module's safety comments. No claim of universal race freedom
 is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash.
 
-- Browsing does not copy, rename, delete, execute files, invoke a shell, request
-  elevation or interpret filenames as code. Explicit navigation into a symbolic
+- Ordinary browsing does not copy, rename, delete, execute files, invoke a shell,
+  request elevation or interpret filenames as code. A failed explicit native folder
+  navigation can offer **Retry with authorization**. Only that explicit action
+  consumes a backend-retained denied-navigation receipt and invokes the OS prompt
+  for one read-only directory listing in a separate helper. Refresh, metadata and
+  background tree probes never prompt. The helper loads no plugins, changes no
+  ACLs, stores no passwords, and grants no file mutation or content-read authority
+  to the host. Native operation capture/revalidation remains unelevated.
+  See [the bounded helper contract](docs/verification/2026-11-11-directory-authorization.md).
+  Explicit navigation into a symbolic
   link/junction follows OS directory-navigation semantics; enumeration and metadata
   inspection do not recursively follow links or open special-file contents.
 - Explicit Enter or an unmodified left double click is a separate activation

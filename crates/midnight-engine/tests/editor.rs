@@ -73,6 +73,7 @@ async fn editor_dispatch_preserves_request_and_reports_worker_launch_error() {
         .unwrap()
         .join("文档 & $HOME; ' .txt");
     let editor = EditorPreferences {
+        rules: Vec::new(),
         executable: Some(std::env::current_exe().unwrap()),
         arguments: vec!["{file}".into(), "literal $HOME; \"".into()],
     };

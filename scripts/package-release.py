@@ -488,6 +488,18 @@ def write_archive(stage, archive, binary_name, archive_format, executables=()):
             bundle.add(stage, arcname=stage.name, filter=safe_tar_member)
 
 
+def copy_authorization_helper(stage, binary, target):
+    name = "midnight-elevated-listing.exe" if target.endswith("windows-msvc") else "midnight-elevated-listing"
+    source = (Path(binary).parent / name).absolute()
+    metadata = plain_metadata(source)
+    if source.resolve() != source or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 512 * 1024 * 1024:
+        raise ValueError("Authorization helper must be a regular, bounded, unredirected sibling executable")
+    destination = stage / name
+    shutil.copyfile(source, destination)
+    destination.chmod(0o755)
+    return {"path": name, "bytes": metadata.st_size, "sha256": sha256_file(destination), "executable": True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -524,6 +536,7 @@ def main():
     binary = stage / args.binary.name
     shutil.copyfile(args.binary, binary)
     binary.chmod(0o755)
+    authorization = copy_authorization_helper(stage, args.binary, args.target)
     shutil.copyfile(args.readme, stage / "README.txt")
     shutil.copyfile(root / "Cargo.lock", stage / "Cargo.lock")
     shutil.copyfile(root / "assets/branding/midnight-explorer.png", stage / "midnight-explorer.png")
@@ -550,6 +563,7 @@ def main():
         "version": version, "target": args.target, "revision": args.revision,
         "profile": "release", "rust": rust, "binary": binary.name,
         "binary_sha256": binary_hash,
+        "authorization_helper": authorization,
         "viewer_plugins": plugins,
         "filesystem_plugins": filesystems,
         "thumbnail_workers": thumbnails,
@@ -560,7 +574,8 @@ def main():
     viewer_executables = [file["path"] for plugin in plugins for file in plugin["files"]
                           if file.get("executable")]
     write_archive(stage, archive, binary.name, args.format,
-                  [file["path"] for file in worker_files if file["executable"]] + viewer_executables)
+                  [file["path"] for file in worker_files if file["executable"]] + viewer_executables
+                  + [authorization["path"]])
     print(archive)
 
 

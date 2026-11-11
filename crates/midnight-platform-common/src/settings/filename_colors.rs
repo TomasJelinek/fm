@@ -131,7 +131,10 @@ fn legacy_defaults() -> Vec<FilenameColorRule> {
 }
 
 pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
-    if rules == legacy_defaults() {
+    let defaults = midnight_core::default_filename_colors();
+    let mut amber_defaults = defaults.clone();
+    amber_defaults[7].style.foreground = Some(RgbColor(217, 119, 6));
+    if rules == legacy_defaults() || rules == amber_defaults {
         midnight_core::default_filename_colors()
     } else {
         rules

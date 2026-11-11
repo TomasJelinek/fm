@@ -58,11 +58,10 @@ fn prepare(
             ),
         ));
     }
-    let spec = match &editor.executable {
-        Some(executable) => EditorCommand {
-            executable: executable.clone(),
-            arguments: editor.arguments.clone(),
-        },
+    let selected = midnight_platform_common::editor_rules::select(editor, file)
+        .map_err(|cause| error(file, io::Error::new(io::ErrorKind::InvalidInput, cause)))?;
+    let spec = match selected.command {
+        Some(command) => command,
         None => service.default_editor()?,
     };
     validate_program(&spec.executable)?;
@@ -75,8 +74,12 @@ fn prepare(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(parent) = spec.executable.parent() {
-        command.current_dir(parent);
+    if let Some(directory) = selected
+        .working_directory
+        .as_deref()
+        .or_else(|| spec.executable.parent())
+    {
+        command.current_dir(directory);
     }
     Ok(command)
 }

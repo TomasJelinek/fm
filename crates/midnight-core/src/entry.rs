@@ -71,6 +71,8 @@ pub struct DirectoryIndex {
     /// Logical regular-file lengths prepared with the index on a backend worker.
     /// Links, directories, special entries and unavailable metadata remain unknown.
     pub file_sizes: Vec<Option<u64>>,
+    /// Bounded locale samples prepared during the same backend index pass.
+    pub column_samples: crate::MetadataColumnSamples,
 }
 
 impl DirectoryIndex {
@@ -85,8 +87,10 @@ impl DirectoryIndex {
             by_path: HashMap::with_capacity(count),
             directory_bits: vec![0; count.div_ceil(64)],
             file_sizes: Vec::with_capacity(count),
+            column_samples: crate::MetadataColumnSamples::default(),
         };
         for (row, entry) in entries.enumerate() {
+            index.column_samples.observe(entry);
             index.by_id.insert(entry.id, row);
             if let Some(path) = entry.native_path() {
                 index.by_path.insert(path.to_owned(), entry.id);

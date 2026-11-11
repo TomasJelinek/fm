@@ -9,10 +9,14 @@ use std::{
     },
 };
 
+#[path = "job_pause.rs"]
+mod pause;
+
 #[derive(Clone, Debug, Default)]
 pub struct Cancellation {
     local: Arc<AtomicBool>,
     parents: Arc<[Arc<AtomicBool>]>,
+    pauses: Arc<[Arc<pause::State>]>,
 }
 
 impl Cancellation {
@@ -33,6 +37,7 @@ impl Cancellation {
         Self {
             local: Arc::default(),
             parents: parents.into(),
+            pauses: self.pauses.clone(),
         }
     }
 
@@ -46,6 +51,12 @@ impl Cancellation {
         Self {
             local: Arc::default(),
             parents: parents.into(),
+            pauses: self
+                .pauses
+                .iter()
+                .chain(other.pauses.iter())
+                .cloned()
+                .collect(),
         }
     }
 }

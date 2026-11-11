@@ -68,6 +68,7 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         images: Arc::new(Mutex::new(Some(providers.into()))),
         windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
+        catalog_preparation: Default::default(),
     };
     let files = tempfile::tempdir().unwrap();
     std::fs::write(files.path().join("first.BMP"), bitmap()).unwrap();

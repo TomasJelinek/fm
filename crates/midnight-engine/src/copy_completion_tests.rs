@@ -98,6 +98,18 @@ async fn partially_skipped_folder_is_not_reported_complete() {
             }
             CopyEvent::Progress(p) if p.state.is_terminal() => {
                 assert_eq!(p.skipped, 1);
+                assert_eq!(
+                    p.completed_roots, 1,
+                    "partially skipped directories are not completed roots"
+                );
+                assert_eq!(
+                    p.completed_directories, 0,
+                    "a skipped subtree is not a completed directory"
+                );
+                assert_eq!(
+                    p.completed_bytes, 4,
+                    "only the published last file counts as completed bytes"
+                );
                 break;
             }
             _ => {}

@@ -10,7 +10,7 @@ pub(crate) const PRESETS: [&str; 3] = [
     "$(Drive)$(Path)$(FileName)$(CRLF)",
     "$(FileName:max)$(TAB)$(FileSize)$(TAB)$(FileDate) $(FileTime)$(TAB)$(FileAttributes)$(CRLF)",
 ];
-pub(crate) const VARIABLES: [(&str, &str); 15] = [
+pub(crate) const VARIABLES: [(&str, &str); 13] = [
     ("File name", "$(FileName)"),
     ("Name without extension", "$(FileNamePart)"),
     ("Extension", "$(FileExtension)"),
@@ -18,10 +18,8 @@ pub(crate) const VARIABLES: [(&str, &str); 15] = [
     ("Date", "$(FileDate)"),
     ("Time", "$(FileTime)"),
     ("Attributes", "$(FileAttributes)"),
-    ("Short file name", "$(FileDOSName)"),
     ("Drive", "$(Drive)"),
     ("Directory path", "$(Path)"),
-    ("Short directory path", "$(DOSPath)"),
     ("Line ending (CRLF)", "$(CRLF)"),
     ("Line feed", "$(LF)"),
     ("Carriage return", "$(CR)"),

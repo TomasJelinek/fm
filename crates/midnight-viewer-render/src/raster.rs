@@ -89,6 +89,10 @@ impl TextRenderer {
         let rectangles = selection
             .map(|range| page.selection_geometry(range))
             .transpose()?;
+        let mut trace = cfg!(debug_assertions)
+            .then(|| std::env::var_os("MIDNIGHT_VIEWER_SCROLL_TRACE"))
+            .flatten()
+            .map(|_| std::time::Instant::now());
         let mut raster = Raster {
             width: viewport.width,
             height: viewport.height,
@@ -98,13 +102,16 @@ impl TextRenderer {
         for pixel in raster.rgba.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&background);
         }
+        trace_phase("clear", &mut trace);
         paint_backgrounds(page, viewport, &mut raster);
         if let Some(rectangles) = rectangles {
             for rect in rectangles {
                 raster.fill(rect, viewport.origin, viewport.selection_color);
             }
         }
+        trace_phase("backgrounds", &mut trace);
         self.glyphs.paint(page, viewport, &mut raster)?;
+        trace_phase("glyphs", &mut trace);
         Ok(raster)
     }
 }
@@ -123,16 +130,31 @@ impl Raster {
             .min((x1 - x0) / 2.0)
             .min((y1 - y0) / 2.0);
         let color = premultiply(fill.color);
+        let left = x0.floor().clamp(0.0, f64::from(self.width)) as usize;
+        let right = x1.ceil().clamp(0.0, f64::from(self.width)) as usize;
+        if left >= right {
+            return;
+        }
+        // Between the corner arcs dx is zero, so every pixel in this row has
+        // exactly the same coverage. Keep scalar corner math and batch the body.
+        let middle_left = (x0 + radius - 0.5).ceil().clamp(left as f64, right as f64) as usize;
+        let middle_right =
+            ((x1 - radius - 0.5).floor() + 1.0).clamp(middle_left as f64, right as f64) as usize;
         for y in
             y0.floor().max(0.0) as usize..y1.ceil().min(f64::from(self.height)).max(0.0) as usize
         {
-            for x in
-                x0.floor().max(0.0) as usize..x1.ceil().min(f64::from(self.width)).max(0.0) as usize
-            {
+            let py = y as f64 + 0.5;
+            let dy = (y0 + radius - py).max(0.0).max(py - y1 + radius);
+            let coverage = (radius + 0.5 - dy).clamp(0.0, 1.0);
+            self.blend_span(
+                y,
+                middle_left,
+                middle_right,
+                color.map(|channel| (f64::from(channel) * coverage).round() as u8),
+            );
+            for x in (left..middle_left).chain(middle_right..right) {
                 let px = x as f64 + 0.5;
-                let py = y as f64 + 0.5;
                 let dx = (x0 + radius - px).max(0.0).max(px - x1 + radius);
-                let dy = (y0 + radius - py).max(0.0).max(py - y1 + radius);
                 let coverage = (radius + 0.5 - dx.hypot(dy)).clamp(0.0, 1.0);
                 self.blend(
                     x,
@@ -157,7 +179,22 @@ impl Raster {
             .clamp(0.0, f64::from(self.height)) as usize;
         let color = premultiply(color);
         for y in y0..y1 {
-            for x in x0..x1 {
+            self.blend_span(y, x0, x1, color);
+        }
+    }
+
+    fn blend_span(&mut self, y: usize, left: usize, right: usize, color: [u8; 4]) {
+        if left >= right {
+            return;
+        }
+        if color[3] == 255 {
+            let row = y * self.width as usize;
+            self.rgba[(row + left) * 4..(row + right) * 4]
+                .as_chunks_mut::<4>()
+                .0
+                .fill(color);
+        } else if color[3] != 0 {
+            for x in left..right {
                 self.blend(x, y, color);
             }
         }
@@ -199,3 +236,17 @@ pub(crate) fn premultiply(color: [u8; 4]) -> [u8; 4] {
         color[3],
     ]
 }
+
+fn trace_phase(phase: &str, started: &mut Option<std::time::Instant>) {
+    if let Some(started) = started {
+        eprintln!(
+            "raster_phase phase={phase} elapsed_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        *started = std::time::Instant::now();
+    }
+}
+
+#[cfg(test)]
+#[path = "raster_fill_tests.rs"]
+mod fill_tests;

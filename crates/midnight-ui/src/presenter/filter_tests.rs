@@ -149,3 +149,63 @@ fn captured_show_all_rejects_a_new_navigation_without_touching_its_applied_filte
     assert!(p.filter_dialog.error.contains("panel changed"));
     assert_eq!(p.preferences.values.panel_filters, before);
 }
+
+#[test]
+fn only_successfully_applied_filters_enter_bounded_deduplicated_history() {
+    let mut p = presenter();
+    p.open_panel_filter(PaneId::Left);
+    let request = submit(&mut p, "kind = file");
+    assert!(p.preferences.values.panel_filter_history.is_empty());
+    p.apply(Event::PanelFilterValidated {
+        request,
+        result: Ok(()),
+        diagnostic: None,
+    });
+    assert!(p.preferences.values.panel_filter_history.is_empty());
+    p.flush_filters(&|_| true);
+    assert_eq!(p.preferences.values.panel_filter_history.len(), 1);
+    assert_eq!(
+        p.preferences.values.panel_filter_history[0].expression,
+        "kind = file"
+    );
+    p.open_panel_filter(PaneId::Left);
+    let request = submit(&mut p, "kind = directory");
+    p.cancel_panel_filter();
+    p.apply(Event::PanelFilterValidated {
+        request,
+        result: Ok(()),
+        diagnostic: None,
+    });
+    p.flush_filters(&|_| panic!("cancelled history request cannot save"));
+    assert_eq!(p.preferences.values.panel_filter_history.len(), 1);
+    let mut history = Vec::new();
+    for index in 0..MAX_PANEL_FILTER_HISTORY + 3 {
+        remember_history(
+            &mut history,
+            &PanelFilter {
+                enabled: true,
+                expression: format!("*.{index}"),
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(history.len(), MAX_PANEL_FILTER_HISTORY);
+    let reused = history[20].clone();
+    remember_history(&mut history, &reused);
+    assert_eq!(history[0], reused);
+    assert_eq!(history.iter().filter(|value| **value == reused).count(), 1);
+    let mut different_case = reused.clone();
+    different_case.case_sensitive = true;
+    remember_history(&mut history, &different_case);
+    assert_eq!(history[0], different_case);
+    assert_eq!(history[1], reused);
+    remember_history(
+        &mut history,
+        &PanelFilter {
+            enabled: true,
+            expression: String::new(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(history[0], different_case);
+}

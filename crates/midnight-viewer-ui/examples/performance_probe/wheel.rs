@@ -38,6 +38,7 @@ pub(super) struct Probe {
     stable: Option<(String, [f32; 2], Instant)>,
     actual_context: Option<String>,
     tail_sent: Option<Instant>,
+    mode_requested: bool,
     gestures: Vec<Gesture>,
     timeline: super::timeline::Trace,
     options: Options,
@@ -132,7 +133,12 @@ impl Probe {
         }).collect()
     }
     fn report(&self, window: &ViewerWindow, stage: usize) -> Result<Vec<String>, String> {
-        let mut rows = Vec::new();
+        let mut rows = vec![format!(
+            "wheel_mode stage={stage} index={} source={} markdown={}",
+            window.get_mode_index(),
+            window.get_source_mode(),
+            window.get_markdown_mode(),
+        )];
         let mut continuous = Vec::new();
         for (index, gesture) in self.gestures.iter().enumerate() {
             let count = gesture.frames.len();
@@ -267,6 +273,17 @@ impl Probe {
                 window.get_status()
             ));
         }
+        if !self.mode_requested {
+            self.mode_requested = true;
+            if let Some(index) = std::env::var("MIDNIGHT_VIEWER_PROBE_MODE_INDEX")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+                .filter(|index| *index >= 0)
+            {
+                window.invoke_change_mode(index);
+                return Ok(None);
+            }
+        }
         let count = if self.options.sustained { 96 } else { 3 };
         if self.gestures.is_empty() {
             let context = window.get_position_context().to_string();
@@ -290,11 +307,16 @@ impl Probe {
                 }
                 return Ok(None);
             }
-            if self.options.tail {
+            let start = std::env::var("MIDNIGHT_VIEWER_PROBE_START")
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|value| (0.0..=1.0).contains(value));
+            if self.options.tail || start.is_some() {
                 let Some(sent) = self.tail_sent else {
                     self.tail_sent = Some(Instant::now());
-                    window.invoke_seek(1.0);
-                    self.timeline.record("tail_seek", 1.0);
+                    window.invoke_seek(start.unwrap_or(1.0));
+                    self.timeline
+                        .record("tail_seek", f64::from(start.unwrap_or(1.0)));
                     return Ok(None);
                 };
                 if sent.elapsed() < Duration::from_millis(700) || window.get_position_pending() {
@@ -303,7 +325,11 @@ impl Probe {
             }
         } else {
             let wait = if self.options.sustained && self.gestures.len() < count {
-                100
+                std::env::var("MIDNIGHT_VIEWER_PROBE_WHEEL_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| (1..=500).contains(value))
+                    .unwrap_or(100)
             } else {
                 700
             };

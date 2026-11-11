@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Editor,
+    EditorWorkingDirectory,
     CommandProgram,
     WorkingDirectory,
     CommandIcon,
@@ -47,17 +48,35 @@ impl Presenter {
             return;
         }
         let (kind, title, initial, revision, token) = match target {
-            Target::Editor => {
+            Target::Editor | Target::EditorWorkingDirectory => {
                 let draft = self.editor_draft();
-                let initial = draft
-                    .native
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .map(Path::to_path_buf);
+                let form = draft.selected_form();
+                if target == Target::EditorWorkingDirectory && draft.selected.is_none() {
+                    return;
+                }
+                let initial = if target == Target::EditorWorkingDirectory {
+                    form.native_working_directory.clone().or_else(|| {
+                        let path = PathBuf::from(&form.working_directory);
+                        path.is_absolute().then_some(path)
+                    })
+                } else {
+                    form.native
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .map(Path::to_path_buf)
+                };
                 self.editor.draft = Some(draft);
                 (
-                    PathPickerKind::Program,
-                    "Choose editor",
+                    if target == Target::Editor {
+                        PathPickerKind::Program
+                    } else {
+                        PathPickerKind::Directory
+                    },
+                    if target == Target::Editor {
+                        "Choose editor"
+                    } else {
+                        "Choose editor working directory"
+                    },
                     initial,
                     self.editor.revision,
                     String::new(),
@@ -113,7 +132,7 @@ impl Presenter {
                         "Choose initial directory",
                         Some(PathBuf::from(&draft.working_directory)),
                     ),
-                    Target::Editor => unreachable!(),
+                    Target::Editor | Target::EditorWorkingDirectory => unreachable!(),
                 };
                 (
                     kind,
@@ -144,7 +163,7 @@ impl Presenter {
             });
         } else {
             let error = "The file picker queue is busy. Try Browse again.";
-            if target == Target::Editor {
+            if matches!(target, Target::Editor | Target::EditorWorkingDirectory) {
                 self.editor.error = error.into();
             } else {
                 self.user_command_settings.error = error.into();
@@ -153,7 +172,10 @@ impl Presenter {
     }
     pub(crate) fn settings_picker_context(&mut self, page: i32, send: &dyn Fn(Command) -> bool) {
         if let Some(pending) = &mut self.settings_picker.pending {
-            let expected = if pending.target == Target::Editor {
+            let expected = if matches!(
+                pending.target,
+                Target::Editor | Target::EditorWorkingDirectory
+            ) {
                 4
             } else {
                 9
@@ -195,7 +217,7 @@ impl Presenter {
         let current = !pending.cancelled
             && !self.operations.closing
             && match pending.target {
-                Target::Editor => {
+                Target::Editor | Target::EditorWorkingDirectory => {
                     pending.revision == self.editor.revision
                         && self
                             .editor
@@ -219,7 +241,10 @@ impl Presenter {
             Ok(None) => return,
             Err(error) => {
                 let message = crate::error_presentation::describe(&error);
-                if pending.target == Target::Editor {
+                if matches!(
+                    pending.target,
+                    Target::Editor | Target::EditorWorkingDirectory
+                ) {
                     self.editor.error = message;
                 } else {
                     self.user_command_settings.error = message;
@@ -230,11 +255,12 @@ impl Presenter {
         if !path.is_absolute() {
             return;
         }
-        if pending.target == Target::Editor {
+        if matches!(
+            pending.target,
+            Target::Editor | Target::EditorWorkingDirectory
+        ) {
             let mut draft = self.editor_draft();
-            draft.executable = path.to_string_lossy().into_owned();
-            draft.native = Some(path);
-            draft.use_default = false;
+            draft.picked(path, pending.target == Target::EditorWorkingDirectory);
             self.editor.draft = Some(draft);
             self.editor.dirty = true;
             self.editor.error.clear();
@@ -263,7 +289,7 @@ impl Presenter {
                 // Dollar signs in a picked literal must not become template substitutions.
                 draft.working_directory = text.replace('$', "$$");
             }
-            Target::Editor => unreachable!(),
+            Target::Editor | Target::EditorWorkingDirectory => unreachable!(),
         }
         self.remember_user_command_form(&pending.token, draft);
         self.user_command_settings.draft_revision =

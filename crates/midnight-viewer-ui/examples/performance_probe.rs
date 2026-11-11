@@ -27,7 +27,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -42,6 +42,7 @@ struct Counters {
 #[derive(Debug)]
 struct Counted {
     file: CapturedFile,
+    origin: Instant,
     counts: Arc<Counters>,
 }
 impl ContentSource for Counted {
@@ -56,14 +57,30 @@ impl ContentSource for Counted {
     }
     fn validate(&self) -> Result<(), Error> {
         self.counts.validations.fetch_add(1, Ordering::Relaxed);
-        self.file.revalidate()
+        let started = Instant::now();
+        let result = self.file.revalidate();
+        eprintln!(
+            "source_validate_ms={:.3} success={} at_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            result.is_ok(),
+            self.origin.elapsed().as_secs_f64() * 1000.0
+        );
+        result
     }
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
         self.counts.reads.fetch_add(1, Ordering::Relaxed);
         self.counts
             .bytes
             .fetch_add(u64::from(length), Ordering::Relaxed);
-        self.file.read_at(offset, length)
+        let started = Instant::now();
+        let result = self.file.read_at(offset, length);
+        eprintln!(
+            "source_read_ms={:.3} offset={offset} length={length} success={} at_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            result.is_ok(),
+            self.origin.elapsed().as_secs_f64() * 1000.0
+        );
+        result
     }
 }
 struct Probe {
@@ -81,6 +98,7 @@ struct Probe {
     latencies: Vec<f64>,
     rows: Vec<String>,
     error: Option<String>,
+    last_status: String,
     proofs: Vec<gpu_proof::Capture>,
 }
 fn marker(window: &ViewerWindow) -> f64 {
@@ -254,16 +272,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
     );
     let capture_counts = counts.clone();
+    let capture_started = Arc::new(OnceLock::new());
+    let source_started = capture_started.clone();
     let capture: midnight_viewer_engine::NativeCapture = Arc::new(move |path, cancel| {
         if cancel.load(Ordering::Acquire) {
             return Err("closed".into());
         }
-        let file = CapturedFile::capture(path).map_err(|e| e.to_string())?;
+        let started = Instant::now();
+        let origin: Instant = source_started.get().copied().unwrap_or(started);
+        if instrumented {
+            eprintln!(
+                "source_capture_begin_ms={:.3}",
+                origin.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        let captured = CapturedFile::capture(path);
+        if instrumented {
+            eprintln!(
+                "source_capture_ms={:.3} success={}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                captured.is_ok()
+            );
+        }
+        let file = captured.map_err(|e| e.to_string())?;
         if !instrumented {
             return Ok(file);
         }
         CapturedFile::from_source(Arc::new(Counted {
             file,
+            origin,
             counts: capture_counts[path].clone(),
         }))
         .map_err(|e| e.to_string())
@@ -315,7 +352,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|(index, path)| Entry::new(EntryId(index as u64), path.clone(), EntryKind::File))
             .collect();
         let start = Instant::now();
-        let window = manager.open(
+        let _ = capture_started.set(start);
+        let window = manager.open_with_ready(
             ViewerLaunch {
                 associations: Default::default(),
                 tree: None,
@@ -332,8 +370,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 disabled_plugins: Arc::from([]),
             },
             ViewerAppearance {
-                family: "monospace".into(),
-                font_size: 15.0,
+                family: std::env::var("MIDNIGHT_VIEWER_PROBE_UI_FAMILY")
+                    .unwrap_or_else(|_| "monospace".into()),
+                font_size: std::env::var("MIDNIGHT_VIEWER_PROBE_UI_SIZE")
+                    .ok()
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .filter(|size| (8.0..=48.0).contains(size))
+                    .unwrap_or(15.0),
                 foreground: [225, 229, 236, 255],
                 background: [25, 29, 37, 255],
                 selection: [55, 86, 124, 255],
@@ -344,7 +387,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (!search && chord.key == "Space").then(|| "viewer.next-file".to_owned())
             }),
             Rc::new(|_| {}),
+            Box::new(|result| eprintln!("opening_result={result:?}")),
         )?;
+        eprintln!(
+            "viewer_construct_ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         timeline.bind(window.clone());
         // This build enables FemtoVG/WGPU and software. Software explicitly lacks
         // transformations; inspect the initialized renderer rather than counting
@@ -385,6 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 snapshot_run = gpu_proof || image_proof || opening_proof
             )],
             error: None,
+            last_status: "viewer constructed; no timer status yet".into(),
             proofs: Vec::new(),
         }));
         let notify = state.clone();
@@ -399,6 +448,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("window disappeared")?
             .on_frame_presented(move || {
                 frames.set(frames.get().saturating_add(1));
+                if frames.get() == 1 {
+                    eprintln!(
+                        "first_publication_ms={:.3}",
+                        start.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
                 publication_timeline.record("ui_published", frames.get() as f64);
             });
         let rendered_frames = presented.clone();
@@ -545,12 +600,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     timer_timeline.record("timer_gap", gap);
                 }
                 let Some(window) = weak.upgrade() else {
+                    eprintln!("probe_exit viewer_window_disappeared=true");
                     let _ = slint::quit_event_loop();
                     return;
                 };
                 let Ok(mut state) = tick.try_borrow_mut() else {
                     return;
                 };
+                state.last_status = window.get_status().to_string();
                 if origin.elapsed() > Duration::from_secs(300) {
                     state.error = Some(format!(
                         "timeout stage={} round={} status={}",
@@ -745,6 +802,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             counts.reads.load(Ordering::Relaxed),
             counts.bytes.load(Ordering::Relaxed),
             counts.validations.load(Ordering::Relaxed)
+        ));
+    }
+    let completed_openings = state
+        .rows
+        .iter()
+        .filter(|row| row.starts_with("first "))
+        .count();
+    if completed_openings < paths.len() && state.error.is_none() {
+        state.error = Some(format!(
+            "event loop ended before image/content publication: completed={completed_openings}/{} \
+             stage={} round={} status={}",
+            paths.len(),
+            state.stage,
+            state.round,
+            state.last_status,
         ));
     }
     if let Some(error) = state.error.clone() {

@@ -101,9 +101,24 @@ pub struct CopyProgress {
     /// Native rename does not read content regardless of this choice.
     pub verification: crate::TransferVerification,
     pub state: CopyOperationState,
+    /// A request is acknowledged only at a safe backend checkpoint.
+    pub pause_requested: bool,
+    pub paused: bool,
     pub phase: CopyOperationPhase,
     pub requested_roots: u64,
-    /// Recursive totals remain unknown; these are observed counters, never estimates.
+    /// Successfully published selected roots (a directory includes its complete subtree).
+    pub completed_roots: u64,
+    pub discovery: crate::OperationDiscovery,
+    /// Logical bytes successfully published once. Unlike copied_bytes this excludes retry I/O.
+    pub completed_bytes: u64,
+    /// Fully traversed source directories, including merges; excludes skipped/error subtrees.
+    pub completed_directories: u64,
+    /// Exact current regular-file length and bytes written; absent during traversal/rename.
+    /// This is a file-write meter, not an assertion that verification/publication completed.
+    pub current_file_size: Option<u64>,
+    pub current_file_copied: u64,
+    pub current_file_verified: u64,
+    /// Successful file publications; discovery is an independent metadata snapshot.
     pub files_completed: u64,
     pub directories_created: u64,
     /// Actual native entry renames; a renamed directory counts once without
@@ -138,6 +153,8 @@ pub struct CopyProgress {
     /// First 16 recovery paths. The native provider keeps every object on disk.
     pub recovery_paths: Vec<PathBuf>,
     pub current_path: Option<PathBuf>,
+    /// Exact current target derived from the retained destination and raw source basename.
+    pub current_destination: Option<PathBuf>,
     /// Refresh this captured destination after a terminal event, including partial outcomes.
     pub destination_directory: PathBuf,
     pub message: String,
@@ -157,8 +174,17 @@ impl CopyProgress {
             intent,
             verification: crate::TransferVerification::default(),
             state: CopyOperationState::Queued,
+            pause_requested: false,
+            paused: false,
             phase: CopyOperationPhase::Planning,
             requested_roots,
+            completed_roots: 0,
+            discovery: crate::OperationDiscovery::default(),
+            completed_bytes: 0,
+            completed_directories: 0,
+            current_file_size: None,
+            current_file_copied: 0,
+            current_file_verified: 0,
             files_completed: 0,
             directories_created: 0,
             native_entries_moved: 0,
@@ -178,6 +204,7 @@ impl CopyProgress {
             recovery_count: 0,
             recovery_paths: vec![],
             current_path: None,
+            current_destination: None,
             destination_directory: destination,
             message: String::new(),
             errors: vec![],

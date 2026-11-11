@@ -76,6 +76,7 @@ fn request(
 
 #[tokio::test]
 async fn checksum_capture_provider_lives_through_blocked_read_and_queued_shutdown() {
+    let _quota = checksum::test_quota_fixture().await;
     let barrier = Barrier::new();
     let _release = ReleaseOnDrop(barrier.clone());
     let (sender, _events) = mpsc::channel(32);
@@ -134,6 +135,7 @@ async fn checksum_capture_provider_lives_through_blocked_read_and_queued_shutdow
 
 #[tokio::test]
 async fn checksum_capture_rejected_admission_retires_provider_on_worker() {
+    let _quota = checksum::test_quota_fixture().await;
     let (sender, _events) = mpsc::channel(1);
     let controller = Controller::new(
         None,

@@ -16,6 +16,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 
+#[path = "mutation_discovery.rs"]
+pub(crate) mod discovery;
+
 #[path = "mutation_create.rs"]
 mod create;
 #[path = "mutation_metadata.rs"]
@@ -131,6 +134,23 @@ impl WindowsMutation {
 }
 
 impl PreparedMutation for WindowsMutation {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.item.path)?;
+        let source = self.revalidate(false)?;
+        discovery::walk(
+            &self.parent,
+            &source,
+            &self.name,
+            &self.item.path,
+            cancel,
+            visit,
+        )?;
+        self.revalidate(false).map(|_| ())
+    }
     fn item(&self) -> &MutationItem {
         &self.item
     }
@@ -355,7 +375,7 @@ pub(crate) fn validate_name(name: &OsStr) -> io::Result<()> {
 }
 
 fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
-    if cancel.is_cancelled() {
+    if !cancel.wait_if_paused() {
         Err(failure(
             "mutate",
             path,
@@ -388,3 +408,7 @@ fn changed(path: &Path) -> FsError {
         ),
     )
 }
+
+#[cfg(test)]
+#[path = "mutation_pause_tests.rs"]
+mod pause_tests;

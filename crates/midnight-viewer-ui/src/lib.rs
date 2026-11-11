@@ -229,6 +229,9 @@ impl ViewerWindows {
             self.service.retire(launch);
             return Err("Close a viewer before opening another (maximum four windows).".into());
         }
+        // Installation discovery can overlap native/GPU construction. Content still opens only
+        // after show() below supplies the exact physical canvas and monitor scale.
+        self.service.prepare_catalogs();
         let window = match ViewerWindow::new() {
             Ok(window) => window,
             Err(error) => {

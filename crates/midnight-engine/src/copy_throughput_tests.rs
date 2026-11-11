@@ -20,6 +20,8 @@ async fn short_copy_and_move_events_retain_separate_transfer_and_readback_activi
         let done = h.terminal(1).await;
         h.close().await;
         assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        assert_eq!(done.completed_roots, 1);
+        assert!(done.current_file_size.is_none());
         assert_eq!(done.throughput.transfer_per_second, 0.0);
         assert_eq!(done.throughput.verification_per_second, 0.0);
         assert!(
@@ -92,6 +94,11 @@ async fn blocked_copy_emits_zero_activity_without_releasing_native_capacity() {
     assert_eq!(sampled.throughput.transfer_per_second, 0.0);
     assert_eq!(sampled.throughput.verification_per_second, 0.0);
     assert!(sampled.copied_bytes > 0);
+    assert_eq!(sampled.current_file_size, Some(600_000));
+    assert_eq!(sampled.current_file_copied, sampled.copied_bytes);
+    assert_eq!(sampled.completed_roots, 0);
+    assert!(done.current_file_size.is_none());
+    assert_eq!(done.current_file_copied, 0);
     assert_eq!(capacity, (0, 0));
     assert_eq!(done.state, CopyOperationState::Cancelled);
     assert_eq!(done.throughput.transfer_per_second, 0.0);

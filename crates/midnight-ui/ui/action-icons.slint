@@ -118,6 +118,8 @@ export component ActionButton inherits Rectangle {
     in property <image> native-icon;
     in property <image> fallback-icon;
     in property <bool> primary;
+    in property <bool> compact;
+    in property <bool> removal-icon;
     in property <bool> destructive;
     in property <bool> enabled: true;
     in property <bool> checkable;
@@ -158,13 +160,13 @@ export component ActionButton inherits Rectangle {
         : root.destructive ? Theme.error-text
         : root.has-focus || root.primary || root.checked ? Theme.active-frame : Theme.frame;
     content := HorizontalLayout {
-        padding-left: 12px; padding-right: 12px; padding-top: 5px; padding-bottom: 5px;
+        padding-left: root.compact ? 4px : 12px; padding-right: root.compact ? 4px : 12px; padding-top: 5px; padding-bottom: 5px;
         spacing: 4px; alignment: center; cross-axis-alignment: center;
         if root.has-icon: Image {
             source: root.artwork; image-fit: contain;
             width: Theme.icon-size; height: Theme.icon-size;
             colorize: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback-icon))
-                ? transparent : root.foreground;
+                ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
             opacity: root.native-available && !root.enabled ? 0.45 : 1;
             accessible-role: none;
         }

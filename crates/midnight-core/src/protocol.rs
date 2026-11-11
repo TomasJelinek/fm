@@ -57,6 +57,11 @@ pub enum Command {
         content: Arc<dyn crate::GeneratedTextSource>,
         cancel: crate::Cancellation,
     },
+    ReadDiagnosticText {
+        request: DesktopRequestId,
+        content: Arc<dyn crate::GeneratedTextSource>,
+        cancel: crate::Cancellation,
+    },
     OpenSizeWarnings {
         request: DesktopRequestId,
         report: crate::SizeWarningReport,
@@ -163,6 +168,14 @@ pub enum Command {
     DecideCopy(crate::CopyDecision),
     DecideRename(crate::CopyDecision),
     CancelCopy(crate::OperationId),
+    SetCopyPaused {
+        id: crate::OperationId,
+        paused: bool,
+    },
+    SetOperationPaused {
+        id: crate::OperationId,
+        paused: bool,
+    },
     AttachDragDrop {
         host: crate::DragHost,
         targets: crate::SharedDropTargets,
@@ -320,6 +333,12 @@ pub enum Command {
         pane: PaneId,
         scan: FolderSizeScanId,
     },
+    /// Explicit retry of a backend-retained denied navigation. UI supplies no privileged path.
+    RetryDirectoryWithElevation {
+        pane: PaneId,
+        denied_navigation: NavigationId,
+        navigation: NavigationId,
+    },
     Navigate {
         pane: PaneId,
         navigation: NavigationId,
@@ -472,6 +491,10 @@ pub enum Event {
         entry: EntryId,
         size: FolderSize,
     },
+    DiagnosticTextReady {
+        request: DesktopRequestId,
+        result: Result<crate::DiagnosticTextPreview, FsError>,
+    },
     SizeWarningsReady {
         request: DesktopRequestId,
         result: Result<Arc<dyn crate::GeneratedTextSource>, FsError>,
@@ -535,6 +558,12 @@ pub enum Event {
         navigation: NavigationId,
         entries: Arc<[Entry]>,
         index: Arc<DirectoryIndex>,
+    },
+    /// Backend retained one denied native navigation for an explicit authorization retry.
+    DirectoryElevationAvailable {
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
     },
     ListingFailed {
         pane: PaneId,

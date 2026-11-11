@@ -127,7 +127,9 @@ The error dialog has Retry/Skip/Skip All/Cancel only when supported. Escape or
 Decide later preserves the attention state; Jobs → Resolve opens the exact pending
 decision. Successful Copy/Move closes only automatically opened progress, after
 all associated work succeeds. Manually opened Jobs remains open. Completed
-records remain in the bounded recent history, including when progress closes.
+records remain for the current session, including when progress closes. The Jobs
+ledger is separate from the operation window. Closing operation progress with
+X/Escape cancels that exact operation; closing the ledger does not cancel work.
 See the [interaction design](../superpowers/specs/2026-11-08-transfer-errors-design.md)
 and [Salamander reference audit](../verification/2026-11-08-transfer-error-reference-audit.md).
 
@@ -159,8 +161,8 @@ and short completed jobs retain a visible point. Counter resets rebase measureme
 instead of producing negative rates. Terminal chart history remains with the
 existing session-only Jobs record and is not written to settings.
 
-The shared Slint chart appears in both automatic progress and manually opened
-Jobs. Its horizontal scale contracts from time zero as the operation grows, and
+The shared Slint chart appears in each operation progress window; Jobs is a
+ledger whose Open action reopens that operation or its retained details. Its horizontal scale contracts from time zero as the operation grows, and
 its vertical scale expands when a higher peak appears. The filled write/deletion
 series, separate verification line and text labels adapt to the theme and dialog
 size. Existing queue, confirmation, cancellation,
@@ -196,9 +198,9 @@ Before mutation, an ordinary error leaves the existing target untouched. After
 recovery ownership transfers, Drop closes handles but never removes retained
 objects. No implicit rollback or recovery garbage collection is performed.
 
-Jobs shows the exact recovery count and the first 16 paths. Job history contains
-the latest 16 completed jobs and is not persisted across restart; copy the job
-details while available. The files themselves remain on disk until explicitly
+Jobs shows the exact recovery count and the first 16 paths. Transfer and deletion
+receipts remain throughout the session until explicitly cleared; history is not
+persisted across restart. Copy details while available. The files themselves remain on disk until explicitly
 removed. This is not a persistent recovery catalogue or an automatic Undo action.
 
 ## Bounded ordinary Move

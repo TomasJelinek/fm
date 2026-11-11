@@ -575,6 +575,7 @@ impl Deferred {
             by_path.insert(path, id);
         }
         Arc::new(DirectoryIndex {
+            column_samples: Default::default(),
             file_sizes: vec![None; by_id.len()],
             by_id,
             by_path,

@@ -12,12 +12,16 @@ mod archive;
 mod cancel_queue;
 #[path = "copy_completion_tests.rs"]
 mod completion;
+#[path = "copy_discovery_tests.rs"]
+mod discovery;
 #[path = "copy_error_tests.rs"]
 mod errors;
 #[path = "move_tests.rs"]
 mod moves;
 #[path = "move_native_tests.rs"]
 mod native_moves;
+#[path = "copy_pause_tests.rs"]
+mod pause;
 #[path = "copy_queue_tests.rs"]
 mod queue;
 #[path = "copy_replacement_tests.rs"]

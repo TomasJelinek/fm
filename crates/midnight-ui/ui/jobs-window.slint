@@ -7,6 +7,7 @@ export component JobsWindow inherits DialogWindow {
     title: "Jobs";
     in property <[OperationRow]> rows;
     in property <string> requested-identity;
+    callback open-progress(string);
     callback cancel(string);
     callback resolve(string);
     callback copy-details(string);
@@ -22,6 +23,7 @@ export component JobsWindow inherits DialogWindow {
         x: 0px; y: 0px; width: root.width; height: root.height;
         preferred-width: 0px; preferred-height: 0px;
         rows: root.rows; requested-identity: root.requested-identity;
+        open-progress(identity) => { root.open-progress(identity); }
         cancel(identity) => { root.cancel(identity); }
         resolve(identity) => { root.resolve(identity); }
         copy-details(identity) => { root.copy-details(identity); }

@@ -70,7 +70,12 @@ impl Harness {
             if gate.get()
                 && matches!(
                     command,
-                    Command::DecideCopy(_) | Command::ResolveMetadataConflict { .. }
+                    Command::DecideCopy(_)
+                        | Command::ResolveMetadataConflict { .. }
+                        | Command::CancelCopy(_)
+                        | Command::CancelOperation(_)
+                        | Command::SetCopyPaused { .. }
+                        | Command::SetOperationPaused { .. }
                 )
             {
                 return false;
@@ -278,7 +283,11 @@ fn native_decision_escape_and_x_cancel_exact_jobs_without_closing_jobs() {
         } else {
             input::key(&decision, Key::Escape);
         }
-        h.children(1);
+        let progress = h.children(1).remove(0);
+        progress
+            .window()
+            .dispatch_event(WindowEvent::CloseRequested);
+        h.children(0);
         assert!(
             matches!(h.choices().last(), Some((target, version, CopyChoice::Cancel)) if *target == OperationId(id) && *version == id + 100)
         );
@@ -315,6 +324,9 @@ fn native_metadata_decision_later_and_cancel_keep_exact_tokens() {
     h.main.invoke_show_operations();
     h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
             id: OperationId(91),
             kind: MutationKind::EditMetadata,
             state: OperationState::Running,
@@ -382,6 +394,9 @@ fn native_jobs_resolve_selects_the_requested_metadata_job_across_refresh() {
     for id in [91, 92] {
         h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
             OperationProgress {
+                pause_requested: false,
+                paused: false,
+                discovery: Default::default(),
                 id: OperationId(id),
                 kind: MutationKind::EditMetadata,
                 state: OperationState::Running,
@@ -567,6 +582,9 @@ fn native_rename_overwrite_uses_shared_decision_and_exact_mutation_dispatch() {
     h.main.invoke_show_operations();
     h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
             id: OperationId(90),
             kind: MutationKind::Rename,
             state: OperationState::Running,
@@ -644,7 +662,7 @@ fn native_jobs_clear_actions_preserve_active_work_and_repair_selected_details() 
     failed.failed = 1;
     h.apply(Event::Copy(CopyEvent::Progress(Arc::new(failed))));
     h.start(3);
-    let jobs = h.children(1).remove(0);
+    let jobs = h.children(3).remove(0);
     h.commands.borrow_mut().clear();
     modeless::click(&jobs, "Clear finished without errors");
     assert_eq!(
@@ -681,4 +699,130 @@ fn native_jobs_clear_actions_preserve_active_work_and_repair_selected_details() 
     assert_eq!(h.main.get_operations().row_count(), 0);
     modeless::draw(&jobs, 320, 200, "jobs-empty-compact");
     h.children(1);
+}
+
+#[test]
+fn independent_progress_windows_route_exact_jobs_and_manual_reopen_does_not_autoclose() {
+    let h = Harness::new();
+    h.start(1);
+    let first = h.children(1).remove(0);
+    h.start(2);
+    let second = h.children(2).pop().unwrap();
+    h.commands.borrow_mut().clear();
+    modeless::click(&first, "Cancel operation");
+    h.children(1);
+    assert!(matches!(
+        h.commands.borrow().as_slice(),
+        [Command::CancelCopy(OperationId(1))]
+    ));
+    h.commands.borrow_mut().clear();
+    input::key(&second, Key::Escape);
+    h.children(0);
+    assert!(matches!(
+        h.commands.borrow().as_slice(),
+        [Command::CancelCopy(OperationId(2))]
+    ));
+    h.commands.borrow_mut().clear();
+    refresh(&h.main, &h.state.borrow());
+    h.children(0);
+    h.main.invoke_open_job_progress("copy-job:2".into());
+    let reopened = h.children(1).pop().unwrap();
+    h.complete(2);
+    assert!(
+        reopened.window().is_visible(),
+        "manually reopened progress stays open"
+    );
+    h.complete(1);
+    h.children(1);
+    first.window().dispatch_event(WindowEvent::CloseRequested);
+    assert!(
+        h.commands.borrow().is_empty(),
+        "retired callbacks have no job authority"
+    );
+    h.main.invoke_show_operations();
+    h.children(2);
+    input::key(&reopened, Key::Escape);
+    h.children(1);
+    assert!(h.main.get_operations_visible());
+}
+
+#[test]
+fn progress_close_retains_window_if_cancellation_cannot_be_admitted() {
+    let h = Harness::new();
+    h.start(1);
+    let progress = h.children(1).remove(0);
+    h.commands.borrow_mut().clear();
+    h.refuse.set(true);
+    progress
+        .window()
+        .dispatch_event(WindowEvent::CloseRequested);
+    h.children(1);
+    assert!(h.commands.borrow().is_empty());
+    assert!(h.main.get_operations().row_data(0).unwrap().cancellable);
+    h.refuse.set(false);
+    input::key(&progress, Key::Escape);
+    h.children(0);
+    assert!(matches!(
+        h.commands.borrow().as_slice(),
+        [Command::CancelCopy(OperationId(1))]
+    ));
+    let row = h.main.get_operations().row_data(0).unwrap();
+    assert_eq!(row.state, "Cancelling");
+    assert!(
+        !row.cancellable,
+        "accepted cancellation remains visible in the ledger"
+    );
+}
+
+#[test]
+fn pause_and_resume_are_exact_job_requests_and_wait_for_backend_acknowledgement() {
+    let h = Harness::new();
+    h.start(1);
+    let progress = h.children(1).remove(0);
+    h.start(2);
+    h.commands.borrow_mut().clear();
+    modeless::click(&progress, "Pause");
+    assert!(matches!(
+        h.commands.borrow().as_slice(),
+        [Command::SetCopyPaused {
+            id: OperationId(1),
+            paused: true
+        }]
+    ));
+    let rows: Vec<_> = h.main.get_operations().iter().collect();
+    assert!(
+        rows.iter()
+            .find(|row| row.identity == "copy-job:1")
+            .unwrap()
+            .pause_requested
+    );
+    assert!(
+        rows.iter().all(|row| !row.paused),
+        "only a safe backend checkpoint acknowledges pause"
+    );
+    assert!(
+        !rows
+            .iter()
+            .find(|row| row.identity == "copy-job:2")
+            .unwrap()
+            .pause_requested
+    );
+    h.commands.borrow_mut().clear();
+    h.children(2);
+    modeless::click(&progress, "Resume");
+    assert!(matches!(
+        h.commands.borrow().as_slice(),
+        [Command::SetCopyPaused {
+            id: OperationId(1),
+            paused: false
+        }]
+    ));
+    h.complete(1);
+    h.commands.borrow_mut().clear();
+    h.main.invoke_pause_job("copy-job:1".into(), true);
+    h.main.invoke_pause_job("copy-job:99999".into(), true);
+    assert!(
+        h.commands.borrow().is_empty(),
+        "finished or unknown identities have no pause authority"
+    );
 }

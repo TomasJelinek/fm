@@ -211,3 +211,71 @@ fn native_hotpaths_first_open_at_minimum_large_fonts_accepts_escape() {
     key(&native, slint::platform::Key::Escape);
     assert!(!native.window().is_visible());
 }
+
+#[test]
+fn native_filter_history_restores_mode_case_and_text_without_applying_and_clear_edits_only() {
+    use midnight_ui::PanelFilterHistoryItem;
+    let item = PanelFilterHistoryItem {
+        label: "Regex (case sensitive): \\.TXT$".into(),
+        mode: 1,
+        expression: r"\.TXT$".into(),
+        case_sensitive: true,
+    };
+    let form = Form::new(
+        PanelFilterView {
+            open: true,
+            expression: "*.old".into(),
+            history: slint::ModelRc::new(slint::VecModel::from(vec![item.clone()])),
+            history_labels: slint::ModelRc::new(slint::VecModel::from(vec![
+                "Choose a recent filter…".into(),
+                item.label,
+            ])),
+            ..Default::default()
+        },
+        540,
+        360,
+        0,
+        11,
+    );
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let out = calls.clone();
+    form.window
+        .on_apply(move |enabled, mode, expression, case| {
+            out.borrow_mut().push((enabled, mode, expression, case));
+        });
+    let clears = Rc::new(RefCell::new(0));
+    let out = clears.clone();
+    form.window.on_clear(move || *out.borrow_mut() += 1);
+    click_control(&form.native, "Filter history", AccessibleRole::Combobox);
+    key(&form.native, slint::platform::Key::DownArrow);
+    key(&form.native, slint::platform::Key::Return);
+    assert_eq!(value(&form.native), r"\.TXT$");
+    assert!(calls.borrow().is_empty());
+    form.feedback();
+    modeless::draw(&form.native, 540, 360, "native-filter-history");
+    for label in ["Help", "OK", "Cancel"] {
+        action_visible(&form, label);
+    }
+    let ok = modeless::accessible_item(&form.native, AccessibleRole::Button, "OK").unwrap();
+    let cancel = modeless::accessible_item(&form.native, AccessibleRole::Button, "Cancel").unwrap();
+    assert!(
+        (ok.map_to_native_window(ok.geometry().origin).y
+            - cancel.map_to_native_window(cancel.geometry().origin).y)
+            .abs()
+            < 1.,
+        "normal-width footer actions must share one row"
+    );
+    modeless::click(&form.native, "OK");
+    assert_eq!(
+        calls.borrow().as_slice(),
+        [(true, 1, r"\.TXT$".into(), true)]
+    );
+    modeless::click(&form.native, "Clear filter expression");
+    assert_eq!(value(&form.native), "");
+    assert_eq!(
+        *clears.borrow(),
+        0,
+        "clearing text must not clear the applied panel filter"
+    );
+    assert_eq!(calls.borrow().len(), 1);
+}

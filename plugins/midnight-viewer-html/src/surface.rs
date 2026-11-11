@@ -145,15 +145,26 @@ impl Surface {
         {
             return None;
         }
-        let mut rgba = Vec::with_capacity(self.width as usize * self.height as usize * 4);
+        // Extend exact-size typed rows instead of growing a byte Vec for every
+        // pixel. This retains development overflow checks without their per-pixel
+        // capacity work. Flattening reuses this allocation; no extra image copy.
+        let mut rgba = Vec::<[u8; 4]>::with_capacity(self.width as usize * self.height as usize);
         for row in bgra
             .chunks_exact(width as usize * 4)
             .take(self.height as usize)
         {
-            for p in row[..self.width as usize * 4].as_chunks::<4>().0 {
-                rgba.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
-            }
+            rgba.extend(
+                row[..self.width as usize * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|p| [p[2], p[1], p[0], p[3]]),
+            );
         }
-        Some(rgba)
+        Some(rgba.into_flattened())
     }
 }
+
+#[cfg(test)]
+#[path = "surface_tests.rs"]
+mod tests;

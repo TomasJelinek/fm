@@ -178,6 +178,19 @@ impl Presenter {
         })
     }
 
+    /// Return only a captured native item path, never a provider's temporary backing file.
+    pub(crate) fn focused_full_path(&self, pane: PaneId) -> Option<PathBuf> {
+        let p = &self.panes[pane.index()];
+        if !p.native_capabilities() || p.parent_cursor || p.loading {
+            return None;
+        }
+        p.cursor
+            .and_then(|id| p.entry_by_id(id))
+            .and_then(Entry::native_path)
+            .filter(|path| path.is_absolute())
+            .map(Path::to_path_buf)
+    }
+
     /// Return the focused raw native basename for literal command-line insertion.
     pub(crate) fn focused_name(&self, pane: PaneId) -> Option<PathBuf> {
         let p = &self.panes[pane.index()];

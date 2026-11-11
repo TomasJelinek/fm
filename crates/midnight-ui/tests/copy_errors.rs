@@ -185,7 +185,8 @@ fn automatic_copy_and_move_jobs_close_after_success_and_keep_history() {
     let mut h = Harness::new();
     for (id, intent) in [(1, TransferIntent::Copy), (2, TransferIntent::Move)] {
         h.start(id);
-        assert!(h.ui.window.get_operations_visible());
+        assert_eq!(h.ui.visible_count(), 1);
+        assert!(!h.ui.window.get_operations_visible());
         h.progress(id, intent, CopyOperationState::Completed);
         assert!(h.ui.visible_count() == 0);
         assert!(!h.ui.window.get_operations_visible());
@@ -216,7 +217,8 @@ fn manual_jobs_and_non_successful_terminal_jobs_do_not_auto_close() {
     ] {
         h.start(id);
         h.progress(id, TransferIntent::Copy, state);
-        assert!(h.ui.window.get_operations_visible());
+        assert!(!h.ui.window.get_operations_visible());
+        assert_eq!(h.ui.visible_count(), 1);
         h.ui.key(Key::Escape);
     }
 }
@@ -227,7 +229,8 @@ fn successful_auto_job_waits_for_other_active_jobs_and_does_not_hide_a_waiting_e
     h.start(1);
     h.start(2);
     h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
-    assert!(h.ui.window.get_operations_visible());
+    assert_eq!(h.ui.visible_count(), 1);
+    assert!(!h.ui.window.get_operations_visible());
     h.failure(2, 1, false, false);
     h.ui.item("Cancel job", AccessibleRole::Button);
     h.ui.window
@@ -240,7 +243,8 @@ fn successful_auto_job_waits_for_other_active_jobs_and_does_not_hide_a_waiting_e
     );
     assert!(h.ui.visible_count() > 0);
     h.progress(2, TransferIntent::Copy, CopyOperationState::Failed);
-    assert!(h.ui.window.get_operations_visible());
+    assert!(!h.ui.window.get_operations_visible());
+    assert_eq!(h.ui.visible_count(), 1);
 }
 
 #[test]
@@ -273,155 +277,28 @@ fn error_skip_all_dispatches_a_separate_policy_from_name_conflict_skip_all() {
 }
 
 #[test]
-fn automatic_jobs_finish_after_their_owner_has_left_bounded_history() {
+fn simultaneous_progress_windows_close_independently_and_keep_session_history() {
     let mut h = Harness::new();
-    for id in 1..=24 {
-        h.start(id);
-    }
-    // Backend events can arrive in one UI tick; trimming the owner before the
-    // next refresh must not erase the automatic session's successful outcome.
-    for id in 1..=24 {
-        let mut progress = CopyProgress::queued(
-            OperationId(id),
-            "destination".into(),
-            1,
-            TransferIntent::Copy,
-        );
-        progress.state = CopyOperationState::Completed;
-        h.presenter.borrow_mut().apply_with_sender(
-            Event::Copy(CopyEvent::Progress(Arc::new(progress))),
-            h.send.as_ref(),
-        );
-    }
-    refresh(&h.ui.window, &h.presenter.borrow());
-    h.ui.draw();
-    assert_eq!(h.ui.window.get_operations().row_count(), 16);
+    h.start(1);
+    h.start(2);
+    assert_eq!(h.ui.visible_count(), 2);
     assert!(
-        !h.ui
-            .window
+        !h.ui.window.get_operations_visible(),
+        "progress is separate from Jobs"
+    );
+    h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
+    assert_eq!(h.ui.visible_count(), 1, "only this job's progress closes");
+    h.progress(2, TransferIntent::Copy, CopyOperationState::Completed);
+    for id in 3..=24 {
+        h.start(id);
+        h.progress(id, TransferIntent::Copy, CopyOperationState::Completed);
+    }
+    assert_eq!(h.ui.visible_count(), 0);
+    assert_eq!(h.ui.window.get_operations().row_count(), 24);
+    assert!(
+        h.ui.window
             .get_operations()
             .iter()
             .any(|row| row.identity == "copy-job:1")
-    );
-    assert!(!h.ui.window.get_operations_visible());
-    assert!(h.ui.visible_count() == 0);
-}
-
-#[test]
-fn automatic_jobs_remember_trimmed_failure_and_cancellation_outcomes() {
-    let mut h = Harness::new();
-    for (offset, state) in [
-        (0, CopyOperationState::Failed),
-        (24, CopyOperationState::Cancelled),
-    ] {
-        for id in 1..=24 {
-            h.start(offset + id);
-        }
-        for id in 1..=24 {
-            h.progress(
-                offset + id,
-                TransferIntent::Copy,
-                if id == 2 {
-                    state
-                } else {
-                    CopyOperationState::Completed
-                },
-            );
-        }
-        let failure = format!("copy-job:{}", offset + 2);
-        assert!(
-            !h.ui
-                .window
-                .get_operations()
-                .iter()
-                .any(|row| row.identity.as_str() == failure.as_str())
-        );
-        assert!(
-            h.ui.window.get_operations_visible(),
-            "a pruned outcome still needs attention"
-        );
-        h.ui.key(Key::Escape);
-    }
-}
-
-#[test]
-fn reopened_automatic_jobs_select_current_work_and_manual_jobs_keep_selection() {
-    use i_slint_core::{
-        accessibility::{AccessibilityAction, AccessibleStringProperty},
-        item_tree::ItemRc,
-        window::WindowInner,
-    };
-    use slint::platform::WindowAdapter;
-
-    fn job(h: &Harness, identity: &str) -> ItemRc {
-        fn find(item: ItemRc, identity: &str) -> Option<ItemRc> {
-            if item.accessible_role() == AccessibleRole::ListItem
-                && item
-                    .accessible_string_property(AccessibleStringProperty::Value)
-                    .is_some_and(|value| value == identity)
-            {
-                return Some(item);
-            }
-            let mut child = item.first_child();
-            while let Some(item) = child {
-                child = item.next_sibling();
-                if let Some(found) = find(item, identity) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        let native = h.ui.child();
-        let root = ItemRc::new_root(WindowInner::from_pub(native.window()).component());
-        find(root, identity).unwrap_or_else(|| panic!("missing job {identity}"))
-    }
-    fn selected(h: &Harness, identity: &str) {
-        assert_eq!(
-            job(h, identity)
-                .accessible_string_property(AccessibleStringProperty::Checked)
-                .as_deref(),
-            Some("true"),
-            "expected selected job {identity}"
-        );
-    }
-
-    let mut h = Harness::new();
-    h.start(1);
-    h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
-    h.start(2);
-    selected(&h, "copy-job:2");
-    h.ui.click("Copy details");
-    assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|command| match command {
-                Command::CopyText { text, .. } => Some(text.contains("\nQueued\n")),
-                _ => None,
-            })
-            .unwrap()
-    );
-    h.ui.window.invoke_show_operations();
-    h.ui.draw();
-    selected(&h, "copy-job:2");
-    // Reusing modeless Jobs preserves focus on the last action button. Focus the
-    // selected row before using list navigation, as a user or accessibility client does.
-    job(&h, "copy-job:2").accessible_action(&AccessibilityAction::Default);
-    h.ui.key(Key::DownArrow);
-    selected(&h, "copy-job:1");
-    h.start(3);
-    selected(&h, "copy-job:1");
-    h.ui.click("Copy details");
-    assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|command| match command {
-                Command::CopyText { text, .. } => Some(text.contains("\nCompleted\n")),
-                _ => None,
-            })
-            .unwrap()
     );
 }

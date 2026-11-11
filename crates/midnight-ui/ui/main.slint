@@ -15,6 +15,8 @@ import { NoticeWindow } from "notice-window.slint";
 export { HelpWindow, AboutWindow, NoticeWindow }
 import { OperationWindow } from "operation-window.slint";
 export { OperationWindow }
+import { JobProgressWindow } from "job-progress-window.slint";
+export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
 import { DecisionWindow } from "decision-window.slint";
 export { JobsWindow, DecisionWindow }
@@ -60,8 +62,8 @@ export { JobsView }
 import { MetadataDialog, MetadataDraft, MetadataFileRow } from "metadata-controls.slint";
 export { MetadataDraft, MetadataFileRow }
 import { ComparisonView, CompareDirectoriesDialog } from "comparison-dialog.slint";
-import { PanelFilterView } from "panel-filter-dialog.slint";
-export { ComparisonView, PanelFilterView }
+import { PanelFilterHistoryItem, PanelFilterView } from "panel-filter-dialog.slint";
+export { ComparisonView, PanelFilterView, PanelFilterHistoryItem }
 export { OperationRow }
 import { SearchTextEdit } from "panel-search.slint";
 export { Theme }
@@ -106,7 +108,8 @@ export component MainWindow inherits Window {
     callback thumbnail-size-changed(int);
     in property <bool> thumbnails-enabled: true;
     in property <bool> thumbnails-network: false;
-    in property <int> thumbnail-size: 72;
+    in property <int> thumbnail-size: 96;
+    in property <string> thumbnail-cache-location;
     callback row-drag(int, int, string, float, float) -> bool;
     callback drag-moved(float, float);
     callback drag-modifiers(bool, bool, bool);
@@ -186,6 +189,7 @@ export component MainWindow inherits Window {
     callback confirm-operation(string, string);
     callback cancel-operation(string);
     callback cancel-job(string);
+    callback pause-job(string, bool);
     callback copy-job-details(string);
     callback clear-finished-jobs(bool);
     callback network-connections(bool);
@@ -193,7 +197,7 @@ export component MainWindow inherits Window {
     callback close-operation-windows();
     public function begin-operation() { root.refresh-operation-windows(); }
     out property <bool> operations-visible;
-    in-out property <string> operations-auto-copy;
+    callback open-job-progress(string);
     callback refresh-jobs-window(bool);
     callback close-jobs-window();
     callback open-decision-window(bool, bool);
@@ -201,17 +205,10 @@ export component MainWindow inherits Window {
     callback close-decision-window(bool);
     callback close-decision-windows();
     public function show-operations() {
-        root.operations-auto-copy = "";
         root.operations-visible = true; root.refresh-jobs-window(true);
     }
-    public function show-copy-operations(token: string) {
-        if !root.operations-visible {
-            root.operations-auto-copy = token;
-            root.operations-visible = true; root.refresh-jobs-window(false);
-        }
-    }
     public function close-operations() {
-        root.operations-auto-copy = ""; root.operations-visible = false;
+        root.operations-visible = false;
         root.refresh-jobs-window(false);
     }
     in property <string> copy-token;
@@ -224,7 +221,6 @@ export component MainWindow inherits Window {
     in property <bool> copy-can-skip;
     in property <string> copy-source-details;
     in property <string> copy-target-details;
-    in-out property <string> copy-latest;
     callback decide-copy(string, int, string);
     callback resolve-copy(string);
     callback defer-copy(string);
@@ -416,6 +412,14 @@ export component MainWindow inherits Window {
     out property <length> right-list-content-x: right.list-content-x;
     out property <length> left-list-grid-width: left.list-grid-width;
     out property <length> right-list-grid-width: right.list-grid-width;
+    public function remember-navigation-viewport(pane: int) {
+        if pane == 0 { left.remember-navigation-viewport(); }
+        else { right.remember-navigation-viewport(); }
+    }
+    public function finish-navigation-viewport(pane: int, failed: bool) {
+        if pane == 0 { left.finish-navigation-viewport(failed); }
+        else { right.finish-navigation-viewport(failed); }
+    }
     public function scroll-selection(pane: int, delta: float) {
         if pane == 0 { left.scroll-selection(delta); }
         else { right.scroll-selection(delta); }
@@ -452,6 +456,9 @@ export component MainWindow inherits Window {
     in property <int> right-volume: -1;
     in property <string> left-status;
     in property <string> right-status;
+    in property <bool> left-can-elevate;
+    in property <bool> right-can-elevate;
+    callback retry-directory-elevated(int);
     in property <string> left-error;
     in property <string> right-error;
     in property <string> left-error-revision;
@@ -470,6 +477,13 @@ export component MainWindow inherits Window {
     in property <int> right-search-count;
     in-out property <bool> quick-search-filter;
     in-out property <bool> sizes-in-bytes;
+    in property <string> metadata-column-revision;
+    in property <string> left-size-column-sample;
+    in property <string> left-date-column-sample;
+    in property <string> left-time-column-sample;
+    in property <string> right-size-column-sample;
+    in property <string> right-date-column-sample;
+    in property <string> right-time-column-sample;
     in-out property <bool> remember-command-history: true;
     in-out property <bool> copy-checksum-verification: true;
     in-out property <int> options-topic-index;
@@ -504,6 +518,7 @@ export component MainWindow inherits Window {
     in property <string> message-body;
     in property <bool> message-error;
     callback copy-message();
+    callback diagnostic-notice-closed(int);
     callback copy-panel-error(int, string);
     in property <int> message-generation;
     in-out property <string> command-text <=> command-input.text;
@@ -530,7 +545,7 @@ export component MainWindow inherits Window {
     out property <length> options-left: (root.width - root.options-width) / 2;
     out property <length> options-top: (root.height - root.options-height) / 2;
     out property <length> options-width: min(root.width - 24px, max(840px, Theme.font-size * 28));
-    out property <length> options-height: min(root.height - 24px, max(580px, Theme.font-size * 20));
+    out property <length> options-height: min(root.height - 24px, max(660px, Theme.font-size * 23));
     out property <bool> command-focused: command-input.has-focus;
     // Slint 1.18.1 exposes these internal UTF-8 offsets; keep the pinned SDK and
     // the actual-key Unicode selection tests together when upgrading Slint.
@@ -571,6 +586,7 @@ export component MainWindow inherits Window {
     callback copy-verification-changed(bool);
     callback insert-path(int);
     callback insert-name();
+    callback insert-full-path();
     callback tab-new(int);
     callback tab-select(int, string);
     callback tab-close(int, string);
@@ -809,6 +825,9 @@ export component MainWindow inherits Window {
                 back-history: root.left-back-history; forward-history: root.left-forward-history;
                 history-revision: root.history-revision; path-parts: root.left-path-parts; details: root.left-details; free-space: root.left-free-space;
                 sizes-in-bytes: root.sizes-in-bytes;
+                size-column-sample: root.left-size-column-sample;
+                date-column-sample: root.left-date-column-sample;
+                time-column-sample: root.left-time-column-sample;
                 path-part(identity) => { root.path-part(0, identity); }
                 path-copy(identity) => { root.path-copy(0, identity); }
                 history-choice(forward, identity) => { root.history-choice(0, forward, identity); }
@@ -835,6 +854,8 @@ export component MainWindow inherits Window {
                 disclosure(identity) => { root.tree-disclosure(0, identity); }
                 warning-details(identity, tree) => { root.panel-warning-details(0, identity, tree); }
                 error-details(text) => { root.panel-error-details(0, text); }
+                can-elevate: root.left-can-elevate;
+                retry-directory-elevated => { root.retry-directory-elevated(0); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(0, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
                 drop-highlight: root.drag-hover-pane == 0; drag-label: root.drag-label;
@@ -887,6 +908,9 @@ export component MainWindow inherits Window {
                 back-history: root.right-back-history; forward-history: root.right-forward-history;
                 history-revision: root.history-revision; path-parts: root.right-path-parts; details: root.right-details; free-space: root.right-free-space;
                 sizes-in-bytes: root.sizes-in-bytes;
+                size-column-sample: root.right-size-column-sample;
+                date-column-sample: root.right-date-column-sample;
+                time-column-sample: root.right-time-column-sample;
                 path-part(identity) => { root.path-part(1, identity); }
                 path-copy(identity) => { root.path-copy(1, identity); }
                 history-choice(forward, identity) => { root.history-choice(1, forward, identity); }
@@ -913,6 +937,8 @@ export component MainWindow inherits Window {
                 disclosure(identity) => { root.tree-disclosure(1, identity); }
                 warning-details(identity, tree) => { root.panel-warning-details(1, identity, tree); }
                 error-details(text) => { root.panel-error-details(1, text); }
+                can-elevate: root.right-can-elevate;
+                retry-directory-elevated => { root.retry-directory-elevated(1); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(1, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
                 drop-highlight: root.drag-hover-pane == 1; drag-label: root.drag-label;
@@ -1101,6 +1127,7 @@ export component MainWindow inherits Window {
                             + "\n" + ShortcutHints.hint("Run command", "command.execute")
                             + "\n" + ShortcutHints.hint("Return to files", "command.focus-files")
                             + "\n" + ShortcutHints.hint("Append focused filename", "command.insert-name")
+                            + "\n" + ShortcutHints.hint("Append focused full path", "command.insert-full-path")
                             + "\n" + ShortcutHints.hint("Insert active panel path", "command.insert-path")
                             + "\n" + ShortcutHints.hint("Insert left panel path", "command.insert-left-path")
                             + "\n" + ShortcutHints.hint("Insert right panel path", "command.insert-right-path"); } }
@@ -1299,7 +1326,7 @@ export component MainWindow inherits Window {
                     color-picker-popup.show();
                 } else { color-picker-popup.close(); }
             }
-            desired-width: max(840px, Theme.font-size * 28); desired-height: max(580px, Theme.font-size * 20);
+            desired-width: max(840px, Theme.font-size * 28); desired-height: max(660px, Theme.font-size * 23);
             changed body-left => { root.options-left = self.body-left; }
             changed body-top => { root.options-top = self.body-top; }
             changed body-width => { root.options-width = self.body-width; }
@@ -1328,6 +1355,7 @@ export component MainWindow inherits Window {
                 thumbnails-enabled: root.thumbnails-enabled;
                 thumbnails-network: root.thumbnails-network;
                 thumbnail-size: root.thumbnail-size;
+                thumbnail-cache-location: root.thumbnail-cache-location;
                 thumbnail-size-changed(size) => { root.thumbnail-size-changed(size); }
                 thumbnail-options-changed(enabled, network, field) => { root.thumbnail-options-changed(enabled, network, field); }
                 thumbnail-clear-cache => { root.thumbnail-clear-cache(); }

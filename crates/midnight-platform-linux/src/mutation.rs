@@ -38,6 +38,7 @@ use std::{
 };
 
 mod create;
+pub(crate) mod discovery;
 mod metadata;
 mod trash;
 mod tree;
@@ -223,6 +224,22 @@ impl Prepared {
 }
 
 impl PreparedMutation for Prepared {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        discovery::walk(
+            &self.parent,
+            &self._source,
+            &self.name,
+            &self.item.path,
+            cancel,
+            visit,
+        )?;
+        self.revalidate(cancel)
+    }
     fn prepare_rename_replacement(
         &self,
         new_name: &OsStr,
@@ -527,7 +544,7 @@ fn modified_time(seconds: i64, nanos: u64) -> Option<SystemTime> {
 }
 
 fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
-    if cancel.is_cancelled() {
+    if !cancel.wait_if_paused() {
         Err(error(
             path,
             ErrorKind::Interrupted,
@@ -550,3 +567,7 @@ fn error(path: &Path, kind: ErrorKind, message: &str) -> FsError {
 mod create_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "mutation_pause_tests.rs"]
+mod pause_tests;

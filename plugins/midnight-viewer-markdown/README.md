@@ -57,7 +57,8 @@ and search reuse a nearby fragment of the same bounded read and discard the
 unproven parser context rather than skipping the requested content.
 
 At most 64 KiB is read/decoded per operation. Emitted displayed text is at most
-8192 bytes and the public 512-block budget. Requested lines bound demand around
+the caller's budget, capped at 64 KiB, and the public block/anchor/wire budgets.
+Scalar and plain fallback pages retain an 8 KiB text cap. Requested lines bound demand around
 the source anchor; completing an enclosing paragraph/table may add context.
 Paragraphs, headings, list items, rules and table rows each count as a displayed
 line even when their text has no literal newline. Later blocks outside the
@@ -65,9 +66,10 @@ visible crop no longer downgrade a normal heading/table page to plain text.
 Parser traversal stops at 16384 events or nesting depth 16 and falls back to
 plain text.
 Tables support up to 64 columns; excessive columns use the readable plain-text
-fallback. Partial table rows preserve column positions and clipped decorations.
-The same bounded-context fallback applies to very large tables and distant
-uncached seeks. Older hosts ignore the optional table/strikethrough metadata and
+fallback. Complete tables that fit the bounded parsed context keep every row
+for stable column widths. Tables exceeding the caller/read or exact-anchor/wire budgets use bounded
+wrapped row text without partial table geometry. The same readable fallback applies to
+distant uncached seeks. Older hosts ignore the optional table/strikethrough metadata and
 show the row text without rich decoration.
 The combined wire-item budget is checked too: dense documents first discard
 optional styles and link metadata, preserving displayed text and exact anchors

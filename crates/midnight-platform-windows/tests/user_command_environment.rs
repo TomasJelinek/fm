@@ -46,3 +46,65 @@ fn unknown_duplicate_or_nul_custom_environment_fields_are_rejected_before_spawn(
         assert!(environment::build(vec![], &entries).is_err());
     }
 }
+
+#[test]
+fn native_shell_record_is_omitted_only_during_capture_and_cannot_be_overridden() {
+    let shell = (OsString::from("=::"), OsString::from("opaque fixture"));
+    let block = environment::snapshot_with_inherited(
+        vec![
+            shell.clone(),
+            ("=C:".into(), r"C:\captured".into()),
+            ("NORMAL".into(), "kept".into()),
+        ],
+        &[("ME_FILE_PATH".into(), "literal & $()".into())],
+    )
+    .unwrap();
+    let records = block[..block.len() - 1]
+        .split(|unit| *unit == 0)
+        .filter(|record| !record.is_empty())
+        .map(OsString::from_wide)
+        .collect::<Vec<_>>();
+    assert!(
+        !records
+            .iter()
+            .any(|record| record.to_string_lossy().starts_with("=::="))
+    );
+    assert!(records.contains(&OsString::from(r"=C:=C:\captured")));
+    assert!(records.contains(&OsString::from("NORMAL=kept")));
+    assert!(records.contains(&OsString::from("ME_FILE_PATH=literal & $()")));
+    assert!(
+        environment::build(vec![shell.clone()], &[]).is_err(),
+        "encoder stays strict"
+    );
+    assert!(
+        environment::snapshot_with_inherited(vec![shell], &[("=::".into(), "override".into())])
+            .is_err(),
+        "private inherited names cannot enter through fixed caller overrides"
+    );
+}
+
+#[test]
+fn shell_capture_keeps_nul_name_and_ordinal_duplicate_rejection() {
+    for (name, value) in [
+        ("", "value"),
+        ("ordinary=name", "value"),
+        ("bad\0name", "value"),
+        ("=C:extra", "value"),
+        ("=1:", "value"),
+        ("=ExitCode", "value"),
+        ("=::", "value\0tail"),
+        ("NORMAL", "value\0tail"),
+        ("=C:", "value\0tail"),
+    ] {
+        assert!(
+            environment::snapshot_with_inherited(vec![(name.into(), value.into())], &[]).is_err()
+        );
+    }
+    assert!(
+        environment::snapshot_with_inherited(
+            vec![("Path".into(), "one".into()), ("PATH".into(), "two".into())],
+            &[],
+        )
+        .is_err()
+    );
+}

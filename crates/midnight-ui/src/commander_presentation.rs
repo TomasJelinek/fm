@@ -129,7 +129,45 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         unmatched_directories: state.options.unmatched_directories,
     });
     let state = &presenter.filter_dialog;
+    let history = presenter
+        .preferences
+        .values
+        .panel_filter_history
+        .iter()
+        .map(|filter| PanelFilterHistoryItem {
+            label: format!(
+                "{}{}: {}",
+                match filter.mode {
+                    FilterMode::Masks => "Masks",
+                    FilterMode::Regex => "Regex",
+                    FilterMode::Expression => "Expression",
+                },
+                if filter.case_sensitive {
+                    " (case sensitive)"
+                } else {
+                    ""
+                },
+                filter.expression
+            )
+            .into(),
+            mode: match filter.mode {
+                FilterMode::Masks => 0,
+                FilterMode::Regex => 1,
+                FilterMode::Expression => 2,
+            },
+            expression: filter.expression.as_str().into(),
+            case_sensitive: filter.case_sensitive,
+        })
+        .collect::<Vec<_>>();
+    let mut labels = vec![SharedString::from(if history.is_empty() {
+        "No filter history yet"
+    } else {
+        "Choose a recent filter…"
+    })];
+    labels.extend(history.iter().map(|item| item.label.clone()));
     window.set_panel_filter_view(PanelFilterView {
+        history: slint::ModelRc::new(slint::VecModel::from(history)),
+        history_labels: slint::ModelRc::new(slint::VecModel::from(labels)),
         open: state.open,
         pane: state.pane.index() as i32,
         enabled: state.draft.enabled,

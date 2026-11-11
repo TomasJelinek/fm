@@ -112,7 +112,7 @@ fn settings_inner_list_owns_wheel_motion_until_the_pointer_moves_outside_it() {
 }
 
 #[test]
-fn jobs_list_renders_native_wheel_frames_without_scrolling_its_details() {
+fn jobs_list_renders_native_wheel_frames_without_moving_footer_or_selection() {
     let mut h = Frames::new(jobs_window, 1000, 760);
     h.window.set_rows(ModelRc::new(VecModel::from(
         (0..30)
@@ -125,15 +125,22 @@ fn jobs_list_renders_native_wheel_frames_without_scrolling_its_details() {
             .collect::<Vec<_>>(),
     )));
     h.settle();
-    let row = h.item(AccessibleRole::ListItem, "Job 02");
-    let inner = scroll_parent(&row);
-    let outer = scroll_parent(&inner);
-    let original = offset(&outer);
+    h.window.set_requested_identity("job-2".into());
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = opened.clone();
+    h.window
+        .on_open_progress(move |identity| captured.borrow_mut().push(identity));
+    h.settle();
+    let close = h.item(AccessibleRole::Button, "Close");
+    let original = bounds(&close);
     h.check_motion(AccessibleRole::ListItem, "Job 02");
-    near(
-        offset(&outer),
-        original,
-        "Jobs wheel must stay within the operation list",
+    assert_eq!(bounds(&close), original, "Jobs footer must stay anchored");
+    h.item(AccessibleRole::Button, "Open")
+        .accessible_action(&AccessibilityAction::Default);
+    assert_eq!(
+        opened.borrow().as_slice(),
+        &[slint::SharedString::from("job-2")],
+        "scrolling must not retarget which job will open"
     );
 }
 

@@ -227,6 +227,7 @@ impl Presenter {
                     && p.index.by_path.contains_key(path)
                     && scope.contains(path)
                 {
+                    p.folder_column_samples.observe(size.bytes);
                     self.retired
                         .push(Box::new(p.folder_sizes.insert(path.clone(), size)));
                 } else {
@@ -491,6 +492,7 @@ impl Presenter {
             selection: selection.clone(),
         }) {
             if selection.is_none() {
+                p.folder_column_samples = SizeColumnSamples::default();
                 self.retired.push(Box::new(mem::take(&mut p.folder_sizes)));
             }
             self.retired

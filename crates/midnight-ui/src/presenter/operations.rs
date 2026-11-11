@@ -146,6 +146,9 @@ impl Presenter {
             self.operations.unconfirmed.insert(id);
             // Register immediately: closing before Preparing arrives must not abandon a job.
             self.operations.progress.push(Arc::new(OperationProgress {
+                pause_requested: false,
+                paused: false,
+                discovery: Default::default(),
                 id,
                 throughput: Arc::default(),
                 kind,
@@ -210,9 +213,19 @@ impl Presenter {
         else {
             return;
         };
-        if send(Command::CancelOperation(id)) && self.operations.pending == Some(id) {
-            self.operations.pending = None;
-            self.operations.preview = None;
+        if send(Command::CancelOperation(id)) {
+            if let Some(progress) = self
+                .operations
+                .progress
+                .iter_mut()
+                .find(|progress| progress.id == id && !progress.state.is_terminal())
+            {
+                Arc::make_mut(progress).state = OperationState::CancelRequested;
+            }
+            if self.operations.pending == Some(id) {
+                self.operations.pending = None;
+                self.operations.preview = None;
+            }
         }
     }
     pub fn has_live_operations(&self) -> bool {
@@ -320,14 +333,6 @@ impl Presenter {
                 {
                     self.operations.unconfirmed.remove(&progress.id);
                 }
-                if self
-                    .operations
-                    .progress
-                    .iter()
-                    .any(|old| old.id == progress.id && !old.state.is_terminal())
-                {
-                    self.copies.automatic_jobs.observe_mutation(&progress);
-                }
                 if progress.state.is_terminal() {
                     self.retire_rename_decision(progress.id);
                     self.operations
@@ -399,22 +404,6 @@ impl Presenter {
                     }
                 } else {
                     self.operations.progress.push(progress);
-                }
-                while self
-                    .operations
-                    .progress
-                    .iter()
-                    .filter(|p| p.state.is_terminal())
-                    .count()
-                    > 16
-                {
-                    let index = self
-                        .operations
-                        .progress
-                        .iter()
-                        .position(|p| p.state.is_terminal())
-                        .unwrap();
-                    self.operations.progress.remove(index);
                 }
             }
         }

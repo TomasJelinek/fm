@@ -70,6 +70,17 @@ pub(super) async fn prepare_job(
     loop {
         set_state(waiter.status, CopyOperationState::Preparing);
         publish(waiter.outbox, snapshot(waiter.status)).await;
+        if !wait_for_pause(
+            waiter.cancel,
+            waiter.status,
+            waiter.outbox,
+            waiter.throughput,
+        )
+        .await
+        {
+            drop_preparation(preparation).await;
+            return Err(Box::new(cancelled(waiter.status)));
+        }
         let Some(permit) = acquire(io_budget, waiter.cancel).await else {
             drop_preparation(preparation).await;
             return Err(Box::new(cancelled(waiter.status)));

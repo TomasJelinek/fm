@@ -161,9 +161,19 @@ export component FindWindow inherits ToolWindow {
                             hint: "Literal text, read incrementally on a backend worker.";
                             accepted => { root.submit(); }
                         }
-                        content-case := WrappingCheckBox {
+                        GridLayout {
                             row: root.narrow ? root.name-row + 7 : 4; col: root.narrow ? 0 : 2; colspan: root.narrow ? 2 : 1;
-                            text: "Match case"; enabled: !root.running && content-enabled.checked;
+                            spacing: 6px;
+                            content-case := WrappingCheckBox {
+                                row: 0; col: 0;
+                                text: "Match case"; enabled: !root.running && content-enabled.checked;
+                            }
+                            WrappingCheckBox {
+                                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                                text: "Whole words"; checked <=> advanced.whole-words;
+                                enabled: !root.running && content-enabled.checked;
+                                hint: "Match the containing text only at word boundaries.";
+                            }
                         }
                     }
                     GridLayout {

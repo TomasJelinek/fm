@@ -246,15 +246,19 @@ pub struct UserPreferences {
     /// Only deviations from the application shortcut catalog are persisted.
     pub shortcuts: Vec<ShortcutBinding>,
     pub panel_filters: [crate::PanelFilter; 2],
+    /// Up to 100 unique, successfully applied filters, newest first.
+    pub panel_filter_history: Vec<crate::PanelFilter>,
     /// Accepted edits replace this bounded shared collection atomically.
     pub filename_colors: Arc<Vec<crate::FilenameColorRule>>,
 }
+
+pub const MAX_PANEL_FILTER_HISTORY: usize = 100;
 
 pub const FONT_SIZE_MIN: u16 = 8;
 pub const FONT_SIZE_MAX: u16 = 32;
 pub const MAX_FONT_FAMILY_BYTES: usize = 512;
 pub const DEFAULT_PANEL_SPLIT_BASIS_POINTS: u16 = 5000;
-pub const DEFAULT_THUMBNAIL_SIZE: u16 = 72;
+pub const DEFAULT_THUMBNAIL_SIZE: u16 = 96;
 pub const THUMBNAIL_SIZES: [u16; 7] = [48, 64, 72, 96, 128, 192, 256];
 
 impl Default for UserPreferences {
@@ -290,6 +294,7 @@ impl Default for UserPreferences {
             thumbnail_size: DEFAULT_THUMBNAIL_SIZE,
             shortcuts: Vec::new(),
             panel_filters: Default::default(),
+            panel_filter_history: Vec::new(),
             filename_colors: crate::default_filename_colors().into(),
         }
     }
@@ -392,7 +397,18 @@ impl UserPreferences {
         if let Err(error) = self.editor.validate() {
             message = Some(error);
         }
-        for filter in &self.panel_filters {
+        if self.panel_filter_history.len() > MAX_PANEL_FILTER_HISTORY {
+            message = Some("At most 100 filter history entries can be saved.");
+        }
+        for (index, filter) in self.panel_filter_history.iter().enumerate() {
+            if !filter.enabled
+                || filter.expression.trim().is_empty()
+                || self.panel_filter_history[..index].contains(filter)
+            {
+                message = Some("Filter history entries must be nonempty, enabled and unique.");
+            }
+        }
+        for filter in self.panel_filters.iter().chain(&self.panel_filter_history) {
             if let Err(error) = filter.validate_bounds() {
                 message = Some(error);
             }

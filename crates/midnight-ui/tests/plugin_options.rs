@@ -201,7 +201,7 @@ impl Harness {
             id: format!("midnight.viewer.{id}"),
             name: name.into(),
             description: if id == "source" {
-                "Syntax highlighting for Rust, C, C++, JavaScript, TypeScript, Python, POSIX shell/Bash/Zsh, JSON, TOML, Java, C#, Go, Swift, Kotlin, Ruby, SQL and YAML (17 lexical profiles).".into()
+                "Syntax highlighting for Rust, C, C++, JavaScript, TypeScript, Python, POSIX shell/Bash/Zsh, Windows Batch/CMD, JSON, TOML, Java, C#, Go, Swift, Kotlin, Ruby, SQL and YAML (18 lexical profiles).".into()
             } else { String::new() },
             version: "1".into(),
             status: "Available".into(),
@@ -547,4 +547,60 @@ fn thumbnailer_discovery_failure_is_visible_and_refresh_waits_for_all_catalogs()
     assert!(!view.get_pending());
     assert!(view.get_thumbnailer_error().is_empty());
     assert_eq!(view.get_thumbnailer_rows().row_count(), 2);
+}
+
+#[test]
+fn all_six_installed_viewers_fit_without_catalog_scrolling_at_normal_sizes() {
+    let mut h = Harness::new();
+    let names = [
+        "Text and binary viewer",
+        "Source viewer",
+        "Markdown viewer",
+        "Image viewer",
+        "PDF viewer",
+        "HTML viewer",
+    ];
+    h.ui.window
+        .global::<ViewerPluginsView>()
+        .set_rows(ModelRc::new(VecModel::from(
+            names
+                .iter()
+                .map(|name| ViewerPluginRow {
+                    name: (*name).into(),
+                    version: "1".into(),
+                    enabled: true,
+                    configurable: true,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )));
+    for (density, font) in [(0, 12), (0, 18), (1, 15)] {
+        h.ui.window.invoke_apply_preferences(1, density);
+        h.ui.window.invoke_apply_fonts("".into(), font, font);
+        h.ui.resize(1340, 900);
+        h.settle();
+        let list = ui::popup_item(&h.ui.window, "Viewer priority", AccessibleRole::List);
+        let refresh = ui::popup_item(&h.ui.window, "Rescan all plugins", AccessibleRole::Button);
+        let top = list.map_to_native_window(list.geometry().origin).y;
+        let bottom = top + list.geometry().size.height;
+        let footer_top = refresh.map_to_native_window(refresh.geometry().origin).y;
+        for name in names {
+            let row = ui::popup_item(
+                &h.ui.window,
+                &format!("{name} · 1"),
+                AccessibleRole::ListItem,
+            );
+            let row_top = row.map_to_native_window(row.geometry().origin).y;
+            let row_bottom = row_top + row.geometry().size.height;
+            assert!(
+                row_top >= top && row_bottom <= bottom,
+                "{name} must fit in the catalog, density={density}, font={font}"
+            );
+            assert!(
+                row_bottom < footer_top,
+                "{name} must remain above the pinned rescan action"
+            );
+        }
+        render::snapshot(&h.ui, &format!("six-viewers-{density}-{font}"));
+    }
 }

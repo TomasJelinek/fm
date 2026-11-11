@@ -36,7 +36,9 @@ export component OperationWindow inherits DialogWindow {
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
-    preferred-width: max(540px, Theme.font-size * 28);
+    out property <length> initial-width: max(540px, Theme.font-size * 28);
+    out property <length> initial-height: form.preferred-dialog-height;
+    preferred-width: root.initial-width;
     preferred-height: form.preferred-dialog-height;
     form := OperationDialog {
         x: 0px; y: 0px; width: root.width; height: root.height;

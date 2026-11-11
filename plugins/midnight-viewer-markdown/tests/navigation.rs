@@ -55,12 +55,12 @@ fn initial_heading_preserves_raw_navigation_bounds() {
 }
 
 #[test]
-fn table_metadata_survives_sequential_forward_and_backward_viewports() {
+fn table_metadata_returns_when_the_viewport_budget_fits_the_complete_table() {
     let input = "| Name | Count |\n| :--- | ---: |\n| Café | 12 |\n| 字 | 42 |\n\nAfter table\n";
     let mut host = open(input.as_bytes(), MODE_DOCUMENT);
     let first = viewport(&mut host, 0, false, 14);
     assert!(first.has_after);
-    assert!(first.blocks[0].table.as_ref().unwrap().header);
+    assert!(first.blocks.iter().all(|block| block.table.is_none()));
     let second = viewport(&mut host, first.source.end().unwrap(), false, 8192);
     assert!(
         second

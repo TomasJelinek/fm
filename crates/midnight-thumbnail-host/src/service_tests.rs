@@ -283,6 +283,7 @@ fn a_rejected_delivery_retries_from_cache_after_the_view_changes_without_recaptu
         retries: HashMap::new(),
         stopped: false,
         clear_cache: false,
+        cache_location: None,
         notice: None,
     }));
     let (output, ready) = mpsc::sync_channel(4);
@@ -374,6 +375,7 @@ fn increasing_one_visible_edge_reuses_its_pinned_capture_and_leaves_other_cached
         retries: HashMap::new(),
         stopped: false,
         clear_cache: false,
+        cache_location: None,
         notice: None,
     }));
     let (output, ready) = mpsc::sync_channel(4);
@@ -502,6 +504,7 @@ fn clearing_waits_for_old_decode_and_only_new_generation_may_repopulate() {
         retries: HashMap::new(),
         stopped: false,
         clear_cache: false,
+        cache_location: None,
         notice: None,
     }));
     let (ready_tx, ready) = mpsc::sync_channel(4);

@@ -60,6 +60,8 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
             }
         }
         api::CommandKind::Wheel(wheel) => {
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::record(crate::trace::Event::Wheel, command.header.sequence, 0);
             let mut event = mouse(wheel.x, wheel.y, wheel.modifiers, scale);
             event.modifiers |= doc.mouse_buttons.load(Ordering::Acquire) as u32;
             host.send_mouse_wheel_event(Some(&event), (wheel.delta_x / scale) as i32, (wheel.delta_y / scale) as i32);

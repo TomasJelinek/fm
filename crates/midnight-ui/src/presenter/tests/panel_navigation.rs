@@ -274,7 +274,7 @@ fn space_sizes_original_directory_and_result_survives_sort_and_recycled_ids() {
 }
 
 #[test]
-fn space_does_not_scan_links_or_restart_an_active_all_folder_scan() {
+fn space_scans_directory_links_without_restarting_an_active_all_folder_scan() {
     let root = test_root();
     let mut p = Presenter::new(root.clone(), root.clone());
     let navigation = begin(&mut p, PaneId::Left, root.to_str().unwrap());
@@ -293,11 +293,19 @@ fn space_does_not_scan_links_or_restart_an_active_all_folder_scan() {
         true
     };
     p.move_cursor(PaneId::Left, 8, &send);
-    assert!(sent.borrow().iter().all(|command| matches!(
+    assert!(sent.borrow().iter().any(|command| matches!(
         command,
-        Command::Selection(_) | Command::SummarizeSelectedFolders(_)
+        Command::ComputeEntrySize {
+            entry: EntryId(1),
+            ..
+        }
     )));
-    let toggle = sent.borrow_mut().pop();
+    let position = sent
+        .borrow()
+        .iter()
+        .position(|command| matches!(command, Command::Selection(_)))
+        .unwrap();
+    let toggle = Some(sent.borrow_mut().remove(position));
     fixture_toggle(&mut p, PaneId::Left, toggle);
     assert!(p.bulk_selection(PaneId::Left, SelectionOperation::Clear, &send));
     let Command::Selection(clear) = sent.borrow_mut().pop().unwrap() else {

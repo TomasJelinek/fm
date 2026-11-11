@@ -126,6 +126,7 @@ struct Mailbox {
     retries: HashMap<(u64, u64, u8), (Work, u32)>,
     stopped: bool,
     clear_cache: bool,
+    cache_location: Option<PathBuf>,
     notice: Option<String>,
 }
 pub struct Service {
@@ -154,6 +155,7 @@ impl Service {
             retries: HashMap::new(),
             stopped: false,
             clear_cache: false,
+            cache_location: None,
             notice: None,
         }));
         let (ready_tx, ready) = mpsc::sync_channel(4);
@@ -164,6 +166,10 @@ impl Service {
             // leave bounded headroom; source captures remain owned by admitted workers.
             let initialized = (|| {
                 let (executable, cache) = locations()?;
+                input
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .cache_location = Some(cache.clone());
                 let providers = providers::discover(&executable)?;
                 let cache = Cache::open(&cache, DEFAULT_DISK_BYTES, 4 * 1024 * 1024)?;
                 Ok::<_, io::Error>((providers, cache))
@@ -244,6 +250,14 @@ impl Service {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear_cache = true;
+    }
+    /// Native cache location resolved by the backend initialization worker.
+    pub fn take_cache_location(&self) -> Option<PathBuf> {
+        self.mailbox
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cache_location
+            .take()
     }
     pub fn take_notice(&self) -> Option<String> {
         self.mailbox

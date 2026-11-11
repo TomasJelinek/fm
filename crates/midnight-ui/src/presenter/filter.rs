@@ -228,11 +228,26 @@ impl Presenter {
                 return;
             }
             let mut preferences = self.preferences.values.clone();
+            remember_history(&mut preferences.panel_filter_history, &request.filter);
             preferences.panel_filters[request.pane.index()] = request.filter;
             self.update_preferences(preferences, send);
             self.cancel_panel_filter();
         }
     }
+}
+
+/// History contains only successfully applied nonempty filters, newest first.
+pub(super) fn remember_history(history: &mut Vec<PanelFilter>, filter: &PanelFilter) {
+    if !filter.enabled || filter.expression.trim().is_empty() {
+        return;
+    }
+    history.retain(|previous| {
+        previous.mode != filter.mode
+            || previous.expression != filter.expression
+            || previous.case_sensitive != filter.case_sensitive
+    });
+    history.insert(0, filter.clone());
+    history.truncate(MAX_PANEL_FILTER_HISTORY);
 }
 
 fn describe_diagnostic(source: &str, diagnostic: &FilterDiagnostic) -> String {

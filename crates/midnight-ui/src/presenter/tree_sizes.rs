@@ -27,6 +27,12 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn column_samples(&self) -> Option<&SizeColumnSamples> {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.column_samples)
+    }
+
     pub(super) fn diagnostic_revision(&self) -> u64 {
         self.snapshot
             .as_ref()

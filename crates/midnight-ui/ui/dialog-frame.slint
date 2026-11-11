@@ -5,7 +5,7 @@ import { DialogResizeEdge } from "dialog-resize.slint";
 import { CloseButton } from "close-button.slint";
 
 // Each top-level native dialog sets this in its own component context. Its OS
-// titlebar supplies movement, resizing and X; embedded dialogs keep this header.
+// titlebar supplies native movement/resizing; all forms retain the themed header.
 export global DialogWindowStyle {
     in-out property <bool> native-titlebar;
 }
@@ -131,11 +131,11 @@ export component DialogHeader inherits Rectangle {
     callback close();
     in property <string> close-label: "Cancel dialog";
     private property <length> close-size: max(root.compact ? 26px : 30px, Theme.font-size + 8px);
-    visible: !DialogWindowStyle.native-titlebar;
-    height: root.visible ? max(root.compact ? 28px : 36px, root.text-size + 6px, root.close-size) : 0px;
+    private property <length> heading-height: max(root.compact ? 28px : 36px, root.text-size + 6px, root.close-size);
+    height: root.heading-height + (root.compact ? 5px : 10px);
     min-width: 0px;
     HorizontalLayout {
-        x: 0px; y: 0px;
+        x: 0px; y: 0px; height: root.heading-height;
         width: max(0px, parent.width - root.close-size - 8px);
         spacing: 10px; cross-axis-alignment: center;
         if root.error : ErrorGlyph {}
@@ -154,12 +154,12 @@ export component DialogHeader inherits Rectangle {
         }
     }
     TouchArea {
-        x: 0px; y: 0px;
+        x: 0px; y: 0px; height: root.heading-height;
         width: max(0px, parent.width - root.close-size - 8px);
         private property <length> anchor-x;
         private property <length> anchor-y;
         private property <bool> dragging;
-        mouse-cursor: move;
+        mouse-cursor: DialogWindowStyle.native-titlebar ? default : move;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                 self.anchor-x = self.mouse-x; self.anchor-y = self.mouse-y; self.dragging = true;
@@ -172,9 +172,10 @@ export component DialogHeader inherits Rectangle {
         }
     }
     CloseButton {
-        x: parent.width - self.width; y: (parent.height - self.height) / 2;
+        x: parent.width - self.width; y: (root.heading-height - self.height) / 2;
         width: root.close-size; height: root.close-size;
         label: root.close-label;
         clicked => { root.close(); }
     }
+    Rectangle { x: 0px; y: root.height - 1px; width: root.width; height: 1px; background: Theme.frame; }
 }

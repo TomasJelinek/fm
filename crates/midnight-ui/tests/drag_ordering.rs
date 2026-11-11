@@ -162,7 +162,7 @@ fn cancelling_an_admitted_drop_rejects_its_token_before_the_copy_is_registered()
 }
 
 #[test]
-fn locally_cancelled_admissions_keep_only_the_bounded_terminal_job_history() {
+fn locally_cancelled_admissions_keep_session_job_history() {
     let h = Harness::new();
     for token in 1..=20 {
         if token > 1 {
@@ -188,7 +188,7 @@ fn locally_cancelled_admissions_keep_only_the_bounded_terminal_job_history() {
                 .unwrap();
         h.ui.window.invoke_cancel_operation(job.identity);
     }
-    assert_eq!(h.ui.window.get_operations().row_count(), 16);
+    assert_eq!(h.ui.window.get_operations().row_count(), 20);
     assert!(
         h.ui.window
             .get_operations()

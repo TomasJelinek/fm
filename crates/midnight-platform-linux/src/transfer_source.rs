@@ -114,6 +114,22 @@ pub(super) fn open_retained(file: &File, path: &Path) -> Result<File, FsError> {
     Ok(opened)
 }
 impl TransferSource for Source {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        crate::mutation::discovery::walk(
+            &self.parent,
+            &self.file,
+            &self.name,
+            &self.entry.item.path,
+            cancel,
+            visit,
+        )?;
+        self.revalidate(cancel)
+    }
     fn open_child(
         &self,
         name: &OsStr,

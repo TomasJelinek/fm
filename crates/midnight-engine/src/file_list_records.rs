@@ -153,9 +153,7 @@ pub(super) fn record(
             .map_or("-", |value| &value.time)
             .into(),
         attributes: native::attributes(&entry.metadata),
-        dos_name: "-".into(),
         drive,
-        dos_path: path.clone(),
         path,
         environment: environment.clone(),
     })

@@ -14,6 +14,9 @@ use std::{
     rc::Rc,
 };
 
+#[path = "job_progress_windows.rs"]
+mod progress;
+
 pub(crate) type ThemeRevision = (i32, i32, String, i32, i32);
 pub(crate) fn theme(p: &Presenter) -> ThemeRevision {
     let values = &p.preferences.values;
@@ -55,6 +58,7 @@ struct Context {
     windows: RefCell<Windows>,
     closing: Rc<Cell<bool>>,
     failures: Failures<u8>,
+    progress: Rc<progress::Windows>,
 }
 
 pub(crate) fn install(
@@ -74,6 +78,7 @@ pub(crate) fn install(
         |_, _: u8, _| true,
     );
     let ctx = Rc::new(Context {
+        progress: progress::Windows::install(main, &state, &send),
         main: main.as_weak(),
         state: Rc::downgrade(&state),
         closing,
@@ -101,6 +106,7 @@ pub(crate) fn install(
     });
     main.on_close_jobs_window(move || {
         ctx.closing.set(true);
+        ctx.progress.close_all();
         let record = {
             let mut windows = ctx.windows.borrow_mut();
             windows.closing = true;
@@ -115,6 +121,7 @@ fn synchronize(
     p: &Presenter,
     activate: bool,
 ) -> Result<(), PlatformError> {
+    ctx.progress.synchronize(main, p);
     if ctx.windows.borrow().closing || !main.get_operations_visible() {
         let record = ctx.windows.borrow_mut().record.take();
         close(record, false);
@@ -170,6 +177,7 @@ fn synchronize(
             });
         }};
     }
+    action!(on_open_progress, invoke_open_job_progress);
     action!(on_cancel, invoke_cancel_job);
     action!(on_resolve, invoke_resolve_copy);
     action!(on_copy_details, invoke_copy_job_details);
@@ -212,9 +220,6 @@ fn dismiss(ctx: &Context, session: DialogSession) {
     close(record, true);
     if let Some(main) = ctx.main.upgrade() {
         main.invoke_close_operations();
-    }
-    if let Some(state) = ctx.state.upgrade() {
-        state.borrow().sync_automatic_copy_jobs(None);
     }
 }
 fn close(record: Option<Record>, explicit: bool) {

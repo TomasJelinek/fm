@@ -9,16 +9,14 @@ fn record(name: &str) -> FileListRecord {
         date: "9. 11. 2026".into(),
         time: "17:45:06".into(),
         attributes: "AC".into(),
-        dos_name: "SAMPLE~1.TXT".into(),
         drive: "C:".into(),
         path: "\\資料\\".into(),
-        dos_path: "\\DATA~1\\".into(),
         environment: BTreeMap::from([("USER".into(), "Alice".into())]),
     }
 }
 
 #[test]
-fn expands_the_complete_salamander_variable_palette_without_changing_values() {
+fn expands_unicode_variables_and_maps_legacy_dos_tokens_to_full_values() {
     let template = FileListTemplate::parse(concat!(
         "$(FileName)|$(FileNamePart)|$(FileExtension)|$(FileSize)|",
         "$(FileDate)|$(FileTime)|$(FileAttributes)|$(FileDOSName)|",
@@ -27,7 +25,7 @@ fn expands_the_complete_salamander_variable_palette_without_changing_values() {
     .unwrap();
     assert_eq!(
         template.render(&record("文档.txt"), &[]).unwrap(),
-        "文档.txt|sample|txt|12345|9. 11. 2026|17:45:06|AC|SAMPLE~1.TXT|C:|\\資料\\|\\DATA~1\\|\n|\r|\r\n|\t"
+        "文档.txt|sample|txt|12345|9. 11. 2026|17:45:06|AC|文档.txt|C:|\\資料\\|\\資料\\|\n|\r|\r\n|\t"
     );
 }
 

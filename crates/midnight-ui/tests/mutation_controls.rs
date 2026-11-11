@@ -156,6 +156,18 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: None } if *id == deletion.id)));
         assert!(
+            !ui.window.get_dialog_input_blocked(),
+            "progress is modeless"
+        );
+        assert!(
+            windows
+                .borrow()
+                .iter()
+                .skip(1)
+                .any(|child| child.window().is_visible()),
+            "confirmed Delete has visible progress while panel actions remain enabled"
+        );
+        assert!(
             !commands
                 .borrow()
                 .iter()
@@ -297,20 +309,21 @@ fn main_with_children() -> (TestUi, ChildWindows) {
 }
 fn current(test: &TestUi, windows: &ChildWindows) -> Rc<MinimalSoftwareWindow> {
     slint::platform::update_timers_and_animations();
+    // Confirmed Delete keeps a modeless progress window while new panel actions
+    // remain available. Only an active confirmation owns keyboard input here.
+    if !test.window.get_dialog_input_blocked() {
+        return test.native.clone();
+    }
     let child = windows
         .borrow()
         .iter()
         .skip(1)
         .rev()
         .find(|adapter| adapter.window().is_visible())
-        .cloned();
-    if let Some(child) = child {
-        assert!(test.window.get_dialog_input_blocked());
-        modeless::draw(&child, 640, 420, "mutation-child");
-        child
-    } else {
-        test.native.clone()
-    }
+        .cloned()
+        .expect("blocked owner must have a visible confirmation window");
+    modeless::draw(&child, 640, 420, "mutation-child");
+    child
 }
 fn key_current(test: &TestUi, windows: &ChildWindows, key: impl Into<slint::SharedString>) {
     window_input::key(&current(test, windows), key);
