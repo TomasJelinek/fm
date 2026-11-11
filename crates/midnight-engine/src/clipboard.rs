@@ -80,7 +80,12 @@ impl Controller {
         sender
     }
 
-    pub(crate) fn copy(&mut self, id: DesktopRequestId, text: String, tasks: &mut JoinSet<()>) {
+    pub(crate) async fn copy(
+        &mut self,
+        id: DesktopRequestId,
+        text: String,
+        tasks: &mut JoinSet<()>,
+    ) {
         // Idle applications must not occupy a blocking worker. Once requested, retain the
         // thread-affine session so Linux clipboard contents remain available to other clients.
         if self.sender.is_none() {
@@ -93,22 +98,25 @@ impl Controller {
             .try_send(Request { id, text })
             .is_err()
         {
-            let outbox = self.outbox.clone();
-            tasks.spawn(async move {
-                outbox
-                    .send(Event::DesktopActionFinished {
-                        request: id,
-                        result: Err(error(
-                            io::ErrorKind::WouldBlock,
-                            "Clipboard queue is busy; try copying again.",
-                        )),
-                    })
-                    .await;
-            });
+            self.outbox
+                .send(Event::DesktopActionFinished {
+                    request: id,
+                    result: Err(error(
+                        io::ErrorKind::WouldBlock,
+                        "Clipboard queue is busy; try copying again.",
+                    )),
+                })
+                .await;
         }
     }
 
     pub(crate) fn shutdown(self) {
+        drop(self);
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
         self.cancel.cancel();
     }
 }

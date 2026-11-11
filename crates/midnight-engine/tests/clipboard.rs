@@ -146,3 +146,71 @@ async fn invalid_clipboard_text_never_reaches_the_native_service() {
     commands.send(Command::Shutdown).await.unwrap();
     engine.await.unwrap();
 }
+
+#[derive(Default)]
+struct ClipboardLifetime {
+    copied: tokio::sync::Notify,
+    dropped: tokio::sync::Notify,
+}
+
+struct ObservedClipboard(Arc<ClipboardLifetime>);
+struct ObservedSession(Arc<ClipboardLifetime>);
+impl ClipboardSession for ObservedSession {
+    fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        assert_eq!(text, "captured clipboard text");
+        self.0.copied.notify_one();
+        Ok(())
+    }
+}
+impl Drop for ObservedSession {
+    fn drop(&mut self) {
+        self.0.dropped.notify_one();
+    }
+}
+impl ClipboardService for ObservedClipboard {
+    fn open(&self) -> Result<Box<dyn ClipboardSession>, FsError> {
+        Ok(Box::new(ObservedSession(self.0.clone())))
+    }
+}
+
+#[tokio::test]
+async fn aborting_engine_releases_clipboard_session_while_output_remains_full() {
+    let clipboard = Arc::new(ClipboardLifetime::default());
+    let (commands, receiver) = mpsc::channel(2);
+    let (sender, events) = mpsc::channel(1);
+    sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+    let engine = tokio::spawn(
+        Engine::new(
+            Arc::new(midnight_platform::LocalFileSystem::new(None)),
+            sender,
+        )
+        .with_clipboard(Arc::new(ObservedClipboard(clipboard.clone())))
+        .run(receiver),
+    );
+    commands
+        .send(Command::CopyText {
+            request: DesktopRequestId(1),
+            text: "captured clipboard text".into(),
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), clipboard.copied.notified())
+        .await
+        .unwrap();
+    engine.abort();
+    assert!(engine.await.unwrap_err().is_cancelled());
+    let released = tokio::time::timeout(Duration::from_millis(200), clipboard.dropped.notified())
+        .await
+        .is_ok();
+    // A failing assertion must not strand the old blocking sender at runtime teardown.
+    drop(events);
+    if !released {
+        tokio::time::timeout(Duration::from_secs(3), clipboard.dropped.notified())
+            .await
+            .unwrap();
+    }
+    assert!(
+        released,
+        "Clipboard session outlived its aborted engine behind full output"
+    );
+}

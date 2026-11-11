@@ -33,6 +33,15 @@ jobs:
         run: bash scripts/check-source-size.sh
       - name: Test
         run: cargo test --workspace --locked
+      - name: Qualify Linux cross-filesystem Trash
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p midnight-platform-linux --locked \
+            mutation::tests::cross_filesystem_trash_returns_unsupported_and_keeps_source \
+            -- --exact --nocapture 2>&1 | tee _build/cross-filesystem-trash.log
+          grep -Fq 'QUALIFIED cross_filesystem_trash:' _build/cross-filesystem-trash.log
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optimized release build

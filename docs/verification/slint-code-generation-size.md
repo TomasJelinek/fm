@@ -1,6 +1,12 @@
 # Why the Slint-generated Rust is large
 
-The latest shared-button pass generates **4,871,700 normalized token bytes**, or
+Historical measurement: this report records the shared-button checkpoint before
+later panel modes and operation controls. Current product guidance and evidence
+precedence are in the [documentation map](../README.md); later generated-source
+sizes are recorded in [operations verification](midnight-explorer-operations.md).
+The measurements below are not the current output size or a build-time benchmark.
+
+The recorded shared-button pass generates **4,871,700 normalized token bytes**, or
 **8,704,058 formatted bytes**. Relative to the initial frozen adapted output,
 this is a 40.56% reduction in token text. It is not a claimed optimum.
 

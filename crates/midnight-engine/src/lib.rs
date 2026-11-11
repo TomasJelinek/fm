@@ -85,6 +85,12 @@ impl Request {
     }
 }
 
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 pub struct Engine {
     locale: Option<Arc<dyn midnight_core::LocaleService>>,
     network: Option<Arc<dyn midnight_core::NetworkService>>,
@@ -133,6 +139,13 @@ struct SizeRequest {
 
 impl SizeRequest {
     fn cancel(self) {
+        self.cancel.cancel();
+        self.task.abort();
+    }
+}
+
+impl Drop for SizeRequest {
+    fn drop(&mut self) {
         self.cancel.cancel();
         self.task.abort();
     }
@@ -260,9 +273,13 @@ impl Engine {
         );
 
         loop {
+            // Navigation adds two tasks; a continuously ready command queue must
+            // not outpace the single completion branch below.
+            while tasks.try_join_next().is_some() {}
+
             tokio::select! {
                 Some(prepared) = properties_ready.recv() => {
-                    desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks);
+                    desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks).await;
                 }
                 command = commands.recv() => {
                     let resort = matches!(&command, Some(Command::Resort { .. }));
@@ -295,9 +312,14 @@ impl Engine {
                             match (service, permit) {
                                 (Some(service), Ok(permit)) => {
                                     let outbox = self.outbox.clone();
+                                    let permit = Arc::new(permit);
+                                    let worker_permit = permit.clone();
                                     tasks.spawn(async move {
                                         let _permit = permit;
-                                        let result = tokio::task::spawn_blocking(move || service.manage_connections(disconnect))
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            let _permit = worker_permit;
+                                            service.manage_connections(disconnect)
+                                        })
                                             .await.unwrap_or_else(|error| Err(midnight_core::FsError::from_io(
                                                 "network dialog", std::path::Path::new("Network"), std::io::Error::other(error.to_string()))));
                                         // Retain the permit through delivery so a stopped UI cannot
@@ -325,15 +347,13 @@ impl Engine {
                         Some(Command::LoadPreferences) => {
                             if let Some(settings) = &settings { settings.load(); }
                             else {
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::PreferencesLoaded(Ok(Default::default()))).await; });
+                                self.outbox.send(Event::PreferencesLoaded(Ok(Default::default()))).await;
                             }
                         }
                         Some(Command::SavePreferences { revision, preferences }) => {
                             if let Some(settings) = &settings { settings.save(revision, preferences); }
                             else {
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported))) }).await; });
+                                self.outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported))) }).await;
                             }
                         }
                         Some(Command::PaneCommitted(visible)) => {
@@ -347,14 +367,14 @@ impl Engine {
                             drop(snapshots);
                             if let Some(watcher) = &watcher { watcher.set_visible(watch_target); }
                         }
-                        Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks),
-                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks),
-                        Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks),
+                        Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks).await,
+                        Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
+                        Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks).await,
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
                             selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback },
-                                properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks);
+                                properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks).await;
                         }
-                        Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, &mut tasks),
+                        Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, &mut tasks).await,
                         Some(Command::ComputeFolderSizes { pane, navigation, scan }) => {
                             // Retrying an accepted command must not falsely finish
                             // the still-running scan with the same identity.
@@ -367,8 +387,7 @@ impl Engine {
                                     .filter(|_| state.pending.is_none()).cloned()
                             };
                             if entries.is_none() || size_requests[pane.index()].as_ref().is_some_and(|request| request.navigation == navigation && scan <= request.scan) {
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await; });
+                                self.outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
                                 continue;
                             }
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
@@ -389,10 +408,13 @@ impl Engine {
                                 };
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if worker_cancel.is_cancelled() { return; }
+                                let permit = Arc::new(permit);
+                                let worker_permit = permit.clone();
+                                let _permit = permit;
                                 let final_cancel = worker_cancel.clone();
                                 let final_outbox = outbox.clone();
                                 let result = tokio::task::spawn_blocking(move || {
-                                    let _permit = permit;
+                                    let _permit = worker_permit;
                                     let paths: HashMap<_, _> = snapshot.entries.iter()
                                         .filter(|entry| entry.kind == EntryKind::Directory)
                                         .map(|entry| (entry.id, entry.path.clone())).collect();
@@ -412,16 +434,15 @@ impl Engine {
                             }
                         }
                         Some(Command::ComputeEntrySize { pane, navigation, scan, entry }) => {
-                            entry_sizes.compute(pane, navigation, scan, entry, &mut tasks);
+                            entry_sizes.compute(pane, navigation, scan, entry, &mut tasks).await;
                         }
                         Some(Command::CancelFolderSizes { pane, scan }) => {
-                            entry_sizes.cancel(pane, scan, &mut tasks);
+                            entry_sizes.cancel(pane, scan).await;
                             if size_requests[pane.index()].as_ref().is_some_and(|request| request.scan == scan)
                                 && let Some(old) = size_requests[pane.index()].take() {
                                 let navigation = old.navigation;
                                 old.cancel();
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await; });
+                                self.outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
                             }
                         }
                         Some(Command::ListVolumes) => {
@@ -496,10 +517,13 @@ impl Engine {
                             let space = tasks.spawn(async move {
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if space_cancel.is_cancelled() { return; }
+                                let permit = Arc::new(permit);
+                                let worker_permit = permit.clone();
+                                let _permit = permit;
                                 let storage_outbox = outbox.clone();
                                 let storage_cancel = space_cancel.clone();
                                 let result = tokio::task::spawn_blocking(move || {
-                                    let _permit = permit;
+                                    let _permit = worker_permit;
                                     let kind = filesystem.storage_kind(&path).unwrap_or_default();
                                     storage_outbox.blocking_send(Event::StorageKindUpdated { pane, navigation, kind }, &storage_cancel);
                                     filesystem.space_info(&path)

@@ -7,6 +7,8 @@ Product version **0.1** (Cargo SemVer `0.1.0`); the native window title shows
 
 Lossless Unicode throughout the product, security and backend-only non-UI work
 are explicit requirements. See [security and integrity rules](SECURITY.md).
+The [documentation map](docs/README.md) distinguishes current contracts,
+accepted future work and historical verification records.
 
 Stage 1 provides independent local directory navigation, mounted-volume switching,
 history, sorting, selection, mouse/keyboard navigation, and background metadata/capacity

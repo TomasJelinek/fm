@@ -113,7 +113,7 @@ export component FileEntry inherits Rectangle {
                 self.control-pressed = event.modifiers.control;
                 self.shift-pressed = event.modifiers.shift;
                 self.modified-pressed = event.modifiers.control
-                    || event.modifiers.shift || event.modifiers.alt;
+                    || event.modifiers.shift || event.modifiers.alt || event.modifiers.meta;
             } else if event.kind == PointerEventKind.cancel {
                 self.pressed-identity = "";
                 self.same-target-double = false;

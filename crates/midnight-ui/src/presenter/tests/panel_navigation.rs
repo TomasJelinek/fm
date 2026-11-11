@@ -154,16 +154,17 @@ fn history_dropdown_uses_exact_position_and_never_creates_a_new_history_entry() 
         let generation = begin(&mut p, PaneId::Left, path.to_str().unwrap());
         finish(&mut p, PaneId::Left, generation, vec![]);
     }
-    let choices = p.history_entries(PaneId::Left, false);
-    assert_eq!(choices.len(), 2);
-    assert_eq!(choices[0].path, locations[1]);
-    let token = choices[1].identity.clone();
+    let nearest = p.history_entry(PaneId::Left, false, 0).unwrap();
+    assert_eq!(nearest.path, locations[1]);
+    let token = p.history_entry(PaneId::Left, false, 1).unwrap().identity;
+    assert!(p.history_entry(PaneId::Left, false, 2).is_none());
     assert!(p.choose_history_entry(PaneId::Left, false, &token, &|_| true));
     let generation = NavigationId(p.panes[0].generation);
     finish(&mut p, PaneId::Left, generation, vec![]);
     assert_eq!(p.panes[0].history, locations);
     assert_eq!(p.panes[0].history_index, Some(0));
-    assert_eq!(p.history_entries(PaneId::Left, true).len(), 2);
+    assert!(p.history_entry(PaneId::Left, true, 1).is_some());
+    assert!(p.history_entry(PaneId::Left, true, 2).is_none());
     assert!(!p.choose_history_entry(PaneId::Left, false, &token, &|_| panic!("stale history")));
 }
 

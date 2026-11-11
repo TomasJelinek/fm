@@ -1,6 +1,5 @@
 //! Verify compact panel details, fixed function-button height and size warnings.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

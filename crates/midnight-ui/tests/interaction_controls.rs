@@ -1,6 +1,5 @@
 //! Commander gestures and geometry use the real Slint component tree.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},

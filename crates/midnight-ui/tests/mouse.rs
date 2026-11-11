@@ -1,6 +1,5 @@
+use crate::selection;
 use midnight_core::*;
-#[path = "support/selection.rs"]
-mod selection;
 use midnight_ui::{MainWindow, Presenter, Theme, install, refresh};
 use slint::{
     ComponentHandle, Model,
@@ -236,7 +235,7 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
             h.commands.borrow().is_empty(),
             "right double click must never launch"
         );
-        for modifier in [Key::Control, Key::Shift, Key::Alt] {
+        for modifier in [Key::Control, Key::Shift, Key::Alt, Key::Meta] {
             h.modifier(modifier, true);
             h.double_click(pane, 1, PointerEventButton::Left);
             h.modifier(modifier, false);

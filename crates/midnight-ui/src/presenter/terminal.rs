@@ -6,26 +6,6 @@ use super::*;
 mod command_history_tests;
 
 impl Presenter {
-    /// Exact command text is a stable callback token; a stale removed row does nothing.
-    pub(crate) fn command_history_choices(&self) -> Vec<(String, String)> {
-        self.preferences
-            .values
-            .command_history
-            .iter()
-            .map(|entry| {
-                let shell = match entry.shell {
-                    ShellFlavor::PowerShell => "PowerShell",
-                    ShellFlavor::Cmd => "cmd",
-                    ShellFlavor::Posix => "Terminal",
-                };
-                (
-                    entry.command.clone(),
-                    format!("{shell} · {}", entry.command),
-                )
-            })
-            .collect()
-    }
-
     /// Recall edits the draft only. It cannot launch or revive elevated permissions.
     pub(crate) fn recall_command(&mut self, token: &str) -> Option<String> {
         let entry = self

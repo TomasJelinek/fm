@@ -1,6 +1,5 @@
 //! Exercise mode changes through the actual picker and virtualized file cells.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

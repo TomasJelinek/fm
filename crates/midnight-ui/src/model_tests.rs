@@ -1,6 +1,8 @@
 use super::*;
 use std::{path::PathBuf, sync::Arc};
 
+mod history_models;
+mod performance;
 #[cfg(unix)]
 mod unix;
 

@@ -1,6 +1,5 @@
 //! New panel controls preserve display values and dispatch stable identities.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     item_tree::ItemRc,

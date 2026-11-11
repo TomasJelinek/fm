@@ -113,8 +113,9 @@ the entered relative path and leaves already-created intermediate folders on err
 Viewer design: F3 routes by extension to an applicable installed viewer; Alt+F3
 forces the basic plain-text viewer, preserving Unicode and disabling highlighting
 and markup rendering. Both remain unavailable until the viewer plugin is implemented.
-Copy/move/delete queues, overwrite decisions and mandatory destination checksum
-verification remain in the design. Other unlisted Salamander/Total Commander
+The mutation queue already handles rename, creation and deletion. Copy/move,
+overwrite decisions and mandatory destination checksum verification remain
+planned extensions. Other unlisted Salamander/Total Commander
 shortcuts, such as Shift+F9 for a bookmark menu, are not implemented.
 
 Bulk selection runs through the backend and excludes `..`. Text editors retain

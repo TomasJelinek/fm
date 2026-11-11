@@ -1,6 +1,5 @@
 //! Real hover, paint and click routing across the shared tooltip compiler adapter.
-#[path = "support/ui.rs"]
-mod ui;
+use crate::ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,

@@ -4,6 +4,7 @@ use midnight_core::{ShellFlavor, quote_shell_path};
 use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
+    io::{self, Read},
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         process::CommandExt,
@@ -34,6 +35,25 @@ fn system_program(relative: &str) -> PathBuf {
     root.join("System32").join(relative)
 }
 
+const MAX_CAPTURE_BYTES: u64 = 1024 * 1024;
+
+fn read_capture(mut stream: impl Read) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    stream
+        .by_ref()
+        .take(MAX_CAPTURE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CAPTURE_BYTES {
+        // Keep draining so the child cannot stall on a full pipe before the
+        // supervising thread observes exit or applies its unchanged deadline.
+        io::copy(&mut stream, &mut io::sink())?;
+        return Err(io::Error::other(
+            "shell output exceeded its 1 MiB capture limit",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn run_hidden(mut command: Command) -> Output {
     let mut child = command
         .creation_flags(CREATE_NO_WINDOW)
@@ -42,23 +62,50 @@ fn run_hidden(mut command: Command) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("start the actual system shell");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    // Waiting before reading can deadlock as soon as either pipe fills. Each
+    // trusted fixture stream is drained concurrently with bounded capture.
+    thread::scope(|scope| {
+        let stdout = scope.spawn(move || read_capture(stdout));
+        let stderr = scope.spawn(move || read_capture(stderr));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let (status, timed_out) = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break (status, false);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break (child.wait().unwrap(), true);
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let stdout = stdout.join().unwrap().expect("capture shell stdout");
+        let stderr = stderr.join().unwrap().expect("capture shell stderr");
+        assert!(
+            !timed_out,
+            "system shell timed out after 15 s; stdout ({} bytes): {}; stderr ({} bytes): {}",
+            stdout.len(),
+            String::from_utf8_lossy(&stdout[..stdout.len().min(4096)]),
+            stderr.len(),
+            String::from_utf8_lossy(&stderr[..stderr.len().min(4096)]),
+        );
+        Output {
+            status,
+            stdout,
+            stderr,
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let output = child.wait_with_output().unwrap();
-            panic!(
-                "system shell timed out: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+    })
 }
 
+#[test]
+fn oversized_shell_capture_is_rejected_after_draining_the_stream() {
+    let length = MAX_CAPTURE_BYTES as usize + 128 * 1024;
+    let mut stream = io::Cursor::new(vec![b'x'; length]);
+    let error = read_capture(&mut stream).unwrap_err();
+    assert!(error.to_string().contains("capture limit"));
+    assert_eq!(stream.position(), length as u64);
+}
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02X}")).collect()
 }
@@ -87,6 +134,36 @@ fn encoded_command(script: &str) -> String {
     encoded
 }
 
+#[test]
+fn hidden_shell_drains_both_output_streams_before_waiting_for_exit() {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "shell_output_child", "--ignored", "--nocapture"])
+        .env("MIDNIGHT_CORE_OUTPUT_CHILD", "1");
+    let output = run_hidden(command);
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout.iter().filter(|byte| **byte == b'x').count(),
+        128 * 1024
+    );
+    assert_eq!(output.stderr, vec![b'y'; 128 * 1024]);
+}
+
+#[test]
+#[ignore = "bounded output subprocess fixture invoked by hidden_shell_drains_both_output_streams_before_waiting_for_exit"]
+fn shell_output_child() {
+    use std::io::Write;
+    if std::env::var_os("MIDNIGHT_CORE_OUTPUT_CHILD").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    std::io::stdout()
+        .write_all(&vec![b'x'; 128 * 1024])
+        .unwrap();
+    std::io::stderr()
+        .write_all(&vec![b'y'; 128 * 1024])
+        .unwrap();
+}
 #[test]
 fn powershell_argument_context_preserves_unicode_numeric_names_and_inert_shell_syntax() {
     let cases = [
@@ -124,42 +201,46 @@ fn powershell_argument_context_preserves_unicode_numeric_names_and_inert_shell_s
         "C:\\with space\\tail\\",
         "back\\slash\"quote\\",
     ];
-    for value in cases {
+    let mut script = String::from(
+        "function Read-MidnightArgs { [Console]::Out.WriteLine($args.Count); foreach ($value in $args) { [Console]::Out.WriteLine([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes([string]$value)).Replace('-', '')) } };",
+    );
+    let mut expected = Vec::new();
+    for (index, value) in cases.into_iter().enumerate() {
         let token = quote_shell_path(Path::new(value), ShellFlavor::PowerShell).unwrap();
-        // A real command/function argument context, not an expression-only parser.
-        let script = format!(
-            "function Read-MidnightArgs {{ [Console]::Out.WriteLine($args.Count); foreach ($value in $args) {{ [Console]::Out.WriteLine([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes([string]$value)).Replace('-', '')) }} }}; Read-MidnightArgs {token} {SENTINEL}"
-        );
-        let mut command = Command::new(system_program("WindowsPowerShell/v1.0/powershell.exe"));
-        command
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-            ])
-            .arg(encoded_command(&script));
-        let output = run_hidden(command);
-        assert!(
-            output.status.success(),
-            "{value:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let actual: Vec<_> = String::from_utf8(output.stdout)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(
-            actual,
-            [
-                "2".to_owned(),
-                hex(value.as_bytes()),
-                hex(SENTINEL.as_bytes())
-            ],
-            "{value:?}: {token}"
-        );
+        // Keep a separate native function invocation and sentinel per case. Only
+        // process startup is shared; the numbered markers detect missing output.
+        let marker = format!("CASE_{index}");
+        script.push_str(&format!(
+            "[Console]::Out.WriteLine('{marker}'); Read-MidnightArgs {token} {SENTINEL};"
+        ));
+        expected.extend([
+            marker,
+            "2".to_owned(),
+            hex(value.as_bytes()),
+            hex(SENTINEL.as_bytes()),
+        ]);
     }
+    let mut command = Command::new(system_program("WindowsPowerShell/v1.0/powershell.exe"));
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+        ])
+        .arg(encoded_command(&script));
+    let output = run_hidden(command);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual: Vec<_> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(actual, expected);
 }
 
 struct ProbeFile(PathBuf);

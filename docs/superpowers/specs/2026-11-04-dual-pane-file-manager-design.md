@@ -9,6 +9,7 @@ Pořadí přijatých navazujících implementací zachycuje
 
 [Nový prázdný soubor](2026-11-05-empty-file-design.md): tlačítko v panelu a Shift+F4,
 dialog názvu, výhradní vytvoření na backendu bez přepsání existujícího souboru.
+Přednost aktuálních kontraktů a historické doklady shrnuje [mapa dokumentace](../../README.md).
 
 ## 1. Záměr a potvrzená rozhodnutí
 
@@ -39,7 +40,7 @@ Požadavky uživatele:
 - Dodatečně potvrzeno: vestavěný viewer má mít prostý text, zvýrazněný zdrojový kód a vykreslený Markdown. Nejprve navrhnout rozhraní a zkontrolovat viewer/pluginy Salamanderu; F3 se aktivuje až se skutečnou implementací.
 - Dodatečně odsouhlaseno: opakované sudo má využít systémové ověření a vhodnou otevřenou relaci, nikoli ukládat heslo v aplikaci. Automatické znovupoužití z editoru vyžaduje samostatný bezpečný návrh relací z oddílu 24; samotné otevřené root okno tento routing nezajišťuje.
 - Dodatečně potvrzeno: obecné VFS rozhraní má umožnit lokální disky, procházení archivů včetně vnořených, další vzdálené filesystémy a Windows Registry. Současné lokální panely se převedou na první nativní provider; Windows/Linux/macOS mají každý svou samostatnou nativní implementaci.
-- Dodatečně potvrzeno: každý viewer a filesystem včetně nativního je dynamicky načitatelný plugin vedle executable ve složkách viewers/filesystems. Přítomnost balíčku určuje dostupnost funkce. První viewer je text se syntax highlighting; první archivy ZIP, GZIP, TAR.GZ a 7z. Rozhraní a přejímku finalizuje [plugin návrh](2026-11-05-dynamic-viewer-filesystem-plugins-design.md).
+- Každý viewer/filesystem včetně nativního je samostatný plugin ve složce `viewers/` nebo `filesystems/`; přítomnost balíčku určuje dostupnost. [Viewer rozšíření](2026-11-05-viewer-implementation-extension.md) požaduje nejprve basic/source/Markdown, později nativní a archivní providery.
 - Dodatečně potvrzeno: při kopírování/přesunu na existující cíl zobrazit varování a rozhodnutí o přepsání se srovnáním zdroje/cíle, zejména velikosti a data/času. Bez výslovné platné politiky se nic nepřepíše.
 - Dodatečně potvrzeno: výběr shellu vlevo od příkazového editoru na všech platformách: PowerShell/cmd na Windows, Terminal/Terminal (sudo) na Linuxu a stejné připravené rozhraní pro budoucí macOS. Enter při zaměřeném editoru spouští přesně jeho obsah ve zvolené externí relaci; volba se zachytí společně s cwd a oprávněním.
 
@@ -78,7 +79,7 @@ Cargo workspace rozděluje pět logických vrstev do následujících crates; pl
 | Crate | Odpovědnost | Závislosti uvnitř workspace |
 | --- | --- | --- |
 | `midnight-core` | Doménové typy, identifikátory, příkazy/události, chyby, rozhraní providerů a jejich schopnosti | Žádné |
-| `midnight-engine` | Navigace, načítání adresářů, plánování, kopírování, ověřování a stav úloh; Tokio | `midnight-core` |
+| `midnight-engine` | Navigace, plánování a stav mutací; budoucí kopírování/ověřování; Tokio | `midnight-core` |
 | `midnight-platform` | Malá továrna/reexport podle targetu | `midnight-core` a zvolený platformní crate |
 | `midnight-platform-common` | Přenositelné bezpečné Rust operace a společné pomocné struktury | `midnight-core` |
 | `midnight-platform-windows` | Windows implementace služeb, Win32, svazky a Windows specifika | `midnight-core`, `midnight-platform-common` |
@@ -90,7 +91,7 @@ Cargo workspace rozděluje pět logických vrstev do následujících crates; pl
 
 Pro lokální cesty se používá dynamický `PathBuf`/`OsString`, nikoli cesta rekonstruovaná z textu v UI nebo buffer o velikosti `MAX_PATH`. `PathBuf` je lokální reprezentace, nikoli univerzální formát pro FTP či jiné providery. Zobrazený název a identita položky jsou oddělené. Rust cesty nemusejí být platné UTF-8. [Rust: Path](https://doc.rust-lang.org/rust-by-example/std_misc/path.html)
 
-Základní identifikátory: `PaneId`, `NavigationId`, `EntryId`, `JobId`, `VolumeId`. `EntryId` identifikuje položku v konkrétním výpisu; OS identita souboru je samostatná informace. Výběr ani příkazy se neodvozují jen z indexu řádku, který se může změnit řazením.
+Základní identifikátory: `PaneId`, `NavigationId`, `EntryId`, `OperationId`, `VolumeId`. `EntryId` identifikuje položku v konkrétním výpisu; OS identita souboru je samostatná informace. Výběr ani příkazy se neodvozují jen z indexu řádku, který se může změnit řazením.
 
 ## 5. UI a komunikace s back-endem
 
@@ -240,7 +241,8 @@ publikační kontrakt; hashování bloků v pořadí dokončení nebo slepení j
 není hash původního souboru. Stávající čtyřslotový vážený scheduler velikostí
 složek není hotový kopírovací algoritmus. Podrobnosti rozpočtů, férovosti,
 publikování a testů určuje [návrh souběhu kopírování](2026-11-04-copy-concurrency-design.md).
-**Toto je pouze návrh; kopírování/přesun/mazání zůstávají neimplementované a vypnuté.**
+**Kopírování/přesun zůstávají návrhem a jsou vypnuté. Mazání, přejmenování a vytvoření
+souboru/složky již používají potvrzovanou backendovou frontu.**
 
 ## 9. Stav úloh, rušení a chyby
 
@@ -262,7 +264,9 @@ nepřípustný; čekající požadavky se připravují postupně v omezeném okn
 
 ## 10. GPU a měření výkonu
 
-GPU použijeme pro vykreslování Slintu. Počáteční kandidát je Winit + FemtoVG-WGPU; proti Skia se ověří startup, plynulost, paměť a velikost distribuce. Zůstane explicitně testovaná softwarová varianta pro prostředí bez použitelné GPU. Winit pokrývá Windows, Linux X11/Wayland a macOS; Slint nabízí více GPU i softwarových rendererů. [Slint: Winit](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/), [Slint: renderery](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/)
+Winit + FemtoVG-WGPU je současný renderer. Softwarová varianta slouží diagnostice;
+bez samostatné kvalifikace Unicode není produkčním fallbackem. Podpora macOS ve
+Winit neznamená hotový adaptér aplikace. [Slint: Winit](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/), [Slint: renderery](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/)
 
 Kopírování a hashování začnou na CPU. GPU hashování má přenosovou a synchronizační režii; jeho případné zavedení vyžaduje měřitelný přínos celému přenosu s ověřením. Vícevláknové hashování není automaticky zapnuté jen instalací BLAKE3; nesmí přesytit stroj ani zhoršit přístup k HDD.
 
@@ -276,7 +280,10 @@ Navržené cíle, které se musí potvrdit na zaznamenaném referenčním stroji
 
 Výsledky vždy uvádějí OS, CPU, médium, filesystem, renderer, počet položek a stav cache. Měří se čas do prvních položek i úplného načtení, UI latency, paměť, zatížení CPU, obsazení front a celková rychlost kopie včetně synchronizace a ověření. Diagnostika začíná strukturovanými událostmi přes `tracing`, bez zaznamenávání obsahu souborů.
 
-## 11. Etapy a jejich přejímací podmínky
+## 11. Původní etapy a jejich přejímací podmínky
+
+Historické pořadí níže nahrazuje [aktuální plán etap](../plans/2026-11-05-follow-up-stages.md).
+Podmínky budoucí kopie zůstávají závazné; neoznačují již dodané mutace za chybějící.
 
 ### Etapa 1: skutečné dva panely a svazky
 
@@ -403,6 +410,9 @@ Ve `midnight-core` jsou objektově použitelná rozhraní:
 | `DesktopServices` | Agregát předchozích pěti desktopových rozhraní; oddělený od `FileSystem` |
 | `WatchService` | Ne-rekurzivní systémové změnové hinty a vlastněná subscription; debounce, kontrola a polling patří enginu |
 | `SettingsService` | Načtení/verzované atomické uložení typovaných preferencí pouze na backendu |
+| `MutationService` | Příprava připnuté identity pro rename/delete a výhradní vytvoření souboru/složky |
+| `ClipboardService`, `LocaleService` | Backendová schránka a zachycené systémové formátování |
+| `NetworkService` | Volitelné nativní connect/disconnect dialogy, nikoli discovery |
 
 Každá OS implementace musí dodat tyto služby; může delegovat přenositelné části
 na `midnight-platform-common`. Podpisy zachovávají bezeztrátové cesty, strukturované
@@ -416,7 +426,7 @@ síťové operace na UI vlákno.
 - `CopyPublicationService`: práce s otevřenou identitou souboru, výhradní dočasné
   vytvoření, synchronizace, publikování bez přepsání a bezpečná výměna. Jednotlivé
   schopnosti jsou explicitní; chybějící záruka vrací `Unsupported` před mutací.
-- `TrashService`: přesun do koše s výsledkem a dostupnými možnostmi obnovy.
+- Obnova z koše je budoucí schopnost; dnešní mazání/koš poskytuje `MutationService`.
 - `MountService`: připojení a bezpečné odpojení zařízení včetně potřebné uživatelské interakce.
 - Další schopnosti asociací a explicitního otevření rozšíří existující desktopové služby; žádné sestavování shellových příkazů z názvů souborů.
 
@@ -455,6 +465,10 @@ identity a podmínky operace. Snapshot výběru není snapshot obsahu měnícíh
 souboru; pravidla stability zdroje a povinného ověření zůstávají platná.
 
 ### Jednotný model úloh
+
+Dnešní API je `PrepareOperation`/`ConfirmOperation`, `OperationId` a
+`OperationState` v `midnight-core`; fronta má 32 slotů a jednu aktivní mutaci.
+Následující typy/fáze jsou návrh rozšíření pro copy/move, nikoli současné Rust API.
 
 - `OperationRequest` zahrnuje `Copy`, `Move` a `Delete`; další typy se přidávají
   samostatnými handlery ve stejném back-endovém scheduleru.
@@ -548,13 +562,14 @@ Provedené testy nejsou náhradou za dosud neprovedená měření či nasazení 
 | Windows x64, Linux | Implementováno a testováno na Windows a WSL Ubuntu 24.04; samostatná kvalifikace Mint zbývá |
 | Unicode, raw identity, cesty bez aplikačního limitu | Závazné; testy včetně dlouhých Windows cest a ne-UTF-8 Linux názvů |
 | Dva panely, svazky, historie, postupná metadata, multiselekce | Implementováno; řádky jsou virtualizované |
-| F1–F10, editor příkazů, vlastnosti, ikony, umístění, `..` | Implementováno; rozsah funkčních tlačítek níže |
+| F1–F12, editor příkazů, vlastnosti, ikony, umístění, `..` | Implementované akce níže; F11/F12 závisí na nativní schopnosti |
 | Výpočet velikostí a přepínání směru řazení | Implementováno včetně sdíleného plánování SSD/HDD/síť/Unknown z oddílu 19 |
 | Automatická obnova a zachování rozpracovaného UI | Implementováno; nativní události i fallback polling |
 | Odstranění horního pruhu, témata, hustota, ukládání preferencí | Implementováno podle oddílu 21; shell picker je na všech aktuálně podporovaných platformách |
-| Kopírování/přesun/mazání a jejich společná fronta | Následující etapy podle uživatelem zvoleného read-only rozsahu; ověření nelze obejít |
+| Rename, vytvoření souboru/složky a mazání | Implementováno přes potvrzovanou frontu, včetně rušení a průběhu |
+| Kopírování/přesun | Budoucí rozšíření stejné fronty; povinné ověření nelze obejít |
 | FTP/FTPS/SFTP, archivy, macOS | Připravené hranice providerů/platformních služeb; implementace později |
-| Vestavěný viewer a obecné VFS | Finalizovaný návrh dynamických pluginů: text/source, nativní OS provider, ZIP/GZIP/TAR.GZ/7z; implementace následuje podle oddílů 22–23 |
+| Viewer a obecné VFS | Návrh; nejprve basic/source/Markdown viewery, později migrace nativních a archivních providerů |
 
 | Vstup | Chování |
 | --- | --- |
@@ -575,11 +590,10 @@ Provedené testy nejsou náhradou za dosud neprovedená měření či nasazení 
 | Options / menu | Volba tématu a hustoty; About je v menu, nikoli v samostatném horním řádku |
 
 Spodní lišta zachovává referenční pořadí F1 Help, F2 Rename, F3 View, F4 Edit,
-F5 Copy, F6 Move, F7 Create directory, F8 Delete, F9 User menu, F10 Menu.
-Dosud neimplementované akce jsou skutečně zakázané; klávesy neobcházejí stav
-tlačítek. F10 otevírá menu, ukončení je jeho samostatná položka. Příkazový editor
-je výslovná akce uživatele a může přes systémový shell měnit soubory; read-only
-rozsah se týká interních souborových operací manažeru.
+F5 Copy, F6 Move, F7 Create directory, F8 Delete, F9 User menu, F10 Menu,
+F11 Connect a F12 Disconnect. F3–F6 jsou zakázané do implementace; klávesy
+neobcházejí dostupnost akcí. F10 obsahuje samostatné ukončení. Příkazový editor
+je výslovná shellová akce; potvrzované interní mutace mají vlastní backend.
 
 Windows používá důvěryhodné absolutní systémové cesty pro PowerShell i cmd.
 PowerShell předává Unicode přes `-EncodedCommand`; cmd přes přesný Unicode
@@ -625,7 +639,8 @@ Hotová část používá rušení po položkách/adresářích, průběh nejvý
 rozpočtu dává explicitně neúplný výsledek. Jednotlivá cesta nemá pevný limit.
 Řazení je samostatný backendový `Resort` nad přijatým snapshotem: zachová ID
 položek a hotové bezchybné velikosti. Neúplné hodnoty se nepoužijí jako přesná
-velikost. Refresh načte skutečná aktuální data a staré výpočty zneplatní.
+velikost. Refresh načte aktuální data, ale aktivní sken stejné cesty zachová;
+pravidla jeho životnosti určuje oddíl 28.
 
 Nově požadovaná politika plánování:
 
@@ -713,9 +728,10 @@ hustoty nesmí měnit aktuální cesty, výběr, operace nebo rozepsaný příka
 
 Okamžitý náhled je čistá UI operace. Perzistence je realizační volba backendu:
 `SettingsService` ukládá typované `UserPreferences` ve verzovaném souboru
-(v3; migrace v1/v2). Windows použije uživatelské LocalAppData, Linux absolutní XDG_CONFIG_HOME
+(v6; migrace v1–5). Windows použije uživatelské LocalAppData, Linux absolutní XDG_CONFIG_HOME
 nebo ~/.config; platformní rozhodnutí zůstávají v oddělených OS souborech.
-Konfigurace neobsahuje spustitelné příkazy nebo přístupové údaje.
+Volitelná historie ukládá přesný text úspěšně spuštěných příkazů; může obsahovat
+uživatelem zadaná tajemství. Options umožňuje historii vypnout a vymazat.
 Obsahuje také běžnou volbu Windows shellu; zvýšený POSIX režim se neukládá.
 
 Načítání/zápis/úklid běží na workeru, ne v UI. Chybějící soubor znamená výchozí
@@ -729,7 +745,7 @@ Požadavky mají monotónní `PreferencesRevision`. Opožděné načtení nesmí
 novější uživatelskou volbu; starší uložení nesmí zvítězit nad novějším. Engine
 serializuje zápisy a drží nejvýše jeden běžící a poslední čekající stav. Selhání
 uložení nezruší aktuální náhled a zobrazí možnost opakování. Po zavření okna
-proběhne omezené dokončení posledního přijatého uložení (cílově do 2 sekund);
+proběhne omezené dokončení posledního přijatého uložení (sdílená lhůta 2500 ms);
 blokující OS volání ani pád napájení nedostávají falešnou záruku durability.
 
 Testy zahrnou všech šest kombinací tématu/hustoty, skutečný render světlých i
@@ -744,13 +760,12 @@ vyčistit řádek; již citovaná cesta s `&` se nesmí změnit ve spustitelnou 
 Přepnutí Standard/sudo v rámci POSIX gramatiky je výslovná změna oprávnění,
 stále vyžaduje Enter/Run a nezapisuje zvýšený režim do konfigurace.
 
-## 22. Vestavěný viewer: dynamické pluginy pro text/source a později Markdown
+## 22. Vestavěný viewer: samostatné basic, source a Markdown pluginy
 
-Aktuální [finální plugin kontrakt](2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
-stanoví samostatné knihovny v `viewers/`, discovery při startu, verzované C ABI,
-backendové leases a společný Slint renderer. První plugin poskytne plain text
-a zvýraznění syntaxe známých zdrojových jazyků. Odebraný plugin odebere příslušnou funkci;
-F3 se aktivuje až se skutečnou implementací. UI neobsahuje skrytý parser fallback.
+[Plugin kontrakt](2026-11-05-dynamic-viewer-filesystem-plugins-design.md) určuje
+ABI, leases a společný renderer. Novější [viewer rozšíření](2026-11-05-viewer-implementation-extension.md)
+vyžaduje tři balíčky v `viewers/` před migrací filesystemů. Odebrání pluginu
+odebere jeho funkci; F3 zůstává vypnuté do implementace, bez skrytého fallbacku.
 
 Čtení, dekódování, indexování, syntax, hledání, velké výběry a cleanup patří
 backendu. UI vykreslí omezené UTF-8 stránky a sémantické spany se source map,
@@ -758,7 +773,7 @@ generation a revision. Unicode shaping, výběr a bidi zachovají společný kon
 řádku; jednotlivé tokeny se nesmějí rozpadnout do nezávislých Text widgetů.
 Sekvenční stream nepředstírá levný random access, velký soubor se nenačítá celý.
 
-Markdown přijde jako další plugin s vyjednaným block modelem. Zachová zákaz
+Markdown má vyjednaný block model ve stejné viewer etapě. Zachová zákaz
 aktivního HTML/scriptu a automatického stahování i hostitelskou LinkPolicy.
 Podrobnosti obsahových kontraktů, Unicode, cache, source změn a reference
 Salamanderu zůstávají v [původním viewer/VFS návrhu](2026-11-04-viewer-vfs-design.md).
@@ -950,8 +965,9 @@ okna je `Midnight Explorer 0.1 — File Manager`; hodnota se odvozuje z verze ba
 Každý panel má samostatné karty cest. Výchozí jméno karty vždy odpovídá názvu
 aktuální složky a při navigaci se změní; kořen zobrazí svou cestu. Celá cesta je
 v tooltipu. Ctrl+T přidá kartu, Ctrl+W zavře aktuální, Ctrl+Shift+Tab volí předchozí,
-Ctrl+Shift+1…9 konkrétní kartu. Ctrl+Tab fokusuje příkazový řádek. Poslední karta zůstává otevřená; limit je32 na panel. V této etapě
-jsou karty pouze pro aktuální běh, s vlastní historií, řazením a kurzorem.
+Ctrl+Shift+1…9 konkrétní kartu. Ctrl+Tab fokusuje příkazový řádek. Poslední karta
+zůstává otevřená; limit je32 na panel. V6 ukládá pořadí cest a aktivní kartu;
+historie navigace, řazení a kurzor zůstávají stavem aktuálního běhu.
 Neaktivní karty nedrží velké výpisy ani skeny; přepnutí načte čerstvý obsah.
 Opožděné backendové výsledky nesmějí přepsat jinou kartu.
 
@@ -959,7 +975,7 @@ Uložené cesty podle Salamanderu mají jméno, nezměněnou nativní cestu a vo
 číselnou zkratku. Nabídka hvězdičky umožní přidání, otevření a odebrání. Až64
 záložek,10 číselných slotů; správce přiřazuje, Ctrl/Shift+číslo otevírá,
 Alt navíc cílí do druhého panelu. Identita není odvozena z názvu ani zobrazené
-cesty. Uložené záložky sdílí atomické asynchronní nastavení verze5; nativní
+cesty. Uložené záložky sdílí atomické asynchronní nastavení verze6; nativní
 ne-Unicode názvy mají bezeztrátový platformní kodek. Souhrnný limit nastavení
 4MiB chrání paměť, není limitem délky cesty; nadlimitní uložení selže bez zkrácení.
 
@@ -1061,7 +1077,7 @@ pro uložené cesty je při hledání/kompozici dočasně potlačeno. Ostatní e
 zachovávají běžné chování.
 
 Options nabízí filtrování při psaní: zobrazí jen shodné položky namísto skákání
-v celém seznamu. Volba je ve striktních nastaveních verze4 jako
+v celém seznamu. Volbu zavedla verze4 a zachovává současná verze6 jako
 `quick_search_filter`, výchozí `false`; verze1–3 se migrují s vypnutým filtrem.
 Předčasné místní změny přežijí pozdní načtení uložených nastavení. Dotaz je
 samostatný pro každý panel, přežívá řazení a obnovu stejné složky; změna složky

@@ -34,6 +34,13 @@ impl Request {
     }
 }
 
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.task.abort();
+    }
+}
+
 pub(crate) struct Controller {
     filesystem: Arc<dyn FileSystem>,
     outbox: Outbox,
@@ -61,7 +68,7 @@ impl Controller {
         }
     }
 
-    pub(crate) fn compute(
+    pub(crate) async fn compute(
         &mut self,
         pane: PaneId,
         navigation: NavigationId,
@@ -101,7 +108,7 @@ impl Controller {
         let Some(snapshot) = snapshot
             .filter(|_| !duplicate && self.pending[pane.index()].len() < MAX_PENDING_PER_PANE)
         else {
-            self.finished(pane, navigation, scan, true, tasks);
+            self.finished(pane, navigation, scan, true).await;
             return;
         };
         let cancel = Cancellation::default();
@@ -118,10 +125,13 @@ impl Controller {
             let Ok(permit) = budget.acquire_owned().await else {
                 return;
             };
+            let permit = Arc::new(permit);
+            let worker_permit = permit.clone();
+            let _permit = permit;
             let final_cancel = worker_cancel.clone();
             let final_outbox = outbox.clone();
             let result = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
+                let _permit = worker_permit;
                 if worker_cancel.is_cancelled() {
                     return false;
                 }
@@ -164,7 +174,6 @@ impl Controller {
                 !worker_cancel.is_cancelled()
             })
             .await;
-            done.store(true, Ordering::Release);
             final_outbox
                 .send(Event::FolderSizesFinished {
                     pane,
@@ -173,6 +182,7 @@ impl Controller {
                     cancelled: final_cancel.is_cancelled() || !matches!(result, Ok(true)),
                 })
                 .await;
+            done.store(true, Ordering::Release);
         });
         self.pending[pane.index()].push(Request {
             navigation,
@@ -185,7 +195,7 @@ impl Controller {
         });
     }
 
-    pub(crate) fn cancel(&mut self, pane: PaneId, scan: FolderSizeScanId, tasks: &mut JoinSet<()>) {
+    pub(crate) async fn cancel(&mut self, pane: PaneId, scan: FolderSizeScanId) {
         if let Some(index) = self.pending[pane.index()]
             .iter()
             .position(|request| request.scan == scan)
@@ -193,7 +203,7 @@ impl Controller {
             let request = self.pending[pane.index()].remove(index);
             let navigation = request.navigation;
             request.cancel();
-            self.finished(pane, navigation, scan, true, tasks);
+            self.finished(pane, navigation, scan, true).await;
         }
     }
 
@@ -249,25 +259,21 @@ impl Controller {
         }
     }
 
-    fn finished(
+    async fn finished(
         &self,
         pane: PaneId,
         navigation: NavigationId,
         scan: FolderSizeScanId,
         cancelled: bool,
-        tasks: &mut JoinSet<()>,
     ) {
-        let outbox = self.outbox.clone();
-        tasks.spawn(async move {
-            outbox
-                .send(Event::FolderSizesFinished {
-                    pane,
-                    navigation,
-                    scan,
-                    cancelled,
-                })
-                .await;
-        });
+        self.outbox
+            .send(Event::FolderSizesFinished {
+                pane,
+                navigation,
+                scan,
+                cancelled,
+            })
+            .await;
     }
 
     pub(crate) fn shutdown(mut self) {
