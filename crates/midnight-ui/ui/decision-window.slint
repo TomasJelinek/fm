@@ -1,0 +1,55 @@
+import { DialogWindow } from "dialog-window.slint";
+import { CopyConflictDialog } from "copy-controls.slint";
+import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
+
+export component DecisionWindow inherits DialogWindow {
+    in property <string> title-text: "Operation decision";
+    title: root.title-text;
+    in property <string> token;
+    in property <string> body;
+    in property <string> initial-name;
+    in property <string> source-details;
+    in property <string> target-details;
+    in property <string> warning;
+    in property <image> native-icon;
+    in property <bool> allow-alternate-name;
+    in property <bool> can-replace;
+    in property <bool> can-merge;
+    in property <bool> failure-mode;
+    in property <bool> can-retry;
+    in property <bool> can-skip;
+    callback decide(int, string);
+    callback later();
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    preferred-width: max(700px, Theme.font-size * 38);
+    preferred-height: max(500px, Theme.font-size * 25);
+    FocusScope {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.request-dismiss(); return accept; }
+            reject
+        }
+        if root.warning != "": ErrorNotice {
+            x: 0px; y: 0px; width: root.width; height: min(48px, root.height / 4);
+            text: root.warning; compact: true;
+            minimum-notice-height: 0px; preferred-notice-height: 0px; maximum-notice-height: 48px;
+        }
+        CopyConflictDialog {
+            x: 0px; y: root.warning == "" ? 0px : min(48px, root.height / 4);
+            width: root.width; height: max(0px, root.height - self.y);
+            preferred-width: 0px; preferred-height: 0px;
+            token: root.token; body: root.body; initial-name: root.initial-name;
+            source-details: root.source-details; target-details: root.target-details;
+            native-icon: root.native-icon; allow-alternate-name: root.allow-alternate-name;
+            can-replace: root.can-replace; can-merge: root.can-merge;
+            failure-mode: root.failure-mode; can-retry: root.can-retry; can-skip: root.can-skip;
+            decide(choice, name) => { root.decide(choice, name); }
+            later => { root.later(); }
+        }
+    }
+}

@@ -24,7 +24,8 @@ export component PanelFilterDialog inherits Rectangle {
         mode.current-index = root.model.mode;
         expression.text = root.model.expression;
         names.checked = root.model.case-sensitive;
-        expression.focus();
+        if root.width < 400px || root.height < 280px { footer.focus-dismiss(); }
+        else { expression.focus(); }
     }
     background: Theme.surface; border-radius: 8px;
     border-width: 1px; border-color: Theme.active-frame;

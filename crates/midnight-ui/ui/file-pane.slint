@@ -10,7 +10,7 @@ import { FileEntry } from "file-entry.slint";
 import { FileRow, TreePress } from "file-models.slint";
 import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRow, LocationRole } from "navigation-models.slint";
 import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
-import { TabStrip, BookmarkMenu, NavigationButton } from "navigation-controls.slint";
+import { TabStrip, NavigationButton } from "navigation-controls.slint";
 import { PathNavigation } from "path-navigation.slint";
 import { PanelDetails } from "panel-details.slint";
 import { DragFeedback } from "drag-feedback.slint";
@@ -230,6 +230,7 @@ export component FilePane inherits Rectangle {
     callback tab-new();
     callback tab-select(string);
     callback tab-close(string);
+    callback bookmark-manage();
     callback bookmark-add(string, int);
     callback bookmark-open(string);
     callback bookmark-remove(string);
@@ -254,7 +255,7 @@ export component FilePane inherits Rectangle {
     public function take-location-choice(index: int) -> string {
         return volume-picker.take-choice(index);
     }
-    public function open-bookmarks() { bookmarks-menu.open(); }
+    public function open-bookmarks() { root.bookmark-manage(); }
     changed row-height => { root.reveal-cursor(); }
     changed view-columns => {
         root.repeated-columns = root.view-columns;
@@ -319,18 +320,6 @@ export component FilePane inherits Rectangle {
         else if action == 3 { search.clear-query(); }
         else if action == 4 { search.erase-previous(); }
         else if action == 5 { search.clear-query(); root.key(9); }
-    }
-    // Hidden per-pane manager preserves the originating pane across active-pane changes.
-    bookmarks-menu := BookmarkMenu {
-        show-trigger: false;
-        action-icons: root.action-icons;
-        model: root.bookmarks; path: root.path; default-name: root.bookmark-name;
-        viewport-width: root.viewport-width; viewport-height: root.viewport-height;
-        opening => { root.activate(); root.focus-list(); }
-        dismissed => { root.focus-list(); }
-        add-bookmark(name, slot) => { root.bookmark-add(name, slot); }
-        assign-bookmark(identity, slot) => { root.bookmark-assign(identity, slot); }
-        remove-bookmark(identity) => { root.bookmark-remove(identity); }
     }
     VerticalLayout {
         padding: 1px; spacing: 0px;

@@ -6,13 +6,15 @@ use crate::*;
 mod tests;
 
 pub(crate) fn install(window: &MainWindow) {
-    window.global::<JobsView>().on_find(|rows, identity| {
-        rows.iter()
-            .position(|row| row.identity == identity)
-            .map_or(if rows.row_count() == 0 { -1 } else { 0 }, |index| {
-                index as i32
-            })
-    });
+    window.global::<JobsView>().on_find(find);
+}
+
+pub(crate) fn find(rows: ModelRc<OperationRow>, identity: SharedString) -> i32 {
+    rows.iter()
+        .position(|row| row.identity == identity)
+        .map_or(if rows.row_count() == 0 { -1 } else { 0 }, |index| {
+            index as i32
+        })
 }
 
 pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {

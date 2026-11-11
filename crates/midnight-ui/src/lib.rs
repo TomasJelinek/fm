@@ -15,6 +15,7 @@ mod dialog_host;
 mod dialog_native;
 mod dialog_presentation;
 pub use dialog_native::configure_dialog_window_attributes;
+mod decision_windows;
 mod drag_bridge;
 mod drag_lifecycle;
 mod editor_options_presentation;
@@ -25,9 +26,11 @@ mod file_list_windows;
 mod filename_colors;
 mod find_windows;
 mod font_model;
+mod hot_path_windows;
 mod information_windows;
 mod job_presentation;
 mod job_speed;
+mod jobs_windows;
 mod metadata_input;
 mod metadata_presentation;
 #[cfg(test)]
@@ -38,6 +41,7 @@ mod navigation_models;
 mod operation_detail;
 mod operation_presentation;
 mod operation_windows;
+mod panel_filter_windows;
 mod panel_models;
 mod panel_pointer;
 mod panel_view_navigation;
@@ -479,6 +483,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     };
     window.set_left_bookmark_name(bookmark_name(PaneId::Left));
     window.set_right_bookmark_name(bookmark_name(PaneId::Right));
+    window.invoke_refresh_panel_filter_window();
+    window.invoke_refresh_hot_paths_window();
     let volume_icons = presenter
         .volumes
         .iter()
@@ -743,6 +749,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         window.set_message_generation(presenter.desktop.notice_generation);
     }
     window.invoke_refresh_information_windows();
+    window.invoke_refresh_jobs_window(false);
+    window.invoke_refresh_decision_windows();
     let labels: Vec<SharedString> = presenter
         .volumes
         .iter()
@@ -870,12 +878,16 @@ pub fn install(
     archive_options::install(window, presenter.clone(), send.clone());
     color_options::install(window, presenter.clone(), send.clone());
     commander_presentation::bind(window, &presenter, &send);
+    panel_filter_windows::install(window, presenter.clone(), send.clone());
+    hot_path_windows::install(window, presenter.clone(), send.clone());
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     scroll_input::install(window);
     shell_bridge::install(window, presenter.clone(), send.clone());
     copy_presentation::install(window, presenter.clone(), send.clone());
     operation_windows::install(window, presenter.clone(), send.clone());
+    jobs_windows::install(window, presenter.clone(), send.clone());
+    decision_windows::install(window, presenter.clone(), send.clone());
     drag_bridge::install(window, presenter.clone(), send.clone());
     selection_bridge::install(window, presenter.clone(), send.clone());
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
@@ -982,18 +994,41 @@ pub fn install(
     callback!(on_defer_copy, |_w, p, _s, token| {
         p.defer_copy_decision(token.as_str());
     });
-    callback!(on_resolve_copy, |w, p, _s, token| {
-        if let Some(conflict) = p
-            .operations
-            .metadata_conflicts
-            .iter()
-            .find(|conflict| token == format!("metadata-job:{}", conflict.id.0))
-        {
-            metadata_presentation::show_conflict(&w, conflict, true);
-            return;
-        }
-        p.resolve_copy_decision(token.as_str());
-    });
+    {
+        let weak = window.as_weak();
+        let state = presenter.clone();
+        window.on_resolve_copy(move |token| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let (metadata, copy_selected) = {
+                let mut p = state.borrow_mut();
+                let metadata = p
+                    .operations
+                    .metadata_conflicts
+                    .iter()
+                    .find(|conflict| token == format!("metadata-job:{}", conflict.id.0))
+                    .cloned();
+                let copy_selected = if metadata.is_none() {
+                    p.resolve_copy_decision(token.as_str());
+                    p.active_copy_decision()
+                        .is_some_and(|(id, _)| token == format!("copy-job:{}", id.0))
+                } else {
+                    false
+                };
+                (metadata, copy_selected)
+            };
+            // Native creation can query Presenter synchronously. Never hold its
+            // mutable borrow across show/activation, including metadata Resolve.
+            if let Some(conflict) = &metadata {
+                metadata_presentation::show_conflict(&window, conflict, true);
+            }
+            refresh_properties(&window, &state.borrow(), true);
+            if metadata.is_some() || copy_selected {
+                window.invoke_open_decision_window(metadata.is_some(), true);
+            }
+        });
+    }
     callback!(on_navigate, |w, p, s, id, text| {
         p.navigate_text(pane(id), text.as_str(), s);
         let _ = w;
@@ -1501,6 +1536,10 @@ pub fn install(
                     window.invoke_close_checksum_windows();
                     window.invoke_close_file_list_window();
                     window.invoke_close_operation_windows();
+                    window.invoke_close_jobs_window();
+                    window.invoke_close_decision_windows();
+                    window.invoke_close_panel_filter_window();
+                    window.invoke_close_hot_paths_window();
                     window.invoke_close_information_windows();
                     let _ = window.hide();
                 }

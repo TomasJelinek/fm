@@ -1,3 +1,5 @@
+#[path = "support/file_conflicts.rs"]
+mod conflicts;
 #[path = "support/owned_windows.rs"]
 mod owned_windows;
 #[path = "support/selection.rs"]
@@ -10,7 +12,7 @@ use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{
     ComponentHandle,
-    platform::{Key, PointerEventButton, WindowEvent},
+    platform::{Key, PointerEventButton, WindowAdapter, WindowEvent},
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
@@ -333,90 +335,90 @@ fn row_refresh_invalidates_a_held_right_click_and_drive_picker_targets_its_root(
 }
 
 #[test]
-fn copy_conflict_controls_dispatch_versioned_choices_and_escape_defers() {
-    let mut test = ui::TestUi::new();
-    let decisions = Rc::new(RefCell::new(Vec::new()));
-    let observed = decisions.clone();
-    test.window.on_decide_copy(move |token, choice, name| {
-        observed
-            .borrow_mut()
-            .push((token.to_string(), choice, name.to_string()));
-    });
-    test.window.set_copy_token("copy:9:4".into());
-    test.window
-        .set_copy_body("Source and existing destination".into());
-    test.window.set_copy_name("original.txt".into());
-    for (label, choice) in [("Skip", 0), ("Skip all", 1), ("Copy as", 2)] {
-        test.window.invoke_show_copy_conflict();
-        test.draw();
-        if choice == 2 {
-            ui::click_popup(
-                &test.window,
-                "Copy under a different name",
-                AccessibleRole::TextInput,
-            );
-            ui::chord(&test.window, &[Key::Control], "a");
-            ui::key(&test.window, "renamed 文档.txt");
+fn copy_conflict_native_choices_cancel_and_later_keep_exact_job_identity() {
+    let mut h = conflicts::Harness::new();
+    for (index, label) in ["Skip", "Skip all", "Copy as"].into_iter().enumerate() {
+        let (id, version) = h.open(index as u64 + 4, false, false);
+        if index == 2 {
+            h.type_name("renamed 文档.txt");
         }
-        ui::click_popup(&test.window, label, AccessibleRole::Button);
-        assert_eq!(
-            decisions.borrow().last(),
-            Some(&(
-                "copy:9:4".into(),
-                choice,
-                if choice == 2 {
-                    "renamed 文档.txt".into()
-                } else {
-                    String::new()
-                }
-            ))
-        );
-        test.window.invoke_close_copy_conflict();
+        let child = h.ui.child();
+        h.ui.click(label);
+        match (index, h.decision(id, version)) {
+            (0, CopyChoice::Skip) | (1, CopyChoice::SkipAll) => {}
+            (2, CopyChoice::Rename(name)) => assert_eq!(name, "renamed 文档.txt"),
+            (_, choice) => panic!("{label} emitted {choice:?}"),
+        }
+        assert!(!child.window().is_visible());
     }
-    decisions.borrow_mut().clear();
-    test.window.invoke_show_copy_conflict();
-    test.draw();
-    ui::key(&test.window, Key::Escape);
+
+    let (id, version) = h.open(20, false, false);
+    let child = h.ui.child();
+    h.ui.click_owner(5.0, 5.0);
+    h.ui.draw();
     assert!(
-        decisions.borrow().is_empty(),
-        "Escape keeps the job waiting for a decision"
+        child.window().is_visible(),
+        "outside click leaves the modeless decision open"
     );
-    assert!(!ui::has_popup(&test.window));
-    assert_eq!(test.window.get_copy_token(), "copy:9:4");
-    test.window.invoke_show_copy_conflict();
-    test.draw();
-    ui::click(&test.window, 5.0, 5.0);
-    assert!(!ui::has_popup(&test.window));
-    assert!(decisions.borrow().is_empty());
-    test.window.invoke_focus_files();
-    assert_eq!(test.window.get_focused_pane(), 0);
+    assert!(h.commands.borrow().is_empty());
+    h.ui.click("Decide later");
+    assert!(!child.window().is_visible());
+    assert!(
+        h.commands.borrow().is_empty(),
+        "Later must not send a decision"
+    );
+    h.refresh();
+    assert_eq!(
+        h.ui.visible_count(),
+        1,
+        "only Jobs remains; refresh must not reopen the decision"
+    );
+    h.ui.window
+        .invoke_resolve_copy(format!("copy-job:{}", id.0).into());
+    h.ui.draw();
+    let reopened = h.ui.child();
+    assert!(!Rc::ptr_eq(&child, &reopened));
+    assert_eq!(
+        h.ui.window.get_copy_token(),
+        format!("copy:{}:{version}", id.0)
+    );
+    h.ui.key(Key::Escape);
+    assert!(matches!(h.decision(id, version), CopyChoice::Cancel));
+    assert!(!reopened.window().is_visible());
+
+    let (id, version) = h.open(21, false, false);
+    let child = h.ui.child();
+    child.window().dispatch_event(WindowEvent::CloseRequested);
+    assert!(matches!(h.decision(id, version), CopyChoice::Cancel));
+    assert!(
+        !child.window().is_visible(),
+        "native X cancels this exact job"
+    );
 }
 
 #[test]
 fn copy_conflict_exposes_separate_recovery_and_merge_choices() {
-    let mut test = ui::TestUi::new();
-    let decisions = Rc::new(RefCell::new(Vec::new()));
-    let captured = decisions.clone();
-    test.window.on_decide_copy(move |token, choice, _| {
-        captured.borrow_mut().push((token.to_string(), choice));
-    });
-    test.window.set_copy_token("copy:7:2".into());
-    for (replace, label, expected) in [
-        (true, "Replace · keep original", 4),
-        (true, "Replace all · keep originals", 5),
-        (false, "Merge folders", 6),
-        (false, "Merge all folders", 7),
-    ] {
-        test.window.set_copy_can_replace(replace);
-        test.window.set_copy_can_merge(!replace);
-        test.window.invoke_show_copy_conflict();
-        test.draw();
-        ui::click_popup(&test.window, label, AccessibleRole::Button);
-        assert_eq!(
-            decisions.borrow().last(),
-            Some(&("copy:7:2".into(), expected))
-        );
-        test.window.invoke_close_copy_conflict();
+    let mut h = conflicts::Harness::new();
+    for (index, (replace, label)) in [
+        (true, "Replace · keep original"),
+        (true, "Replace all · keep originals"),
+        (false, "Merge folders"),
+        (false, "Merge all folders"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (id, version) = h.open(index as u64 + 2, replace, !replace);
+        let child = h.ui.child();
+        h.ui.click(label);
+        match (index, h.decision(id, version)) {
+            (0, CopyChoice::ReplaceRecoverable { all: false })
+            | (1, CopyChoice::ReplaceRecoverable { all: true })
+            | (2, CopyChoice::Merge { all: false })
+            | (3, CopyChoice::Merge { all: true }) => {}
+            (_, choice) => panic!("{label} emitted {choice:?}"),
+        }
+        assert!(!child.window().is_visible());
     }
 }
 

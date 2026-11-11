@@ -282,6 +282,36 @@ minimum to its preferred dimensions.
   retirement mechanism. No native dialog migration adds UI filesystem access,
   relaxes `..` protection, follows links, or exports virtual display paths.
 
+## Panel Filter and Hot Paths implementation checkpoint
+
+11 November 2026: Panel Filter and Hot Paths now use separate resizable,
+owner-modal native hosts. Filter retains its captured pane/navigation or tree
+session and a per-opening generation. Refresh and resize preserve edited text;
+Cancel invalidates pending validation, and Apply/Show all reject stale captures.
+The compact first-open path focuses a visible footer control so Escape works at
+320 by 200 with font 32.
+
+Hot Paths captures a typed native/archive/Network location when the manager opens.
+Add retains that location across subsequent navigation; displayed path text never
+becomes authority. Existing bookmark IDs, deduplication, numbered-slot uniqueness
+and slot swaps remain in force. Edits commit immediately through the existing
+presenter/settings path; closing the manager does not roll them back. Old window
+callbacks cannot mutate or close a replacement session.
+
+Windows has **22 focused passing tests**: ten native-window integration cases,
+three affected commander/bookmark cases, two stale-window callback cases, two
+captured-bookmark cases and five filter presenter cases. Linux passes the same
+ten native Filter/Hot Paths integration cases with the software test platform.
+These checks establish source behavior, including compact first-open Escape,
+draft preservation, stale callbacks and injected host-creation failure recovery.
+The latter requires a visible owned Notice after ordinary refresh, no backend
+mutation and explicit reopening; Filter also retires its failed draft while
+preserving the applied filter. Desktop movement, native focus placement and
+cross-monitor behavior remain separate; the current Windows debug build and
+startup qualification are recorded with the evidence below. Jobs/decision qualification is recorded separately and remains outside
+this checkpoint. See the [current evidence and remaining checks](../../verification/2026-11-11-native-tool-windows.md).
+The overall inventory and completion boundary below remain open.
+
 ## Verification and completion boundary
 
 Adapt the software-native `tests/support/modeless.rs` harness to distinguish

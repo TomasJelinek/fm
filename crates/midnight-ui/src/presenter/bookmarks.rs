@@ -21,6 +21,17 @@ impl Presenter {
             );
             return false;
         }
+        let Some(mut location) = self.capture_bookmark_location(pane, name) else {
+            return false;
+        };
+        location.slot = slot;
+        self.add_bookmark_location(location, send)
+    }
+
+    pub(crate) fn capture_bookmark_location(&self, pane: PaneId, name: String) -> Option<Bookmark> {
+        if self.panes[pane.index()].network_request {
+            return None;
+        }
         let displayed = &self.panes[pane.index()];
         let network = displayed
             .network
@@ -40,6 +51,29 @@ impl Presenter {
             },
             |network| network.origin.clone(),
         );
+        Some(Bookmark {
+            id: BookmarkId(1),
+            name,
+            path,
+            archive,
+            network,
+            slot: None,
+        })
+    }
+
+    pub(crate) fn add_bookmark_location(
+        &mut self,
+        location: Bookmark,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Bookmark {
+            name,
+            path,
+            archive,
+            network,
+            slot,
+            ..
+        } = location;
         if slot.is_some_and(|slot| !(1..=10).contains(&slot)) {
             return false;
         }
@@ -253,3 +287,6 @@ impl Presenter {
         self.open_bookmark(pane, bookmark.id, send)
     }
 }
+#[cfg(test)]
+#[path = "bookmark_capture_tests.rs"]
+mod capture_tests;

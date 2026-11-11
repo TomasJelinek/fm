@@ -177,14 +177,6 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
     use i_slint_core::items::AccessibleRole;
     let mut test = ui::TestUi::new();
     let mut outside = Vec::new();
-    test.window
-        .set_hot_path_choices(slint::ModelRc::new(slint::VecModel::from(vec![
-            midnight_ui::NavigationChoiceRow {
-                identity: "manage-hot-paths".into(),
-                label: "Manage Hot Paths…".into(),
-                ..Default::default()
-            },
-        ])));
     let window = test.window.as_weak();
     test.window
         .on_cancel_metadata(move |_| window.upgrade().unwrap().set_metadata_token("".into()));
@@ -195,16 +187,9 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
         model.open = false;
         window.set_comparison_view(model);
     });
-    let window = test.window.as_weak();
-    test.window.on_cancel_panel_filter(move || {
-        let window = window.upgrade().unwrap();
-        let mut model = window.get_panel_filter_view();
-        model.open = false;
-        window.set_panel_filter_view(model);
-    });
-    // Native Help/About/Notice use OS titlebars. Their independent resize and
-    // close behavior is covered by native_information_windows and error_notices.
-    for kind in [0, 1, 3, 4, 5, 6, 7, 9] {
+    // Migrated tools use native titlebars; their form geometry and dismissal
+    // are covered by native_tool_layout and installed native adapter tests.
+    for kind in [0, 5, 6] {
         test.window.invoke_apply_fonts("".into(), 11, 15);
         test.window.invoke_apply_preferences(0, 0);
         test.resize(1340, 820);
@@ -212,21 +197,6 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
             0 => {
                 test.window.invoke_show_options();
                 "Options"
-            }
-            1 => {
-                test.window.invoke_show_operations();
-                "Jobs"
-            }
-            3 => {
-                test.window.set_copy_token("copy:1:1".into());
-                test.window.invoke_show_copy_conflict();
-                "Item already exists"
-            }
-            4 => {
-                test.window
-                    .set_metadata_conflict_token("metadata:1:1".into());
-                test.window.invoke_show_metadata_conflict();
-                "Item already exists"
             }
             5 => {
                 test.window.set_metadata_token("metadata:1".into());
@@ -239,20 +209,6 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
                         ..Default::default()
                     });
                 "Compare displayed directories"
-            }
-            7 => {
-                test.window
-                    .set_panel_filter_view(midnight_ui::PanelFilterView {
-                        open: true,
-                        ..Default::default()
-                    });
-                "Panel filter"
-            }
-            9 => {
-                ui::click_root(&test.window, "Hot Paths", AccessibleRole::Combobox);
-                draw(&mut test);
-                ui::click_popup(&test.window, "Manage Hot Paths…", AccessibleRole::Button);
-                "Manage Hot Paths"
             }
             _ => unreachable!("only remaining embedded dialog cases are listed"),
         };
@@ -267,8 +223,7 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
             &format!("{title} header, Desktop/font11 after shrinking"),
         ));
         let close = match kind {
-            3 | 4 => "Decide later",
-            0 | 5 | 7 => "Cancel",
+            0 | 5 => "Cancel",
             _ => "Close",
         };
         outside.extend(bounds_error(
@@ -323,17 +278,6 @@ fn outside_click_preserves_dialog_policies_and_reopening_centers_again() {
     );
     ui::key(&test.window, Key::Escape);
     draw(&mut test);
-    test.window.invoke_show_operations();
-    draw(&mut test);
-    ui::click(&test.window, 2.0, 2.0);
-    draw(&mut test);
-    assert!(
-        ui::has_popup(&test.window),
-        "Jobs keeps no-auto-close policy"
-    );
-    ui::key(&test.window, Key::Escape);
-    draw(&mut test);
-    assert!(!ui::has_popup(&test.window));
 }
 
 #[test]
@@ -407,13 +351,6 @@ fn scrolling_dialogs_open_at_minimum_size_with_keyboard_close_available() {
         model.open = false;
         window.set_comparison_view(model);
     });
-    let window = test.window.as_weak();
-    test.window.on_cancel_panel_filter(move || {
-        let window = window.upgrade().unwrap();
-        let mut model = window.get_panel_filter_view();
-        model.open = false;
-        window.set_panel_filter_view(model);
-    });
     test.window
         .set_comparison_view(midnight_ui::ComparisonView {
             open: true,
@@ -445,18 +382,7 @@ fn scrolling_dialogs_open_at_minimum_size_with_keyboard_close_available() {
         !ui::has_popup(&test.window),
         "comparison Escape at initial minimum size"
     );
-    test.window
-        .set_panel_filter_view(midnight_ui::PanelFilterView {
-            open: true,
-            ..Default::default()
-        });
-    draw(&mut test);
-    ui::key(&test.window, Key::Escape);
-    draw(&mut test);
-    assert!(
-        !ui::has_popup(&test.window),
-        "filter Escape at initial minimum size"
-    );
+    // Native panel-filter compact keyboard coverage is in native_filter_hotpath.
 }
 
 // Native operation movement/caret and WM_CLOSE coverage lives in

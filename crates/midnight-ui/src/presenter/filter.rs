@@ -8,6 +8,7 @@ enum Target {
 
 pub(crate) struct FilterDialogState {
     pub(crate) open: bool,
+    pub(crate) generation: u64,
     pub(crate) pane: PaneId,
     pub(crate) draft: PanelFilter,
     pub(crate) busy: bool,
@@ -22,6 +23,7 @@ impl Default for FilterDialogState {
     fn default() -> Self {
         Self {
             open: false,
+            generation: 0,
             pane: PaneId::Left,
             draft: PanelFilter::default(),
             busy: false,
@@ -71,6 +73,9 @@ impl Presenter {
     }
 
     pub(crate) fn open_panel_filter(&mut self, pane: PaneId) {
+        let Some(generation) = self.filter_dialog.generation.checked_add(1) else {
+            return;
+        };
         let p = &mut self.panes[pane.index()];
         if p.tree.options.is_pending() {
             p.set_error(
@@ -84,6 +89,7 @@ impl Presenter {
         });
         self.retired
             .push(Box::new(self.filter_dialog.target.replace(target)));
+        self.filter_dialog.generation = generation;
         self.filter_dialog.open = true;
         self.filter_dialog.pane = pane;
         self.filter_dialog.draft = p
@@ -130,6 +136,33 @@ impl Presenter {
         }
     }
 
+    fn panel_filter_target_current(&self) -> bool {
+        let p = &self.panes[self.filter_dialog.pane.index()];
+        match &self.filter_dialog.target {
+            Some(Target::Tree(root, session)) => p.tree_view().is_some_and(|view| {
+                view.root.same_snapshot(root) && view.stamp.session == *session
+            }),
+            Some(Target::Flat(generation)) => {
+                p.generation == *generation && p.tree_view().is_none()
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn clear_captured_panel_filter(&mut self, send: &dyn Fn(Command) -> bool) {
+        if !self.filter_dialog.open {
+            return;
+        }
+        if !self.panel_filter_target_current()
+            || self.panes[self.filter_dialog.pane.index()].loading
+        {
+            self.filter_dialog.error =
+                "The panel changed. Reopen the filter for the current folder.".into();
+            return;
+        }
+        self.clear_panel_filter(self.filter_dialog.pane, send);
+    }
+
     pub(crate) fn cancel_panel_filter(&mut self) {
         self.filter_dialog.open = false;
         self.filter_dialog.busy = false;
@@ -170,15 +203,7 @@ impl Presenter {
     pub fn flush_filters(&mut self, send: &dyn Fn(Command) -> bool) {
         if let Some(request) = self.filter_dialog.ready.take() {
             let p = &self.panes[request.pane.index()];
-            let current = match &self.filter_dialog.target {
-                Some(Target::Tree(root, session)) => p.tree_view().is_some_and(|view| {
-                    view.root.same_snapshot(root) && view.stamp.session == *session
-                }),
-                Some(Target::Flat(generation)) => {
-                    p.generation == *generation && p.tree_view().is_none()
-                }
-                None => false,
-            };
+            let current = self.panel_filter_target_current();
             if !current || p.loading {
                 self.filter_dialog.error =
                     "The panel changed. Reopen the filter for the current folder.".into();

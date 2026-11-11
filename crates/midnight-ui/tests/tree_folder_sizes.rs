@@ -1,4 +1,6 @@
 //! Directory-size commands through real Engine workers and installed Slint callbacks.
+#[path = "support/native_panel_input.rs"]
+mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
 #[path = "support/ui.rs"]
@@ -203,20 +205,16 @@ fn explicit_size_sort_and_filter_preserve_calculated_descendant_values() {
     let reads = h.calls.size_reads.lock().unwrap().len();
 
     h.ui.window.invoke_open_panel_filter(1);
-    h.ui.draw();
+    let child = native::filter(&h);
     // Masks retain directories by design; Expression can hide these directory rows.
-    ui::click_popup(&h.ui.window, "Filter mode", AccessibleRole::Combobox);
-    ui::key(&h.ui.window, Key::DownArrow);
-    ui::key(&h.ui.window, Key::DownArrow);
-    ui::key(&h.ui.window, Key::Return);
-    ui::click_popup(
-        &h.ui.window,
-        "File filter expression",
-        AccessibleRole::TextInput,
-    );
-    ui::chord(&h.ui.window, &[Key::Control], "a");
-    ui::key(&h.ui.window, "name = \"small\"");
-    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
+    native::click(&child, "Filter mode", AccessibleRole::Combobox);
+    native::key(&child, Key::DownArrow);
+    native::key(&child, Key::DownArrow);
+    native::key(&child, Key::Return);
+    native::click(&child, "File filter expression", AccessibleRole::TextInput);
+    native::chord(&child, &[Key::Control], "a");
+    native::key(&child, "name = \"small\"");
+    native::click(&child, "OK", AccessibleRole::Button);
     h.until(|h| h.filter_label().contains("small") && h.view.as_ref().unwrap().rows.len() == 2);
     wait_size(&mut h, "small", 12);
     h.ui.window.invoke_clear_panel_filter(1);

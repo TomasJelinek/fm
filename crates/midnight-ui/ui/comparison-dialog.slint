@@ -28,7 +28,11 @@ export component CompareDirectoriesDialog inherits Rectangle {
         names.checked = root.model.case-sensitive;
         tolerance.text = root.model.tolerance-seconds;
         directories.checked = root.model.unmatched-directories;
-        sizes.focus();
+        if root.width < 400px || root.height < 350px {
+            footer.focus-dismiss();
+        } else {
+            sizes.focus();
+        }
     }
     background: Theme.surface; border-radius: 8px;
     border-width: 1px; border-color: Theme.active-frame;

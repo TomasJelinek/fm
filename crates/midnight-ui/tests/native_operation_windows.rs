@@ -360,14 +360,31 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             );
             drop(commands);
             h.assert_closed(&child);
-            // This synthetic sink has no terminal progress reply. Dismiss the
-            // automatic Jobs popup through its real input route before F5/F6.
-            assert!(
-                !WindowInner::from_pub(h.main.window())
-                    .active_popups()
-                    .is_empty()
+            // This synthetic sink has no terminal progress reply. Close the
+            // distinct modeless Jobs child through its real Escape route.
+            assert!(h.main.get_operations_visible());
+            let jobs: Vec<_> = h
+                .windows
+                .borrow()
+                .iter()
+                .skip(1)
+                .filter(|window| window.window().is_visible())
+                .cloned()
+                .collect();
+            assert_eq!(
+                jobs.len(),
+                1,
+                "only Jobs remains after the form is accepted"
             );
-            ui::key(&h.main, Key::Escape);
+            assert!(!Rc::ptr_eq(&child, &jobs[0]), "Jobs has its own adapter");
+            modeless::draw(&jobs[0], 720, 500, "transfer-jobs");
+            assert!(
+                modeless::accessible_item(&jobs[0], AccessibleRole::Button, "Copy details")
+                    .is_some()
+            );
+            key(&jobs[0], Key::Escape);
+            assert!(!jobs[0].window().is_visible());
+            assert!(!h.main.get_operations_visible());
             assert!(
                 WindowInner::from_pub(h.main.window())
                     .active_popups()

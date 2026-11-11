@@ -1,0 +1,29 @@
+import { DialogWindow } from "dialog-window.slint";
+import { OperationsBody, OperationRow } from "jobs-dialog.slint";
+import { Theme } from "theme.slint";
+
+// Keep this body alive across progress publications so selection and scroll survive.
+export component JobsWindow inherits DialogWindow {
+    title: "Jobs";
+    in property <[OperationRow]> rows;
+    in property <string> requested-identity;
+    callback cancel(string);
+    callback resolve(string);
+    callback copy-details(string);
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    preferred-width: max(720px, Theme.font-size * 30);
+    preferred-height: max(500px, Theme.font-size * 22);
+    OperationsBody {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        preferred-width: 0px; preferred-height: 0px;
+        rows: root.rows; requested-identity: root.requested-identity;
+        cancel(identity) => { root.cancel(identity); }
+        resolve(identity) => { root.resolve(identity); }
+        copy-details(identity) => { root.copy-details(identity); }
+        close => { root.request-dismiss(); }
+    }
+}

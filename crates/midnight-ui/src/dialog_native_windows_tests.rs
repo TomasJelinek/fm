@@ -284,3 +284,6 @@ fn native_owned_dialog_has_no_separate_taskbar_button() {
 
 #[path = "native_operation_desktop_tests.rs"]
 mod operation_adapters;
+
+#[path = "native_jobs_desktop_tests.rs"]
+mod job_adapters;

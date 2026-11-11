@@ -1,6 +1,4 @@
 //! Real keyboard and pointer routing for tab identities and persistent bookmarks.
-#[path = "support/render.rs"]
-mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -530,72 +528,16 @@ fn tabs_and_bookmark_shortcuts_follow_actual_file_focus() {
             .borrow_mut()
             .push(format!("assign:{identity}:{slot}"))
     });
+    let captured = events.clone();
+    window
+        .on_open_hot_paths_window(move |pane| captured.borrow_mut().push(format!("manage:{pane}")));
     draw(&mut pixels);
     ui::click_root(&window, "Hot Paths", AccessibleRole::Combobox);
-    chord(&window, &[], Key::Return); // The final dropdown item opens its manager.
-    draw(&mut pixels);
-    assert_eq!(
-        window.get_focused_pane(),
-        -1,
-        "the popup must take real editor focus"
-    );
-    ui::click_popup(&window, "Add current", AccessibleRole::Button);
-    assert_eq!(events.borrow().last().unwrap(), "add:0:文档:0");
-    draw(&mut pixels);
-    ui::click_popup(
-        &window,
-        "Remove Hot Path: D:\\文档\\work\nThe folder is kept.",
-        AccessibleRole::Button,
-    );
-    assert_eq!(events.borrow().last().unwrap(), "remove:31");
-    assert_eq!(
-        window.get_focused_pane(),
-        -1,
-        "removing a bookmark must keep its popup open"
-    );
-    ui::click_popup(
-        &window,
-        "D:\\文档\\work\nHot Path 1 (1 / Ctrl+1 / Shift+1)",
-        AccessibleRole::Button,
-    );
-    assert!(
-        ui::has_popup(&window),
-        "selecting a saved path must keep its manager open"
-    );
-    assert_eq!(
-        window.get_focused_pane(),
-        -1,
-        "selecting a saved path must retain management focus"
-    );
-    assert!(
-        !events
-            .borrow()
-            .iter()
-            .any(|event| event.starts_with("open:")),
-        "management selection must not navigate"
-    );
-    draw(&mut pixels);
-    render::snapshot(
-        &ui::TestUi {
-            window: window.as_weak().upgrade().unwrap(),
-            native: native.clone(),
-            pixels: pixels.clone(),
-            width: 1340,
-            height: 820,
-        },
-        "hot-paths-manager",
-    );
-    ui::click_popup(&window, "Hot Path shortcut", AccessibleRole::Combobox);
-    chord(&window, &[], Key::DownArrow);
     chord(&window, &[], Key::Return);
-    draw(&mut pixels);
-    ui::click_popup(&window, "Apply shortcut", AccessibleRole::Button);
-    assert_eq!(events.borrow().last().unwrap(), "assign:31:2");
-    assert!(
-        ui::has_popup(&window),
-        "applying a shortcut must keep management open"
+    assert_eq!(
+        events.borrow().last().unwrap(),
+        "manage:0",
+        "dropdown opens the captured pane's native manager"
     );
-    ui::click_popup(&window, "Close", AccessibleRole::Button);
-    assert_eq!(window.get_focused_pane(), 0);
     window.hide().unwrap();
 }

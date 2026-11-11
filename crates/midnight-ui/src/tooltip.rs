@@ -4,8 +4,9 @@
 //! shares its host coordinates. Recheck this contract when upgrading Slint or
 //! adding a backend with native popup windows. This observer never consumes input.
 use crate::{
-    AboutWindow, ChecksumWindow, FileListWindow, FindWindow, HelpWindow, MainWindow, NoticeWindow,
-    OperationWindow, TooltipPlacement,
+    AboutWindow, ChecksumWindow, DecisionWindow, FileListWindow, FindWindow, HelpWindow,
+    HotPathsWindow, JobsWindow, MainWindow, NoticeWindow, OperationWindow, PanelFilterWindow,
+    TooltipPlacement,
 };
 use i_slint_core::{
     items::TooltipArea,
@@ -39,6 +40,10 @@ enum Target {
     About(slint::Weak<AboutWindow>),
     Notice(slint::Weak<NoticeWindow>),
     Operation(slint::Weak<OperationWindow>),
+    Jobs(slint::Weak<JobsWindow>),
+    Decision(slint::Weak<DecisionWindow>),
+    PanelFilter(slint::Weak<PanelFilterWindow>),
+    HotPaths(slint::Weak<HotPathsWindow>),
 }
 enum Host {
     Main(MainWindow),
@@ -49,6 +54,10 @@ enum Host {
     About(AboutWindow),
     Notice(NoticeWindow),
     Operation(OperationWindow),
+    Jobs(JobsWindow),
+    Decision(DecisionWindow),
+    PanelFilter(PanelFilterWindow),
+    HotPaths(HotPathsWindow),
 }
 impl Target {
     fn upgrade(&self) -> Option<Host> {
@@ -61,6 +70,10 @@ impl Target {
             Self::About(window) => window.upgrade().map(Host::About),
             Self::Notice(window) => window.upgrade().map(Host::Notice),
             Self::Operation(window) => window.upgrade().map(Host::Operation),
+            Self::Jobs(window) => window.upgrade().map(Host::Jobs),
+            Self::Decision(window) => window.upgrade().map(Host::Decision),
+            Self::PanelFilter(window) => window.upgrade().map(Host::PanelFilter),
+            Self::HotPaths(window) => window.upgrade().map(Host::HotPaths),
         }
     }
 }
@@ -75,6 +88,10 @@ impl Host {
             Self::About(window) => window.window(),
             Self::Notice(window) => window.window(),
             Self::Operation(window) => window.window(),
+            Self::Jobs(window) => window.window(),
+            Self::Decision(window) => window.window(),
+            Self::PanelFilter(window) => window.window(),
+            Self::HotPaths(window) => window.window(),
         }
     }
     fn placement(&self) -> TooltipPlacement<'_> {
@@ -87,6 +104,10 @@ impl Host {
             Self::About(window) => window.global::<TooltipPlacement>(),
             Self::Notice(window) => window.global::<TooltipPlacement>(),
             Self::Operation(window) => window.global::<TooltipPlacement>(),
+            Self::Jobs(window) => window.global::<TooltipPlacement>(),
+            Self::Decision(window) => window.global::<TooltipPlacement>(),
+            Self::PanelFilter(window) => window.global::<TooltipPlacement>(),
+            Self::HotPaths(window) => window.global::<TooltipPlacement>(),
         }
     }
     fn synchronize(&self) -> bool {
@@ -114,6 +135,12 @@ pub(crate) fn install_about(window: &AboutWindow) -> Result<(), PlatformError> {
 }
 pub(crate) fn install_operation(window: &OperationWindow) -> Result<(), PlatformError> {
     register(Target::Operation(window.as_weak()))
+}
+pub(crate) fn install_jobs(window: &JobsWindow) -> Result<(), PlatformError> {
+    register(Target::Jobs(window.as_weak()))
+}
+pub(crate) fn install_decision(window: &DecisionWindow) -> Result<(), PlatformError> {
+    register(Target::Decision(window.as_weak()))
 }
 pub(crate) fn install_notice(window: &NoticeWindow) -> Result<(), PlatformError> {
     register(Target::Notice(window.as_weak()))
@@ -286,4 +313,11 @@ fn synchronize_host(window: &slint::Window, global: TooltipPlacement<'_>) -> boo
             .set(LogicalLength::new(cursor.1 - origin.y));
     }
     changed
+}
+
+pub(crate) fn install_panel_filter(window: &PanelFilterWindow) -> Result<(), PlatformError> {
+    register(Target::PanelFilter(window.as_weak()))
+}
+pub(crate) fn install_hot_paths(window: &HotPathsWindow) -> Result<(), PlatformError> {
+    register(Target::HotPaths(window.as_weak()))
 }

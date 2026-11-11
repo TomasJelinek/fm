@@ -94,6 +94,16 @@ that it stalled.
 
 ## Task 1: Native host foundation and informational windows
 
+**Checkpoint evidence:** Task 1 implementation and Windows foundation qualification
+are recorded in [dialog polish](../../verification/2026-11-10-ui-dialog-polish.md).
+Lifecycle cases live in `src/dialog_host_tests.rs` and the informational-window
+integration target rather than a separate `native_dialog_lifecycle` target.
+Task 2 is committed through `5aee4d2`; its behavioral REDs, host lifecycle and
+Windows qualification are in [operation windows](../../verification/2026-11-11-native-operation-windows.md),
+with final captures and Linux limits in the [queue follow-up](../../verification/2026-11-11-queue-followup.md).
+The checked items record those implemented/verified slices, not completion of
+Tasks 3–6 or X11/Wayland desktop qualification.
+
 **Files:**
 - Create: shared Rust/native/Slint files listed above; `information_windows.rs`;
   `ui/help-window.slint`, `ui/about-dialog.slint`, `ui/about-window.slint`,
@@ -124,27 +134,27 @@ that it stalled.
   typed adapters provide the fallback focus action. `DialogSessions::allocate`
   provides checked generations; failed allocation does not open an ambiguous host.
 
-- [ ] Add `information_dialogs_get_independent_window_adapters` using installed
+- [x] Add `information_dialogs_get_independent_window_adapters` using installed
   Help/About/notice actions. Assert a second visible adapter and no main popup.
   Add `native_close_and_escape_use_one_close_route`, `show_failure_releases_modal_owner`,
   and `nested_modal_lease_restores_only_after_last_child` with simulated native
   close/show failure. Run `cargo test -p midnight-ui --test native_information_windows
   --test native_dialog_lifecycle`; observe behavioral RED against embedded hosts.
-- [ ] Implement UI-only host records, weak owners, counted modal leases and
+- [x] Implement UI-only host records, weak owners, counted modal leases and
   native attributes scope. Preserve Windows `with_drag_and_drop(false)`. Add
   Windows owner/enable and Linux X11 transient/type handling in separate files;
   Wayland uses application owner graph and compositor placement. Do not hold a
   strong Winit window Arc or use nested event loops.
-- [ ] Implement pre-show theme/model/callback initialization, owner-monitor
+- [x] Implement pre-show theme/model/callback initialization, owner-monitor
   placement, native titlebar/header suppression, tooltip attachment and
   close/failure cleanup. Migrate Help/About/Notice; keep their content and full
   diagnostic-copy behavior. Add notices' generation checks and owner fallback.
-- [ ] Extend the lifecycle test with background completion while another window
+- [x] Extend the lifecycle test with background completion while another window
   is active, explicit-close focus return, expired owner, repeated open/close, and
   failed backend-release admission. Assert no hidden live host/disabled owner,
   bounded retry, and no focus theft. Verify `cargo test -p midnight-ui --lib
   dialog_host` plus both new integration targets and `tool_window_failures`.
-- [ ] Review/commit only this task's coherent changes when the integration owner
+- [x] Review/commit only this task's coherent changes when the integration owner
   approves the checkpoint; do not stage unrelated workspace files.
 
 ## Task 2: Operation confirmations and Copy/Move drafts
@@ -165,21 +175,21 @@ that it stalled.
 - Reuse `OperationDialog::begin`, confirm/cancel and focused-input behavior.
   Native window creation/refresh never changes its captured backend target.
 
-- [ ] Add `native_operation_resize_retains_input_and_target` for rename/create
+- [x] Add `native_operation_resize_retains_input_and_target` for rename/create
   directory/create file, and `native_copy_draft_retains_source_after_other_panel_activation`
   for F5/F6. Assert a separate window, preserved text/caret and unchanged exact
   request token; simulate a late callback from a closed occurrence. Run
   `cargo test -p midnight-ui --test native_operation_windows` for RED.
-- [ ] Implement the two adapters using the shared `OperationWindow`. Migrate
+- [x] Implement the two adapters using the shared `OperationWindow`. Migrate
   source summary, icons, metadata option and default focus. Retain the existing
   full command-queue and cancellation semantics; remove only the corresponding
   embedded host definitions and MainWindow form-focusing assumptions.
-- [ ] Move default-action regressions to actual child windows: Return in editor
+- [x] Move default-action regressions to actual child windows: Return in editor
   submits once; empty value does not; focused Cancel/native-X equivalent never
   confirms Delete; Escape cancels; opening/focusing never submits. Add queue-full
   retry and exact raw Unicode path assertions. Run `native_operation_windows`,
   `operation_defaults`, `copy_dialog`, `dialog_layout` and presenter operation tests.
-- [ ] Review/commit this slice after the integration owner checks native host
+- [x] Review/commit this slice after the integration owner checks native host
   failure releases its prepared operation instead of leaving invisible ownership.
 
 ## Task 3: Jobs and operation decisions
@@ -187,9 +197,13 @@ that it stalled.
 **Files:**
 - Create: `src/jobs_windows.rs`, `src/decision_windows.rs`, `ui/jobs-window.slint`,
   `ui/decision-window.slint`, `tests/native_job_windows.rs`.
-- Modify: `src/lib.rs`, `src/job_presentation.rs`, `src/copy_presentation.rs`,
-  `src/presenter/copy_decisions.rs`, `ui/main.slint`, `ui/jobs-dialog.slint`,
-  `ui/copy-controls.slint`; `tests/jobs_dialog.rs`, `tests/copy_errors.rs`.
+- Modify: `src/lib.rs`, `src/job_presentation.rs`, `src/metadata_presentation.rs`,
+  `src/tooltip.rs`, `ui/main.slint`, `ui/copy-controls.slint`;
+  `tests/jobs_dialog.rs`, `tests/copy_errors.rs`, `tests/list_scroll.rs`,
+  `tests/tool_reflow.rs`, and the direct native-operation transfer fixture.
+- Add native desktop qualification: `src/native_jobs_desktop_tests.rs` and the
+  existing Windows test module registration. Existing backend decision policies
+  and the Jobs body remain reused.
 
 **Interfaces:**
 - Both adapters use Task 1 `install(...)` signature. Jobs keeps one presentation
@@ -199,21 +213,37 @@ that it stalled.
 - `JobsWindow::request-dismiss` closes presentation. `DecisionWindow::request-dismiss`
   maps to existing `decide(3, "")`; `later` is a separate callback.
 
-- [ ] Add RED assertions that Jobs creates another adapter while the main panel
+- [x] Add RED assertions that Jobs creates another adapter while the main panel
   stays usable; native close sends no Cancel job; both conflict Escape and X send
   the exact cancel decision; Later sends only defer. Assert manual Jobs remains
   after completion and automatic successful progress closes. Run
   `cargo test -p midnight-ui --test native_job_windows`.
-- [ ] Implement modeless Jobs/decision hosts. Keep Jobs visible behind decisions
+- [x] Implement modeless Jobs/decision hosts. Keep Jobs visible behind decisions
   instead of popup hide/rebuild. Preserve selected job, scroll and speed-chart
   cache. Cancel job remains an explicit button. Exact decision tokens reject
   stale prompts; full admission queues leave the decision actionable.
-- [ ] Add `decision_does_not_steal_focus_from_unrelated_app` to native probe
-  coverage and a software activation-policy test. Add existing-error Retry/Skip/
-  Cancel and metadata-decision routing cases. Run `native_job_windows`,
-  `jobs_dialog`, `copy_errors`, and `cargo test -p midnight-ui --lib job_speed`.
-- [ ] Review/commit with a check that no UI change alters operation cancellation,
-  verification, cleanup or terminal-job retention.
+- [x] Qualify modeless ownership and background decision activation through the
+  actual Windows Jobs/Decision adapter probe, plus installed software lifecycle
+  cases. Cover existing-error Retry/Skip/Cancel and metadata-decision routing.
+  Run `native_job_windows`, `jobs_dialog`, `copy_errors`, and
+  `cargo test -p midnight-ui --lib job_speed`.
+- [x] Independently review exact identity, admission failure, deferred notices,
+  and closure; verify that operation cancellation, verification, cleanup and
+  terminal-job retention policies remain unchanged.
+- [x] Parent integrates/commits the completed slice with the coordinated batch.
+
+**Evidence:** [Task3 verification](../../verification/2026-11-11-native-jobs-decisions.md)
+records 34 targeted Windows tests, 18 Linux Jobs/error tests, and one passing
+interactive Windows probe. The native probe is named
+`native_jobs_close_preserves_work_and_background_decision_preserves_foreground`.
+It verifies actual HWND ownership/taskbar styles, enabled modeless owner,
+non-cancelling Jobs close, preserved independent foreground on decision show and
+close, and exact `Cancel 1:9`. Windows may retain an already independent foreground
+window when activation of the test window is refused; this is not a claim about
+any particular other application. The actual native-boundary probe replaces the
+proposed separate mocked activation-policy check under the user's targeted-test
+priority. Broad final suites remain deferred until the implementation queue is
+complete; the slice has not yet been committed by its implementer.
 
 ## Task 4: Metadata, comparison, filter and Hot Paths
 

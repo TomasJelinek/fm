@@ -9,10 +9,23 @@ use i_slint_core::{
     lengths::LogicalPoint,
 };
 use midnight_ui::{
-    ColorOptionsView, FindRow, FindWindow, MainWindow, NavigationChoiceRow, OperationRow,
+    ColorOptionsView, FindRow, FindWindow, JobsView, JobsWindow, MainWindow, NavigationChoiceRow,
+    OperationRow,
 };
 use midnight_ui_input as native_scroll;
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
+
+fn jobs_window() -> Result<JobsWindow, slint::PlatformError> {
+    let window = JobsWindow::new()?;
+    window.global::<JobsView>().on_find(|rows, identity| {
+        rows.iter()
+            .position(|row| row.identity == identity)
+            .map_or(if rows.row_count() == 0 { -1 } else { 0 }, |index| {
+                index as i32
+            })
+    });
+    Ok(window)
+}
 
 #[test]
 fn find_results_render_native_wheel_frames_without_dragging_selection() {
@@ -100,8 +113,8 @@ fn settings_inner_list_owns_wheel_motion_until_the_pointer_moves_outside_it() {
 
 #[test]
 fn jobs_list_renders_native_wheel_frames_without_scrolling_its_details() {
-    let mut h = Frames::new(MainWindow::new, 1000, 760);
-    h.window.set_operations(ModelRc::new(VecModel::from(
+    let mut h = Frames::new(jobs_window, 1000, 760);
+    h.window.set_rows(ModelRc::new(VecModel::from(
         (0..30)
             .map(|index| OperationRow {
                 identity: format!("job-{index}").into(),
@@ -111,7 +124,6 @@ fn jobs_list_renders_native_wheel_frames_without_scrolling_its_details() {
             })
             .collect::<Vec<_>>(),
     )));
-    h.window.invoke_show_operations();
     h.settle();
     let row = h.item(AccessibleRole::ListItem, "Job 02");
     let inner = scroll_parent(&row);
@@ -190,13 +202,13 @@ fn find_scrollbar_wheel_uses_the_same_animation_as_result_content() {
 }
 
 #[test]
-fn native_scrollbar_hook_preserves_pixels_and_cancels_when_a_popup_takes_ownership() {
+fn native_jobs_scrollbar_preserves_precise_pixels_and_cancels_its_tail() {
     use slint::winit_030::winit::{
         dpi::PhysicalPosition,
         event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
     };
-    let mut h = Frames::new(MainWindow::new, 1000, 760);
-    h.window.set_operations(ModelRc::new(VecModel::from(
+    let mut h = Frames::new(jobs_window, 1000, 760);
+    h.window.set_rows(ModelRc::new(VecModel::from(
         (0..30)
             .map(|index| OperationRow {
                 identity: format!("job-{index}").into(),
@@ -205,7 +217,6 @@ fn native_scrollbar_hook_preserves_pixels_and_cancels_when_a_popup_takes_ownersh
             })
             .collect::<Vec<_>>(),
     )));
-    h.window.invoke_show_operations();
     h.settle();
     let viewport = scroll_parent(&h.item(AccessibleRole::ListItem, "Job 02"));
     let area = bounds(&viewport);
@@ -236,10 +247,31 @@ fn native_scrollbar_hook_preserves_pixels_and_cancels_when_a_popup_takes_ownersh
         before - 3.25,
         "native pixel input cancels the synthetic wheel tail",
     );
+}
+
+#[test]
+fn native_scrollbar_hook_cancels_when_a_popup_takes_ownership() {
+    let mut h = Frames::new(MainWindow::new, 720, 520);
+    h.window.set_preferences_ready(true);
+    let colors = h.window.global::<ColorOptionsView>();
+    colors.set_labels(ModelRc::new(VecModel::from(
+        (0..32)
+            .map(|index| format!("Rule {index:02}").into())
+            .collect::<Vec<_>>(),
+    )));
+    colors.set_selected(3);
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(8);
+    h.settle();
+    let viewport = scroll_parent(&h.item(AccessibleRole::ListItem, "Rule 03"));
+    let area = bounds(&viewport);
+    let point = LogicalPoint::new(area.2 - 3.0, (area.1 + area.3) / 2.0);
+    h.install_native_scroll();
     assert!(h.driver_wheel(point, 0.0, -1.0));
     h.advance(16);
     let paused = offset(&viewport);
-    h.window.invoke_show_options();
+    h.item(AccessibleRole::Combobox, "Options topic")
+        .accessible_action(&AccessibilityAction::Expand);
     h.settle();
     for _ in 0..20 {
         h.advance(16);

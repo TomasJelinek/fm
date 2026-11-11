@@ -6,35 +6,12 @@ mod ui;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
-    items::{AccessibleRole, ComplexText, SimpleText},
+    items::AccessibleRole,
     window::{WindowInner, WindowKind},
 };
-use midnight_ui::{
-    BookmarkRow, KeyboardEditorView, NavigationChoiceRow, OperationRow, ShortcutCommandRow,
-};
+use midnight_ui::{KeyboardEditorView, ShortcutCommandRow};
 use render::snapshot;
 use slint::ComponentHandle;
-
-fn find_text(item: ItemRc, value: &str) -> Option<ItemRc> {
-    let text = item
-        .downcast::<SimpleText>()
-        .map(|t| t.as_pin_ref().text())
-        .or_else(|| {
-            item.downcast::<ComplexText>()
-                .map(|t| t.as_pin_ref().text())
-        });
-    if item.is_visible() && text.is_some_and(|text| text == value) {
-        return Some(item);
-    }
-    let mut child = item.first_child();
-    while let Some(item) = child {
-        child = item.next_sibling();
-        if let Some(found) = find_text(item, value) {
-            return Some(found);
-        }
-    }
-    None
-}
 
 fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
     if matches!(
@@ -80,25 +57,8 @@ fn inside(test: &ui::TestUi, item: ItemRc, label: &str) {
     );
 }
 
-#[test]
-fn recoverable_copy_dialog_keeps_comparison_and_dismissal_accessible() {
-    let mut test = ui::TestUi::new();
-    test.window.set_copy_token("copy:3:7".into());
-    test.window.set_copy_name("資料.txt".into());
-    test.window.set_copy_can_replace(true);
-    test.window.set_copy_source_details("C:\\Users\\Example\\資料.txt\n\nFile\n123 456 bytes (120.6 KiB)\nModified: 07.11.2026 14:22:11\n2026-11-07 13:22:11.123456700 UTC".into());
-    test.window.set_copy_target_details("D:\\Work\\資料.txt\n\nFile\n234 567 bytes (229.1 KiB)\nModified: 06.11.2026 18:10:01\n2026-11-06 17:10:01.500 UTC".into());
-    test.window.set_copy_body("Replacement keeps the original in a private recovery folder. Recent Jobs show its location; copy details before closing the app.".into());
-    for (width, height) in [(1340, 820), (660, 500), (320, 200)] {
-        test.resize(width, height);
-        test.window.invoke_show_copy_conflict();
-        test.draw();
-        inside(&test, popup_button(&test, "Decide later"), "Decide later");
-        snapshot(&test, &format!("recoverable-copy-{width}x{height}"));
-        ui::key(&test.window, slint::platform::Key::Escape);
-        assert!(!ui::has_popup(&test.window));
-    }
-}
+// Native Jobs, decisions and Hot Paths retain the former geometry/icon checks
+// in native_tool_layout; adapter identity and close semantics have dedicated tests.
 
 #[test]
 fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
@@ -108,31 +68,8 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
     test.window.set_left_can_target_selection(true);
     test.resize(1040, 720);
     test.window.set_network_available(true);
-    test.window.set_operations(slint::ModelRc::new(slint::VecModel::from(vec![OperationRow {
-        identity: "copy-job:1".into(), title: "Copy · 文档 · waiting for a decision".into(),
-        detail: "123 456 bytes copied · 123 456 bytes verified with SHA-256\n/very/long/文档/source-file.txt".into(),
-        cancellable: true, attention: true, ..Default::default()
-    }])));
     test.window
         .set_left_path("/very/long/文档/👩🏽‍💻/folder".into());
-    test.window.set_left_bookmark_name("文档 👩🏽‍💻".into());
-    test.window
-        .set_bookmarks(slint::ModelRc::new(slint::VecModel::from(vec![
-            BookmarkRow {
-                identity: "1".into(),
-                label: "文档 · Saved project".into(),
-                path: "/very/long/文档/👩🏽‍💻/project".into(),
-                slot: 1,
-            },
-        ])));
-    test.window
-        .set_hot_path_choices(slint::ModelRc::new(slint::VecModel::from(vec![
-            NavigationChoiceRow {
-                identity: "manage-hot-paths".into(),
-                label: "Manage Hot Paths…".into(),
-                ..Default::default()
-            },
-        ])));
     let editor = test.window.global::<KeyboardEditorView>();
     editor.set_commands(slint::ModelRc::new(slint::VecModel::from(vec![
         ShortcutCommandRow {
@@ -161,58 +98,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
                 );
             }
             let label = format!("theme-{scheme}-density-{density}-font-{font}");
-            // Native operation form layout is covered by native_operation_layout.
-            test.window.set_copy_token("copy:1:1".into());
-            test.window.set_copy_name("文档 👩🏽‍💻.txt".into());
-            test.window.set_copy_body(format!("Source\n/very/long/文档/source.txt\n123 456 bytes · 06.11.2026 10:20:30\n\nExisting destination\n/very/long/文档/destination.txt\n234 567 bytes · 05.11.2026 08:00:00\n\n{}", "Choose another name or skip. Replacement is unavailable.").into());
-            test.window.invoke_show_copy_conflict();
-            test.draw();
-            {
-                let popups = WindowInner::from_pub(test.window.window()).active_popups();
-                let popup = popups
-                    .iter()
-                    .rev()
-                    .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
-                    .unwrap();
-                let title = find_text(
-                    ItemRc::new_root(popup.component.clone()),
-                    "Item already exists",
-                )
-                .unwrap();
-                inside(&test, title, "Copy conflict title");
-            }
-            for label in ["Skip", "Skip all", "Copy as", "Cancel job", "Decide later"] {
-                inside(&test, popup_button(&test, label), label);
-            }
-            if font != 32 {
-                snapshot(&test, &format!("{label}-copy"));
-            }
-            test.window.invoke_close_copy_conflict();
-            test.window.set_copy_token("".into());
-            test.window.invoke_show_operations();
-            test.draw();
-            for label in ["Cancel job", "Resolve", "Close"] {
-                inside(&test, popup_button(&test, label), label);
-                assert!(
-                    popup_button(&test, label).geometry().height() <= 100.0,
-                    "Job actions must keep normal button height instead of filling the viewport"
-                );
-            }
-            if font != 32 {
-                snapshot(&test, &format!("{label}-jobs"));
-            }
-            ui::click_popup(&test.window, "Close", AccessibleRole::Button);
-            ui::click_root(&test.window, "Hot Paths", AccessibleRole::Combobox);
-            test.draw();
-            ui::click_popup(&test.window, "Manage Hot Paths…", AccessibleRole::Button);
-            test.draw();
-            for label in ["Add current", "Close"] {
-                inside(&test, popup_button(&test, label), label);
-            }
-            if font != 32 {
-                snapshot(&test, &format!("{label}-bookmarks"));
-            }
-            ui::click_popup(&test.window, "Close", AccessibleRole::Button);
+            // Native operation and tool form layout have dedicated fixtures.
             test.window.invoke_show_options();
             for topic in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
                 test.window.set_options_topic_index(topic);

@@ -1,6 +1,17 @@
 //! Actual control geometry and actions at the compact window minimum.
-#[path = "support/render.rs"]
-mod render;
+#[path = "support/compact_jobs.rs"]
+mod compact_jobs;
+#[allow(dead_code)]
+#[path = "support/jobs_form.rs"]
+mod jobs_form;
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
+mod render {
+    pub fn snapshot(test: &crate::ui::TestUi, name: &str) {
+        crate::modeless::bitmap::snapshot(&test.pixels, test.width, test.height, name);
+    }
+}
 #[path = "support/toolbar.rs"]
 mod toolbar;
 #[path = "support/ui.rs"]
@@ -44,6 +55,9 @@ fn controls(item: ItemRc, result: &mut Vec<ItemRc>) {
     }
 }
 fn inside(test: &ui::TestUi, item: &ItemRc) {
+    inside_window(test.width, test.height, item);
+}
+fn inside_window(width: usize, height: usize, item: &ItemRc) {
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
     assert!(
@@ -51,12 +65,12 @@ fn inside(test: &ui::TestUi, item: &ItemRc) {
             && rect.height() > 0.0
             && origin.x >= -0.5
             && origin.y >= -0.5
-            && origin.x + rect.width() <= test.width as f32 + 0.5
-            && origin.y + rect.height() <= test.height as f32 + 0.5,
+            && origin.x + rect.width() <= width as f32 + 0.5
+            && origin.y + rect.height() <= height as f32 + 0.5,
         "{} outside {}x{}: {origin:?} {rect:?}",
         label(item),
-        test.width,
-        test.height
+        width,
+        height
     );
 }
 fn main_geometry(test: &mut ui::TestUi) {
@@ -192,16 +206,22 @@ fn compact_mouse_window_keeps_toolbars_splitter_command_and_dialog_actions_reach
             }]))
             .into(),
         );
-        ui::click_root(&test.window, "Jobs", AccessibleRole::Button);
-        test.draw();
-        for action in ["Copy details", "Cancel job", "Resolve", "Close"] {
-            inside(
-                &test,
-                &ui::popup_item(&test.window, action, AccessibleRole::Button),
-            );
-        }
-        ui::click_popup(&test.window, "Close", AccessibleRole::Button);
-        test.draw();
+        let detail = path.clone();
+        compact_jobs::check(
+            (width, 360),
+            0,
+            11,
+            move || OperationRow {
+                identity: "one".into(),
+                title: "Copy files".into(),
+                detail: detail.into(),
+                cancellable: true,
+                attention: true,
+                ..Default::default()
+            },
+            &["Copy details", "Cancel job", "Resolve", "Close"],
+            &format!("small-jobs-{width}"),
+        );
         render::snapshot(&test, &format!("small-main-{width}"));
     }
 }
@@ -328,15 +348,24 @@ fn exact_320_by_200_minimum_survives_density_fonts_and_recovers_both_panels() {
         );
         ui::click_popup(&test.window, "Cancel", AccessibleRole::Button);
         test.draw();
-        ui::click_root(&test.window, "Jobs", AccessibleRole::Button);
-        test.draw();
-        inside(
-            &test,
-            &ui::popup_item(&test.window, "Close", AccessibleRole::Button),
+        compact_jobs::check(
+            (320, 200),
+            density,
+            font,
+            || OperationRow {
+                identity: "active".into(),
+                title: "Copy files".into(),
+                detail: "C:\\long Unicode 文档\\file.txt → D:\\destination\\file.txt".into(),
+                cancellable: true,
+                attention: true,
+                active: true,
+                determinate: true,
+                progress: 0.6,
+                ..Default::default()
+            },
+            &["Close"],
+            &format!("small-jobs-density-{density}-font-{font}"),
         );
-        render::snapshot(&test, &format!("small-jobs-density-{density}-font-{font}"));
-        ui::click_popup(&test.window, "Close", AccessibleRole::Button);
-        test.draw();
         test.resize(1340, 820);
         assert!(!test.window.get_compact_window());
         main_geometry(&mut test);

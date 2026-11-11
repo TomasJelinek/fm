@@ -1,4 +1,6 @@
 //! Production Engine replies through the installed Slint filter/sort controls.
+#[path = "support/native_panel_input.rs"]
+mod native;
 #[path = "support/tree_filters.rs"]
 mod support;
 #[path = "support/ui.rs"]
@@ -6,7 +8,7 @@ mod ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_core::*;
-use slint::platform::Key;
+use slint::platform::{Key, WindowAdapter};
 use std::sync::{Arc, atomic::Ordering};
 use support::Harness;
 
@@ -20,25 +22,22 @@ fn apply(h: &mut Harness, mode: i32, expression: &str) {
     };
     ui::click_root(&h.ui.window, button, AccessibleRole::Button);
     assert!(h.ui.window.get_panel_filter_view().open);
-    h.ui.draw();
-    ui::click_popup(&h.ui.window, "Filter mode", AccessibleRole::Combobox);
+    let child = native::filter(h);
+    native::click(&child, "Filter mode", AccessibleRole::Combobox);
     for _ in 0..h.ui.window.get_panel_filter_view().mode {
-        ui::key(&h.ui.window, Key::UpArrow);
+        native::key(&child, Key::UpArrow);
     }
     for _ in 0..mode {
-        ui::key(&h.ui.window, Key::DownArrow);
+        native::key(&child, Key::DownArrow);
     }
-    ui::key(&h.ui.window, Key::Return);
-    ui::click_popup(
-        &h.ui.window,
-        "File filter expression",
-        AccessibleRole::TextInput,
-    );
-    ui::chord(&h.ui.window, &[Key::Control], "a");
-    ui::key(&h.ui.window, expression);
-    ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
+    native::key(&child, Key::Return);
+    native::click(&child, "File filter expression", AccessibleRole::TextInput);
+    native::chord(&child, &[Key::Control], "a");
+    native::key(&child, expression);
+    native::click(&child, "OK", AccessibleRole::Button);
     assert!(h.ui.window.get_panel_filter_view().busy);
     h.until(|h| !h.ui.window.get_panel_filter_view().open);
+    assert!(!child.window().is_visible());
     assert_eq!(
         h.filter_label(),
         previous_label,
@@ -71,7 +70,9 @@ fn native_tree_controls_apply_clear_sort_and_cancel_across_layouts() {
         h.ui.window.get_panel_filter_view().open,
         "Ctrl+F12 reaches the adopted tree dialog"
     );
-    ui::key(&h.ui.window, Key::Escape);
+    let child = native::filter(&h);
+    native::key(&child, Key::Escape);
+    assert!(!child.window().is_visible());
     assert!(!h.ui.window.get_panel_filter_view().open);
     let hidden = h
         .view
@@ -184,8 +185,10 @@ fn native_tree_controls_apply_clear_sort_and_cancel_across_layouts() {
     );
     h.ui.resize(320, 200);
     h.ui.window.invoke_open_panel_filter(0);
-    h.ui.draw();
-    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
+    let child = native::filter(&h);
+    native::resize(&child, 320, 200);
+    native::click(&child, "Cancel", AccessibleRole::Button);
+    assert!(!child.window().is_visible());
     assert!(!h.ui.window.get_panel_filter_view().open);
 }
 

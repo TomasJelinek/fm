@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
-#[path = "support/ui.rs"]
+#[path = "support/jobs_form.rs"]
 mod ui;
 
 use i_slint_core::{
@@ -158,15 +158,15 @@ fn minimum_checksum_window_keeps_both_page_and_algorithm_pickers_usable_at_font3
 #[test]
 fn small_jobs_scrolls_chart_and_details_without_moving_close() {
     let mut test = ui::TestUi::new();
-    test.window.invoke_apply_preferences(0, 1);
-    test.window.invoke_apply_fonts("".into(), 32, 32);
+    test.window
+        .invoke_apply_preferences(0, 1, "".into(), 32, 32);
     test.resize(320, 200);
-    test.window.set_operations(slint::ModelRc::new(slint::VecModel::from(vec![OperationRow {
+    test.window.set_rows(slint::ModelRc::new(slint::VecModel::from(vec![OperationRow {
         identity: "copy".into(), title: "Copy files".into(),
         detail: "Source\nD:\\文档\\source.txt\nDestination\nE:\\target.txt\nComplete diagnostics remain scrollable.".into(),
         cancellable: true, ..Default::default()
     }])));
-    test.window.invoke_show_operations();
+    test.window.show().unwrap();
     test.draw();
     let close = ui::popup_item(&test.window, "Close", AccessibleRole::Button);
     inside(&close, 320.0, 200.0);
@@ -195,12 +195,7 @@ fn small_jobs_scrolls_chart_and_details_without_moving_close() {
         before,
         "Close stays outside scrolling diagnostics"
     );
-    modeless::bitmap::snapshot(
-        &test.pixels,
-        test.width,
-        test.height,
-        "jobs-scroll-minimum-font32",
-    );
+    test.snapshot("jobs-scroll-minimum-font32");
     ui::key(&test.window, Key::Escape);
     assert!(
         !ui::has_popup(&test.window),

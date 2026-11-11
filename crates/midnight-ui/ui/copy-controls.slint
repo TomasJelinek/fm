@@ -1,9 +1,10 @@
 import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
-import { FallbackIcons } from "action-icons.slint";
-import { DialogHeader } from "dialog-frame.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
+import { ErrorGlyph } from "error-notice.slint";
 
 component ConflictItem inherits Rectangle {
     in property <string> heading;
@@ -70,7 +71,16 @@ export component CopyConflictDialog inherits Rectangle {
                 ConflictItem { heading: "Source"; details: root.source-details; vertical-stretch: 1; }
                 ConflictItem { heading: "Existing destination"; details: root.target-details; vertical-stretch: 1; }
             }
-            DialogText { text: root.body; height: root.failure-mode ? max(220px, Theme.font-size * 14) : max(50px, Theme.font-size * 4); }
+            HorizontalLayout {
+                spacing: 8px;
+                height: root.failure-mode ? max(220px, Theme.font-size * 14) : max(50px, Theme.font-size * 4);
+                if DialogWindowStyle.native-titlebar && root.failure-mode: ErrorGlyph { }
+                if DialogWindowStyle.native-titlebar && !root.failure-mode: NativeActionImage {
+                    native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
+                    width: 24px; height: 24px;
+                }
+                DialogText { text: root.body; min-width: 0px; horizontal-stretch: 1; }
+            }
             if root.can-replace : HorizontalLayout {
                 spacing: 8px;
                 HintedActionButton { text: "Replace · keep original"; hint: "Publish the verified copy and retain the displaced file in a private recovery folder. Recent Jobs show recovery locations."; clicked => { root.decide(4, ""); } }

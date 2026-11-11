@@ -137,3 +137,15 @@ fn refused_expression_validation_keeps_the_draft_retryable_without_changing_pref
     let request = submit(&mut p, "size >= 10");
     assert_eq!(request.id, 1);
 }
+
+#[test]
+fn captured_show_all_rejects_a_new_navigation_without_touching_its_applied_filter() {
+    let mut p = presenter();
+    p.open_panel_filter(PaneId::Left);
+    let before = p.preferences.values.panel_filters.clone();
+    p.panes[0].generation += 1;
+    p.clear_captured_panel_filter(&|_| panic!("stale Show all must not enqueue or save"));
+    assert!(p.filter_dialog.open);
+    assert!(p.filter_dialog.error.contains("panel changed"));
+    assert_eq!(p.preferences.values.panel_filters, before);
+}

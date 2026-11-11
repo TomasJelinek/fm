@@ -173,7 +173,16 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .unwrap_or_default()
             .into(),
     );
-    if let Some(conflict) = presenter.operations.metadata_conflicts.first() {
+    // Keep an explicitly resolved job selected while its exact prompt is live.
+    // Falling back to the first row on every refresh would retarget its native child.
+    let selected = window.get_metadata_conflict_token();
+    if let Some(conflict) = presenter
+        .operations
+        .metadata_conflicts
+        .iter()
+        .find(|conflict| selected == format!("metadata:{}:{}", conflict.id.0, conflict.token))
+        .or_else(|| presenter.operations.metadata_conflicts.first())
+    {
         show_conflict(window, conflict, false);
     } else {
         window.set_metadata_conflict_token("".into());

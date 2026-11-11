@@ -1,13 +1,14 @@
-#[path = "support/render.rs"]
-mod render;
-#[path = "support/ui.rs"]
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
+#[path = "support/jobs_form.rs"]
 mod ui;
 use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable, Path},
 };
 use midnight_ui::{OperationRow, SpeedChartData};
-use slint::{ModelRc, VecModel, platform::Key};
+use slint::{ComponentHandle, ModelRc, VecModel, platform::Key};
 use std::{cell::RefCell, rc::Rc};
 
 fn job(id: &str, title: &str) -> OperationRow {
@@ -23,23 +24,22 @@ fn job(id: &str, title: &str) -> OperationRow {
 #[test]
 fn job_selection_survives_updates_and_cancel_does_not_close_the_window() {
     let mut test = ui::TestUi::new();
-    test.window.set_operations(ModelRc::new(VecModel::from(vec![
+    test.window.set_rows(ModelRc::new(VecModel::from(vec![
         job("first", "First job"),
         job("second", "Second job"),
     ])));
     let cancelled = Rc::new(RefCell::new(Vec::new()));
     let sink = cancelled.clone();
-    test.window
-        .on_cancel_job(move |id| sink.borrow_mut().push(id));
+    test.window.on_cancel(move |id| sink.borrow_mut().push(id));
     let copied = Rc::new(RefCell::new(Vec::new()));
     let sink = copied.clone();
     test.window
-        .on_copy_job_details(move |id| sink.borrow_mut().push(id));
-    test.window.invoke_show_operations();
+        .on_copy_details(move |id| sink.borrow_mut().push(id));
+    test.window.show().unwrap();
     slint::platform::update_timers_and_animations();
     test.draw();
     ui::click_popup(&test.window, "Second job", AccessibleRole::ListItem);
-    test.window.set_operations(ModelRc::new(VecModel::from(vec![
+    test.window.set_rows(ModelRc::new(VecModel::from(vec![
         job("new", "New job"),
         job("first", "First job"),
         job("second", "Second job"),
@@ -58,7 +58,7 @@ fn job_selection_survives_updates_and_cancel_does_not_close_the_window() {
         &[slint::SharedString::from("second")]
     );
     assert!(ui::has_popup(&test.window));
-    render::snapshot(&test, "jobs-selected");
+    test.snapshot("jobs-selected");
     ui::key(&test.window, Key::Escape);
     assert!(!ui::has_popup(&test.window));
     assert_eq!(
@@ -66,7 +66,7 @@ fn job_selection_survives_updates_and_cancel_does_not_close_the_window() {
         1,
         "closing does not cancel another job"
     );
-    test.window.invoke_show_operations();
+    test.window.show().unwrap();
     slint::platform::update_timers_and_animations();
     test.draw();
     ui::key(&test.window, Key::Escape);
@@ -81,11 +81,11 @@ fn transfer_and_delete_jobs_show_their_own_speed_chart() {
     let mut test = ui::TestUi::new();
     let mut deletion = job("delete", "Delete files");
     deletion.kind = 1;
-    test.window.set_operations(ModelRc::new(VecModel::from(vec![
+    test.window.set_rows(ModelRc::new(VecModel::from(vec![
         job("copy", "Copy files"),
         deletion,
     ])));
-    test.window.invoke_show_operations();
+    test.window.show().unwrap();
     test.draw();
     ui::popup_item(&test.window, "Transfer speed", AccessibleRole::Groupbox);
     ui::click_popup(&test.window, "Delete files", AccessibleRole::ListItem);
@@ -115,12 +115,13 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
         ..Default::default()
     };
     test.window
-        .set_operations(ModelRc::new(VecModel::from(vec![copy])));
+        .set_rows(ModelRc::new(VecModel::from(vec![copy])));
     for theme in [0, 1, 2, 21, 22] {
-        test.window.invoke_apply_preferences(theme, 0);
+        test.window
+            .invoke_apply_preferences(theme, 0, "".into(), 11, 15);
         for (width, height) in [(1000, 700), (480, 360), (320, 200)] {
             test.resize(width, height);
-            test.window.invoke_show_operations();
+            test.window.show().unwrap();
             test.draw();
             let chart = ui::popup_item(&test.window, "Transfer speed", AccessibleRole::Groupbox);
             assert_eq!(
@@ -141,7 +142,7 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
                 assert!(location.x + rect.size.width <= width as f32 + 1.0);
                 assert!(location.y + rect.size.height <= height as f32 + 1.0);
             }
-            render::snapshot(&test, &format!("job-speed-{theme}-{width}x{height}"));
+            test.snapshot(&format!("job-speed-{theme}-{width}x{height}"));
             ui::key(&test.window, Key::Escape);
         }
     }

@@ -45,7 +45,7 @@ unsafe extern "system" fn find_owned(window: isize, data: isize) -> i32 {
     }
     1
 }
-fn find_child(owner: isize, title: &'static str) -> Result<Option<isize>, String> {
+pub(super) fn find_child(owner: isize, title: &'static str) -> Result<Option<isize>, String> {
     let mut search = Search {
         owner,
         title,

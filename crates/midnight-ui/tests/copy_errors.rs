@@ -1,7 +1,5 @@
 //! Real callbacks exercise error decisions and automatic/manual Jobs ownership.
-#[path = "support/render.rs"]
-mod render;
-#[path = "support/ui.rs"]
+#[path = "support/job_windows.rs"]
 mod ui;
 
 use i_slint_core::items::AccessibleRole;
@@ -102,9 +100,9 @@ fn copy_error_retry_preserves_refused_token_and_jobs_resolve_restores_deferred_e
     let mut h = Harness::new();
     h.start(1);
     h.failure(1, 7, true, true);
-    render::snapshot(&h.ui, "copy-error-normal");
+    h.ui.snapshot("copy-error-normal");
     h.ui.resize(320, 200);
-    render::snapshot(&h.ui, "copy-error-compact");
+    h.ui.snapshot("copy-error-compact");
     h.ui.resize(1340, 820);
     assert!(h.ui.window.get_copy_is_failure());
     assert!(
@@ -117,31 +115,34 @@ fn copy_error_retry_preserves_refused_token_and_jobs_resolve_restores_deferred_e
             .get_copy_body()
             .contains("\n\nDestination\ndestination/資料.txt")
     );
-    ui::popup_item(&h.ui.window, "Error", AccessibleRole::Text);
-    ui::click(&h.ui.window, 5.0, 5.0);
+    h.ui.item("Error", AccessibleRole::Text);
+    h.ui.click_owner(5.0, 5.0);
     assert!(
-        ui::has_popup(&h.ui.window),
+        h.ui.visible_count() > 0,
         "outside click cannot hide an error"
     );
     h.refuse_decision.set(true);
-    ui::click_popup(&h.ui.window, "Retry", AccessibleRole::Button);
+    h.ui.click("Retry");
     assert_eq!(h.ui.window.get_copy_token(), "copy-error:1:7");
-    assert!(ui::has_popup(&h.ui.window));
-    ui::click_popup(&h.ui.window, "Decide later", AccessibleRole::Button);
-    assert!(!ui::has_popup(&h.ui.window));
-    assert_eq!(h.ui.window.get_focused_pane(), 0);
+    assert!(h.ui.visible_count() > 0);
+    h.ui.click("Decide later");
+    assert_eq!(
+        h.ui.visible_count(),
+        1,
+        "Jobs remains behind a deferred decision"
+    );
     assert!(h.ui.window.get_operations().row_data(0).unwrap().attention);
     refresh(&h.ui.window, &h.presenter.borrow());
     assert!(
-        !ui::has_popup(&h.ui.window),
+        h.ui.visible_count() == 1,
         "a refresh cannot reopen a deferred error"
     );
     h.ui.window.invoke_show_operations();
     h.ui.draw();
-    ui::click_popup(&h.ui.window, "Resolve", AccessibleRole::Button);
+    h.ui.click("Resolve");
     assert_eq!(h.ui.window.get_copy_token(), "copy-error:1:7");
     h.refuse_decision.set(false);
-    ui::click_popup(&h.ui.window, "Retry", AccessibleRole::Button);
+    h.ui.click("Retry");
     assert!(h.commands.borrow().iter().any(|command| matches!(
         command,
         Command::DecideCopy(CopyDecision {
@@ -163,12 +164,12 @@ fn compact_error_keeps_retry_visible_and_clickable_below_scrolling_diagnostics()
     h.start(1);
     h.failure(1, 7, true, true);
     h.ui.resize(320, 200);
-    let retry = ui::popup_item(&h.ui.window, "Retry", AccessibleRole::Button);
+    let retry = h.ui.item("Retry", AccessibleRole::Button);
     let rect = retry.geometry();
     let origin = retry.map_to_native_window(rect.origin);
     assert!(origin.y >= 0.0 && origin.y + rect.size.height <= 200.0);
     assert!(origin.x >= 0.0 && origin.x + rect.size.width <= 320.0);
-    ui::click_popup(&h.ui.window, "Retry", AccessibleRole::Button);
+    h.ui.click("Retry");
     assert!(h.commands.borrow().iter().any(|command| matches!(
         command,
         Command::DecideCopy(CopyDecision {
@@ -186,7 +187,7 @@ fn automatic_copy_and_move_jobs_close_after_success_and_keep_history() {
         h.start(id);
         assert!(h.ui.window.get_operations_visible());
         h.progress(id, intent, CopyOperationState::Completed);
-        assert!(!ui::has_popup(&h.ui.window));
+        assert!(h.ui.visible_count() == 0);
         assert!(!h.ui.window.get_operations_visible());
         assert_eq!(h.ui.window.get_operations().row_count(), id as usize);
         assert_eq!(
@@ -196,7 +197,7 @@ fn automatic_copy_and_move_jobs_close_after_success_and_keep_history() {
     }
     h.ui.window.invoke_show_operations();
     h.ui.draw();
-    assert!(ui::has_popup(&h.ui.window));
+    assert!(h.ui.visible_count() > 0);
     assert_eq!(h.ui.window.get_operations().row_count(), 2);
 }
 
@@ -207,7 +208,7 @@ fn manual_jobs_and_non_successful_terminal_jobs_do_not_auto_close() {
     h.start(1);
     h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
     assert!(h.ui.window.get_operations_visible());
-    ui::key(&h.ui.window, Key::Escape);
+    h.ui.key(Key::Escape);
     for (id, state) in [
         (2, CopyOperationState::Cancelled),
         (3, CopyOperationState::CompletedWithErrors),
@@ -216,7 +217,7 @@ fn manual_jobs_and_non_successful_terminal_jobs_do_not_auto_close() {
         h.start(id);
         h.progress(id, TransferIntent::Copy, state);
         assert!(h.ui.window.get_operations_visible());
-        ui::key(&h.ui.window, Key::Escape);
+        h.ui.key(Key::Escape);
     }
 }
 
@@ -228,7 +229,7 @@ fn successful_auto_job_waits_for_other_active_jobs_and_does_not_hide_a_waiting_e
     h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
     assert!(h.ui.window.get_operations_visible());
     h.failure(2, 1, false, false);
-    ui::popup_item(&h.ui.window, "Cancel job", AccessibleRole::Button);
+    h.ui.item("Cancel job", AccessibleRole::Button);
     h.ui.window
         .invoke_decide_copy("copy-error:2:1".into(), 8, "".into());
     assert!(
@@ -237,7 +238,7 @@ fn successful_auto_job_waits_for_other_active_jobs_and_does_not_hide_a_waiting_e
             .iter()
             .any(|command| matches!(command, Command::DecideCopy(_)))
     );
-    assert!(ui::has_popup(&h.ui.window));
+    assert!(h.ui.visible_count() > 0);
     h.progress(2, TransferIntent::Copy, CopyOperationState::Failed);
     assert!(h.ui.window.get_operations_visible());
 }
@@ -252,7 +253,7 @@ fn error_skip_all_dispatches_a_separate_policy_from_name_conflict_skip_all() {
         (3, "Cancel job"),
     ] {
         h.failure(1, version, false, true);
-        ui::click_popup(&h.ui.window, label, AccessibleRole::Button);
+        h.ui.click(label);
         let commands = h.commands.borrow();
         let decision = commands
             .iter()
@@ -303,7 +304,7 @@ fn automatic_jobs_finish_after_their_owner_has_left_bounded_history() {
             .any(|row| row.identity == "copy-job:1")
     );
     assert!(!h.ui.window.get_operations_visible());
-    assert!(!ui::has_popup(&h.ui.window));
+    assert!(h.ui.visible_count() == 0);
 }
 
 #[test]
@@ -339,7 +340,7 @@ fn automatic_jobs_remember_trimmed_failure_and_cancellation_outcomes() {
             h.ui.window.get_operations_visible(),
             "a pruned outcome still needs attention"
         );
-        ui::key(&h.ui.window, Key::Escape);
+        h.ui.key(Key::Escape);
     }
 }
 
@@ -349,7 +350,7 @@ fn reopened_automatic_jobs_select_current_work_and_manual_jobs_keep_selection() 
     h.start(1);
     h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
     h.start(2);
-    ui::click_popup(&h.ui.window, "Copy details", AccessibleRole::Button);
+    h.ui.click("Copy details");
     assert!(
         h.commands
             .borrow()
@@ -363,9 +364,9 @@ fn reopened_automatic_jobs_select_current_work_and_manual_jobs_keep_selection() 
     );
     h.ui.window.invoke_show_operations();
     h.ui.draw();
-    ui::key(&h.ui.window, Key::DownArrow);
+    h.ui.key(Key::DownArrow);
     h.start(3);
-    ui::click_popup(&h.ui.window, "Copy details", AccessibleRole::Button);
+    h.ui.click("Copy details");
     assert!(
         h.commands
             .borrow()
