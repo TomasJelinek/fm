@@ -313,7 +313,10 @@ async fn real_fifo_queue_cancels_queued_job_behind_a_conflict_gate() {
     assert_eq!(skipped.skipped, 1);
     for id in 2..=9 {
         if id == 5 {
-            assert_eq!(harness.terminal(id).await.state, CopyOperationState::Cancelled);
+            assert_eq!(
+                harness.terminal(id).await.state,
+                CopyOperationState::Cancelled
+            );
             continue;
         }
         harness.completed(id).await;

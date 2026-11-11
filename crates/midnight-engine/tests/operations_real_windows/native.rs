@@ -177,7 +177,11 @@ async fn real_sharing_violation_retry_succeeds_only_after_exclusive_handle_is_re
     let failure = harness.failure(1).await;
     assert!(failure.can_retry);
     assert_eq!(failure.error.kind, io::Error::from_raw_os_error(32).kind());
-    assert!(failure.error.message.ends_with("(os error 32)"), "{:?}", failure.error);
+    assert!(
+        failure.error.message.ends_with("(os error 32)"),
+        "{:?}",
+        failure.error
+    );
     harness.decide(1, failure.version, CopyChoice::Retry).await;
     let still_locked = harness.failure(1).await;
     assert!(still_locked.can_retry);
