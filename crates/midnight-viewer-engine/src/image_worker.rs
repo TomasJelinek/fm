@@ -237,6 +237,76 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     #[test]
+    fn transparent_scenes_still_require_current_source_validation_before_publication() {
+        let (sender, requests) = mpsc::sync_channel(1);
+        let (_, events) = mpsc::sync_channel(1);
+        let worker = ImageWorker {
+            sender,
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            thread: None,
+        };
+        let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
+        let mut geometry = ImageGeometry::new(607, 204, [1200, 800]);
+        geometry.origin = [4096.0; 2];
+        view.geometry = Some(geometry);
+        view.changed();
+        view.validated = Some(view.revision - 1);
+        assert!(view.request().unwrap().is_none());
+        let Render::Validate(revision) = requests.try_recv().unwrap() else {
+            panic!("transparent scenes must validate without a decoder request")
+        };
+        assert_eq!(revision, view.revision);
+        assert!(view.scene.tiles().is_some());
+        assert!(view.request().unwrap().is_none());
+        assert!(requests.try_recv().is_err());
+        view.pending = None;
+        view.validated = Some(revision);
+        let Some(Paint::Tiles(tiles)) = view.request().unwrap() else {
+            panic!("validated transparent scene must remain presentable")
+        };
+        assert!(
+            tiles
+                .iter()
+                .all(|tile| tile.pixels.rgba().iter().all(|byte| *byte == 0))
+        );
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn magnification_reuses_tiles_but_revalidates_each_new_camera_revision() {
+        let (sender, requests) = mpsc::sync_channel(1);
+        let (_, events) = mpsc::sync_channel(1);
+        let worker = ImageWorker {
+            sender,
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            thread: None,
+        };
+        let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
+        view.geometry = Some(ImageGeometry::new(607, 204, [1200, 800]));
+        view.changed();
+        while let Some((key, charge)) = view.scene.next().unwrap() {
+            let pixels = ViewerPixels::new(vec![255; 256 * 256 * 4], charge).unwrap();
+            view.scene.complete(key, Arc::new(pixels)).unwrap();
+        }
+        view.validated = Some(view.revision);
+        assert!(matches!(view.request().unwrap(), Some(Paint::Tiles(_))));
+        let geometry = view.geometry.as_mut().unwrap();
+        geometry.zoom(1.25, geometry.center());
+        view.changed();
+        assert!(view.request().unwrap().is_none());
+        let Render::Validate(revision) = requests.try_recv().unwrap() else {
+            panic!("cached magnification must validate without resampling source pixels")
+        };
+        assert_eq!(revision, view.revision);
+        assert!(view.request().unwrap().is_none());
+        view.pending = None;
+        view.validated = Some(revision);
+        assert!(matches!(view.request().unwrap(), Some(Paint::Tiles(_))));
+        assert!(requests.try_recv().is_err());
+    }
+    #[test]
     fn documents_request_one_bounded_viewport_without_tile_or_guard_amplification() {
         let (sender, requests) = mpsc::sync_channel(1);
         let (_, events) = mpsc::sync_channel(1);
@@ -248,7 +318,13 @@ mod tests {
         };
         let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
         view.document = true;
-        view.geometry = Some(ImageGeometry::new(2400, 1800, [1000, 700]));
+        let mut geometry = ImageGeometry::document(2400, 1800, [1000, 700]);
+        assert!(geometry.zoom_from(
+            midnight_core::ViewerZoomPreference::ScaleBasisPoints(20000),
+            [1200.0, 900.0],
+            [500.0, 350.0],
+        ));
+        view.geometry = Some(geometry);
         view.changed();
         assert!(view.request().unwrap().is_none());
         let Render::Document {
@@ -260,6 +336,8 @@ mod tests {
             panic!("document must use whole bounded viewport")
         };
         assert_eq!((page, viewport.width, viewport.height), (0, 1000, 700));
+        assert_eq!(viewport.scale, 2.0);
+        assert_eq!(view.scene.plan.as_ref().unwrap().scale, viewport.scale);
         assert!(view.request().unwrap().is_none());
         assert!(requests.try_recv().is_err());
         view.pending = None;

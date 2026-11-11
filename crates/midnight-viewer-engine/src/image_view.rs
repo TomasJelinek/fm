@@ -49,10 +49,15 @@ impl ImageView {
             Some(revision) => self.revision = revision,
             None => self.failure = Some("Image camera identity exhausted.".into()),
         }
-        if let Some(geometry) = &self.geometry
-            && let Err(error) = self.scene.update(self.page, geometry)
-        {
-            self.failure = Some(error);
+        if let Some(geometry) = &self.geometry {
+            let result = if self.document {
+                self.scene.update_document(self.page, geometry)
+            } else {
+                self.scene.update(self.page, geometry)
+            };
+            if let Err(error) = result {
+                self.failure = Some(error);
+            }
         }
     }
 
@@ -76,7 +81,7 @@ impl ImageView {
         }
         self.waiting_budget = false;
         if self.pending.is_none() {
-            if let Some((key, charge)) = self.scene.next() {
+            if let Some((key, charge)) = self.scene.next()? {
                 if self.worker.render(self.revision, key, charge) {
                     self.pending = Some(self.revision);
                 }

@@ -3,6 +3,8 @@
 mod cases;
 #[path = "performance_probe/gpu_proof.rs"]
 mod gpu_proof;
+#[path = "performance_probe/image_proof.rs"]
+mod image_proof;
 #[path = "performance_probe/render_observer.rs"]
 mod render_observer;
 #[path = "performance_probe/scrollbar.rs"]
@@ -14,7 +16,7 @@ mod wheel;
 use midnight_core::*;
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use midnight_viewer_ui::{ViewerWindow, ViewerWindows};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -67,6 +69,9 @@ struct Probe {
     round: usize,
     opened: Instant,
     first: bool,
+    image_ready: Option<Instant>,
+    image_proofs: Vec<image_proof::Capture>,
+    image_settled: bool,
     pending: Option<(Instant, f64)>,
     latencies: Vec<f64>,
     rows: Vec<String>,
@@ -85,7 +90,13 @@ fn active(window: &ViewerWindow, path: &std::path::Path) -> bool {
         .get_caption()
         .contains(path.file_name().unwrap().to_string_lossy().as_ref())
         && !window.get_accessible_text().is_empty()
-        && window.get_image_mode() == (path.extension().is_some_and(|extension| extension == "bmp"))
+        && window.get_image_mode()
+            == (path.extension().is_some_and(|extension| {
+                matches!(
+                    extension.to_str(),
+                    Some("bmp" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "tif" | "tiff")
+                )
+            }))
 }
 fn presentation(window: &ViewerWindow) -> &'static str {
     if window.get_retained_raster() {
@@ -99,7 +110,7 @@ fn presentation(window: &ViewerWindow) -> &'static str {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let directory = PathBuf::from(args.next().ok_or(
-        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof]",
+        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof] [--image-proof]",
     )?);
     let report = PathBuf::from(args.next().ok_or("report-file missing")?);
     let flags: Vec<_> = args.collect();
@@ -126,6 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sustained = wrapped_tabs || flags.iter().any(|flag| flag == "--sustained");
     let tail = flags.iter().any(|flag| flag == "--tail");
     let gpu_proof = flags.iter().any(|flag| flag == "--gpu-proof");
+    let image_proof = flags.iter().any(|flag| flag == "--image-proof");
     let d3d = flags.iter().any(|flag| flag == "--d3d");
     let software = flags.iter().any(|flag| flag == "--software");
     if flags.iter().any(|flag| {
@@ -140,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && flag != "--sustained"
             && flag != "--tail"
             && flag != "--gpu-proof"
+            && flag != "--image-proof"
             && flag != "--d3d"
             && flag != "--software"
             && !flag
@@ -336,12 +349,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         round: 0,
         opened: start,
         first: false,
+        image_ready: None,
+        image_proofs: Vec::new(),
+        image_settled: false,
         pending: None,
         latencies: vec![],
         rows: vec![format!(
-            "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} timing=input_to_redraw_completed exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} snapshot_run_excluded_from_timing_comparison={gpu_proof}",
+            "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} timing=input_to_redraw_completed exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} image_proof={image_proof} snapshot_run_excluded_from_timing_comparison={snapshot_run}",
             if load { 2 } else { 0 },
-            selected_file.is_some()
+            selected_file.is_some(),
+            snapshot_run = gpu_proof || image_proof
         )],
         error: None,
         proofs: Vec::new(),
@@ -386,6 +403,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 counts.validations.load(Ordering::Relaxed), window.window().size(), window.window().scale_factor(), native_paths[stage], window.get_source_mode(), window.get_markdown_mode(), window.get_retained_raster(), window.get_tiled(), window.get_wrap_enabled(), window.get_wrap_available(), presentation(&window)
             ));
             state.first = true;
+            if window.get_image_mode() {
+                state.image_ready = Some(Instant::now());
+                if image_proof {
+                    match image_proof::capture(&window, format!("stage-{stage}-first")) {
+                        Ok((capture, row)) => {
+                            state.image_proofs.push(capture);
+                            state.rows.push(row);
+                        }
+                        Err(error) => {
+                            state.error = Some(error);
+                            let _ = slint::quit_event_loop();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if window.get_image_mode() {
+            let canvas = [window.get_content_width(), window.get_content_height()];
+            let viewport = [
+                window.get_image_viewport_width() * window.get_image_pixel_scale(),
+                window.get_image_viewport_height() * window.get_image_pixel_scale(),
+            ];
+            let tiles: Vec<_> = window
+                .get_image_tiles()
+                .iter()
+                .map(|tile| {
+                    [
+                        (canvas[0] - viewport[0]) / 2.0
+                            + (tile.x - window.get_tile_offset_x()) * viewport[0],
+                        (canvas[1] - viewport[1]) / 2.0
+                            + (tile.y - window.get_tile_offset_y()) * viewport[1],
+                        tile.width * viewport[0],
+                        tile.height * viewport[1],
+                    ]
+                })
+                .collect();
+            let stage = state.stage;
+            let round = state.round;
+            let elapsed = state.opened.elapsed().as_secs_f64() * 1000.0;
+            state.rows.push(format!(
+                "image_redraw stage={stage} round={round} ms={elapsed:.3} zoom={} canvas={canvas:?} viewport={viewport:?} content_origin={:?} tiles={tiles:?} uploads={} status={}",
+                window.get_zoom_percent(),
+                [window.get_content_left(), window.get_content_top()],
+                window.get_tile_upload_count(), window.get_status(),
+            ));
         }
         if let Some(gesture) = state.wheel.as_mut() {
             gesture.rendered(&window, redraw);
@@ -394,7 +457,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if let Some((sent, previous)) = state.pending
             && marker(&window) != previous
         {
-            state.latencies.push(sent.elapsed().as_secs_f64() * 1000.0);
+            let latency = sent.elapsed().as_secs_f64() * 1000.0;
+            state.latencies.push(latency);
+            if window.get_image_mode() {
+                let round = state.round;
+                state.rows.push(format!(
+                    "image_zoom round={round} previous_zoom={previous} zoom={} ms={latency:.3}",
+                    window.get_zoom_percent(),
+                ));
+            }
             state.pending = None;
             state.round += 1;
         }
@@ -443,11 +514,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     window.get_status()
                 ));
                 state.pending = None;
+                if window.get_image_mode() {
+                    state.error = Some(format!("image zoom timed out at round {round}"));
+                    let _ = slint::quit_event_loop();
+                    return;
+                }
             }
             if state.stage >= stage_count || !state.first || state.pending.is_some() {
                 return;
             }
+            if window.get_image_mode()
+                && state
+                    .image_ready
+                    .is_some_and(|ready| ready.elapsed() < Duration::from_millis(600))
+            {
+                return;
+            }
             let stage = state.stage;
+            if image_proof && window.get_image_mode() && !state.image_settled {
+                match image_proof::capture(&window, format!("stage-{stage}-settled")) {
+                    Ok((capture, row)) => {
+                        state.image_proofs.push(capture);
+                        state.rows.push(row);
+                        state.image_settled = true;
+                    }
+                    Err(error) => {
+                        state.error = Some(error);
+                        let _ = slint::quit_event_loop();
+                        return;
+                    }
+                }
+            }
             if let Some(drag) = state.scrollbar.as_mut() {
                 match drag.tick(&window, window.get_image_mode(), presented.get(), stage) {
                     Ok(Some(rows)) => {
@@ -501,6 +598,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         times[times.len() - 1]
                     ));
                 }
+                if image_proof && window.get_image_mode() {
+                    match image_proof::capture(&window, format!("stage-{stage}-final")) {
+                        Ok((capture, row)) => {
+                            state.image_proofs.push(capture);
+                            state.rows.push(row);
+                        }
+                        Err(error) => {
+                            state.error = Some(error);
+                            let _ = slint::quit_event_loop();
+                            return;
+                        }
+                    }
+                }
                 if gpu_proof {
                     match gpu_proof::capture(&window, stage) {
                         Ok(proof) => {
@@ -522,6 +632,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 timer_timeline.stage(state.stage);
                 state.round = 0;
                 state.first = false;
+                state.image_ready = None;
+                state.image_settled = false;
                 state.opened = Instant::now();
                 state.scrollbar = scrollbar.then(scrollbar::Probe::default);
                 state.wheel =
@@ -545,7 +657,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             state.pending = Some((Instant::now(), marker(&window)));
             if window.get_image_mode() {
-                window.invoke_image_command(if state.round % 2 == 0 { 1 } else { 0 });
+                window.invoke_image_command(if state.round < 6 { 2 } else { 3 });
             } else {
                 window.invoke_scroll(0.0, 60.0);
             }
@@ -576,6 +688,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     gpu_proof::write(
         &report.with_extension("pixels"),
         std::mem::take(&mut state.proofs),
+    )?;
+    image_proof::write(
+        &report.with_extension("images"),
+        std::mem::take(&mut state.image_proofs),
     )?;
     let output = state.rows.join("\n") + "\n";
     eprintln!("{output}");

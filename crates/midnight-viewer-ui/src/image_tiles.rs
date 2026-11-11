@@ -14,7 +14,8 @@ const MAX_ENTRIES: usize = 128;
 const EDGE: f64 = 256.0;
 
 struct Texture {
-    image: Image,
+    // Proven-transparent coverage has no Slint image or uploaded pixel storage.
+    image: Option<Image>,
     touched: u64,
     bytes: usize,
     width: u32,
@@ -97,13 +98,21 @@ impl Textures {
                 return Err("Unexpected image tile dimensions.".into());
             }
             self.clock = self.clock.saturating_add(1);
+            let transparent = tile.pixels.is_known_transparent();
             if let Some(texture) = self.textures.get_mut(&tile.id) {
-                if texture.width != tile.width || texture.height != tile.height {
+                if texture.width != tile.width
+                    || texture.height != tile.height
+                    || texture.image.is_none() != transparent
+                {
                     return Err("Image tile identity changed.".into());
                 }
                 texture.touched = self.clock;
             } else {
-                let bytes = tile.pixels.rgba().len();
+                let bytes = if transparent {
+                    0
+                } else {
+                    tile.pixels.rgba().len()
+                };
                 while self.textures.len() >= MAX_ENTRIES || self.bytes + bytes > MAX_BYTES {
                     let oldest = self
                         .textures
@@ -118,15 +127,21 @@ impl Textures {
                         self.bytes -= old.bytes;
                     }
                 }
-                let pixels = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                    tile.pixels.rgba(),
-                    tile.width,
-                    tile.height,
-                );
+                let image = if transparent {
+                    None
+                } else {
+                    let pixels = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        tile.pixels.rgba(),
+                        tile.width,
+                        tile.height,
+                    );
+                    self.uploads = self.uploads.saturating_add(1);
+                    Some(Image::from_rgba8_premultiplied(pixels))
+                };
                 self.textures.insert(
                     tile.id,
                     Texture {
-                        image: Image::from_rgba8_premultiplied(pixels),
+                        image,
                         touched: self.clock,
                         bytes,
                         width: tile.width,
@@ -134,7 +149,6 @@ impl Textures {
                     },
                 );
                 self.bytes += bytes;
-                self.uploads = self.uploads.saturating_add(1);
             }
             let position = coordinate(tile, info);
             self.positions.insert(position, tile.id);
@@ -142,7 +156,19 @@ impl Textures {
         self.positions
             .retain(|_, id| self.textures.contains_key(id));
         let dimensions = info.visible_source.map(|extent| extent * info.raster_scale);
-        let wanted: HashSet<_> = self.positions.values().copied().collect();
+        // Coverage includes transparent cells, but only drawable entries belong
+        // in the Slint repeater. Replacing visible pixels with a blank cell must
+        // remove the previous row while retaining camera coverage.
+        let wanted: HashSet<_> = self
+            .positions
+            .values()
+            .filter(|id| {
+                self.textures
+                    .get(*id)
+                    .is_some_and(|texture| texture.image.is_some())
+            })
+            .copied()
+            .collect();
         for index in (0..self.rows.len()).rev() {
             if !wanted.contains(&self.rows[index].0) {
                 self.rows.remove(index);
@@ -153,7 +179,7 @@ impl Textures {
         let mut positions: Vec<_> = self
             .positions
             .iter()
-            .map(|(position, id)| (*id, *position))
+            .filter_map(|(position, id)| wanted.contains(id).then_some((*id, *position)))
             .collect();
         positions.sort_unstable_by_key(|(id, _)| id.0);
         for (id, position) in positions {
@@ -161,9 +187,11 @@ impl Textures {
             if previous.is_some_and(|index| !rebase && self.rows[index].1 == position) {
                 continue;
             }
-            if let Some(texture) = self.textures.get(&id) {
+            if let Some(texture) = self.textures.get(&id)
+                && let Some(image) = &texture.image
+            {
                 let row = ViewerRasterTile {
-                    image: texture.image.clone(),
+                    image: image.clone(),
                     x: ((f64::from(position[0]) * EDGE - base[0] * info.raster_scale)
                         / dimensions[0]) as f32,
                     y: ((f64::from(position[1]) * EDGE - base[1] * info.raster_scale)

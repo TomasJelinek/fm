@@ -12,19 +12,45 @@ pub trait ViewerPixelOwner: fmt::Debug + Send + Sync {}
 pub struct ViewerPixels {
     // Drop pixel memory before releasing its reservation.
     rgba: Box<[u8]>,
+    known_transparent: bool,
     _owner: Arc<dyn ViewerPixelOwner>,
 }
 
 impl ViewerPixels {
     /// The backend reserves the allocation before asking a decoder for it.
     pub fn new(rgba: Vec<u8>, owner: Arc<dyn ViewerPixelOwner>) -> Result<Self, &'static str> {
-        if rgba.is_empty() || rgba.len() > 16 * 1024 * 1024 || !rgba.len().is_multiple_of(4) {
-            return Err("Viewer tile exceeds pixel bounds.");
-        }
+        Self::validate_length(rgba.len())?;
         Ok(Self {
             rgba: rgba.into_boxed_slice(),
+            known_transparent: false,
             _owner: owner,
         })
+    }
+
+    /// Allocate guaranteed zero pixels after the backend reserves their byte budget.
+    pub fn transparent(
+        bytes: usize,
+        owner: Arc<dyn ViewerPixelOwner>,
+    ) -> Result<Self, &'static str> {
+        Self::validate_length(bytes)?;
+        Ok(Self {
+            rgba: vec![0; bytes].into_boxed_slice(),
+            known_transparent: true,
+            _owner: owner,
+        })
+    }
+
+    /// True only for immutable pixels created by the guaranteed-zero constructor.
+    /// Ordinary decoded pixels are not scanned or classified as transparent.
+    pub fn is_known_transparent(&self) -> bool {
+        self.known_transparent
+    }
+
+    fn validate_length(bytes: usize) -> Result<(), &'static str> {
+        if bytes == 0 || bytes > 16 * 1024 * 1024 || !bytes.is_multiple_of(4) {
+            return Err("Viewer tile exceeds pixel bounds.");
+        }
+        Ok(())
     }
 
     pub fn rgba(&self) -> &[u8] {
@@ -37,6 +63,7 @@ impl fmt::Debug for ViewerPixels {
         formatter
             .debug_struct("ViewerPixels")
             .field("bytes", &self.rgba.len())
+            .field("known_transparent", &self.known_transparent)
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +118,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn known_transparent_pixels_are_zero_and_retain_their_reservation() {
+        let released = Arc::new(AtomicUsize::new(0));
+        let pixels =
+            Arc::new(ViewerPixels::transparent(8, Arc::new(Charge(released.clone()))).unwrap());
+        assert!(pixels.is_known_transparent());
+        assert_eq!(pixels.rgba(), &[0; 8]);
+        let retained = pixels.clone();
+        drop(pixels);
+        assert_eq!(released.load(Ordering::Relaxed), 0);
+        drop(retained);
+        assert_eq!(released.load(Ordering::Relaxed), 1);
+
+        let decoded = ViewerPixels::new(vec![0; 8], Arc::new(Charge(released.clone()))).unwrap();
+        assert!(!decoded.is_known_transparent());
+        drop(decoded);
+        assert_eq!(released.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn transparent_pixel_bounds_are_checked_before_allocating() {
+        let released = Arc::new(AtomicUsize::new(0));
+        let invalid = [0, 1, 3, 5, 16 * 1024 * 1024 + 4, usize::MAX];
+        for bytes in invalid {
+            assert!(ViewerPixels::transparent(bytes, Arc::new(Charge(released.clone()))).is_err());
+        }
+        assert_eq!(released.load(Ordering::Relaxed), invalid.len());
+        let maximum =
+            ViewerPixels::transparent(16 * 1024 * 1024, Arc::new(Charge(released))).unwrap();
+        assert!(maximum.is_known_transparent());
+        assert_eq!(maximum.rgba().len(), 16 * 1024 * 1024);
+    }
     #[test]
     fn reservation_lives_through_every_retained_frame_and_pixels_are_validated() {
         let released = Arc::new(AtomicUsize::new(0));

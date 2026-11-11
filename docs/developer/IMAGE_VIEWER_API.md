@@ -105,7 +105,38 @@ invalidates the session; subsequent requests cannot revive it.
 The application's raster-image presentation may request individual bounded tiles
 through the same positioned viewport operation. Retained host tiles still require
 source revalidation before a new camera frame is published. `validate` performs
-that check on the backend without another decoder render. The host also rejects
+that check on the backend without another decoder render. Tiles lying wholly
+outside the source image are transparent letterboxing: the engine creates them
+locally, with the same bounded pixel ownership and unique tile identities, without
+asking the decoder to render or validate each empty tile. Their immutable
+app-owned pixel object records guaranteed transparency at construction time.
+The presenter keeps their bounded grid/identity metadata for camera coverage,
+but creates neither an image row nor a GPU/software texture for empty pixels.
+It never scans source pixels on the UI thread to infer transparency. This is an
+internal presentation contract, not a plugin wire/ABI change. Tiles intersecting any
+source pixel still use the restricted worker. A scene made only from cached or
+transparent tiles still requires source validation for its current revision before
+publication; optimizing blank space never bypasses that gate.
+
+Raster-image tile sampling is capped at source resolution. Once original pixels
+are cached, magnification changes their display coordinates instead of asking the
+worker for enlarged copies. Tile keys use the sampling scale; camera surface
+identity separately includes the requested zoom, page and viewport so old pan
+requests cannot alter a new view. The raster viewport shrinks by
+`sampling_scale / display_zoom`, preserving the existing viewport pixel budget.
+New camera revisions still validate the source before publishing reused pixels.
+Downsampling keeps its filtered worker path, and PDF/document rasterization is
+uncapped by this image-only rule. Source-resolution image tiles request nearest
+sampling for magnification; reduced-density tiles and documents keep smooth
+presentation.
+The UI requests its initial viewport from the actual native canvas and display
+scale. Each accepted image frame retains explicit physical viewport dimensions;
+its pixels are converted to logical display coordinates without stretching them
+to a different-sized canvas. Native DPI changes and image toolbar/status layout
+changes therefore do not temporarily change the image's declared zoom while a
+replacement frame is prepared. Rejected frames cannot update these dimensions.
+
+The host also rejects
 a reply whose declared payload exceeds the requested raster before allocating its
 body. These are host changes; the independent wire/SDK version is unchanged.
 

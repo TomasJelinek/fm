@@ -32,14 +32,20 @@ impl Camera {
             self.last_request = None;
             self.suspended = false;
         }
-        self.factor = f64::from(native_scale) / info.zoom;
         self.info = Some(info.clone());
+        self.set_native_scale(native_scale);
         self.grid = grid;
         if let Some(target) = self.waiting
             && self.covered(target)
         {
             self.origin = target;
             self.waiting = None;
+        }
+    }
+
+    pub fn set_native_scale(&mut self, native_scale: f32) {
+        if let Some(info) = &self.info {
+            self.factor = f64::from(native_scale) / info.zoom;
         }
     }
 

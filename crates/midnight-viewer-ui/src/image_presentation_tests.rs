@@ -195,9 +195,14 @@ fn scrollbar_latest_target_survives_stale_reply_and_only_new_frontier_uploads() 
     open.window.invoke_seek(0.75);
     open.window.invoke_seek(0.9);
     assert!((open.window.get_position() - 0.9).abs() < 0.0001);
+    let viewport = [
+        open.window.get_image_viewport_width(),
+        open.window.get_image_viewport_height(),
+    ];
     let mut stale = frame();
     stale.revision = 2;
     stale.position = 0.1;
+    stale.image.as_mut().unwrap().visible_source = [800.0, 480.0];
     present_outputs(
         &open,
         &service,
@@ -205,6 +210,14 @@ fn scrollbar_latest_target_survives_stale_reply_and_only_new_frontier_uploads() 
         vec![ViewerOutput::Frame(Box::new(stale))],
     );
     assert!((open.window.get_position() - 0.9).abs() < 0.0001);
+    assert_eq!(
+        [
+            open.window.get_image_viewport_width(),
+            open.window.get_image_viewport_height(),
+        ],
+        viewport,
+        "a rejected frame cannot change retained image geometry",
+    );
     let mut frontier = frame();
     frontier.revision = 3;
     let mut tiles = frontier.tiles.as_ref().unwrap().to_vec();
@@ -707,5 +720,325 @@ fn phased_precise_image_gesture_keeps_residual_pixels_until_guard_tiles_arrive()
         912.0,
         "guard refill lost precise pixels"
     );
+    manager.close_all();
+}
+fn small_opening_frame(revision: u64, viewport: [u32; 2]) -> ViewerFrame {
+    let mut frame = frame();
+    frame.revision = revision;
+    frame.width = viewport[0];
+    frame.height = viewport[1];
+    frame.vertical_extent = 1.0;
+    frame.horizontal_extent = 1.0;
+    let info = frame.image.as_mut().unwrap();
+    info.surface = ViewerSurfaceId(1000 + revision);
+    info.width = 128;
+    info.height = 96;
+    info.zoom = 1.0;
+    info.fitted = true;
+    info.visible_source = viewport.map(f64::from);
+    info.origin = [
+        (128.0 - f64::from(viewport[0])) / 2.0,
+        (96.0 - f64::from(viewport[1])) / 2.0,
+    ];
+    let mut pixels = vec![0; 256 * 256 * 4];
+    for y in 0..96 {
+        for x in 0..128 {
+            let color = if (16..36).contains(&x) && (24..36).contains(&y) {
+                [239, 47, 101, 255]
+            } else {
+                [19, 171, 83, 255]
+            };
+            let offset = (y * 256 + x) * 4;
+            pixels[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    frame.tiles = Some(
+        vec![ViewerTile {
+            id: ViewerTileId(5000 + revision),
+            position: info.origin.map(|origin| -origin as f32),
+            width: 256,
+            height: 256,
+            pixels: Arc::new(ViewerPixels::new(pixels, Arc::new(Pixels)).unwrap()),
+        }]
+        .into(),
+    );
+    frame
+}
+
+fn opening_color_bounds(color: [u8; 3]) -> [u32; 4] {
+    let (size, pixels) = bitmap();
+    let mut bounds = [size.width, size.height, 0, 0];
+    for (index, pixel) in pixels.iter().enumerate() {
+        if [pixel.r, pixel.g, pixel.b] == color {
+            let x = index as u32 % size.width;
+            let y = index as u32 / size.width;
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x + 1);
+            bounds[3] = bounds[3].max(y + 1);
+        }
+    }
+    assert!(
+        bounds[0] < bounds[2] && bounds[1] < bounds[3],
+        "missing image color {color:?}"
+    );
+    bounds
+}
+
+#[test]
+fn opening_small_image_keeps_physical_pixels_while_dpi_and_compact_chrome_settle() {
+    let (_runtime, manager, open, service) = open();
+    open.timer.stop();
+    open.image_redraw.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    open.window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
+    for (index, width) in [900.0, 420.0].into_iter().enumerate() {
+        let compact = width < 500.0;
+        open.window.set_compact(compact);
+        open.window.set_narrow_typography(compact);
+        open.window.set_image_mode(false);
+        open.window
+            .window()
+            .set_size(slint::LogicalSize::new(width, 600.0));
+        bitmap();
+        let opening_height = open.window.get_content_height();
+        // Reproduce a frame requested before native DPI and image-mode chrome
+        // settled. Its 100% pixels must retain their physical size on arrival.
+        let revision = 2 + index as u64 * 2;
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(small_opening_frame(
+                revision,
+                [width as u32, 552],
+            )))],
+        );
+        let first_image = opening_color_bounds([19, 171, 83]);
+        let first_marker = opening_color_bounds([239, 47, 101]);
+        if compact {
+            assert!(open.window.get_content_height() < opening_height);
+        }
+        let viewport = image_viewport(&open).map(|value| value as u32);
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(small_opening_frame(
+                revision + 1,
+                viewport,
+            )))],
+        );
+        let settled_image = opening_color_bounds([19, 171, 83]);
+        let settled_marker = opening_color_bounds([239, 47, 101]);
+        for (name, first, settled, expected) in [
+            ("image", first_image, settled_image, [128, 96]),
+            ("marker", first_marker, settled_marker, [20, 12]),
+        ] {
+            for axis in 0..2 {
+                let first_extent = first[axis + 2] - first[axis];
+                let settled_extent = settled[axis + 2] - settled[axis];
+                assert!(
+                    first_extent.abs_diff(expected[axis]) <= 1,
+                    "compact={compact} {name} axis={axis}: first={first_extent}, settled={settled_extent}, expected={}",
+                    expected[axis],
+                );
+                assert!(settled_extent.abs_diff(expected[axis]) <= 1);
+                assert!(first_extent.abs_diff(settled_extent) <= 1);
+                assert!(first[axis].abs_diff(settled[axis]) <= 1);
+            }
+        }
+    }
+    manager.close_all();
+}
+#[test]
+fn rejected_open_does_not_leave_a_visible_native_window() {
+    let (_runtime, manager, _open, _service) = open();
+    let path = std::env::temp_dir().join("invalid-image-preferences.bmp");
+    let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
+    let mut preferences = ViewerPreferences::default();
+    preferences.text_font.size = 0;
+    let result = manager.open(
+        ViewerLaunch {
+            associations: Default::default(),
+            tree: None,
+            generated: None,
+            preferences: Arc::new(preferences),
+            archive: None,
+            view: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+            focused: path,
+            basic: false,
+            disabled_plugins: Arc::from([]),
+        },
+        ViewerAppearance {
+            family: "monospace".into(),
+            font_size: 14.0,
+            foreground: [255; 4],
+            background: [0, 0, 0, 255],
+            selection: [55; 4],
+            accent: [150; 4],
+        },
+        slint::LogicalSize::new(420.0, 320.0),
+        Rc::new(|_, _| None),
+        Rc::new(|_| {}),
+    );
+    assert!(result.is_err());
+    assert!(TEST_WINDOW.with(|slot| {
+        slot.borrow()
+            .upgrade()
+            .is_none_or(|adapter| !adapter.window().is_visible())
+    }));
+    assert_eq!(manager.windows.borrow().len(), 1);
+    manager.close_all();
+}
+#[test]
+fn dpi_change_preserves_first_drag_distance_before_resize_frame() {
+    let (_runtime, manager, open, service) = open();
+    open.timer.stop();
+    open.image_redraw.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    open.window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
+    let mut initial = frame();
+    initial.revision = 2;
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(Box::new(initial))],
+    );
+    for (scale, source_distance) in [(1.0, 10.0), (2.0, 20.0)] {
+        open.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                scale_factor: scale,
+            });
+        let before = open.image_camera.borrow().origin;
+        // No timer, redraw or replacement frame intervenes before this gesture.
+        open.window.invoke_image_drag(-10.0, -10.0);
+        let after = open.image_camera.borrow().origin;
+        assert_eq!(after, before.map(|origin| origin + source_distance));
+        assert_eq!(open.window.get_image_pixel_scale(), 1.0 / scale);
+    }
+    manager.close_all();
+}
+#[test]
+fn source_resolution_tiles_reuse_pixels_across_magnified_camera_surfaces() {
+    use slint::Model;
+
+    let (_runtime, manager, open, service) = open();
+    open.timer.stop();
+    open.image_redraw.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    open.window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
+    open.window
+        .window()
+        .set_size(slint::LogicalSize::new(900.0, 600.0));
+    bitmap();
+    let viewport = image_viewport(&open).map(|value| value as u32);
+    let source = small_opening_frame(2, viewport).tiles.as_ref().unwrap()[0]
+        .pixels
+        .clone();
+    let expected_uploads = open.window.get_tile_upload_count() + 1;
+    // Slint software renderer 1.18.1 stores the inverse texture scale in 8
+    // fractional bits: these zooms use steps 204/256, 128/256 and 85/256.
+    // Truncated sample positions can extend a solid block by a few pixels:
+    // at 3x, ceil(128 * 256 / 85) = 386 and ceil(96 * 256 / 85) = 290.
+    // Keep exact sampler expectations alongside strict destination geometry.
+    for (index, (zoom, sampled_image, sampled_marker)) in [
+        (1.25, [161, 121], [25, 15]),
+        (2.0, [256, 192], [40, 24]),
+        (3.0, [386, 290], [60, 36]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let revision = 2 + index as u64;
+        let mut enlarged = small_opening_frame(revision, viewport);
+        let info = enlarged.image.as_mut().unwrap();
+        info.zoom = zoom;
+        info.fitted = false;
+        info.visible_source = viewport.map(|extent| f64::from(extent) / zoom);
+        info.origin = [
+            (128.0 - info.visible_source[0]) / 2.0,
+            (96.0 - info.visible_source[1]) / 2.0,
+        ];
+        enlarged.tiles = Some(
+            vec![ViewerTile {
+                id: ViewerTileId(9000),
+                position: info.origin.map(|origin| -origin as f32),
+                width: 256,
+                height: 256,
+                pixels: source.clone(),
+            }]
+            .into(),
+        );
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(enlarged))],
+        );
+        assert!(open.window.get_image_native_pixels());
+        assert_eq!(open.window.get_tile_upload_count(), expected_uploads);
+        let tile = open.window.get_image_tiles().row_data(0).unwrap();
+        let canvas = image_viewport(&open).map(f64::from);
+        let declared = [
+            f64::from(open.window.get_image_viewport_width()),
+            f64::from(open.window.get_image_viewport_height()),
+        ];
+        for axis in 0..2 {
+            let tile_extent = f64::from([tile.width, tile.height][axis]) * declared[axis];
+            assert!((tile_extent - 256.0 * zoom).abs() < 0.001);
+            let coordinate = f64::from([tile.x, tile.y][axis]);
+            let offset = f64::from(
+                [
+                    open.window.get_tile_offset_x(),
+                    open.window.get_tile_offset_y(),
+                ][axis],
+            );
+            let image_start =
+                (canvas[axis] - declared[axis]) / 2.0 + (coordinate - offset) * declared[axis];
+            let expected_start = (canvas[axis] - [128.0, 96.0][axis] * zoom) / 2.0;
+            assert!((image_start - expected_start).abs() < 0.001);
+        }
+        let image = opening_color_bounds([19, 171, 83]);
+        let marker = opening_color_bounds([239, 47, 101]);
+        for (bounds, expected) in [(image, sampled_image), (marker, sampled_marker)] {
+            assert_eq!(
+                [bounds[2] - bounds[0], bounds[3] - bounds[1]],
+                expected,
+                "zoom={zoom}: software sample bounds={bounds:?}",
+            );
+        }
+        let (size, pixels) = bitmap();
+        for y in marker[1]..marker[3] {
+            for x in marker[0]..marker[2] {
+                let pixel = pixels[(y * size.width + x) as usize];
+                assert_eq!([pixel.r, pixel.g, pixel.b], [239, 47, 101]);
+            }
+        }
+    }
+    // Reduced-density rasters and PDF retain their existing smooth sampler.
+    for (index, page, raster_scale) in [(0, 0, 0.75), (1, 1, 1.0)] {
+        let mut other = small_opening_frame(10 + index, viewport);
+        let info = other.image.as_mut().unwrap();
+        info.zoom = 2.0;
+        info.page = page;
+        info.raster_scale = raster_scale;
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(other))],
+        );
+        assert!(!open.window.get_image_native_pixels());
+    }
     manager.close_all();
 }

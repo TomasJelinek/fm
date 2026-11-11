@@ -19,6 +19,13 @@ export component ViewerWindow inherits Window {
     in property <float> raster-offset-x;
     in property <float> raster-offset-y;
     in property <int> raster-upload-count;
+    // Frame dimensions are physical pixels; the canvas is in logical pixels.
+    in property <float> image-viewport-width;
+    in property <float> image-viewport-height;
+    in property <float> image-pixel-scale: 1;
+    in property <bool> image-native-pixels;
+    private property <length> image-width: root.image-viewport-width * root.image-pixel-scale * 1px;
+    private property <length> image-height: root.image-viewport-height * root.image-pixel-scale * 1px;
     in property <[ViewerRasterTile]> image-tiles;
     in property <float> tile-offset-x;
     in property <float> tile-offset-y;
@@ -191,7 +198,15 @@ export component ViewerWindow inherits Window {
                     accessible-role: text;
                     accessible-label: "File content";
                     accessible-value: root.accessible-text;
-                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.tiled && !root.retained-raster; }
+                    Image {
+                        source: root.surface;
+                        x: root.image-mode ? (canvas.width - root.image-width) / 2 : 0px;
+                        y: root.image-mode ? (canvas.height - root.image-height) / 2 : 0px;
+                        width: root.image-mode ? root.image-width : canvas.width;
+                        height: root.image-mode ? root.image-height : canvas.height;
+                        image-fit: fill;
+                        visible: !root.tiled && !root.retained-raster;
+                    }
                     if root.retained-raster: Rectangle {
                         x: root.raster-gutter-width * canvas.width;
                         width: canvas.width - self.x; height: canvas.height; clip: true;
@@ -215,11 +230,12 @@ export component ViewerWindow inherits Window {
                     for tile in root.image-tiles: Image {
                         visible: root.tiled;
                         source: tile.image;
-                        x: (tile.x - root.tile-offset-x) * parent.width;
-                        y: (tile.y - root.tile-offset-y) * parent.height;
-                        width: tile.width * parent.width;
-                        height: tile.height * parent.height;
+                        x: (canvas.width - root.image-width) / 2 + (tile.x - root.tile-offset-x) * root.image-width;
+                        y: (canvas.height - root.image-height) / 2 + (tile.y - root.tile-offset-y) * root.image-height;
+                        width: tile.width * root.image-width;
+                        height: tile.height * root.image-height;
                         image-fit: fill;
+                        image-rendering: root.image-native-pixels ? ImageRendering.pixelated : ImageRendering.smooth;
                     }
                     content-focus := FocusScope {}
                     TouchArea {

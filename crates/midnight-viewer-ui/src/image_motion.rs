@@ -50,7 +50,16 @@ fn wake(open: &OpenWindow) {
     open.window.window().request_redraw();
 }
 
+/// Input and retained pixels share the current native DPI even before the
+/// resize worker supplies a new frame or the next geometry timer runs.
+pub(super) fn refresh_scale(open: &OpenWindow) {
+    let scale = open.window.window().scale_factor();
+    open.window.set_image_pixel_scale(1.0 / scale);
+    open.image_camera.borrow_mut().set_native_scale(scale);
+}
+
 pub(super) fn push(open: &OpenWindow, x: f32, y: f32, direct: bool) -> bool {
+    refresh_scale(open);
     let accepted = open.image_camera.borrow_mut().push(x, y, now(open), direct);
     if accepted {
         if direct {
@@ -70,6 +79,7 @@ pub(super) fn seek(open: &OpenWindow, axis: usize, position: f64) {
 }
 
 pub(super) fn present(open: &OpenWindow) {
+    refresh_scale(open);
     let Some(info) = open.image_info.borrow().clone() else {
         return;
     };
@@ -114,6 +124,7 @@ fn step(open: &OpenWindow) {
     if open.closed.get() || !open.window.get_tiled() {
         return;
     }
+    refresh_scale(open);
     if open.image_camera.borrow_mut().tick(now(open)) {
         present(open);
     } else {

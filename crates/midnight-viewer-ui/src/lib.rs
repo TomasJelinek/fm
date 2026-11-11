@@ -238,14 +238,25 @@ impl ViewerWindows {
                 + u16::from(appearance.background[2])
                 > 384,
         );
-        let geometry = ViewerGeometry {
-            width: size.width.max(1.0) as u32,
-            height: (size.height - 48.0).max(1.0) as u32,
-            scale: window.window().scale_factor(),
+        // Showing synchronizes the Slint layout with the native client size and
+        // monitor scale. The first backend viewport uses the same physical
+        // canvas measurement as subsequent resize requests.
+        if let Err(error) = window.show() {
+            let _ = window.hide();
+            self.service.retire(launch);
+            return Err(error.to_string());
+        }
+        let geometry = window_geometry(&window);
+        let session = match self.service.open(launch, appearance, geometry) {
+            Ok(session) => Rc::new(session),
+            Err(error) => {
+                let _ = window.hide();
+                return Err(error);
+            }
         };
-        let session = Rc::new(self.service.open(launch, appearance, geometry)?);
         if !session.send(ViewerInput::RetainedRaster(true)) {
             session.close();
+            let _ = window.hide();
             return Err("Viewer input is unavailable.".into());
         }
         let input = Rc::downgrade(&session);
@@ -258,7 +269,7 @@ impl ViewerWindows {
             timer: Timer::default(),
             closed: Cell::new(false),
             ready: RefCell::new(Some(ready)),
-            last_geometry: Cell::new((0, 0, 0)),
+            last_geometry: Cell::new((geometry.width, geometry.height, geometry.scale.to_bits())),
             frame: Cell::new(0),
             frame_generation: Cell::new(0),
             raster_size: Cell::new((1, 1)),
@@ -296,12 +307,12 @@ impl ViewerWindows {
                 }
                 let window = &open.window;
                 preferences::present_font_catalog(&open);
-                let scale = window.window().scale_factor();
-                let width = window.window().size().to_logical(scale).width;
-                window.set_compact(width < 500.0);
-                window.set_narrow_typography(width < 680.0);
-                let width = (window.get_content_width() * scale).max(1.0) as u32;
-                let height = (window.get_content_height() * scale).max(1.0) as u32;
+                image_motion::refresh_scale(&open);
+                let ViewerGeometry {
+                    width,
+                    height,
+                    scale,
+                } = window_geometry(window);
                 let geometry = (width, height, scale.to_bits());
                 if geometry != open.last_geometry.get()
                     && open.session.send(ViewerInput::Resize(ViewerGeometry {
@@ -328,7 +339,6 @@ impl ViewerWindows {
                 image_motion::fallback(&open);
                 flush_position(&open);
             });
-        open.window.show().map_err(|e| e.to_string())?;
         open.window.invoke_focus_content();
         let weak_window = open.window.as_weak();
         self.windows.borrow_mut().push(open);
@@ -339,6 +349,19 @@ impl ViewerWindows {
         for open in self.windows.borrow_mut().drain(..) {
             close(&open);
         }
+    }
+}
+
+fn window_geometry(window: &ViewerWindow) -> ViewerGeometry {
+    let scale = window.window().scale_factor();
+    let width = window.window().size().to_logical(scale).width;
+    window.set_compact(width < 500.0);
+    window.set_narrow_typography(width < 680.0);
+    window.set_image_pixel_scale(1.0 / scale);
+    ViewerGeometry {
+        width: (window.get_content_width() * scale).max(1.0) as u32,
+        height: (window.get_content_height() * scale).max(1.0) as u32,
+        scale,
     }
 }
 
@@ -623,6 +646,15 @@ fn present_outputs(
                     window.invoke_focus_content();
                 }
                 window.set_image_mode(image_mode);
+                if let Some(info) = &frame.image {
+                    // A frame retains its physical viewport while native DPI or
+                    // mode-dependent chrome settles. Stretching it to today's
+                    // canvas would silently change its declared image zoom.
+                    window.set_image_pixel_scale(1.0 / window.window().scale_factor());
+                    window.set_image_native_pixels(info.page == 0 && info.raster_scale == 1.0);
+                    window.set_image_viewport_width((info.visible_source[0] * info.zoom) as f32);
+                    window.set_image_viewport_height((info.visible_source[1] * info.zoom) as f32);
+                }
                 let web_mode = frame.mode == VIEWER_MODE_HTML;
                 if web_mode != window.get_web_mode() {
                     window.set_web_network(false);

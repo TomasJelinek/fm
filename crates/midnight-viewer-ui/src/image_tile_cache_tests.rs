@@ -91,3 +91,107 @@ fn wide_diagonal_transition_evicts_optional_guards_and_preserves_both_visible_re
     assert!(textures.textures.len() <= MAX_ENTRIES);
     assert!(textures.bytes <= MAX_BYTES);
 }
+fn transparent_tile(id: u64, position: [f32; 2]) -> ViewerTile {
+    ViewerTile {
+        id: ViewerTileId(id),
+        position,
+        width: 256,
+        height: 256,
+        pixels: Arc::new(ViewerPixels::transparent(256 * 256 * 4, Arc::new(Charge)).unwrap()),
+    }
+}
+
+#[test]
+fn transparent_tiles_cover_camera_motion_without_uploads_or_image_rows() {
+    let mut textures = Textures::default();
+    let info = info([0.0; 2]);
+    let model = textures
+        .receive(&[transparent_tile(1, [0.0; 2])], &info, info.origin, true)
+        .unwrap();
+    assert_eq!(model.row_count(), 0);
+    assert_eq!(textures.uploads, 0);
+    assert_eq!(textures.bytes, 0);
+    let mut camera = crate::image_camera::Camera::default();
+    camera.receive(&info, 1.0, textures.grid());
+    assert!(camera.push(10.0, 12.0, std::time::Duration::ZERO, true));
+    assert!(camera.tick(std::time::Duration::ZERO));
+    assert_eq!(camera.origin, [10.0, 12.0]);
+}
+
+#[test]
+fn replacing_visible_tiles_with_transparent_coverage_removes_rows_and_reuses_cached_images() {
+    let mut textures = Textures::default();
+    let visible = tile([0.0; 2]);
+    let info = info([0.0; 2]);
+    let model = textures
+        .receive(std::slice::from_ref(&visible), &info, info.origin, true)
+        .unwrap();
+    assert_eq!(model.row_count(), 1);
+    assert_eq!(textures.uploads, 1);
+    let blank = textures
+        .receive(&[transparent_tile(2, [0.0; 2])], &info, info.origin, false)
+        .unwrap();
+    assert_eq!(model, blank);
+    assert_eq!(blank.row_count(), 0);
+    assert_eq!(textures.uploads, 1);
+    assert_eq!(textures.grid(), HashSet::from([[0, 0]]));
+    let restored = textures
+        .receive(&[visible], &info, info.origin, false)
+        .unwrap();
+    assert_eq!(model, restored);
+    assert_eq!(restored.row_count(), 1);
+    assert_eq!(textures.uploads, 1);
+}
+
+#[test]
+fn transparent_metadata_is_bounded_and_eviction_removes_old_camera_coverage() {
+    let mut textures = Textures::default();
+    let pixels = Arc::new(ViewerPixels::transparent(256 * 256 * 4, Arc::new(Charge)).unwrap());
+    for index in 0..=MAX_ENTRIES {
+        let info = ViewerImageInfo {
+            width: 65536,
+            ..info([index as f64 * 256.0, 0.0])
+        };
+        let tile = ViewerTile {
+            id: ViewerTileId(index as u64 + 1),
+            position: [0.0; 2],
+            width: 256,
+            height: 256,
+            pixels: pixels.clone(),
+        };
+        let model = textures
+            .receive(&[tile], &info, info.origin, false)
+            .unwrap();
+        assert_eq!(model.row_count(), 0);
+        assert!(textures.textures.len() <= MAX_ENTRIES);
+    }
+    assert_eq!(textures.textures.len(), MAX_ENTRIES);
+    assert_eq!(textures.grid().len(), MAX_ENTRIES);
+    assert!(!textures.grid().contains(&[0, 0]));
+    assert!(textures.grid().contains(&[MAX_ENTRIES as i32, 0]));
+    assert_eq!(textures.bytes, 0);
+    assert_eq!(textures.uploads, 0);
+}
+
+#[test]
+fn reused_tile_identity_cannot_change_transparency() {
+    for transparent_first in [false, true] {
+        let mut textures = Textures::default();
+        let visible = tile([0.0; 2]);
+        let transparent = transparent_tile(visible.id.0, [0.0; 2]);
+        let (first, replacement) = if transparent_first {
+            (transparent, visible)
+        } else {
+            (visible, transparent)
+        };
+        let info = info([0.0; 2]);
+        textures
+            .receive(&[first], &info, info.origin, true)
+            .unwrap();
+        assert!(
+            textures
+                .receive(&[replacement], &info, info.origin, false)
+                .is_err()
+        );
+    }
+}

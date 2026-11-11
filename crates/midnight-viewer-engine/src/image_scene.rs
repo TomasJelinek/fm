@@ -9,10 +9,11 @@ use std::sync::{Arc, atomic::AtomicU64};
 pub(crate) struct Scene {
     ids: Arc<AtomicU64>,
     cache: Tiles,
-    signature: Option<(usize, u64, [u32; 2])>,
+    signature: Option<(usize, u64, u64, [u32; 2])>,
     pub surface: ViewerSurfaceId,
     pub sequence: u64,
     previous_origin: [f64; 2],
+    raster_image_size: [f64; 2],
     direction: [f64; 2],
     pub plan: Option<Plan>,
 }
@@ -26,15 +27,48 @@ impl Scene {
             surface: ViewerSurfaceId(0),
             sequence: 0,
             previous_origin: [0.0; 2],
+            raster_image_size: [0.0; 2],
             direction: [0.0; 2],
             plan: None,
         }
     }
 
     pub fn update(&mut self, page: usize, geometry: &ImageGeometry) -> Result<(), String> {
-        let (size, density) = geometry.raster_geometry();
-        let scale = geometry.scale * density;
-        let signature = (page, scale.to_bits(), geometry.viewport);
+        self.update_camera(page, geometry, true)
+    }
+
+    pub fn update_document(&mut self, page: usize, geometry: &ImageGeometry) -> Result<(), String> {
+        self.update_camera(page, geometry, false)
+    }
+
+    fn update_camera(
+        &mut self,
+        page: usize,
+        geometry: &ImageGeometry,
+        retain_source_pixels: bool,
+    ) -> Result<(), String> {
+        let (mut size, density) = geometry.raster_geometry();
+        let requested_scale = geometry.scale * density;
+        let scale = if retain_source_pixels {
+            requested_scale.min(1.0)
+        } else {
+            requested_scale
+        };
+        if scale < requested_scale {
+            // Magnification changes presentation coordinates, not retained source pixels.
+            // Plan's extra fractional pixel still covers the rounded-down viewport edge.
+            size = geometry
+                .viewport
+                .map(|edge| (f64::from(edge) * (scale / geometry.scale)).max(1.0) as u32);
+        }
+        self.raster_image_size =
+            [geometry.width, geometry.height].map(|size| f64::from(size) * scale);
+        let signature = (
+            page,
+            scale.to_bits(),
+            geometry.scale.to_bits(),
+            geometry.viewport,
+        );
         if self.signature != Some(signature) {
             self.surface = ViewerSurfaceId(image_tiles::next_id(&self.ids)?);
             self.sequence = 0;
@@ -77,13 +111,34 @@ impl Scene {
         true
     }
 
-    pub fn next(&self) -> Option<(Key, Arc<image_tiles::Charge>)> {
-        let key = self
-            .plan
-            .as_ref()?
-            .keys()
-            .find(|key| !self.cache.contains(*key))?;
-        Some((key, self.cache.reserve()?))
+    /// Prepare transparent letterbox tiles locally; only source pixels need the decoder.
+    pub fn next(&mut self) -> Result<Option<(Key, Arc<image_tiles::Charge>)>, String> {
+        let Some(plan) = &self.plan else {
+            return Ok(None);
+        };
+        for key in plan.keys() {
+            if self.cache.contains(key) {
+                continue;
+            }
+            let Some(charge) = self.cache.reserve() else {
+                return Ok(None);
+            };
+            let outside = key.x < 0
+                || key.y < 0
+                || f64::from(key.x) * f64::from(image_tiles::EDGE) >= self.raster_image_size[0]
+                || f64::from(key.y) * f64::from(image_tiles::EDGE) >= self.raster_image_size[1];
+            if !outside {
+                return Ok(Some((key, charge)));
+            }
+            // Preserve the complete camera grid and ordinary allocation ownership.
+            // Publishing still waits for this revision's source validation in ImageView.
+            let pixels = ViewerPixels::transparent(
+                image_tiles::EDGE as usize * image_tiles::EDGE as usize * 4,
+                charge,
+            )?;
+            self.cache.insert(key, Arc::new(pixels), plan)?;
+        }
+        Ok(None)
     }
 
     pub fn needs_tiles(&self) -> bool {
@@ -96,7 +151,7 @@ impl Scene {
         let Some(plan) = &self.plan else {
             return Ok(());
         };
-        // Keep a useful in-flight pan tile; never install an old page or zoom reply.
+        // Keep useful in-flight source pixels; page and sampling-scale changes have distinct keys.
         if !plan.keys().any(|needed| needed == key) {
             return Ok(());
         }

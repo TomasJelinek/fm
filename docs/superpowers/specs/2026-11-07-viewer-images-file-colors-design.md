@@ -105,3 +105,22 @@ theme/selection states. Update developer API, design, hotkeys and dependency doc
   optimization for backend hot paths. Further size optimization must be measured
   against the same source and exercised with representative UI workloads before
   becoming the release default.
+
+## Image opening and zoom correction, 11 November 2026
+
+The initial image viewport uses the realized native canvas in physical pixels.
+Rendered image tiles retain their physical dimensions while DPI or image controls
+settle; a 100% image must never appear enlarged before the first resize response.
+Both GPU and software presentation follow this rule. A failed viewer opening must
+close its newly created native window.
+
+Zoom requests reuse source-resolution tiles and texture identities for
+magnification; the renderer scales those pixels instead of receiving new enlarged
+rasters. Display zoom still changes camera surface identity and requires source
+validation. Downsample filtering and PDF rasterization retain their own paths.
+Transparent tiles outside the
+image are generated in the backend without decoder IPC; boundary tiles use normal
+sampling. Complete camera coverage, bounded memory, stale-response rejection and
+source validation remain required. See the [image API](../../developer/IMAGE_VIEWER_API.md)
+for the implementation contract and [verification](../../verification/2026-11-11-image-opening-zoom.md)
+for the focused regression and native before/after evidence.
