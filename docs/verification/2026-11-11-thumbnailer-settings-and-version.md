@@ -29,7 +29,7 @@ in the root Cargo workspace. Explicit root exclusions now preserve their nested
 workspace versions. This follows [Cargo's workspace membership rules](https://doc.rust-lang.org/cargo/reference/workspaces.html#the-members-and-exclude-fields).
 Metadata confirmed exactly 23 application members under `crates/`; the root
 lockfile changes only their versions and the local engine-to-thumbnail-host edge.
-Independent plugin/API manifests and their lockfiles were not rewritten.
+The version bump did not rewrite independent plugin/API manifests or their lockfiles.
 
 ## Verification scope
 
@@ -90,3 +90,35 @@ catalog delivery test. Final logs carry the `-0.2` suffix. Test-body times were
 1.10 s across Settings targets, 0.22 s for the engine regression, 0.36 s for the
 ordinary host suite and 0.08 s for the seven-test catalog rerun. Compilation is
 reported separately in those logs; it is not hidden in the execution times.
+
+## CI checksum follow-up
+
+The archive CI jobs exposed a stale `midnight-filesystem-api` 0.3.0 checksum in
+`plugins/midnight-fs-archive/Cargo.lock`. Comparing a freshly generated canonical
+worker SDK bundle with the previous bundle found exactly one changed member:
+`PROTOCOL.md` lost its final blank line (6800 to 6799 bytes). The other five SDK
+archives were byte-identical; Git provenance, tar metadata and line endings did
+not cause this mismatch. Only that first-party checksum was updated, preserving
+all package versions, third-party checksums and `--locked` enforcement. Evidence
+for this follow-up is under `D:/experiments/dev/FM/_build/qa/sdk-checksum/`.
+The existing 0.2 application tests, executable and deployment recorded above
+remain unchanged; no new application build was needed.
+
+- A fresh bundle was generated with `cargo run --manifest-path api/Cargo.toml -p
+  midnight-api-package --bin worker-packages --locked --offline --
+  D:/experiments/dev/FM D:/experiments/dev/FM/_build/qa/sdk-checksum/releases`
+  (`fresh-package.log`). Its configuration is
+  `releases/worker-sdk-1794356045532782900/.cargo/registry.toml` beneath the
+  evidence directory, referenced below as `$sdk`.
+- `cargo --config $sdk fetch --manifest-path plugins/midnight-fs-archive/Cargo.toml
+  --locked --offline` reproduced the checksum failure before the correction
+  (`archive-red.log`) and passed afterward (`archive-fetch-green.log`).
+- `cargo test --config $sdk --manifest-path plugins/midnight-fs-archive/Cargo.toml
+  --all-targets --locked --offline`: **37 passed, 0 failed, 3 documented opt-ins
+  ignored**, across 12 targets (`archive-tests.log`).
+- `cargo clippy --config $sdk --manifest-path plugins/midnight-fs-archive/Cargo.toml
+  --all-targets --locked --offline -- -D warnings` passed (`archive-clippy.log`).
+- `cargo test --manifest-path api/Cargo.toml -p midnight-api-package --lib --locked
+  --offline`: **4 passed**, including canonical archive determinism checks
+  (`packager-tests.log`). Archive `cargo fmt --all -- --check` passed using its
+  manifest (`archive-format.log`); `git diff --check` passed.
