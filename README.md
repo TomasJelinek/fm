@@ -32,7 +32,7 @@ Supported desktop targets are **Windows x64 with MSVC** and **Linux**, including
 Ubuntu and Linux Mint. macOS is planned; it has no platform adapter and does not
 currently build. Slint's own macOS support does not change Midnight Explorer's platform support.
 
-Install [Rust with rustup](https://rust-lang.org/tools/install/), then reopen your
+For native builds, install [Rust with rustup](https://rust-lang.org/tools/install/), then reopen your
 terminal so `cargo` and `rustup` are on `PATH`. The repository pins **Rust 1.99.1**
 with rustfmt and Clippy in [rust-toolchain.toml](rust-toolchain.toml). From the
 repository root, `rustup show` selects/downloads that toolchain. Cargo downloads
@@ -43,7 +43,11 @@ The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. They accept no argument
 (debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They do not install system packages or launch the application.
+exit status. On Linux, `build.sh` uses Docker when native build dependencies are
+missing, installing packages and the pinned Rust toolchain inside the image.
+For native builds it installs Rust through rustup when Cargo is unavailable.
+Neither path uses host sudo. `build.bat` expects prerequisites to be installed already.
+Neither helper launches the application.
 Output paths below assume the default native target and no `CARGO_TARGET_DIR`
 override. Cargo's checked-in configuration puts compiled and generated output
 under `_build/`. The build helpers also keep their child processes'
@@ -105,16 +109,53 @@ that PowerShell helper. Regular `cargo` commands use the ordinary `--` separator
 
 ### Linux / Ubuntu / Mint
 
-Install the native compiler/linker and development libraries used by the current
-Linux build. This matches the repository's CI prerequisites plus `build-essential`:
+Run `./build.sh` or `./build.sh release`. When the native compiler or required
+libraries are missing, the helper builds an Ubuntu 24.04 Docker image containing
+the dependencies and pinned Rust toolchain. Docker must already be running and
+accessible to your user without sudo. The first build needs internet access;
+subsequent builds reuse the image and Cargo cache.
+
+Run `./build.sh clean` to remove generated files under `_build/`, including debug
+and release binaries, temporary files, and build logs. It preserves `_build/docker/`
+and the cached Docker dependency image, so the next build can reuse downloaded
+crates and installed tools. Cleaning needs no Cargo, Docker, network, or sudo.
+It cleans the repository's `_build/` directory only; use `cargo clean` separately
+if you build natively with a custom `CARGO_TARGET_DIR`.
+
+The container mounts source read-only and writes output as your user under
+`_build/`; Cargo downloads and the container home are under `_build/docker/`.
+The Docker build always writes to `_build/`, regardless of host `CARGO_TARGET_DIR`.
+The resulting binary targets Ubuntu 24.04 or a compatible system and needs the
+usual desktop runtime libraries to run outside the container.
+
+To choose the build environment explicitly:
+
+```sh
+FM_BUILD_BACKEND=docker ./build.sh release
+FM_BUILD_BACKEND=native ./build.sh release
+```
+
+The default is `FM_BUILD_BACKEND=auto`. Native mode expects the native libraries
+to be present and can install Rust in your user account without sudo.
+If Docker's default DNS cannot resolve package servers, set an accessible DNS
+server for both image setup and the build, for example
+`FM_DOCKER_DNS=1.1.1.1 ./build.sh release`. This does not change host DNS settings.
+
+For manual setup, install the native compiler/linker and development libraries
+used by the current Linux build. Other distributions need equivalent packages
+installed through their own package manager. These optional manual commands
+change the host; the Docker build above does not:
 
 ```sh
 sudo apt update
-sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype6-dev \
+sudo apt install build-essential pkg-config curl ca-certificates libfontconfig1-dev libfreetype6-dev \
     libxkbcommon-dev libx11-dev libxcb1-dev libwayland-dev libudev-dev
 ```
 
-Install Rust using the [official rustup instructions](https://rust-lang.org/tools/install/),
+For native builds, `build.sh` finds an existing Cargo under `${CARGO_HOME:-$HOME/.cargo}/bin` even if
+it is missing from `PATH`, or installs rustup when Cargo is absent. Cargo then
+selects the pinned toolchain from `rust-toolchain.toml`.
+For manual Rust setup, use the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
 Build using the POSIX helper or Cargo:
 

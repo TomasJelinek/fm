@@ -21,6 +21,9 @@ jobs:
       - name: Linux prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libx11-dev libxcb1-dev libwayland-dev libudev-dev
+      - name: Build helper tests
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-build.py
       - name: Install pinned toolchain
         run: rustup show
       - name: Format
