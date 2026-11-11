@@ -11,6 +11,8 @@ mod image_zoom;
 mod opening_retirement_tests;
 #[cfg(test)]
 mod opening_tests;
+mod pixel_delivery;
+mod pixel_preparation;
 mod preferences;
 mod raster_camera;
 mod raster_motion;
@@ -69,6 +71,9 @@ struct OpenWindow {
     timer: Timer,
     closed: Cell<bool>,
     ready: RefCell<Option<OpenReady>>,
+    opening_succeeded: Cell<bool>,
+    preparation: RefCell<Option<pixel_preparation::Preparation>>,
+    prepared_pixels: RefCell<Option<pixel_preparation::PreparedPixels>>,
     last_geometry: Cell<(u32, u32, u32)>,
     frame: Cell<u64>,
     frame_generation: Cell<u64>,
@@ -96,6 +101,17 @@ impl OpenWindow {
         let ready = self.ready.borrow_mut().take();
         if let Some(ready) = ready {
             ready(result);
+        }
+    }
+
+    fn acknowledge_opening(&self, result: Option<Result<(), String>>) {
+        match result {
+            Some(Ok(())) => self.opening_succeeded.set(true),
+            Some(Err(error)) => self.opened(Err(error)),
+            None => {}
+        }
+        if self.frame.get() != 0 && self.opening_succeeded.replace(false) {
+            self.opened(Ok(()));
         }
     }
 
@@ -269,6 +285,9 @@ impl ViewerWindows {
             timer: Timer::default(),
             closed: Cell::new(false),
             ready: RefCell::new(Some(ready)),
+            opening_succeeded: Cell::new(false),
+            preparation: RefCell::new(None),
+            prepared_pixels: RefCell::new(None),
             last_geometry: Cell::new((geometry.width, geometry.height, geometry.scale.to_bits())),
             frame: Cell::new(0),
             frame_generation: Cell::new(0),
@@ -294,7 +313,11 @@ impl ViewerWindows {
         preferences::present(&open);
         image_motion::install(&open);
         raster_motion::install(&open);
-        bind_delivery(&open, self.service.clone(), copy.clone());
+        if let Err(error) = pixel_delivery::bind(&open, self.service.clone(), copy.clone()) {
+            open.ready.borrow_mut().take();
+            close(&open);
+            return Err(error);
+        }
         let weak = Rc::downgrade(&open);
         let service = self.service.clone();
         open.timer
@@ -363,25 +386,6 @@ fn window_geometry(window: &ViewerWindow) -> ViewerGeometry {
         height: (window.get_content_height() * scale).max(1.0) as u32,
         scale,
     }
-}
-
-fn bind_delivery(open: &Rc<OpenWindow>, service: Service, copy: Rc<dyn Fn(String)>) {
-    let weak = Rc::downgrade(open);
-    open.window.on_deliver_output(move || {
-        if let Some(open) = weak.upgrade()
-            && !open.closed.get()
-        {
-            present_output(&open, &service, copy.as_ref());
-        }
-    });
-    let window = open.window.as_weak();
-    open.session
-        .mailbox
-        .notify_on_ready(std::sync::Arc::new(move || {
-            window
-                .upgrade_in_event_loop(|window| window.invoke_deliver_output())
-                .is_ok()
-        }));
 }
 
 fn accept_preference(open: &OpenWindow, change: ViewerPreferenceChange) -> bool {
@@ -546,7 +550,7 @@ fn send_input(open: &OpenWindow, input: ViewerInput) -> bool {
 }
 
 fn present_output(open: &OpenWindow, service: &Service, copy: &dyn Fn(String)) {
-    present_outputs(open, service, copy, open.session.mailbox.take());
+    pixel_delivery::receive(open, service, copy);
 }
 
 fn present_outputs(
@@ -580,8 +584,18 @@ fn present_outputs(
                         service.retire(output);
                         continue;
                     }
-                } else if window.get_retained_raster() {
-                    raster_presentation::clear(open);
+                } else {
+                    if frame.image.is_none()
+                        && (frame.generation != open.frame_generation.get()
+                            || open.raster_size.get() != (frame.width, frame.height)
+                            || window.get_image_mode())
+                    {
+                        window.set_raster_viewport_width(window.get_content_width().max(1.0));
+                        window.set_raster_viewport_height(window.get_content_height().max(1.0));
+                    }
+                    if window.get_retained_raster() {
+                        raster_presentation::clear(open);
+                    }
                 }
                 if let (Some(info), Some(tiles)) = (&frame.image, &frame.tiles) {
                     let incoming = open.image_camera.borrow().incoming(info);
@@ -689,12 +703,16 @@ fn present_outputs(
                     .map_or([frame.width, frame.height], |info| info.viewport);
                 open.raster_size.set((width, height));
                 if frame.tiles.is_none() && frame.raster.is_none() {
-                    let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                        frame.pixels.as_ref(),
-                        frame.width,
-                        frame.height,
-                    );
-                    window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
+                    match pixel_delivery::pixels(open, frame) {
+                        Ok(pixels) => {
+                            window.set_surface(slint::Image::from_rgba8_premultiplied(pixels.body))
+                        }
+                        Err(error) => {
+                            window.set_status(error.into());
+                            service.retire(output);
+                            continue;
+                        }
+                    }
                 }
                 window.set_accessible_text(frame.accessible_text.as_ref().into());
                 window.set_position(frame.position as f32);
@@ -790,10 +808,10 @@ fn present_outputs(
         }
         service.retire(output);
     }
-    if !open.closed.get()
-        && let Some(result) = open.session.mailbox.take_open_result()
-    {
-        open.opened(result);
+    if !open.closed.get() {
+        // A control-only delivery can overtake preparation of the first frame.
+        // Do not report successful opening before any pixels were admitted.
+        open.acknowledge_opening(open.session.mailbox.take_open_result());
     }
 }
 
@@ -1214,8 +1232,8 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
             let (width, height) = open.raster_size.get();
             open.enqueue(ViewerInput::Select {
                 frame: open.frame.get(),
-                x: x * width as f32 / open.window.get_content_width().max(1.0),
-                y: y * height as f32 / open.window.get_content_height().max(1.0),
+                x: x * width as f32 / open.window.get_raster_viewport_width().max(1.0),
+                y: y * height as f32 / open.window.get_raster_viewport_height().max(1.0),
                 extend,
             });
         }
@@ -1294,6 +1312,10 @@ fn close(open: &OpenWindow) {
     raster_rebase::cancel_context(open);
     raster_motion::cancel(open);
     if !open.closed.replace(true) {
+        if let Some(preparation) = open.preparation.borrow().as_ref() {
+            preparation.stop();
+        }
+        open.prepared_pixels.borrow_mut().take();
         open.session.close();
         open.timer.stop();
         open.image_zoom.borrow_mut().clear();

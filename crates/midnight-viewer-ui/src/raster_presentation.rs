@@ -36,26 +36,56 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
             .set_status("Invalid retained viewer surface.".into());
         return false;
     }
-    let scale = [
-        f64::from(info.viewport[0]) / f64::from(open.window.get_content_width().max(1.0)),
-        f64::from(info.viewport[1]) / f64::from(open.window.get_content_height().max(1.0)),
-    ];
     let mut state = open.retained_raster.borrow_mut();
+    let key = (info.surface, info.pixel_id);
+    let prepared = if state.pixels != Some(key) {
+        match pixel_delivery::pixels(open, frame) {
+            Ok(pixels) => Some(pixels),
+            Err(error) => {
+                open.window.set_status(error.into());
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+    let same_surface = state
+        .pixels
+        .is_some_and(|(surface, _)| surface == info.surface);
+    let inherited_viewport = !open.window.get_retained_raster()
+        && !open.window.get_image_mode()
+        && frame.generation == open.frame_generation.get()
+        && open.raster_size.get() == (info.viewport[0], info.viewport[1]);
+    let viewport = if same_surface || inherited_viewport {
+        [
+            open.window.get_raster_viewport_width(),
+            open.window.get_raster_viewport_height(),
+        ]
+    } else {
+        [
+            open.window.get_content_width(),
+            open.window.get_content_height(),
+        ]
+    }
+    .map(|extent| extent.max(1.0));
+    let scale =
+        std::array::from_fn(|axis| f64::from(info.viewport[axis]) / f64::from(viewport[axis]));
     if !state.camera.receive(info, scale) {
         return false;
     }
+    // Source/Markdown controls appear with the first frame. Their smaller canvas
+    // clips these pixels; it must not squeeze glyphs or change hit testing.
+    // Preserve effective raster scale too when backend pixel budgets reduce it.
+    open.window.set_raster_viewport_width(viewport[0]);
+    open.window.set_raster_viewport_height(viewport[1]);
     state.positions = [frame.horizontal_position, frame.position];
-    let key = (info.surface, info.pixel_id);
-    if state.pixels != Some(key) {
+    if let Some(pixels) = prepared {
         open.window
-            .set_surface(image(&frame.pixels, frame.width, frame.height));
-        open.window.set_raster_gutter(
-            info.gutter
-                .as_ref()
-                .map_or_else(slint::Image::default, |gutter| {
-                    image(&gutter.pixels, gutter.width, gutter.height)
-                }),
-        );
+            .set_surface(slint::Image::from_rgba8_premultiplied(pixels.body));
+        open.window.set_raster_gutter(pixels.gutter.map_or_else(
+            slint::Image::default,
+            slint::Image::from_rgba8_premultiplied,
+        ));
         state.pixels = Some(key);
         state.uploads = state.uploads.saturating_add(1);
         open.window
@@ -76,12 +106,6 @@ fn pixel_bytes(width: u32, height: u32) -> Option<u64> {
     u64::from(width)
         .checked_mul(u64::from(height))?
         .checked_mul(4)
-}
-
-fn image(pixels: &[u8], width: u32, height: u32) -> slint::Image {
-    slint::Image::from_rgba8_premultiplied(
-        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(pixels, width, height),
-    )
 }
 
 pub(super) fn present(open: &OpenWindow) {
@@ -231,8 +255,8 @@ pub(super) fn select(open: &OpenWindow, x: f32, y: f32, extend: bool) -> Option<
         input: ViewerRasterInput::Select {
             pixel_id: info.pixel_id,
             origin: state.camera.origin,
-            x: x * info.viewport[0] as f32 / open.window.get_content_width().max(1.0),
-            y: y * info.viewport[1] as f32 / open.window.get_content_height().max(1.0),
+            x: x * info.viewport[0] as f32 / open.window.get_raster_viewport_width().max(1.0),
+            y: y * info.viewport[1] as f32 / open.window.get_raster_viewport_height().max(1.0),
             extend,
         },
     })

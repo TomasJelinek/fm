@@ -16,6 +16,9 @@ export component ViewerWindow inherits Window {
     in property <float> raster-gutter-width;
     in property <float> raster-width;
     in property <float> raster-height;
+    // Keep the frame's logical viewport while mode controls change the canvas.
+    in property <length> raster-viewport-width: canvas.width;
+    in property <length> raster-viewport-height: canvas.height;
     in property <float> raster-offset-x;
     in property <float> raster-offset-y;
     in property <int> raster-upload-count;
@@ -202,29 +205,29 @@ export component ViewerWindow inherits Window {
                         source: root.surface;
                         x: root.image-mode ? (canvas.width - root.image-width) / 2 : 0px;
                         y: root.image-mode ? (canvas.height - root.image-height) / 2 : 0px;
-                        width: root.image-mode ? root.image-width : canvas.width;
-                        height: root.image-mode ? root.image-height : canvas.height;
+                        width: root.image-mode ? root.image-width : root.raster-viewport-width;
+                        height: root.image-mode ? root.image-height : root.raster-viewport-height;
                         image-fit: fill;
                         visible: !root.tiled && !root.retained-raster;
                     }
                     if root.retained-raster: Rectangle {
-                        x: root.raster-gutter-width * canvas.width;
+                        x: root.raster-gutter-width * root.raster-viewport-width;
                         width: canvas.width - self.x; height: canvas.height; clip: true;
                         Image {
                             source: root.surface;
-                            x: root.raster-offset-x * canvas.width;
-                            y: root.raster-offset-y * canvas.height;
-                            width: root.raster-width * canvas.width;
-                            height: root.raster-height * canvas.height;
+                            x: root.raster-offset-x * root.raster-viewport-width;
+                            y: root.raster-offset-y * root.raster-viewport-height;
+                            width: root.raster-width * root.raster-viewport-width;
+                            height: root.raster-height * root.raster-viewport-height;
                             image-fit: fill;
                         }
                     }
                     if root.retained-raster && root.raster-gutter-width > 0: Image {
                         source: root.raster-gutter;
                         x: 0px;
-                        y: root.raster-offset-y * canvas.height;
-                        width: root.raster-gutter-width * canvas.width;
-                        height: root.raster-height * canvas.height;
+                        y: root.raster-offset-y * root.raster-viewport-height;
+                        width: root.raster-gutter-width * root.raster-viewport-width;
+                        height: root.raster-height * root.raster-viewport-height;
                         image-fit: fill;
                     }
                     for tile in root.image-tiles: Image {

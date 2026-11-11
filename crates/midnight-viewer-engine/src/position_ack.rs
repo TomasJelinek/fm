@@ -5,8 +5,16 @@ pub(crate) struct Positions {
     pub acknowledged: [u64; 2],
     latest: [u64; 2],
     pub horizontal: Option<f64>,
+    pub target: Option<Target>,
     read: Option<(u64, u64, bool)>,
     deferred: Option<(u64, f64)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Target {
+    pub sequence: u64,
+    pub position: f64,
+    pub corrected: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -53,6 +61,7 @@ impl Positions {
     pub fn vertical(&mut self, sequence: u64) {
         debug_assert!(self.read.is_none());
         self.acknowledged[0] = sequence;
+        self.target = None;
     }
     pub fn requested(&mut self, id: u64, sequence: u64) {
         self.read = Some((id, sequence, false));
@@ -72,6 +81,7 @@ impl Positions {
             return Completion::Unrelated;
         }
         self.read = None;
+        self.target = None;
         if !success || !loaded {
             return Completion::Failed;
         }
@@ -83,6 +93,9 @@ impl Positions {
     }
     pub fn defer(&mut self, sequence: u64, position: f64) {
         self.deferred = Some((sequence, position.clamp(0.0, 1.0)));
+    }
+    pub fn has_deferred(&self) -> bool {
+        self.deferred.is_some()
     }
     pub fn take_deferred(&mut self) -> Option<(u64, f64)> {
         self.deferred.take()

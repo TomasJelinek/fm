@@ -210,3 +210,181 @@ fn scrollbar_position_deferred_seek_keeps_the_latest_origin_after_read_completio
         frame.position
     );
 }
+
+fn read_target(worker: &mut Worker, request: u64, sequence: u64, position: f64) {
+    worker.positions.target = Some(crate::position_ack::Target {
+        sequence,
+        position,
+        corrected: false,
+    });
+    worker.positions.requested(request, sequence);
+    worker.positions.loaded(request);
+    worker.viewport_request = Some(request);
+    worker.position_page = Some((request, worker.page.as_ref().unwrap().clone()));
+}
+
+fn position_at(worker: &Worker, y: f32) -> f64 {
+    let page = worker.page.as_ref().unwrap();
+    navigation::scroll_metrics(
+        page.start,
+        page.end,
+        worker.length,
+        worker.shaped.as_ref().unwrap().height(),
+        worker.geometry.height as f32,
+        y,
+    )
+    .0
+}
+
+#[test]
+fn scrollbar_loaded_partial_page_resolves_exact_target_before_acknowledging() {
+    for mode in [viewer::MODE_SOURCE, viewer::MODE_DOCUMENT] {
+        let (mut worker, output) = prepared(mode, true, true);
+        let position = position_at(&worker, 73.25);
+        assert!((position_at(&worker, 0.0) - position).abs() > 0.0001);
+        read_target(&mut worker, 91, 1, position);
+        worker.event(91, EventKind::Completed, &output);
+        let frame = rendered(&mut worker, &output);
+        assert_eq!(frame.position_sequence[0], 1);
+        assert!(
+            (frame.position - position).abs() < 0.0001,
+            "new fragment acknowledged the byte estimate rather than the requested camera: mode={mode}, target={position}, actual={}",
+            frame.position
+        );
+        assert!((worker.origin[1] - 73.25).abs() < 0.001);
+    }
+}
+
+#[test]
+fn scrollbar_density_shift_uses_one_guarded_correction_then_actual_pixels_at_the_target() {
+    let (mut worker, output) = prepared(viewer::MODE_SOURCE, true, true);
+    let at_start = position_at(&worker, 0.0);
+    let extent = navigation::scroll_metrics(
+        worker.page.as_ref().unwrap().start,
+        worker.page.as_ref().unwrap().end,
+        worker.length,
+        worker.shaped.as_ref().unwrap().height(),
+        worker.geometry.height as f32,
+        0.0,
+    )
+    .1;
+    let target = at_start - 80.0 / (worker.length as f64 * (1.0 - extent));
+    read_target(&mut worker, 91, 1, target);
+    let super::super::position::LoadedPosition::Reload {
+        sequence,
+        anchor,
+        backwards,
+    } = worker.refine_position()
+    else {
+        panic!("new density puts the desired camera before the loaded fragment");
+    };
+    assert_eq!(sequence, 1);
+    assert!(!backwards);
+    let mut page = worker.page.as_ref().unwrap().clone();
+    assert!(
+        anchor < page.start - 80,
+        "correction must retain prefix context"
+    );
+    assert!(
+        page.start - anchor <= page.end - page.start,
+        "context stays within one bounded source page"
+    );
+    let shift = page.start - anchor;
+    page.start -= shift;
+    page.end -= shift;
+    for mapped in &mut page.anchors {
+        mapped.source_offset -= shift;
+    }
+    worker.positions.requested(92, sequence);
+    worker.positions.loaded(92);
+    worker.viewport_request = Some(92);
+    worker.position_page = Some((92, page));
+    worker.event(92, EventKind::Completed, &output);
+    let frame = rendered(&mut worker, &output);
+    assert_eq!(frame.position_sequence[0], 1);
+    assert!((frame.position - target).abs() < 0.0001);
+    assert!(worker.origin[1] > 0.0);
+    assert!(worker.viewport_request.is_none());
+}
+
+#[test]
+fn scrollbar_uncovered_correction_fails_without_false_ack_or_another_read() {
+    let (mut worker, output) = prepared(viewer::MODE_SOURCE, true, true);
+    read_target(&mut worker, 91, 1, 0.9);
+    assert!(matches!(
+        worker.refine_position(),
+        super::super::position::LoadedPosition::Reload { .. }
+    ));
+    assert_eq!(
+        worker.refine_position(),
+        super::super::position::LoadedPosition::Unavailable
+    );
+    worker.event(91, EventKind::Completed, &output);
+    assert_eq!(worker.positions.acknowledged[0], 0);
+    assert!(worker.viewport_request.is_none());
+    assert!(worker.status.contains("not completed"));
+}
+
+#[test]
+fn scrollbar_latest_deferred_target_supersedes_an_uncovered_old_correction() {
+    let (mut worker, output) = prepared(viewer::MODE_SOURCE, true, true);
+    let generation = worker.positions.generation;
+    read_target(&mut worker, 91, 1, 0.9);
+    worker.positions.target.as_mut().unwrap().corrected = true;
+    let target = position_at(&worker, 113.75);
+    worker.input(
+        ViewerInput::Position {
+            generation,
+            sequence: 2,
+            horizontal: false,
+            position: target,
+        },
+        &output,
+    );
+    worker.event(91, EventKind::Completed, &output);
+    let frame = rendered(&mut worker, &output);
+    assert_eq!(frame.position_sequence[0], 2);
+    assert_eq!(frame.generation, generation);
+    assert!((frame.position - target).abs() < 0.0001);
+    assert!(worker.viewport_request.is_none());
+}
+
+#[test]
+fn scrollbar_correction_prefix_fits_a_fragment_with_only_twenty_pixels_to_scroll() {
+    for retained in [false, true] {
+        let (mut worker, output) = prepared(viewer::MODE_SOURCE, retained, true);
+        let available = crate::viewport::available_height(
+            worker.page.as_ref().unwrap(),
+            worker.shaped.as_ref().unwrap(),
+            worker.geometry.height as f32,
+        );
+        worker.geometry.height = available as u32 - 20;
+        let (position, extent) = navigation::scroll_metrics(
+            worker.page.as_ref().unwrap().start,
+            worker.page.as_ref().unwrap().end,
+            worker.length,
+            worker.shaped.as_ref().unwrap().height(),
+            worker.geometry.height as f32,
+            0.0,
+        );
+        let target = position - 20.0 / (worker.length as f64 * (1.0 - extent));
+        read_target(&mut worker, 91, 1, target);
+        let super::super::position::LoadedPosition::Reload { anchor, .. } =
+            worker.refine_position()
+        else {
+            panic!("target needs a preceding source fragment");
+        };
+        let mut page = worker.page.as_ref().unwrap().clone();
+        let shift = page.start - anchor;
+        page.start -= shift;
+        page.end -= shift;
+        for mapped in &mut page.anchors {
+            mapped.source_offset -= shift;
+        }
+        worker.position_page = Some((91, page));
+        worker.event(91, EventKind::Completed, &output);
+        let frame = rendered(&mut worker, &output);
+        assert_eq!(frame.position_sequence[0], 1, "retained={retained}");
+        assert!((frame.position - target).abs() < 0.0001);
+    }
+}

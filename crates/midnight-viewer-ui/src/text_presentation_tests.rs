@@ -518,3 +518,173 @@ fn raster_coast_survives_pointer_motion_but_another_scroll_target_cancels_it() {
     );
     manager.close_all();
 }
+
+#[test]
+fn source_opening_keeps_first_glyph_geometry_when_its_toolbar_appears() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    for (scale, retained) in [(1.0, true), (1.5, true), (1.0, false), (1.5, false)] {
+        open.window
+            .window()
+            .dispatch_event(WindowEvent::ScaleFactorChanged {
+                scale_factor: scale,
+            });
+        open.window
+            .window()
+            .set_size(slint::LogicalSize::new(900.0, 600.0));
+        open.window.set_image_mode(false);
+        open.window.set_source_mode(false);
+        image_presentation_tests::bitmap();
+        let initial = window_geometry(&open.window);
+        let revision = open.frame.get() + 1;
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![source_opening_frame(revision, initial, retained)],
+        );
+        let first = source_opening_marks();
+        if retained {
+            let selected = raster_presentation::select(&open, 25.0, 25.0, false).unwrap();
+            assert!(
+                matches!(selected, ViewerInput::Raster {
+                input: ViewerRasterInput::Select { y, .. }, ..
+            } if (y - 25.0 * scale).abs() < 0.1),
+                "initial selection disagrees with raster pixels"
+            );
+            let ViewerOutput::Frame(mut acknowledgement) =
+                source_opening_frame(revision + 1, initial, retained)
+            else {
+                unreachable!()
+            };
+            acknowledgement.raster.as_mut().unwrap().surface = ViewerSurfaceId(1200 + revision);
+            present_outputs(
+                &open,
+                &service,
+                &|_| {},
+                vec![ViewerOutput::Frame(acknowledgement)],
+            );
+            assert_eq!(
+                first,
+                source_opening_marks(),
+                "same-surface acknowledgement stretched source pixels"
+            );
+        } else {
+            present_outputs(
+                &open,
+                &service,
+                &|_| {},
+                vec![source_opening_frame(revision + 1, initial, true)],
+            );
+            assert_eq!(
+                first,
+                source_opening_marks(),
+                "retained activation stretched the initial source pixels"
+            );
+        }
+        let settled = window_geometry(&open.window);
+        assert!(
+            settled.height < initial.height,
+            "source toolbar did not change the canvas"
+        );
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![source_opening_frame(revision + 2, settled, retained)],
+        );
+        let second = source_opening_marks();
+        assert_eq!(
+            first, second,
+            "first source frame changed glyph size or position at scale {scale}"
+        );
+    }
+    manager.close_all();
+}
+
+fn source_opening_frame(revision: u64, geometry: ViewerGeometry, retained: bool) -> ViewerOutput {
+    let ViewerOutput::Frame(mut frame) = frame(revision, 0, 0.0) else {
+        unreachable!()
+    };
+    let gutter_width = 36;
+    let pixels = |width: u32, gutter: bool| {
+        let mut pixels = vec![0; width as usize * geometry.height as usize * 4];
+        for y in 0..geometry.height {
+            for x in 0..width {
+                let color = if (8..28).contains(&y) && (4..12).contains(&x) && gutter {
+                    [20, 230, 245, 255]
+                } else if (8..28).contains(&y) && (30..42).contains(&x) && !gutter {
+                    [250, 30, 20, 255]
+                } else if (200..220).contains(&y) && (30..42).contains(&x) && !gutter {
+                    [45, 70, 240, 255]
+                } else {
+                    [0, 0, 0, 255]
+                };
+                let index = ((y * width + x) * 4) as usize;
+                pixels[index..index + 4].copy_from_slice(&color);
+            }
+        }
+        Arc::from(pixels)
+    };
+    frame.mode = 2;
+    frame.modes = vec![1, 2];
+    frame.width = geometry.width - gutter_width;
+    frame.height = geometry.height;
+    frame.pixels = pixels(frame.width, false);
+    frame.raster = Some(ViewerRasterInfo {
+        surface: ViewerSurfaceId(1200 + revision),
+        pixel_id: 1,
+        origin: [0.0; 2],
+        raster_origin: [0.0; 2],
+        viewport: [geometry.width, geometry.height],
+        coverage_min: [0.0; 2],
+        coverage_max: [0.0; 2],
+        limit_min: [Some(0.0); 2],
+        limit_max: [Some(0.0); 2],
+        pan_sequence: 0,
+        scroll_per_pixel: [0.0; 2],
+        settled: true,
+        gutter: Some(ViewerRasterGutter {
+            width: gutter_width,
+            height: geometry.height,
+            pixels: pixels(gutter_width, true),
+        }),
+    });
+    if !retained {
+        let gutter = frame.raster.take().unwrap().gutter.unwrap();
+        let mut combined =
+            Vec::with_capacity(geometry.width as usize * geometry.height as usize * 4);
+        for row in 0..geometry.height as usize {
+            let gutter_stride = gutter_width as usize * 4;
+            let body_stride = frame.width as usize * 4;
+            combined
+                .extend_from_slice(&gutter.pixels[row * gutter_stride..(row + 1) * gutter_stride]);
+            combined.extend_from_slice(&frame.pixels[row * body_stride..(row + 1) * body_stride]);
+        }
+        frame.width = geometry.width;
+        frame.pixels = combined.into();
+    }
+    ViewerOutput::Frame(frame)
+}
+
+fn source_opening_marks() -> [[usize; 4]; 3] {
+    let (size, pixels) = image_presentation_tests::bitmap();
+    [[250, 30, 20], [45, 70, 240], [20, 230, 245]].map(|color| {
+        let mut bounds = [usize::MAX, usize::MAX, 0, 0];
+        let mut found = false;
+        for (index, pixel) in pixels.iter().enumerate() {
+            if [pixel.r, pixel.g, pixel.b] == color {
+                let x = index % size.width as usize;
+                let y = index / size.width as usize;
+                bounds[0] = bounds[0].min(x);
+                bounds[1] = bounds[1].min(y);
+                bounds[2] = bounds[2].max(x);
+                bounds[3] = bounds[3].max(y);
+                found = true;
+            }
+        }
+        assert!(found, "source glyph marker was not visible");
+        bounds
+    })
+}

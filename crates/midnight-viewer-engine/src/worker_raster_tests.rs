@@ -487,6 +487,24 @@ fn retained_short_incomplete_fragment_falls_back_without_losing_source_progress(
 }
 
 #[test]
+fn retained_guard_preserves_logical_lookahead_on_scaled_monitors() {
+    for scale in [1.0_f32, 1.25, 1.5, 2.25] {
+        let geometry = ViewerGeometry {
+            width: (1000.0 * scale) as u32,
+            height: (600.0 * scale) as u32,
+            scale,
+        };
+        let [x, y] = super::super::raster::guard(geometry, false);
+        assert_eq!(x, 0);
+        assert_eq!(y, (256.0 * scale).ceil() as u32);
+        let requested = ViewerGeometry {
+            height: geometry.height + 2 * y,
+            ..geometry
+        };
+        assert_eq!(crate::viewport::line_budget(requested, 20.0 * scale), 58);
+    }
+}
+#[test]
 fn retained_guard_geometry_caps_body_and_gutter_at_high_dpi() {
     for (width, height) in [(240, 100), (2250, 1400), (4096, 4096), (1, 4096)] {
         let geometry = bounded_geometry(ViewerGeometry {
@@ -496,7 +514,8 @@ fn retained_guard_geometry_caps_body_and_gutter_at_high_dpi() {
         });
         for horizontal in [false, true] {
             let [x, y] = super::super::raster::guard(geometry, horizontal);
-            assert!(x <= 256 && y <= 256);
+            let maximum = (256.0 * geometry.scale).ceil() as u32;
+            assert!(x <= maximum && y <= maximum);
             assert!(
                 (u64::from(geometry.width) + 2 * u64::from(x))
                     * (u64::from(geometry.height) + 2 * u64::from(y))

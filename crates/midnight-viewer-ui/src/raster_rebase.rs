@@ -149,8 +149,8 @@ pub(super) fn presented(open: &OpenWindow, frame: &ViewerFrame) {
             y,
             pending.direct,
             [
-                frame.width as f32 / open.window.get_content_width().max(1.0),
-                frame.height as f32 / open.window.get_content_height().max(1.0),
+                frame.width as f32 / open.window.get_raster_viewport_width().max(1.0),
+                frame.height as f32 / open.window.get_raster_viewport_height().max(1.0),
             ],
         );
     }

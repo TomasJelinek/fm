@@ -940,6 +940,24 @@ impl Worker {
                                 page_id == id && self.set_page(page, output)
                             });
                     }
+                    if completed && self.positions.has_pending() {
+                        match self.refine_position() {
+                            position::LoadedPosition::Ready => {}
+                            position::LoadedPosition::Reload {
+                                sequence,
+                                anchor,
+                                backwards,
+                            } => {
+                                self.viewport_request = None;
+                                self.request_page_for(anchor, backwards, Some(sequence), output);
+                                if self.viewport_request.is_some() {
+                                    return;
+                                }
+                                completed = false;
+                            }
+                            position::LoadedPosition::Unavailable => completed = false,
+                        }
+                    }
                     let acknowledgement = self.positions.complete(id, completed);
                     let raster_failed = self
                         .abort_raster_refill("The requested text page was not completed.", output);

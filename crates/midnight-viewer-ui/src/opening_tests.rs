@@ -96,3 +96,20 @@ fn initial_backend_failure_is_delivered_once_and_closing_cannot_replace_it() {
     assert_eq!(results.borrow().len(), 1);
     manager.close_all();
 }
+
+#[test]
+fn a_control_batch_cannot_report_success_before_the_first_prepared_frame() {
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let received = results.clone();
+    let (_runtime, manager, open, _service) =
+        opening(Box::new(move |result| received.borrow_mut().push(result)));
+    open.acknowledge_opening(Some(Ok(())));
+    open.acknowledge_opening(None);
+    assert!(results.borrow().is_empty());
+    open.frame.set(1);
+    open.acknowledge_opening(None);
+    assert_eq!(&*results.borrow(), &[Ok(())]);
+    close(&open);
+    assert_eq!(results.borrow().len(), 1);
+    manager.close_all();
+}

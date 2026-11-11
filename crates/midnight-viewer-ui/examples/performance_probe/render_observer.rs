@@ -1,16 +1,25 @@
 //! Observe render submission without changing the renderer's flush path.
-use slint::winit_030::{CustomApplicationHandler, EventResult, winit};
+use midnight_viewer_ui::ViewerWindow;
+use slint::{
+    ComponentHandle,
+    winit_030::{CustomApplicationHandler, EventResult, WinitWindowAccessor, winit},
+};
 use std::{
     cell::RefCell,
     rc::Rc,
     time::{Duration, Instant},
 };
 
-pub type Callback = Rc<RefCell<Option<Box<dyn FnMut(Duration)>>>>;
+pub struct Callbacks {
+    pub window: slint::Weak<ViewerWindow>,
+    pub before: Box<dyn FnMut()>,
+    pub after: Box<dyn FnMut(winit::window::WindowId, Duration)>,
+}
+pub type Callback = Rc<RefCell<Option<Callbacks>>>;
 
 pub struct Observer {
     pub callback: Callback,
-    pub drawing: Option<Instant>,
+    pub drawing: Option<(winit::window::WindowId, Instant)>,
     pub injected_wheel: bool,
     pub native_events: Rc<RefCell<Vec<String>>>,
     pub timeline: super::timeline::Trace,
@@ -18,13 +27,13 @@ pub struct Observer {
 
 impl Observer {
     fn finished(&mut self) {
-        if let Some(started) = self.drawing.take()
+        if let Some((window_id, started)) = self.drawing.take()
             && let Some(callback) = self.callback.borrow_mut().as_mut()
         {
             let elapsed = started.elapsed();
             self.timeline
                 .record("redraw_end", elapsed.as_secs_f64() * 1000.0);
-            callback(elapsed);
+            (callback.after)(window_id, elapsed);
         }
     }
 }
@@ -33,12 +42,21 @@ impl CustomApplicationHandler for Observer {
     fn window_event(
         &mut self,
         _: &winit::event_loop::ActiveEventLoop,
-        _: winit::window::WindowId,
+        window_id: winit::window::WindowId,
         _: Option<&winit::window::Window>,
         _: Option<&slint::Window>,
         event: &winit::event::WindowEvent,
     ) -> EventResult {
         self.finished();
+        let target = self.callback.borrow().as_ref().and_then(|callback| {
+            callback
+                .window
+                .upgrade()
+                .and_then(|window| window.window().with_winit_window(|native| native.id()))
+        });
+        if target != Some(window_id) {
+            return EventResult::Propagate;
+        }
         if matches!(event, winit::event::WindowEvent::MouseWheel { .. }) {
             self.timeline.record("native_wheel", 0.0);
         }
@@ -63,8 +81,11 @@ impl CustomApplicationHandler for Observer {
             return EventResult::PreventDefault;
         }
         if matches!(event, winit::event::WindowEvent::RedrawRequested) {
+            if let Some(callback) = self.callback.borrow_mut().as_mut() {
+                (callback.before)();
+            }
             self.timeline.record("redraw_begin", 0.0);
-            self.drawing = Some(Instant::now());
+            self.drawing = Some((window_id, Instant::now()));
         }
         EventResult::Propagate
     }

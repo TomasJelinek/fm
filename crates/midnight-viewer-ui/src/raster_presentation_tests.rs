@@ -77,8 +77,8 @@ fn retained_selection_uses_displayed_camera_and_effective_viewport_not_overscan_
     present_outputs(&open, &service, &|_| {}, vec![frame(10)]);
     open.window.invoke_scroll(10.0, 20.0);
     let origin = open.retained_raster.borrow().camera.origin;
-    let half_x = open.window.get_content_width() / 2.0;
-    let half_y = open.window.get_content_height() / 2.0;
+    let half_x = open.window.get_raster_viewport_width() / 2.0;
+    let half_y = open.window.get_raster_viewport_height() / 2.0;
     open.window.invoke_select_point(half_x, half_y, false);
     assert!(received.borrow().iter().any(|input| matches!(input,
         ViewerInput::Raster { surface: ViewerSurfaceId(90), input: ViewerRasterInput::Select {
@@ -123,7 +123,7 @@ fn precise_deltas_accumulate_while_the_worker_has_not_yet_refilled_the_visible_f
     };
     short.raster.as_mut().unwrap().coverage_max[1] = 205.0;
     present_outputs(&open, &service, &|_| {}, vec![ViewerOutput::Frame(short)]);
-    let scale_y = 240.0 / f64::from(open.window.get_content_height());
+    let scale_y = 240.0 / f64::from(open.window.get_raster_viewport_height());
     open.window.invoke_scroll(0.0, 100.0);
     assert!((open.retained_raster.borrow().camera.origin[1] - 205.0).abs() < 0.00001);
     open.window.invoke_scroll(0.0, 100.0);
@@ -521,8 +521,8 @@ fn retained_scrollbar_moves_real_body_and_gutter_pixels_before_any_worker_reply(
     let body_after = bounds([253, 27, 15]);
     let gutter_after = bounds([17, 241, 253]);
     let scale = open.window.window().scale_factor();
-    let dx = 10.0 * open.window.get_content_width() / 400.0 * scale;
-    let dy = 20.0 * open.window.get_content_height() / 240.0 * scale;
+    let dx = 10.0 * open.window.get_raster_viewport_width() / 400.0 * scale;
+    let dy = 20.0 * open.window.get_raster_viewport_height() / 240.0 * scale;
     assert!(((body_before[0] - body_after[0]) as f32 - dx).abs() < 1.1);
     assert!(((body_before[1] - body_after[1]) as f32 - dy).abs() < 1.1);
     assert_eq!(

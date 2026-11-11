@@ -64,6 +64,31 @@ plugin can decline the optional feature for the session. Obsolete
 requests are cancelled, and replies must match the active request and page range.
 No complete-file line table is built or retained by the host.
 
+## First display and raster geometry
+
+A viewer opened from the application captures its parent's physical bounds and
+exact display scale. `WindowPlacement` applies that scale before sizing the child,
+so the first logical layout and backend font metrics do not depend on when the
+native child is created by the event loop. Subsequent native DPI events remain
+authoritative. A placement supplied only as a logical size has no captured scale
+and does not guess one.
+
+Each displayed raster retains the logical viewport against which its effective
+pixel dimensions were mapped. Showing the source or Markdown controls can shrink
+the live canvas; it clips the existing frame instead of compressing its glyphs.
+Body, gutter, camera offsets and selection use that same frame extent. Metadata
+updates retain it for the same surface, and initial viewport-only pixels pass it
+to retained presentation when the generation and effective viewport match. A new
+layout surface uses the replacement viewport. This mapping preserves the backend's
+effective raster scale when its pixel budget reduces resolution below native DPI.
+
+The UI crate's bounded pixel-preparation worker converts immutable backend RGBA
+into safe shared Slint pixel buffers off the event loop. Slint images and window
+state remain on the UI thread; the engine and independent plugins do not acquire
+a Slint dependency. The worker reuses converted buffers for metadata-only updates.
+Its delivery bounds, retirement and stale-frame rules are described in
+[Viewer scrolling](VIEWER_SCROLLING.md#retained-text-pixels-and-delivery).
+
 All three text plugins prepare bounded windows rather than loading complete files.
 The basic plugin gathers at most 8 KiB per viewport; source and Markdown gather at
 most 64 KiB of source context, with bounded output and checkpoint/cache state.

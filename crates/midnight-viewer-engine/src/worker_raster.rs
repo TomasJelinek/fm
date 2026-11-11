@@ -87,12 +87,17 @@ fn same_phase(a: [f64; 2], b: [f64; 2]) -> bool {
 
 pub(super) fn guard(geometry: ViewerGeometry, horizontal: bool) -> [u32; 2] {
     let mut low = 0;
-    let mut high = GUARD;
+    // Guard distance is logical: high-DPI monitors need the same time to refill
+    // while scrolling. Physical allocation still obeys the shared pixel ceiling.
+    let mut high = (GUARD as f32 * geometry.scale).ceil() as u32;
     while low < high {
         let middle = (low + high).div_ceil(2);
         let width = u64::from(geometry.width) + if horizontal { u64::from(middle) * 2 } else { 0 };
         let height = u64::from(geometry.height) + u64::from(middle) * 2;
-        if width * height <= MAX_PIXELS {
+        if width
+            .checked_mul(height)
+            .is_some_and(|pixels| pixels <= MAX_PIXELS)
+        {
             low = middle;
         } else {
             high = middle - 1;

@@ -46,12 +46,23 @@ rejects older completed sequences and unacknowledged page replacements. Only the
 latest target's acknowledgement clears that axis's pending intent. Navigation
 barriers clear the deferred target along with the old context.
 
-The backend retains native byte offsets as `u64`. It acknowledges a vertical
-position only when its exact viewport request supplied a usable page and completed
-successfully. An error/cancellation establishes a fresh context and publishes the
-retained view; a no-match search also publishes its new context. Horizontal intent
-survives a matching page arrival, but cannot override newer relative horizontal
-scrolling. Old context/sequence replies cannot pull a pending thumb backwards.
+The backend retains native byte offsets as `u64`. An absolute vertical seek keeps
+its latest normalized target through the bounded read, then maps that target into the
+newly shaped page before acknowledging it. The new page's byte density can change
+the visible fraction, so the first returned source anchor is not itself a success
+acknowledgement. Requests include a bounded context prefix, limited by the guard,
+a quarter of the current page and half its available scroll span. If the loaded
+page still cannot cover the target, at most one further bounded correction read
+is allowed. A newer deferred target supersedes that correction. There is no
+whole-file index or recursive read loop.
+
+A final acknowledgement requires a successfully completed request whose usable
+pixels cover the mapped target. An error, cancellation or still-uncovered correction
+establishes a fresh context and publishes the retained view without a success
+acknowledgement; a no-match search also publishes its new context. Horizontal
+intent survives a matching page arrival, but cannot override newer relative
+horizontal scrolling. Old context/sequence replies cannot pull a pending thumb
+backwards.
 
 These messages are application-owned, not a change to the external viewer plugin
 ABI. Plugins continue to receive bounded viewport requests through the shared API.
@@ -61,6 +72,58 @@ Behavioral reference: Salamander `src/viewer3.cpp`, `OnVScroll` and the
 updates content on a 20 ms timer and explicitly applies the final position on
 release to avoid a flash at the old location. This implementation uses asynchronous
 backend messages and bounded coalescing; no Salamander code is copied.
+
+## Retained text pixels and delivery
+
+Text, source, Markdown and binary/hex can retain a bounded body raster and a
+separate source gutter. Their surface identity names a layout/camera context;
+immutable pixel identities distinguish new allocations from metadata updates.
+The frontend moves covered pixels without waiting for a new backend raster and
+keeps the gutter horizontally fixed. Each guard targets 256 logical pixels per
+side, converted using the effective raster scale, including the initial parent
+DPI. The combined body and gutter still fit the 24 MiB snapshot cap, so guards
+shrink when necessary. Guard refills retain the existing 12 KiB text and 512-line
+request ceilings; a higher DPI does not enlarge those source budgets. An uncovered
+frontier pauses displayed motion until usable pixels arrive; it is not an inferred
+end of file. Settling can request exact fractional glyph phase.
+The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
+defines coverage, continuation and snapshot budgets.
+
+Raster pixel coordinates map through the frame's retained logical viewport,
+not through the current clipping canvas. Source/Markdown controls appearing with
+the first frame therefore cannot squeeze existing text. The body, gutter,
+translation, selection and legacy rebase-resume mapping use the same effective
+geometry in each axis, including when backend pixel limits reduce resolution.
+A matching ordinary-to-retained opening transition preserves that extent;
+metadata for the same retained surface does too. Parent-captured DPI is applied
+before the child's first physical sizing; later native scale changes still cause
+normal viewport updates. See [presentation](VIEWER_PRESENTATION.md#first-display-and-raster-geometry).
+
+One presentation worker per viewer lives in `midnight-viewer-ui`. It validates
+buffer dimensions and byte budgets, then copies RGBA into safe
+`SharedPixelBuffer<Rgba8Pixel>` allocations off the UI thread. Only creation of
+Slint images from those shared buffers and window updates happen on the UI thread.
+The engine still publishes toolkit-independent pixels and metadata; reads,
+parsing, shaping and rasterization stay on their existing workers. This adapter
+adds no source reads, larger decoded pages or whole-file loading.
+
+At most one prepared batch waits for UI consumption. Until it is taken, the
+worker does not drain another batch, so the source mailbox retains its existing
+eight-output bound, latest-frame coalescing and reserved raster-control slot.
+There is no task or growing queue per frame. A failed event-loop wake is retried
+without requiring another source frame. The conversion cache reuses shared
+body/gutter buffers for the same generation, surface, pixel identity, dimensions
+and viewport; it does not retain the source pixel Arcs or their backend reservation.
+Frontend shared buffers remain separate from the backend raster storage budget.
+
+Delivery preserves the existing generation, frame revision, position sequence,
+surface and rebase checks. Prepared pixels must match the delivered frame revision.
+Rejected frames cannot replace the accepted buffer lease; conversion failures
+leave control/status delivery available. Accepted replacement buffers keep the
+previous display alive through image replacement, then retire its lease away from
+the event loop. Closing signals cancellation without joining the preparation
+thread. The worker reclaims its pending batch/cache, and late UI deliveries use
+backend retirement rather than updating a closed window.
 
 ## Images
 
@@ -77,7 +140,12 @@ Decoder work and cache preparation remain on backend workers.
 pixels for both axes, grab offsets, reversals, stale metrics and cancellation.
 The viewer UI's presentation tests exercise the real manager callbacks and
 delayed frames. Engine tests check bounded ingress, input barriers and exact
-viewport completion. Generated fixtures and logs belong under `_build/`.
+viewport completion. Opening regressions compare actual body/gutter marker bounds
+before and after source controls appear, including retained activation and hit
+testing. Placement tests check captured DPI before the first physical sizing and
+preserve later native scale changes. Pixel-preparation tests exercise one-batch
+backpressure, metadata buffer reuse, failed wakes, invalid buffers and cancellation.
+Generated fixtures and logs belong under `_build/`.
 
 For native measurements, build the `midnight-viewer-ui` example
 `performance_probe` in debug and stage it beside trusted viewer packages in the
@@ -96,3 +164,18 @@ Do not compare debug measurements with release results or report thumb latency a
 document-render latency. Native measurements must not access user preferences.
 The native test fails if content changes fewer than twice during the gesture;
 moving the thumb alone is not an acceptable result.
+
+Opening proof captures Slint offscreen rerenders without gestures:
+
+```text
+performance_probe <fixtures> <report> --d3d --native-parent --opening-proof --file=<source-file>
+```
+
+`--native-parent` captures placement from an already native parent, matching the
+application's viewer launch path. Standalone logical-size startup has no parent
+DPI to seed and is a distinct scenario. Keep startup modes consistent in before
+and after comparisons. At each observed viewer redraw, the probe latches the publication revision and geometry; it rejects a snapshot if that state changes before capture. These crops match the observed redraw state, but do not read the compositor framebuffer or cover Slint's direct pre-show draw. Opening snapshots are excluded from cadence comparisons;
+these probe capabilities alone do not establish a passing native qualification.
+
+The latest measured results, matched-redraw opening scope, GPU/software limits and
+focused regression evidence are in [the text viewer follow-up](../verification/2026-11-11-text-opening-scroll.md).

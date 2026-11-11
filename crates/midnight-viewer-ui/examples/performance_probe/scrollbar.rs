@@ -36,6 +36,7 @@ pub(super) struct Probe {
     redraw_content: Vec<f64>,
     redraw_uploaded: Vec<f64>,
     dispatch: Vec<f64>,
+    content_frames: Vec<(f64, f32, i32, f64)>,
 }
 
 impl Probe {
@@ -61,6 +62,12 @@ impl Probe {
             if !self.released {
                 self.content_updates_during_drag += 1;
             }
+            self.content_frames.push((
+                self.started.unwrap().elapsed().as_secs_f64() * 1000.0,
+                content,
+                window.get_raster_upload_count(),
+                elapsed,
+            ));
             self.content_position = content;
         }
         // A delayed response to an older input is not a fast response to this one.
@@ -233,6 +240,17 @@ impl Probe {
                 )];
                 rows.push(format!("scrollbar_cpu_crop stage={stage} checked={} changed={} nonblank={} presentation={} raster_offset_x={} raster_offset_y={} actual_gpu_readback=false",
                     !image, self.initial_crop.zip(final_crop).is_some_and(|(before, after)| before.0 != after.0), final_crop.is_some_and(|(_, varied)| varied), super::presentation(window), window.get_raster_offset_x(), window.get_raster_offset_y()));
+                let mut motion_gaps: Vec<_> = self
+                    .content_frames
+                    .windows(2)
+                    .map(|pair| pair[1].0 - pair[0].0)
+                    .collect();
+                motion_gaps.sort_by(f64::total_cmp);
+                if !motion_gaps.is_empty() {
+                    let count = motion_gaps.len();
+                    rows.push(format!("scrollbar_content_motion stage={stage} moving_frames={} gap_p50_ms={:.3} gap_p95_ms={:.3} gap_max_ms={:.3}", self.content_frames.len(), motion_gaps[count / 2], motion_gaps[(count * 95 / 100).min(count - 1)], motion_gaps[count - 1]));
+                }
+                rows.extend(self.content_frames.iter().map(|(time, content, uploads, redraw)| format!("scrollbar_content_frame stage={stage} elapsed_ms={time:.3} displayed_position={content:.9} raster_uploads={uploads} redraw_ms={redraw:.3}")));
                 for (kind, samples) in [
                     ("retained_redraw", &mut self.redraw_retained),
                     ("content_redraw", &mut self.redraw_content),

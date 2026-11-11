@@ -6,16 +6,16 @@
 
 ## Approved contract
 
-- The native frontend sends `ViewerInput::RetainedRaster(true)` before its first content frame. Existing viewport-only CPU consumers remain exact reference paths and allocate no retained surface.
+- The native frontend sends `ViewerInput::RetainedRaster(true)` as part of opening. Existing viewport-only CPU consumers remain exact reference paths and allocate no retained surface.
 - `ViewerFrame.raster` describes text rasters separately from `ViewerFrame.image`. Existing frame pixels hold the retained body image; optional gutter pixels live in the raster descriptor. No duplicate visible-viewport raster is allocated.
 - A surface ID names one camera/layout context. It survives overlapping fragment refills, but file/mode, arbitrary seek/search, resize/font/wrap changes replace it. An immutable pixel ID changes only when body/gutter pixels change.
 - Camera origin, raster origin and coverage use continuous effective raster pixel coordinates. The backend retains a page-local offset so exact source-anchor continuation can rebase a fragment without moving this camera.
-- Effective raster geometry retains the existing 4 Mi-pixel viewport cap, which can reduce its dimensions/scale below actual window pixels. The frontend maps each axis using `info.viewport / logical_canvas_size`; tests cover an effective scale different from native window DPI.
+- Effective raster geometry retains the existing 4 Mi-pixel viewport cap, which can reduce its dimensions/scale below actual window pixels. The frontend maps each axis using `info.viewport / logical_frame_extent`; that retained extent does not shrink when mode controls change the clipping canvas. Rendering and hit testing share this mapping; tests cover an effective scale different from native window DPI.
 - Safe coverage is a min/max range of camera origins for which the full viewport is already rasterized. Known file/content limits are separate optional min/max origins. An unloaded frontier is not EOF.
 - `Raster { surface, input }` carries absolute latest-wins `PanTo { sequence, origin, settled }`, origin-aware `Select { pixel_id, origin, ... }`, `SelectPage { pixel_id, origin }`, and surface-scoped `Copy`. Acknowledgements never pull a newer frontend camera backward. Non-pan commands are queue barriers.
 - The frontend translates existing body pixels in both axes and the source gutter only vertically. It asks for replacement pixels before the guard is exhausted, pauses at actual coverage if delayed, and retains remaining intended motion.
 - Selection requires an issued pixel identity from the current page/layout serial, plus a camera inside safe coverage. A page replacement invalidates selection authority before replacement pixels are available. Selection-only repaint retains the same coordinate authority, including while a guard read is in flight. Stale selection is rejected with a retry status; a rejected new selection blocks copying the previous selection. Ordinary overlap retains exact selected source endpoints and bounded selected text. SelectPage covers lines intersecting the displayed viewport, excluding added guard rows.
-- Body and gutter together target at most 6 Mi pixels (24 MiB RGBA) per retained snapshot. Guards target 256 effective raster pixels per side and shrink to respect that cap. A single Service-owned registry admits at most three live/reserved snapshots per worker and twelve across all workers, including closed windows and context resets. It holds the only weak pixel references and prunes a slot only after both body and gutter owners are gone; weak slice references themselves retain allocation storage. The resulting retained Arc storage cap is 288 MiB. Safe Vec-to-Arc construction can add up to one snapshot per active worker (four windows, at most 96 MiB). Frontend/GPU copies, layout caches and small retirement metadata are separate; this is not a claim about total process/GPU usage.
+- Body and gutter together target at most 6 Mi pixels (24 MiB RGBA) per retained snapshot. Guards target 256 logical pixels per side, converted with the effective raster scale, and shrink to respect that cap. The initial parent DPI therefore preserves logical lookahead without increasing the allocation budget. A single Service-owned registry admits at most three live/reserved snapshots per worker and twelve across all workers, including closed windows and context resets. It holds the only weak pixel references and prunes a slot only after both body and gutter owners are gone; weak slice references themselves retain allocation storage. The resulting retained Arc storage cap is 288 MiB. Safe Vec-to-Arc construction can add up to one snapshot per active worker (four windows, at most 96 MiB). Frontend/GPU copies, layout caches and small retirement metadata are separate; this is not a claim about total process/GPU usage.
 - Decode demand adds guard lines but retains the existing 12 KiB text / 4 KiB binary and 512-line ceilings. Shaping always uses the visible text width. Overscan never widens wrapping or reads a whole file.
 - Forward refill requests start near camera minus guard; backward requests end near camera plus viewport plus guard. Refill overlap and frontend lookahead are capped to half the available camera span, and page completion does not recursively start another optional guard. Plain/source boundaries retain complete available logical-line context so wrapping and tabs do not change at a visual-row crop. Binary and semantic document continuation retain their existing rules. The continuation records the actual camera through exact source anchors. Selected source endpoints/text survive ordinary overlap refills.
 - An incomplete byte-limited fragment shorter than a viewport temporarily uses the existing viewport path: it cannot promise continuous vertical coverage for a partial logical line. It retains the opt-in, advances exact source anchors, and can regain a new retained context on a later complete fragment. Short real EOF pages remain retained. No incomplete frontier is reported as EOF.
@@ -94,3 +94,40 @@ logical lines still use bounded viewport fallback, and PDF document tiles are a
 separate optimization. These limitations remain tracked; the checkboxes above
 mean qualification was executed, not that every viewer/platform meets uniform
 60 Hz or that the broad implementation goal is complete.
+
+## Opening geometry and pixel-delivery follow-up
+
+The implementation now retains each frame's logical display extent through the
+first source/Markdown toolbar layout and same-surface metadata updates. An initial
+viewport-only frame can hand that geometry to retained presentation without a
+scale change. Rendering, selection and rebase-resume input use the same effective
+pixel mapping. Captured parent placement also seeds the child's exact DPI before
+its first physical sizing; native scale events remain authoritative, while
+logical-size-only placement does not invent a monitor scale.
+
+Safe pixel-buffer conversion now runs on one bounded worker in the UI crate.
+There is at most one prepared batch awaiting presentation, backed by the existing
+coalescing source mailbox. Metadata updates reuse cached shared buffers without
+retaining source pixel Arcs. Slint images remain UI-owned; engine/plugin contracts,
+decoded-page limits and source-read behavior are unchanged. Frame admission still
+uses existing stale-context checks, accepted buffers retain their lease through
+replacement, and close/cancellation retires pending ownership off the event loop.
+The detailed contract is in [Viewer scrolling](../../developer/VIEWER_SCROLLING.md#retained-text-pixels-and-delivery).
+
+The first bounded page now uses the captured parent DPI. Guard sizing preserves
+256 logical pixels of lookahead per side at that effective scale, subject to the
+unchanged combined 24 MiB raster cap. Text decode remains capped at 12 KiB and
+512 lines; this does not preload the whole file or increase source budgets.
+
+Absolute scrollbar seeks retain the requested fraction until the returned page
+has been shaped and can map that fraction to actual visible pixels. A bounded
+context prefix allows for changing source-byte density; it is capped by the guard,
+a quarter of the current page and half its available scroll span. If that page
+still misses the target, the engine permits one bounded correction read before
+reporting failure without a success acknowledgement. A newer deferred target
+supersedes the old correction. Partial-page mapping therefore has a fixed read
+bound and never acknowledges an estimated anchor as the final displayed position.
+
+- [x] Add opening pixel/selection and captured-parent DPI regressions; observe their failures before the fixes.
+- [x] Implement fixed frame extents, captured DPI initialization and bounded presentation-buffer preparation.
+- [x] Record focused checks and native captured-parent opening/cadence qualification in [the follow-up verification](../../verification/2026-11-11-text-opening-scroll.md). GPU/software and exact drag targets pass; JSON drag outliers and slower high-DPI software pacing remain documented limitations.
