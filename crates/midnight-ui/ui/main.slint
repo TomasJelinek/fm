@@ -521,8 +521,8 @@ export component MainWindow inherits Window {
     out property <length> command-history-height: command-history-picker.height;
     out property <length> options-left: (root.width - root.options-width) / 2;
     out property <length> options-top: (root.height - root.options-height) / 2;
-    out property <length> options-width: min(root.width - 24px, max(740px, Theme.font-size * 28));
-    out property <length> options-height: min(root.height - 24px, max(520px, Theme.font-size * 20));
+    out property <length> options-width: min(root.width - 24px, max(840px, Theme.font-size * 28));
+    out property <length> options-height: min(root.height - 24px, max(580px, Theme.font-size * 20));
     out property <bool> command-focused: command-input.has-focus;
     // Slint 1.18.1 exposes these internal UTF-8 offsets; keep the pinned SDK and
     // the actual-key Unicode selection tests together when upgrading Slint.
@@ -1286,7 +1286,7 @@ export component MainWindow inherits Window {
                     color-picker-popup.show();
                 } else { color-picker-popup.close(); }
             }
-            desired-width: max(740px, Theme.font-size * 28); desired-height: max(520px, Theme.font-size * 20);
+            desired-width: max(840px, Theme.font-size * 28); desired-height: max(580px, Theme.font-size * 20);
             changed body-left => { root.options-left = self.body-left; }
             changed body-top => { root.options-top = self.body-top; }
             changed body-width => { root.options-width = self.body-width; }

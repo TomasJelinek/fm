@@ -13,6 +13,15 @@ descriptions are presentation metadata; they do not redirect routing or migrate
 saved IDs. The source viewer's description identifies its supported lexical
 profiles rather than placing resource-limit wording in its title.
 
+The Extensions editor is a single-line field. Long lists scroll horizontally
+with the caret, so Home/End and arrow keys reach either end without clipped
+wrapped lines. Spaces, commas and semicolons remain supported separators;
+multiline clipboard input becomes space-separated text. Validation, Reset,
+preview, OK and Cancel retain their existing transaction semantics. Options
+starts at 840×580 logical pixels, grows for larger fonts and remains constrained
+to the available window area; users can still resize it. See the
+[layout verification](../verification/2026-11-11-options-extension-layout.md).
+
 The existing internal `Command::ListViewerPlugins` requests all three catalogs
 through one bounded backend worker. It publishes independent
 `Event::ViewerPluginsListed`, `Event::FilesystemPluginsListed` and

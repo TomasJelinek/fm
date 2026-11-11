@@ -1,5 +1,5 @@
 import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
-import { ListView, TextEdit } from "std-widgets.slint";
+import { ListView, LineEdit } from "std-widgets.slint";
 import { TipBody } from "controls.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { Theme } from "theme.slint";
@@ -199,13 +199,12 @@ export component PluginOptions inherits VerticalLayout {
                     clicked => { ViewerPluginsView.reset-extensions(); }
                 }
             }
-            TextEdit {
-                text: ViewerPluginsView.extensions; wrap: word-wrap;
-                height: Theme.control-height * 2; min-width: 0px;
+            LineEdit {
+                text: ViewerPluginsView.extensions; min-width: 0px;
                 accessible-label: "Viewer extensions";
                 enabled: root.selected.configurable && ViewerPluginsView.settings-ready;
                 edited => { ViewerPluginsView.edit-extensions(self.text); }
-                Tooltip { TipBody { text: "Extensions separated by spaces, commas or semicolons: rs, .rs or *.rs. Empty removes specific matches. Changes are saved with OK."; } }
+                Tooltip { TipBody { text: "Extensions separated by spaces, commas or semicolons: rs, .rs or *.rs. Use Home/End or the arrow keys to move through long lists. Empty removes specific matches. Changes are saved with OK."; } }
             }
             if root.selected.fallback : Text {
                 text: "This viewer remains the fallback for unassociated files.";

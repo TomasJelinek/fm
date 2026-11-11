@@ -247,7 +247,7 @@ rows, scroll offsets, draft text, caret and selection do not reset on theme chan
 
 The subsequent complete-UI-polish request supersedes fixed large initial sizes.
 Ordinary operations and Copy/Move choose height from their wrapped summaries,
-fields and actions; long content scrolls. Options starts at 740x520 logical
+fields and actions; long content scrolls. Options starts at 840x580 logical
 pixels and Jobs at 720x500, with font-relative sizing. Hot Paths sizes its list to
 saved rows; short notices use compact content-based heights. Native migration
 must carry these updated presentation rules forward rather than restoring the

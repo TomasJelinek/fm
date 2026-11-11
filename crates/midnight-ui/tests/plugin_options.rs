@@ -3,13 +3,20 @@ mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
-use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
+use i_slint_core::{
+    accessibility::AccessibilityAction,
+    items::{AccessibleRole, TextCursorAffinity, TextInput},
+    window::WindowInner,
+};
 use midnight_core::{
     Command, Event, FilesystemPluginInfo, FilesystemPluginKind, ThumbnailerPluginInfo,
     UserPreferences, ViewerPluginInfo,
 };
 use midnight_ui::{Presenter, ViewerPluginRow, ViewerPluginsView, install, refresh};
-use slint::{ComponentHandle, Model, ModelRc, VecModel, platform::Key};
+use slint::{
+    ComponentHandle, Model, ModelRc, VecModel,
+    platform::{Key, WindowAdapter},
+};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -320,6 +327,74 @@ fn viewer_priority_keyboard_extensions_and_reset_are_cancelled_as_one_transactio
             .name,
         "Image viewer"
     );
+}
+
+#[test]
+fn long_viewer_extensions_scroll_horizontally_and_keep_the_caret_fully_visible() {
+    let mut h = Harness::new();
+    let extensions = "rs; c; h; cpp; cc; cxx; hpp; hh; hxx; js; mjs; cjs; jsx; ts; tsx; mts; cts; py; pyw; sh; bash; zsh; json; toml; java; cs; go; swift; kt; kts; rb; sql; yaml; yml; 日本語";
+    for (density, font, width, height) in
+        [(0, 14, 1100, 800), (0, 22, 760, 650), (1, 28, 1050, 900)]
+    {
+        h.edit(extensions);
+        h.ui.window.invoke_apply_preferences(1, density);
+        h.ui.window.invoke_apply_fonts("".into(), font, font);
+        h.ui.resize(width, height);
+        h.click("Viewer extensions", AccessibleRole::TextInput);
+        let input = WindowInner::from_pub(h.ui.window.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .expect("extension input must receive focus");
+        let field = ui::popup_item(&h.ui.window, "Viewer extensions", AccessibleRole::TextInput);
+        let mut origins = Vec::new();
+        for (key, offset) in [(Key::Home, 0), (Key::End, extensions.len()), (Key::Home, 0)] {
+            ui::key(&h.ui.window, key);
+            h.settle();
+            let text = input
+                .downcast::<TextInput>()
+                .expect("focused extension text");
+            let text = text.as_pin_ref();
+            assert_eq!(text.text().as_str(), extensions);
+            assert_eq!(text.cursor_position_byte_offset() as usize, offset);
+            let caret =
+                h.ui.native
+                    .renderer()
+                    .text_input_cursor_rect_for_byte_offset(
+                        text,
+                        &input,
+                        offset,
+                        TextCursorAffinity::NextCharacter,
+                    );
+            let origin =
+                input.map_to_native_window(input.geometry().origin + caret.origin.to_vector());
+            let bounds = field.geometry();
+            let field_origin = field.map_to_native_window(bounds.origin);
+            assert!(
+                origin.x >= field_origin.x
+                    && origin.x + caret.width() <= field_origin.x + bounds.width(),
+                "horizontal caret is clipped: density={density}, font={font}"
+            );
+            assert!(
+                origin.y >= field_origin.y
+                    && origin.y + caret.height() <= field_origin.y + bounds.height(),
+                "vertical caret is clipped: density={density}, font={font}"
+            );
+            origins.push(input.map_to_native_window(input.geometry().origin).x);
+        }
+        assert!(
+            origins[1] < origins[0] - 20.0,
+            "End must reveal the extension tail by scrolling horizontally"
+        );
+        assert!(
+            (origins[2] - origins[0]).abs() < 1.0,
+            "Home must restore the leading extensions"
+        );
+        render::snapshot(
+            &h.ui,
+            &format!("viewer-extension-scroll-{density}-{font}-{width}"),
+        );
+    }
 }
 
 #[test]
