@@ -100,6 +100,11 @@ information_window!(
         self.set_error(main.get_message_error());
         self.set_generation(main.get_message_generation());
     },
+    fn refresh(&self, main: &MainWindow) {
+        if self.get_generation() == main.get_message_generation() {
+            self.initialize(main);
+        }
+    },
     fn generation(main: &MainWindow) -> Option<i32> {
         Some(main.get_message_generation())
     },

@@ -359,6 +359,11 @@ def copy_thumbnail_packages(stage, source, target):
     return {"providers": providers, "target": target, "package_sha256": digest, "files": copied}
 
 
+def vendored(package):
+    marker = (package.get("metadata") or {}).get("midnight")
+    return isinstance(marker, dict) and marker.get("vendored-third-party") is True
+
+
 def dependency_packages(metadata, dependency_list, *, required_root="midnight-explorer",
                         include_local=False):
     """Use the application's tree, not metadata's workspace-wide feature union."""
@@ -382,7 +387,8 @@ def dependency_packages(metadata, dependency_list, *, required_root="midnight-ex
     if selected - packages.keys():
         raise ValueError(f"Dependencies missing from metadata: {selected - packages.keys()}")
     return [package for _, package in sorted(packages.items())
-            if include_local or package["source"]]
+            if include_local or package["source"]
+            or vendored(package)]
 
 
 def license_files(package):

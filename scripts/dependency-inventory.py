@@ -16,6 +16,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parent.parent
 SCOPES = {
     "app": "Cargo.toml",
+    "renderer-tests": "vendor/femtovg/Cargo.toml",
     "api": "api/Cargo.toml",
     "basic": "plugins/midnight-viewer-basic/Cargo.toml",
     "source": "plugins/midnight-viewer-source/Cargo.toml",
@@ -44,6 +45,11 @@ SCOPE_TARGETS = {
 }
 
 
+def vendored(package):
+    marker = (package.get("metadata") or {}).get("midnight")
+    return isinstance(marker, dict) and marker.get("vendored-third-party") is True
+
+
 def identity(package):
     return package["name"], package["version"]
 
@@ -55,7 +61,8 @@ def inventory(captures, selections=None):
         for member in metadata["workspace_members"]:
             if member not in packages:
                 raise ValueError(f"Missing workspace member: {member}")
-            owned.add(identity(packages[member]))
+            if not vendored(packages[member]):
+                owned.add(identity(packages[member]))
     records = {}
     for (scope, target), metadata in sorted(captures.items()):
         packages = {item["id"]: item for item in metadata["packages"]}
@@ -71,6 +78,8 @@ def inventory(captures, selections=None):
         for member in metadata["workspace_members"]:
             if member not in nodes:
                 raise ValueError(f"Missing resolve node: {member}")
+            if vendored(packages[member]):
+                continue
             for edge in nodes[member]["deps"]:
                 direct.setdefault(edge["pkg"], set()).add(packages[member]["name"])
         while pending:
@@ -136,6 +145,7 @@ def render(rows):
                 "inventory, not a claim that every entry is linked into the release executable.",
                 "Unused metadata feature-union/lockfile entries and project-owned crates are excluded.", "",
                 "`app` = application workspace; `api` = public API/SDK and its tools;",
+                "`renderer-tests` = vendored FemtoVG and its independent upstream/GPU tests;",
                 "`basic`, `source`, `markdown` = independent viewer plugins;",
                 "`conformance` = independent viewer ABI test fixture;",
                 "`native-windows`, `native-linux`, `native-macos` = independent native filesystem plugins;",

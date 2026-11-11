@@ -1,6 +1,20 @@
 # Feature status for 0.2.0
 
 This is an early preview. A design document is not evidence that a feature is available.
+The [pixel-scrolling contract](developer/SCROLLING.md) distinguishes fractional
+movement, native input routing and actual frame cadence. Native observations and
+known performance limits are recorded in the [scrolling investigation](NATIVE_SCROLL_VERIFICATION.md);
+intermediate offset tests alone do not establish 60 Hz scrolling.
+
+The 11 November scrolling update applies fractional wheel coasting to panel and
+standard-list scrollbar paths, shares input handling across tool windows, and
+reuses visible-row and GPU rendering resources. Final Windows panel probes reach
+roughly 60 Hz average redraw cadence, with occasional longer gaps. Text/source
+viewers at high DPI and viewer idle restart still have measured delays; see the
+[viewer qualification and remaining work](verification/2026-11-11-viewer-pixel-scroll.md).
+The fresh debug application passed backend, software-UI and native-UI startup
+checks with its protected plugin runtime. Linux compilation passed; Linux native
+frame pacing has not been qualified in this update.
 
 The current transfer update is available in the qualified Windows debug build:
 whole-operation speed charts, native same-volume Move without

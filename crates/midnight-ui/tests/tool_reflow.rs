@@ -2,8 +2,6 @@
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
-#[path = "support/render.rs"]
-mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -197,7 +195,12 @@ fn small_jobs_scrolls_chart_and_details_without_moving_close() {
         before,
         "Close stays outside scrolling diagnostics"
     );
-    render::snapshot(&test, "jobs-scroll-minimum-font32");
+    modeless::bitmap::snapshot(
+        &test.pixels,
+        test.width,
+        test.height,
+        "jobs-scroll-minimum-font32",
+    );
     ui::key(&test.window, Key::Escape);
     assert!(
         !ui::has_popup(&test.window),

@@ -569,9 +569,12 @@ Linux5.6+ and same-device home Trash; Windows Shell Trash can refuse long paths
 that native rename/create/permanent operations support.
 The [panel navigation and details extension](docs/superpowers/specs/2026-11-05-panel-navigation-details-design.md)
 defines current controls. A separate [Network filesystem plugin](docs/superpowers/specs/2026-11-05-network-filesystem-design.md)
-will discover available devices/shares; discovery is designed, not implemented yet.
+discovers devices/shares through separate Windows and Linux adapters; macOS support remains planned.
 The [panel and scrolling verification](docs/verification/panel-navigation-and-smooth-scrolling.md)
 records regression coverage, native checks and the clean build layout.
+The [pixel-scrolling contract](docs/developer/SCROLLING.md) and
+[native measurements](docs/NATIVE_SCROLL_VERIFICATION.md) cover current list/viewer
+input, renderer optimizations and remaining measured performance limits.
 The [interaction and layout verification](docs/verification/panel-interaction-and-layout.md)
 records Ctrl/Shift selection, splitter/tab/terminal controls, and measured debug
 selection/resize performance, including remaining native rendering limits.

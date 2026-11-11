@@ -91,6 +91,37 @@ fn click(window: &MainWindow, position: slint::LogicalPosition) {
         .window()
         .dispatch_event(WindowEvent::PointerReleased { position, button });
 }
+fn options_topic(
+    window: &MainWindow,
+    native: &MinimalSoftwareWindow,
+    pixels: &mut [slint::Rgb8Pixel],
+    label: &str,
+    topic: i32,
+) {
+    if let Some(button) = ui::try_popup_item(window, label, AccessibleRole::Button) {
+        click(window, center(&button));
+    } else {
+        // Large-font Options uses the compact picker instead of sidebar buttons.
+        let current = window.get_options_topic_index();
+        let current_index = if current >= 3 { current - 1 } else { current };
+        let target_index = if topic >= 3 { topic - 1 } else { topic };
+        ui::click_popup(window, "Options topic", AccessibleRole::Combobox);
+        for _ in 0..(target_index - current_index).abs() {
+            ui::key(
+                window,
+                if target_index > current_index {
+                    Key::DownArrow
+                } else {
+                    Key::UpArrow
+                },
+            );
+        }
+        ui::key(window, Key::Return);
+    }
+    draw(native, pixels);
+    assert_eq!(window.get_options_topic_index(), topic);
+}
+
 fn axis(cursor: f32, size: f32, surface: f32, gap: f32) -> f32 {
     let after = cursor + gap;
     (if after + size <= surface - 8.0 {
@@ -509,9 +540,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         hover(&window, &native, &time, &mut pixels, position, "Options");
         click(&window, position);
         draw(&native, &mut pixels);
-        let appearance = find(popup_root(&window), "Appearance", AccessibleRole::Button).remove(0);
-        click(&window, center(&appearance));
-        draw(&native, &mut pixels);
+        options_topic(&window, &native, &mut pixels, "Appearance", 1);
         let theme = find(popup_root(&window), "Theme", AccessibleRole::Combobox).remove(0);
         hover(
             &window,
@@ -522,9 +551,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             "Preview a color theme. OK saves it; Cancel restores the previous theme.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
-        let panel = find(popup_root(&window), "General", AccessibleRole::Button).remove(0);
-        click(&window, center(&panel));
-        draw(&native, &mut pixels);
+        options_topic(&window, &native, &mut pixels, "General", 0);
         let checkbox = find(
             popup_root(&window),
             "Show only filename search matches",

@@ -248,6 +248,7 @@ impl DialogHost {
         // Slint snapshots the attributes during adapter construction, before later realization.
         let _scope = dialog_native::CreationScope::enter(owner.clone(), role);
         let component = create()?;
+        midnight_ui_input::install_native_scroll(&component, dialog_input_blocked);
         let host = Self {
             session,
             owner,

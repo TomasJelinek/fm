@@ -243,6 +243,10 @@ fn shift_insert_empty_paste_is_noop_and_ordinary_typing_is_not_modified() {
 #[test]
 fn rejected_paste_leaves_text_unchanged_and_reports_failure_without_navigation() {
     let mut h = Harness::new();
+    let notices = Rc::new(Cell::new(0));
+    let captured = notices.clone();
+    h.ui.window
+        .on_open_notice_window(move || captured.set(captured.get() + 1));
     h.text("unchanged");
     h.sent.borrow_mut().clear();
     h.accept.set(false);
@@ -250,7 +254,11 @@ fn rejected_paste_leaves_text_unchanged_and_reports_failure_without_navigation()
     h.settle();
     assert_eq!(h.value(), "unchanged");
     assert!(h.ui.window.get_message_body().contains("busy"));
-    assert!(ui::has_popup(&h.ui.window));
+    assert_eq!(
+        notices.get(),
+        1,
+        "the failure requests its independent notice window"
+    );
     assert!(h.sent.borrow().is_empty());
 }
 

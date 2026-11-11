@@ -36,7 +36,8 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
         "Select all",
         "Select files only",
         "Deselect all",
-        "Invert selection",
+        "Invert files only",
+        "Invert files and folders",
         "Find files…",
         "Checksums…",
         "Make File List…",
@@ -53,6 +54,21 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
     test.draw();
     assert_eq!(*actions.borrow(), [(1, 0)]);
     assert!(!ui::has_popup(&test.window));
+
+    let selections = Rc::new(RefCell::new(Vec::new()));
+    let captured = selections.clone();
+    test.window.on_bulk_selection(move |pane, operation| {
+        captured.borrow_mut().push((pane, operation));
+    });
+    for label in ["Invert files only", "Invert files and folders"] {
+        test.window.invoke_show_app_menu(2);
+        test.draw();
+        category(&mut test, 2);
+        ui::click_popup(&test.window, label, AccessibleRole::Button);
+        test.draw();
+        assert!(!ui::has_popup(&test.window));
+    }
+    assert_eq!(*selections.borrow(), [(1, 2), (1, 4)]);
 }
 
 fn enabled(test: &ui::TestUi, label: &str) -> bool {

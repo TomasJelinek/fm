@@ -11,6 +11,8 @@ pub type Callback = Rc<RefCell<Option<Box<dyn FnMut(Duration)>>>>;
 pub struct Observer {
     pub callback: Callback,
     pub drawing: Option<Instant>,
+    pub injected_wheel: bool,
+    pub native_events: Rc<RefCell<Vec<String>>>,
 }
 
 impl Observer {
@@ -33,6 +35,26 @@ impl CustomApplicationHandler for Observer {
         event: &winit::event::WindowEvent,
     ) -> EventResult {
         self.finished();
+        if self.injected_wheel
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseWheel { .. }
+                    | winit::event::WindowEvent::CursorMoved { .. }
+                    | winit::event::WindowEvent::CursorLeft { .. }
+                    | winit::event::WindowEvent::Focused(_)
+                    | winit::event::WindowEvent::Resized(_)
+            )
+            && self.native_events.borrow().len() < 4096
+        {
+            self.native_events
+                .borrow_mut()
+                .push(format!("wheel_native {event:?}"));
+        }
+        // Synthetic native mouse messages leave the desktop cursor in place.
+        // Its unrelated leave notification must not cancel this probe gesture.
+        if self.injected_wheel && matches!(event, winit::event::WindowEvent::CursorLeft { .. }) {
+            return EventResult::PreventDefault;
+        }
         if matches!(event, winit::event::WindowEvent::RedrawRequested) {
             self.drawing = Some(Instant::now());
         }

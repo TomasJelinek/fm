@@ -4,7 +4,7 @@ use i_slint_core::{
 use midnight_core::*;
 use midnight_ui::{MainWindow, Presenter, Theme, install, refresh};
 use slint::winit_030::{CustomApplicationHandler, EventResult, winit};
-use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
+use slint::{ComponentHandle, Model, winit_030::WinitWindowAccessor};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -12,13 +12,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "measurements.rs"]
+mod measurements;
+
 #[link(name = "user32")]
 unsafe extern "system" {
     fn FindWindowW(class: *const u16, name: *const u16) -> *mut std::ffi::c_void;
     fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, w: usize, l: isize) -> i32;
 }
 
-type Frames = Rc<RefCell<Vec<(f64, f32, bool, f64)>>>;
+type Frames = Rc<RefCell<Vec<(f64, f32, bool, f64, f64)>>>;
 
 struct ProbeEvents {
     window: Rc<RefCell<Option<slint::Weak<MainWindow>>>>,
@@ -26,12 +29,12 @@ struct ProbeEvents {
     samples: Frames,
     capturing: Rc<Cell<bool>>,
     started: Instant,
-    pending: Option<Instant>,
+    pending: Option<(Instant, f64)>,
 }
 
 impl ProbeEvents {
     fn finish_redraw(&mut self) {
-        if let Some(before) = self.pending.take()
+        if let Some((before, cpu_before)) = self.pending.take()
             && self.capturing.get()
             && let Some(window) = self.window.borrow().as_ref().and_then(slint::Weak::upgrade)
             && let Some(item) = self.list.borrow().as_ref()
@@ -42,6 +45,7 @@ impl ProbeEvents {
                 flick.as_pin_ref().content_y().get(),
                 window.get_scroll_interaction_active(),
                 before.elapsed().as_secs_f64() * 1000.0,
+                measurements::thread_cpu_ms() - cpu_before,
             ));
         }
     }
@@ -69,7 +73,7 @@ impl CustomApplicationHandler for ProbeEvents {
             );
         }
         if matches!(event, winit::event::WindowEvent::RedrawRequested) {
-            self.pending = Some(Instant::now());
+            self.pending = Some((Instant::now(), measurements::thread_cpu_ms()));
         }
         EventResult::Propagate
     }
@@ -137,8 +141,8 @@ fn capture_views(window: &MainWindow) {
 }
 
 fn seed_capture_icons(presenter: &Rc<RefCell<Presenter>>) {
-    // The benchmark has no desktop backend. Supply existing fixture artwork
-    // only after timing capture, so the visual check includes nonempty icons.
+    // The probe has no filesystem icon provider. Load fixture artwork outside
+    // capture: normally afterward, or before warmup for --timed-fixture-icons.
     for (key, name) in [
         (IconKey::file(), "documents.svg"),
         (IconKey::folder(), "folder-sizes.svg"),
@@ -159,7 +163,7 @@ fn seed_capture_icons(presenter: &Rc<RefCell<Presenter>>) {
     }
 }
 
-fn check_frames(injections: &[f64], frames: &[(f64, f32, bool, f64)], row_height: f32) {
+fn check_frames(injections: &[f64], frames: &[(f64, f32, bool, f64, f64)], row_height: f32) {
     for (index, &start) in injections.iter().enumerate() {
         let end = injections.get(index + 1).copied().unwrap_or(f64::INFINITY);
         let mut previous = frames
@@ -168,7 +172,7 @@ fn check_frames(injections: &[f64], frames: &[(f64, f32, bool, f64)], row_height
             .map_or(0.0, |frame| frame.1);
         let initial = previous;
         let mut positions = Vec::new();
-        for &(_, offset, active, _) in frames
+        for &(_, offset, active, _, _) in frames
             .iter()
             .filter(|frame| frame.0 >= start && frame.0 < end)
         {
@@ -211,12 +215,55 @@ fn check_frames(injections: &[f64], frames: &[(f64, f32, bool, f64)], row_height
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments: Vec<_> = std::env::args().collect();
+    let real_path = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--path="))
+        .map(std::path::PathBuf::from);
+    let maximized = arguments.iter().any(|argument| argument == "--maximized");
+    let zoomed = arguments.iter().any(|argument| argument == "--zoomed");
+    let app_renderer = arguments
+        .iter()
+        .any(|argument| argument == "--app-renderer");
+    if app_renderer && std::env::var_os("MIDNIGHT_SCROLL_APP_RENDERER_CHILD").is_none() {
+        let status = measurements::run_with_app_renderer()?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(format!("app-renderer child exited {status}").into())
+        };
+    }
+    let sustained = arguments.iter().any(|argument| argument == "--sustained");
+    let scrollbar_wheel = arguments
+        .iter()
+        .any(|argument| argument == "--scrollbar-wheel");
+    let timed_fixture_icons = arguments
+        .iter()
+        .any(|argument| argument == "--timed-fixture-icons");
+    if sustained && arguments.iter().any(|argument| argument == "--check") {
+        return Err("--check expects isolated notches; omit it with --sustained".into());
+    }
+    let pixel_directory = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--capture-pixels="))
+        .map(std::path::PathBuf::from);
+    let path = real_path.clone().unwrap_or(std::env::current_dir()?);
+    let entries = measurements::load_entries(path.clone(), real_path.is_some())?;
+    eprintln!(
+        "fixture path={path:?} source={} entries={} app_renderer={app_renderer} scrollbar_wheel={scrollbar_wheel} timed_fixture_icons={timed_fixture_icons}",
+        if real_path.is_some() {
+            "read-only directory metadata; no Engine/provider or native icons"
+        } else {
+            "synthetic"
+        },
+        entries.len(),
+    );
     let started = Instant::now();
     let observed_window = Rc::new(RefCell::new(None));
     let list = Rc::new(RefCell::new(None::<ItemRc>));
     let samples: Frames = Default::default();
     let capturing = Rc::new(Cell::new(false));
-    slint::BackendSelector::new()
+    let selector = slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("femtovg-wgpu".into())
         .with_winit_custom_application_handler(ProbeEvents {
@@ -226,11 +273,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             capturing: capturing.clone(),
             started,
             pending: None,
-        })
-        .select()?;
+        });
+    selector.select()?;
     let window = MainWindow::new()?;
     *observed_window.borrow_mut() = Some(window.as_weak());
-    let path = std::env::current_dir()?;
     let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let capture = commands.clone();
@@ -262,23 +308,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ => None,
             })
             .unwrap();
-        let entries: Arc<[Entry]> = (0..10_000)
-            .map(|id| {
-                Entry::new(
-                    EntryId(id),
-                    path.join(format!("entry-{id:06}-文档.txt")),
-                    EntryKind::File,
-                )
-            })
-            .collect();
         presenter.borrow_mut().apply(Event::ListingFinished {
             pane,
             navigation,
             index: Arc::new(DirectoryIndex::from_entries(&entries)),
-            entries,
+            entries: entries.clone(),
         });
     }
+    if timed_fixture_icons {
+        // All fixture loading precedes warmup and capture. This remains separate
+        // from the real Engine/provider and native shell-icon pipeline.
+        seed_capture_icons(&presenter);
+    }
     refresh(&window, &presenter.borrow());
+    if timed_fixture_icons {
+        let rows = window.get_left_rows();
+        let count = (0..rows.row_count().min(64))
+            .filter_map(|index| rows.row_data(index))
+            .filter(|row| row.icon.size().width > 0)
+            .count();
+        assert!(count > 0, "timed fixture must include nonempty icons");
+        eprintln!("timed fixture icons: {count} nonempty rows among first 64");
+    }
     let requested_mode = std::env::args()
         .find_map(|argument| {
             argument
@@ -292,6 +343,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     window
         .window()
         .set_size(slint::LogicalSize::new(1340.0, 820.0));
+    window.window().set_maximized(maximized);
+    if zoomed {
+        window.invoke_toggle_panel_zoom(0);
+        assert!(window.get_panel_zoomed());
+    }
     let timer = slint::Timer::default();
     let weak = window.as_weak();
     let mut step = 0;
@@ -302,6 +358,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let validation_capture = validation.clone();
     let capture = std::env::args().any(|argument| argument == "--capture-views");
     let capture_presenter = presenter.clone();
+    let pixel_captures = Rc::new(RefCell::new(Vec::new()));
+    let capture_pixels = pixel_captures.clone();
+    let wants_pixels = pixel_directory.is_some();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(200),
@@ -310,6 +369,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             if step == 8 {
+                window.window().with_winit_window(|native| {
+                    eprintln!(
+                        "geometry physical={:?} scale={} maximized={} panel_zoomed={} list={}x{} monitor={:?} refresh_millihertz={:?}",
+                        native.inner_size(), native.scale_factor(), native.is_maximized(),
+                        window.get_panel_zoomed(), window.get_left_list_width(), window.get_left_list_height(),
+                        native.current_monitor().and_then(|monitor| monitor.name()),
+                        native.current_monitor().and_then(|monitor| monitor.refresh_rate_millihertz()),
+                    );
+                });
+                eprintln!(
+                    "renderer transformations={} WGPU_BACKEND={:?} WGPU_DEBUG={:?} WGPU_VALIDATION={:?}",
+                    WindowInner::from_pub(window.window()).window_adapter().renderer().supports_transformations(),
+                    std::env::var_os("WGPU_BACKEND"), std::env::var_os("WGPU_DEBUG"), std::env::var_os("WGPU_VALIDATION"),
+                );
                 *list.borrow_mut() = find_list(
                     ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
                     window.get_left_list_left(),
@@ -318,7 +391,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 assert!(list.borrow().is_some());
                 capturing.set(true);
             }
-            if [9, 16, 23, 30].contains(&step) {
+            if if sustained { (9..=29).contains(&step) } else { [9, 16, 23, 30].contains(&step) } {
                 let title = format!(
                     "Midnight Explorer native scroll probe {}",
                     std::process::id()
@@ -328,7 +401,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .with_winit_window(|native| native.set_title(&title));
                 let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
                 let scale = window.window().scale_factor();
-                let x = ((window.get_left_list_left() + 100.0) * scale) as u32;
+                // Fluent's vertical bar overlays the last 14 logical pixels.
+                let local_x = if scrollbar_wheel {
+                    window.get_left_list_width() - 7.0
+                } else {
+                    100.0
+                };
+                let x = ((window.get_left_list_left() + local_x) * scale) as u32;
                 let y = ((window.get_left_list_top() + 100.0) * scale) as u32;
                 unsafe {
                     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
@@ -349,6 +428,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 window.invoke_reveal_left();
             }
             if step == 38 {
+                if wants_pixels {
+                    *capture_pixels.borrow_mut() = measurements::capture_pixel_proof(&window);
+                    window.invoke_reveal_left();
+                }
                 let theme = window.global::<Theme>();
                 validation_capture.borrow_mut().push((
                     "ordinary row",
@@ -381,6 +464,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 capture_views(&window);
             }
             if step == (if capture { 44 } else { 41 }) {
+                validation_capture.borrow_mut().push((
+                    "row name/icon updates", measurements::check_row_invalidation(&window),
+                ));
                 slint::quit_event_loop().unwrap();
             }
             step += 1;
@@ -392,9 +478,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         capture_injections.borrow(),
         row_height
     );
-    println!("elapsed_ms,content_y,interaction_active,render_ms");
-    for &(elapsed, offset, active, render) in samples.borrow().iter() {
-        println!("{elapsed:.3},{offset:.4},{active},{render:.3}");
+    println!("elapsed_ms,content_y,interaction_active,render_ms,ui_thread_cpu_ms");
+    for &(elapsed, offset, active, render, cpu) in samples.borrow().iter() {
+        println!("{elapsed:.3},{offset:.4},{active},{render:.3},{cpu:.3}");
+    }
+    measurements::report(&capture_injections.borrow(), &samples.borrow(), row_height);
+    if let Some(directory) = pixel_directory {
+        let captures = std::mem::take(&mut *pixel_captures.borrow_mut());
+        std::thread::spawn(move || measurements::write_pixel_proof(&directory, captures))
+            .join()
+            .map_err(|_| std::io::Error::other("pixel artifact worker panicked"))??;
     }
     if std::env::args().any(|arg| arg == "--check") {
         check_frames(&capture_injections.borrow(), &samples.borrow(), row_height);
@@ -403,7 +496,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         samples
             .borrow()
             .iter()
-            .any(|&(_, offset, _, _)| offset < -1.0),
+            .any(|&(_, offset, _, _, _)| offset < -1.0),
         "native wheel must move the list"
     );
     for &(phase, valid) in validation.borrow().iter() {

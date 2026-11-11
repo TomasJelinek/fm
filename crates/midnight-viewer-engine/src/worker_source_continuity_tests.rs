@@ -210,3 +210,88 @@ fn source_scroll_first_frame_keeps_exact_overlap_line_numbers_without_locate() {
         "3"
     );
 }
+
+#[test]
+fn continuation_preserves_reversed_motion_while_the_next_fragment_is_pending() {
+    let (mut worker, output) = worker();
+    let source: String = (0..90)
+        .map(|i| format!("row {i:03} {}\n", "wide text ".repeat(10)))
+        .collect();
+    let starts: Vec<_> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    worker.length = source.len() as u64;
+    assert!(worker.set_page(source_page(&source, starts[10], starts[30]), &output));
+    let maximum = crate::viewport::available_height(
+        worker.page.as_ref().unwrap(),
+        worker.shaped.as_ref().unwrap(),
+        worker.geometry.height as f32,
+    ) - worker.geometry.height as f32;
+    worker.origin = [0.0, maximum - 0.25];
+    let screen_y = |worker: &Worker| {
+        let index = worker
+            .page
+            .as_ref()
+            .unwrap()
+            .anchors
+            .iter()
+            .find(|anchor| anchor.source_offset == starts[22] as u64)
+            .unwrap()
+            .text_offset;
+        worker
+            .shaped
+            .as_ref()
+            .unwrap()
+            .caret_geometry(index as usize)
+            .unwrap()
+            .y0 as f32
+            - worker.origin[1]
+    };
+    let before = screen_y(&worker);
+    worker.input(ViewerInput::Scroll { x: 0.0, y: 3.5 }, &output);
+    assert!(worker.continuation.is_some());
+    // The fixture supplies the asynchronous response without requiring an installed plugin.
+    worker.viewport_request = Some(41);
+    worker.input(ViewerInput::Scroll { x: 0.0, y: -1.25 }, &output);
+    worker.received_page(41, source_page(&source, starts[15], starts[45]), &output);
+    let first = before - screen_y(&worker);
+    assert!(
+        (first - 2.25).abs() < 0.001,
+        "first page frame ignored queued reversal: {first}"
+    );
+    worker.event(41, EventKind::Completed, &output);
+    let moved = before - screen_y(&worker);
+    assert!(
+        (moved - 2.25).abs() < 0.001,
+        "reversal was overwritten by the page reply: {moved}"
+    );
+}
+
+#[test]
+fn continuation_keeps_horizontal_pixels_from_the_crossing_gesture() {
+    let (mut worker, output) = worker();
+    let source: String = (0..90)
+        .map(|i| format!("row {i:03} {}\n", "wide text ".repeat(10)))
+        .collect();
+    let starts: Vec<_> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    worker.length = source.len() as u64;
+    assert!(worker.set_page(source_page(&source, starts[10], starts[30]), &output));
+    worker.origin = [
+        10.0,
+        crate::viewport::available_height(
+            worker.page.as_ref().unwrap(),
+            worker.shaped.as_ref().unwrap(),
+            worker.geometry.height as f32,
+        ) - worker.geometry.height as f32
+            - 0.25,
+    ];
+    worker.input(ViewerInput::Scroll { x: 7.5, y: 3.5 }, &output);
+    assert!(worker.continuation.is_some());
+    assert!(worker.set_page(source_page(&source, starts[15], starts[45]), &output));
+    assert!(
+        (worker.origin[0] - 17.5).abs() < 0.001,
+        "crossing discarded horizontal pixels"
+    );
+}

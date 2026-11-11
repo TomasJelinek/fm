@@ -33,6 +33,15 @@ class DependencyInventoryTests(unittest.TestCase):
         result = packaging.dependency_packages(self.metadata, tree)
         self.assertEqual([entry["name"] for entry in result], ["derive", "runtime"])
 
+    def test_vendored_renderer_keeps_distribution_notices(self):
+        self.metadata["packages"][0]["metadata"] = None
+        vendor = package("renderer", None)
+        vendor["metadata"] = {"midnight": {"vendored-third-party": True}}
+        self.metadata["packages"].append(vendor)
+        result = packaging.dependency_packages(
+            self.metadata, "midnight-explorer v0.1.0\nrenderer v0.1.0\n")
+        self.assertEqual([entry["name"] for entry in result], ["renderer"])
+
     def test_indented_tree_cannot_silently_omit_dependency_notices(self):
         tree = "midnight-explorer v0.1.0\n\u2514\u2500\u2500 runtime v0.1.0\n"
         with self.assertRaises(ValueError):

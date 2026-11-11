@@ -3,6 +3,8 @@
 mod render_observer;
 #[path = "performance_probe/scrollbar.rs"]
 mod scrollbar;
+#[path = "performance_probe/wheel.rs"]
+mod wheel;
 use midnight_core::*;
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use midnight_viewer_ui::{ViewerWindow, ViewerWindows};
@@ -54,6 +56,7 @@ impl ContentSource for Counted {
 }
 struct Probe {
     scrollbar: Option<scrollbar::Probe>,
+    wheel: Option<wheel::Probe>,
     stage: usize,
     round: usize,
     opened: Instant,
@@ -79,33 +82,47 @@ fn active(window: &ViewerWindow, stage: usize) -> bool {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let directory = PathBuf::from(args.next().ok_or(
-        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar] [--d3d|--software]",
+        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software]",
     )?);
     let report = PathBuf::from(args.next().ok_or("report-file missing")?);
     let flags: Vec<_> = args.collect();
     let load = flags.iter().any(|flag| flag == "--load");
     let instrumented = flags.iter().any(|flag| flag == "--count");
     let scrollbar = flags.iter().any(|flag| flag == "--scrollbar");
+    let wheel = flags.iter().any(|flag| flag == "--wheel");
     let d3d = flags.iter().any(|flag| flag == "--d3d");
     let software = flags.iter().any(|flag| flag == "--software");
     if flags.iter().any(|flag| {
         flag != "--load"
             && flag != "--count"
             && flag != "--scrollbar"
+            && flag != "--wheel"
             && flag != "--d3d"
             && flag != "--software"
     }) {
         return Err("unknown probe argument".into());
     }
+    if wheel && scrollbar {
+        return Err("choose --wheel or --scrollbar".into());
+    }
     if d3d && software {
         return Err("choose either --d3d or --software".into());
     }
     let after_render: render_observer::Callback = Rc::new(RefCell::new(None));
+    let native_events = Rc::new(RefCell::new(Vec::new()));
     let mut selector = slint::BackendSelector::new().backend_name("winit".into());
     if d3d {
         // Match the Windows application's default renderer policy explicitly.
         let mut graphics = slint::wgpu_30::WGPUSettings::default();
         graphics.backends = slint::wgpu_30::wgpu::Backends::DX12;
+        let mut flags = slint::wgpu_30::wgpu::InstanceFlags::from_build_config();
+        flags.remove(
+            slint::wgpu_30::wgpu::InstanceFlags::DEBUG
+                | slint::wgpu_30::wgpu::InstanceFlags::VALIDATION,
+        );
+        flags = flags.with_env();
+        flags.insert(slint::wgpu_30::wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+        graphics.instance_flags = flags;
         selector = selector
             .renderer_name("femtovg-wgpu".into())
             .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(graphics));
@@ -116,6 +133,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_winit_custom_application_handler(render_observer::Observer {
             callback: after_render.clone(),
             drawing: None,
+            injected_wheel: wheel,
+            native_events: native_events.clone(),
         })
         .select()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -229,6 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let state = Rc::new(RefCell::new(Probe {
         scrollbar: scrollbar.then(scrollbar::Probe::default),
+        wheel: wheel.then(wheel::Probe::default),
         stage: 0,
         round: 0,
         opened: start,
@@ -275,7 +295,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ));
             state.first = true;
         }
-        if let Some(drag) = state.scrollbar.as_mut() {
+        if let Some(gesture) = state.wheel.as_mut() {
+            gesture.rendered(&window, redraw);
+        } else if let Some(drag) = state.scrollbar.as_mut() {
             drag.rendered(&window, rendered_frames.get(), redraw);
         } else if let Some((sent, previous)) = state.pending
             && marker(&window, state.stage) != previous
@@ -342,7 +364,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            let rounds = if scrollbar {
+            if let Some(gesture) = state.wheel.as_mut() {
+                match gesture.tick(&window, stage == 2, stage) {
+                    Ok(Some(rows)) => {
+                        state.rows.extend(rows);
+                        state.round = 1;
+                    }
+                    Ok(None) => return,
+                    Err(error) => {
+                        let trace = gesture.trace(stage);
+                        state.rows.extend(trace);
+                        state
+                            .rows
+                            .push(format!("wheel_failure stage={stage}: {error}"));
+                        state.error.get_or_insert(error);
+                        // Keep collecting later modes while retaining a failing exit status.
+                        state.round = 1;
+                    }
+                }
+            }
+            let rounds = if scrollbar || wheel {
                 1
             } else if state.stage == 2 {
                 12
@@ -351,7 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             if state.round >= rounds {
                 let stage = state.stage;
-                if !scrollbar {
+                if !scrollbar && !wheel {
                     let mut times = std::mem::take(&mut state.latencies);
                     times.sort_by(f64::total_cmp);
                     state.rows.push(format!(
@@ -367,6 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.first = false;
                 state.opened = Instant::now();
                 state.scrollbar = scrollbar.then(scrollbar::Probe::default);
+                state.wheel = wheel.then(wheel::Probe::default);
                 if state.stage == 3 {
                     let _ = slint::quit_event_loop();
                 } else {
@@ -412,6 +454,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(error) = state.error.clone() {
         state.rows.push(format!("ERROR {error}"));
     }
+    state.rows.extend(native_events.borrow_mut().drain(..));
     let output = state.rows.join("\n") + "\n";
     eprintln!("{output}");
     runtime.block_on(runtime.spawn_blocking(move || std::fs::write(report, output)))??;

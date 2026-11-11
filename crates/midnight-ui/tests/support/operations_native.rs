@@ -40,6 +40,7 @@ pub struct Harness {
     pub send: Rc<dyn Fn(Command) -> bool>,
     events: mpsc::Receiver<Event>,
     commands: mpsc::Sender<Command>,
+    committed: [Option<NavigationId>; 2],
     runtime: Option<Runtime>,
     engine: Option<JoinHandle<()>>,
 }
@@ -118,6 +119,7 @@ impl Harness {
             send,
             events,
             commands,
+            committed: [None; 2],
             runtime: Some(runtime),
             engine: Some(engine),
         };
@@ -202,7 +204,24 @@ impl Harness {
                     .unwrap()
                     .spawn_blocking(move || drop(retired));
             }
+            self.sync_visible();
             self.ui.draw();
+        }
+    }
+
+    fn sync_visible(&mut self) {
+        // Match the app's VisibleSync: native operations require the exact
+        // displayed snapshot, acknowledged on the same FIFO command channel.
+        // Retry a full queue without marking an unaccepted snapshot delivered.
+        for pane in [PaneId::Left, PaneId::Right] {
+            if let Some(visible) = self.presenter.borrow().visible_directory(pane) {
+                let navigation = visible.navigation;
+                if self.committed[pane.index()] != Some(navigation)
+                    && (self.send)(Command::PaneCommitted(visible))
+                {
+                    self.committed[pane.index()] = Some(navigation);
+                }
+            }
         }
     }
 

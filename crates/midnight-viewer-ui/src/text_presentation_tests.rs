@@ -150,3 +150,369 @@ fn accepted_later_navigation_cancels_an_unsubmitted_scrollbar_retry() {
     ));
     manager.close_all();
 }
+
+#[test]
+fn raster_native_wheel_delivers_fractional_frames_between_notches() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        if let ViewerInput::Scroll { x, y } = input {
+            received.borrow_mut().push([x, y]);
+        }
+        true
+    });
+    for (revision, mode) in [
+        (10, 1),
+        (11, 1),
+        (12, 2),
+        (13, 2),
+        (14, 3),
+        (15, 3),
+        (16, 4),
+        (17, 4),
+        (18, VIEWER_MODE_IMAGE),
+        (19, VIEWER_MODE_IMAGE),
+    ] {
+        let mut value = frame(revision, 0, 0.2);
+        if let ViewerOutput::Frame(frame) = &mut value {
+            frame.mode = mode;
+            frame.modes = vec![mode];
+            if mode == VIEWER_MODE_IMAGE {
+                frame.image = Some(ViewerImageInfo {
+                    surface: ViewerSurfaceId(99),
+                    origin: [0.0, 500.0],
+                    visible_source: [400.0, 240.0],
+                    raster_scale: 1.0,
+                    pan_sequence: 0,
+                    width: 4000,
+                    height: 3000,
+                    zoom: 1.0,
+                    fitted: false,
+                    page: 1,
+                    page_count: 3,
+                });
+            }
+        }
+        present_outputs(&open, &service, &|_| {}, vec![value]);
+        submitted.borrow_mut().clear();
+        let scale = f64::from(open.window.window().scale_factor());
+        assert!(
+            native_raster_notch(&open, -1.0),
+            "raster mode {mode} bypassed the motion controller"
+        );
+        assert!(
+            submitted.borrow().is_empty(),
+            "a notch jumped before the first display frame"
+        );
+        raster_ticks(&open, 30);
+        let steps = submitted.borrow();
+        assert!(
+            steps.len() >= 10,
+            "mode {mode}: only {} movement frames",
+            steps.len()
+        );
+        assert!(steps.iter().all(|step| step[1] > 0.0 && step[1] < 10.0));
+        assert!(steps.iter().any(|step| step[1].fract() != 0.0));
+        let total: f32 = steps.iter().map(|step| step[1]).sum();
+        assert!(
+            (total - 60.0 * scale as f32).abs() < 0.001,
+            "lost distance: {total}"
+        );
+        image_presentation_tests::advance_time(Duration::from_millis(500));
+    }
+    manager.close_all();
+}
+fn native_raster_notch(open: &OpenWindow, lines: f32) -> bool {
+    use slint::winit_030::winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    };
+    let scale = f64::from(open.window.window().scale_factor());
+    image_motion::observe(
+        open,
+        &WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(
+                f64::from(open.window.get_content_left() + 20.0) * scale,
+                f64::from(open.window.get_content_top() + 20.0) * scale,
+            ),
+        },
+    );
+    image_motion::observe(
+        open,
+        &WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, lines),
+            phase: TouchPhase::Moved,
+        },
+    )
+}
+
+fn raster_ticks(open: &OpenWindow, count: usize) {
+    for _ in 0..count {
+        image_presentation_tests::advance_time(Duration::from_millis(8));
+        image_motion::observe(
+            open,
+            &slint::winit_030::winit::event::WindowEvent::RedrawRequested,
+        );
+    }
+}
+
+#[test]
+fn raster_pixel_input_and_scrollbar_cancel_the_previous_wheel_tail() {
+    use slint::winit_030::winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    };
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        received.borrow_mut().push(input);
+        true
+    });
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 2);
+    submitted.borrow_mut().clear();
+    assert!(
+        !image_motion::observe(
+            &open,
+            &WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -0.375)),
+                phase: TouchPhase::Moved,
+            }
+        ),
+        "precise pixels must keep their native delivery path"
+    );
+    open.window.invoke_scroll(0.0, 0.375);
+    raster_ticks(&open, 30);
+    assert!(
+        matches!(
+            submitted.borrow().as_slice(),
+            [ViewerInput::Scroll { x: 0.0, y: 0.375 }]
+        ),
+        "native pixel input acquired an extra wheel tail"
+    );
+
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 2);
+    open.window.invoke_seek(0.7);
+    let count = submitted.borrow().len();
+    raster_ticks(&open, 30);
+    assert_eq!(
+        submitted.borrow().len(),
+        count,
+        "scrollbar drag must supersede wheel motion"
+    );
+    assert_eq!(
+        open.window.get_position(),
+        0.7,
+        "absolute scrollbar tracking stays direct"
+    );
+    manager.close_all();
+}
+
+#[test]
+fn raster_wheel_retries_a_full_queue_without_losing_its_last_pixels() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
+    let accepting = Rc::new(Cell::new(false));
+    let accepted = accepting.clone();
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        if !accepted.get() {
+            return false;
+        }
+        if let ViewerInput::Scroll { x, y } = input {
+            received.borrow_mut().push([x, y]);
+        }
+        true
+    });
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 3);
+    assert!(submitted.borrow().is_empty());
+    accepting.set(true);
+    raster_ticks(&open, 40);
+    let steps = submitted.borrow();
+    assert!(steps.len() >= 10);
+    assert!(steps.iter().all(|step| step[1] > 0.0 && step[1] < 10.0));
+    let total: f32 = steps.iter().map(|step| step[1]).sum();
+    assert!(
+        (total - 60.0).abs() < 0.001,
+        "queue backpressure lost wheel distance: {total}"
+    );
+    manager.close_all();
+}
+
+#[test]
+fn raster_next_file_cancels_motion_even_when_the_new_file_keeps_text_mode() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        received.borrow_mut().push(input);
+        true
+    });
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 2);
+    assert!(dispatch_key(&open, "viewer.next-file"));
+    let count = submitted.borrow().len();
+    assert!(
+        !native_raster_notch(&open, -1.0),
+        "opening file has no usable motion context"
+    );
+    present_outputs(&open, &service, &|_| {}, vec![frame(11, 0, 0.25)]);
+    raster_ticks(&open, 30);
+    assert_eq!(
+        submitted.borrow().len(),
+        count,
+        "old content restarted its wheel tail"
+    );
+    let mut next = frame(12, 0, 0.0);
+    if let ViewerOutput::Frame(frame) = &mut next {
+        frame.generation = 8;
+    }
+    present_outputs(&open, &service, &|_| {}, vec![next]);
+    raster_ticks(&open, 30);
+    assert_eq!(
+        submitted.borrow().len(),
+        count,
+        "same-mode file inherited previous wheel movement"
+    );
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 2);
+    assert!(
+        submitted.borrow().len() > count,
+        "new file accepts its own wheel gesture"
+    );
+    manager.close_all();
+}
+#[test]
+fn raster_keyboard_navigation_cancels_the_previous_wheel_tail() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        received.borrow_mut().push(input);
+        true
+    });
+    for action in [
+        "viewer.up",
+        "viewer.down",
+        "viewer.page-up",
+        "viewer.page-down",
+    ] {
+        assert!(native_raster_notch(&open, -1.0));
+        raster_ticks(&open, 2);
+        submitted.borrow_mut().clear();
+        assert!(dispatch_key(&open, action));
+        raster_ticks(&open, 30);
+        assert_eq!(
+            submitted.borrow().len(),
+            1,
+            "{action} inherited a wheel tail"
+        );
+        assert!(matches!(submitted.borrow()[0], ViewerInput::Scroll { .. }));
+    }
+    manager.close_all();
+}
+
+#[test]
+fn raster_phased_line_gesture_keeps_native_momentum_without_an_added_tail() {
+    use slint::winit_030::winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        received.borrow_mut().push(input);
+        true
+    });
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 2);
+    submitted.borrow_mut().clear();
+    for phase in [TouchPhase::Started, TouchPhase::Moved, TouchPhase::Ended] {
+        assert!(
+            !image_motion::observe(
+                &open,
+                &WindowEvent::MouseWheel {
+                    device_id: DeviceId::dummy(),
+                    delta: MouseScrollDelta::LineDelta(0.0, -0.1),
+                    phase,
+                }
+            ),
+            "phased {phase:?} acquired wheel easing"
+        );
+    }
+    open.window.invoke_scroll(0.0, 1.25);
+    raster_ticks(&open, 30);
+    assert!(matches!(
+        submitted.borrow().as_slice(),
+        [ViewerInput::Scroll { x: 0.0, y: 1.25 }]
+    ));
+    assert!(
+        native_raster_notch(&open, -1.0),
+        "ended gesture left wheel input blocked"
+    );
+    manager.close_all();
+}
+
+#[test]
+fn raster_coast_survives_pointer_motion_but_another_scroll_target_cancels_it() {
+    use slint::winit_030::winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    };
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        received.borrow_mut().push(input);
+        true
+    });
+    assert!(native_raster_notch(&open, -1.0));
+    raster_ticks(&open, 2);
+    image_motion::observe(
+        &open,
+        &WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(1.0, 1.0),
+        },
+    );
+    let count = submitted.borrow().len();
+    raster_ticks(&open, 2);
+    assert!(
+        submitted.borrow().len() > count,
+        "moving the pointer alone stopped deceleration"
+    );
+    assert!(!image_motion::observe(
+        &open,
+        &WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        }
+    ));
+    let count = submitted.borrow().len();
+    raster_ticks(&open, 30);
+    assert_eq!(
+        submitted.borrow().len(),
+        count,
+        "another scroll target kept moving old content"
+    );
+    manager.close_all();
+}

@@ -360,7 +360,6 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.invoke_refresh_file_list_window();
     window.invoke_refresh_file_list_viewer();
     window.invoke_refresh_warning_viewer();
-    window.invoke_refresh_information_windows();
     archive_options::refresh(window, presenter);
     color_options::refresh(window, presenter);
     plugin_options::refresh(window, presenter);
@@ -738,6 +737,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         window.set_message_error(presenter.desktop.notice_error);
         window.set_message_generation(presenter.desktop.notice_generation);
     }
+    window.invoke_refresh_information_windows();
     let labels: Vec<SharedString> = presenter
         .volumes
         .iter()

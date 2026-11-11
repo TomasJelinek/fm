@@ -1,6 +1,6 @@
 //! Shared software-native-window harness for independent tool windows.
 #[path = "bitmap.rs"]
-mod bitmap;
+pub mod bitmap;
 use i_slint_core::{
     accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
     window::WindowInner,

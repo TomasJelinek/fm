@@ -5,8 +5,17 @@ use slint::platform::{
 };
 use std::sync::Arc;
 
+thread_local! {
+    static TEST_TIME: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+}
+pub(super) fn advance_time(time: Duration) {
+    TEST_TIME.with(|clock| clock.set(clock.get() + time));
+}
 struct TestPlatform;
 impl Platform for TestPlatform {
+    fn duration_since_start(&self) -> Duration {
+        TEST_TIME.with(Cell::get)
+    }
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))
     }
@@ -624,6 +633,59 @@ fn untiled_document_keeps_captured_raster_metrics_and_routes_both_scrollbars_to_
     assert!(
         matches!(submitted.borrow().as_slice(),[ViewerInput::Seek(vertical),ViewerInput::Pan(horizontal)]
         if (*vertical-0.7).abs()<0.0001 && (*horizontal-0.8).abs()<0.0001)
+    );
+    manager.close_all();
+}
+
+#[test]
+fn phased_precise_image_gesture_keeps_residual_pixels_until_guard_tiles_arrive() {
+    use slint::winit_030::winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    };
+    let (_runtime, manager, open, service) = open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    assert!(!image_motion::observe(
+        &open,
+        &WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 0.0)),
+            phase: TouchPhase::Started,
+        }
+    ));
+    open.window.invoke_scroll(0.0, 400.0);
+    assert!(
+        open.image_camera.borrow().active(),
+        "guard boundary retains unsent pixels"
+    );
+    let edge = open.image_camera.borrow().origin[1];
+    assert!(edge > 512.0 && edge < 912.0);
+    image_motion::observe(&open, &WindowEvent::RedrawRequested);
+    assert!(
+        open.image_camera.borrow().active(),
+        "redraw discarded the direct gesture residual"
+    );
+    let mut ready = frame();
+    ready.revision = 2;
+    let mut tiles = ready.tiles.take().unwrap().to_vec();
+    tiles.extend([
+        tile(10, -256.0, 512.0),
+        tile(11, 0.0, 512.0),
+        tile(12, 256.0, 512.0),
+    ]);
+    ready.tiles = Some(tiles.into());
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(Box::new(ready))],
+    );
+    image_motion::observe(&open, &WindowEvent::RedrawRequested);
+    assert_eq!(
+        open.image_camera.borrow().origin[1],
+        912.0,
+        "guard refill lost precise pixels"
     );
     manager.close_all();
 }

@@ -1,4 +1,6 @@
 use crate::glyph_cache::{GlyphCache, GlyphKey};
+#[path = "outline_cache.rs"]
+mod outlines;
 use crate::{
     LayoutError, Raster, TextPage, Viewport,
     raster::{premultiply, stable_pixel},
@@ -19,6 +21,11 @@ pub(crate) struct GlyphPainter {
     scale: ScaleContext,
     fonts: HashMap<(u64, u32), CacheKey>,
     cache: GlyphCache,
+    outlines: outlines::OutlineCache,
+    #[cfg(test)]
+    scales: usize,
+    #[cfg(test)]
+    uncached_outlines: bool,
 }
 
 impl GlyphPainter {
@@ -42,6 +49,10 @@ impl GlyphPainter {
             }
             return Ok(());
         }
+        #[cfg(test)]
+        let outlines_enabled = !self.uncached_outlines;
+        #[cfg(not(test))]
+        let outlines_enabled = true;
         for line in page.layout.lines() {
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
@@ -120,7 +131,24 @@ impl GlyphPainter {
                         }
                         continue;
                     }
+                    if outlines_enabled
+                        && let Some(image) =
+                            self.outlines
+                                .get(&key, [x, y], [raster.width, raster.height])
+                    {
+                        if let Some(image) = image {
+                            paint_image(raster, &image, x, y, key.color);
+                            self.cache.insert(key, Some(image));
+                        }
+                        // Offscreen paths must not poison the phase image cache:
+                        // the same glyph/phase can become visible after scrolling.
+                        continue;
+                    }
                     if scaler.is_none() {
+                        #[cfg(test)]
+                        {
+                            self.scales += 1;
+                        }
                         let mut font = FontRef::from_index(data.data.as_ref(), data.index as usize)
                             .ok_or(LayoutError::InvalidFont)?;
                         if self.fonts.len() >= 256 {
@@ -135,6 +163,20 @@ impl GlyphPainter {
                                 .normalized_coords(run.normalized_coords())
                                 .build(),
                         );
+                    }
+                    if outlines_enabled
+                        && let Some(image) = self.outlines.build(
+                            &key,
+                            scaler.as_mut().ok_or(LayoutError::InvalidFont)?,
+                            [x, y],
+                            [raster.width, raster.height],
+                        )
+                    {
+                        if let Some(image) = image {
+                            paint_image(raster, &image, x, y, key.color);
+                            self.cache.insert(key, Some(image));
+                        }
+                        continue;
                     }
                     let mut render = Render::new(&[
                         Source::ColorOutline(0),
@@ -219,3 +261,7 @@ fn paint_image(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4
         }
     }
 }
+
+#[cfg(test)]
+#[path = "outline_tests.rs"]
+mod outline_tests;

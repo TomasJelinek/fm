@@ -1,8 +1,6 @@
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
-#[path = "support/render.rs"]
-mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -68,7 +66,12 @@ fn copy_confirmation_shows_the_complete_source_above_the_destination() {
         test.window.set_copy_draft_token("layout".into());
         test.window.invoke_show_copy_draft();
         test.draw();
-        render::snapshot(&test, &format!("copy-source-{density}-{font}"));
+        modeless::bitmap::snapshot(
+            &test.pixels,
+            test.width,
+            test.height,
+            &format!("copy-source-{density}-{font}"),
+        );
         let source = ui::root_item(&test.window, body, AccessibleRole::Text);
         let label = ui::root_item(&test.window, "Destination folder", AccessibleRole::Text);
         let source_rect = source.geometry();
@@ -93,7 +96,7 @@ fn copy_confirmation_shows_the_complete_source_above_the_destination() {
     test.window.invoke_apply_preferences(3, 0);
     test.window.invoke_apply_fonts("".into(), 13, 15);
     test.resize(320, 200);
-    render::snapshot(&test, "copy-source-compact");
+    modeless::bitmap::snapshot(&test.pixels, test.width, test.height, "copy-source-compact");
     for (label, role) in [
         ("Destination folder", AccessibleRole::TextInput),
         ("Cancel", AccessibleRole::Button),
@@ -326,8 +329,10 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         );
     }
     assert!(commands.borrow().is_empty());
-    render::snapshot(
-        &ui,
+    modeless::bitmap::snapshot(
+        &ui.pixels,
+        ui.width,
+        ui.height,
         if moving {
             "move-recovery-dialog"
         } else {
@@ -336,7 +341,12 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     );
     if moving {
         ui.resize(320, 200);
-        render::snapshot(&ui, "move-recovery-dialog-small");
+        modeless::bitmap::snapshot(
+            &ui.pixels,
+            ui.width,
+            ui.height,
+            "move-recovery-dialog-small",
+        );
     }
     ui::key(&ui.window, Key::Escape);
     ui.draw();

@@ -1,4 +1,6 @@
 //! Filename-color priority is visible, selectable and reversible inside Options.
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -74,68 +76,7 @@ impl Harness {
     }
 
     fn click(&mut self, label: &str, role: AccessibleRole) {
-        let target = ui::popup_item(&self.ui.window, label, role);
-        let mut ancestors = Vec::new();
-        let mut parent = target.parent_item(ParentItemTraversalMode::StopAtPopups);
-        while let Some(item) = parent {
-            if item.downcast::<Flickable>().is_some() {
-                ancestors.push(item.clone());
-            }
-            parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
-        }
-        // Compact Options can scroll the heading out of view while editing.
-        // Reveal through the real wheel path before sending a pointer click.
-        for viewport in ancestors.iter().rev() {
-            let clip = bounds(viewport);
-            let area = bounds(&target);
-            let delta = if area.1 < clip.1 {
-                clip.1 - area.1
-            } else if area.3 > clip.3 - 14.0 {
-                clip.3 - 14.0 - area.3
-            } else {
-                0.0
-            };
-            if delta != 0.0 {
-                self.ui
-                    .window
-                    .window()
-                    .dispatch_event(WindowEvent::PointerScrolled {
-                        position: LogicalPosition::new(clip.0 + 4.0, clip.1 + 4.0),
-                        delta_x: 0.0,
-                        delta_y: delta,
-                    });
-                self.settle();
-            }
-        }
-        let area = bounds(&target);
-        for viewport in &ancestors {
-            let clip = bounds(viewport);
-            let overlay = if viewport
-                .downcast::<Flickable>()
-                .unwrap()
-                .as_pin_ref()
-                .content_height()
-                .get()
-                > viewport.geometry().height()
-            {
-                14.0
-            } else {
-                0.0
-            };
-            assert!(
-                area.0 >= clip.0 - 1.0
-                    && area.1 >= clip.1 - 1.0
-                    && area.2 <= clip.2 + 1.0
-                    && area.3 <= clip.3 + 1.0,
-                "{label} must be visible through its actual clip before clicking: {area:?}, {clip:?}"
-            );
-            assert!(
-                (area.0 + area.2) / 2.0 < clip.2 - overlay,
-                "{label}'s click target must not hit Fluent's overlaid vertical scrollbar"
-            );
-        }
-        ui::click_popup(&self.ui.window, label, role);
-        self.settle();
+        popup_scroll::click(&mut self.ui, label, role);
     }
 
     fn assert_draft_only(&self) {

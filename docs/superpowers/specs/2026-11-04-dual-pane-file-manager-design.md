@@ -1,6 +1,12 @@
 # Midnight Explorer — dvoupanelový souborový manažer v Rustu
 
 Datum: 4. listopadu 2026; doplněno 9. listopadu 2026
+Aktualizace 11. listopadu: [plynulé pixelové posouvání](../../developer/SCROLLING.md)
+platí pro panely, seznamy v Nastavení, Find, Jobs, nabídky i viewery. Kolečko má
+krátký přerušitelný dojezd; přesné touchpadové vstupy zůstávají nativní. Panely
+se zarovnávají na řádek až po skončení pohybu. Podmínkou ověření je kromě
+správných souřadnic také měření snímků a kontrola skutečně vykreslených pixelů;
+backend nadále načítá pouze omezené části dokumentů.
 
 Přetahování souborů rozšiřuje [návrh folder-drop](2026-11-10-folder-drag-and-native-handoff.md):
 cílem může být složka přímo v panelu i zachycená nativní větev stromu. Výchozí
@@ -35,7 +41,7 @@ podbarvené bloky kódu, odsazené citace a seznamy a tabulky se střídáním �
 Volba uživatelského písma zůstává zachována. Compact/Comfortable a textové viewery
 nepřebírají tyto dekorace.
 
-Stav: průběžný návrh produktu Midnight Explorer 0.1. Aktuální rozšíření operací,
+Stav: průběžný návrh produktu Midnight Explorer 0.2. Aktuální rozšíření operací,
 ovládání a pluginů níže mají přednost před historickými etapami tohoto dokumentu.
 Pořadí přijatých navazujících implementací zachycuje
 [plán etap](../plans/2026-11-05-follow-up-stages.md); samotný návrh neznamená hotovou funkci.

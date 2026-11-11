@@ -9,27 +9,48 @@ references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppu
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
 Release packages carry that record and `licenses/themes/` alongside library notices.
 
-Inventory updated on 9 November 2026 from the checked-in lockfiles and actual
+Inventory updated on 11 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
 captures for the independent native macOS filesystem package only:
 
 - [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **63**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **530**
-  package/version/source records, **495** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **625**
+  package/version/source records, **512** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The twenty-one workspaces cover the application, public viewer/filesystem/thumbnail/image/web
+The twenty-two workspaces cover the application, public viewer/filesystem/thumbnail/image/web
 APIs and worker SDK, six independent viewer plugins, archive/image/video plugins,
 the independent native Windows/Linux/macOS Browse/Read filesystem packages,
 the independent Windows/Linux Network Neighborhood plugin, and the
-independent viewer ABI conformance project. Project-owned crates
-are excluded. The negative descriptor fixture has no third-party dependencies.
+independent viewer ABI conformance project and vendored renderer tests. Project-owned
+crates are excluded. The negative descriptor fixture has no third-party dependencies.
 Target graphs include normal, build and test dependencies; this is broader
 than the libraries linked into `me.exe`/`me`. Unused lockfile entries and optional
 packages present only in Cargo metadata's feature union are excluded using
 `cargo tree`. The complete list links to each workspace's maintained lockfile.
+
+The scrolling renderer correction vendors the same FemtoVG **0.27.0** under its
+MIT alternative, retaining both upstream license texts and
+[exact source provenance and patch details](../vendor/README.md). Application
+package/version selections are unchanged; its lockfile changes only the
+renderer source from the registry to the local patch. The `renderer-tests` scope
+accounts for the independent vendored test workspace with
+`--no-default-features --features wgpu`, including its normal, build and development
+dependencies. The standalone lock retains upstream pins except the Windows API
+family compatibility correction documented with the vendor source. The broader
+test graph adds 95 net inventory records and 17 crate names; these are not new
+application runtime dependencies.
+
+Application and renderer-test metadata/tree pairs were captured on Windows and
+WSL Ubuntu 24.04 on 11 November 2026; the other forty target pairs retain their
+previous capture provenance. The renderer-only `harfrust` 0.5.2 archive declares
+MIT in its manifest/README and notes its HarfBuzz Old MIT origin, but omits a root
+license file. `resource_list_proc_macro` 0.6.1 declares CC0-1.0 and shares its
+recorded upstream commit with `resource` 0.6.1, whose workspace archive includes
+the complete CC0 text. These published-source details do not change their
+verbatim declarations in the generated inventory.
 
 All entries have a declared license. Alternatives are retained verbatim; they do
 not mean all alternatives are selected. The mandatory free-of-charge requirement
@@ -286,6 +307,7 @@ workspaces. Name the outputs
 | Scope | Manifest |
 | --- | --- |
 | app | `Cargo.toml` |
+| renderer-tests | `vendor/femtovg/Cargo.toml` |
 | api | `api/Cargo.toml` |
 | basic | `plugins/midnight-viewer-basic/Cargo.toml` |
 | source | `plugins/midnight-viewer-source/Cargo.toml` |
@@ -299,6 +321,8 @@ workspaces. Name the outputs
 | worker-api | `worker-api/Cargo.toml` |
 | thumbnail-api | `thumbnail-api/Cargo.toml` |
 | image-viewer-api | `image-viewer-api/Cargo.toml` |
+| web-viewer-api | `web-viewer-api/Cargo.toml` |
+| html-viewer | `plugins/midnight-viewer-html/Cargo.toml` |
 | image-viewer | `plugins/midnight-viewer-image/Cargo.toml` |
 | pdf-viewer | `plugins/midnight-viewer-pdf/Cargo.toml` |
 | archive | `plugins/midnight-fs-archive/Cargo.toml` |
@@ -328,6 +352,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Cargo tree failed' }
 python -B scripts/dependency-inventory.py --metadata-dir $captures
 ```
 
+For `renderer-tests`, append `--no-default-features --features wgpu` to both
+Cargo commands. Its independent lockfile and development edges are part of the
+capture.
+
 On Linux use `sh scripts/cargo.sh` and UTF-8 shell redirection instead of
 PowerShell's `Set-Content`; use `python3` where Python is installed under that name.
 `cargo metadata`/`tree` do not compile native code. Capture each target on its
@@ -338,15 +366,14 @@ exception: its current libc/public-API/SDK graph has no additional build or
 procedural-macro dependencies. Recapture on a Mac if that graph gains such
 dependencies; do not extrapolate its graph to the application. Metadata/tree
 success never establishes native runtime support.
-The generator reads thirty-eight metadata/tree pairs, excludes project-owned API/SDK crates,
-and writes deterministic Markdown/CSV. Recapture after every dependency or feature
-change. `--check` verifies tables against the supplied captures; it does not prove
-those captures are current. Current source hashes are deliberately not labelled
-as capture provenance. Windows/Linux captures retain their existing native-host
-provenance; the native-macos reconciliation added two Darwin pairs, and the network
-plugin adds two native-host Windows/Linux pairs captured on 9 November 2026.
-The streaming-worker update subsequently refreshed the twenty pairs named above;
-the remaining eighteen pairs retain their existing capture provenance.
+The generator reads forty-four metadata/tree pairs, excludes project-owned
+API/SDK crates, and writes deterministic Markdown/CSV. Explicitly marked vendored
+third-party workspace members remain included. Recapture after every dependency
+or feature change. `--check` verifies tables against the supplied captures; it
+does not prove that those captures are current. Current source hashes are not
+used as a substitute for capture provenance. The four application/renderer pairs
+were refreshed on 11 November 2026; the remaining forty pairs preserve their
+existing native-host or documented macOS cross-target provenance.
 
 ```sh
 python3 -B -m unittest discover -s scripts/tests -v

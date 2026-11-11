@@ -1,17 +1,19 @@
 //! Immediate retained-image presentation; all decoder/source work stays in the engine.
 use super::*;
 use i_slint_core::window::{WindowInner, WindowKind};
-use slint::winit_030::winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
+use slint::winit_030::winit::event::{
+    ElementState, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+};
 
 #[derive(Default)]
 pub(super) struct Native {
-    active: bool,
+    pub(super) active: bool,
     cursor: Option<[f64; 2]>,
     control: bool,
-    pressed: bool,
+    presses: midnight_ui_input::PressState,
 }
 
-fn now(open: &OpenWindow) -> Duration {
+pub(super) fn now(open: &OpenWindow) -> Duration {
     WindowInner::from_pub(open.window.window())
         .context()
         .platform()
@@ -134,6 +136,23 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
     {
         let mut native = open.image_native.borrow_mut();
         native.active = true;
+        native.presses.observe(event);
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::MouseWheel {
+                phase: TouchPhase::Started,
+                ..
+            } | WindowEvent::Touch(Touch {
+                phase: TouchPhase::Started,
+                ..
+            })
+        ) {
+            open.image_camera.borrow_mut().cancel();
+            raster_motion::cancel(open);
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 native.cursor = Some([position.x, position.y])
@@ -142,19 +161,32 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
             WindowEvent::ModifiersChanged(modifiers) => {
                 native.control = modifiers.state().control_key()
             }
-            WindowEvent::MouseInput { state, .. } => {
-                native.pressed = *state == ElementState::Pressed
-            }
+
             WindowEvent::Focused(false) => {
-                native.pressed = false;
                 native.control = false;
                 open.image_camera.borrow_mut().cancel();
+                raster_motion::cancel(open);
             }
             _ => {}
         }
     }
     if matches!(event, WindowEvent::RedrawRequested) {
         step(open);
+        raster_motion::step(open);
+        return false;
+    }
+    if matches!(
+        event,
+        WindowEvent::MouseWheel {
+            delta: MouseScrollDelta::PixelDelta(_),
+            ..
+        }
+    ) {
+        raster_motion::cancel(open);
+    }
+    if matches!(event, WindowEvent::MouseWheel { .. }) && !content_target(open) {
+        open.image_camera.borrow_mut().cancel();
+        raster_motion::cancel(open);
         return false;
     }
     let WindowEvent::MouseWheel {
@@ -165,12 +197,23 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
     else {
         return false;
     };
-    if !open.window.get_tiled() {
+    if open.image_native.borrow().presses.active() {
+        return false;
+    }
+    if open.window.get_tiled() {
+        push(open, -x * 60.0, -y * 60.0, false)
+    } else {
+        raster_motion::push(open, -x * 60.0, -y * 60.0)
+    }
+}
+
+fn content_target(open: &OpenWindow) -> bool {
+    if open.window.get_web_mode() {
         return false;
     }
     let target = {
         let native = open.image_native.borrow();
-        if native.control || native.pressed {
+        if native.control {
             return false;
         }
         native.cursor
@@ -198,5 +241,5 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
     {
         return false;
     }
-    push(open, -x * 60.0, -y * 60.0, false)
+    true
 }

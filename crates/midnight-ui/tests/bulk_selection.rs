@@ -170,16 +170,35 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
     );
     key(&window, Key::Escape);
     window.invoke_focus_files();
+    // Help is hosted in an independent native window; this bare UI fixture
+    // verifies its callback rather than assuming F1 creates an embedded popup.
+    let help_requested = Rc::new(Cell::new(0));
+    let captured = help_requested.clone();
+    window.on_open_help_window(move || captured.set(captured.get() + 1));
     key(&window, Key::F1);
+    assert_eq!(help_requested.get(), 1);
+    assert_eq!(requested.borrow().len(), previous);
+
+    key(&window, Key::F10);
     draw(&mut pixels);
+    assert!(ui::try_popup_item(&window, "Menu category", AccessibleRole::Combobox).is_some());
+    assert_eq!(window.get_focused_pane(), -1);
     for letter in ["a", "d", "i"] {
         chord(&window, &[Key::Control], letter);
     }
     assert_eq!(
         requested.borrow().len(),
         previous,
-        "popups cannot select files"
+        "the open main-menu popup owns selection shortcuts"
     );
+    assert!(ui::try_popup_item(&window, "Menu category", AccessibleRole::Combobox).is_some());
+    key(&window, Key::Escape);
+    draw(&mut pixels);
+    assert!(ui::try_popup_item(&window, "Menu category", AccessibleRole::Combobox).is_none());
+    assert_eq!(window.get_focused_pane(), 1);
+    chord(&window, &[Key::Control], "a");
+    assert_eq!(requested.borrow().len(), previous + 1);
+    assert_eq!(requested.borrow().last(), Some(&(1, 0)));
     assert_eq!(submitted.get(), 0);
     assert_eq!(opened.get(), 0);
     window.hide().unwrap();

@@ -242,7 +242,8 @@ export component OptionsBody inherits Rectangle {
                     hint: "Keep the last 100 distinct executed commands. Commands may contain sensitive text. Disabling this removes persisted history; session history remains available.";
                 }
                 HorizontalLayout {
-                    alignment: start;
+                    // Include the touch button's full height in the scroll extent.
+                    height: Theme.control-height; alignment: start;
                     HintedActionButton {
                         text: root.narrow ? "Clear history" : "Clear command history";
                         accessible-label: "Clear command history"; enabled: !root.command-history-empty;

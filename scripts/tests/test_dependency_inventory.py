@@ -42,6 +42,22 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["direct_by"], ["app"])
         self.assertEqual(rows[1]["direct_by"], [])
 
+    def test_vendored_test_workspace_remains_third_party(self):
+        app = package("app", source=None)
+        app["metadata"] = None
+        vendor = package("renderer", source=None)
+        vendor["metadata"] = {"midnight": {"vendored-third-party": True}}
+        test_dep = package("gpu-test")
+        rows = self.module.inventory({
+            ("app", "Windows"): graph(app, [vendor], {"app": [vendor]}),
+            ("renderer-tests", "Windows"): graph(vendor, [test_dep],
+                                                {"renderer": [test_dep]})})
+        by_name = {row["name"]: row for row in rows}
+        self.assertEqual(set(by_name), {"renderer", "gpu-test"})
+        self.assertEqual(by_name["renderer"]["direct_by"], ["app"])
+        self.assertEqual(by_name["renderer"]["scopes"], ["app", "renderer-tests"])
+        self.assertEqual(by_name["gpu-test"]["direct_by"], [])
+
     def test_versions_remain_distinct_and_targets_are_combined(self):
         root = package("app", source=None)
         first, second = package("lib"), package("lib", "2.0.0")

@@ -45,8 +45,18 @@ fn exercise(pane: PaneId) {
         CopyOperationState::Completed,
         "{progress:?}"
     );
-    assert_eq!(progress.source_files_removed, 2);
-    assert_eq!(progress.verified_bytes, 1012);
+    // All three roots share this fixture's volume, including the empty tree.
+    // Native rename requires neither descendant checksums nor proof-based deletes.
+    assert_eq!(progress.native_entries_moved, 3);
+    assert_eq!(progress.source_files_removed, 0);
+    assert_eq!(
+        (
+            progress.copied_bytes,
+            progress.verified_bytes,
+            progress.validation_bytes
+        ),
+        (0, 0, 0),
+    );
     for (name, byte, count) in [("large", 42, 1000), ("small", 43, 12)] {
         assert!(!fixture.root.join("folder").join(name).exists());
         assert_eq!(

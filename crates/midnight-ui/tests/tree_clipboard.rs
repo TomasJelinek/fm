@@ -255,15 +255,26 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
             TransferIntent::Copy
         }
     );
-    assert_eq!(progress.verified_bytes, 1021);
-    assert_eq!(
-        progress.source_files_removed,
-        if intent == FileClipboardIntent::Move {
-            3
-        } else {
-            0
-        }
-    );
+    if intent == FileClipboardIntent::Move {
+        // These sibling roots share the owned fixture's volume. Native rename
+        // moves both trees without copying, checksumming or deleting each file.
+        assert_eq!(progress.native_entries_moved, 2);
+        assert_eq!(
+            (
+                progress.copied_bytes,
+                progress.verified_bytes,
+                progress.validation_bytes
+            ),
+            (0, 0, 0),
+        );
+    } else {
+        assert_eq!(progress.native_entries_moved, 0);
+        assert_eq!(
+            (progress.copied_bytes, progress.verified_bytes),
+            (1021, 1021)
+        );
+    }
+    assert_eq!(progress.source_files_removed, 0);
     for (name, byte, count) in [("large", 42, 1000), ("small", 43, 12)] {
         assert_eq!(
             fs::read(

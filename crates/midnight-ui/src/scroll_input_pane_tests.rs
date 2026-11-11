@@ -110,8 +110,7 @@ impl Harness {
     }
 }
 
-#[test]
-fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle() {
+fn harness() -> Harness {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
@@ -159,6 +158,12 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
         pixels: RefCell::new(vec![slint::Rgb8Pixel::default(); 1340 * 820]),
     };
     h.draw();
+    h
+}
+
+#[test]
+fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle() {
+    let h = harness();
     let left_x = h.window.get_left_list_left() + 100.0;
     let list_y = h.window.get_left_list_top() + 100.0;
     h.point(left_x, list_y);
@@ -291,4 +296,80 @@ fn real_file_panes_interpolate_wheel_during_model_refresh_then_snap_after_idle()
         !h.wheel(-1.0),
         "popup input remains native even above the list"
     );
+}
+
+#[test]
+fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_policy() {
+    let h = harness();
+    for (pane, side) in [(PaneId::Left, 0), (PaneId::Right, 1)] {
+        let last = h.window.get_left_rows().row_count() - 1;
+        h.presenter
+            .borrow_mut()
+            .select_row(pane, last, false, &|_| true);
+        crate::refresh(&h.window, &h.presenter.borrow());
+        let (left, top, width, height) = if side == 0 {
+            h.window.invoke_reveal_left();
+            (
+                h.window.get_left_list_left(),
+                h.window.get_left_list_top(),
+                h.window.get_left_list_width(),
+                h.window.get_left_list_height(),
+            )
+        } else {
+            h.window.invoke_reveal_right();
+            (
+                h.window.get_right_list_left(),
+                h.window.get_right_list_top(),
+                h.window.get_right_list_width(),
+                h.window.get_right_list_height(),
+            )
+        };
+        h.advance(4);
+        let initial = h.offset(side);
+        let other = h.offset(1 - side);
+        assert!(
+            initial < -1000.0,
+            "fixture must explicitly reveal the final row"
+        );
+        h.point(left + width - 3.0, top + height / 2.0);
+        assert!(
+            h.wheel(1.0),
+            "panel observer must retain scrollbar ownership"
+        );
+        let mut previous = initial;
+        for _ in 0..13 {
+            h.advance(1);
+            let current = h.offset(side);
+            assert!(
+                current > previous && current < previous + 12.0,
+                "scrollbar frame was lost to cursor-following or jumped: {previous} -> {current}"
+            );
+            assert_eq!(
+                h.offset(1 - side),
+                other,
+                "other panel must stay stationary"
+            );
+            previous = current;
+        }
+        assert!(
+            (h.offset(side) - initial - 60.0).abs() < 0.02,
+            "panel notch retains all pixels"
+        );
+        let selected = if side == 0 {
+            h.window.get_left_cursor()
+        } else {
+            h.window.get_right_cursor()
+        };
+        assert_eq!(
+            selected, last as i32,
+            "wheel does not move the selected file"
+        );
+        h.advance(24);
+        let row = h.window.global::<Theme>().get_row_height();
+        let snapped = ((initial + 60.0) / row).round() * row;
+        assert!(
+            (h.offset(side) - snapped).abs() < 0.02,
+            "panel keeps its idle row alignment"
+        );
+    }
 }

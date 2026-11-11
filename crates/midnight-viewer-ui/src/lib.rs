@@ -12,6 +12,7 @@ mod opening_retirement_tests;
 #[cfg(test)]
 mod opening_tests;
 mod preferences;
+mod raster_motion;
 mod scrolling;
 mod text_position;
 #[cfg(test)]
@@ -19,6 +20,8 @@ mod text_presentation_tests;
 mod web_input;
 #[cfg(test)]
 mod web_input_tests;
+#[cfg(test)]
+mod web_popup_tests;
 
 use midnight_core::*;
 use midnight_viewer_engine::{Service, WindowSession};
@@ -69,6 +72,8 @@ struct OpenWindow {
     image_camera: RefCell<image_camera::Camera>,
     image_textures: RefCell<image_tiles::Textures>,
     image_redraw: Timer,
+    raster_redraw: Timer,
+    raster_motion: RefCell<raster_motion::Motion>,
     image_native: RefCell<image_motion::Native>,
     text_position: RefCell<text_position::TextPosition>,
     web_native: RefCell<web_input::Native>,
@@ -85,7 +90,12 @@ impl OpenWindow {
 
     fn enqueue(&self, input: ViewerInput) -> bool {
         let sender = self.input.borrow().clone();
-        sender(input)
+        let interrupts = !matches!(input, ViewerInput::Scroll { .. });
+        let accepted = sender(input);
+        if accepted && interrupts {
+            raster_motion::cancel(self);
+        }
+        accepted
     }
 }
 
@@ -211,6 +221,8 @@ impl ViewerWindows {
             image_camera: RefCell::new(Default::default()),
             image_textures: RefCell::new(Default::default()),
             image_redraw: Timer::default(),
+            raster_redraw: Timer::default(),
+            raster_motion: RefCell::new(Default::default()),
             image_native: RefCell::new(Default::default()),
             text_position: RefCell::new(Default::default()),
             web_native: RefCell::new(Default::default()),
@@ -219,6 +231,7 @@ impl ViewerWindows {
         bind(&open);
         preferences::present(&open);
         image_motion::install(&open);
+        raster_motion::install(&open);
         bind_delivery(&open, self.service.clone(), copy.clone());
         let weak = Rc::downgrade(&open);
         let service = self.service.clone();
@@ -246,6 +259,7 @@ impl ViewerWindows {
                         scale,
                     }))
                 {
+                    raster_motion::cancel(&open);
                     if window.get_image_mode() {
                         open.image_zoom.borrow_mut().clear();
                         open.text_position.borrow_mut().cancel();
@@ -298,6 +312,7 @@ fn accept_preference(open: &OpenWindow, change: ViewerPreferenceChange) -> bool 
     match open.session.change_preferences(&change) {
         Ok(changed) => {
             if changed {
+                raster_motion::cancel(open);
                 if !matches!(
                     change,
                     ViewerPreferenceChange::CaseSensitive(_)
@@ -480,6 +495,7 @@ fn present_outputs(
                     service.retire(output);
                     continue;
                 }
+                raster_motion::receive(open, frame);
                 if let (Some(info), Some(tiles)) = (&frame.image, &frame.tiles) {
                     let incoming = open.image_camera.borrow().incoming(info);
                     let Some((displayed, replace)) = incoming else {
@@ -626,6 +642,7 @@ fn present_outputs(
                     open.image_zoom.borrow_mut().clear();
                     open.image_camera.borrow_mut().suspend();
                     open.image_redraw.stop();
+                    raster_motion::cancel(open);
                     window.set_status(message.as_str().into());
                 }
             }
@@ -674,6 +691,26 @@ fn flush_position(open: &OpenWindow) {
     });
 }
 
+fn observe_native_content(
+    open: &OpenWindow,
+    event: &slint::winit_030::winit::event::WindowEvent,
+    shortcuts: bool,
+    ancillary: &mut midnight_ui_input::NativeScroll,
+) -> bool {
+    // Every native transition must update auxiliary press/gesture bookkeeping,
+    // including a release that the browser or retained image consumes below.
+    let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
+    if web_input::observe(open, event, shortcuts) {
+        ancillary.cancel();
+        return true;
+    }
+    if image_motion::observe(open, event) {
+        ancillary.cancel();
+        return true;
+    }
+    ancillary_consumed
+}
+
 fn bind(open: &Rc<OpenWindow>) {
     bind_image(open);
     web_input::bind(open);
@@ -706,12 +743,14 @@ fn bind(open: &Rc<OpenWindow>) {
     let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));
     let weak = Rc::downgrade(open);
     let native_state = native.clone();
+    let mut ancillary_scroll = midnight_ui_input::NativeScroll::new(&open.window);
     open.window.window().on_winit_window_event(move |_, event| {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
         if midnight_ui_input::native_escape_pressed(event) {
             close(&open);
+            ancillary_scroll.cancel();
             return EventResult::PreventDefault;
         }
         let consumed = native_state.borrow_mut().handle(event, |chord| {
@@ -719,15 +758,19 @@ fn bind(open: &Rc<OpenWindow>) {
             action.is_some_and(|action| dispatch_key(&open, &action))
         });
         if consumed {
+            ancillary_scroll.cancel();
             return EventResult::PreventDefault;
         }
-        if web_input::observe(&open, event, !native_state.borrow().alt_gr()) {
-            return EventResult::PreventDefault;
+        if observe_native_content(
+            &open,
+            event,
+            !native_state.borrow().alt_gr(),
+            &mut ancillary_scroll,
+        ) {
+            EventResult::PreventDefault
+        } else {
+            EventResult::Propagate
         }
-        if image_motion::observe(&open, event) {
-            return EventResult::PreventDefault;
-        }
-        EventResult::Propagate
     });
     let weak = Rc::downgrade(open);
     open.window.on_input_key(move |event, search| {
@@ -916,6 +959,7 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             .set_position_context(format!("changing:{}", open.frame.get()).into());
     }
     if navigation && accepted {
+        raster_motion::cancel(open);
         open.text_position.borrow_mut().cancel();
     }
     accepted
@@ -932,6 +976,8 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_scroll(move |x, y| {
         if let Some(open) = weak.upgrade() {
+            // Logical/pixel input already includes the platform's own momentum.
+            raster_motion::cancel(&open);
             if open.window.get_tiled() {
                 image_motion::push(&open, x, y, true);
                 return;
@@ -948,6 +994,7 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_seek(move |value| {
         if let Some(open) = weak.upgrade() {
+            raster_motion::cancel(&open);
             if open.window.get_tiled() {
                 image_motion::seek(&open, 1, f64::from(value));
                 return;
@@ -968,6 +1015,7 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_pan(move |value| {
         if let Some(open) = weak.upgrade() {
+            raster_motion::cancel(&open);
             if open.window.get_tiled() {
                 image_motion::seek(&open, 0, f64::from(value));
                 return;
@@ -988,6 +1036,7 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_select_point(move |x, y, extend| {
         if let Some(open) = weak.upgrade() {
+            raster_motion::cancel(&open);
             let (width, height) = open.raster_size.get();
             open.session.send(ViewerInput::Select {
                 frame: open.frame.get(),
@@ -1068,6 +1117,7 @@ fn bind_image(open: &Rc<OpenWindow>) {
 }
 
 fn close(open: &OpenWindow) {
+    raster_motion::cancel(open);
     if !open.closed.replace(true) {
         open.session.close();
         open.timer.stop();

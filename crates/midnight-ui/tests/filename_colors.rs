@@ -1,3 +1,5 @@
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -301,10 +303,10 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
     commands.borrow_mut().clear();
     test.window.invoke_show_options();
     test.draw();
-    ui::click_popup(&test.window, "Colors", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Colors", AccessibleRole::Button);
     test.draw();
     assert_eq!(test.window.get_options_topic_index(), 8);
-    ui::click_popup(&test.window, "Add rule", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Add rule", AccessibleRole::Button);
     test.draw();
     let window = test.window.clone_strong();
     let view = window.global::<ColorOptionsView>();
@@ -312,17 +314,17 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
     draft.expression = "*.rs".into();
     draft.foreground = "#b749de".into();
     view.invoke_edit(draft);
-    ui::click_popup(&test.window, "Add rule", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Add rule", AccessibleRole::Button);
     test.draw();
     let mut draft = view.get_draft();
     draft.expression = "文档*".into();
     draft.background = "#ece5cd".into();
     view.invoke_edit(draft);
-    ui::click_popup(&test.window, "Move up", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Move up", AccessibleRole::Button);
     test.draw();
     assert!(view.get_labels().row_data(0).unwrap().contains("文档"));
     assert_eq!(view.get_selected(), 0);
-    ui::click_popup(&test.window, "Apply colors", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Apply colors", AccessibleRole::Button);
     test.draw();
     assert!(view.get_busy());
     assert!(
@@ -350,6 +352,7 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
     midnight_ui::refresh(&test.window, &presenter.borrow());
     test.draw();
     assert!(view.get_error().contains("Invalid expression"));
+    assert!(!view.get_busy(), "a failed validation must allow retry");
     assert!(
         !commands
             .borrow()
@@ -357,7 +360,7 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
             .any(|command| matches!(command, Command::SavePreferences { .. }))
     );
     commands.borrow_mut().clear();
-    ui::click_popup(&test.window, "Apply colors", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Apply colors", AccessibleRole::Button);
     let request = commands
         .borrow()
         .iter()
@@ -385,13 +388,13 @@ fn colors_topic_edits_reorders_and_waits_for_backend_validation_before_saving() 
     assert_eq!(view.get_labels().row_count(), 2);
     assert!(view.get_labels().row_data(0).unwrap().contains("文档*"));
     render::snapshot(&test, "filename-colors-options");
-    ui::click_popup(&test.window, "Remove rule", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Remove rule", AccessibleRole::Button);
     test.draw();
     assert_eq!(view.get_labels().row_count(), 1);
-    ui::click_popup(&test.window, "Discard changes", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "Discard changes", AccessibleRole::Button);
     test.draw();
     assert_eq!(view.get_labels().row_count(), 2);
-    ui::click_popup(&test.window, "OK", AccessibleRole::Button);
+    popup_scroll::click(&mut test, "OK", AccessibleRole::Button);
     let saved = commands
         .borrow()
         .iter()

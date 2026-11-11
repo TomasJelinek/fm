@@ -39,6 +39,9 @@ export component FileEntry inherits Rectangle {
     private property <color> text-color: item.color-rule ? FilenameColorPresentation.foreground(item.custom-foreground, item.foreground, root.name-background, item.selected, item.directory)
         : item.selected ? Theme.selected-text
         : item.directory ? Theme.directory-text : Theme.text;
+    // The virtualized viewport retains only visible cells. Cache their paint
+    // while scrolling; Slint invalidates it when row data or theme changes.
+    cache-rendering-hint: true;
     clip: true;
     private property <color> row-color: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
         : item.selected ? Theme.selected-background

@@ -658,6 +658,14 @@ impl Worker {
                 if x != 0.0 {
                     self.positions.horizontal = None;
                 }
+                // A continuation owns the requested source-relative camera until
+                // its reply arrives. Even a reversal that fits the old fragment
+                // belongs after that movement, rather than to the obsolete page.
+                if self.viewport_request.is_some() && self.continuation.is_some() {
+                    self.queued_scroll[0] = (self.queued_scroll[0] + x).clamp(-1e7, 1e7);
+                    self.queued_scroll[1] = (self.queued_scroll[1] + y).clamp(-1e7, 1e7);
+                    return;
+                }
                 if let Some(page) = &self.page {
                     let height = self.shaped.as_ref().map_or(0.0, |p| p.height());
                     let max_y = (height - self.geometry.height as f32).max(0.0);
@@ -667,7 +675,7 @@ impl Worker {
                             page,
                             shaped,
                             self.geometry,
-                            self.origin,
+                            [self.origin[0] + x, self.origin[1]],
                             y,
                         )
                     });
@@ -904,7 +912,15 @@ impl Worker {
             self.position_page = Some((id, page));
             self.positions.loaded(id);
         } else {
-            self.set_page(page, output);
+            let continuing = self.continuation.is_some();
+            if self.set_page(page, output) && continuing {
+                // A TextPage can precede its terminal event. Apply the latest
+                // wheel intent before publishing this first replacement frame.
+                let [x, y] = std::mem::replace(&mut self.queued_scroll, [0.0; 2]);
+                if x != 0.0 || y != 0.0 {
+                    self.input(ViewerInput::Scroll { x, y }, output);
+                }
+            }
         }
     }
 

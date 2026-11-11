@@ -1,5 +1,7 @@
 #[path = "support/bitmap.rs"]
 mod bitmap;
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
 #[path = "support/ui.rs"]
 mod ui;
 use i_slint_core::{
@@ -397,10 +399,9 @@ fn hovered_argument_can_be_removed_without_popup_reentrancy() {
     let (mut h, _p) = options();
     h.window.set_options_topic_index(9);
     h.draw();
-    reveal_option(&mut h, "Command argument 2", AccessibleRole::ListItem);
-    ui::popup_item(&h.window, "Command argument 2", AccessibleRole::ListItem)
-        .accessible_action(&AccessibilityAction::Default);
-    h.draw();
+    // Reveal each nested clip by its required distance, then select by real
+    // pointer input before testing removal with the row tooltip still alive.
+    popup_scroll::click(&mut h, "Command argument 2", AccessibleRole::ListItem);
     let row = ui::popup_item(&h.window, "Command argument 2", AccessibleRole::ListItem);
     let rect = row.geometry();
     let origin = row.map_to_native_window(rect.origin);

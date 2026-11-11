@@ -2,8 +2,6 @@
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
-#[path = "support/render.rs"]
-mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -233,6 +231,6 @@ fn panel_error_has_a_readable_multiline_body_at_the_minimum_window_size() {
     ui.resize(1040, 480);
     ui::root_item(&ui.window, "Show error details", AccessibleRole::Button);
     assert!(ui.window.get_left_list_height() >= 22.0);
-    render::snapshot(&ui, "error-panel-minimum");
+    modeless::bitmap::snapshot(&ui.pixels, ui.width, ui.height, "error-panel-minimum");
     ui.window.hide().unwrap();
 }

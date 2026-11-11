@@ -2,8 +2,8 @@
 #[path = "support/modeless.rs"]
 mod modeless;
 
-use i_slint_core::window::WindowInner;
-use midnight_ui::{MainWindow, Presenter};
+use i_slint_core::{items::AccessibleRole, window::WindowInner};
+use midnight_ui::{HelpWindow, MainWindow, Presenter};
 use modeless::Windows;
 use slint::{
     ComponentHandle,
@@ -173,4 +173,38 @@ fn notice_initial_height_tracks_wrapped_content_instead_of_a_large_empty_canvas(
         "notice-content-long",
     );
     modeless::click(&long, "Close");
+}
+
+#[test]
+fn long_help_keeps_close_visible_at_small_size_in_both_densities() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    for density in 0..2 {
+        let help = HelpWindow::new().unwrap();
+        help.invoke_apply_preferences(0, density, "".into(), 11, 15);
+        help.set_shortcuts("Ctrl+A — Select all files\n".repeat(100).into());
+        let weak = help.as_weak();
+        help.on_request_dismiss(move || weak.upgrade().unwrap().hide().unwrap());
+        help.show().unwrap();
+        let child = windows.borrow().last().unwrap().clone();
+        modeless::draw(
+            &child,
+            320,
+            200,
+            &format!("native-help-close-density-{density}"),
+        );
+        let close = modeless::accessible_item(&child, AccessibleRole::Button, "Close")
+            .expect("native Help Close button");
+        assert!(close.is_visible());
+        let rect = close.geometry();
+        let origin = close.map_to_native_window(rect.origin);
+        assert!(origin.x >= 0.0 && origin.y >= 0.0);
+        assert!(origin.x + rect.width() <= 320.0 && origin.y + rect.height() <= 200.0);
+        assert!(rect.height() >= if density == 0 { 24.0 } else { 40.0 });
+        modeless::click(&child, "Close");
+        assert!(
+            !help.window().is_visible(),
+            "Close must dismiss density {density} Help"
+        );
+    }
 }

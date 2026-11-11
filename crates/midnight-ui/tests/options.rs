@@ -1,4 +1,6 @@
 //! The topic tabs and nested pickers remain usable through actual pointer input.
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -94,14 +96,14 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     ui.options_topic(0);
     assert!(ui.window.get_quick_search_filter());
     assert!(ui.window.get_sizes_in_bytes());
-    // Command history belongs to Panel; it must not require a separate page.
-    click_popup(
-        &ui.window,
+    // Command history belongs to General; reveal its controls in the touch layout.
+    popup_scroll::click(
+        &mut ui,
         "Remember command history after restart",
         AccessibleRole::Checkbox,
     );
     assert!(!ui.window.get_remember_command_history());
-    click_popup(&ui.window, "Clear command history", AccessibleRole::Button);
+    popup_scroll::click(&mut ui, "Clear command history", AccessibleRole::Button);
     assert_eq!(cleared.get(), 1);
     ui.options_topic(0);
     key(&ui.window, Key::RightArrow);
@@ -117,7 +119,7 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     assert_eq!(
         ui.window.get_options_topic_index(),
         0,
-        "repeated arrows return to Panel"
+        "repeated arrows return to General"
     );
     ui.draw();
     ui.options_topic(1);
@@ -137,7 +139,7 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     ui.draw();
     assert!(
         !ui::has_popup(&ui.window),
-        "Done closes Options after changing topics and density"
+        "Cancel closes Options after changing topics and density"
     );
     ui.window.hide().unwrap();
 }

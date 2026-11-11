@@ -1,5 +1,6 @@
 //! Winit supplies physical, layout-independent input and IME once per browser event.
 use super::*;
+use i_slint_core::window::{WindowInner, WindowKind};
 use midnight_core::viewer_web as api;
 use slint::winit_030::winit::{
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
@@ -228,6 +229,27 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent, shortcuts: bool) -
         native.dragging = false;
     }
     if !open.window.get_web_mode() {
+        return false;
+    }
+    // Embedded SDK popups own pointer, wheel, keyboard and IME input even when
+    // their geometry overlaps the browser surface. Keep the cursor current for
+    // the first wheel after dismissal; native focus loss still reaches Chromium.
+    if !matches!(event, WindowEvent::Focused(_))
+        && WindowInner::from_pub(open.window.window())
+            .active_popups()
+            .iter()
+            .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+    {
+        let mut native = open.web_native.borrow_mut();
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                native.cursor = Some([position.x, position.y]);
+            }
+            WindowEvent::CursorLeft { .. } => native.cursor = None,
+            _ => {}
+        }
+        native.dragging = false;
+        native.last_click = None;
         return false;
     }
     let scale = f64::from(open.window.window().scale_factor());

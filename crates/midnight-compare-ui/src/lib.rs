@@ -315,11 +315,13 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
     let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));
     let state = native.clone();
     let native_keys = keys.clone();
+    let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
     let weak = Rc::downgrade(open);
     open.window.window().on_winit_window_event(move |_, event| {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        let scrolled = scroll.observe(open.window.window(), event, None);
         if midnight_ui_input::native_escape_pressed(event) {
             open.close();
             return EventResult::PreventDefault;
@@ -327,7 +329,8 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver) {
         if state.borrow_mut().handle(event, |chord| {
             native_keys(&chord, !open.window.get_content_focused())
                 .is_some_and(|action| key(&open, &action))
-        }) {
+        }) || scrolled
+        {
             EventResult::PreventDefault
         } else {
             EventResult::Propagate

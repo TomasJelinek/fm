@@ -1,8 +1,6 @@
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
-#[path = "support/render.rs"]
-mod render;
 #[path = "support/ui.rs"]
 mod ui;
 
@@ -344,7 +342,12 @@ fn settings_navigation_and_footer_fit_both_densities_and_large_fonts() {
             assert!(position.x >= 0.0 && position.y >= 0.0);
             assert!(position.x + rect.size.width <= h.ui.width as f32);
             assert!(position.y + rect.size.height <= h.ui.height as f32);
-            render::snapshot(&h.ui, &format!("settings-{topic}-{theme}-{density}-{font}"));
+            modeless::bitmap::snapshot(
+                &h.ui.pixels,
+                h.ui.width,
+                h.ui.height,
+                &format!("settings-{topic}-{theme}-{density}-{font}"),
+            );
         }
     }
 }

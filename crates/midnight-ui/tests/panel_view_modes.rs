@@ -120,7 +120,11 @@ fn independent_modes_preserve_file_identity_and_virtualize_column_and_icon_layou
         .on_row_click(move |pane, row, _, _| capture.borrow_mut().push((pane, row)));
     ui.draw();
     let row = ui::root_item(&ui.window, "left-00000", AccessibleRole::ListItem);
-    assert!(ui::text_values(row).iter().any(|text| text == "123 B"));
+    assert!(
+        ui::visible_text_values(row)
+            .iter()
+            .any(|text| text == "123 B")
+    );
     let right_before = origin(&ui::root_item(
         &ui.window,
         "right-00001",
@@ -150,7 +154,11 @@ fn independent_modes_preserve_file_identity_and_virtualize_column_and_icon_layou
         x2 > x0 + 100.0 && (y2 - y0).abs() < 1.0,
         "Brief starts the next column at its top"
     );
-    assert!(!ui::text_values(first).iter().any(|text| text == "123 B"));
+    assert!(
+        !ui::visible_text_values(first)
+            .iter()
+            .any(|text| text == "123 B")
+    );
     assert!(
         left.reads.get() < 500,
         "Brief must only read visible cells, got {}",
@@ -215,7 +223,11 @@ fn independent_modes_preserve_file_identity_and_virtualize_column_and_icon_layou
     let _ = ui::root_item(&ui.window, "left-00001-updated", AccessibleRole::ListItem);
     choose(&mut ui, "Left", "Detailed");
     let first = ui::root_item(&ui.window, "left-00000", AccessibleRole::ListItem);
-    assert!(ui::text_values(first).iter().any(|text| text == "123 B"));
+    assert!(
+        ui::visible_text_values(first)
+            .iter()
+            .any(|text| text == "123 B")
+    );
 
     // A layout switch must reveal the same source identity far beyond the
     // first virtualized viewport, with bounded metadata refresh ranges.
