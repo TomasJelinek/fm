@@ -51,6 +51,10 @@ When no overrides exist, the writer retains the oldest schema needed by the othe
 saved settings. Changes made before startup settings finish loading take precedence
 for the edited extension while preserving unrelated saved choices.
 
+Custom extensions are shown as removable chips. Their removal cross is red,
+using a darker shade in light themes and a lighter shade in dark themes.
+Disabled actions retain the normal muted appearance.
+
 Custom extensions accept one literal suffix at a time, with an optional leading
 dot. Unicode case folding makes `.BACKUP`, `.backup` and equivalent Unicode case
 spellings match; composed and decomposed Unicode remain distinct. Compound suffixes

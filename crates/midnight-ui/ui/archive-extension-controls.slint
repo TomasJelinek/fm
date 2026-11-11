@@ -17,6 +17,7 @@ export component ArchiveExtensionChip inherits Rectangle {
     remove-button := NavigationButton {
         x: 2px; y: 2px; width: Theme.control-height; height: Theme.control-height;
         label: "×"; identity: root.extension; enabled: root.enabled;
+        label-color: Theme.light ? #a32020 : #ffa4a4;
         accessible-label: "Remove ." + root.extension;
         hint: "Remove ." + root.extension + " from this archive format. OK saves the change.";
         clicked => { root.remove(); }

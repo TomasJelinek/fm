@@ -13,6 +13,7 @@ export component NavigationButton inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
     in property <string> label;
+    in property <color> label-color: Theme.text;
     in property <string> hint;
     in property <string> identity;
     in property <int> model-revision;
@@ -42,7 +43,7 @@ export component NavigationButton inherits Rectangle {
     }
     Text {
         visible: root.label != ""; text: root.label; font-size: Theme.font-size;
-        color: root.enabled ? Theme.text : Theme.muted-text;
+        color: root.enabled ? root.label-color : Theme.muted-text;
         horizontal-alignment: center; vertical-alignment: center; overflow: elide;
     }
     focus := FocusScope {
