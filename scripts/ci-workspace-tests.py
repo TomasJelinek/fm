@@ -221,7 +221,16 @@ def load_metadata(root):
     apply_feature_tree(metadata, tree)
     return metadata
 
+def configure_output():
+    # Cargo emits UTF-8. Hosted Windows runners pipe Python output through a
+    # legacy code page by default; a Unicode test name must not abort the suite.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+
+
 def main():
+    configure_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--retire-successful-test-artifacts', action='store_true')
     args = parser.parse_args()

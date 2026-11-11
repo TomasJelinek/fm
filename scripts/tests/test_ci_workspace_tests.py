@@ -155,6 +155,21 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn('test selected ... ok', output.getvalue())
         self.assertIn('readable diagnostic', output.getvalue())
 
+    def test_redirected_legacy_console_preserves_unicode_test_output(self):
+        payload = "test Unicode \u6587\u6863 \U0001f319 ... ok"
+        raw = io.BytesIO()
+        output = io.TextIOWrapper(raw, encoding='cp1252', errors='strict')
+        gate = {'cleanup': False, 'packages': set()}
+        command = [sys.executable, '-c',
+                   'import sys; sys.stdout.buffer.write(' + repr((payload + '\n').encode('utf-8')) + ')']
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            runner.configure_output()
+            code, artifacts = runner.run_command(command, self.root, gate)
+        output.flush()
+        self.assertEqual(code, 0)
+        self.assertEqual(artifacts, [])
+        self.assertIn(payload, raw.getvalue().decode('utf-8'))
+
     def test_unexpected_package_or_non_test_profile_cannot_authorize_cleanup(self):
         metadata = graph(self.root, [target('selection')])
         for change in [{'package_id': 'external'}, {'profile': {'test': False}}]:

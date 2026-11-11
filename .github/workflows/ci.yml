@@ -6,6 +6,7 @@ permissions:
   contents: read
 
 env:
+  PYTHONUTF8: "1"
   # Formatting metadata needs the public registry name even before --config is
   # passed to compilation; dependency resolution uses the released local bundle.
   CARGO_REGISTRIES_MIDNIGHT_INDEX: https://midnight-explorer.invalid/api-index
@@ -406,7 +407,20 @@ jobs:
           "ARCHIVE_TEST_INSTALL_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth
+        run: |
+          # Avoid the runner's Azure mirror, which intermittently fails DNS.
+          # Use signed official Ubuntu repositories for this job only.
+          sources="$GITHUB_WORKSPACE/_build/ci-ubuntu.list"
+          printf '%s\n' \
+            'deb https://archive.ubuntu.com/ubuntu noble main universe' \
+            'deb https://archive.ubuntu.com/ubuntu noble-updates main universe' \
+            'deb https://security.ubuntu.com/ubuntu noble-security main universe' > "$sources"
+          apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
+                       -o Acquire::Retries=3 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_options[@]}" update --error-on=any
+          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends \
+            pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
+            libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev xvfb xauth
       - name: Install pinned toolchain
         run: rustup show
       - name: Format
