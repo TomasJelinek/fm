@@ -133,7 +133,13 @@ impl Controller {
         }
         match self.lanes[pane.index()].push(command) {
             Ok(()) => None,
-            Err(command) => {
+            Err(mailbox::PushError::Superseded(command)) => {
+                // Releasing the last old projection can be expensive. Keep it
+                // off dispatch and await disposal so retired views cannot pile up.
+                let _ = tokio::task::spawn_blocking(move || drop(command)).await;
+                None
+            }
+            Err(mailbox::PushError::Rejected(command)) => {
                 reject_off_thread(
                     command,
                     "Tree command queue is full or its view/generation changed.",
@@ -191,6 +197,21 @@ impl Drop for Controller {
             lane.close();
         }
     }
+}
+
+/// Commit and viewport are observations, not user actions. A newer publication
+/// makes an older observation obsolete; never retry it or turn it into an error.
+/// All explicit actions and foreign/current/future views retain strict checks.
+fn superseded_observation(command: &TreeCommand, current: midnight_core::TreeViewStamp) -> bool {
+    let view = match command {
+        TreeCommand::Commit(view) | TreeCommand::Viewport { view, .. } => view,
+        _ => return false,
+    };
+    let stamp = view.stamp;
+    stamp.pane == current.pane
+        && stamp.navigation == current.navigation
+        && stamp.session == current.session
+        && stamp.revision.0 < current.revision.0
 }
 
 fn command_pane(command: &TreeCommand) -> PaneId {

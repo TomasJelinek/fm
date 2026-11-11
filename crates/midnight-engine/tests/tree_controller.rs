@@ -7,6 +7,9 @@ use tokio::sync::mpsc;
 #[path = "tree_refresh/controller.rs"]
 mod refresh_tests;
 
+#[path = "tree_refresh/housekeeping.rs"]
+mod housekeeping_tests;
+
 struct Files;
 impl DirectoryService for Files {
     fn read_directory(

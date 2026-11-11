@@ -213,6 +213,13 @@ impl Worker {
         }
     }
     fn command(&mut self, command: TreeCommand) {
+        // A completion can overtake a command already admitted by the mailbox.
+        // Retire obsolete observations here as well, on the model worker.
+        if self.session.as_ref().is_some_and(|session| {
+            super::superseded_observation(&command, session.projection().stamp)
+        }) {
+            return;
+        }
         if let TreeCommand::Sizes(command) = command {
             self.size_command(command);
             return;

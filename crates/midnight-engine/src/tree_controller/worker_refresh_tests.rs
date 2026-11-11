@@ -390,3 +390,59 @@ async fn reset_unblocks_full_output_but_running_provider_keeps_gate_until_return
     assert!(worker.session.is_none());
     drop(receiver);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_observations_superseded_by_completion_do_not_report_errors() {
+    let mut fixture = fixture();
+    fixture.receiver.try_recv().unwrap(); // Drain the fixture output barrier.
+    fixture
+        .lane
+        .push(TreeCommand::Commit(fixture.view.clone()))
+        .unwrap();
+    let rows = TreeViewport::new(&fixture.view, vec![fixture.view.rows[0].id]).unwrap();
+    fixture
+        .lane
+        .push(TreeCommand::Viewport {
+            view: fixture.view.clone(),
+            rows,
+        })
+        .unwrap();
+    fixture.gate.release();
+    let completion = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(completion) = fixture.lane.take_completion() {
+                break completion;
+            }
+            fixture.lane.wake.notified().await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.worker.complete(completion);
+    let newer = fixture
+        .worker
+        .session
+        .as_ref()
+        .unwrap()
+        .projection()
+        .clone();
+    assert!(newer.stamp.revision.0 > fixture.view.stamp.revision.0);
+    assert!(fixture.lane.publish(&newer));
+    // Completion is taken before queued commands; admission-time validation
+    // alone cannot prevent an obsolete observation from reaching the worker.
+    for _ in 0..2 {
+        let Some(Input::Command(command)) = fixture.lane.pop() else {
+            panic!("queued observation")
+        };
+        tokio::task::block_in_place(|| fixture.worker.command(command));
+        assert!(matches!(
+            fixture.receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+    tokio::task::block_in_place(|| fixture.worker.command(TreeCommand::Commit(newer)));
+    assert!(matches!(
+        fixture.receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}

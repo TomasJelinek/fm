@@ -18,6 +18,7 @@ struct Inbox {
     ready: Option<NavigationId>,
     completion: Option<BranchCompletion>,
     published: Weak<TreeProjection>,
+    published_stamp: Option<midnight_core::TreeViewStamp>,
     closed: bool,
 }
 #[derive(Default)]
@@ -32,8 +33,13 @@ pub(super) enum Input {
     Completion(BranchCompletion),
     Closed,
 }
+#[derive(Debug)]
+pub(super) enum PushError {
+    Rejected(TreeCommand),
+    Superseded(TreeCommand),
+}
 impl Mailbox {
-    pub fn push(&self, command: TreeCommand) -> Result<(), TreeCommand> {
+    pub fn push(&self, command: TreeCommand) -> Result<(), PushError> {
         let mut inbox = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let TreeCommand::Sizes(midnight_core::TreeSizeCommand::Acknowledge { stamp, version }) =
             &command
@@ -56,14 +62,23 @@ impl Mailbox {
             return Ok(());
         }
         if inbox.closed
-            || inbox.commands.len() >= 8
-            || !known_view(&command, &inbox.published)
             || inbox
                 .generation
                 .as_ref()
                 .is_none_or(|generation| generation.navigation != command_navigation(&command))
         {
-            return Err(command);
+            return Err(PushError::Rejected(command));
+        }
+        if inbox
+            .published_stamp
+            .is_some_and(|stamp| superseded_observation(&command, stamp))
+        {
+            // No command is admitted. The controller retires this old view on a
+            // worker; the latest publication will trigger fresh UI observations.
+            return Err(PushError::Superseded(command));
+        }
+        if inbox.commands.len() >= 8 || !known_view(&command, &inbox.published) {
+            return Err(PushError::Rejected(command));
         }
         inbox.commands.push_back(command);
         self.wake.notify_one();
@@ -79,6 +94,7 @@ impl Mailbox {
             return false;
         }
         inbox.published = Arc::downgrade(view);
+        inbox.published_stamp = Some(view.stamp);
         true
     }
     pub fn reset(&self, generation: Generation) {
@@ -91,6 +107,7 @@ impl Mailbox {
         }
         inbox.generation = Some(generation);
         inbox.published = Weak::new();
+        inbox.published_stamp = None;
         inbox.reset = true;
         self.wake.notify_one();
     }

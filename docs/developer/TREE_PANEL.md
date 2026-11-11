@@ -14,6 +14,14 @@ uses the backend root-alias map to preserve the caret. Every publication is
 adopted with its matching selection and acknowledged with its exact projection
 Arc before branch, navigation, selection, or viewport requests.
 
+A fast branch completion may publish a newer view before the UI's automatic
+Commit/Viewport observations arrive. Older observations in the same pane,
+navigation and session are silently retired at both mailbox admission and worker
+dispatch. The latest publication triggers fresh observations, avoiding false queue
+errors and retry loops. Retirement remains off the UI/dispatch thread and bounded.
+Current/future/foreign projections and explicit user actions retain exact-identity
+validation; this does not relax navigation or filesystem-operation authorization.
+
 `Rows` reads the immutable projection directly. It does not construct a second
 complete UI model. Occurrence/session/revision tokens bind disclosure callbacks;
 root and descendant entry IDs never become interchangeable. Details, Brief and
