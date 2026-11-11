@@ -7,7 +7,7 @@ import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
 import { ListHeader } from "list-header.slint";
 
-// Shared presentation metadata. Filesystem rows never instantiate viewer controls.
+// Shared presentation metadata. Filesystem/thumbnailer rows have no viewer controls.
 export struct ViewerPluginRow {
     id: string,
     name: string,
@@ -27,6 +27,9 @@ export global ViewerPluginsView {
     in property <[ViewerPluginRow]> filesystem-rows;
     in property <int> filesystem-selected: -1;
     in property <string> filesystem-error;
+    in property <[ViewerPluginRow]> thumbnailer-rows;
+    in property <int> thumbnailer-selected: -1;
+    in property <string> thumbnailer-error;
     in property <bool> pending;
     in property <bool> settings-ready;
     in property <bool> restart-needed;
@@ -40,6 +43,7 @@ export global ViewerPluginsView {
     callback toggle(string, bool);
     callback select(int);
     callback select-filesystem(int);
+    callback select-thumbnailer(int);
     callback edit-extensions(string);
     callback reset-extensions();
     callback move(int);
@@ -123,14 +127,47 @@ component PluginCatalogList inherits Rectangle {
     }
 }
 
+component ReadOnlyPluginCatalog inherits VerticalLayout {
+    in property <[ViewerPluginRow]> rows;
+    in property <int> selected: -1;
+    in property <int> visible-rows: 8;
+    in property <string> label;
+    in property <string> error;
+    in property <string> empty-text;
+    private property <ViewerPluginRow> current: root.rows[root.selected];
+    callback selected-row(int);
+    spacing: 8px; alignment: start;
+    Text { text: root.label; color: Theme.strong-text; font-size: Theme.font-size; }
+    PluginCatalogList {
+        rows: root.rows; selected: root.selected; visible-rows: root.visible-rows;
+        label: root.label;
+        selected-row(index) => { root.selected-row(index); }
+    }
+    if root.selected >= 0 : VerticalLayout {
+        spacing: 6px; alignment: start;
+        Text { text: root.current.kind; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+        if root.current.description != "" : Text {
+            text: root.current.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        Text { text: root.current.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+        Text { text: root.current.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+        if root.current.location != "" : Text {
+            text: root.current.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+    }
+    if root.error != "" : ErrorNotice { text: root.error; }
+    if !ViewerPluginsView.pending && root.error == "" && root.rows.length == 0 : Text {
+        text: root.empty-text; color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
+    }
+}
+
 export component PluginOptions inherits VerticalLayout {
     in property <length> available-height: 580px;
     private property <int> section;
     private property <int> visible-rows: clamp(floor((root.available-height - 240px) / (Theme.control-height + 2px)), 2, 8);
     private property <ViewerPluginRow> selected: ViewerPluginsView.rows[ViewerPluginsView.selected];
-    private property <ViewerPluginRow> filesystem: ViewerPluginsView.filesystem-rows[ViewerPluginsView.filesystem-selected];
     spacing: 8px; alignment: start;
-    DialogTabs { labels: ["Viewers", "Filesystems"]; current-index <=> root.section; }
+    DialogTabs { labels: ["Viewers", "Filesystems", "Thumbnailers"]; current-index <=> root.section; }
     if root.section == 0 : VerticalLayout {
         spacing: 8px; alignment: start;
         ListHeader {
@@ -190,27 +227,19 @@ export component PluginOptions inherits VerticalLayout {
             color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
         }
     }
-    if root.section == 1 : VerticalLayout {
-        spacing: 8px; alignment: start;
-        Text { text: "Filesystem plugins"; color: Theme.strong-text; font-size: Theme.font-size; }
-        PluginCatalogList {
-            rows: ViewerPluginsView.filesystem-rows; selected: ViewerPluginsView.filesystem-selected;
-            visible-rows: max(3, min(root.visible-rows, ViewerPluginsView.filesystem-rows.length));
-            label: "Filesystem plugins";
-            selected-row(index) => { ViewerPluginsView.select-filesystem(index); }
-        }
-        if ViewerPluginsView.filesystem-selected >= 0 : VerticalLayout {
-            spacing: 6px; alignment: start;
-            Text { text: root.filesystem.kind; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
-            Text { text: root.filesystem.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
-            Text { text: root.filesystem.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-            if root.filesystem.location != "" : Text { text: root.filesystem.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-        }
-        if ViewerPluginsView.filesystem-error != "" : ErrorNotice { text: ViewerPluginsView.filesystem-error; }
-        if !ViewerPluginsView.pending && ViewerPluginsView.filesystem-error == "" && ViewerPluginsView.filesystem-rows.length == 0 : Text {
-            text: "No filesystem plugins are installed beside this application.";
-            color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
-        }
+    if root.section == 1 : ReadOnlyPluginCatalog {
+        rows: ViewerPluginsView.filesystem-rows; selected: ViewerPluginsView.filesystem-selected;
+        visible-rows: root.visible-rows; label: "Filesystem plugins";
+        error: ViewerPluginsView.filesystem-error;
+        empty-text: "No filesystem plugins are installed beside this application.";
+        selected-row(index) => { ViewerPluginsView.select-filesystem(index); }
+    }
+    if root.section == 2 : ReadOnlyPluginCatalog {
+        rows: ViewerPluginsView.thumbnailer-rows; selected: ViewerPluginsView.thumbnailer-selected;
+        visible-rows: root.visible-rows; label: "Thumbnailer plugins";
+        error: ViewerPluginsView.thumbnailer-error;
+        empty-text: "No thumbnailer plugins are installed beside this application.";
+        selected-row(index) => { ViewerPluginsView.select-thumbnailer(index); }
     }
     if ViewerPluginsView.error != "" : ErrorNotice { text: ViewerPluginsView.error; }
     HorizontalLayout {
@@ -218,7 +247,7 @@ export component PluginOptions inherits VerticalLayout {
         HintedActionButton {
             text: ViewerPluginsView.pending ? "Refreshing…" : "Refresh plugins";
             enabled: !ViewerPluginsView.pending;
-            hint: "Refresh installed viewer and filesystem packages.";
+            hint: "Refresh installed viewer, filesystem and thumbnailer packages.";
             clicked => { ViewerPluginsView.refresh(); }
         }
     }

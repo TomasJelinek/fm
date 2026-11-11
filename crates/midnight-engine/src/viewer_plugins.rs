@@ -18,19 +18,27 @@ impl Controller {
                 let result =
                     tokio::task::spawn_blocking(
                         || match midnight_plugin_host::installed_executable() {
-                            Ok(executable) => {
-                                (catalog(&executable), filesystems::catalog(&executable))
-                            }
-                            Err(error) => (Err(error.to_string()), Err(error.to_string())),
+                            Ok(executable) => (
+                                catalog(&executable),
+                                filesystems::catalog(&executable),
+                                midnight_thumbnail_host::catalog(&executable)
+                                    .map_err(|error| error.to_string()),
+                            ),
+                            Err(error) => (
+                                Err(error.to_string()),
+                                Err(error.to_string()),
+                                Err(error.to_string()),
+                            ),
                         },
                     )
                     .await
                     .unwrap_or_else(|error| {
                         let message = format!("Plugin discovery worker failed: {error}");
-                        (Err(message.clone()), Err(message))
+                        (Err(message.clone()), Err(message.clone()), Err(message))
                     });
                 if !outbox.send(Event::ViewerPluginsListed(result.0)).await
                     || !outbox.send(Event::FilesystemPluginsListed(result.1)).await
+                    || !outbox.send(Event::ThumbnailerPluginsListed(result.2)).await
                 {
                     break;
                 }

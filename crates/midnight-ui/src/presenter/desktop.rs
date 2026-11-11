@@ -103,6 +103,7 @@ impl Presenter {
             Event::VolumeInformationLoaded(loaded) => self.volume_information_loaded(*loaded),
             Event::ViewerPluginsListed(result) => self.viewer_plugins_listed(result),
             Event::FilesystemPluginsListed(result) => self.filesystem_plugins_listed(result),
+            Event::ThumbnailerPluginsListed(result) => self.thumbnailer_plugins_listed(result),
             Event::EditorDefaultResolved(result) => self.editor_default_resolved(result),
             Event::FontFamiliesLoaded(result) => self.apply_font_families(result),
             Event::PreferencesLoaded(result) => {

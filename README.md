@@ -14,8 +14,8 @@ F3 handles `.html`, `.htm` and `.xhtml`; Ctrl+F searches and Escape closes the
 viewer. HTML starts offline with JavaScript disabled. Windows rendering is
 qualified; the Linux browser runtime still requires native qualification.
 
-Product version **0.1** (Cargo SemVer `0.1.0`); the native window title shows
-`Midnight Explorer 0.1 — File Manager`. The displayed version is derived from the package version.
+Product version **0.2** (Cargo SemVer `0.2.0`); the native window title shows
+`Midnight Explorer 0.2 — File Manager`. The displayed version is derived from the package version.
 
 Prebuilt Windows/Linux previews are published on the
 [GitHub Releases page](https://github.com/TomasJelinek/fm/releases).

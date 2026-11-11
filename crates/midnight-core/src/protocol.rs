@@ -365,6 +365,7 @@ pub enum Event {
     ArchiveAvailability(Vec<crate::ArchiveFormat>),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
     FilesystemPluginsListed(Result<Vec<crate::FilesystemPluginInfo>, String>),
+    ThumbnailerPluginsListed(Result<Vec<crate::ThumbnailerPluginInfo>, String>),
     DirectoriesCompared {
         id: crate::CompareId,
         result: Result<Arc<crate::CompareResult>, FsError>,

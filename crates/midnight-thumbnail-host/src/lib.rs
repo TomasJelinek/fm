@@ -4,6 +4,8 @@
 pub mod archive_source;
 pub mod cache;
 mod cache_store;
+mod catalog;
+pub use catalog::catalog;
 pub mod decode;
 #[cfg(windows)]
 #[path = "paths_windows.rs"]

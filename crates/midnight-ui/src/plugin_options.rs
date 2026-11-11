@@ -7,7 +7,13 @@ use std::{cell::RefCell, rc::Rc};
 pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let view = window.global::<ViewerPluginsView>();
     let state = &presenter.viewer_plugins;
-    view.set_pending(state.pending || state.filesystems_pending);
+    view.set_pending(state.pending || state.filesystems_pending || state.thumbnailers_pending);
+    view.set_thumbnailer_error(state.thumbnailer_error.as_str().into());
+    view.set_thumbnailer_selected(
+        presenter
+            .thumbnailer_plugin_selected()
+            .map_or(-1, |index| index as i32),
+    );
     view.set_filesystem_error(state.filesystem_error.as_str().into());
     view.set_filesystem_selected(
         presenter
@@ -135,6 +141,26 @@ pub(crate) fn refresh(window: &MainWindow, presenter: &Presenter) {
         })
         .collect::<Vec<_>>();
     view.set_filesystem_rows(ModelRc::new(VecModel::from(filesystems)));
+    let thumbnailers = state
+        .thumbnailers
+        .iter()
+        .map(|plugin| ViewerPluginRow {
+            id: plugin.id.as_str().into(),
+            name: plugin.name.as_str().into(),
+            version: plugin.version.as_str().into(),
+            kind: if plugin.video {
+                "Video previews · static and animated frames"
+            } else {
+                "Image previews"
+            }
+            .into(),
+            description: format!("Extensions: {}", plugin.extensions.join("; ")).into(),
+            status: plugin.status.as_str().into(),
+            location: plugin.location.to_string_lossy().into_owned().into(),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    view.set_thumbnailer_rows(ModelRc::new(VecModel::from(thumbnailers)));
     view.set_revision(revision.into());
 }
 
@@ -191,6 +217,17 @@ pub(crate) fn install(
             if let Ok(index) = usize::try_from(index) {
                 change(&weak, &state, |presenter| {
                     presenter.select_filesystem_plugin(index)
+                });
+            }
+        });
+    let weak = window.as_weak();
+    let state = presenter.clone();
+    window
+        .global::<ViewerPluginsView>()
+        .on_select_thumbnailer(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                change(&weak, &state, |presenter| {
+                    presenter.select_thumbnailer_plugin(index)
                 });
             }
         });

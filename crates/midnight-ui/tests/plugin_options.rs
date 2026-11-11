@@ -5,7 +5,8 @@ mod ui;
 
 use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
 use midnight_core::{
-    Command, Event, FilesystemPluginInfo, FilesystemPluginKind, UserPreferences, ViewerPluginInfo,
+    Command, Event, FilesystemPluginInfo, FilesystemPluginKind, ThumbnailerPluginInfo,
+    UserPreferences, ViewerPluginInfo,
 };
 use midnight_ui::{Presenter, ViewerPluginRow, ViewerPluginsView, install, refresh};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, platform::Key};
@@ -216,6 +217,9 @@ impl Harness {
         presenter
             .borrow_mut()
             .apply(Event::FilesystemPluginsListed(Ok(Vec::new())));
+        presenter
+            .borrow_mut()
+            .apply(Event::ThumbnailerPluginsListed(Ok(Vec::new())));
         refresh(&ui.window, &presenter.borrow());
         let mut harness = Self {
             ui,
@@ -345,4 +349,127 @@ fn invalid_extension_draft_blocks_ok_and_corrected_multiline_text_saves_once() {
             .get("midnight.viewer.source"),
         Some(&vec!["rs".into(), "rust".into(), "日本語".into()])
     );
+}
+
+#[test]
+fn plugins_exposes_thumbnailers_tab_without_viewer_controls() {
+    let mut h = Harness::new();
+    h.click("Thumbnailers", AccessibleRole::Button);
+    let list = ui::popup_item(&h.ui.window, "Thumbnailer plugins", AccessibleRole::List);
+    assert!(
+        !has_role(list, AccessibleRole::Checkbox),
+        "thumbnailer discovery must not offer nonfunctional viewer switches"
+    );
+    assert!(h.saves().is_empty());
+}
+
+fn thumbnailers() -> Vec<ThumbnailerPluginInfo> {
+    [("image", false, "png"), ("video", true, "webm")]
+        .into_iter()
+        .map(|(kind, video, extension)| ThumbnailerPluginInfo {
+            id: format!("midnight-{kind}"),
+            name: if video {
+                "Video thumbnailer"
+            } else {
+                "Image thumbnailer"
+            }
+            .into(),
+            version: "1".into(),
+            extensions: vec![extension.into()],
+            video,
+            location: std::path::PathBuf::from("thumbnailers").join(kind),
+            status: "Installed".into(),
+        })
+        .collect()
+}
+
+#[test]
+fn thumbnailer_catalog_shows_details_and_retains_selection_by_identity() {
+    let mut h = Harness::new();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(thumbnailers())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.settle();
+    h.click("Thumbnailers", AccessibleRole::Button);
+    h.sent.borrow_mut().clear();
+    h.click("Video thumbnailer · 1", AccessibleRole::ListItem);
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_thumbnailer_selected(), 1);
+    let video = view.get_thumbnailer_rows().row_data(1).unwrap();
+    assert_eq!(video.id, "midnight-video");
+    assert_eq!(video.status, "Installed");
+    assert_eq!(video.description, "Extensions: webm");
+    assert!(video.kind.contains("animated"));
+    assert!(video.location.ends_with("video"));
+    assert!(!video.configurable);
+    assert!(
+        h.sent.borrow().is_empty(),
+        "selection must not start a worker or save settings"
+    );
+    render::snapshot(&h.ui, "plugin-thumbnailers");
+
+    let mut reordered = thumbnailers();
+    reordered.reverse();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(reordered)));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.settle();
+    assert_eq!(
+        h.ui.window
+            .global::<ViewerPluginsView>()
+            .get_thumbnailer_selected(),
+        0
+    );
+}
+
+#[test]
+fn thumbnailer_discovery_failure_is_visible_and_refresh_waits_for_all_catalogs() {
+    let mut h = Harness::new();
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(thumbnailers())));
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Err(
+            "Thumbnail helper is missing: thumbnailers/video".into(),
+        )));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    h.settle();
+    h.click("Thumbnailers", AccessibleRole::Button);
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert_eq!(view.get_thumbnailer_rows().row_count(), 0);
+    assert_eq!(view.get_thumbnailer_selected(), -1);
+    assert!(
+        view.get_thumbnailer_error()
+            .contains("Thumbnail helper is missing")
+    );
+    h.sent.borrow_mut().clear();
+    h.click("Refresh plugins", AccessibleRole::Button);
+    h.ui.window.global::<ViewerPluginsView>().invoke_refresh();
+    assert_eq!(
+        h.sent
+            .borrow()
+            .iter()
+            .filter(|c| matches!(c, Command::ListViewerPlugins))
+            .count(),
+        1
+    );
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ViewerPluginsListed(Ok(Vec::new())));
+    h.presenter
+        .borrow_mut()
+        .apply(Event::FilesystemPluginsListed(Ok(Vec::new())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    assert!(h.ui.window.global::<ViewerPluginsView>().get_pending());
+    h.presenter
+        .borrow_mut()
+        .apply(Event::ThumbnailerPluginsListed(Ok(thumbnailers())));
+    refresh(&h.ui.window, &h.presenter.borrow());
+    let view = h.ui.window.global::<ViewerPluginsView>();
+    assert!(!view.get_pending());
+    assert!(view.get_thumbnailer_error().is_empty());
+    assert_eq!(view.get_thumbnailer_rows().row_count(), 2);
 }

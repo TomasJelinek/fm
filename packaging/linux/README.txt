@@ -1,4 +1,4 @@
-Midnight Explorer 0.1.0 - Linux x86-64 preview
+Midnight Explorer 0.2.0 - Linux x86-64 preview
 
 Extract the archive with tar, then run ./me in a graphical desktop session.
 Keep the viewers folder beside me. Native plugins require a private user-owned

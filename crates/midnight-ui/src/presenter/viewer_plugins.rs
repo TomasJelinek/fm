@@ -22,6 +22,10 @@ pub(crate) struct ViewerPluginsState {
     pub(crate) filesystem_error: String,
     pub(crate) filesystems_pending: bool,
     pub(crate) filesystem_selected_key: String,
+    pub(crate) thumbnailers: Vec<ThumbnailerPluginInfo>,
+    pub(crate) thumbnailer_error: String,
+    pub(crate) thumbnailers_pending: bool,
+    pub(crate) thumbnailer_selected_id: String,
     pub(crate) error: String,
     pub(crate) pending: bool,
     pub(crate) startup_disabled: Option<Arc<[String]>>,
@@ -41,15 +45,57 @@ impl Presenter {
             && !self.operations.closing
     }
     pub(crate) fn request_viewer_plugins(&mut self, send: &dyn Fn(Command) -> bool) {
-        if !self.viewer_plugins.pending && !self.viewer_plugins.filesystems_pending {
+        if !self.viewer_plugins.pending
+            && !self.viewer_plugins.filesystems_pending
+            && !self.viewer_plugins.thumbnailers_pending
+        {
             if send(Command::ListViewerPlugins) {
                 self.viewer_plugins.pending = true;
                 self.viewer_plugins.filesystems_pending = true;
+                self.viewer_plugins.thumbnailers_pending = true;
                 self.viewer_plugins.error.clear();
                 self.viewer_plugins.filesystem_error.clear();
+                self.viewer_plugins.thumbnailer_error.clear();
             } else {
                 self.viewer_plugins.error = "Plugin discovery is busy. Try Refresh again.".into();
             }
+        }
+    }
+
+    pub(super) fn thumbnailer_plugins_listed(
+        &mut self,
+        result: Result<Vec<ThumbnailerPluginInfo>, String>,
+    ) {
+        self.viewer_plugins.thumbnailers_pending = false;
+        let catalog = match result {
+            Ok(catalog) => {
+                self.viewer_plugins.thumbnailer_error.clear();
+                catalog
+            }
+            Err(error) => {
+                self.viewer_plugins.thumbnailer_error = error;
+                Vec::new()
+            }
+        };
+        self.retired.push(Box::new(mem::replace(
+            &mut self.viewer_plugins.thumbnailers,
+            catalog,
+        )));
+        self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
+    }
+
+    pub(crate) fn thumbnailer_plugin_selected(&self) -> Option<usize> {
+        self.viewer_plugins
+            .thumbnailers
+            .iter()
+            .position(|plugin| plugin.id == self.viewer_plugins.thumbnailer_selected_id)
+            .or_else(|| (!self.viewer_plugins.thumbnailers.is_empty()).then_some(0))
+    }
+
+    pub(crate) fn select_thumbnailer_plugin(&mut self, index: usize) {
+        if let Some(plugin) = self.viewer_plugins.thumbnailers.get(index) {
+            self.viewer_plugins.thumbnailer_selected_id = plugin.id.clone();
+            self.viewer_plugins.revision = self.viewer_plugins.revision.wrapping_add(1);
         }
     }
 

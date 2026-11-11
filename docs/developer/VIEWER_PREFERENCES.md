@@ -6,18 +6,20 @@ host captures `Arc<ViewerPreferences>` in `ViewerLaunch` before opening a source
 
 ## Plugin catalogs in Options
 
-Options → Plugins separates Viewers from a read-only Filesystems overview.
+Options → Plugins has Viewers, Filesystems and Thumbnailers tabs. The latter two are read-only catalogs.
 Viewer enablement, extension overrides and priority retain stable plugin IDs and
 their existing restart/application-settings semantics. Short names and functional
 descriptions are presentation metadata; they do not redirect routing or migrate
 saved IDs. The source viewer's description identifies its supported lexical
 profiles rather than placing resource-limit wording in its title.
 
-The existing internal `Command::ListViewerPlugins` requests both catalogs through
-one bounded backend worker. It publishes independent `Event::ViewerPluginsListed`
-and `Event::FilesystemPluginsListed` results. These are application catalog events,
+The existing internal `Command::ListViewerPlugins` requests all three catalogs
+through one bounded backend worker. It publishes independent
+`Event::ViewerPluginsListed`, `Event::FilesystemPluginsListed` and
+`Event::ThumbnailerPluginsListed` results. These are application catalog events,
 not new plugin ABI messages or filesystem capabilities. One catalog's error does
-not discard the other's successful rows; Refresh stays pending until both replies.
+not discard another catalog's successful rows; Refresh stays pending until all
+three replies, including errors. Repeated Refresh is coalesced while pending.
 
 `FilesystemPluginsListed` contains metadata discovered by the native/network and
 archive filesystem hosts. Installed means a trusted compatible manifest and
@@ -27,6 +29,15 @@ Its overview has no filesystem enable/disable, priority, extension-edit or runti
 reload control. Existing archive decoder settings remain on the Archives page.
 Filesystem selection displays details without saving viewer preferences or
 granting any operation authority from the displayed ID or location.
+
+`ThumbnailerPluginsListed` carries provider ID, readable name, decoder version,
+supported extensions, video capability, helper path and installation status. It
+reuses thumbnail service discovery and its path-trust rules, without decoding
+media, launching helpers or touching the cache. An absent directory is empty;
+a malformed or untrusted installation reports an error and clears stale rows.
+Selection survives reordering by provider ID. Global preview enablement, network
+access, thumbnail size and cache controls remain on Previews. Per-provider
+checkboxes, extension overrides and runtime reload are not exposed by this catalog.
 
 ## Viewer window choices
 

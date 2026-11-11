@@ -15,6 +15,7 @@ midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }
 midnight-web-viewer-host = { path = "../midnight-web-viewer-host" }
 midnight-filesystem-host = { path = "../midnight-filesystem-host" }
 midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
+midnight-thumbnail-host = { path = "../midnight-thumbnail-host" }
 tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 unicase = "=2.10.0"

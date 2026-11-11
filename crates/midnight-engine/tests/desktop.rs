@@ -782,3 +782,43 @@ async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
     drop(events);
     task.await.unwrap();
 }
+
+#[tokio::test]
+async fn plugin_refresh_delivers_all_three_catalog_results_through_a_bounded_channel() {
+    let (commands, receiver) = mpsc::channel(1);
+    let (sender, mut events) = mpsc::channel(1);
+    let filesystem = Arc::new(midnight_platform::LocalFileSystem::new(None));
+    let task = tokio::spawn(Engine::new(filesystem, sender).run(receiver));
+    commands.send(Command::ListViewerPlugins).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut slot = 0;
+        while slot < 3 {
+            let event = events
+                .recv()
+                .await
+                .expect("all plugin catalogs must finish");
+            // Unrelated startup icons and availability share this bounded event channel.
+            let catalog = match event {
+                Event::ViewerPluginsListed(_) => 0,
+                Event::FilesystemPluginsListed(_) => 1,
+                Event::ThumbnailerPluginsListed(_) => 2,
+                _ => continue,
+            };
+            assert_eq!(
+                catalog, slot,
+                "unexpected plugin catalog order or duplicate"
+            );
+            slot += 1;
+        }
+    })
+    .await
+    .expect("plugin refresh must deliver all three terminal events");
+    drop(commands);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        // Shutdown drains other actors while their terminal messages arrive.
+        while events.recv().await.is_some() {}
+        task.await.unwrap();
+    })
+    .await
+    .expect("catalog refresh must not prevent shutdown");
+}

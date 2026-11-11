@@ -202,3 +202,20 @@ console. The public SDK verifies containment before reading media. Linux workers
 preload trusted runtime code, set resource limits, close unrelated descriptors and
 install a deny-by-default seccomp policy before acknowledging startup. Neither
 platform falls back to decoding untrusted input in the application process.
+
+## Thumbnailer catalog in Options (11 November 2026)
+
+Options → Plugins contains separate Viewers, Filesystems and Thumbnailers tabs.
+The thumbnailer list shows validated installed image/video helpers with readable
+names, decoder versions, supported extensions, preview capabilities, helper paths
+and installation status. Refresh updates all three catalogs asynchronously;
+missing installations show an empty state and discovery/trust failures show an
+explicit error instead of leaving stale rows marked as available.
+
+Catalog discovery reuses the thumbnail service's existing manifest and path-trust
+validation. It never starts a decoder, reads media or touches the thumbnail cache.
+`Installed` describes validated package metadata/artifacts, not a running worker.
+Selection is retained by provider ID when catalog ordering changes. Thumbnailer
+and filesystem entries are read-only: the Previews page continues to control
+image/video previews globally, network access, longest-side size and cache cleanup.
+No individual-thumbnailer enable/disable or extension-routing preference is implied.

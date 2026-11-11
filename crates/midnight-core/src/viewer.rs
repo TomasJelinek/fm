@@ -80,6 +80,22 @@ pub struct FilesystemPluginInfo {
     pub status: String,
 }
 
+/// A thumbnail helper discovered from trusted metadata without starting its worker.
+/// Installed means metadata/artifacts were validated, not that decoding succeeded.
+#[derive(Clone, Debug)]
+pub struct ThumbnailerPluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// Manifest routing hints; each worker still validates the source content.
+    pub extensions: Vec<String>,
+    /// Supports additional sampled frames for selected or hovered video previews.
+    pub video: bool,
+    /// The validated helper executable in the installation's thumbnailers directory.
+    pub location: PathBuf,
+    pub status: String,
+}
+
 pub fn validate_disabled_viewers(ids: &[String]) -> Result<(), &'static str> {
     if ids.len() > 64 {
         return Err("At most 64 disabled viewer IDs can be stored.");
