@@ -215,6 +215,8 @@ impl Worker {
                         wrap_enabled: false,
                         wrap_available: false,
                         image: None,
+                        raster: None,
+                        raster_rebase: None,
                         width: frame.width,
                         height: frame.height,
                         pixels: frame.rgba.into(),

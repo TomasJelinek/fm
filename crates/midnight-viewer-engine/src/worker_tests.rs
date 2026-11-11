@@ -1,5 +1,10 @@
 use super::*;
 
+#[path = "worker_position_tests.rs"]
+mod position;
+
+#[path = "worker_raster_tests.rs"]
+mod raster;
 #[path = "worker_source_continuity_tests.rs"]
 mod source_continuity;
 
@@ -80,6 +85,7 @@ fn opening_reports_plugin_open_and_initial_viewport_errors_without_a_frame() {
 fn worker() -> (Worker, Mailbox) {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(Runtime::discover(root.path()).unwrap());
+    let raster_budget = Arc::new(crate::raster_budget::Budget::default());
     let worker = Worker {
         wake: Arc::new(|| true),
         preference_state: Arc::new(crate::preferences::Preferences::new(Arc::new(
@@ -117,6 +123,9 @@ fn worker() -> (Worker, Mailbox) {
         page: None,
         shaped: None,
         text: Default::default(),
+        raster: Default::default(),
+        raster_owner: raster_budget.owner(),
+        raster_budget,
         appearance: ViewerAppearance {
             family: "monospace".into(),
             font_size: 14.0,

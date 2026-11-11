@@ -279,6 +279,8 @@ fn html_surface_keeps_search_zoom_and_policy_in_normal_viewer() {
     let frame = |revision| {
         ViewerOutput::Frame(Box::new(ViewerFrame {
             generation: 2,
+            raster: None,
+            raster_rebase: None,
             position_sequence: [0; 2],
             revision,
             mode: VIEWER_MODE_HTML,

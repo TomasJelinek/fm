@@ -13,6 +13,7 @@ pub struct Observer {
     pub drawing: Option<Instant>,
     pub injected_wheel: bool,
     pub native_events: Rc<RefCell<Vec<String>>>,
+    pub timeline: super::timeline::Trace,
 }
 
 impl Observer {
@@ -20,7 +21,10 @@ impl Observer {
         if let Some(started) = self.drawing.take()
             && let Some(callback) = self.callback.borrow_mut().as_mut()
         {
-            callback(started.elapsed());
+            let elapsed = started.elapsed();
+            self.timeline
+                .record("redraw_end", elapsed.as_secs_f64() * 1000.0);
+            callback(elapsed);
         }
     }
 }
@@ -35,6 +39,9 @@ impl CustomApplicationHandler for Observer {
         event: &winit::event::WindowEvent,
     ) -> EventResult {
         self.finished();
+        if matches!(event, winit::event::WindowEvent::MouseWheel { .. }) {
+            self.timeline.record("native_wheel", 0.0);
+        }
         if self.injected_wheel
             && matches!(
                 event,
@@ -56,6 +63,7 @@ impl CustomApplicationHandler for Observer {
             return EventResult::PreventDefault;
         }
         if matches!(event, winit::event::WindowEvent::RedrawRequested) {
+            self.timeline.record("redraw_begin", 0.0);
             self.drawing = Some(Instant::now());
         }
         EventResult::Propagate

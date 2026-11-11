@@ -14,6 +14,25 @@ pub(crate) fn viewport(position: f64, length: u64) -> (u64, bool) {
     }
 }
 
+/// A scrollbar's thumb already accounts for the visible part of the file.
+/// The exact pixel inverse is used when that range is already decoded.
+pub(crate) fn scrollbar_viewport(position: f64, length: u64, extent: f64) -> (u64, bool) {
+    if position >= 1.0 {
+        return viewport(position, length);
+    }
+    let extent = if extent.is_finite() {
+        extent.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let position = if position.is_finite() {
+        position.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let anchor = (position * length as f64 * (1.0 - extent)) as u64;
+    (anchor.min(length.saturating_sub(1)), false)
+}
 /// Provisional byte-based extent until a complete file line index exists.
 pub(crate) fn scroll_metrics(
     start: u64,

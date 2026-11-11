@@ -218,3 +218,37 @@ fn web_consumed_release_does_not_leave_auxiliary_scrollbars_pressed() {
     );
     close(&open);
 }
+
+#[test]
+fn raster_wheel_after_a_browser_consumed_release_is_not_stuck_in_pointer_drag_mode() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    let _inputs = configure(&open);
+    let mut ancillary = midnight_ui_input::NativeScroll::new(&open.window);
+    let x = open.window.get_content_left() + 20.0;
+    let top = open.window.get_content_top();
+    for event in [
+        cursor(&open, x, top - 2.0),
+        button(ElementState::Pressed),
+        cursor(&open, x, top + 20.0),
+        button(ElementState::Released),
+    ] {
+        observe_native_content(&open, &event, true, &mut ancillary);
+    }
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![text_presentation_tests::frame(10, 0, 0.2)],
+    );
+    observe_native_content(&open, &cursor(&open, x, top + 20.0), true, &mut ancillary);
+    assert!(
+        observe_native_content(
+            &open,
+            &wheel(MouseScrollDelta::LineDelta(0.0, -1.0)),
+            true,
+            &mut ancillary
+        ),
+        "browser-consumed release left the content scroller pressed"
+    );
+    manager.close_all();
+}

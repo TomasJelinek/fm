@@ -12,7 +12,16 @@ mod opening_retirement_tests;
 #[cfg(test)]
 mod opening_tests;
 mod preferences;
+mod raster_camera;
 mod raster_motion;
+mod raster_presentation;
+#[cfg(test)]
+mod raster_presentation_tests;
+mod raster_rebase;
+#[cfg(test)]
+mod raster_rebase_tests;
+#[cfg(test)]
+mod raster_render_tests;
 mod scrolling;
 mod text_position;
 #[cfg(test)]
@@ -74,6 +83,8 @@ struct OpenWindow {
     image_redraw: Timer,
     raster_redraw: Timer,
     raster_motion: RefCell<raster_motion::Motion>,
+    retained_raster: RefCell<raster_presentation::State>,
+    raster_rebase: RefCell<raster_rebase::State>,
     image_native: RefCell<image_motion::Native>,
     text_position: RefCell<text_position::TextPosition>,
     web_native: RefCell<web_input::Native>,
@@ -90,10 +101,33 @@ impl OpenWindow {
 
     fn enqueue(&self, input: ViewerInput) -> bool {
         let sender = self.input.borrow().clone();
-        let interrupts = !matches!(input, ViewerInput::Scroll { .. });
+        let interrupts = !matches!(
+            input,
+            ViewerInput::Scroll { .. }
+                | ViewerInput::RasterRebase { .. }
+                | ViewerInput::Raster {
+                    input: ViewerRasterInput::PanTo { .. },
+                    ..
+                }
+        );
+        let changes_context = matches!(
+            input,
+            ViewerInput::Mode(_)
+                | ViewerInput::NextFile
+                | ViewerInput::Resize(_)
+                | ViewerInput::Search { .. }
+                | ViewerInput::Seek(_)
+                | ViewerInput::Pan(_)
+                | ViewerInput::Position { .. }
+                | ViewerInput::Wrap(_)
+        );
         let accepted = sender(input);
         if accepted && interrupts {
             raster_motion::cancel(self);
+        }
+        if accepted && changes_context {
+            raster_rebase::cancel_context(self);
+            self.retained_raster.borrow_mut().camera.suspend();
         }
         accepted
     }
@@ -120,11 +154,22 @@ impl ViewerWindows {
             .iter()
             .filter(|open| !open.closed.get())
         {
-            let raster_zoom_changed =
-                open.session.preferences().image_zoom != preferences.image_zoom;
+            let previous = open.session.preferences();
+            let raster_zoom_changed = previous.image_zoom != preferences.image_zoom;
+            let layout_changed = previous.wrap != preferences.wrap
+                || previous.line_numbers != preferences.line_numbers
+                || previous.text_font != preferences.text_font
+                || previous.source_font != preferences.source_font
+                || previous.markdown_font != preferences.markdown_font
+                || previous.markdown_preset != preferences.markdown_preset;
             if let Err(message) = open.session.restore_preferences(preferences.clone()) {
                 open.window.set_status(message.into());
             } else {
+                if layout_changed {
+                    raster_rebase::cancel_context(open);
+                    raster_motion::cancel(open);
+                    open.retained_raster.borrow_mut().camera.suspend();
+                }
                 if raster_zoom_changed
                     && open
                         .image_info
@@ -199,6 +244,10 @@ impl ViewerWindows {
             scale: window.window().scale_factor(),
         };
         let session = Rc::new(self.service.open(launch, appearance, geometry)?);
+        if !session.send(ViewerInput::RetainedRaster(true)) {
+            session.close();
+            return Err("Viewer input is unavailable.".into());
+        }
         let input = Rc::downgrade(&session);
         let open = Rc::new(OpenWindow {
             window,
@@ -223,6 +272,8 @@ impl ViewerWindows {
             image_redraw: Timer::default(),
             raster_redraw: Timer::default(),
             raster_motion: RefCell::new(Default::default()),
+            retained_raster: RefCell::new(Default::default()),
+            raster_rebase: RefCell::new(Default::default()),
             image_native: RefCell::new(Default::default()),
             text_position: RefCell::new(Default::default()),
             web_native: RefCell::new(Default::default()),
@@ -259,7 +310,9 @@ impl ViewerWindows {
                         scale,
                     }))
                 {
+                    raster_rebase::cancel_context(&open);
                     raster_motion::cancel(&open);
+                    open.retained_raster.borrow_mut().camera.suspend();
                     if window.get_image_mode() {
                         open.image_zoom.borrow_mut().clear();
                         open.text_position.borrow_mut().cancel();
@@ -320,6 +373,8 @@ fn accept_preference(open: &OpenWindow, change: ViewerPreferenceChange) -> bool 
                         | ViewerPreferenceChange::DocumentZoom(_)
                 ) {
                     open.text_position.borrow_mut().cancel();
+                    raster_rebase::cancel_context(open);
+                    open.retained_raster.borrow_mut().camera.suspend();
                 }
                 let listener = open.preferences_listener.borrow().clone();
                 listener(change);
@@ -483,6 +538,7 @@ fn present_outputs(
             ViewerOutput::Frame(frame) => {
                 if frame.revision <= open.frame.get()
                     || frame.generation < open.frame_generation.get()
+                    || !raster_rebase::allows(open, frame.raster_rebase)
                 {
                     service.retire(output);
                     continue;
@@ -496,6 +552,14 @@ fn present_outputs(
                     continue;
                 }
                 raster_motion::receive(open, frame);
+                if frame.raster.is_some() {
+                    if !raster_presentation::receive(open, frame) {
+                        service.retire(output);
+                        continue;
+                    }
+                } else if window.get_retained_raster() {
+                    raster_presentation::clear(open);
+                }
                 if let (Some(info), Some(tiles)) = (&frame.image, &frame.tiles) {
                     let incoming = open.image_camera.borrow().incoming(info);
                     let Some((displayed, replace)) = incoming else {
@@ -587,8 +651,12 @@ fn present_outputs(
                 }
                 window.set_wrap_enabled(frame.wrap_enabled);
                 window.set_wrap_available(frame.wrap_available);
-                open.raster_size.set((frame.width, frame.height));
-                if frame.tiles.is_none() {
+                let [width, height] = frame
+                    .raster
+                    .as_ref()
+                    .map_or([frame.width, frame.height], |info| info.viewport);
+                open.raster_size.set((width, height));
+                if frame.tiles.is_none() && frame.raster.is_none() {
                     let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                         frame.pixels.as_ref(),
                         frame.width,
@@ -620,8 +688,33 @@ fn present_outputs(
                 } else {
                     window.set_position_context(format!("text:{}", frame.generation).into());
                     present_position(open);
+                    if frame.raster.is_some() {
+                        raster_presentation::present(open);
+                    }
                 }
+                raster_rebase::presented(open, frame);
                 window.invoke_frame_presented();
+            }
+            ViewerOutput::RasterRebase {
+                surface,
+                transition,
+            } => {
+                raster_rebase::receive(open, *surface, *transition);
+            }
+            ViewerOutput::RasterUnavailable { surface, message } => {
+                if raster_rebase::unavailable(open, *surface)
+                    || open
+                        .retained_raster
+                        .borrow()
+                        .camera
+                        .info()
+                        .is_some_and(|info| info.surface == *surface)
+                {
+                    // Keep the displayed pixels and settle at the actual camera.
+                    // The failed frontier must not replay indefinitely.
+                    raster_motion::cancel(open);
+                    window.set_status(message.as_str().into());
+                }
             }
             ViewerOutput::Status(message) => window.set_status(message.as_str().into()),
             ViewerOutput::ImageUnavailable {
@@ -700,11 +793,12 @@ fn observe_native_content(
     // Every native transition must update auxiliary press/gesture bookkeeping,
     // including a release that the browser or retained image consumes below.
     let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
+    image_motion::bookkeeping(open, event);
     if web_input::observe(open, event, shortcuts) {
         ancillary.cancel();
         return true;
     }
-    if image_motion::observe(open, event) {
+    if image_motion::route(open, event) {
         ancillary.cancel();
         return true;
     }
@@ -810,6 +904,9 @@ fn bind(open: &Rc<OpenWindow>) {
 }
 
 fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
+    if raster_rebase::waiting(open) && matches!(action, "viewer.copy" | "viewer.select-page") {
+        return true;
+    }
     if open.window.get_web_mode()
         && let Some(result) = web_input::navigate(open, action)
     {
@@ -892,12 +989,14 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
                 input,
             }
         }
-        "viewer.copy" => ViewerInput::Copy {
+        "viewer.copy" => raster_presentation::command(open, true).unwrap_or(ViewerInput::Copy {
             frame: open.frame.get(),
-        },
-        "viewer.select-page" => ViewerInput::SelectPage {
-            frame: open.frame.get(),
-        },
+        }),
+        "viewer.select-page" => {
+            raster_presentation::command(open, false).unwrap_or(ViewerInput::SelectPage {
+                frame: open.frame.get(),
+            })
+        }
         "viewer.find-next" | "viewer.find-previous" => {
             if open.window.get_image_mode() {
                 return false;
@@ -932,6 +1031,17 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             y / open.window.window().scale_factor(),
             false,
         );
+    }
+    if let ViewerInput::Scroll { x, y } = input
+        && open.window.get_retained_raster()
+        && raster_presentation::push(
+            open,
+            x / open.window.window().scale_factor(),
+            y / open.window.window().scale_factor(),
+            true,
+        )
+    {
+        return true;
     }
     let changing = matches!(
         input,
@@ -977,9 +1087,15 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
     open.window.on_scroll(move |x, y| {
         if let Some(open) = weak.upgrade() {
             // Logical/pixel input already includes the platform's own momentum.
-            raster_motion::cancel(&open);
+            raster_motion::cancel_legacy(&open);
             if open.window.get_tiled() {
                 image_motion::push(&open, x, y, true);
+                return;
+            }
+            if open.window.get_retained_raster() && raster_presentation::push(&open, x, y, true) {
+                return;
+            }
+            if raster_motion::continue_direct(&open, x, y) {
                 return;
             }
             let scale = open.window.window().scale_factor();
@@ -991,54 +1107,80 @@ fn bind_pointer(open: &Rc<OpenWindow>) {
             }
         }
     });
+    fn position(open: &OpenWindow, horizontal: bool, value: f32, dragging: bool) {
+        if raster_presentation::seek(open, horizontal, f64::from(value), dragging) {
+            return;
+        }
+        raster_rebase::cancel_context(open);
+        raster_motion::cancel(open);
+        if open.window.get_tiled() {
+            image_motion::seek(open, usize::from(!horizontal), f64::from(value));
+            return;
+        }
+        if open.window.get_image_mode() {
+            let input = if horizontal {
+                ViewerInput::Pan(f64::from(value))
+            } else {
+                ViewerInput::Seek(f64::from(value))
+            };
+            if open.enqueue(input) {
+                if horizontal {
+                    open.window.set_horizontal_position(value);
+                } else {
+                    open.window.set_position(value);
+                }
+            }
+            return;
+        }
+        open.text_position
+            .borrow_mut()
+            .request(horizontal, f64::from(value));
+        present_position(open);
+        flush_position(open);
+    }
     let weak = Rc::downgrade(open);
     open.window.on_seek(move |value| {
         if let Some(open) = weak.upgrade() {
-            raster_motion::cancel(&open);
-            if open.window.get_tiled() {
-                image_motion::seek(&open, 1, f64::from(value));
-                return;
-            }
-            if open.window.get_image_mode() {
-                if open.enqueue(ViewerInput::Seek(f64::from(value))) {
-                    open.window.set_position(value);
-                }
-                return;
-            }
-            open.text_position
-                .borrow_mut()
-                .request(false, f64::from(value));
-            present_position(&open);
-            flush_position(&open);
+            position(&open, false, value, false);
         }
     });
     let weak = Rc::downgrade(open);
     open.window.on_pan(move |value| {
         if let Some(open) = weak.upgrade() {
-            raster_motion::cancel(&open);
-            if open.window.get_tiled() {
-                image_motion::seek(&open, 0, f64::from(value));
-                return;
-            }
-            if open.window.get_image_mode() {
-                if open.enqueue(ViewerInput::Pan(f64::from(value))) {
-                    open.window.set_horizontal_position(value);
-                }
-                return;
-            }
-            open.text_position
-                .borrow_mut()
-                .request(true, f64::from(value));
-            present_position(&open);
-            flush_position(&open);
+            position(&open, true, value, false);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_drag_seek(move |horizontal, value| {
+        if let Some(open) = weak.upgrade() {
+            position(&open, horizontal, value, true);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_position_drag_began(move |_| {
+        if let Some(open) = weak.upgrade() {
+            raster_presentation::begin_seek(&open);
+        }
+    });
+    let weak = Rc::downgrade(open);
+    open.window.on_position_drag_ended(move |_| {
+        if let Some(open) = weak.upgrade() {
+            raster_presentation::end_seek(&open);
         }
     });
     let weak = Rc::downgrade(open);
     open.window.on_select_point(move |x, y, extend| {
         if let Some(open) = weak.upgrade() {
             raster_motion::cancel(&open);
+            if raster_rebase::waiting(&open) {
+                return;
+            }
+            if let Some(input) = raster_presentation::select(&open, x, y, extend) {
+                open.enqueue(input);
+                return;
+            }
             let (width, height) = open.raster_size.get();
-            open.session.send(ViewerInput::Select {
+            open.enqueue(ViewerInput::Select {
                 frame: open.frame.get(),
                 x: x * width as f32 / open.window.get_content_width().max(1.0),
                 y: y * height as f32 / open.window.get_content_height().max(1.0),
@@ -1117,16 +1259,19 @@ fn bind_image(open: &Rc<OpenWindow>) {
 }
 
 fn close(open: &OpenWindow) {
+    raster_rebase::cancel_context(open);
     raster_motion::cancel(open);
     if !open.closed.replace(true) {
         open.session.close();
         open.timer.stop();
         open.image_zoom.borrow_mut().clear();
         open.image_redraw.stop();
+        open.raster_redraw.stop();
         let _ = open.window.hide();
         open.window.set_surface(slint::Image::default());
         open.window.set_image_tiles(Default::default());
         open.image_textures.borrow_mut().clear();
+        raster_presentation::clear(open);
         open.window.set_accessible_text("".into());
         open.opened(Err("Viewer closed before displaying content.".into()));
     }

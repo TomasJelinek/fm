@@ -8,11 +8,16 @@ intermediate offset tests alone do not establish 60 Hz scrolling.
 
 The 11 November scrolling update applies fractional wheel coasting to panel and
 standard-list scrollbar paths, shares input handling across tool windows, and
-reuses visible-row and GPU rendering resources. Final Windows panel probes reach
-roughly 60 Hz average redraw cadence, with occasional longer gaps. Text/source
-viewers at high DPI and viewer idle restart still have measured delays; see the
+reuses visible-row and GPU rendering resources. The Windows System32 panel fixture
+has p50/p95/max redraw gaps of 16.531/20.024/21.947 ms. Text, source, Markdown and
+hex viewers now move bounded retained pixels between backend page replies, with
+an explicit camera handoff when a partial long line requires viewport rendering.
+Cached movement improves, but high-DPI refill and idle restart still have measured
+delays; see the
 [viewer qualification and remaining work](verification/2026-11-11-viewer-pixel-scroll.md).
-The fresh debug application passed backend, software-UI and native-UI startup
+Exact JSON/XML wheel and drag regressions now pass on GPU and CPU; GPU startup
+failures also recover once into software before the first window reveal. The fresh
+debug application passed backend, software-UI and native-UI startup
 checks with its protected plugin runtime. Linux compilation passed; Linux native
 frame pacing has not been qualified in this update.
 

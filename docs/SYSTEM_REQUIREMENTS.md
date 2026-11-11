@@ -1,6 +1,6 @@
 # System requirements
 
-Applies to Midnight Explorer **0.1**. Reviewed on **2026-11-06**.
+Applies to Midnight Explorer **0.2.0**. Rendering policy reviewed on **2026-11-11**.
 Build/run commands are in the [README](../README.md#build-and-run).
 
 ## Operating systems and support status
@@ -80,24 +80,29 @@ not establish worst-case consumption or a Linux/macOS result.
 
 ## Runtime software
 
-**All platforms:** a graphical desktop, readable system fonts covering the scripts
-being displayed, and working graphics drivers. The default renderer is Slint
-FemtoVG-WGPU. Windows defaults to a usable Direct3D 12 device/driver; Linux needs a working WGPU
-backend, normally Vulkan. An integrated GPU is sufficient in principle; no discrete
-GPU or GPU hashing is required. Driver compatibility still needs testing on the
-actual machine ([Slint renderer documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/)).
+**All platforms:** a graphical desktop and readable system fonts covering the
+scripts being displayed. **Hardware GPU acceleration is optional.** The preferred
+renderer is Slint FemtoVG-WGPU: Direct3D 12 on Windows and normally Vulkan on Linux.
+The CPU renderer remains available through `--software` and automatic startup
+recovery when the default GPU cannot initialize. The recovery is limited to one
+attempt before the first successful window reveal; it preserves original paths,
+arguments and working directory. A failed hidden attempt cannot save preferences
+or replacement geometry. No already-visible session or file operation is replayed.
 
-`--software` is a diagnostic renderer, not a qualified full-Unicode production
-fallback. Passing a software-renderer smoke test does not establish GPU support.
-Slint can also fall back to software when it cannot obtain a suitable GPU adapter;
-that path omits bitmap emoji even when the font is installed. Renderer qualification
-must check actual glyph output, not just a successful process exit. Isolated Linux
-QA used `SLINT_WGPU_CPU=1` to exercise FemtoVG-WGPU on a CPU adapter with Noto fonts;
-this is a diagnostic configuration, not a hardware-GPU or performance guarantee.
-The Windows QA host reproduces WGPU device loss through Vulkan, while the same
-binary passes through Direct3D 12. Windows startup therefore selects Direct3D by
-default, preserving explicit `SLINT_BACKEND` / `WGPU_BACKEND` overrides. This is a
-backend/driver compatibility result, not evidence of an unsupported OS version.
+Explicit `SLINT_BACKEND` choices are not silently overridden. `WGPU_BACKEND`
+remains available for driver diagnosis. A graphical display is still necessary
+with CPU rendering; this is not a headless application mode. GPU hashing is not
+required. CPU scrolling uses the same pixel camera and bounded source loading,
+with hardware-dependent rendering performance.
+
+The pinned Slint software renderer omits bitmap emoji even when the font is
+installed. That known glyph limitation and cross-platform font qualification are
+separate from functional CPU startup; do not infer complete Unicode rendering
+coverage from a smoke-test exit. For WGPU diagnostics, `SLINT_WGPU_CPU=1` allows a
+CPU adapter while retaining the WGPU runtime. It is distinct from `--software`
+and does not establish hardware-GPU performance. See the
+[scrolling contract](developer/SCROLLING.md) and
+[native evidence](NATIVE_SCROLL_VERIFICATION.md).
 
 **Windows:** install the Microsoft Visual C++ x64 runtime if it is not already
 present. The current MSVC release executable imports `VCRUNTIME140.dll` and the

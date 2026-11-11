@@ -21,7 +21,7 @@ pub(super) struct Probe {
     travel: f32,
     expected_position: f32,
     sampled_input: usize,
-    before_final_frame: u64,
+    initial_crop: Option<(u64, bool)>,
     settled: Option<f64>,
     latencies: Vec<f64>,
     uploads_before: i32,
@@ -69,13 +69,17 @@ impl Probe {
             self.latencies.push(sent.elapsed().as_secs_f64() * 1000.0);
             self.sampled_input = self.sent;
         }
-        let final_content = if window.get_image_mode() {
-            (window.get_displayed_position() - 0.7).abs() < 0.0001
+        // A retained seek can move pixels without publishing a backend frame.
+        // This callback observes the completed native redraw, not input dispatch.
+        let tolerance = if window.get_image_mode() || window.get_retained_raster() {
+            0.0001
         } else {
-            frames > self.before_final_frame
-                && !window.get_position_pending()
-                && (window.get_displayed_position() - 0.7).abs() < 0.025
+            0.025
         };
+        let final_content = !window.get_position_pending()
+            && (window.get_displayed_position() - self.expected_position).abs() < tolerance
+            && window.get_raster_offset_x().is_finite()
+            && window.get_raster_offset_y().is_finite();
         if self.released
             && final_content
             && window.get_position_context().as_str() == self.stable_context
@@ -159,6 +163,7 @@ impl Probe {
             self.previous_uploads = self.uploads_before;
             self.previous_frame = frames;
             self.content_position = window.get_displayed_position();
+            self.initial_crop = (!image).then(|| visible_crop(window)).flatten();
             let grab = self.at(window.get_position());
             window
                 .window()
@@ -202,6 +207,18 @@ impl Probe {
                         self.content_updates_during_drag
                     ));
                 }
+                let final_crop = (!image).then(|| visible_crop(window)).flatten();
+                if !image
+                    && (final_crop.is_none_or(|(_, varied)| !varied)
+                        || self
+                            .initial_crop
+                            .zip(final_crop)
+                            .is_some_and(|(before, after)| before.0 == after.0))
+                {
+                    return Err(format!(
+                        "scrollbar final visible CPU crop is blank or unchanged: stage={stage}"
+                    ));
+                }
                 self.latencies.sort_by(f64::total_cmp);
                 let len = self.latencies.len();
                 let mut rows = vec![format!(
@@ -214,6 +231,8 @@ impl Probe {
                     window.get_tile_upload_count() - self.uploads_before,
                     self.content_updates_during_drag
                 )];
+                rows.push(format!("scrollbar_cpu_crop stage={stage} checked={} changed={} nonblank={} presentation={} raster_offset_x={} raster_offset_y={} actual_gpu_readback=false",
+                    !image, self.initial_crop.zip(final_crop).is_some_and(|(before, after)| before.0 != after.0), final_crop.is_some_and(|(_, varied)| varied), super::presentation(window), window.get_raster_offset_x(), window.get_raster_offset_y()));
                 for (kind, samples) in [
                     ("retained_redraw", &mut self.redraw_retained),
                     ("content_redraw", &mut self.redraw_content),
@@ -247,7 +266,6 @@ impl Probe {
         let position = self.at(self.expected_position);
         self.last_input = Some(now);
         self.next_input = Some(now + Duration::from_millis(10));
-        self.before_final_frame = frames;
         let dispatched = Instant::now();
         window
             .window()
@@ -270,4 +288,54 @@ impl Probe {
     fn at(&self, position: f32) -> slint::LogicalPosition {
         slint::LogicalPosition::new(self.x, self.top + position * self.travel + self.thumb / 2.0)
     }
+}
+
+// Bounded CPU evidence outside the gesture timing. Renderer arrangement is
+// independently verified by --gpu-proof; this is not GPU readback.
+fn visible_crop(window: &ViewerWindow) -> Option<(u64, bool)> {
+    let image = window.get_surface().to_rgba8_premultiplied()?;
+    let [width, height] = [image.width() as usize, image.height() as usize];
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let (left, top, columns, rows) = if window.get_retained_raster() {
+        let [rw, rh] = [window.get_raster_width(), window.get_raster_height()];
+        if rw <= 0.0 || rh <= 0.0 {
+            return None;
+        }
+        (
+            -window.get_raster_offset_x() / rw * width as f32,
+            -window.get_raster_offset_y() / rh * height as f32,
+            (1.0 - window.get_raster_gutter_width()) / rw * width as f32,
+            height as f32 / rh,
+        )
+    } else {
+        (0.0, 0.0, width as f32, height as f32)
+    };
+    if left < -1.0
+        || top < -1.0
+        || columns <= 0.0
+        || rows <= 0.0
+        || left + columns > width as f32 + 1.0
+        || top + rows > height as f32 + 1.0
+    {
+        return None;
+    }
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut first = None;
+    let mut varied = false;
+    for y in 0..64 {
+        for x in 0..64 {
+            let column =
+                (left + (x as f32 + 0.5) * columns / 64.0).clamp(0.0, (width - 1) as f32) as usize;
+            let row =
+                (top + (y as f32 + 0.5) * rows / 64.0).clamp(0.0, (height - 1) as f32) as usize;
+            let p = image.as_slice()[row * width + column];
+            let rgba = u32::from_le_bytes([p.r, p.g, p.b, p.a]);
+            varied |= first.is_some_and(|value| value != rgba);
+            first.get_or_insert(rgba);
+            hash = (hash ^ u64::from(rgba)).wrapping_mul(0x100000001b3);
+        }
+    }
+    Some((hash, varied))
 }

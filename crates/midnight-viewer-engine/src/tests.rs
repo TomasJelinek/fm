@@ -163,6 +163,7 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         .build()
         .unwrap();
     let service = Service {
+        raster_budget: Arc::new(crate::raster_budget::Budget::default()),
         web: Arc::new(Mutex::new(Some(Arc::from([])))),
         handle: executor.handle().clone(),
         capture: crate::capture::native(),

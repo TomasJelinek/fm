@@ -80,3 +80,66 @@ Windows probes above passed. Native first-render logs record `native_visible=fal
 saved Nord theme, exact normal bounds, primary-monitor fallback and maximization.
 Normal capture/restoration remained at (180,150), 720×460 across repeated samples.
 Artifacts are `_build/qa/metadata-review/native_*.{out,err}.log` and `app-tests.log`.
+
+## Renderer startup recovery (2026-11-11)
+
+The default renderer remains unchanged. Failure during backend selection
+(including required-WGPU adapter preflight), initial window creation, or native
+initialization before the first successful `show()` produces a typed
+`NativeStartupFailed` outcome. After bounded engine and runtime cleanup, the
+application starts its own executable once with the original raw OS arguments
+and working directory, plus `--software`. It invokes no shell, reports a failed
+software child, and creates no extra Windows console. Explicit `SLINT_BACKEND`
+choices and an existing `--software` argument disable automatic recovery.
+Failures after a successful first reveal never restart the application, so
+active operations cannot be replayed.
+
+A single shared gate protects the existing backend settings worker. Font and
+preference reads proceed immediately. Writes, including normalization saves
+triggered by loading preferences, wait for the first successful reveal. The UI
+only signals reveal or abort; it never waits. A pending save has a 30-second
+deadline. Aborting startup or dropping its attempt owner wakes blocked saves and
+rejects them without modifying saved preferences. The failed hidden attempt also
+skips final geometry capture and preference reconciliation/flush. Once revealed,
+ordinary preference saves and normal shutdown persistence remain enabled.
+
+Cleanup uses the existing bounded shutdown deadlines. It does not promise that
+every already-running OS read has terminated: Tokio cannot forcibly stop an
+in-progress blocking call. The failed attempt's preference gate remains closed,
+its UI is never revealed, and no interactive operation is replayed in the
+software process. This recovery does not switch an already-visible window to a
+different renderer after device loss.
+
+Regression coverage is in the app's `startup_recovery`, `startup_gate`, and
+`startup_settings` modules: default-only eligibility, selector failure, lossless
+arguments/cwd, cleanup ordering, one-attempt failure reporting, concurrent
+reveal/abort/deadline behavior, and actual settings-service reads/writes.
+The coordinator observed the retry/gate tests fail before implementation and the
+old executable fail the no-adapter default-startup smoke. The final Windows gate
+passes all 13 new startup cases (39 app tests passed, 15 interactive tests ignored),
+with strict all-target Clippy passing.
+
+Final Windows native qualification passed on app build `80e7d310`
+(SHA-256 `80e7d310f755218bdb652b5fe2602608f320372aae305a155c8f1f4ba1d4d7e6`).
+Each process used in-memory smoke preferences and exited 0:
+
+| Process-local configuration | Observed failure/recovery | Software restarts |
+| --- | --- | --- |
+| `WGPU_BACKEND=webgpu`, no renderer override or CPU-adapter bypass | Required-WGPU adapter preflight failed; automatic software startup succeeded | 1 |
+| Same unavailable backend, plus `SLINT_WGPU_CPU=1` | Adapter preflight was bypassed; native WGPU surface creation failed; automatic software startup succeeded | 1 |
+| Same unavailable backend, plus explicit `--software` | Software startup succeeded directly | 0 |
+
+The three screenshots are byte-identical, each 825,642 bytes, with SHA-256
+`a4013c797684b2d29b68038612fee30795a7fc6db9c3863dbe836c42ae56e664`.
+Visual inspection confirms the requested System32/repository panes and normal
+application controls. The no-adapter and late-device stderr logs each contain
+exactly one retry message; explicit software has no stderr output. Standard
+backend, native-renderer, and software-renderer startup smokes also passed.
+These checks qualify startup recovery, not a frame-rate guarantee.
+
+Evidence is under `_build/qa/smooth-scroll-20261111/`:
+`final3-gpu-fallback-smokes.ps1`,
+`final3-{no-adapter,late-device,explicit-software}.{stdout,stderr}.log`, and
+`final3-{no-adapter,late-device,explicit-software}-startup.png`.
+The fixture preserves environment overrides within each child process and checks
+exit status and snapshot publication.

@@ -17,6 +17,10 @@ use std::{
 
 #[path = "worker_image.rs"]
 mod image;
+#[path = "worker_position.rs"]
+mod position;
+#[path = "worker_raster.rs"]
+mod raster;
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
@@ -60,6 +64,9 @@ struct Worker {
     page: Option<Page>,
     shaped: Option<TextPage>,
     text: text::Presentation,
+    raster: raster::Retained,
+    raster_budget: Arc<crate::raster_budget::Budget>,
+    raster_owner: u64,
     appearance: ViewerAppearance,
     geometry: ViewerGeometry,
     image_size: [u32; 2],
@@ -79,6 +86,7 @@ struct Worker {
 }
 
 pub(crate) struct Services {
+    pub raster_budget: Arc<crate::raster_budget::Budget>,
     pub runtime: Arc<Runtime>,
     pub images: Arc<[midnight_image_viewer_host::Provider]>,
     pub web: Arc<[midnight_web_viewer_host::Provider]>,
@@ -99,6 +107,7 @@ pub(crate) fn run(
     closed: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let Services {
+        raster_budget,
         runtime,
         images,
         web,
@@ -161,6 +170,9 @@ pub(crate) fn run(
         page: None,
         shaped: None,
         text: Default::default(),
+        raster: Default::default(),
+        raster_owner: raster_budget.owner(),
+        raster_budget,
         appearance,
         geometry: bounded_geometry(geometry),
         image_size: [geometry.width.max(1), geometry.height.max(1)],
@@ -258,6 +270,9 @@ pub(crate) fn run(
         web.session.close();
     }
     output.put(ViewerOutput::Closed);
+    let raster_budget = worker.raster_budget.clone();
+    drop(worker);
+    raster_budget.reap();
     Ok(())
 }
 
@@ -281,6 +296,7 @@ fn bounded_geometry(mut geometry: ViewerGeometry) -> ViewerGeometry {
 
 impl Worker {
     fn position_context(&mut self, output: &Mailbox) {
+        self.reset_raster_context();
         self.position_page = None;
         if self.positions.has_pending()
             && let Some(id) = self.viewport_request.take()
@@ -547,7 +563,16 @@ impl Worker {
             .map_or(self.appearance.font_size * self.geometry.scale, |page| {
                 page.height()
             });
-        let max_lines = crate::viewport::line_budget(self.geometry, line_height);
+        let mut requested_geometry = self.geometry;
+        if self.raster.enabled {
+            requested_geometry.height += raster::guard(self.geometry, false)[1] * 2;
+        }
+        let max_lines = crate::viewport::request_line_budget(
+            requested_geometry,
+            line_height,
+            self.length,
+            self.mode,
+        );
         self.continuation = None;
         let Some(session) = &self.session else {
             return;
@@ -581,6 +606,15 @@ impl Worker {
             return;
         }
         match input {
+            ViewerInput::RetainedRaster(enabled) => {
+                self.raster.enabled = enabled;
+                self.reset_raster_context();
+                self.dirty = true;
+            }
+            ViewerInput::Raster { surface, input } => self.raster_input(surface, input, output),
+            ViewerInput::RasterRebase { transition, origin } => {
+                self.raster_rebase_input(transition, origin, output)
+            }
             ViewerInput::Position {
                 generation,
                 sequence,
@@ -594,26 +628,13 @@ impl Worker {
                     return;
                 }
                 if horizontal {
+                    self.reset_raster_context();
                     self.positions.horizontal(sequence, position);
                     self.apply_horizontal_position();
                     self.frames.invalidate();
                     self.dirty = true;
                 } else {
-                    if self.positions.has_pending() {
-                        self.positions.defer(sequence, position);
-                        return;
-                    }
-                    if let Some(id) = self.search_request.take()
-                        && let Some(session) = &self.session
-                    {
-                        session.cancel(id);
-                    }
-                    let (anchor, backwards) = navigation::viewport(position, self.length);
-                    self.request_page_for(anchor, backwards, Some(sequence), output);
-                    if self.viewport_request.is_none() {
-                        self.position_context(output);
-                        self.dirty = true;
-                    }
+                    self.seek_position(sequence, position, output);
                 }
             }
             ViewerInput::Resize(geometry) => {
@@ -652,6 +673,10 @@ impl Worker {
                 self.dirty = true;
             }
             ViewerInput::Scroll { x, y } if x.is_finite() && y.is_finite() => {
+                self.cancel_raster_rebase();
+                if self.retained_active() {
+                    self.reset_raster_context();
+                }
                 if self.positions.has_pending() {
                     self.position_context(output);
                 }
@@ -666,8 +691,25 @@ impl Worker {
                     self.queued_scroll[1] = (self.queued_scroll[1] + y).clamp(-1e7, 1e7);
                     return;
                 }
+                let fallback = self.raster.enabled && !self.retained_active();
+                let y = if fallback {
+                    let pending = std::mem::take(&mut self.raster.fallback_scroll);
+                    y + if y != 0.0 && pending.signum() != y.signum() {
+                        0.0
+                    } else {
+                        pending
+                    }
+                } else {
+                    y
+                };
                 if let Some(page) = &self.page {
-                    let height = self.shaped.as_ref().map_or(0.0, |p| p.height());
+                    let height = self.shaped.as_ref().map_or(0.0, |p| {
+                        if fallback {
+                            crate::viewport::available_height(page, p, self.geometry.height as f32)
+                        } else {
+                            p.height()
+                        }
+                    });
                     let max_y = (height - self.geometry.height as f32).max(0.0);
                     let next = self.origin[1] + y;
                     let continuation = self.shaped.as_ref().and_then(|shaped| {
@@ -678,6 +720,23 @@ impl Worker {
                             [self.origin[0] + x, self.origin[1]],
                             y,
                         )
+                    });
+                    let continuation = continuation.filter(|next| {
+                        let progresses = if next.backwards {
+                            next.anchor < page.end
+                        } else {
+                            next.anchor > page.start
+                        };
+                        if fallback && !progresses {
+                            // Keep sub-row wheel distance without repeatedly
+                            // fetching the same byte-limited fragment.
+                            self.raster.fallback_scroll = (self.origin[1] + y
+                                - (self.origin[1] + y).clamp(0.0, max_y))
+                            .clamp(-1e7, 1e7);
+                            false
+                        } else {
+                            true
+                        }
                     });
                     if let Some(continuation) = continuation {
                         if self.viewport_request.is_some() {
@@ -774,16 +833,28 @@ impl Worker {
                         index
                     };
                     self.selection = Some((start, index));
+                    self.cancel_raster_rebase();
+                    if self.raster.enabled {
+                        self.capture_raster_selection();
+                    }
                     self.dirty = true;
                 }
             }
             ViewerInput::SelectPage { frame } if self.frames.accepts(frame) => {
                 if let Some(page) = &self.shaped {
                     self.selection = Some((0, page.text().len()));
+                    self.cancel_raster_rebase();
+                    if self.raster.enabled {
+                        self.capture_raster_selection();
+                    }
                     self.dirty = true;
                 }
             }
             ViewerInput::Copy { frame } if self.frames.accepts(frame) => {
+                self.cancel_raster_rebase();
+                if self.copy_raster_selection(output) {
+                    return;
+                }
                 if let (Some(page), Some((a, b))) = (&self.shaped, self.selection)
                     && let Ok(text) = page.selected_text(a.min(b)..a.max(b))
                 {
@@ -832,6 +903,8 @@ impl Worker {
                     || self.viewport_request == Some(id) =>
             {
                 if self.viewport_request == Some(id) {
+                    self.abort_raster_rebase(&failure.message, output);
+                    self.abort_raster_refill(&failure.message, output);
                     self.position_page = None;
                     let failed = self.positions.complete(id, false)
                         == crate::position_ack::Completion::Failed;
@@ -868,7 +941,10 @@ impl Worker {
                             });
                     }
                     let acknowledgement = self.positions.complete(id, completed);
+                    let raster_failed = self
+                        .abort_raster_refill("The requested text page was not completed.", output);
                     self.viewport_request = None;
+                    self.finish_raster_rebase(completed, output);
                     match acknowledgement {
                         crate::position_ack::Completion::Ready => self.dirty = true,
                         crate::position_ack::Completion::Failed => {
@@ -881,15 +957,17 @@ impl Worker {
                     if acknowledgement == crate::position_ack::Completion::Ready
                         && let Some((sequence, position)) = self.positions.take_deferred()
                     {
-                        let (anchor, backwards) = navigation::viewport(position, self.length);
-                        self.request_page_for(anchor, backwards, Some(sequence), output);
-                        if self.viewport_request.is_none() {
-                            self.position_context(output);
-                        }
+                        self.seek_position(sequence, position, output);
                     }
                     let [x, y] = std::mem::replace(&mut self.queued_scroll, [0.0; 2]);
                     if matches!(event, EventKind::Completed) && (x != 0.0 || y != 0.0) {
                         self.input(ViewerInput::Scroll { x, y }, output);
+                    }
+                    if matches!(event, EventKind::Completed)
+                        && self.retained_active()
+                        && !raster_failed
+                    {
+                        self.resume_raster_target(output);
                     }
                 }
                 if self.search_request == Some(id) {
@@ -919,6 +997,9 @@ impl Worker {
                 let [x, y] = std::mem::replace(&mut self.queued_scroll, [0.0; 2]);
                 if x != 0.0 || y != 0.0 {
                     self.input(ViewerInput::Scroll { x, y }, output);
+                }
+                if self.retained_active() {
+                    self.resume_raster_target(output);
                 }
             }
         }
@@ -955,6 +1036,7 @@ impl Worker {
     }
 
     fn reflow(&mut self, output: &Mailbox) {
+        self.reset_raster_context();
         self.text.gutter = None;
         let Some(page) = self.page.take() else {
             return;
@@ -985,36 +1067,41 @@ impl Worker {
     }
 
     fn set_page(&mut self, page: Page, output: &Mailbox) -> bool {
+        let raster_continuing = self.raster.continuing.take();
+        let same_raster_context = !matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
+            || self
+                .page
+                .as_ref()
+                .is_none_or(|previous| crate::viewport::retains_start_context(previous, &page));
         self.frames.invalidate();
         let requested_anchor = self.anchor;
         self.anchor = page.start;
         match self.layout_page(&page) {
             Ok(shaped) => {
-                self.origin = self
+                let restored = self
                     .continuation
                     .take()
-                    .and_then(|continuation| continuation.restore(&page, &shaped))
-                    .unwrap_or([
-                        0.0,
-                        if self.land_at_bottom {
-                            (shaped.height() - self.geometry.height as f32).max(0.0)
-                        } else if self.mode == viewer::MODE_DOCUMENT
-                            && requested_anchor > page.start
-                        {
-                            // Semantic pages keep complete paragraphs/tables around
-                            // a request. Place its source anchor, not the block start,
-                            // at the viewport edge without changing line wrapping.
-                            page.anchors
-                                .iter()
-                                .find(|anchor| anchor.source_offset >= requested_anchor)
-                                .and_then(|anchor| {
-                                    shaped.caret_geometry(anchor.text_offset as usize).ok()
-                                })
-                                .map_or(0.0, |caret| caret.y0 as f32)
-                        } else {
-                            0.0
-                        },
-                    ]);
+                    .and_then(|continuation| continuation.restore(&page, &shaped));
+                self.origin = restored.unwrap_or([
+                    0.0,
+                    if self.land_at_bottom {
+                        (shaped.height() - self.geometry.height as f32).max(0.0)
+                    } else if self.mode == viewer::MODE_DOCUMENT && requested_anchor > page.start {
+                        // Semantic pages keep complete paragraphs/tables around
+                        // a request. Place its source anchor, not the block start,
+                        // at the viewport edge without changing line wrapping.
+                        page.anchors
+                            .iter()
+                            .find(|anchor| anchor.source_offset >= requested_anchor)
+                            .and_then(|anchor| {
+                                shaped.caret_geometry(anchor.text_offset as usize).ok()
+                            })
+                            .map_or(0.0, |caret| caret.y0 as f32)
+                    } else {
+                        0.0
+                    },
+                ]);
+                let raster_local = self.origin;
                 self.selection = self.found.as_ref().and_then(|found| {
                     let first = page
                         .anchors
@@ -1035,11 +1122,19 @@ impl Worker {
                     .filter(|_| self.mode == viewer::MODE_SOURCE);
                 self.text.page(previous, &page);
                 self.page = Some(page);
+                self.raster_loaded_with_handoff(
+                    raster_continuing,
+                    restored,
+                    raster_local,
+                    same_raster_context,
+                    output,
+                );
                 self.dirty = true;
                 self.status = String::new();
                 true
             }
             Err(error) => {
+                self.raster.continuing = raster_continuing;
                 self.error(format!("Cannot lay out this page: {error:?}"), output);
                 false
             }
@@ -1057,6 +1152,9 @@ impl Worker {
     }
 
     fn paint(&mut self, output: &Mailbox) -> Result<(), String> {
+        if self.raster_rebase_waiting() {
+            return Ok(());
+        }
         if self.image.is_some() {
             return self.paint_image(output);
         }
@@ -1066,35 +1164,53 @@ impl Worker {
             return Ok(());
         }
         self.prepare_gutter()?;
+        let retained = if self.retained_active() {
+            let Some(snapshot) = self.retained_pixels()? else {
+                return Ok(());
+            };
+            Some(snapshot)
+        } else {
+            None
+        };
         let margin = self.text_margin();
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
             return Ok(());
         };
-        let mut raster = self
-            .renderer
-            .rasterize(
-                shaped,
-                Viewport {
-                    width: self.geometry.width,
-                    height: self.geometry.height,
-                    origin: [self.origin[0] - margin, self.origin[1]],
-                    background: self.appearance.background,
-                    selection_color: self.appearance.selection,
-                },
-                self.selection.map(|(a, b)| a.min(b)..a.max(b)),
+        let (width, height, pixels, raster_info) = if let Some(snapshot) = retained {
+            (
+                snapshot.width,
+                snapshot.height,
+                snapshot.pixels,
+                Some(snapshot.info),
             )
-            .map_err(|e| format!("Cannot render page: {e:?}"))?;
-        if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers {
-            text::paint_gutter(
-                &mut self.renderer,
-                &self.text,
-                &self.appearance,
-                self.geometry,
-                self.origin,
-                margin,
-                &mut raster,
-            )?;
-        }
+        } else {
+            let mut raster = self
+                .renderer
+                .rasterize(
+                    shaped,
+                    Viewport {
+                        width: self.geometry.width,
+                        height: self.geometry.height,
+                        origin: [self.origin[0] - margin, self.origin[1]],
+                        background: self.appearance.background,
+                        selection_color: self.appearance.selection,
+                    },
+                    self.selection.map(|(a, b)| a.min(b)..a.max(b)),
+                )
+                .map_err(|e| format!("Cannot render page: {e:?}"))?;
+            if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers {
+                text::paint_gutter(
+                    &mut self.renderer,
+                    &self.text,
+                    &self.appearance,
+                    self.geometry,
+                    self.origin,
+                    margin,
+                    &mut raster,
+                )?;
+            }
+            (raster.width, raster.height, Arc::from(raster.rgba), None)
+        };
         let revision = self.frames.painted()?;
         // BOM bytes and hidden Markdown delimiters do not create a scrollable
         // remainder when the plugin reports that the entire file is present.
@@ -1120,9 +1236,11 @@ impl Worker {
             wrap_enabled: self.wrap && self.wrap_available(),
             wrap_available: self.wrap_available(),
             image: None,
-            width: raster.width,
-            height: raster.height,
-            pixels: raster.rgba.into(),
+            raster: raster_info,
+            raster_rebase: self.raster_rebase_ack(),
+            width,
+            height,
+            pixels,
             tiles: None,
             accessible_text: page.text.clone().into(),
             position,

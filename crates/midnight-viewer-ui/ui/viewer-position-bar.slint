@@ -14,10 +14,15 @@ export component PositionBar inherits Rectangle {
         : min(root.track-length, max(28px, root.track-length * clamp(root.extent, 0, 1)));
     out property <float> shown-position: root.dragging ? root.drag-position : clamp(root.position, 0, 1);
     callback seek(float);
-    changed width => { root.dragging = false; }
-    changed height => { root.dragging = false; }
-    changed context-key => { root.dragging = false; }
-    changed visible => { if !root.visible { root.dragging = false; } }
+    callback drag-started();
+    callback drag-ended();
+    function finish-drag() {
+        if root.dragging { root.dragging = false; root.drag-ended(); }
+    }
+    changed width => { root.finish-drag(); }
+    changed height => { root.finish-drag(); }
+    changed context-key => { root.finish-drag(); }
+    changed visible => { if !root.visible { root.finish-drag(); } }
     background: #80808020;
     min-width: horizontal ? 0px : 14px;
     max-width: horizontal ? 1000000px : 14px;
@@ -50,13 +55,14 @@ export component PositionBar inherits Rectangle {
                     ? pointer - start : root.thumb-length / 2;
                 root.drag-position = root.shown-position;
                 root.dragging = true;
+                root.drag-started();
                 if !on-thumb { self.drag(); }
             }
             if event.kind == PointerEventKind.up && event.button == PointerEventButton.left && root.dragging {
                 self.drag();
-                root.dragging = false;
+                root.finish-drag();
             }
-            if event.kind == PointerEventKind.cancel { root.dragging = false; }
+            if event.kind == PointerEventKind.cancel { root.finish-drag(); }
         }
         moved => { if root.dragging && self.pressed { self.drag(); } }
     }

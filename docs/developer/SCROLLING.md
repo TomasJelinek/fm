@@ -6,6 +6,12 @@ panels, settings lists, Find results, Jobs, menus and viewers. A position trace
 alone does not establish smoothness: frame cadence and rendered pixels also
 need verification on the native renderer.
 
+GPU acceleration is optional. Retained viewer content uses ordinary clipped Slint
+images and continuous transforms, with the same camera/input contract on GPU and
+CPU renderers. A lack of a usable GPU must not disable browsing, viewer controls
+or file operations. Qualify software output separately; GPU timing cannot stand
+in for CPU timing, and a successful startup does not prove every font/glyph case.
+
 ## Input contract
 
 - Unphased mouse-wheel line deltas receive a short, interruptible ease-out.
@@ -108,3 +114,89 @@ standard and custom dropdowns, both scrollbar axes, 2x DPI, hidden-bar policy,
 command remapping, native-pixel cancellation, Find selection ownership and closed
 component lifetimes. The panel input tests also cover both file-panel scrollbars
 after explicit cursor reveal, preserving the panel's idle row alignment.
+
+## Retained text and document presentation
+
+The native viewer opts into `ViewerFrame.raster` for text, source, binary and
+Markdown. The backend paints a viewport plus guards of up to 256 raster pixels;
+the frontend translates those immutable pixels at native redraw cadence. Line
+numbers have a separate image pinned to the left edge, with the same vertical
+camera as the body. Text/image mode, search and typography remain independent.
+
+Coordinates use the effective bounded raster viewport, not necessarily the full
+physical window: the existing geometry cap can reduce large high-DPI viewports.
+The frontend maps each axis using `info.viewport / content_size`. It reuses the
+uploaded body and gutter while their pixel identity is unchanged. A matching
+latest settled acknowledgement restores the backend's exact fractional glyph
+phase; old replies cannot pull a newer gesture backward.
+
+Absolute camera requests coalesce without crossing selection or context changes.
+The frontend prefetches ahead, pauses at actual retained coverage, and preserves
+remaining displacement. Discrete-wheel motion resumes in small steps after a
+late refill; precise touchpad deltas accumulate without another inertia curve.
+An interruption requests an exact final repaint outside callback borrows.
+Selection carries the displayed pixel identity and camera, and only the current
+layout can interpret it. Ordinary overlapping page refills preserve bounded
+selected text; an invalid new selection cannot copy an older selection silently.
+
+If a bounded page must change its source context or fall back to viewport rendering,
+`RasterRebase` first requests the camera actually displayed by the frontend. No
+speculative replacement frame is published. The frontend keeps its old pixels and
+bounded remaining wheel intent until the matching sticky acknowledgement; a late
+reply cannot overwrite a later search, resize or navigation. Discrete motion resumes
+with a fresh animation clock, while precise input keeps its native momentum. A
+corrective read failure releases the wait without claiming success. Within the
+eight-event mailbox, one slot is reserved for the latest frame and one for raster
+control, so ordinary event pressure cannot strand either side of this exchange.
+
+A failed guard load leaves the current picture visible and stops its pending
+motion, while allowing later navigation to recover.
+
+Body and gutter together are capped at 6 Mi pixels (24 MiB RGBA) per snapshot.
+Shared admission permits at most three snapshots per worker and twelve across a
+Service, including closed workers awaiting retirement. This caps retained CPU
+raster storage at 288 MiB, separately from bounded construction copies, UI/GPU
+images and layout caches. Dead weak allocation owners are reaped off the UI
+thread. Text decoding remains capped at 12 KiB (4 KiB for binary) and 512 lines;
+guards do not widen word wrapping or permit whole-file loading. An incomplete
+byte-limited fragment shorter than a viewport temporarily retains the existing
+viewport renderer rather than inventing continuous coverage or EOF.
+
+Native GPU allocation stalls are addressed separately by the pinned FemtoVG
+[upload cache](../../vendor/README.md). In-flight buffers become reusable only
+after successful GPU completion and remapping. The pool is bounded, adds no
+blocking wait or extra submission, and keeps input/presentation independent of
+source I/O.
+
+See the [implementation and acceptance plan](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
+and [viewer measurements](../verification/2026-11-11-viewer-pixel-scroll.md).
+Backend/camera tests and a correct transform do not by themselves qualify native
+60 Hz performance; sustained refills, idle restart and real rendered pixels
+remain part of the measurement gate.
+## Scrollbar coverage and small source blocks
+
+A scrollbar position describes the scrollable visual range, excluding the visible
+extent. It is not a fraction multiplied directly by the file's total byte length.
+The frontend inverts the accepted raster frame's mapping only when the requested
+camera is finite and fully covered, with no pending position/context transition.
+Covered drags immediately translate retained pixels and send absolute camera
+requests; release sends a settled request even when the final position is unchanged.
+Uncovered targets use the bounded backend positioning path. They are never clamped
+to a cached edge and reported as though the requested position were displayed.
+
+The backend can position within an already shaped page without reading or parsing
+again. It checks read authority before canceling a speculative correction and
+records the new origin before resetting the raster context. Deferred positions use
+the same path. Partial pages use their actual loaded bounds; file length alone
+cannot prove complete coverage.
+
+Text/source files no larger than 8 KiB already fit a fixed source block. Their
+request may use the existing 512-line ceiling instead of splitting that block
+solely because the window is short. Byte budgets remain unchanged; larger files
+still request viewport-sized fragments. This does not introduce file-sized memory
+allocation or eager loading for large files.
+
+The exact user JSON/XML cases pass wheel and scrollbar checks with both GPU and
+software rendering. Some late frame gaps remain, so the result is not a uniform
+60 Hz guarantee. See the final qualification in
+[viewer verification](../verification/2026-11-11-viewer-pixel-scroll.md).

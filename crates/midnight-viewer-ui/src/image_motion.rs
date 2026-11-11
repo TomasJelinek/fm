@@ -132,7 +132,7 @@ pub(super) fn fallback(open: &OpenWindow) {
     }
 }
 
-pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
+pub(super) fn bookkeeping(open: &OpenWindow, event: &WindowEvent) {
     {
         let mut native = open.image_native.borrow_mut();
         native.active = true;
@@ -170,6 +170,15 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
             _ => {}
         }
     }
+}
+
+#[cfg(test)]
+pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
+    bookkeeping(open, event);
+    route(open, event)
+}
+
+pub(super) fn route(open: &OpenWindow, event: &WindowEvent) -> bool {
     if matches!(event, WindowEvent::RedrawRequested) {
         step(open);
         raster_motion::step(open);
@@ -182,7 +191,7 @@ pub(super) fn observe(open: &OpenWindow, event: &WindowEvent) -> bool {
             ..
         }
     ) {
-        raster_motion::cancel(open);
+        raster_motion::cancel_legacy(open);
     }
     if matches!(event, WindowEvent::MouseWheel { .. }) && !content_target(open) {
         open.image_camera.borrow_mut().cancel();

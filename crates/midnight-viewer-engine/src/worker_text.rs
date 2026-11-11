@@ -197,6 +197,7 @@ impl Worker {
                 column: Some(position.column),
             });
             self.text.gutter = None;
+            self.raster.invalidate();
             self.dirty = true;
         }
     }

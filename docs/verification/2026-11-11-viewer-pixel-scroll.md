@@ -162,7 +162,7 @@ Evidence: `viewer-outlines-red.log`, `viewer-outlines-green.log`,
 `viewer-outlines-final-lib.log`, `viewer-outlines-ab-backend-zeno2.log`, and
 `viewer-outlines-ab-backend-outlines.log`.
 
-## Final native qualification
+## Earlier viewport-renderer native qualification
 
 The final combined application feature graph built `me`, `native_scroll` and
 `performance_probe` together. The frozen probe is
@@ -197,9 +197,9 @@ Evidence: `viewer-wheel-final1.txt`, `viewer-wheel-final1-stderr.log`, and
 `viewer-wheel-final1-metadata.txt` under `_build/qa/smooth-scroll-20261111/`.
 The native measurement slot was released only after the viewer process exited.
 
-## Concrete follow-up for raster cadence
+## Architecture identified by the earlier qualification
 
-This is an identified next step, not an implemented or measured claim:
+The earlier qualification identified the following next steps. The retained text implementation is now under qualification; PDF document tiles remain a separate task:
 
 - Retain a bounded raster viewport plus an edge strip and move its presentation
   camera on the GPU while the worker prepares newly exposed pixels. Current text
@@ -220,4 +220,142 @@ This is an identified next step, not an implemented or measured claim:
   tiles into the existing image camera is a concrete separate route without a
   plugin ABI change.
 
-No retained-raster architecture change was made during final qualification.
+The measurements above describe the earlier viewport renderer, before the retained-raster change below.
+
+## Retained raster follow-up
+
+Text, source, Markdown and binary/hex now opt into a bounded retained body image
+and a separately pinned source gutter. The native camera moves existing pixels
+between backend replies. The worker retains lazy byte/line limits and prepares
+coverage ahead of the camera; an unavailable frontier never masquerades as EOF.
+Exact settling uses the original CPU raster phase. See the
+[implementation contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
+and [developer scrolling guide](../developer/SCROLLING.md).
+
+The focused integrated gate passed 29 engine, 29 viewer UI and one renderer
+regression. An unfiltered engine run passed 146 tests, with four explicitly
+installed-runtime tests ignored, in 0.20 seconds. The UI gate includes an actual
+software-rendered body/gutter comparison: a settled crop matches all 96,000
+reference pixels, with native DPI different from the effective raster scale.
+Those tests found and corrected the source gutter's implicit horizontal centering.
+Guard-load errors, stale selections, selection-only repaint and selections made
+while a guard read is in flight have separate regressions. Later final gates and
+native results supersede these intermediate counts.
+
+A separate common-clock stack capture identified the large idle stalls in the
+old native trace: most samples inside slow redraws were DX12 staging-buffer
+allocation, with the remainder in texture allocation/destruction. The pinned
+FemtoVG renderer now has a bounded completion-aware upload-buffer pool. It does
+not reuse in-flight buffers, introduce blocking GPU waits or submit additional
+command buffers. Nine GPU validation regressions passed on the local Intel Iris
+Xe DX12 adapter, including deferred submission order and exact output pixels.
+
+The next immutable viewport-binding cache passed all eleven GPU regressions,
+including eviction and deferred use after the cache itself is dropped. It keeps
+32 bindings per renderer and never rewrites an in-flight uniform.
+
+The frozen post-cache candidate (`DB0C4F38D13B39DB94AF92658CC094E31D9459E411CC1D8D0EC896222E15BD1B`)
+completed seven-case native isolated and sustained runs with no concurrent compiler.
+Cached motion gaps are typically 16–17 ms, but idle and refill stalls remain:
+DX12 idle restart ranges from 323 to 527 ms in this run; sustained source and real
+JSON reach 540 and 554 ms. Separate GPU snapshots pass all seven cases, proving
+body movement, fixed horizontal source gutter and unchanged uploads while panning.
+The System32 panel recheck has p50/p95/max frame gaps of 16.531/20.024/21.947 ms.
+These are submission observations, not monitor scanout measurements.
+
+Explicit Vulkan and high-performance DX12 adapter experiments did not produce a
+consistent improvement. Vulkan reduced some idle delays but roughly doubled warm
+frame intervals to 31 ms. The high-performance preference selected the available
+NVIDIA RTX 3500 Ada laptop GPU, yet still showed moving-frame stalls up to 1.07 s.
+Neither experiment changes the shipped adapter/backend policy. Full metadata,
+limitations and artifact names are in [native verification](../NATIVE_SCROLL_VERIFICATION.md).
+
+The later automatic page-handoff correction is tested separately: its new
+regressions first fail on speculative publication/lost motion, then pass for
+actual-camera restoration, late replies, full queues, failures, selection and
+reduced effective DPI. The intermediate full engine suite passes 160 tests with
+four installed-runtime opt-ins ignored; the viewer UI passes 84 tests. Final
+integrated Windows gates below supersede those counts; native requalification is recorded separately.
+## Intermediate integrated Windows gate (candidate 2)
+
+The final application feature graph passes **1,187 tests, with 20 explicit
+installed-runtime/measurement opt-ins ignored and no failures**. This includes
+160 viewer-engine and 85 viewer-UI tests. The test command took 66.36 seconds,
+including 42.81 seconds of compilation. Workspace formatting, affected-package
+all-target Clippy with `-D warnings`, source-size limits (1,823 handwritten files)
+and diff whitespace checks pass. Clippy took 151.86 seconds; the final combined
+application/native-probe build took 7.62 seconds. Existing vendored FemtoVG warnings
+are not new application warnings. No dependencies or lockfiles changed.
+
+Fresh debug `me.exe` SHA-256:
+`E698F54BD33051CBA48D251AD66D7A61C1433E8A7D6E4E0111021E5F9D6D1861`.
+Its private plugin runtime was deployed and registered for this exact hash.
+Backend, software UI and native GPU startup smokes all pass. The UI smokes use
+System32 and the repository as panel locations; the captured native window was
+visually checked for complete panels, toolbar rendering and absence of startup
+plugin errors. These startup checks establish launch correctness, not scrolling
+latency.
+
+Logs: `retained-final2-{format,tests,clippy,build}.log`; startup artifacts:
+`retained-ui-{software,native}-startup.png`, under the same ignored QA directory.
+The matching Linux all-target check passes in Ubuntu 24.04 WSL after correcting
+one stale Unix-only timestamp assertion to check both date and time columns.
+The initial failed compile is recorded as a qualification finding, not a runtime
+failure; the repeated check completes in 2 minutes 51 seconds. It checks the same
+eight-package application/viewer/comparator feature graph. No Linux native frame
+pacing claim follows from compilation. Log: `retained-linux-check.log`.
+
+Subsequent user feedback identifies the exact 2,659-byte/67-line JSON manifest and
+3,865-byte/80-line Windows XML as remaining interaction cases. These are small
+bounded source/text pages, not the very-long-line fallback fixture. Targeted
+wheel and scrollbar qualification, plus optional GPU/CPU startup behavior, is
+tracked below as a follow-up to the completed gates above.
+## Final exact-file and optional-renderer qualification
+
+The final debug application SHA-256 is
+`80E7D310F755218BDB652B5FE2602608F320372AAE305A155C8F1F4BA1D4D7E6`.
+The exact JSON and XML files above reproduce a shared scrollbar bug on both GPU
+and CPU: requesting 70% positioned at approximately 70% of file bytes, then
+reported the visible scroll range as 100%. Repeated drags also discarded retained
+pixels unnecessarily. The corrected mapping excludes the visible extent, reuses
+covered pixels immediately and acknowledges the actual displayed position.
+
+All eight final cases pass: JSON/XML, wheel/drag, GPU/software. Each of the four
+drags finishes at 0.70000005, with changed, nonblank visible crops. GPU drag
+input-to-rendered-thumb medians are 6.212 ms (JSON) and 4.851 ms (XML); software
+medians are 15.548 and 16.002 ms. Final content settles in 4.655-17.522 ms after
+release. Wheel moving-gap medians are approximately 16-17 ms. Individual late gaps
+still reach 66.519 ms, so uniform 60 Hz is not established. Raw native wheel input,
+Slint-dispatched drag input, CPU crop evidence, separate earlier GPU pixel proof
+and foreground samples are distinguished in the
+[complete measurement record](../NATIVE_SCROLL_VERIFICATION.md#exact-user-jsonxml-candidate-eight-cases-pass).
+No compiler/linker overlapped any timed run.
+
+Final Windows verification passes **1,217 tests, 20 explicit opt-ins ignored,
+zero failures** (85.03 s including 47.56 s compilation): viewer engine 167,
+viewer UI 95, app 39, core 51, main UI 807, UI input 21, renderer 6,
+comparator engine 30 and comparator UI 1. Workspace formatting passes (40.62 s),
+strict affected-package all-target Clippy passes (32.48 s), and the combined
+app/native-probe build passes (6.23 s). All 1,830 handwritten source files meet
+the 100,000-byte limit. The corresponding Linux all-target feature graph compiles
+in Ubuntu 24.04 WSL (2 min 35 s); this is not Linux native timing qualification.
+No dependencies or lockfiles changed. Logs: `retained-final3-*.log` and
+`retained-linux-check.log` in the ignored QA directory.
+
+The exact app hash has a registered protected plugin runtime. Backend, native GPU
+UI and explicit software UI startup smokes pass. Three additional native process
+checks exercise recovery: unavailable GPU at selector preflight and a later GPU
+surface failure each recover exactly once into software and exit successfully;
+explicit software rendering succeeds without a retry. Their three snapshots are
+identical. Both the native startup and no-adapter recovered screenshots were
+visually checked for complete panels/toolbars and absence of plugin errors.
+The startup recovery never restarts an already visible session or replays file
+operations. Failed hidden attempts cannot overwrite saved preferences/geometry.
+See [startup evidence](2026-11-08-startup-first-frame.md).
+
+Build output: `_build/debug/me.exe`. Protected installation:
+`C:\Users\tjelinek\MidnightExplorer-20261111-pixel-scroll-80e7d310`.
+Artifacts: `viewer-exact5-*`, `final3-ui-*-startup.png`,
+`final3-{no-adapter,late-device,explicit-software}*`. The broad project goal and
+remaining large-fragment/PDF/Linux desktop performance qualification are separate
+from these completed regressions.

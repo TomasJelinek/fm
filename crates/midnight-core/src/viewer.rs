@@ -4,6 +4,9 @@ use std::{path::PathBuf, sync::Arc};
 #[path = "viewer_tiles.rs"]
 mod tiles;
 pub use tiles::*;
+#[path = "viewer_raster.rs"]
+mod raster;
+pub use raster::*;
 #[path = "viewer_associations.rs"]
 mod associations;
 pub use associations::ViewerAssociations;
@@ -186,6 +189,18 @@ pub struct ViewerImageInfo {
 
 #[derive(Clone, Debug)]
 pub enum ViewerInput {
+    /// Opt in to app-owned retained text pixels; legacy CPU consumers stay viewport-only.
+    RetainedRaster(bool),
+    Raster {
+        surface: ViewerSurfaceId,
+        input: ViewerRasterInput,
+    },
+    /// Reply to an automatic retained-context handoff with the camera actually
+    /// displayed in the old surface's effective raster pixel coordinates.
+    RasterRebase {
+        transition: u64,
+        origin: [f64; 2],
+    },
     /// Browser input only; host validates authority-bearing commands separately.
     Web {
         frame: u64,
@@ -249,6 +264,11 @@ pub struct ViewerFrame {
     pub wrap_enabled: bool,
     pub wrap_available: bool,
     pub image: Option<ViewerImageInfo>,
+    /// Text/source/Markdown retained camera; never changes image-mode UI semantics.
+    pub raster: Option<ViewerRasterInfo>,
+    /// Sticky acknowledgement of a completed displayed-camera handoff. Retained
+    /// until accepted subsequent input or an explicit context invalidation.
+    pub raster_rebase: Option<u64>,
     pub width: u32,
     pub height: u32,
     /// Bounded premultiplied RGBA prepared by backend text or image workers.
@@ -274,6 +294,15 @@ pub enum ViewerOutput {
     /// Host-owned commands from an interactive viewer, after browser arbitration.
     WebShortcut(viewer_web::HostShortcut),
     Frame(Box<ViewerFrame>),
+    /// Keep the current picture until the UI replies with its displayed camera.
+    RasterRebase {
+        surface: ViewerSurfaceId,
+        transition: u64,
+    },
+    RasterUnavailable {
+        surface: ViewerSurfaceId,
+        message: String,
+    },
     ImageUnavailable {
         generation: u64,
         surface: ViewerSurfaceId,

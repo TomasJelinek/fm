@@ -11,6 +11,14 @@ export component ViewerWindow inherits Window {
     in property <string> status: "Opening…";
     in property <image> surface;
     in property <bool> tiled;
+    in property <bool> retained-raster;
+    in property <image> raster-gutter;
+    in property <float> raster-gutter-width;
+    in property <float> raster-width;
+    in property <float> raster-height;
+    in property <float> raster-offset-x;
+    in property <float> raster-offset-y;
+    in property <int> raster-upload-count;
     in property <[ViewerRasterTile]> image-tiles;
     in property <float> tile-offset-x;
     in property <float> tile-offset-y;
@@ -76,6 +84,9 @@ export component ViewerWindow inherits Window {
     callback scroll(float, float);
     callback seek(float);
     callback pan(float);
+    callback position-drag-began(bool);
+    callback position-drag-ended(bool);
+    callback drag-seek(bool, float);
     callback select-point(float, float, bool);
     callback search(bool);
     callback change-mode(int);
@@ -180,7 +191,27 @@ export component ViewerWindow inherits Window {
                     accessible-role: text;
                     accessible-label: "File content";
                     accessible-value: root.accessible-text;
-                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.tiled; }
+                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.tiled && !root.retained-raster; }
+                    if root.retained-raster: Rectangle {
+                        x: root.raster-gutter-width * canvas.width;
+                        width: canvas.width - self.x; height: canvas.height; clip: true;
+                        Image {
+                            source: root.surface;
+                            x: root.raster-offset-x * canvas.width;
+                            y: root.raster-offset-y * canvas.height;
+                            width: root.raster-width * canvas.width;
+                            height: root.raster-height * canvas.height;
+                            image-fit: fill;
+                        }
+                    }
+                    if root.retained-raster && root.raster-gutter-width > 0: Image {
+                        source: root.raster-gutter;
+                        x: 0px;
+                        y: root.raster-offset-y * canvas.height;
+                        width: root.raster-gutter-width * canvas.width;
+                        height: root.raster-height * canvas.height;
+                        image-fit: fill;
+                    }
                     for tile in root.image-tiles: Image {
                         visible: root.tiled;
                         source: tile.image;
@@ -228,7 +259,9 @@ export component ViewerWindow inherits Window {
                         context-key: root.position-context;
                         position: root.position; extent: root.vertical-extent; accent: root.accent;
                         visible: root.vertical-extent < 1;
-                        seek(value) => { root.seek(value); } }
+                        seek(value) => { root.drag-seek(false, value); }
+                        drag-started => { root.position-drag-began(false); }
+                        drag-ended => { root.position-drag-ended(false); } }
                 }
             }
             HorizontalLayout {
@@ -236,7 +269,9 @@ export component ViewerWindow inherits Window {
                 PositionBar { horizontal: true; position: root.horizontal-position; extent: root.horizontal-extent;
                     context-key: root.position-context;
                     visible: root.horizontal-extent < 1;
-                    accent: root.accent; seek(value) => { root.pan(value); } }
+                    accent: root.accent; seek(value) => { root.drag-seek(true, value); }
+                    drag-started => { root.position-drag-began(true); }
+                    drag-ended => { root.position-drag-ended(true); } }
             }
             if root.compact && (root.image-mode || root.source-mode): Text {
                 height: max(18px, root.status-size + 6px); text: root.status; color: root.foreground;

@@ -50,6 +50,10 @@ impl Positions {
         self.horizontal = Some(position.clamp(0.0, 1.0));
         self.acknowledged[1] = sequence;
     }
+    pub fn vertical(&mut self, sequence: u64) {
+        debug_assert!(self.read.is_none());
+        self.acknowledged[0] = sequence;
+    }
     pub fn requested(&mut self, id: u64, sequence: u64) {
         self.read = Some((id, sequence, false));
     }

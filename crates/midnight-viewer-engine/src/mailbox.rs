@@ -67,6 +67,13 @@ impl Mailbox {
             ViewerOutput::Status(_) => {
                 pending.retain(|old| !matches!(old, ViewerOutput::Status(_)))
             }
+            ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. } => pending
+                .retain(|old| {
+                    !matches!(
+                        old,
+                        ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. }
+                    )
+                }),
             ViewerOutput::ImageUnavailable { .. } => {
                 pending.retain(|old| !matches!(old, ViewerOutput::ImageUnavailable { .. }))
             }
@@ -79,7 +86,28 @@ impl Mailbox {
                 pending.retain(|old| !matches!(old, ViewerOutput::WebState { .. }))
             }
         }
-        if pending.len() < 8 {
+        // Preserve one slot each for content and the latest raster control.
+        // A full ordinary-event queue must not strand either side of a handoff.
+        let frame = matches!(output, ViewerOutput::Frame(_));
+        let control = matches!(
+            output,
+            ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. }
+        );
+        let reserved = usize::from(
+            !frame
+                && !pending
+                    .iter()
+                    .any(|old| matches!(old, ViewerOutput::Frame(_))),
+        ) + usize::from(
+            !control
+                && !pending.iter().any(|old| {
+                    matches!(
+                        old,
+                        ViewerOutput::RasterRebase { .. } | ViewerOutput::RasterUnavailable { .. }
+                    )
+                }),
+        );
+        if pending.len() < 8 - reserved {
             match &output {
                 ViewerOutput::Frame(_) => self.finish_open(Ok(())),
                 ViewerOutput::ImageUnavailable { message, .. } => {
@@ -158,4 +186,64 @@ mod tests {
             matches!(mailbox.take().as_slice(), [ViewerOutput::Status(value)] if value == "two")
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn raster_failures_remain_bounded_and_preserve_the_latest_surface_authority() {
+    let mailbox = Mailbox::default();
+    for surface in 1..=10_000 {
+        mailbox.put(ViewerOutput::RasterUnavailable {
+            surface: midnight_core::ViewerSurfaceId(surface),
+            message: "guard failed".into(),
+        });
+    }
+    let output = mailbox.take();
+    assert_eq!(output.len(), 1);
+    assert!(matches!(
+        output[0],
+        ViewerOutput::RasterUnavailable {
+            surface: midnight_core::ViewerSurfaceId(10_000),
+            ..
+        }
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn raster_rebase_delivery_survives_full_event_pressure_and_coalesces_to_latest() {
+    let mailbox = Mailbox::default();
+    for _ in 0..100 {
+        mailbox.put(ViewerOutput::WebShortcut(
+            midnight_core::viewer_web::HostShortcut::Find,
+        ));
+    }
+    for transition in 1..=10_000 {
+        mailbox.put(ViewerOutput::RasterRebase {
+            surface: midnight_core::ViewerSurfaceId(1),
+            transition,
+        });
+    }
+    let output = mailbox.take();
+    assert!(output.len() <= 8);
+    assert_eq!(
+        output
+            .iter()
+            .filter(|event| matches!(event, ViewerOutput::RasterRebase { .. }))
+            .count(),
+        1
+    );
+    assert!(output.iter().any(|event| matches!(
+        event,
+        ViewerOutput::RasterRebase {
+            transition: 10_000,
+            ..
+        }
+    )));
+    mailbox.put(ViewerOutput::RasterRebase {
+        surface: midnight_core::ViewerSurfaceId(1),
+        transition: 10_001,
+    });
+    mailbox.put(ViewerOutput::Closed);
+    assert!(matches!(mailbox.take().as_slice(), [ViewerOutput::Closed]));
 }

@@ -1,8 +1,14 @@
 //! Native synthetic viewer latency/read probe; no preferences, clipboard or application launch.
+#[path = "performance_probe/cases.rs"]
+mod cases;
+#[path = "performance_probe/gpu_proof.rs"]
+mod gpu_proof;
 #[path = "performance_probe/render_observer.rs"]
 mod render_observer;
 #[path = "performance_probe/scrollbar.rs"]
 mod scrollbar;
+#[path = "performance_probe/timeline.rs"]
+mod timeline;
 #[path = "performance_probe/wheel.rs"]
 mod wheel;
 use midnight_core::*;
@@ -65,24 +71,35 @@ struct Probe {
     latencies: Vec<f64>,
     rows: Vec<String>,
     error: Option<String>,
+    proofs: Vec<gpu_proof::Capture>,
 }
-fn marker(window: &ViewerWindow, stage: usize) -> f64 {
-    if stage == 2 {
+fn marker(window: &ViewerWindow) -> f64 {
+    if window.get_image_mode() {
         f64::from(window.get_zoom_percent())
     } else {
         f64::from(window.get_position())
     }
 }
-fn active(window: &ViewerWindow, stage: usize) -> bool {
-    let caption = window.get_caption();
-    caption.contains(["plain.txt", "source.rs", "image.bmp"][stage])
+fn active(window: &ViewerWindow, path: &std::path::Path) -> bool {
+    window
+        .get_caption()
+        .contains(path.file_name().unwrap().to_string_lossy().as_ref())
         && !window.get_accessible_text().is_empty()
-        && window.get_image_mode() == (stage == 2)
+        && window.get_image_mode() == (path.extension().is_some_and(|extension| extension == "bmp"))
+}
+fn presentation(window: &ViewerWindow) -> &'static str {
+    if window.get_retained_raster() {
+        "retained-raster"
+    } else if window.get_tiled() {
+        "tiled-image"
+    } else {
+        "legacy-viewport"
+    }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let directory = PathBuf::from(args.next().ok_or(
-        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software]",
+        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof]",
     )?);
     let report = PathBuf::from(args.next().ok_or("report-file missing")?);
     let flags: Vec<_> = args.collect();
@@ -90,6 +107,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instrumented = flags.iter().any(|flag| flag == "--count");
     let scrollbar = flags.iter().any(|flag| flag == "--scrollbar");
     let wheel = flags.iter().any(|flag| flag == "--wheel");
+    let wheel_trace = flags.iter().any(|flag| flag == "--wheel-trace");
+    let extended = flags.iter().any(|flag| flag == "--extended-wheel");
+    let real_only = flags.iter().any(|flag| flag == "--real-wheel");
+    let wrapped_tabs = flags.iter().any(|flag| flag == "--wrapped-tabs");
+    let selected_files: Vec<_> = flags
+        .iter()
+        .filter_map(|flag| {
+            flag.to_str()
+                .and_then(|value| value.strip_prefix("--file="))
+                .map(PathBuf::from)
+        })
+        .collect();
+    if selected_files.len() > 1 {
+        return Err("choose a single --file path per diagnostic run".into());
+    }
+    let selected_file = selected_files.first();
+    let sustained = wrapped_tabs || flags.iter().any(|flag| flag == "--sustained");
+    let tail = flags.iter().any(|flag| flag == "--tail");
+    let gpu_proof = flags.iter().any(|flag| flag == "--gpu-proof");
     let d3d = flags.iter().any(|flag| flag == "--d3d");
     let software = flags.iter().any(|flag| flag == "--software");
     if flags.iter().any(|flag| {
@@ -97,24 +133,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && flag != "--count"
             && flag != "--scrollbar"
             && flag != "--wheel"
+            && flag != "--wheel-trace"
+            && flag != "--extended-wheel"
+            && flag != "--real-wheel"
+            && flag != "--wrapped-tabs"
+            && flag != "--sustained"
+            && flag != "--tail"
+            && flag != "--gpu-proof"
             && flag != "--d3d"
             && flag != "--software"
+            && !flag
+                .to_str()
+                .is_some_and(|value| value.starts_with("--file="))
     }) {
         return Err("unknown probe argument".into());
     }
+    if wheel_trace && !wheel && !scrollbar {
+        return Err("input tracing requires --wheel or --scrollbar".into());
+    }
+    if (extended || real_only || sustained || tail || gpu_proof) && !wheel {
+        return Err("wheel diagnostic options require --wheel".into());
+    }
+    if usize::from(extended)
+        + usize::from(real_only)
+        + usize::from(wrapped_tabs)
+        + usize::from(selected_file.is_some())
+        > 1
+    {
+        return Err(
+            "choose one of --extended-wheel, --real-wheel, --wrapped-tabs, or --file=path".into(),
+        );
+    }
+    let wheel_options = wheel::Options {
+        sustained,
+        tail,
+        require_wrapped_handoff: wrapped_tabs,
+    };
     if wheel && scrollbar {
         return Err("choose --wheel or --scrollbar".into());
     }
     if d3d && software {
         return Err("choose either --d3d or --software".into());
     }
+    let timeline = timeline::Trace::new(wheel_trace);
     let after_render: render_observer::Callback = Rc::new(RefCell::new(None));
     let native_events = Rc::new(RefCell::new(Vec::new()));
     let mut selector = slint::BackendSelector::new().backend_name("winit".into());
     if d3d {
         // Match the Windows application's default renderer policy explicitly.
         let mut graphics = slint::wgpu_30::WGPUSettings::default();
-        graphics.backends = slint::wgpu_30::wgpu::Backends::DX12;
+        graphics.backends = slint::wgpu_30::wgpu::Backends::from_env()
+            .unwrap_or(slint::wgpu_30::wgpu::Backends::DX12);
+        eprintln!("app_wgpu_backends={:?}", graphics.backends);
         let mut flags = slint::wgpu_30::wgpu::InstanceFlags::from_build_config();
         flags.remove(
             slint::wgpu_30::wgpu::InstanceFlags::DEBUG
@@ -135,13 +205,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             drawing: None,
             injected_wheel: wheel,
             native_events: native_events.clone(),
+            timeline: timeline.clone(),
         })
         .select()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let paths = ["plain.txt", "source.rs", "image.bmp"].map(|name| directory.join(name));
+    let paths = if let Some(path) = selected_file {
+        if !std::fs::metadata(path)?.is_file() {
+            return Err("--file must name an existing regular file".into());
+        }
+        vec![path.clone()]
+    } else {
+        cases::paths(&directory, extended, real_only, wrapped_tabs)?
+    };
+    let stage_count = paths.len();
     let counts: Arc<HashMap<PathBuf, Arc<Counters>>> = Arc::new(
         paths
             .iter()
@@ -205,7 +284,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             associations: Default::default(),
             tree: None,
             generated: None,
-            preferences: Arc::new(Default::default()),
+            preferences: Arc::new(ViewerPreferences {
+                wrap: wrapped_tabs,
+                ..Default::default()
+            }),
             focused: paths[0].clone(),
             view: Arc::new(DirectoryIndex::from_entries(&entries)),
             entries,
@@ -227,6 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         Rc::new(|_| {}),
     )?;
+    timeline.bind(window.clone());
     // This build enables FemtoVG/WGPU and software. Software explicitly lacks
     // transformations; inspect the initialized renderer rather than counting
     // a requested graphics API as evidence that it was selected successfully.
@@ -248,7 +331,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let state = Rc::new(RefCell::new(Probe {
         scrollbar: scrollbar.then(scrollbar::Probe::default),
-        wheel: wheel.then(wheel::Probe::default),
+        wheel: wheel.then(|| wheel::Probe::new(timeline.clone(), wheel_options)),
         stage: 0,
         round: 0,
         opened: start,
@@ -256,10 +339,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pending: None,
         latencies: vec![],
         rows: vec![format!(
-            "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} timing=input_to_redraw_completed",
-            if load { 2 } else { 0 }
+            "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} timing=input_to_redraw_completed exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} snapshot_run_excluded_from_timing_comparison={gpu_proof}",
+            if load { 2 } else { 0 },
+            selected_file.is_some()
         )],
         error: None,
+        proofs: Vec::new(),
     }));
     let notify = state.clone();
     let weak = window.clone();
@@ -267,11 +352,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let native_paths = paths.clone();
     let presented = Rc::new(Cell::new(0_u64));
     let frames = presented.clone();
+    let publication_timeline = timeline.clone();
     window
         .upgrade()
         .ok_or("window disappeared")?
         .on_frame_presented(move || {
             frames.set(frames.get().saturating_add(1));
+            publication_timeline.record("ui_published", frames.get() as f64);
         });
     let rendered_frames = presented.clone();
     *after_render.borrow_mut() = Some(Box::new(move |redraw| {
@@ -281,17 +368,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let Ok(mut state) = notify.try_borrow_mut() else {
             return;
         };
-        if state.stage >= 3 || !active(&window, state.stage) {
+        if state.stage >= stage_count || !active(&window, &native_paths[state.stage]) {
             return;
         }
         if !state.first {
+            if wrapped_tabs && (!window.get_wrap_available() || !window.get_wrap_enabled()) {
+                state.error = Some("wrapped-tab case did not activate wrapping".into());
+                let _ = slint::quit_event_loop();
+                return;
+            }
             let stage = state.stage;
             let counts = &native_counts[&native_paths[stage]];
             let elapsed = state.opened.elapsed().as_secs_f64() * 1000.0;
             state.rows.push(format!(
-                "first stage={stage} ms={elapsed:.3} source_reads={} source_bytes={} source_validations={} physical_window={:?} scale={}",
+                "first stage={stage} ms={elapsed:.3} source_reads={} source_bytes={} source_validations={} physical_window={:?} scale={} file={:?} source_mode={} markdown_mode={} retained={} tiled={} wrap_enabled={} wrap_available={} presentation={}",
                 counts.reads.load(Ordering::Relaxed), counts.bytes.load(Ordering::Relaxed),
-                counts.validations.load(Ordering::Relaxed), window.window().size(), window.window().scale_factor()
+                counts.validations.load(Ordering::Relaxed), window.window().size(), window.window().scale_factor(), native_paths[stage], window.get_source_mode(), window.get_markdown_mode(), window.get_retained_raster(), window.get_tiled(), window.get_wrap_enabled(), window.get_wrap_available(), presentation(&window)
             ));
             state.first = true;
         }
@@ -300,7 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if let Some(drag) = state.scrollbar.as_mut() {
             drag.rendered(&window, rendered_frames.get(), redraw);
         } else if let Some((sent, previous)) = state.pending
-            && marker(&window, state.stage) != previous
+            && marker(&window) != previous
         {
             state.latencies.push(sent.elapsed().as_secs_f64() * 1000.0);
             state.pending = None;
@@ -311,10 +403,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tick = state.clone();
     let weak = window;
     let origin = start;
+    let timer_timeline = timeline.clone();
+    let last_tick = Cell::new(Instant::now());
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(4),
         move || {
+            let gap = last_tick.replace(Instant::now()).elapsed().as_secs_f64() * 1000.0;
+            if gap > 30.0 {
+                timer_timeline.record("timer_gap", gap);
+            }
             let Some(window) = weak.upgrade() else {
                 let _ = slint::quit_event_loop();
                 return;
@@ -322,7 +420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Ok(mut state) = tick.try_borrow_mut() else {
                 return;
             };
-            if origin.elapsed() > Duration::from_secs(150) {
+            if origin.elapsed() > Duration::from_secs(300) {
                 state.error = Some(format!(
                     "timeout stage={} round={} status={}",
                     state.stage,
@@ -346,12 +444,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
                 state.pending = None;
             }
-            if state.stage >= 3 || !state.first || state.pending.is_some() {
+            if state.stage >= stage_count || !state.first || state.pending.is_some() {
                 return;
             }
             let stage = state.stage;
             if let Some(drag) = state.scrollbar.as_mut() {
-                match drag.tick(&window, stage == 2, presented.get(), stage) {
+                match drag.tick(&window, window.get_image_mode(), presented.get(), stage) {
                     Ok(Some(rows)) => {
                         state.rows.extend(rows);
                         state.round = 1;
@@ -365,7 +463,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if let Some(gesture) = state.wheel.as_mut() {
-                match gesture.tick(&window, stage == 2, stage) {
+                match gesture.tick(&window, window.get_image_mode(), stage) {
                     Ok(Some(rows)) => {
                         state.rows.extend(rows);
                         state.round = 1;
@@ -385,7 +483,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let rounds = if scrollbar || wheel {
                 1
-            } else if state.stage == 2 {
+            } else if window.get_image_mode() {
                 12
             } else {
                 60
@@ -403,13 +501,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         times[times.len() - 1]
                     ));
                 }
+                if gpu_proof {
+                    match gpu_proof::capture(&window, stage) {
+                        Ok(proof) => {
+                            state.rows.extend(proof.rows);
+                            state.proofs.extend(proof.captures);
+                            if let Some(error) = proof.error {
+                                state.error.get_or_insert(error);
+                            }
+                        }
+                        Err(error) => {
+                            state
+                                .rows
+                                .push(format!("gpu_proof_failure stage={stage}: {error}"));
+                            state.error.get_or_insert(error);
+                        }
+                    }
+                }
                 state.stage += 1;
+                timer_timeline.stage(state.stage);
                 state.round = 0;
                 state.first = false;
                 state.opened = Instant::now();
                 state.scrollbar = scrollbar.then(scrollbar::Probe::default);
-                state.wheel = wheel.then(wheel::Probe::default);
-                if state.stage == 3 {
+                state.wheel =
+                    wheel.then(|| wheel::Probe::new(timer_timeline.clone(), wheel_options));
+                if state.stage == stage_count {
                     let _ = slint::quit_event_loop();
                 } else {
                     window.invoke_focus_content();
@@ -426,8 +543,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return;
             }
-            state.pending = Some((Instant::now(), marker(&window, state.stage)));
-            if state.stage == 2 {
+            state.pending = Some((Instant::now(), marker(&window)));
+            if window.get_image_mode() {
                 window.invoke_image_command(if state.round % 2 == 0 { 1 } else { 0 });
             } else {
                 window.invoke_scroll(0.0, 60.0);
@@ -455,6 +572,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.rows.push(format!("ERROR {error}"));
     }
     state.rows.extend(native_events.borrow_mut().drain(..));
+    state.rows.extend(timeline.rows());
+    gpu_proof::write(
+        &report.with_extension("pixels"),
+        std::mem::take(&mut state.proofs),
+    )?;
     let output = state.rows.join("\n") + "\n";
     eprintln!("{output}");
     runtime.block_on(runtime.spawn_blocking(move || std::fs::write(report, output)))??;

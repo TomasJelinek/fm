@@ -15,7 +15,9 @@ fn extreme_native_modified_times_render_unknown_without_changing_raw_sort_values
         let mut entry = Entry::new(EntryId(1), root.join("extreme date"), EntryKind::File);
         entry.metadata.modified = Some(time);
         presenter.borrow_mut().panes[0].entries = vec![entry].into();
-        assert_eq!(model.row_data(0).unwrap().modified.as_str(), "—");
+        let row = model.row_data(0).unwrap();
+        assert_eq!(row.modified_date.as_str(), "—");
+        assert_eq!(row.modified_time.as_str(), "—");
         assert_eq!(
             presenter.borrow().panes[0].entries[0].metadata.modified,
             Some(time)

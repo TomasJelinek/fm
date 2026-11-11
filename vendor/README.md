@@ -24,7 +24,38 @@ bindings. Transient unmanaged filter textures bypass the cache. Least-recently
 used eviction caps the cache at 512 bindings per renderer. There is no cross-thread
 or cross-device cache, and WGPU retains resources needed by submitted commands.
 
-The source patch is in `src/renderer/wgpu.rs` and its new `wgpu/bindings.rs` module.
+A second local change reuses upload staging for vertices and fragment uniforms.
+Correlated native idle-redraw stacks reached DX12 committed-buffer allocation
+through `Queue::write_buffer`, even when the first redraw still showed unchanged
+content. `wgpu/uploads.rs` retains at most eight mapped COPY_SRC buffers of at
+most 2 MiB each (16 MiB cache cap). It records copies before the render passes,
+then fills the reserved uniform region and unmaps before command submission.
+WGPU 30's `map_buffer_on_submit` makes a slot reusable only after successful GPU
+completion and remapping. A dropped deferred callback or failed mapping retires
+the slot; it is never treated as mapped. Polling is nonblocking and occurs only
+when pending slots could prevent reuse.
+
+Busy or oversized uploads use uncached staging with copies in the same command
+buffer, preserving ordering when several deferred renders share destinations.
+The 16 MiB limit bounds the retained pool, not the total memory of arbitrary
+caller-owned unsubmitted command buffers and their one-shot sources. Those
+sources remain alive until their GPU commands finish or are discarded. The
+application submits frames promptly; the renderer does not add submissions,
+block for completion, or change GPU/driver workarounds. Texture allocation reuse
+and pipeline retention are not part of this change.
+
+A third change retains at most 32 immutable viewport bind groups per renderer,
+keyed by the exact two viewport float bit patterns. The fixed bind-group layout
+belongs to that renderer/device. Each entry owns its original 16-byte uniform
+resource through the bind group; hits never rewrite buffers. Least-recently-used
+eviction drops only cache ownership, so deferred/in-flight GPU commands retain
+their bindings safely. This removes the measured per-render viewport buffer
+allocation without changing device polling or texture lifetimes.
+
+The source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`, and
+wgpu/uploads.rs and wgpu/viewports.rs. The added code remains under the upstream
+MIT OR Apache-2.0
+license choice; application packaging continues to select MIT.
 Upstream tests remain alongside the source. The packaged book, GitHub workflows
 and Cargo extraction marker are omitted; they are not needed to build or test.
 The standalone lockfile starts from the published lock. Its Windows API family
@@ -39,11 +70,16 @@ a real adapter and fail if none is available):
 $env:WGPU_BACKEND = 'dx12' # Use vulkan on a corresponding Linux GPU host.
 cargo test --manifest-path vendor/femtovg/Cargo.toml --lib `
   --no-default-features --features wgpu --locked --target-dir _build `
-  renderer::wgpu::bindings::tests -- --ignored --test-threads=1
+  renderer::wgpu:: -- --ignored --test-threads=1
 ```
 
 They check actual output pixels, unchanged-frame reuse, pixel updates, same-id
 texture replacement, deletion, uniform-buffer growth, eviction and pruning.
+Upload cases additionally cover GPU-completion reuse, unsubmitted-buffer isolation,
+discarded submissions, renderer drop, growth, cache bounds, ordered mixed cached/
+uncached deferred commands, and oversized uploads. Viewport cases verify repeat
+reuse, exact-bit key separation, bounded eviction, and correct GPU reads after
+eviction/cache drop with deferred command submission.
 Upstream font tests requiring the excluded example assets need the upstream
 checkout; they are not claimed as part of this focused GPU validation.
 

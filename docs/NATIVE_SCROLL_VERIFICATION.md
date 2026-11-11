@@ -467,3 +467,444 @@ The high-DPI text/source viewer and idle-restart limits remain open as detailed
 in [the viewer verification report](verification/2026-11-11-viewer-pixel-scroll.md).
 The panel result must not be generalized into a claim that every viewer now
 maintains 60 Hz or that all first-input delays have been removed.
+
+### Follow-up: idle viewer redraw allocation stalls
+
+The post-commit investigation starts from `bc5c112`. It distinguishes the quiet
+final viewer measurements from the subsequently instrumented diagnostic runs.
+`performance_probe --wheel --wheel-trace --d3d` initially used a bounded
+8,192-record buffer with one monotonic clock (the extended sustained probe raises
+that cap to 65,536 records). It records native enqueue/receive, every redraw
+(including unchanged content), UI frame publication, and long timer gaps. It
+formats/writes the trace only after the event loop ends. A UTC anchor allows
+external owned-process stack samples to be aligned to that clock.
+
+The clean diagnostic `viewer-idle-timeline1` used frozen SHA-256
+`3B9CF2A55FDE87AFDCA5301AFD10EB584D4979879BBD448F6829F42C2FDA8FB2`
+and observed no compiler overlap. For a source-text idle notch, enqueue occurred
+at 7,857.497 ms and native receipt at 7,857.576 ms. An unchanged redraw then ran
+from 7,874.235 to 8,372.690 ms (498.452 ms); the UI published the first changed
+frame at 8,387.514 ms. An image idle notch reached the native handler in 0.052 ms,
+but its first redraw lasted 299.336 ms. Initial CPU stripe sampling took about
+0.7–1.3 ms for text and did not account for the stall. Thus the missing time was
+inside rendering, not native input dispatch or just backend frame publication.
+The stalled notch varied between repetitions.
+
+A second frozen diagnostic with an exact UTC anchor (SHA-256
+`57138E7CC6146EA3FD531C8AC51A0E2526CD50E87112F77A81018FFE209B427F`)
+was sampled only in its owned main thread. `viewer-idle-stacks2` captured 420
+bounded stacks using its matching PDB. Total suspension was 1,521 ms, with a
+16 ms maximum per sample; these timings are diagnostic and are excluded from
+performance comparisons. The exported CSV timestamps use the host decimal comma;
+correlation normalizes that separator before numeric comparison.
+
+Across eight redraw intervals longer than 100 ms, 87 stack samples fell at least
+20 ms inside the measured interval. Fifty-two showed
+`WGPURenderer::render → Queue::write_buffer → StagingBuffer::new →
+CreateCommittedResource → NtGdiDdDDICreateAllocation`. Twenty-six showed
+`Slint Texture::new_from_image → FemtoVG alloc_image → CreateCommittedResource`.
+The other nine were in allocation destruction during an image-mode transition.
+No interior sample showed pipeline compilation. Startup did include shader
+compilation, which is a separate phase. The complete interval summary is
+`viewer-idle-long-redraw-summary.json`; source traces, stack CSVs, symbols, and
+sampling metadata share the `viewer-idle-stacks2` prefix.
+
+This evidence led to a bounded vertex/uniform upload pool in the vendored
+renderer; its ownership and fallback rules are documented in
+[the vendor patch notes](../vendor/README.md). Four lifecycle regressions first
+failed against the no-reuse stub. The implemented pool then passed those four
+and all three existing binding/pixel GPU regressions on Intel Iris Xe/DX12
+(`viewer-upload-green1.log`, 7 passed). Two further cases verify deferred
+commands sharing the same destination across cached/fallback uploads and correct
+oversized uncached storage. The complete nine-case run passed in 12.00 seconds
+with GPU validation enabled (`viewer-upload-green2.log`). The native measurements below qualify the combined retained-raster/upload
+implementation; these functional checks alone do not establish a timing improvement. Texture reuse is deferred because safe retirement must account for
+unsubmitted commands, imported resources, reallocation outside `delete_image`,
+and the initial-zero semantics of a fresh texture.
+
+The extended diagnostic can select all five fixture types plus the real JSON and
+Markdown cases with `--extended-wheel`, or only the real files with `--real-wheel`.
+`--sustained` posts 48 down then 48 up wheel notches at 100 ms intervals; `--tail`
+seeks to the end first and reverses those directions. Every traced redraw records
+the displayed camera and raster/tile upload counters. Continuous reports separate
+unchanged-upload intervals from upload transitions, while retaining the frontier
+gaps. Deliberate idle gaps in isolated-notch runs are not continuous-FPS samples.
+
+`--gpu-proof` performs a separate post-gesture GPU readback at 5.5 logical-pixel
+increments. It compares rendered crop displacement, checks unchanged upload
+counts, and verifies that source line numbers stay fixed horizontally while the
+body translates. This is explicitly a rendering-arrangement check; native input
+and camera behavior are measured by the timed gestures. Any invocation that uses
+GPU snapshots is excluded from published timing comparisons, including its later
+stages. The candidate sections below record native validation of these modes.
+
+### Retained candidate 1: common paths, still incomplete
+
+The frozen viewer SHA-256 is
+`12276F50F9907CEACAAF71D70DBF8D460582C0A4340776C1403B58344AC494C5`;
+the panel probe is
+`AC58DD5B3C933DACAE5CAD8FCA5CB85820628DDF3BB31D4E729E6E1EE6B8F967`.
+Both EXE/PDB pairs are under `retained-candidate1/` in the same QA directory.
+This combines the retained-raster frontend/backend with reusable vertex/uniform
+uploads. It predates the separately identified wrapped-tab continuity and tiny
+fallback reversal fixes. The ordinary text/source fixtures and both real files
+contain no tabs. Text/source wrapping was disabled; Markdown used its document
+layout (its separate wrap control is unavailable).
+
+A fresh quiet run of the frozen baseline reproduced first-content delays of
+380.763 ms for plain text, 393.068 ms for source, and 320.259 ms for images.
+Baseline moving-position gaps were respectively 34.359/38.057/38.289,
+20.450/27.956/40.365, and 16.144/18.813/19.584 ms (p50/p95/max).
+All quiet runs recorded zero compiler/linker overlap. The viewer geometry was
+2250×1575 physical pixels at scale 2.25.
+
+The following values use the exact monotonic `redraw_end` clock. Isolated
+cadence excludes the deliberately idle intervals between notches. Sustained
+cadence includes cache-frontier gaps and excludes only pauses with exact 0/1
+file endpoints. The initial probe's loose edge epsilon was incorrect for large
+files near the top; `summarize-retained.py` recomputes these results from raw
+records without that epsilon, and the source check has been corrected.
+
+| Case | Isolated moving gap p50/p95/max (ms) | Worst isolated input→first movement (ms) | Sustained moving gap p50/p95/max (ms) |
+| --- | --- | --- | --- |
+| Plain | 16.496 / 17.486 / 17.683 | 332.831 | 16.377 / 32.082 / 552.587 |
+| Source | 16.266 / 17.605 / 17.802 | 321.780 | 16.485 / 36.275 / 55.274 |
+| Image | 16.549 / 17.313 / 20.950 | 438.827 | 16.613 / 19.200 / 20.312 |
+| Markdown fixture | 16.374 / 17.309 / 17.536 | 474.800 | 16.402 / 32.979 / 542.955 |
+| Binary | 16.436 / 17.050 / 17.115 | 352.175 | 16.343 / 37.844 / 40.512 |
+| Real manifest.json | 16.414 / 17.259 / 18.815 | 467.247 | 16.358 / 45.650 / 53.185 |
+| Real Markdown | 16.455 / 17.729 / 36.570 | 276.015 | 16.384 / 35.352 / 47.191 |
+
+The sustained run sent 48 down and 48 up notches at 100 ms intervals per case.
+Plain/source/Markdown/binary/realJSON/realMarkdown crossed 74/152/62/111/13/62
+upload transitions. Same-upload gaps had p95 around 17.1–17.4 ms, while the refill
+p95 values were 38.606/45.190/37.684/39.664/53.185/39.414ms. Real JSON reached
+both endpoints. Real Markdown reached position 0.945 then returned to the top;
+the separate tail run explicitly sought the bottom and scrolled upward. Every
+real-file tail notch produced 13 moving positions, but first-content delay still
+reached 477.629 ms for JSON and 384.198 ms for Markdown. The sustained real-Markdown
+first notch also waited 518.068 ms before moving; an initial wait is not a gap
+between already completed positions and must not be hidden by the cadence table.
+
+The separate GPU proof found 12–13 physical pixels of crop movement for each
+5.5 logical-pixel translation. Raster/tile upload counters stayed unchanged.
+Source and real-JSON gutters remained pixel-identical horizontally while their
+bodies moved; both gutter and body moved vertically. The first proof invocation
+exited 1 because the diagnostic wrongly applied the source gutter check to a tiled
+image using an inactive leftover gutter-width property. All vertical checks and
+the actual source gutter checks passed. The probe now gates gutter checks on
+`retained-raster`; the corrected full proof passed on candidate 2 below. These snapshots
+are renderer-arrangement evidence, not native input timing or physical display
+presentation measurements. All snapshot-run timings are excluded above.
+
+The seeded-icon System32 panel recheck passed at 3840×2241/scale 2.25 on the
+60 Hz monitor: 245 moving gaps, p50/p95/max 16.531/20.024/21.947ms (mean 60.15 Hz).
+Submission p50/p95 was 14.486/18.253ms; 251 frames used 1078.125 ms of UI-thread CPU.
+The fractional-pixel and invalidation checks passed. This remains a direct panel
+fixture and does not include concurrent Engine/native-shell thumbnail work.
+
+Artifacts are `viewer-retained-baseline-repeat1`, `viewer-retained-isolated1`,
+`viewer-retained-sustained1`, `viewer-retained-real-tail1`,
+`viewer-retained-gpu-proof1`, and `system32-retained-upload1`, with their logs,
+metadata, summary JSON and pixel directories. The result supports much steadier
+movement within cached rasters. It does not qualify uniform 60 Hz scrolling or
+elimination of idle and refill stalls.
+
+### Exact candidate attribution of the remaining stalls
+
+`viewer-retained-stacks1` sampled only the frozen candidate's main thread and
+resolved its matching PDB. It collected 346 stacks, with 846 ms total suspension
+(max 17 ms), so its timings are diagnostic only. Five redraws over 100 ms contained
+48 samples at least 20 ms inside the interval:
+
+- 12 samples in a 471.510 ms source redraw reached
+  `RenderPassBuilder::new → set_render_target_screen → create_buffer_init →
+  CreateCommittedResource`. The viewport uniform/bind-group is recreated by
+  every new render-pass builder.
+- 13 samples in a 460.844 ms mode-transition redraw reached `Queue::write_texture`
+  staging allocation through `update_image` and glyph rendering.
+- 7 samples in a 247.129 ms image redraw reached `alloc_image` texture allocation.
+- 16 samples in 310.587/333.888 ms plain/image redraws reached
+  `UploadPool::begin → device.poll(Poll) → LifetimeTracker →
+  FlushedStagingBuffer::drop → destroy_buffer`. Although polling does not wait
+  for GPU completion, it can perform expensive synchronous driver cleanup.
+
+The former vertex/uniform `Queue::write_buffer` path was absent from these
+interior samples. The remaining ownership paths are concrete and separate; a
+viewport cache alone cannot be claimed to solve the texture-upload/allocation
+and cleanup paths. The interval evidence is
+`viewer-retained-long-redraw-summary.json`, with representative stack numbers
+136, 91, 259, 48 and 289. A small immutable viewport-binding cache is the next
+approved experiment; texture lifecycle pooling remains deferred.
+
+The viewport cache's two focused regressions first failed on unchanged
+per-render allocation (same viewport produced distinct bindings). The immutable
+32-entry implementation then passed all 11 GPU regressions in 12.02 seconds on
+Intel Iris Xe/DX12 with validation enabled (`viewer-viewport-green.log`). The new
+cases check repeated-key reuse, exact float-bit separation, bounded eviction,
+and actual GPU reads of original values after eviction and cache drop before
+deferred submission. The existing image/binding and upload tests also pass.
+Probe edge classification and the inactive image gutter check are corrected in
+the following candidate; the earlier frozen evidence is preserved unchanged.
+
+
+### Retained candidate 2: viewport reuse and adapter comparisons
+
+The frozen viewer SHA-256 is
+`DB0C4F38D13B39DB94AF92658CC094E31D9459E411CC1D8D0EC896222E15BD1B`.
+Matching EXE/PDBs and the app/panel probes are in `retained-candidate2/`.
+This includes viewport reuse and the wrapped-tab/partial-prefix/tiny-fallback
+backend fixes, but predates the subsequent RasterRebase handshake. The measured
+ordinary text/source fixtures still have wrapping disabled and contain no tabs.
+Geometry remains 2250×1575 physical pixels, scale 2.25. All three timing variants
+recorded zero compiler/linker overlap and used this exact executable.
+
+| Case | DX12 isolated gap p50/p95/max (ms) | Worst input→movement (ms) | DX12 sustained gap p50/p95/max (ms) |
+| --- | --- | --- | --- |
+| Plain | 16.592 / 17.494 / 18.862 | 430.857 | 16.312 / 34.578 / 41.358 |
+| Source | 16.621 / 17.286 / 17.609 | 423.909 | 16.432 / 38.133 / 539.781 |
+| Image | 16.260 / 18.336 / 19.686 | 323.135 | 16.486 / 19.892 / 20.464 |
+| Markdown fixture | 16.210 / 16.992 / 17.297 | 488.337 | 16.315 / 31.275 / 40.598 |
+| Binary | 16.680 / 17.430 / 19.929 | 526.998 | 16.252 / 37.087 / 41.396 |
+| Real manifest.json | 16.456 / 17.597 / 68.138 | 350.152 | 16.370 / 49.078 / 553.790 |
+| Real Markdown | 16.637 / 44.286 / 58.908 | 427.724 | 16.324 / 33.667 / 46.961 |
+
+Same-upload sustained gaps have p95 near 17.1–17.4 ms for text-based cases,
+but source and real JSON refill transitions still paused for 539.781 and
+553.790 ms. The sustained image first movement waited 515.811 ms. Viewport
+reuse therefore did not remove the remaining idle/allocation stalls.
+
+The corrected separate GPU proof passed all seven cases. Each 5.5 logical-pixel
+translation produced 12–13 physical pixels of rendered crop movement, with
+unchanged raster/tile upload counters. Source and JSON gutters stayed identical
+horizontally while their bodies moved, and both regions moved vertically.
+`viewer-viewport-gpu-proof2.pixels` holds the captures; its entire invocation is
+excluded from timing comparisons. Upload counters identify frontend texture
+publications, not every internal glyph/renderer allocation.
+
+Explicit Vulkan retained approximately 31 ms moving-position gaps in every
+case, compared with approximately 16 ms under DX12. Image and Markdown first
+movement still waited 314.033 and 334.171 ms. It was not extended to a sustained
+run and does not support a backend-policy change.
+
+Read-only adapter discovery found Intel Iris Xe (driver 32.0.101.7088) and NVIDIA
+RTX 3500 Ada Generation Laptop GPU (driver 621.14). Pinned WGPU 30.0.1 disables
+DX12 suballocation for adapter names containing `Iris(R) Xe`; its documented
+workaround selects committed allocations regardless of memory hints. The
+workaround and all driver/security policies remain unchanged.
+
+A child-only `WGPU_POWER_PREF=high`, `WGPU_BACKEND=dx12` isolated run used the
+same executable, with `WGPU_ADAPTER_NAME` explicitly absent. A separate,
+timing-excluded run under identical settings confirmed its exact owned PID as
+an NVIDIA C+G process (`viewer-high-adapter-evidence2-adapter.json`). The adapter
+has 12,282 MiB framebuffer memory; WDDM reported its per-process GPU usage as
+unavailable. This separate adapter observation supports selection under those
+settings; the clean timing process itself was not queried during measurement.
+
+| Case | High preference isolated gap p50/p95/max (ms) | Worst input→movement (ms) |
+| --- | --- | --- |
+| Plain | 16.462 / 17.172 / 526.336 | 287.021 |
+| Source | 16.444 / 17.140 / 17.180 | 193.085 |
+| Image | 16.588 / 17.265 / 18.242 | 509.592 |
+| Markdown fixture | 16.176 / 17.793 / 508.747 | 21.410 |
+| Binary | 16.610 / 522.106 / 1071.669 | 19.725 |
+| Real manifest.json | 16.145 / 18.397 / 38.840 | 332.415 |
+| Real Markdown | 16.300 / 17.490 / 520.305 | 17.945 |
+
+Several half-second stalls, including the 1,071.669 ms binary gap, occurred
+without a changed frontend upload count. High preference is therefore not an
+accepted fix and was not extended to sustained/proof runs. Its sampled process
+peak was 505.0 MiB private bytes and 327.0 MiB working set; these are CPU process
+memory figures, not GPU usage. The earlier default-adapter runs lack matching
+memory samples, so no comparative memory claim is made. First-stage readiness
+was 2,442.657 ms versus 3,563.999 ms in the preceding default run; single launches
+include initialization/cache variation and do not establish a startup benefit.
+No shipped GPU preference was changed.
+
+Artifacts are `viewer-viewport-isolated2`, `viewer-viewport-sustained2`,
+`viewer-viewport-gpu-proof2`, `viewer-viewport-vulkan-isolated2`, and
+`viewer-viewport-high-isolated2`, including raw traces and exact-clock summary
+JSON. The data qualifies fractional movement and much steadier cached-frame
+cadence, not uniform 60 Hz scrolling or absence of idle/frontier pauses.
+
+
+### Bounded follow-up feasibility (not implemented)
+
+Slint 1.18 can import `wgpu30::Texture` through `Image::try_from`, avoiding its
+CPU-image texture allocation/upload path. The supported public context route
+without a rendering notifier is `WGPUConfiguration::Manual`; there is no public
+`with_wgpu`/automatic-context getter in the pinned API. Manual initialization
+would change current per-window automatic context ownership and must preserve
+surface compatibility, device limits, explicit environment overrides and error
+fallback. A second device on the same adapter is insufficient.
+
+A proposed experiment could allocate immutable RGBA8 textures and upload them on
+a bounded worker using that same device/queue, then publish completed handles
+and camera metadata together while old pixels remain available. Imported
+textures require `TEXTURE_BINDING | RENDER_ATTACHMENT`, plus `COPY_DST` for
+uploads. Device, queue and texture handles are Send+Sync; Slint Image creation
+and property changes remain on the UI thread. Cancellation must reject stale
+surface/pixel generations, and capacity accounting must include pending CPU
+jobs, in-flight uploads, displayed images and retirement. Closing a window or
+changing modes must not publish a late image. No displayed or unsubmitted
+texture may be rewritten or explicitly destroyed. The RasterRebase
+acknowledgement must follow accepted ready pixels rather than CPU-frame arrival.
+
+This is not a proven fix. The imported-image path lacks the premultiplied flag
+used by the existing raster/tile buffers; passing them unchanged would multiply
+alpha twice. Transparent images need an explicit, pixel-verified solution.
+The software path cannot render an imported WGPU texture back to CPU pixels,
+so its existing CPU representation remains necessary. Worker-held ownership can
+move final texture drops, but Slint still owns views/bindgroups and WGPU's
+`Queue::submit` itself invokes `device.maintain(Poll)`. Driver cleanup and shared
+queue contention may therefore still reach the UI thread. A small measured
+raster experiment and lifecycle/alpha/fallback tests are prerequisites to any
+broader image or manual-context implementation; none has been implemented here.
+
+The example-only `--wrapped-tabs` mode selects two dedicated text/source fixtures,
+enables wrapping at launch, and sends 48 forward then 48 reverse wheel notches.
+Two short prefix lines lead into a tabbed logical line over 50 KiB, exceeding the
+plugins' 8192-byte page request bound. Its gate requires observed moving retained
+and legacy viewport frames plus reverse movement. All first-frame, wheel-frame
+and redraw timeline records identify `retained-raster`, `tiled-image`, or
+`legacy-viewport`; per-stage counts make fallback explicit. Its native result is recorded below.
+
+
+### Candidate 3: wrapped handoff and focus qualification
+
+The frozen viewer SHA-256 is
+`4386459CBCE5DA6BF4D92C452A98477B66F3BB1EBA2C0ECB94BBF4E2B425E066`;
+matching app/probe EXE/PDBs are in `retained-candidate3/`. This includes the
+RasterRebase handoff. `viewer-retained-wrapped3` passed both wrapped-tab cases:
+plain/source produced 41/59 moving retained frames and 242/255 legacy viewport
+frames while scrolling forward and reversing. Wrapping was enabled and both
+legacy and retained movement were required by the diagnostic gate. Raw
+continuous within-upload p50/p95 was 31.980/68.165 ms for plain and
+30.116/59.819 ms for source, so the fallback-heavy case is not qualified at 60 Hz.
+
+`viewer-retained-proof3` passed all seven GPU pixel predicates, including source
+and JSON pinned gutters and unchanged raster/tile upload counts. Its overall
+process nevertheless exited 1: plain first notch produced only one content
+position. Later six mode gestures passed. This is a successful pixel proof with
+a failed cadence gate, not an all-gates pass; all its timings remain excluded.
+
+New read-only observations exposed a material limitation in earlier timing
+interpretation. The wrapped and proof runs were visible, unminimized and not
+DWM-cloaked, but had zero foreground samples (0/45 and 0/41). The proof's
+owned-window `SetForegroundWindow` request failed. Power-throttling control/state
+masks were 0/0: the process did not explicitly override them, which does not prove
+that Windows never applied a background policy. The older candidate 1/2 traces
+lack Focused events and OS foreground samples, so they cannot establish actual
+foreground behavior. Stack allocation/destruction attribution remains valid for
+those diagnostic runs; its relevance to foreground user interaction is unproven.
+
+Two clean three-mode candidate-3 repetitions then ran in verified foreground:
+`viewer-retained-background3` acquired focus naturally (17/18 samples) despite
+its historical artifact name; `viewer-retained-foreground3` had 16/17 foreground
+samples after an explicit owned-window request. Both also logged Focused(true).
+The request returned true in the second run, although its immediate focus check
+was false and the UI Automation fallback reported that the target could not
+receive focus. Subsequent OS samples establish the actual observed state.
+Neither run should be described as a controlled background/foreground pair.
+
+All nine isolated-notch gates passed in each clean foreground run. First-content
+latency ranged 17.292–23.505 ms in the first run and 18.031–28.012 ms in the second.
+Moving-gap medians were about 16.3–16.8 ms. Raw per-gesture traces still include
+late gaps of 62.493/66.556 ms in plain/source for the first run and
+61.606/68.504 ms for the second; image maximum gaps were 19.858/22.207 ms.
+No 300–500 ms idle stall occurred in either foreground repetition. This narrows
+the remaining investigation, but does not prove background state alone caused
+all earlier stalls or qualify arbitrary files/settings. Every run above recorded
+zero compiler/linker overlap. Metadata stores the owned PID/HWND and bounded
+foreground/visibility/cloaking/power samples; no priority or power policy changed.
+
+The next diagnostic supports `--file=<exact-path>` for both wheel and scrollbar
+input while preserving actual file extension/plugin routing, and keeps the
+existing `--software` option. The scrollbar path currently dispatches Slint
+pointer events directly; it proves rendered thumb/content behavior but does not
+exercise the native Windows pointer-input hook. Exact user JSON/XML and optional
+software behavior require the subsequent targeted qualification.
+
+
+### Exact user JSON/XML baseline before covered-target seeks
+
+The exact-file diagnostic was frozen with SHA-256
+`CDA65C95798E46C9CDBFB7A2F992DFA6BA432A553938937656AEF3D7F8E7F72A`
+(`retained-exact-baseline4/`, matching PDB). Inputs were the untouched
+`D:/temp/ovclash/results/2026-09-07-mfg/manifest.json` (2659 bytes) and
+`C:/Windows/System32/WwanFeatureTests.xml` (3865 bytes). The trusted diagnostic
+plugin set selected source mode for JSON and plain text for XML; both began in
+retained-raster presentation, with wrapping disabled. This is the reported actual
+routing, not an assumption that XML used source highlighting.
+
+All four isolated-wheel runs passed their multiple-position gate. All four
+scrollbar runs failed: after 60 pointer moves and release at requested 0.7, the
+thumb, position and displayed position ended at 1.0. Both renderers reproduced
+this. Context remained stable; final frames used legacy viewport presentation,
+with JSON bytes 1860–2659 and XML bytes 2704–3865. Their final-start offsets are
+approximately 0.7 of file length, so the discrepancy concerns byte-seek versus
+visual-range positioning as well as unnecessary raster replacement. It is not
+explained by GPU allocation alone, nor solely by the diagnostic's old requirement
+for a newly published backend frame.
+
+| Input / renderer | Worst wheel first content (ms) | Per-notch moving-gap medians (ms) | Longest reported moving gap (ms) | Foreground samples: wheel / drag |
+| --- | --- | --- | --- | --- |
+| JSON / gpu | 19.703 | 16.324–16.834 | 64.821 | 4/5 / 24/25 |
+| JSON / software | 34.965 | 16.015–16.363 | 54.915 | 4/5 / 24/24 |
+| XML / gpu | 17.560 | 16.484–16.715 | 17.282 | 4/5 / 24/25 |
+| XML / software | 33.450 | 16.095–16.452 | 54.676 | 5/5 / 24/24 |
+
+All runs recorded zero compiler/linker overlap. The first two GPU wheel runs
+still attempted UI Automation after a foreground request; that fallback could
+block its caller and was removed before the other six runs. No input samples
+were silently discarded, and the metadata retains these startup/focus attempts.
+Software was explicitly selected and reported as the actual renderer; no GPU
+was required for those four cases. Their drag failures occurred with 24/24
+foreground samples each. The wheel comparison therefore establishes optional
+CPU behavior and the shared drag failure, not a precise GPU/CPU startup ratio.
+
+The subsequent drag diagnostic observes completed displayed-camera positions
+without requiring a new backend frame. It retains a specific final target,
+requires no pending position and stable context, and checks bounded visible CPU
+crops before/after the gesture for changed, nonblank content. Those crop checks
+respect retained offsets and are explicitly labeled as CPU evidence, not GPU
+readback. The frozen failed baseline remains unchanged for comparison.
+
+
+### Exact user JSON/XML candidate: eight cases pass
+
+The frozen candidate probe SHA-256 is
+`4B00C4B5B9A98B5FA623C48C120D5D3289A1111E806B3166E912DFA9322F7B92`
+(`retained-exact-candidate5/`, matching PDB); the combined app SHA-256 is
+`80E7D310F755218BDB652B5FE2602608F320372AAE305A155C8F1F4BA1D4D7E6`.
+All eight exact JSON/XML wheel and scrollbar cases passed under both GPU and
+software rendering. Every case recorded zero compiler/linker overlap. Each drag
+now reached 0.70000005, rather than the baseline's incorrect 1.0, and kept retained
+presentation. Each final visible CPU crop was changed and nonblank.
+
+| Input / renderer | Drag input→rendered thumb p50/p95/max (ms) | Content updates during 60 moves | Final content after release (ms) | Worst wheel first content (ms) |
+| --- | --- | --- | --- | --- |
+| JSON / gpu | 6.212 / 12.927 / 14.323 | 47 | 4.655 | 21.781 |
+| JSON / software | 15.548 / 18.505 / 19.027 | 45 | 15.792 | 33.710 |
+| XML / gpu | 4.851 / 11.386 / 12.676 | 41 | 9.500 | 19.437 |
+| XML / software | 16.002 / 38.145 / 66.519 | 45 | 17.522 | 34.041 |
+
+Wheel moving-gap medians remain approximately 16–17 ms. Raw late gaps still
+reach 64.315 ms for JSON/GPU, 41.043 ms for XML/GPU, 55.093 ms for JSON/software,
+and 54.646 ms for XML/software. XML/software drag also has a 66.519 ms maximum.
+The functional and pixel-selection regressions are resolved for these cases;
+these measurements do not establish a strict 60 Hz bound for every frame.
+
+Both software wheel runs had 5/5 foreground samples and both software drag runs
+3/3. GPU wheel JSON/XML had 5/7 and 5/6 foreground samples; GPU drags had 3/4
+each, becoming foreground after their initial samples. All samples and the
+owned-window focus-request outcomes are retained; no early gesture or delayed
+frame was silently excluded. UI Automation was absent from these eight runs.
+The raw Windows wheel messages exercise native wheel delivery. Drag still uses
+Slint pointer-event dispatch and the changed/nonblank checks are CPU visible-crop
+evidence, not GPU readback. The earlier seven-case GPU proof separately establishes
+retained body/gutter arrangement. This distinction is part of the qualification.
+
+Artifacts use `viewer-exact5-{json,xml}-{gpu,software}-{wheel,scrollbar}` with raw
+traces, stdout/stderr and foreground/process metadata. `viewer-exact5-summary.json`
+collects the small comparison table. The baseline4 artifacts remain intact.

@@ -303,11 +303,12 @@ install the application but do not make it the default file manager.
 
 ### Rendering diagnostics
 
-Normal rendering uses Slint FemtoVG-WGPU with system-font fallback. Windows defaults
-to Direct3D; explicit `SLINT_BACKEND` / `WGPU_BACKEND` overrides remain available.
-The separate
-software renderer is a developer diagnostic option; it is not a qualified
-full-Unicode production fallback:
+GPU acceleration is optional. Normal rendering uses Slint FemtoVG-WGPU with
+system-font fallback; Windows prefers Direct3D. When default GPU selection or
+initial window/device setup fails before the first window is shown, the app
+retries once with Slint's CPU renderer. Existing file operations and already
+visible windows are never restarted by this startup recovery. Explicit
+`SLINT_BACKEND` choices remain authoritative; `--software` selects CPU rendering:
 
 ```sh
 cargo run -p midnight-explorer --locked -- --software
@@ -315,8 +316,9 @@ cargo run -p midnight-explorer --locked -- --software
 
 `SLINT_BACKEND` is respected when `--software` is not supplied. GUI smoke checks
 and `--snapshot FILE.png` need a working display; see [Checks](#checks) below.
-On an isolated Linux display without a suitable GPU, Slint may fall back to
-software, which does not render bitmap emoji. For WGPU diagnostics only,
+The pinned software renderer does not render bitmap emoji; complete glyph and
+font qualification remains separate from functional CPU startup and scrolling.
+For WGPU diagnostics only,
 `SLINT_WGPU_CPU=1 ./_build/debug/me` permits a CPU adapter. This still needs the
 graphics runtime and fonts; it does not establish production GPU performance.
 

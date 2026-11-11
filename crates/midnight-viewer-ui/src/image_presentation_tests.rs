@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 thread_local! {
     static TEST_TIME: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    static TEST_WINDOW: RefCell<std::rc::Weak<MinimalSoftwareWindow>> = const { RefCell::new(std::rc::Weak::new()) };
 }
 pub(super) fn advance_time(time: Duration) {
     TEST_TIME.with(|clock| clock.set(clock.get() + time));
@@ -17,8 +18,25 @@ impl Platform for TestPlatform {
         TEST_TIME.with(Cell::get)
     }
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+        TEST_WINDOW.with(|slot| *slot.borrow_mut() = Rc::downgrade(&window));
+        Ok(window)
     }
+}
+
+/// Full software framebuffer from the same adapter that presents the viewer.
+pub(super) fn bitmap() -> (slint::PhysicalSize, Vec<slint::Rgb8Pixel>) {
+    let window = TEST_WINDOW.with(|slot| slot.borrow().upgrade().expect("viewer adapter"));
+    let size = window.window().size();
+    assert!(size.width > 0 && size.height > 0);
+    let mut pixels = vec![slint::Rgb8Pixel::default(); size.width as usize * size.height as usize];
+    window.window().request_redraw();
+    assert!(window.draw_if_needed(|renderer| {
+        renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        renderer.render(&mut pixels, size.width as usize);
+        renderer.set_repaint_buffer_type(RepaintBufferType::ReusedBuffer);
+    }));
+    (size, pixels)
 }
 
 #[derive(Debug)]
@@ -52,6 +70,8 @@ fn info() -> ViewerImageInfo {
 fn frame() -> ViewerFrame {
     ViewerFrame {
         generation: 1,
+        raster: None,
+        raster_rebase: None,
         position_sequence: [0; 2],
         revision: 1,
         mode: VIEWER_MODE_IMAGE,

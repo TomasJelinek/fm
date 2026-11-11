@@ -11,6 +11,21 @@ pub(crate) fn line_budget(geometry: ViewerGeometry, line_height: f32) -> u32 {
     ((geometry.height as f32 / height).ceil() as u32 + 2).clamp(1, 512)
 }
 
+/// A small file already fits one fixed source block; avoid splitting its layout
+/// solely because a short window asks for fewer lines. Larger files stay lazy.
+pub(crate) fn request_line_budget(
+    geometry: ViewerGeometry,
+    line_height: f32,
+    length: u64,
+    mode: u16,
+) -> u32 {
+    use midnight_plugin_host::api::viewer;
+    if length <= 8192 && matches!(mode, viewer::MODE_TEXT | viewer::MODE_SOURCE) {
+        512
+    } else {
+        line_budget(geometry, line_height)
+    }
+}
 /// A text fragment's final visual line can still gain content. In particular,
 /// a terminating newline creates an empty layout row for data not loaded yet.
 /// Semantic document windows already retain their complete layout context.
@@ -32,6 +47,69 @@ pub(crate) fn available_height(
     } else {
         shaped.height()
     }
+}
+
+fn logical_break(character: char) -> bool {
+    matches!(
+        character,
+        '\r' | '\n' | '\u{000b}' | '\u{000c}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
+/// New prefix context can alter an initially partial line's tabs and wrapping.
+pub(crate) fn retains_start_context(
+    previous: &crate::page::Page,
+    next: &crate::page::Page,
+) -> bool {
+    next.start >= previous.start
+        || next
+            .anchors
+            .iter()
+            .find(|anchor| anchor.source_offset == previous.start)
+            .is_some_and(|anchor| {
+                let at = anchor.text_offset as usize;
+                at == 0
+                    || next.text[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(logical_break)
+            })
+}
+
+fn complete_line_anchor(page: &crate::page::Page, source: u64, backwards: bool) -> Option<u64> {
+    let at = page
+        .anchors
+        .iter()
+        .find(|anchor| anchor.source_offset >= source)?
+        .text_offset as usize;
+    let boundary = if backwards {
+        if at == 0
+            || page.text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(logical_break)
+        {
+            at + usize::from(page.text[..at].ends_with('\r') && page.text[at..].starts_with('\n'))
+        } else {
+            page.text[at..]
+                .char_indices()
+                .find(|(_, ch)| logical_break(*ch))
+                .map_or(page.text.len(), |(offset, ch)| {
+                    let end = at + offset + ch.len_utf8();
+                    end + usize::from(ch == '\r' && page.text[end..].starts_with('\n'))
+                })
+        }
+    } else {
+        page.text[..at]
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| logical_break(*ch))
+            .map_or(0, |(offset, ch)| offset + ch.len_utf8())
+    };
+    page.anchors
+        .iter()
+        .find(|anchor| anchor.text_offset as usize >= boundary)
+        .map(|anchor| anchor.source_offset)
 }
 
 pub(crate) struct Continuation {
@@ -78,6 +156,32 @@ impl Continuation {
             }
         }
         Some(continuation)
+    }
+
+    /// Keep the visible camera authoritative while requesting a bounded guard around it.
+    pub fn retained_refill(
+        page: &crate::page::Page,
+        shaped: &midnight_viewer_render::TextPage,
+        geometry: ViewerGeometry,
+        origin: [f32; 2],
+        guard: f32,
+        backwards: bool,
+        logical_context: bool,
+    ) -> Option<Self> {
+        let at = if backwards {
+            origin[1] + geometry.height as f32 + guard
+        } else {
+            origin[1] - guard
+        };
+        let mut value = Self::at(page, shaped, origin, at.max(0.0), backwards)?;
+        if logical_context {
+            value.anchor = complete_line_anchor(page, value.anchor, backwards)?;
+        }
+        // Byte-limited logical lines must advance even when they cannot fill a viewport.
+        if shaped.height() <= geometry.height as f32 {
+            value.anchor = if backwards { page.start } else { page.end };
+        }
+        Some(value)
     }
 
     pub fn refill(

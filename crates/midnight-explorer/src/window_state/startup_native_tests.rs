@@ -39,7 +39,16 @@ fn first_frame(load: Load) {
         commands,
         true,
     ));
-    let startup = Rc::new(Startup::install(&window, presenter.clone(), state.clone()).unwrap());
+    let startup_owner = crate::startup_gate::Owner::new();
+    let startup = Rc::new(
+        Startup::install(
+            &window,
+            presenter.clone(),
+            state.clone(),
+            startup_owner.gate(),
+        )
+        .unwrap(),
+    );
     let expected = Rc::new(RefCell::new(None::<WindowGeometry>));
     let rendered = Rc::new(Cell::new(false));
     let observed = rendered.clone();

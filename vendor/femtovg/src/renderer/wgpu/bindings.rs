@@ -61,11 +61,7 @@ fn resource(images: &ImageStore<Image>, id: Option<ImageId>) -> Result<Option<Re
     }
 }
 
-fn matches_resource(
-    images: &ImageStore<Image>,
-    id: Option<ImageId>,
-    saved: &Option<Resource>,
-) -> bool {
+fn matches_resource(images: &ImageStore<Image>, id: Option<ImageId>, saved: &Option<Resource>) -> bool {
     match (id.and_then(|id| images.get(id)), saved) {
         (None, None) => true,
         (Some(image), Some(saved)) => matches!(&image.texture, Texture::Internal(texture)
@@ -103,8 +99,7 @@ impl BindGroupCache {
         let Some(key) = Key::from_state(state) else {
             return materialize();
         };
-        let (Ok(image), Ok(glyph)) = (resource(images, key.image), resource(images, key.glyph))
-        else {
+        let (Ok(image), Ok(glyph)) = (resource(images, key.image), resource(images, key.glyph)) else {
             return materialize();
         };
         let resources = [image, glyph];
@@ -129,12 +124,7 @@ impl BindGroupCache {
             self.entries.remove(&key);
         }
         if self.entries.len() >= MAX_BIND_GROUPS {
-            let oldest = *self
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_used)
-                .unwrap()
-                .0;
+            let oldest = *self.entries.iter().min_by_key(|(_, e)| e.last_used).unwrap().0;
             self.entries.remove(&oldest);
         }
         let group = materialize();

@@ -60,6 +60,7 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         .build()
         .unwrap();
     let service = Service {
+        raster_budget: Arc::new(crate::raster_budget::Budget::default()),
         web: Arc::new(Mutex::new(Some(Arc::from([])))),
         handle: executor.handle().clone(),
         capture: crate::capture::native(),

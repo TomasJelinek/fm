@@ -2,9 +2,11 @@ use super::*;
 use slint::platform::{PointerEventButton, WindowEvent};
 use std::sync::Arc;
 
-fn frame(revision: u64, sequence: u64, position: f64) -> ViewerOutput {
+pub(super) fn frame(revision: u64, sequence: u64, position: f64) -> ViewerOutput {
     ViewerOutput::Frame(Box::new(ViewerFrame {
         generation: 7,
+        raster: None,
+        raster_rebase: None,
         position_sequence: [sequence, 0],
         revision,
         mode: 1,

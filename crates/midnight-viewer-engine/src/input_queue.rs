@@ -1,5 +1,5 @@
 //! Replace still-pending absolute scrollbar positions without crossing input barriers.
-use midnight_core::ViewerInput;
+use midnight_core::{ViewerInput, ViewerRasterInput};
 use std::sync::{Arc, Mutex, Weak};
 
 pub(crate) enum Message {
@@ -25,6 +25,33 @@ impl PositionCell {
     fn replace(&self, input: &ViewerInput) -> bool {
         let mut pending = self.0.lock().unwrap_or_else(|error| error.into_inner());
         match (pending.as_mut(), input) {
+            (
+                Some(ViewerInput::Raster {
+                    surface: old_surface,
+                    input:
+                        ViewerRasterInput::PanTo {
+                            sequence: old_sequence,
+                            origin: old_origin,
+                            settled: old_settled,
+                        },
+                }),
+                ViewerInput::Raster {
+                    surface,
+                    input:
+                        ViewerRasterInput::PanTo {
+                            sequence,
+                            origin,
+                            settled,
+                        },
+                },
+            ) if old_surface == surface => {
+                if sequence > old_sequence {
+                    *old_sequence = *sequence;
+                    *old_origin = *origin;
+                    *old_settled = *settled;
+                }
+                true
+            }
             (Some(ViewerInput::Seek(old)), ViewerInput::Seek(new))
             | (Some(ViewerInput::Pan(old)), ViewerInput::Pan(new)) => {
                 *old = *new;
@@ -74,7 +101,13 @@ impl PositionQueue {
             .unwrap_or_else(|error| error.into_inner());
         if !matches!(
             input,
-            ViewerInput::Seek(_) | ViewerInput::Pan(_) | ViewerInput::Position { .. }
+            ViewerInput::Seek(_)
+                | ViewerInput::Pan(_)
+                | ViewerInput::Position { .. }
+                | ViewerInput::Raster {
+                    input: ViewerRasterInput::PanTo { .. },
+                    ..
+                }
         ) {
             *pending = None;
             return send(Message::Input(input));
@@ -273,5 +306,70 @@ mod tests {
             ViewerInput::Position { sequence: 6, .. }
         ));
         assert!(matches!(received[5], ViewerInput::Pan(0.7)));
+    }
+    #[test]
+    fn retained_absolute_pans_keep_latest_target_without_crossing_selection_barriers() {
+        let queue = PositionQueue::default();
+        let (sender, receiver) = mpsc::sync_channel(3);
+        let surface = midnight_core::ViewerSurfaceId(7);
+        let pan = |sequence| ViewerInput::Raster {
+            surface,
+            input: ViewerRasterInput::PanTo {
+                sequence,
+                origin: [1.25, sequence as f64 / 4.0],
+                settled: sequence == 10_000,
+            },
+        };
+        for sequence in 1..=10_000 {
+            assert!(send(&queue, &sender, pan(sequence)));
+        }
+        assert!(send(
+            &queue,
+            &sender,
+            ViewerInput::Raster {
+                surface,
+                input: ViewerRasterInput::Select {
+                    pixel_id: 2,
+                    origin: [1.25, 20.0],
+                    x: 5.0,
+                    y: 10.0,
+                    extend: false,
+                }
+            }
+        ));
+        assert!(send(&queue, &sender, pan(10_001)));
+        let values: Vec<_> = receiver
+            .try_iter()
+            .filter_map(Message::into_input)
+            .collect();
+        assert_eq!(values.len(), 3);
+        assert!(matches!(
+            values[0],
+            ViewerInput::Raster {
+                input: ViewerRasterInput::PanTo {
+                    sequence: 10_000,
+                    settled: true,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            values[1],
+            ViewerInput::Raster {
+                input: ViewerRasterInput::Select { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            values[2],
+            ViewerInput::Raster {
+                input: ViewerRasterInput::PanTo {
+                    sequence: 10_001,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 }

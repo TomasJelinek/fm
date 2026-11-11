@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod bindings;
+mod uploads;
+mod viewports;
 use bindings::BindGroupCache;
+use uploads::{Upload, UploadPool};
+use viewports::ViewportCache;
 
 use rgb::bytemuck;
-use wgpu::util::DeviceExt;
 
 use crate::image::ImageStore;
 use crate::paint::GlyphTexture;
@@ -275,11 +278,12 @@ pub struct WGPURenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_stride: u64,
     vertex_buffer: wgpu::Buffer,
+    uploads: UploadPool,
     stencil_buffer: Option<wgpu::Texture>,
     stencil_buffer_for_textures: HashMap<wgpu::Texture, wgpu::Texture>,
 
     bind_group_layout: wgpu::BindGroupLayout,
-    viewport_bind_group_layout: wgpu::BindGroupLayout,
+    viewport_bindings: ViewportCache,
     pipeline_layout: wgpu::PipelineLayout,
     pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
     bind_group_cache: Rc<RefCell<BindGroupCache>>,
@@ -485,10 +489,11 @@ impl WGPURenderer {
             uniform_buffer,
             uniform_stride,
             vertex_buffer,
+            uploads: UploadPool::default(),
             stencil_buffer: None,
             stencil_buffer_for_textures: HashMap::new(),
             bind_group_layout,
-            viewport_bind_group_layout,
+            viewport_bindings: ViewportCache::new(viewport_bind_group_layout),
             pipeline_layout,
             pipeline_cache: Default::default(),
             bind_group_cache: Default::default(),
@@ -543,9 +548,32 @@ impl Renderer for WGPURenderer {
             VERTEX_BUFFER_LABEL,
             VERTEX_BUFFER_USAGE,
         );
-        if !vertex_bytes.is_empty() {
-            self.queue.write_buffer(&self.vertex_buffer, 0, vertex_bytes);
-        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        // Copy commands precede the render passes. The conservative slot bound
+        // lets us reserve uniforms now and fill their mapped source after draws
+        // have produced the actual uniform bytes, before submission.
+        let upload = self
+            .uploads
+            .begin(
+                &self.device,
+                &mut encoder,
+                &self.vertex_buffer,
+                &self.uniform_buffer,
+                vertex_bytes,
+                needed_slots * self.uniform_stride,
+            )
+            .unwrap_or_else(|| {
+                Upload::one_shot(
+                    &self.device,
+                    &mut encoder,
+                    &self.vertex_buffer,
+                    &self.uniform_buffer,
+                    vertex_bytes,
+                    needed_slots * self.uniform_stride,
+                )
+            });
         let vertex_buffer = self.vertex_buffer.clone();
 
         if let Some(stencil_buffer) = &self.stencil_buffer {
@@ -574,16 +602,12 @@ impl Renderer for WGPURenderer {
             })
             .clone();
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-
         let mut render_pass_builder = RenderPassBuilder::new(
             self.device.clone(),
             &mut encoder,
             output.format,
             self.screen_view,
-            self.viewport_bind_group_layout.clone(),
+            &mut self.viewport_bindings,
             &mut self.stencil_buffer_for_textures,
             texture_view,
             stencil_buffer.clone(),
@@ -709,15 +733,13 @@ impl Renderer for WGPURenderer {
 
         drop(render_pass_builder);
 
-        // write_buffer is ordered ahead of the caller's submit.
+        // Fill the reserved source before unmapping it for the encoded copies.
         let uniform_staging = &pipeline_and_bindgroup_mapper.uniform_staging;
         debug_assert!(
             uniform_staging.len() as u64 <= self.uniform_buffer.size(),
             "a command recorded more than UNIFORM_SLOTS_PER_COMMAND uniform slots"
         );
-        if !uniform_staging.is_empty() {
-            self.queue.write_buffer(&self.uniform_buffer, 0, uniform_staging);
-        }
+        upload.finish(&encoder, uniform_staging);
 
         self.bind_group_cache.borrow_mut().prune_replaced_images(images);
 
@@ -1667,7 +1689,7 @@ struct RenderPassBuilder<'a> {
     viewport: [f32; 2],
     vertex_buffer: wgpu::Buffer,
     rendering_to_texture: bool,
-    viewport_bind_group_layout: wgpu::BindGroupLayout,
+    viewport_bindings: &'a mut ViewportCache,
     rpass: Option<wgpu::RenderPass<'a>>,
     screen_stencil_buffer: wgpu::Texture,
     screen_view: [f32; 2],
@@ -1685,13 +1707,13 @@ impl<'a> RenderPassBuilder<'a> {
         encoder: &'a mut wgpu::CommandEncoder,
         screen_surface_format: wgpu::TextureFormat,
         screen_view: [f32; 2],
-        viewport_bind_group_layout: wgpu::BindGroupLayout,
+        viewport_bindings: &'a mut ViewportCache,
         stencil_buffer_for_textures: &'a mut HashMap<wgpu::Texture, wgpu::Texture>,
         texture_view: wgpu::TextureView,
         stencil_buffer: wgpu::Texture,
         vertex_buffer: wgpu::Buffer,
     ) -> Self {
-        let viewport_bind_group = Self::create_viewport_bind_group(&device, &screen_view, &viewport_bind_group_layout);
+        let viewport_bind_group = viewport_bindings.get(&device, screen_view);
         Self {
             device: device.clone(),
             encoder,
@@ -1702,7 +1724,7 @@ impl<'a> RenderPassBuilder<'a> {
             viewport: screen_view,
             vertex_buffer,
             rendering_to_texture: false,
-            viewport_bind_group_layout,
+            viewport_bindings,
             rpass: None,
             screen_stencil_buffer: stencil_buffer,
             screen_view,
@@ -1720,34 +1742,7 @@ impl<'a> RenderPassBuilder<'a> {
             return;
         }
         self.viewport = viewport;
-        self.viewport_bind_group =
-            Self::create_viewport_bind_group(&self.device, &self.viewport, &self.viewport_bind_group_layout);
-    }
-
-    fn create_viewport_bind_group(
-        device: &wgpu::Device,
-        viewport: &[f32; 2],
-        viewport_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> wgpu::BindGroup {
-        // WebGL requires 16 byte alignment for uniforms, so pad accordingly.
-        let viewport_padded: [f32; 4] = [viewport[0], viewport[1], 0.0, 0.0];
-
-        let view_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Uniform Buffer for Viewport"),
-            contents: bytemuck::cast_slice(&viewport_padded),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let viewport_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: viewport_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: view_buf.as_entire_binding(),
-            }],
-            label: None,
-        });
-
-        viewport_bind_group
+        self.viewport_bind_group = self.viewport_bindings.get(&self.device, self.viewport);
     }
 
     fn create_binding_resource_and_sampler(
@@ -1992,11 +1987,7 @@ impl CommandToPipelineAndBindGroupMapper {
 
         let bind_group_changed = self.current_bind_group_state != Some(bind_group_state.clone());
         if bind_group_changed {
-            self.current_bind_group = Some(self.bind_group_cache.borrow_mut().get(
-                &bind_group_state,
-                images,
-                self,
-            ));
+            self.current_bind_group = Some(self.bind_group_cache.borrow_mut().get(&bind_group_state, images, self));
             self.current_bind_group_state = Some(bind_group_state);
         }
 

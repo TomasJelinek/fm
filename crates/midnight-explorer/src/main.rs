@@ -7,6 +7,9 @@ mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
 mod startup;
+mod startup_gate;
+mod startup_recovery;
+mod startup_settings;
 mod thumbnails;
 mod viewers;
 mod visible_sync;
@@ -140,10 +143,27 @@ fn run() -> Result<(), String> {
         runtime.shutdown_timeout(Duration::from_secs(1));
         return result;
     }
+    let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let result = run_window(&runtime, local, filesystem, &options);
     // Normal close drains mutation cancellation before hiding the window.
-    runtime.shutdown_timeout(Duration::from_secs(1));
-    result
+    // A failed startup also stops its runtime before another process is started.
+    startup_recovery::finish(
+        result,
+        || runtime.shutdown_timeout(Duration::from_secs(1)),
+        || {
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let status =
+                startup_recovery::software_command(&executable, &restart_arguments, &restart_cwd)
+                    .status()
+                    .map_err(|error| error.to_string())?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Software process exited with {status}"))
+            }
+        },
+    )
 }
 
 async fn smoke_test(
@@ -221,16 +241,35 @@ fn run_window(
     local: Arc<LocalFileSystem>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
     options: &Options,
-) -> Result<(), String> {
+) -> Result<startup_recovery::Attempt, String> {
     // Desktop integration and mutations keep their explicit platform services.
     // Browsing, volume queries and viewer reads route only through the native plugin.
     let desktop: Arc<dyn DesktopServices> = local.clone();
     let watch: Arc<dyn WatchService> = local.clone();
     let settings: Arc<dyn SettingsService> = local.clone();
     let mutations: Arc<dyn midnight_core::MutationService> = local.clone();
-    window_backend::select(options.software)?;
-    let window = MainWindow::new()
-        .map_err(|error| format!("Cannot create window: {error}. Try --software."))?;
+    let may_retry = startup_recovery::retry_allowed(
+        options.software,
+        std::env::var_os("SLINT_BACKEND").is_some(),
+        false,
+    );
+    if let Err(error) = window_backend::select(options.software) {
+        return startup_recovery::native_failure(
+            format!("Cannot initialize renderer: {error}"),
+            may_retry,
+        );
+    }
+    let window = match MainWindow::new() {
+        Ok(window) => window,
+        Err(error) => {
+            let error = format!("Cannot create window: {error}");
+            return startup_recovery::native_failure(error, may_retry);
+        }
+    };
+    // This owner aborts/wakes a pending settings write on every early return.
+    let startup_owner = startup_gate::Owner::new();
+    let settings = smoke_settings::for_run(options.ui_smoke, settings);
+    let settings = startup_settings::for_startup(settings, startup_owner.gate());
     let package_version = env!("CARGO_PKG_VERSION");
     let display_version = package_version
         .strip_suffix(".0")
@@ -283,7 +322,7 @@ fn run_window(
             .with_desktop(desktop)
             .with_clipboard(Arc::new(midnight_platform::NativeClipboard))
             .with_watch(watch)
-            .with_settings(smoke_settings::for_run(options.ui_smoke, settings))
+            .with_settings(settings)
             .run(command_receiver),
     );
 
@@ -319,6 +358,7 @@ fn run_window(
         &window,
         presenter.clone(),
         window_state.clone(),
+        startup_owner.gate(),
     )?);
     let startup_ready = startup.clone();
     window.on_backend_ready(move || {
@@ -557,7 +597,13 @@ fn run_window(
     let result = slint::run_event_loop()
         .map_err(|error| error.to_string())
         .and(startup.finish());
-    window_state.finish(&window, &mut presenter.borrow_mut());
+    let revealed = startup.revealed();
+    // Abort before joining any worker. Reads may have queued normalization saves.
+    startup_owner.gate().abort();
+    if revealed {
+        window_state.finish(&window, &mut presenter.borrow_mut());
+    }
+    let retry = may_retry && !revealed && result.is_err();
     presenter
         .borrow_mut()
         .shutdown_drag_drop(&|command| commands.try_send(command).is_ok());
@@ -580,22 +626,24 @@ fn run_window(
     let mut retired: Vec<midnight_ui::DeferredDrop> = Vec::new();
     runtime.block_on(async {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
-        shutdown_preferences::reconcile(
-            &presenter,
-            &mut closing_events,
-            &commands,
-            deadline,
-            &mut retired,
-        )
-        .await;
-        shutdown_preferences::flush_final(
-            &presenter,
-            &mut closing_events,
-            &commands,
-            deadline,
-            &mut retired,
-        )
-        .await;
+        if revealed {
+            shutdown_preferences::reconcile(
+                &presenter,
+                &mut closing_events,
+                &commands,
+                deadline,
+                &mut retired,
+            )
+            .await;
+            shutdown_preferences::flush_final(
+                &presenter,
+                &mut closing_events,
+                &commands,
+                deadline,
+                &mut retired,
+            )
+            .await;
+        }
         reclaim::retire_receiver(closing_events, &mut retired);
         presenter.borrow_mut().retire_all();
         retired.extend(presenter.borrow_mut().take_retired());
@@ -620,7 +668,9 @@ fn run_window(
             }
         }
     });
-    result?;
+    if let Err(error) = result {
+        return startup_recovery::native_failure(error, retry);
+    }
     if let Some(error) = smoke_error.borrow_mut().take() {
         return Err(error);
     }
@@ -637,7 +687,7 @@ fn run_window(
         ))?;
         println!("snapshot: {}", path.display());
     }
-    Ok(())
+    Ok(startup_recovery::Attempt::Finished)
 }
 
 fn sync_visible(

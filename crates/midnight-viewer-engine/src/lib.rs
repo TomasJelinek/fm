@@ -27,6 +27,7 @@ mod opening_retirement_tests;
 mod page;
 mod position_ack;
 mod preferences;
+mod raster_budget;
 mod routing;
 mod search_cursor;
 #[cfg(test)]
@@ -62,6 +63,7 @@ pub struct Service {
     images: Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>,
     web: Arc<Mutex<Option<Arc<[midnight_web_viewer_host::Provider]>>>>,
     windows: Arc<AtomicUsize>,
+    raster_budget: Arc<raster_budget::Budget>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
 }
 
@@ -153,6 +155,7 @@ impl Service {
             images: Arc::new(Mutex::new(None)),
             web: Arc::new(Mutex::new(None)),
             windows: Arc::new(AtomicUsize::new(0)),
+            raster_budget: Arc::new(raster_budget::Budget::default()),
             fonts: Arc::new(OnceLock::new()),
         }
     }
@@ -249,6 +252,7 @@ impl Service {
                         capture: service.capture.clone(),
                         wake: Arc::new(move || wakes.try_send(worker::Message::Ready).is_ok()),
                         preferences: worker_preferences,
+                        raster_budget: service.raster_budget.clone(),
                     },
                     launch,
                     appearance,
@@ -276,6 +280,10 @@ impl Service {
 
     /// Large presentation snapshots must also be freed off the event loop.
     pub fn retire<T: Send + 'static>(&self, value: T) {
-        self.handle.spawn_blocking(move || drop(value));
+        let raster_budget = self.raster_budget.clone();
+        self.handle.spawn_blocking(move || {
+            drop(value);
+            raster_budget.reap();
+        });
     }
 }

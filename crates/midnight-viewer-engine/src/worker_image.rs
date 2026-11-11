@@ -210,6 +210,8 @@ impl Worker {
                 },
                 page_count: image.pages.len() as u32,
             }),
+            raster: None,
+            raster_rebase: None,
             width,
             height,
             pixels,

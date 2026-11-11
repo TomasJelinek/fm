@@ -13,11 +13,11 @@ unsafe extern "system" {
     fn PostMessageW(window: *mut std::ffi::c_void, message: u32, w: usize, l: isize) -> i32;
 }
 
-pub(super) fn send(window: &ViewerWindow, delta: i16) -> Result<(), String> {
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    eprintln!("wheel_send epoch_ms={} delta={delta}", epoch.as_millis());
+pub(super) fn send(
+    window: &ViewerWindow,
+    delta: i16,
+    timeline: &super::super::timeline::Trace,
+) -> Result<(), String> {
     let scale = window.window().scale_factor();
     let x = ((window.get_content_left() + 30.0) * scale) as u32;
     let y = ((window.get_content_top() + 30.0) * scale) as u32;
@@ -31,10 +31,12 @@ pub(super) fn send(window: &ViewerWindow, delta: i16) -> Result<(), String> {
             let hwnd = handle.hwnd.get() as *mut std::ffi::c_void;
             // SAFETY: The borrowed handle belongs to this live probe window. Posted
             // messages carry integers, retain no pointers, and perform no file work.
+            timeline.record("wheel_enqueue", f64::from(delta));
             let sent = unsafe {
                 PostMessageW(hwnd, 0x0200, 0, (x | y << 16) as isize) != 0
                     && PostMessageW(hwnd, 0x020A, (delta as u16 as usize) << 16, 0) != 0
             };
+            timeline.record("wheel_enqueued", f64::from(delta));
             if sent {
                 Ok(())
             } else {
@@ -42,4 +44,13 @@ pub(super) fn send(window: &ViewerWindow, delta: i16) -> Result<(), String> {
             }
         })
         .ok_or("probe has no native window")?
+}
+
+// These user-provided files are read-only diagnostic inputs on this Windows host.
+// Platform-neutral fixture generation must not assume a personal drive layout.
+pub(super) fn real_paths() -> Vec<std::path::PathBuf> {
+    let directory = std::path::Path::new("D:/temp/ovclash/results/2026-09-07-mfg");
+    ["manifest.json", "post-merge-backend-timings.md"]
+        .map(|name| directory.join(name))
+        .to_vec()
 }
