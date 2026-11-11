@@ -7,6 +7,7 @@ import { TipBody } from "controls.slint";
 export component FunctionButton inherits Rectangle {
     in property <image> native-icon;
     in property <image> fallback-icon;
+    in property <bool> has-icon: true;
     in property <string> text;
     in property <string> caption: root.text;
     in property <string> compact-text;
@@ -29,12 +30,17 @@ export component FunctionButton inherits Rectangle {
     preferred-width: max(root.min-width, caption-metrics.preferred-width + Theme.icon-size + 12px);
     private property <bool> full-caption: caption-metrics.preferred-width <= root.width - Theme.icon-size - 12px;
     private property <bool> key-only: !root.full-caption && root.compact-text != "" && root.width < 56px;
-    private property <length> caption-icon-width: root.key-only ? 0px : Theme.icon-size + 4px;
+    private property <bool> show-icon: root.has-icon && !root.key-only && root.full-caption;
+    private property <length> caption-icon-width: root.show-icon ? Theme.icon-size + 4px : 0px;
     // Fit compact keys to host font metrics without increasing footer layout minima.
     // Keep normal-density text readable and leave smaller user font choices intact.
     private property <length> compact-font-size: clamp(
         Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
             / max(1px, compact-metrics.preferred-width),
+        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size);
+    private property <length> caption-font-size: clamp(
+        Theme.font-size * max(0px, root.width - root.caption-icon-width - 9px)
+            / max(1px, caption-metrics.preferred-width),
         min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size);
     caption-metrics := Text { visible: false; text: root.caption; font-size: Theme.font-size; }
     compact-metrics := Text { visible: false; text: root.compact-text; font-size: Theme.font-size; }
@@ -53,18 +59,18 @@ export component FunctionButton inherits Rectangle {
     Rectangle {
         width: parent.width - 8px; height: parent.height; x: 4px;
         NativeActionImage {
-            visible: !root.key-only;
+            visible: root.show-icon;
             native-icon: root.native-icon; fallback-icon: root.fallback-icon;
             action-enabled: root.enabled; width: Theme.icon-size; height: Theme.icon-size;
             x: root.full-caption || root.compact-text != "" ? 0px : (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
         }
         Text {
-            visible: root.full-caption || root.compact-text != "";
+            visible: true;
             x: root.caption-icon-width; width: max(0px, parent.width - self.x);
             height: parent.height;
-            text: root.full-caption ? root.caption : root.compact-text;
-            font-size: root.full-caption ? Theme.font-size : root.compact-font-size;
+            text: root.key-only ? root.compact-text : root.caption;
+            font-size: root.key-only ? root.compact-font-size : root.caption-font-size;
             color: root.enabled ? Theme.text : Theme.muted-text;
             horizontal-alignment: center; vertical-alignment: center;
             overflow: elide;

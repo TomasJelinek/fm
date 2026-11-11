@@ -34,7 +34,9 @@ pub struct ShortcutState {
     right_alt: bool,
     physical_digit: bool,
     held: HashSet<PhysicalKey>,
-    controls: HashSet<PhysicalKey>,
+    modifier_keys: HashSet<PhysicalKey>,
+    // Some backends report held modifiers on focus entry without key-downs.
+    untracked_modifiers: ModifiersState,
 }
 
 impl ShortcutState {
@@ -94,8 +96,23 @@ impl ShortcutState {
         match event {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
-                if !self.modifiers.control_key() {
-                    self.controls.clear();
+                self.modifier_keys
+                    .retain(|key| modifier(*key).is_some_and(|flag| self.modifiers.contains(flag)));
+                self.untracked_modifiers &= self.modifiers;
+                for flag in [
+                    ModifiersState::CONTROL,
+                    ModifiersState::ALT,
+                    ModifiersState::SHIFT,
+                    ModifiersState::SUPER,
+                ] {
+                    if self.modifiers.contains(flag)
+                        && !self
+                            .modifier_keys
+                            .iter()
+                            .any(|key| modifier(*key) == Some(flag))
+                    {
+                        self.untracked_modifiers.insert(flag);
+                    }
                 }
             }
             WindowEvent::Focused(false) | WindowEvent::Destroyed => *self = Self::default(),
@@ -103,8 +120,20 @@ impl ShortcutState {
         }
     }
 
+    /// Current function-key modifiers: Control=1, Alt=2, Shift=4, Meta=8.
+    /// AltGr belongs to text input and always returns zero.
+    pub fn function_modifiers(&self) -> u8 {
+        if self.right_alt {
+            return 0;
+        }
+        u8::from(self.modifiers.control_key())
+            | (u8::from(self.modifiers.alt_key()) << 1)
+            | (u8::from(self.modifiers.shift_key()) << 2)
+            | (u8::from(self.modifiers.super_key()) << 3)
+    }
+
     pub fn control_layer(&self) -> bool {
-        self.modifiers == ModifiersState::CONTROL && !self.right_alt
+        self.function_modifiers() == 1
     }
 
     fn key(
@@ -118,18 +147,31 @@ impl ShortcutState {
             consumed: false,
         };
         // Winit normally follows key edges with ModifiersChanged. Reflect the
-        // edge immediately so a mouse release cannot see a stale Ctrl layer.
-        if matches!(
-            input.physical,
-            PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight)
-        ) {
+        // edge immediately so a mouse release cannot use stale function actions.
+        // Keep both physical sides: releasing one does not release the other.
+        if let Some(flag) = modifier(input.physical) {
             if input.state == ElementState::Pressed {
-                self.controls.insert(input.physical);
+                self.modifier_keys.insert(input.physical);
+                // Windows reconstructs keys held across focus with synthetic
+                // presses. Those explain the aggregate snapshot's prior hold;
+                // a real new press on Wayland is an additional held key.
+                if input.synthetic {
+                    self.untracked_modifiers.remove(flag);
+                }
             } else {
-                self.controls.remove(&input.physical);
+                self.modifier_keys.remove(&input.physical);
+                // Aggregate-only focus snapshots cannot distinguish one held
+                // side from both. Only the next authoritative snapshot can
+                // release an untracked hold; known keys still update now.
             }
-            self.modifiers
-                .set(ModifiersState::CONTROL, !self.controls.is_empty());
+            self.modifiers.set(
+                flag,
+                self.untracked_modifiers.contains(flag)
+                    || self
+                        .modifier_keys
+                        .iter()
+                        .any(|key| modifier(*key) == Some(flag)),
+            );
         }
         if input.physical == PhysicalKey::Code(KeyCode::AltRight)
             || matches!(input.logical, Key::Named(NamedKey::AltGraph))
@@ -178,6 +220,18 @@ impl ShortcutState {
             decision.consumed = true;
         }
         decision
+    }
+}
+
+fn modifier(key: PhysicalKey) -> Option<ModifiersState> {
+    match key {
+        PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight) => {
+            Some(ModifiersState::CONTROL)
+        }
+        PhysicalKey::Code(KeyCode::AltLeft | KeyCode::AltRight) => Some(ModifiersState::ALT),
+        PhysicalKey::Code(KeyCode::ShiftLeft | KeyCode::ShiftRight) => Some(ModifiersState::SHIFT),
+        PhysicalKey::Code(KeyCode::SuperLeft | KeyCode::SuperRight) => Some(ModifiersState::SUPER),
+        _ => None,
     }
 }
 
@@ -420,6 +474,362 @@ mod tests {
     }
 
     #[test]
+    fn function_modifiers_cover_all_native_combinations() {
+        for (expected, modifiers) in [
+            (0, ModifiersState::empty()),
+            (1, ModifiersState::CONTROL),
+            (2, ModifiersState::ALT),
+            (3, ModifiersState::CONTROL | ModifiersState::ALT),
+            (4, ModifiersState::SHIFT),
+            (5, ModifiersState::CONTROL | ModifiersState::SHIFT),
+            (6, ModifiersState::ALT | ModifiersState::SHIFT),
+            (
+                7,
+                ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT,
+            ),
+            (8, ModifiersState::SUPER),
+            (9, ModifiersState::CONTROL | ModifiersState::SUPER),
+            (10, ModifiersState::ALT | ModifiersState::SUPER),
+            (
+                11,
+                ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SUPER,
+            ),
+            (12, ModifiersState::SHIFT | ModifiersState::SUPER),
+            (
+                13,
+                ModifiersState::CONTROL | ModifiersState::SHIFT | ModifiersState::SUPER,
+            ),
+            (
+                14,
+                ModifiersState::ALT | ModifiersState::SHIFT | ModifiersState::SUPER,
+            ),
+            (15, ModifiersState::all()),
+        ] {
+            let mut state = ShortcutState::default();
+            assert!(!state.handle(&WindowEvent::ModifiersChanged(modifiers.into()), |_| false));
+            assert_eq!(state.function_modifiers(), expected, "{modifiers:?}");
+            assert_eq!(state.control_layer(), expected == 1);
+        }
+    }
+
+    #[test]
+    fn function_modifiers_follow_key_edges_and_preserve_other_held_sides() {
+        for (expected, left, right) in [
+            (1, KeyCode::ControlLeft, KeyCode::ControlRight),
+            (4, KeyCode::ShiftLeft, KeyCode::ShiftRight),
+            (8, KeyCode::SuperLeft, KeyCode::SuperRight),
+        ] {
+            let mut state = ShortcutState::default();
+            state.key(input(left, ""), |_| panic!("modifier is not a shortcut"));
+            assert_eq!(state.function_modifiers(), expected);
+            state.key(input(right, ""), |_| false);
+            let mut release = input(left, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                expected,
+                "other side remains held"
+            );
+            let mut release = input(right, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                0,
+                "release precedes ModifiersChanged"
+            );
+        }
+        let mut state = ShortcutState::default();
+        for (code, expected) in [
+            (KeyCode::ControlLeft, 1),
+            (KeyCode::AltLeft, 3),
+            (KeyCode::ShiftLeft, 7),
+            (KeyCode::SuperLeft, 15),
+        ] {
+            state.key(input(code, ""), |_| false);
+            assert_eq!(state.function_modifiers(), expected);
+        }
+        for (code, expected) in [
+            (KeyCode::AltLeft, 13),
+            (KeyCode::ControlLeft, 12),
+            (KeyCode::SuperLeft, 4),
+            (KeyCode::ShiftLeft, 0),
+        ] {
+            let mut release = input(code, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(state.function_modifiers(), expected);
+        }
+    }
+
+    #[test]
+    fn function_modifiers_reconcile_snapshots_and_clear_after_focus_loss() {
+        for end in [WindowEvent::Focused(false), WindowEvent::Destroyed] {
+            let mut state = ShortcutState::default();
+            for code in [
+                KeyCode::ControlLeft,
+                KeyCode::AltLeft,
+                KeyCode::ShiftLeft,
+                KeyCode::SuperLeft,
+            ] {
+                state.key(input(code, ""), |_| false);
+            }
+            state.handle(&end, |_| false);
+            assert_eq!(state.function_modifiers(), 0);
+            state.handle(&WindowEvent::Focused(true), |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                0,
+                "focus must not revive modifiers"
+            );
+            state.key(input(KeyCode::ShiftRight, ""), |_| false);
+            let mut release = input(KeyCode::ShiftRight, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                0,
+                "old left Shift was forgotten"
+            );
+        }
+        let mut state = ShortcutState::default();
+        state.key(input(KeyCode::ShiftLeft, ""), |_| false);
+        state.handle(
+            &WindowEvent::ModifiersChanged(ModifiersState::empty().into()),
+            |_| false,
+        );
+        state.key(input(KeyCode::ShiftRight, ""), |_| false);
+        let mut release = input(KeyCode::ShiftRight, "");
+        release.state = ElementState::Released;
+        state.key(release, |_| false);
+        assert_eq!(
+            state.function_modifiers(),
+            0,
+            "snapshot removed the stale left Shift"
+        );
+    }
+
+    #[test]
+    fn function_modifiers_snapshot_only_holds_survive_opposite_side_key_edges() {
+        for (flag, expected, left, right) in [
+            (
+                ModifiersState::CONTROL,
+                1,
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+            ),
+            (
+                ModifiersState::SHIFT,
+                4,
+                KeyCode::ShiftLeft,
+                KeyCode::ShiftRight,
+            ),
+            (
+                ModifiersState::SUPER,
+                8,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+            ),
+        ] {
+            for (original, additional) in [(left, right), (right, left)] {
+                let mut state = ShortcutState::default();
+                // Wayland reports the aggregate held modifiers on focus entry,
+                // without synthesizing key-downs for those already held keys.
+                state.handle(&WindowEvent::Focused(true), |_| false);
+                state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+                state.key(input(additional, ""), |_| false);
+                state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+                let mut release = input(additional, "");
+                release.state = ElementState::Released;
+                state.key(release, |_| false);
+                assert_eq!(
+                    state.function_modifiers(),
+                    expected,
+                    "{original:?} remains held"
+                );
+                let mut release = input(original, "");
+                release.state = ElementState::Released;
+                state.key(release, |_| false);
+                assert_eq!(
+                    state.function_modifiers(),
+                    expected,
+                    "unknown side awaits snapshot"
+                );
+                state.handle(
+                    &WindowEvent::ModifiersChanged(ModifiersState::empty().into()),
+                    |_| false,
+                );
+                assert_eq!(state.function_modifiers(), 0, "authoritative last release");
+            }
+        }
+    }
+
+    #[test]
+    fn function_modifiers_snapshot_only_last_release_waits_for_authoritative_snapshot() {
+        for (flag, key) in [
+            (ModifiersState::CONTROL, KeyCode::ControlRight),
+            (ModifiersState::ALT, KeyCode::AltLeft),
+            (ModifiersState::SHIFT, KeyCode::ShiftLeft),
+            (ModifiersState::SUPER, KeyCode::SuperRight),
+        ] {
+            let mut state = ShortcutState::default();
+            state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+            let mut release = input(key, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert!(
+                state.modifiers.contains(flag),
+                "unknown count cannot be inferred from one key-up"
+            );
+            state.handle(
+                &WindowEvent::ModifiersChanged(ModifiersState::empty().into()),
+                |_| false,
+            );
+            assert_eq!(
+                state.function_modifiers(),
+                0,
+                "authoritative last release cannot stick"
+            );
+            state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+            state.handle(
+                &WindowEvent::ModifiersChanged(ModifiersState::empty().into()),
+                |_| false,
+            );
+            state.key(input(key, ""), |_| false);
+            let mut release = input(key, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                0,
+                "snapshot cleared the previous unknown hold"
+            );
+        }
+    }
+
+    #[test]
+    fn function_modifiers_two_untracked_sides_keep_the_unchanged_aggregate_after_one_release() {
+        for (flag, expected, left, right) in [
+            (
+                ModifiersState::CONTROL,
+                1,
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+            ),
+            (
+                ModifiersState::SHIFT,
+                4,
+                KeyCode::ShiftLeft,
+                KeyCode::ShiftRight,
+            ),
+            (
+                ModifiersState::SUPER,
+                8,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+            ),
+        ] {
+            let mut state = ShortcutState::default();
+            // Both keys were held before focus, but Wayland provides only one bit.
+            state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+            let mut release = input(left, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(state.function_modifiers(), expected);
+            state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                expected,
+                "other side remains held"
+            );
+            let mut release = input(right, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                expected,
+                "last unknown release awaits snapshot"
+            );
+            state.handle(
+                &WindowEvent::ModifiersChanged(ModifiersState::empty().into()),
+                |_| false,
+            );
+            assert_eq!(state.function_modifiers(), 0);
+        }
+    }
+
+    #[test]
+    fn function_modifiers_synthetic_focus_keys_resolve_snapshot_only_holds() {
+        for (flag, expected, left, right) in [
+            (
+                ModifiersState::CONTROL,
+                1,
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+            ),
+            (
+                ModifiersState::SHIFT,
+                4,
+                KeyCode::ShiftLeft,
+                KeyCode::ShiftRight,
+            ),
+            (
+                ModifiersState::SUPER,
+                8,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+            ),
+        ] {
+            let mut state = ShortcutState::default();
+            state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+            for code in [left, right] {
+                let mut press = input(code, "");
+                press.synthetic = true;
+                state.key(press, |_| panic!("synthetic focus keys must not dispatch"));
+            }
+            state.handle(&WindowEvent::Focused(true), |_| false);
+            state.handle(&WindowEvent::ModifiersChanged(flag.into()), |_| false);
+            let mut release = input(left, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(state.function_modifiers(), expected);
+            let mut release = input(right, "");
+            release.state = ElementState::Released;
+            state.key(release, |_| false);
+            assert_eq!(
+                state.function_modifiers(),
+                0,
+                "last known release precedes snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn function_modifiers_exclude_altgr_until_its_release() {
+        let mut state = ShortcutState::default();
+        state.key(input(KeyCode::ControlLeft, ""), |_| false);
+        state.key(input(KeyCode::AltRight, ""), |_| false);
+        state.handle(
+            &WindowEvent::ModifiersChanged(ModifiersState::all().into()),
+            |_| false,
+        );
+        assert_eq!(state.function_modifiers(), 0);
+        assert!(!state.control_layer());
+        let mut release = input(KeyCode::AltRight, "");
+        release.state = ElementState::Released;
+        state.key(release, |_| false);
+        assert_eq!(
+            state.function_modifiers(),
+            13,
+            "released AltGr removes Alt immediately"
+        );
+        state.handle(&WindowEvent::Focused(false), |_| false);
+        assert_eq!(state.function_modifiers(), 0);
+        assert!(!state.alt_gr());
+    }
+
+    #[test]
     fn control_footer_tracks_both_control_keys_and_clears_on_native_focus_loss() {
         let mut state = ShortcutState::default();
         state.key(input(KeyCode::ControlLeft, ""), |_| false);
@@ -437,7 +847,7 @@ mod tests {
         state.observe_modifiers(&WindowEvent::Focused(false));
         assert!(!state.control_layer());
         assert!(!state.right_alt);
-        assert!(state.controls.is_empty());
+        assert!(state.modifier_keys.is_empty());
         assert!(state.held.is_empty());
         state.observe_modifiers(&WindowEvent::Focused(true));
         assert!(
@@ -528,10 +938,11 @@ mod tests {
     #[test]
     fn alt_gr_never_dispatches_and_left_alt_can_address_the_other_panel() {
         let map = ShortcutMap::new(&[]).unwrap();
-        let mut state = ShortcutState {
-            modifiers: ModifiersState::CONTROL | ModifiersState::ALT,
-            ..Default::default()
-        };
+        let mut state = ShortcutState::default();
+        // The left keys stay physically held when the right Alt is released.
+        for code in [KeyCode::ControlLeft, KeyCode::AltLeft] {
+            state.key(input(code, ""), |_| panic!("modifier cannot dispatch"));
+        }
         state.key(input(KeyCode::AltRight, ""), |_| {
             panic!("modifier cannot dispatch")
         });

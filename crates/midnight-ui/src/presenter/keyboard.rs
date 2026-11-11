@@ -16,8 +16,8 @@ pub(crate) struct KeyboardBindings {
     hints: HashMap<String, (SharedString, SharedString)>,
     editor_text: HashMap<String, String>,
     scopes: HashMap<String, String>,
-    control_files: [crate::FunctionSlot; 12],
-    control_search: [crate::FunctionSlot; 12],
+    function_files: [[crate::FunctionSlot; 12]; 16],
+    function_search: [[crate::FunctionSlot; 12]; 16],
 }
 
 impl KeyboardBindings {
@@ -82,8 +82,8 @@ impl KeyboardBindings {
             scopes.insert(action.id.clone(), scope);
         }
         Ok(Self {
-            control_files: function_slots::build(&map, ShortcutContext::Files),
-            control_search: function_slots::build(&map, ShortcutContext::Search),
+            function_files: function_slots::build(&map, ShortcutContext::Files),
+            function_search: function_slots::build(&map, ShortcutContext::Search),
             map,
             revision,
             help: help.into(),

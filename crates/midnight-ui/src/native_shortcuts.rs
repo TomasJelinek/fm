@@ -19,6 +19,7 @@ impl ShortcutState {
         window.set_native_digit_event(self.0.physical_digit());
         window.set_native_alt_gr(self.0.alt_gr());
         window.set_control_layer(self.0.control_layer());
+        window.set_function_modifiers(i32::from(self.0.function_modifiers()));
         consumed
     }
 }

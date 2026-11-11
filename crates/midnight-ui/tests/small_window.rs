@@ -377,7 +377,7 @@ fn all_function_slots_keep_captions_in_both_layers_after_remapping() {
     for (width, height) in [(1340, 820), (320, 200)] {
         test.resize(width, height);
         for control in [false, true] {
-            test.window.set_control_layer(control);
+            test.window.set_function_modifiers(i32::from(control));
             test.draw();
             let mut items = Vec::new();
             controls(
@@ -399,19 +399,27 @@ fn all_function_slots_keep_captions_in_both_layers_after_remapping() {
             );
             for (index, item) in keys.iter().enumerate() {
                 assert!(!label(item).is_empty());
-                assert!(
-                    ui::text_values(item.clone())
-                        .iter()
-                        .any(|text| !text.is_empty()),
-                    "Blank caption at slot{} in Ctrl={control}: {}",
-                    index + 1,
-                    label(item)
-                );
+                let origin = item.map_to_native_window(item.geometry().origin);
+                let jobs = ui::root_item(&test.window, "Jobs", AccessibleRole::Button);
+                let jobs_left = jobs.map_to_native_window(jobs.geometry().origin).x;
+                // Narrow windows intentionally clip cells in the horizontal strip.
+                // Only fully exposed cells have rendered text to inspect.
+                if origin.x >= 0.0 && origin.x + item.geometry().width() <= jobs_left - 4.0 {
+                    assert!(
+                        ui::visible_text_values(item.clone())
+                            .iter()
+                            .any(|text| !text.is_empty()),
+                        "Blank visible caption at slot{} in Ctrl={control}: {}",
+                        index + 1,
+                        label(item)
+                    );
+                }
                 if control {
-                    let slot = test
-                        .window
-                        .global::<ShortcutHints>()
-                        .invoke_control(index as i32, false);
+                    let slot = test.window.global::<ShortcutHints>().invoke_function_key(
+                        index as i32,
+                        1,
+                        false,
+                    );
                     if slot.action.is_empty() {
                         assert_eq!(label(item), format!("Ctrl+F{} — unavailable", index + 1));
                     } else {
@@ -539,7 +547,7 @@ fn footer_disables_parent_targets_but_allows_a_real_selection() {
     );
     assert_eq!(metadata.get(), 0);
     ui::root_item(&test.window, "F7 Create dir", AccessibleRole::Button);
-    test.window.set_control_layer(true);
+    test.window.set_function_modifiers(1);
     test.draw();
     ui::root_item(
         &test.window,
@@ -551,7 +559,7 @@ fn footer_disables_parent_targets_but_allows_a_real_selection() {
         "Ctrl+F7 Case — unavailable",
         AccessibleRole::Button,
     );
-    test.window.set_control_layer(false);
+    test.window.set_function_modifiers(0);
     test.window.invoke_row_click(0, 1, true, false);
     let revision = commands
         .borrow()
@@ -595,11 +603,11 @@ fn footer_disables_parent_targets_but_allows_a_real_selection() {
             .collect::<Vec<_>>(),
         ["files.copy-to", "files.trash"]
     );
-    test.window.set_control_layer(true);
+    test.window.set_function_modifiers(1);
     test.draw();
     ui::root_item(&test.window, "Ctrl+F2 Attributes", AccessibleRole::Button);
     ui::root_item(&test.window, "Ctrl+F7 Case", AccessibleRole::Button);
-    test.window.set_control_layer(false);
+    test.window.set_function_modifiers(0);
     test.window.set_left_native_filesystem(false);
     test.draw();
     ui::click_root(&test.window, "F5 Copy", AccessibleRole::Button);

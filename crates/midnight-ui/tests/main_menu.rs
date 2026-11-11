@@ -343,6 +343,95 @@ fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
 }
 
 #[test]
+fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() {
+    let mut test = shortcut_menu(&[]);
+    ui::key(&test.window, Key::Escape);
+    for pane in 0..2 {
+        test.window.invoke_activate(pane);
+        test.window.invoke_focus_files();
+        assert_eq!(test.window.get_focused_pane(), pane);
+        for (key, mode) in [("b", 1), ("l", 0), ("t", 2)] {
+            let before = [
+                test.window.get_left_view_mode(),
+                test.window.get_right_view_mode(),
+            ];
+            ui::chord(&test.window, &[Key::Control, Key::Shift], key);
+            test.draw();
+            let after = [
+                test.window.get_left_view_mode(),
+                test.window.get_right_view_mode(),
+            ];
+            assert_eq!(after[pane as usize], mode, "pane {pane}: Ctrl+Shift+{key}");
+            assert_eq!(after[1 - pane as usize], before[1 - pane as usize]);
+            assert_eq!(test.window.get_active_pane(), pane);
+        }
+    }
+    for (key, mode) in [("b", 1), ("l", 0), ("t", 2)] {
+        // Start from a different mode so an accidentally dispatched shortcut
+        // cannot pass merely because that view was already selected.
+        test.window.invoke_view_mode(1, (mode + 1) % 3);
+        test.window.invoke_set_command("kept view draft".into(), 15);
+        assert_eq!(test.window.get_focused_pane(), -1);
+        let before = [
+            test.window.get_left_view_mode(),
+            test.window.get_right_view_mode(),
+        ];
+        ui::chord(&test.window, &[Key::Control, Key::Shift], key);
+        test.draw();
+        assert_eq!(
+            [
+                test.window.get_left_view_mode(),
+                test.window.get_right_view_mode()
+            ],
+            before
+        );
+        assert_eq!(test.window.get_command_text(), "kept view draft");
+        assert_eq!(test.window.get_focused_pane(), -1);
+    }
+}
+
+#[test]
+fn view_menu_hints_and_key_dispatch_follow_live_remapping() {
+    let mut test = shortcut_menu(&[]);
+    category(&mut test, 3);
+    for (label, key) in [
+        ("Brief view", "Ctrl+Shift+B"),
+        ("Detailed view", "Ctrl+Shift+L"),
+        ("Thumbnail view", "Ctrl+Shift+T"),
+    ] {
+        assert_eq!(menu_shortcut(&test, label), [key]);
+    }
+    test.window
+        .invoke_keyboard_apply("view.brief".into(), "Ctrl+Shift+R".into());
+    test.draw();
+    assert!(
+        test.window.get_keyboard_error().is_empty(),
+        "{}",
+        test.window.get_keyboard_error()
+    );
+    assert!(ui::has_popup(&test.window));
+    assert_eq!(menu_shortcut(&test, "Brief view"), ["Ctrl+Shift+R"]);
+    assert_eq!(menu_shortcut(&test, "Detailed view"), ["Ctrl+Shift+L"]);
+    assert_eq!(menu_shortcut(&test, "Thumbnail view"), ["Ctrl+Shift+T"]);
+    render::snapshot(&test, "main-menu-view-shortcuts-remapped");
+    ui::key(&test.window, Key::Escape);
+    test.window.invoke_activate(0);
+    test.window.invoke_focus_files();
+    assert_eq!(test.window.get_left_view_mode(), 0);
+    ui::chord(&test.window, &[Key::Control, Key::Shift], "b");
+    test.draw();
+    assert_eq!(
+        test.window.get_left_view_mode(),
+        0,
+        "the replaced default must stop dispatching"
+    );
+    ui::chord(&test.window, &[Key::Control, Key::Shift], "r");
+    test.draw();
+    assert_eq!(test.window.get_left_view_mode(), 1);
+    assert_eq!(test.window.get_right_view_mode(), 0);
+}
+
+#[test]
 fn window_commands_route_navigation_and_panel_view_modes() {
     let test = ui::TestUi::new();
     let choices = Rc::new(RefCell::new(Vec::new()));

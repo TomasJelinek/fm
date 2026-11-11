@@ -6,10 +6,10 @@ export global ShortcutHints {
     in-out property <string> revision;
     pure callback lookup(string, bool) -> string;
     pure callback lookup-help() -> string;
-    pure callback lookup-control(int, bool) -> FunctionSlot;
-    pure public function control(index: int, searching: bool) -> FunctionSlot {
+    pure callback lookup-function(int, int, bool) -> FunctionSlot;
+    pure public function function-key(index: int, modifiers: int, searching: bool) -> FunctionSlot {
         return ShortcutHints.revision == "" ? { action: "", label: "", key: "", hint: "", icon: 9 }
-            : ShortcutHints.lookup-control(index, searching);
+            : ShortcutHints.lookup-function(index, modifiers, searching);
     }
     pure public function help() -> string {
         return ShortcutHints.revision == "" ? "" : ShortcutHints.lookup-help();

@@ -877,7 +877,7 @@ fn in_session_reassignment_updates_the_bottom_caption_and_rendered_help() {
     h.draw();
     h.commit();
     h.draw();
-    ui::root_item(&h.ui.window, "Ctrl+Alt+R Rename", AccessibleRole::Button);
+    ui::root_item(&h.ui.window, "F2 — unavailable", AccessibleRole::Button);
     let root_text = ui::text_values(ItemRc::new_root(
         WindowInner::from_pub(h.ui.window.window()).component(),
     ));

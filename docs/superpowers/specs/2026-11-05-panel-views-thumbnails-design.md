@@ -219,3 +219,13 @@ Selection is retained by provider ID when catalog ordering changes. Thumbnailer
 and filesystem entries are read-only: the Previews page continues to control
 image/video previews globally, network access, longest-side size and cache cleanup.
 No individual-thumbnailer enable/disable or extension-routing preference is implied.
+## Direct view shortcuts (11 November 2026)
+
+The existing configurable view actions have defaults Ctrl+Shift+B for Brief,
+Ctrl+Shift+L for Detailed list, and Ctrl+Shift+T for Thumbnails. They target the
+focused file pane, including filename-search mode, and leave the other pane
+unchanged. Text editors, command input and viewer windows retain their own input
+handling. F10 reads the current effective bindings. Existing explicit assignments
+take precedence over these newly added defaults; remapping and removing them
+uses the ordinary Options → Keyboard editor. The existing per-tab view-mode
+persistence remains authoritative.

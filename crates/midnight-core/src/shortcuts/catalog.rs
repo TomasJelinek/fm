@@ -531,9 +531,24 @@ fn build() -> Vec<ShortcutDefinition> {
         &[],
     );
     add("bookmark.manage", "Manage Hot Paths", FilesAny, &[]);
-    add("view.brief", "Brief panel view", FilesAny, &[]);
-    add("view.detailed", "Detailed panel view", FilesAny, &[]);
-    add("view.thumbnails", "Thumbnail panel view", FilesAny, &[]);
+    add(
+        "view.brief",
+        "Brief panel view",
+        FilesAny,
+        &["Ctrl+Shift+B"],
+    );
+    add(
+        "view.detailed",
+        "Detailed panel view",
+        FilesAny,
+        &["Ctrl+Shift+L"],
+    );
+    add(
+        "view.thumbnails",
+        "Thumbnail panel view",
+        FilesAny,
+        &["Ctrl+Shift+T"],
+    );
     add("app.exit", "Exit application", Global, &["Alt+F4"]);
     add("network.connect", "Connect network drive", Global, &["F11"]);
     add(

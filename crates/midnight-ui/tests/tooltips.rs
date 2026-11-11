@@ -255,7 +255,7 @@ fn moving_footer(
     time: &Cell<Duration>,
     pixels: &mut [slint::Rgb8Pixel],
 ) {
-    let hint = "Help (F1) · current keyboard shortcuts and usage help";
+    let hint = "Help (F1)\nApplication window";
     for visible in [false, true] {
         window.window().dispatch_event(WindowEvent::PointerExited);
         window.set_desktop_feedback_important(false);
@@ -462,11 +462,8 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             );
         }
         for (label, hint) in [
-            (
-                "F1 Help",
-                "Help (F1) · current keyboard shortcuts and usage help",
-            ),
-            ("F10 Menu", "Menu (F10) · options, refresh, help and exit"),
+            ("F1 Help", "Help (F1)\nApplication window"),
+            ("F10 Menu", "Main menu (F10)\nApplication window"),
         ] {
             let button = find(root(&window), label, AccessibleRole::Button).remove(0);
             hover(&window, &native, &time, &mut pixels, center(&button), hint);

@@ -139,6 +139,7 @@ export component MainWindow inherits Window {
     callback close-checksum-windows();
     callback edit-file(int);
     in-out property <bool> control-layer;
+    in-out property <int> function-modifiers;
     callback volume-key(KeyEvent) -> int;
     callback physical-shortcut(string, bool, bool, bool, bool) -> bool;
     in property <bool> native-alt-gr;
@@ -1132,7 +1133,7 @@ export component MainWindow inherits Window {
             can-target-selection: root.active-pane == 0 ? root.left-can-target-selection : root.right-can-target-selection;
             native-filesystem: root.active-pane == 0 ? root.left-native-filesystem : root.right-native-filesystem;
             icons: root.action-icons; pane: root.active-pane;
-            control-layer: root.control-layer; network-available: root.network-available;
+            modifiers: root.function-modifiers; network-available: root.network-available;
             searching: root.active-pane == 0 ? root.left-search-active : root.right-search-active;
             action(action, pane) => { root.function-action(action, pane); }
             jobs => { root.show-operations(); }

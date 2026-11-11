@@ -336,6 +336,8 @@ editor scope and shortcuts reserved for later stages.
   case-insensitively. The matching prefix is colored; Up/Down visits matches and
   Escape exits. Options can filter the list while typing instead of just jumping.
 
+- Ctrl+Shift+B / Ctrl+Shift+L / Ctrl+Shift+T: Brief / Detailed / Thumbnails
+  in the active pane. Reassign these in Options → Keyboard; F10 shows current keys.
 - Tab: switch active file pane.
 - Ctrl+T / Ctrl+W: add / close a folder tab in the focused pane.
 - Ctrl+Tab: focus the command editor; press again to return to the active pane.

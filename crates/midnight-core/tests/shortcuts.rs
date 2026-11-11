@@ -888,3 +888,72 @@ fn clear_files_only_never_changes_directory_selection() {
         assert!(!SelectionOperation::Clear.selects(false, selected));
     }
 }
+
+const PANEL_VIEW_KEYS: [(&str, &str); 3] = [
+    ("view.brief", "Ctrl+Shift+B"),
+    ("view.detailed", "Ctrl+Shift+L"),
+    ("view.thumbnails", "Ctrl+Shift+T"),
+];
+
+#[test]
+fn panel_view_defaults_work_in_files_and_search_without_stealing_editor_keys() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    for (id, key) in PANEL_VIEW_KEYS {
+        for context in [ShortcutContext::Files, ShortcutContext::Search] {
+            assert_eq!(action(&map, key, context).as_deref(), Some(id), "{key}");
+        }
+        for context in [
+            ShortcutContext::Command,
+            ShortcutContext::Other,
+            ShortcutContext::Viewer,
+        ] {
+            assert_eq!(action(&map, key, context), None, "{key} in {context:?}");
+        }
+        assert_eq!(map.bindings(id).unwrap()[0].display(), key);
+    }
+}
+
+#[test]
+fn panel_view_defaults_preserve_saved_assignments_and_support_remapping_or_removal() {
+    for (id, key) in PANEL_VIEW_KEYS {
+        let saved = ShortcutBinding {
+            action: "files.rename".into(),
+            keys: vec![key.into()],
+        };
+        let map = ShortcutMap::new(std::slice::from_ref(&saved)).unwrap();
+        assert_eq!(
+            action(&map, key, ShortcutContext::Files).as_deref(),
+            Some("files.rename")
+        );
+        assert!(map.bindings(id).unwrap().is_empty());
+        assert!(
+            ShortcutMap::new(&[
+                saved,
+                ShortcutBinding {
+                    action: id.into(),
+                    keys: vec![key.into()]
+                },
+            ])
+            .is_err(),
+            "explicit conflicts must still be rejected"
+        );
+
+        let remapped = ShortcutMap::new(&[ShortcutBinding {
+            action: id.into(),
+            keys: vec!["Ctrl+Shift+F12".into()],
+        }])
+        .unwrap();
+        assert_eq!(action(&remapped, key, ShortcutContext::Files), None);
+        assert_eq!(
+            action(&remapped, "Ctrl+Shift+F12", ShortcutContext::Files).as_deref(),
+            Some(id)
+        );
+        let removed = ShortcutMap::new(&[ShortcutBinding {
+            action: id.into(),
+            keys: vec![],
+        }])
+        .unwrap();
+        assert_eq!(action(&removed, key, ShortcutContext::Files), None);
+        assert!(removed.bindings(id).unwrap().is_empty());
+    }
+}

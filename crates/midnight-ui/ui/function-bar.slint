@@ -9,7 +9,7 @@ import { ActionAvailability } from "action-availability.slint";
 export component FunctionBar inherits Rectangle {
     private property <image> no-native-icon;
     in property <ActionIcons> icons;
-    in property <bool> control-layer;
+    in property <int> modifiers;
     in property <bool> network-available;
     in property <bool> native-filesystem: true;
     in property <bool> can-measure-folders: root.native-filesystem;
@@ -20,7 +20,6 @@ export component FunctionBar inherits Rectangle {
     in property <bool> can-target-selection;
     callback action(string, int);
     callback jobs();
-    private property <[string]> normal-actions: ["app.help", "files.rename", "files.view", "files.edit", "files.copy-to", "files.move-to", "files.create-directory", "files.trash", "app.user-menu", "app.main-menu", "network.connect", "network.disconnect"];
     private property <[string]> pressed-actions;
     private property <int> pressed-pane;
     private property <bool> pointer-snapshot;
@@ -30,7 +29,7 @@ export component FunctionBar inherits Rectangle {
             root.can-target-selection, root.network-available, root.can-measure-folders);
     }
     pure function capture-action(index: int) -> string {
-        let action = root.control-layer ? ShortcutHints.control(index, root.searching).action : root.normal-actions[index];
+        let action = ShortcutHints.function-key(index, root.modifiers, root.searching).action;
         return root.enabled-action(action) ? action : "";
     }
     public function capture-press(x: length, y: length) {
@@ -60,15 +59,15 @@ export component FunctionBar inherits Rectangle {
         content-height: self.visible-height;
         Rectangle {
             width: keys.content-width; height: keys.visible-height;
-            for label[index] in ["Help", "Rename", "View", "Edit", "Copy", "Move", "Create dir", "Delete", "User menu", "Menu", "Connect", "Disconnect"] : FunctionButton {
+            for index in 12 : FunctionButton {
                 // Modifier changes must not move the pressed cell before pointer-up.
                 preferred-width: self.min-width;
                 min-width: 0px; width: root.key-width; height: root.height;
                 x: index * (root.key-width + 4px);
-                private property <string> normal-action: root.normal-actions[index];
-                private property <FunctionSlot> control: ShortcutHints.control(index, root.searching);
-                private property <int> icon-role: root.control-layer ? self.control.icon : index;
-                action-id: root.control-layer ? self.control.action : self.normal-action;
+                private property <FunctionSlot> slot: ShortcutHints.function-key(index, root.modifiers, root.searching);
+                private property <int> icon-role: self.slot.icon;
+                action-id: self.slot.action;
+                has-icon: self.slot.action != "";
                 pane: root.pane;
                 pointer-snapshot: root.pointer-snapshot;
                 press-cancelled: root.press-cancelled;
@@ -87,15 +86,12 @@ export component FunctionBar inherits Rectangle {
                     : self.icon-role == 8 ? FallbackIcons.user-menu : self.icon-role == 10 || self.icon-role == 11 ? FallbackIcons.network
                     : self.icon-role == 12 ? FallbackIcons.attributes : self.icon-role == 13 ? FallbackIcons.sort-ascending
                     : self.icon-role == 14 ? FallbackIcons.refresh : self.icon-role == 15 ? FallbackIcons.checksums : FallbackIcons.menu;
-                text: root.control-layer ? (self.control.action == "" ? "Ctrl+F" + (index + 1) : self.control.key + " " + self.control.label)
-                    : ShortcutHints.caption(label, self.normal-action);
-                caption: root.control-layer && self.control.action != "" ? "F" + (index + 1) + " " + self.control.label : self.text;
-                // The held Ctrl layer supplies the modifier; keep F1…F12 readable in compact cells.
-                compact-text: root.control-layer ? "F" + (index + 1)
-                    : ShortcutHints.key(self.normal-action) == "" ? label : ShortcutHints.key(self.normal-action);
+                text: self.slot.action == "" ? self.slot.key : self.slot.key + " " + self.slot.label;
+                caption: self.slot.action == "" ? "F" + (index + 1) : "F" + (index + 1) + " " + self.slot.label;
+                // Show the action even when its icon must yield space; only very narrow cells use keys alone.
+                compact-text: "F" + (index + 1);
                 enabled: root.enabled-action(self.action-id);
-                hint: root.control-layer ? (self.control.action == "" ? "Ctrl+F" + (index + 1) + " is unassigned. Configure it in Options → Keyboard." : self.control.hint)
-                    : ShortcutHints.hint(label, self.normal-action) + (index == 0 ? " · current keyboard shortcuts and usage help" : index == 1 ? " · rename the focused entry" : index == 2 ? " · open the focused file in an installed viewer" : index == 3 ? " · edit the focused file in your external editor" : index == 4 ? " · copy selection with checksum verification in the background" : index == 5 ? " · move up to 64 files; verify each destination before removing its source" : index == 6 ? " · create a folder or nested path" : index == 7 ? " · move selection to Trash; " + ShortcutHints.hint("permanent deletion requires confirmation", "files.delete") : index == 8 ? " · commands, properties and folder sizes" : index == 9 ? " · options, refresh, help and exit" : " · system network drive dialog");
+                hint: self.slot.hint;
                 activated(action, pane) => { root.action(action, pane); }
             }
         }

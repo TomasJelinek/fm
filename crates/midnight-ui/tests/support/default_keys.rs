@@ -3,10 +3,14 @@ use midnight_ui::MainWindow;
 use slint::{ComponentHandle, SharedString, platform::WindowEvent};
 
 pub(crate) fn key(window: &MainWindow, text: SharedString) {
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    window
-        .window()
-        .dispatch_event(WindowEvent::KeyReleased { text });
+    key_edge(window, text.clone(), true);
+    key_edge(window, text, false);
+}
+
+pub(crate) fn key_edge(window: &MainWindow, text: SharedString, pressed: bool) {
+    window.window().dispatch_event(if pressed {
+        WindowEvent::KeyPressed { text }
+    } else {
+        WindowEvent::KeyReleased { text }
+    });
 }

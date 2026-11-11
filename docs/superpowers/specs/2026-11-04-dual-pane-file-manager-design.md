@@ -2215,3 +2215,20 @@ bod i bez celého měřicího intervalu. Graf není procentem dokončení ani m�
 fyzické propustnosti disku. UI pouze formátuje omezené vzorky a přizpůsobuje graf
 tématu a velikosti okna; nemění bezpečnostní ani kontrolní podmínky operací.
 Podrobnosti: [návrh grafu](2026-11-10-operation-speed-chart-design.md).
+
+
+### Function-key footer and direct panel views (11 November 2026)
+
+Ctrl+Shift+B, Ctrl+Shift+L and Ctrl+Shift+T select Brief, Detailed and Thumbnails
+for the active file pane, also during filename search. Editor and viewer input is
+unaffected. Saved explicit assignments retain priority over these new defaults.
+The existing Keyboard settings and F10 menu expose their effective bindings.
+
+The bottom function-key bar resolves every F1–F12 slot using the current shortcut
+map and held Ctrl/Alt/Shift/Meta combination, rather than fixed action arrays.
+Labels, tooltips and mouse dispatch come from the same cached binding snapshot.
+AltGr is excluded. Releasing modifiers or switching panes during a mouse press
+preserves the originally pressed action and pane. An unassigned slot is disabled.
+At normal widths action text takes priority over icons; compact minimum-width
+cells retain key labels and expose full descriptions through tooltips/accessibility.
+See [the shortcut matrix](../../KEYBOARD_SHORTCUTS.md) for the default layers.

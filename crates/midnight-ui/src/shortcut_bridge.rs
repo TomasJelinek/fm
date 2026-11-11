@@ -111,7 +111,9 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
     let state = bindings.clone();
     hints.on_lookup_help(move || state.borrow().help.clone());
     let state = bindings.clone();
-    hints.on_lookup_control(move |index, searching| state.borrow().control_slot(index, searching));
+    hints.on_lookup_function(move |index, modifiers, searching| {
+        state.borrow().function_slot(index, modifiers, searching)
+    });
     hints.set_revision(bindings.borrow().revision_text.clone());
     if window.get_keyboard_actions().row_count() == 0 {
         window.set_keyboard_actions(
@@ -276,21 +278,40 @@ fn update_control_layer(
     if window.get_native_shortcuts_authoritative() {
         return;
     }
-    if event.text == slint::SharedString::from(Key::AltGr) {
+    let alt_gr_edge = event.text == slint::SharedString::from(Key::AltGr);
+    if alt_gr_edge {
         window.set_native_alt_gr(!released);
     }
-    let released_control = released
-        && [Key::Control, Key::ControlR]
-            .into_iter()
-            .any(|key| event.text == slint::SharedString::from(key));
-    window.set_control_layer(
-        event.modifiers.control
-            && !released_control
-            && !event.modifiers.alt
-            && !event.modifiers.shift
-            && !event.modifiers.meta
-            && !window.get_native_alt_gr(),
-    );
+    let mut mask = i32::from(event.modifiers.control)
+        | (i32::from(event.modifiers.alt) << 1)
+        | (i32::from(event.modifiers.shift) << 2)
+        | (i32::from(event.modifiers.meta) << 3);
+    // Software hosts can deliver a modifier edge before updating its flags.
+    // Other modifiers remain exactly as reported by the event snapshot.
+    for (key, bit) in [
+        (Key::Control, 1),
+        (Key::ControlR, 1),
+        (Key::Alt, 2),
+        (Key::Shift, 4),
+        (Key::ShiftR, 4),
+        (Key::Meta, 8),
+        (Key::MetaR, 8),
+    ] {
+        if event.text == slint::SharedString::from(key) {
+            if released {
+                mask &= !bit;
+            } else {
+                mask |= bit;
+            }
+            break;
+        }
+    }
+    // AltGr key-up may still contain its synthesized Ctrl+Alt flags.
+    if alt_gr_edge || window.get_native_alt_gr() {
+        mask = 0;
+    }
+    window.set_function_modifiers(mask);
+    window.set_control_layer(mask == 1);
 }
 
 pub(crate) fn install(
@@ -382,5 +403,121 @@ pub(crate) fn refresh_bindings(window: &MainWindow, presenter: &Presenter) {
     }
     if window.get_keyboard_revision() != state.editor_revision_text {
         window.set_keyboard_revision(state.editor_revision_text.clone());
+    }
+}
+
+#[cfg(test)]
+mod function_modifier_tests {
+    use super::*;
+    use i_slint_core::input::KeyEvent;
+    use slint::platform::{
+        Key, Platform, PlatformError, WindowAdapter,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+    };
+
+    fn ui(test: impl FnOnce(MainWindow) + Send + 'static) {
+        std::thread::spawn(move || {
+            struct TestPlatform;
+            impl Platform for TestPlatform {
+                fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+                    Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))
+                }
+            }
+            slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+            test(MainWindow::new().unwrap());
+        })
+        .join()
+        .unwrap();
+    }
+
+    fn event(key: Key, mask: i32) -> KeyEvent {
+        let mut event = KeyEvent::default();
+        event.text = key.into();
+        event.modifiers.control = mask & 1 != 0;
+        event.modifiers.alt = mask & 2 != 0;
+        event.modifiers.shift = mask & 4 != 0;
+        event.modifiers.meta = mask & 8 != 0;
+        event
+    }
+
+    #[test]
+    fn function_modifiers_logical_events_cover_all_combinations_and_modifier_edges() {
+        ui(|window| {
+            for mask in 0..16 {
+                update_control_layer(&window, &event(Key::F1, mask), false);
+                assert_eq!(window.get_function_modifiers(), mask);
+                assert_eq!(window.get_control_layer(), mask == 1);
+            }
+            for (key, bit) in [
+                (Key::Control, 1),
+                (Key::ControlR, 1),
+                (Key::Alt, 2),
+                (Key::Shift, 4),
+                (Key::ShiftR, 4),
+                (Key::Meta, 8),
+                (Key::MetaR, 8),
+            ] {
+                update_control_layer(&window, &event(key, 0), false);
+                assert_eq!(window.get_function_modifiers(), bit, "press precedes flags");
+                update_control_layer(&window, &event(key, 15), true);
+                assert_eq!(
+                    window.get_function_modifiers(),
+                    15 ^ bit,
+                    "release precedes flags"
+                );
+                assert!(!window.get_control_layer());
+            }
+        });
+    }
+
+    #[test]
+    fn function_modifiers_logical_altgr_never_exposes_ctrl_alt_or_overrides_native_state() {
+        ui(|window| {
+            update_control_layer(&window, &event(Key::AltGr, 3), false);
+            assert_eq!(window.get_function_modifiers(), 0);
+            assert!(window.get_native_alt_gr());
+            update_control_layer(&window, &event(Key::F1, 15), false);
+            assert_eq!(window.get_function_modifiers(), 0);
+            update_control_layer(&window, &event(Key::AltGr, 3), true);
+            assert_eq!(
+                window.get_function_modifiers(),
+                0,
+                "AltGr key-up still has old Ctrl+Alt flags"
+            );
+            assert!(!window.get_native_alt_gr());
+            update_control_layer(&window, &event(Key::F1, 4), false);
+            assert_eq!(window.get_function_modifiers(), 4);
+            window.set_native_shortcuts_authoritative(true);
+            window.set_function_modifiers(9);
+            update_control_layer(&window, &event(Key::Shift, 4), false);
+            assert_eq!(
+                window.get_function_modifiers(),
+                9,
+                "native state owns the footer"
+            );
+        });
+    }
+
+    #[test]
+    fn function_modifiers_native_bridge_publishes_combinations_and_focus_reset() {
+        use slint::winit_030::winit::{event::WindowEvent, keyboard::ModifiersState};
+        ui(|window| {
+            let mut state = crate::native_shortcuts::ShortcutState::default();
+            for mask in 0..16 {
+                let mut modifiers = ModifiersState::empty();
+                modifiers.set(ModifiersState::CONTROL, mask & 1 != 0);
+                modifiers.set(ModifiersState::ALT, mask & 2 != 0);
+                modifiers.set(ModifiersState::SHIFT, mask & 4 != 0);
+                modifiers.set(ModifiersState::SUPER, mask & 8 != 0);
+                assert!(!state.handle(&window, &WindowEvent::ModifiersChanged(modifiers.into())));
+                assert_eq!(window.get_function_modifiers(), mask);
+                assert_eq!(window.get_control_layer(), mask == 1);
+            }
+            assert!(!state.handle(&window, &WindowEvent::Focused(false)));
+            assert_eq!(window.get_function_modifiers(), 0);
+            assert!(!window.get_control_layer());
+            assert!(!state.handle(&window, &WindowEvent::Focused(true)));
+            assert_eq!(window.get_function_modifiers(), 0);
+        });
     }
 }

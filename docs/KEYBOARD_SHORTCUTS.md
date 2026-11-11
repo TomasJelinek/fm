@@ -1,4 +1,4 @@
-# Keyboard shortcuts — Midnight Explorer 0.1
+# Keyboard shortcuts — Midnight Explorer 0.2
 
 File dragging follows Explorer-style internal defaults: same-volume Move,
 otherwise Copy, with uncertain or mixed volume evidence falling back to Copy.
@@ -49,11 +49,38 @@ Physical number keys may be entered as `Ctrl+1` or `Ctrl+Digit1`; these are the 
 binding. The editor accepts `Ctrl`, `Alt`, `Shift`, `Meta`, named keys such as
 `PageDown`, and Unicode characters. `Plus` denotes the plus key.
 
-Holding Ctrl switches the footer to the effective Ctrl+F1–F12 bindings. Reassigning
-or disabling a binding updates its caption, tooltip and click action. A mouse press
-captures the displayed action and pane even if Ctrl is released before the click
-finishes. AltGr does not activate this layer. While a panel is enlarged, switching
-panels transfers the enlargement; centering the splitter exits enlargement.
+The F1–F12 footer follows the held Ctrl, Alt, Shift and Meta modifiers, including
+combinations. Every cell uses the effective binding from Options → Keyboard;
+unassigned cells are disabled. Changing, removing or restoring a binding updates
+its caption, tooltip and click action, including unmodified function keys. AltGr
+is typing input and does not activate a modified layer. Operating-system-reserved
+combinations may be intercepted before they reach the app.
+
+At normal widths the action text takes priority over its icon. Very narrow cells
+show the function key; the tooltip and accessibility label retain the complete
+chord and action. A mouse press captures the action and pane, so releasing or
+changing modifiers before releasing the mouse cannot trigger a different action.
+While a panel is enlarged, switching panels transfers the enlargement; centering
+the splitter exits enlargement.
+
+| Function key | Unmodified | Ctrl | Shift | Alt | Ctrl+Shift |
+| --- | --- | --- | --- | --- | --- |
+| F1 | Help | Drive info | — | Left drive | — |
+| F2 | Rename | Attributes | — | Right drive | — |
+| F3 | View | Sort by name | — | Plain-text view | — |
+| F4 | Edit | Sort by extension | New file | Exit | — |
+| F5 | Copy | Sort by modified time | — | — | — |
+| F6 | Move | Sort by size | — | — | — |
+| F7 | Create directory | Filename case | — | Find | — |
+| F8 | Trash | Checksums | Permanent delete | — | — |
+| F9 | User menu | Refresh | — | — | — |
+| F10 | Main menu | Compare directories | — | — | Directory sizes |
+| F11 | Connect | Zoom panel | — | — | — |
+| F12 | Disconnect | Panel filter | — | — | — |
+
+This matrix shows main file-pane defaults, including filename search; viewers and
+dialogs have their own local shortcuts. Other modifier combinations have no default
+main-window function-key bindings; users can assign them if the OS makes them available.
 
 File navigation, tab and bookmark shortcuts apply
 in the focused file list, preserving typing in the path/command/options editors.
@@ -88,6 +115,9 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Shift+drive letter | Switch volume on Windows, using its remembered path |
 | Ctrl+F1 / Ctrl+L | Read-only cached drive information; detailed backend-provided volume information is the requested replacement |
 | Ctrl+F2 | Attributes, times and filename-case editor for the captured selection |
+| Ctrl+Shift+B | Switch the active pane to Brief view |
+| Ctrl+Shift+L | Switch the active pane to Detailed list view |
+| Ctrl+Shift+T | Switch the active pane to Thumbnails view |
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
 | Ctrl+A | Select displayed top-level files only; deselect folders and nested rows |
