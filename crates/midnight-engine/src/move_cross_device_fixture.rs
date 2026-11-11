@@ -44,6 +44,13 @@ fn wrap(prepared: PreparedTransferMove) -> PreparedTransferMove {
 }
 struct Source(Box<dyn TransferSource>);
 impl TransferSource for Source {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.0.discover(cancel, visit)
+    }
     fn entry(&self) -> &TransferEntry {
         self.0.entry()
     }

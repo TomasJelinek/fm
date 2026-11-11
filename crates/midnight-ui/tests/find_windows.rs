@@ -451,9 +451,9 @@ fn modeless_find_streams_results_and_closes_independently_at_320_by_200() {
     );
     accepting.set(true);
     draw(&first, 320, 200);
-    click(&first, "Details");
+    click_footer_action(&first, 320, 200, "Details");
     draw(&first, 320, 200);
-    click(&first, "Copy");
+    click_footer_action(&first, 320, 200, "Copy");
     assert!(commands.borrow().iter().any(
         |c| matches!(c, Command::CopyText { text, .. } if text.contains("Request queue is busy"))
     ));

@@ -18,9 +18,19 @@ impl Job {
         } else {
             DiscoveryScope::Recursive
         };
+        self.discover_scope(scope);
+    }
+    #[cfg(test)]
+    pub(in crate::copy_operations) fn discover_cross_device_fixture(&mut self) {
+        // The fixture injects CrossDevice eligibility while preserving real native
+        // identities on one owned volume. Production scope selection stays above.
+        self.discover_scope(DiscoveryScope::Recursive);
+    }
+    fn discover_scope(&mut self, scope: DiscoveryScope) {
         let mut discovery = OperationDiscovery::scanning(scope);
         self.progress.discovery = discovery.clone();
         self.store_progress();
+        let mut budget = work_budget::Budget::discovery();
         let mut published = Instant::now();
         for source in &self.roots {
             if !self.cancel.wait_if_paused() {
@@ -31,6 +41,7 @@ impl Job {
             }
             let mut visit = |item: &MutationItem| {
                 discovery.observe(item);
+                budget.observe(item, self.verification);
                 if published.elapsed() >= Duration::from_millis(50) {
                     let mut status = self
                         .status
@@ -58,6 +69,7 @@ impl Job {
         }
         discovery.finish();
         self.progress.discovery = discovery;
+        self.work_budget = budget;
         self.progress.current_path = None;
         self.store_progress();
     }

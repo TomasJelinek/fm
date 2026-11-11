@@ -131,6 +131,8 @@ impl Drop for Attributes {
 }
 
 pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Worker> {
+    #[cfg(feature = "startup-diagnostics")]
+    let mut timing = crate::startup_diagnostics::Trace::new("restricted_windows");
     let wide: Vec<_> = executable.as_os_str().encode_wide().chain([0]).collect();
     if wide[..wide.len() - 1].contains(&0) {
         return Err(io::Error::new(
@@ -159,6 +161,8 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
             HANDLE_FLAG_INHERIT,
         ))?;
     }
+    #[cfg(feature = "startup-diagnostics")]
+    timing.mark("pipes");
     let name: Vec<u16> = "MidnightExplorer.RestrictedWorker.v1"
         .encode_utf16()
         .chain([0])
@@ -185,6 +189,8 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
         )));
     }
     let sid = Sid(sid);
+    #[cfg(feature = "startup-diagnostics")]
+    timing.mark("profile");
     let capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: sid.0,
         ..Default::default()
@@ -231,6 +237,8 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
             size_of_val(&budget) as u32,
         )
     })?;
+    #[cfg(feature = "startup-diagnostics")]
+    timing.mark("job");
     let mut process = PROCESS_INFORMATION::default();
     // AppContainer startup needs SystemRoot. Query the OS instead of inheriting user secrets/PATH.
     let mut system_root = vec![0u16; 32768];
@@ -258,6 +266,8 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
     environment.extend("SystemRoot=".encode_utf16());
     environment.extend_from_slice(&system_root[..length]);
     environment.extend_from_slice(&[0, 0]);
+    #[cfg(feature = "startup-diagnostics")]
+    timing.mark("environment");
     // SAFETY: explicit executable avoids command parsing/search; no arguments or secret environment.
     // Suspended start prevents untrusted parsing before assignment to the resource-limited job.
     check(unsafe {
@@ -283,6 +293,8 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
             format!("CreateProcessW for restricted worker: {error}"),
         )
     })?;
+    #[cfg(feature = "startup-diagnostics")]
+    timing.mark("process_created");
     // SAFETY: CreateProcess succeeded and transferred both handles to this scope.
     let process_handle = unsafe { OwnedHandle::from_raw_handle(process.hProcess) };
     let thread = unsafe { OwnedHandle::from_raw_handle(process.hThread) };
@@ -305,6 +317,8 @@ pub(super) fn spawn(executable: &Path, limits: ResourcePolicy) -> io::Result<Wor
     if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
         return Err(io::Error::last_os_error());
     }
+    #[cfg(feature = "startup-diagnostics")]
+    timing.mark("contained_resumed");
     Ok(Worker {
         input,
         output,

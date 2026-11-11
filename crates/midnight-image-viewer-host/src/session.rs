@@ -64,9 +64,15 @@ impl ImageSession {
         cancel: &AtomicBool,
         timeout: Duration,
     ) -> io::Result<Self> {
+        #[cfg(feature = "startup-diagnostics")]
+        let mut startup = midnight_worker_platform::startup_diagnostics::Trace::new("image_open");
         check_cancel(cancel)?;
         provider.validate()?;
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("provider_validated");
         source.validate()?;
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("source_validated");
         let length = source.length();
         let version = source.version();
         let worker = midnight_worker_platform::spawn(
@@ -76,6 +82,8 @@ impl ImageSession {
                 cpu_seconds: 60,
             },
         )?;
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("spawned");
         let mut session = Self {
             input: worker.input,
             output: BufReader::new(worker.output),
@@ -92,14 +100,22 @@ impl ImageSession {
             failed: false,
         };
         let metadata = session.exchange(cancel, timeout, |input, output, source, stopped| {
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("broker_started");
             midnight_worker_sdk::read_ready(output)?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("ready");
             api::write_message(
                 input,
                 &Message::Open {
                     source_length: length,
                 },
             )?;
+            #[cfg(feature = "startup-diagnostics")]
+            startup.mark("open_sent");
             let mut read_total = 0u64;
+            #[cfg(feature = "startup-diagnostics")]
+            let mut first_read = true;
             for _ in 0..8192 {
                 check_cancel(cancel)?;
                 check_cancel(stopped)?;
@@ -108,6 +124,10 @@ impl ImageSession {
                         offset,
                         length: amount,
                     } => {
+                        #[cfg(feature = "startup-diagnostics")]
+                        if first_read {
+                            startup.mark("first_read_request");
+                        }
                         let end = offset
                             .checked_add(u64::from(amount))
                             .filter(|end| *end <= length)
@@ -131,6 +151,10 @@ impl ImageSession {
                                     },
                                 )
                                 .ok_or_else(cancelled)?;
+                            #[cfg(feature = "startup-diagnostics")]
+                            if first_read {
+                                startup.mark("first_read_permit");
+                            }
                             source.validate()?;
                             let bytes = source.read_at(offset, amount)?;
                             source.validate()?;
@@ -138,6 +162,11 @@ impl ImageSession {
                         };
                         if bytes.len() as u64 != end - offset {
                             return Err(io::Error::other("Image source returned a short read"));
+                        }
+                        #[cfg(feature = "startup-diagnostics")]
+                        if first_read {
+                            startup.mark("first_read_complete");
+                            first_read = false;
                         }
                         api::write_message(input, &Message::Data(bytes))?;
                     }
@@ -156,9 +185,13 @@ impl ImageSession {
                 "Image source request-count budget exhausted",
             ))
         })?;
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("metadata");
         session.metadata = metadata.0;
         session.document = metadata.1;
         session.validate_source()?;
+        #[cfg(feature = "startup-diagnostics")]
+        startup.mark("complete");
         check_cancel(cancel)?;
         Ok(session)
     }

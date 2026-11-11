@@ -16,6 +16,8 @@ mod metadata_job;
 mod move_job;
 #[path = "move_native.rs"]
 mod native_move;
+#[path = "copy_work_budget.rs"]
+mod work_budget;
 
 pub(super) enum Step {
     Continue,
@@ -86,6 +88,7 @@ pub(super) struct Job {
     move_work: Option<move_job::MoveWork>,
     metadata: Option<metadata_job::MetadataWork>,
     verification: TransferVerification,
+    work_budget: work_budget::Budget,
     active_root: Option<RootCompletion>,
     completed_root: Option<CompletedCopySource>,
     // Declared last: native sources, captures and cleanup authority close before
@@ -368,6 +371,7 @@ impl Job {
             move_work: None,
             metadata: None,
             verification: TransferVerification::default(),
+            work_budget: work_budget::Budget::default(),
             active_root: None,
             completed_root: None,
             drop_retention: None,
@@ -454,6 +458,11 @@ impl Job {
             .and_then(|work| work.copy.as_ref())
             .map_or(0, VerifiedFileCopy::verified_bytes);
         self.check_discovery_progress();
+        let proof_credit = self
+            .move_work
+            .as_ref()
+            .map_or(Some(0), |work| work.active_proof_credit(self.verification));
+        self.progress.remaining_work = self.work_budget.remaining(&self.progress, proof_credit);
         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
         self.progress.throughput = status.throughput.clone();
         self.progress.pause_requested = self.cancel.pause_requested();
@@ -962,6 +971,8 @@ impl Job {
                 }
             }
             if self.progress.files_completed > completed_before {
+                self.work_budget
+                    .published(work.entry.item.metadata.size, self.verification);
                 self.progress.completed_bytes = self
                     .progress
                     .completed_bytes

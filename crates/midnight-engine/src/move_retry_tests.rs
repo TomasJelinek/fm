@@ -189,6 +189,15 @@ fn prepared_with_read_control(
         prepared: prepared.clone(),
         receipt: Arc::new(Mutex::new(None)),
     });
+    let mut discovery = OperationDiscovery::scanning(DiscoveryScope::Recursive);
+    let mut budget = work_budget::Budget::discovery();
+    for source in &job.roots {
+        discovery.observe(&source.entry().item);
+        budget.observe(&source.entry().item, job.verification);
+    }
+    discovery.finish();
+    job.progress.discovery = discovery;
+    job.work_budget = budget;
     for _ in 0..100 {
         if job.move_work.as_ref().unwrap().has_pending() {
             return (temp, job, prepared, source);
@@ -216,7 +225,17 @@ fn retry_removal_rebuilds_finalizer_and_rehashes_both_retained_objects() {
     assert!(work.can_skip_failure());
     let validated = job.progress.validation_bytes;
     let copied = job.progress.copied_bytes;
+    assert_eq!(work.active_proof_credit(job.verification), None);
     work.retry(&mut job).unwrap();
+    let future = b"untouched future bytes".len() as u64;
+    let repeated = 2 * b"verified first bytes".len() as u64;
+    assert_eq!(work.active_proof_credit(job.verification), Some(repeated));
+    let remaining = job
+        .work_budget
+        .remaining(&job.progress, work.active_proof_credit(job.verification))
+        .unwrap();
+    assert_eq!(remaining.write_bytes, future);
+    assert_eq!(remaining.verification_bytes, 5 * future + repeated);
     for _ in 0..100 {
         work.advance(&mut job).unwrap();
         if !work.has_pending() {

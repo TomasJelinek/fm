@@ -55,8 +55,10 @@ it before executing Chromium. An eligible ancestor is detected automatically;
 The application does not enable controllers or change its own cgroup membership.
 Tree-wide cancellation uses `cgroup.kill`. These limits supplement Chromium's
 sandbox. Failure to establish containment is an error, never an unsandboxed
-fallback. The Linux launcher tests pass, but native Linux Chromium rendering has
-not been qualified; Windows rendering results do not establish Linux support.
+fallback. Native Linux rendering and containment were qualified on Ubuntu 24.04
+under WSLg XWayland; see the [Linux report](../verification/2026-11-10-html-linux.md).
+Physical IME, native Chromium Wayland and other display/system policies still need
+their own qualification. Windows measurements do not establish Linux frame pacing.
 
 Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Pointer, keyboard
 and IME input target the displayed content generation. Space cycling is arbitrated
@@ -79,3 +81,8 @@ unchanged. Native test measurements and platform limitations are recorded in the
 See the [design](../superpowers/specs/2026-11-09-html-viewer-design.md),
 [implementation plan](../superpowers/plans/2026-11-09-html-viewer.md), and the
 provider's [dependency record](../../plugins/midnight-viewer-html/THIRD_PARTY.md).
+
+The provider permits up to 60 painted frames per second while the host still keeps
+only the newest pending frame. This does not require a GPU or guarantee 60 fps.
+Measured Windows native and software latency and remaining limitations are in the
+[frame-pacing report](../verification/2026-11-12-html-frame-pacing.md).

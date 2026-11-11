@@ -225,3 +225,67 @@ The earlier ten-second outlier likewise remains unexplained. The final sample lo
 are `full-timeline-software-2` and `full-timeline-d3d-1`; the bounded runner checks
 opening success, a first-frame record and all twelve zoom results, and reaps only
 its own probe on failure. Qualified production packages were unchanged by these runs.
+
+## 2026-11-12 restricted-worker startup attribution
+
+The opt-in `startup-diagnostics` feature on `midnight-image-viewer-host` enables
+fixed numeric stage timings in the host and `midnight-worker-platform`. It is off
+by default. Each operation collects at most sixteen marks and writes one line
+when it finishes; it records no paths, environment values, source bytes or wire
+messages. The platform-specific startup paths and all containment/validation
+ordering remain unchanged.
+
+A quiet host-only run used the existing small PNG and the image provider beside
+`MidnightExplorer-20261112-progress-final-0cad3979/me.exe`. No source or plugin
+package was modified. Six opens across two fresh host processes completed with
+the same 607x204 metadata, two reads and 419,086 brokered bytes per open.
+
+| Stage duration | First cold open | Next five opens |
+| --- | ---: | ---: |
+| Fresh provider validation | 28.114 ms | 26.891–28.374 ms |
+| AppContainer profile setup (including SID derivation) | 12.923 ms | 8.820–13.596 ms |
+| `CreateProcessW` | 2,394.882 ms | 11.090–22.318 ms |
+| Ready wait after broker starts | 5.847 ms | 3.846–4.615 ms |
+| Open sent to first Read request | 0.081 ms | 0.072–0.136 ms |
+| First Read request to I/O permit | 0.010 ms | 0.003–0.010 ms |
+| Complete host open | 2,445.347 ms | 54.906–72.210 ms |
+
+This directly locates the reproduced multi-second cold delay inside native
+process creation. It is not a source-read, broker-permit or Ready-handshake
+stall. The native call can include OS/loader/security-product work; this
+measurement does not identify Defender or any other specific component as the
+cause. The prior D3D publication delay is a separate boundary and is not measured
+by this host-only example.
+
+Starting a source-free decoder earlier could overlap native window construction,
+but would require a bounded per-opening ownership/geometry handoff. It would hide
+little behind the usual approximately 5 ms software-window construction. No
+speculative decoder pool, cached package authorization, sandbox change or
+unsupported derive-only profile shortcut was introduced for this measurement.
+Microsoft documents profile creation as a per-user data-store operation and SID
+derivation as obtaining the named profile's SID; deriving a SID alone is not
+proof that the required profile was created. See
+[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)
+and
+[DeriveAppContainerSidFromAppContainerName](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-deriveappcontainersidfromappcontainername).
+
+Build: `cargo build -p midnight-image-viewer-host --example image_startup
+--features startup-diagnostics --locked --offline`, with the existing pinned SDK
+config and `_build` target directory. Invocation remains
+`image_startup <trusted-app> <existing-image>`. Evidence is under
+`_build/qa/image-startup-20261112/`: `diagnostic-build-final.log`,
+`host-before.stdout/.stderr` and `host-repeat.stdout/.stderr`. This is attribution
+evidence, not a claimed startup speedup.
+
+Focused qualification passed with both configurations: Windows ordinary host and
+worker-platform libraries 16/16; enabled containment/resource-policy tests 4/4;
+enabled host library tests 6/6 and actual image-session tests 3/3, including
+retained pixels, source changes, corruption, cancellation and deadline while
+waiting for an I/O permit. Strict all-target Clippy passed for both crates with
+diagnostics enabled. Command durations were 6.221, 11.219, 7.138 and 2.251 seconds,
+respectively. Native Linux library checks passed with the feature off and on
+(34 and 16 seconds, one build job); no Linux runtime-containment test was claimed
+for this diagnostic-only change. Exact commands and logs are retained in
+`qualify.ps1`, `qualification-summary.txt`, `qualify-linux.sh` and
+`linux-summary.txt` in the same QA directory. Independent review found no change
+to process/resource ownership, security ordering or feature-off runtime work.

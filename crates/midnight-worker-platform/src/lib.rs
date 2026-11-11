@@ -15,6 +15,10 @@ pub mod browser;
 pub mod spool;
 pub mod store;
 
+#[cfg(feature = "startup-diagnostics")]
+#[doc(hidden)]
+pub mod startup_diagnostics;
+
 pub struct Worker {
     pub input: File,
     pub output: File,

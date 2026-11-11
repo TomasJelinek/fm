@@ -24,6 +24,8 @@ impl Drop for Process {
 }
 
 pub(super) fn spawn(executable: &Path, _: ResourcePolicy) -> io::Result<Worker> {
+    #[cfg(feature = "startup-diagnostics")]
+    let mut startup = crate::startup_diagnostics::Trace::new("restricted_linux");
     // The trusted SDK locks down before acknowledging startup or accepting any untrusted bytes.
     let mut child = Command::new(executable)
         .env_clear()
@@ -32,6 +34,8 @@ pub(super) fn spawn(executable: &Path, _: ResourcePolicy) -> io::Result<Worker> 
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
+    #[cfg(feature = "startup-diagnostics")]
+    startup.mark("process_created");
     let input = child
         .stdin
         .take()

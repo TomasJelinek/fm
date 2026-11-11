@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Opt-in backend timing only; production startup behavior is unchanged.
+startup-diagnostics = ["midnight-worker-platform/startup-diagnostics"]
+
 [dependencies]
 midnight-image-viewer-api = { path = "../../image-viewer-api/midnight-image-viewer-api" }
 midnight-worker-sdk = { path = "../../worker-api/midnight-worker-sdk" }

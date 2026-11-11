@@ -296,3 +296,21 @@ and vector zoom/pan fixtures. `MIDNIGHT_PDF_VIEWER_TEST_APPLICATION` enables the
 host's `pdf_native` tests for real sandboxed page rendering, source retention,
 changed revisions and cancellation. CI exports the public SDK and sparse-checks
 each plugin alone on Windows and Linux before host integration.
+
+### Host startup diagnostics
+
+`midnight-image-viewer-host` has a default-off `startup-diagnostics` feature. It
+also enables the same feature on the shared `midnight-worker-platform` crate.
+Build `cargo build -p midnight-image-viewer-host --example image_startup
+--features startup-diagnostics`, using the normal SDK config and `_build` target,
+then run `image_startup <trusted-app-executable> <existing-image>`.
+
+The host records provider/source validation, restricted process startup, Ready,
+Open, first broker request, I/O admission and decoded metadata. Platform-specific
+marks split native startup further. Each operation buffers at most sixteen fixed
+labels and elapsed-millisecond values, then writes one stderr line; paths,
+environment values and content are excluded. No worker wire/API or sandbox
+behavior changes. Without the feature the timing code is compiled out.
+See the [measured startup attribution](../verification/2026-11-11-image-loading.md)
+for interpreting cold native-process delays separately from decoding and UI
+publication.

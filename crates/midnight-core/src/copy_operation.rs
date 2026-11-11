@@ -93,6 +93,15 @@ pub struct MoveSourceResidual {
     pub matched_source: bool,
 }
 
+/// Advisory unfinished content work, derived on a worker from discovery and retained
+/// copy/proof state. Excludes metadata, sync and namespace latency. Never authority.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TransferRemainingWork {
+    pub write_bytes: u64,
+    /// Initial destination readback plus any remaining Move source/destination proofs.
+    pub verification_bytes: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct CopyProgress {
     pub id: OperationId,
@@ -109,6 +118,8 @@ pub struct CopyProgress {
     /// Successfully published selected roots (a directory includes its complete subtree).
     pub completed_roots: u64,
     pub discovery: crate::OperationDiscovery,
+    /// None for unsupported/changed discovery, native root scope or invalid accounting.
+    pub remaining_work: Option<TransferRemainingWork>,
     /// Logical bytes successfully published once. Unlike copied_bytes this excludes retry I/O.
     pub completed_bytes: u64,
     /// Fully traversed source directories, including merges; excludes skipped/error subtrees.
@@ -180,6 +191,7 @@ impl CopyProgress {
             requested_roots,
             completed_roots: 0,
             discovery: crate::OperationDiscovery::default(),
+            remaining_work: None,
             completed_bytes: 0,
             completed_directories: 0,
             current_file_size: None,

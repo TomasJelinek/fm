@@ -129,7 +129,9 @@ retained-object checkpoints. Automatic progress closes on success; manually
 opened Jobs and session history remain. The 11 November follow-up separates the
 Jobs ledger from per-operation Copy/Move/Delete progress, shares the progress/speed
 chart UI, and makes X/Escape cancel the exact operation. Pause/discovery and native
-window regressions are undergoing integrated qualification; see the
+window regressions passed integrated Windows/Linux affected suites and Windows
+native/software startup checks; see the
+[qualified build](verification/2026-11-11-settings-ui-follow-up.md) and
 [progress contract](developer/OPERATION_PROGRESS.md). Unsupported checkpoints cannot be
 retried optimistically. See [error recovery verification](verification/2026-11-08-transfer-errors.md).
 The 11 November retry correction retains one owned pre-copy stage across Move

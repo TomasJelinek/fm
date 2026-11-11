@@ -152,7 +152,8 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         databases_deprecated: State::DISABLED,
         webgl: State::DISABLED,
         background_color: 0xffffffff,
-        windowless_frame_rate: 30,
+        // Permit a display frame every ~16 ms; the output retains only the newest paint.
+        windowless_frame_rate: 60,
         ..Default::default()
     };
     let info = crate::platform::window_info();

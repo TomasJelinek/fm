@@ -169,6 +169,25 @@ size. Existing queue, confirmation, cancellation,
 checksum and source-removal policies are unchanged. See the
 [chart design](../superpowers/specs/2026-11-10-operation-speed-chart-design.md).
 
+## Remaining-work estimates
+
+Metadata discovery also sums the selected verification range length per file,
+without retaining a file list or reading contents. The engine publishes optional
+`TransferRemainingWork` write/read byte counts. A file of length L and verification
+range length V needs L+V byte-work for Copy, or L+5V for cross-volume Move: initial
+readback plus source/destination proof passes before and after source capture.
+This is advisory work accounting; it cannot grant publication or source-removal
+permission. Native rename retains root-only discovery and does not acquire a
+recursive scan or byte budget.
+
+Logical credit uses completed publication/removal and the exact active copy/proof
+state. The After proof is outstanding again on an explicit removal Retry, including
+before its next `begin_validation` call resets the old proof counter. Cumulative
+I/O counters remain activity only. The UI divides remaining byte-work by the latest
+combined write/readback activity rate, suppressing unavailable, paused, failed or
+skipped estimates. Metadata/sync/namespace latency is unbudgeted; estimates remain
+approximate. See [the budget evidence](../verification/2026-11-12-transfer-eta.md).
+
 ## Publication and recovery
 
 Windows captures the exact guarded old file into a private same-volume directory,

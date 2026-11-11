@@ -16,6 +16,8 @@ mod completion;
 mod discovery;
 #[path = "copy_error_tests.rs"]
 mod errors;
+#[path = "copy_eta_tests.rs"]
+mod eta;
 #[path = "move_tests.rs"]
 mod moves;
 #[path = "move_native_tests.rs"]

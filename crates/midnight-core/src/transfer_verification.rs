@@ -14,11 +14,44 @@ pub enum TransferVerification {
 }
 
 impl TransferVerification {
+    /// Bytes independently read from one file under this immutable policy.
+    /// This is a work estimate, not a completed-verification receipt.
+    pub fn readback_bytes(self, length: u64) -> u64 {
+        match self {
+            Self::FullSha256 => length,
+            Self::SizeAndSamples => length.min(3 * TRANSFER_SAMPLE_BYTES as u64),
+        }
+    }
     pub fn from_checksum_enabled(enabled: bool) -> Self {
         if enabled {
             Self::FullSha256
         } else {
             Self::SizeAndSamples
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn readback_budget_matches_disjoint_samples_and_full_small_files() {
+        for (length, sampled) in [
+            (0, 0),
+            (65_536, 65_536),
+            (196_607, 196_607),
+            (196_608, 196_608),
+            (196_609, 196_608),
+            (u64::MAX, 196_608),
+        ] {
+            assert_eq!(
+                TransferVerification::FullSha256.readback_bytes(length),
+                length
+            );
+            assert_eq!(
+                TransferVerification::SizeAndSamples.readback_bytes(length),
+                sampled
+            );
         }
     }
 }

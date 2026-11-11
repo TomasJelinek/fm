@@ -149,3 +149,9 @@ were checked against its inventory. `conversion-runtime-stage.log` records the
 staging. The deployed DLL must have the `c00eb47e…` identity above; the diagnostic
 `246dfde4…` DLL is retained only under QA. Raw results and the exact median summary
 are `native-conversion-*.stderr` and `native-conversion-summary.json`.
+
+## Subsequent frame-pacing qualification
+
+The [12 November follow-up](2026-11-12-html-frame-pacing.md) measures the later
+60 fps ceiling with the same native probe. The 30 Hz settings and hashes above
+describe this report's historical baseline.

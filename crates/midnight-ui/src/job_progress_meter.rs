@@ -45,22 +45,16 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
         locale,
     );
     if known && !p.pause_requested && !p.paused && p.state == CopyOperationState::Running {
-        // Estimate unfinished work including readback, without counting retries as progress.
-        let seconds = if let Some(total) = bytes.filter(|total| *total > 0) {
-            if p.intent == midnight_core::TransferIntent::Copy
-                && p.verification == midnight_core::TransferVerification::FullSha256
-            {
-                let unfinished = total.saturating_sub(p.completed_bytes);
-                let remaining = unfinished as f64 * 2.0
-                    - p.current_file_copied.min(unfinished) as f64
-                    - p.current_file_verified.min(unfinished) as f64;
-                let rate = p.throughput.transfer_per_second + p.throughput.verification_per_second;
-                estimate_seconds(remaining, rate)
-            } else {
-                // Move proofs and sampled readback have different work budgets.
-                // Do not present a byte ETA that pretends they are full-copy readback.
-                None
-            }
+        let seconds = if bytes.is_some_and(|total| total > 0) {
+            // The backend budgets selected sample ranges and outstanding Move proof
+            // passes. Rates measure the same writes/readback categories, including
+            // actual retry activity; retries never reduce remaining logical work.
+            p.remaining_work.and_then(|work| {
+                estimate_seconds(
+                    work.write_bytes as f64 + work.verification_bytes as f64,
+                    p.throughput.transfer_per_second + p.throughput.verification_per_second,
+                )
+            })
         } else {
             estimate_seconds(
                 total.unwrap_or(0).saturating_sub(completed.unwrap_or(0)) as f64,
@@ -211,6 +205,10 @@ mod tests {
             bytes: Some(1000),
             ..Default::default()
         };
+        p.remaining_work = Some(midnight_core::TransferRemainingWork {
+            write_bytes: 1000,
+            verification_bytes: 1000,
+        });
         p
     }
     #[test]
@@ -268,9 +266,14 @@ mod tests {
         });
         assert!(copy(&p, &NumberLocale::default()).eta.contains("20 s"));
         p.current_file_copied = 500;
+        p.remaining_work.as_mut().unwrap().write_bytes = 500;
         assert!(copy(&p, &NumberLocale::default()).eta.contains("15 s"));
         p.current_file_copied = 1000;
         p.current_file_verified = 500;
+        p.remaining_work = Some(midnight_core::TransferRemainingWork {
+            write_bytes: 0,
+            verification_bytes: 500,
+        });
         assert!(copy(&p, &NumberLocale::default()).eta.contains("5 s"));
         p.copied_bytes = 50_000;
         p.verified_bytes = 30_000;
@@ -287,3 +290,7 @@ mod tests {
         assert!(copy(&p, &NumberLocale::default()).eta.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "job_progress_eta_tests.rs"]
+mod eta_tests;

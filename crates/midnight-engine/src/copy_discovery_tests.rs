@@ -92,6 +92,7 @@ fn same_volume_directory_move_keeps_root_scope_and_zero_content_io() {
     let discovery = snapshot(&status).discovery;
     assert_eq!(discovery.state, DiscoveryState::Complete);
     assert_eq!(discovery.scope, DiscoveryScope::SelectedRoots);
+    assert!(snapshot(&status).remaining_work.is_none());
     assert_eq!(
         (discovery.files, discovery.directories, discovery.bytes),
         (0, 1, None)

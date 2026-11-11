@@ -395,6 +395,35 @@ impl MoveWork {
         self.record_parents(job, &entry.item.path);
         Ok(())
     }
+    /// Logical proof reads retained for the current file, not cumulative retry I/O.
+    pub(super) fn active_proof_credit(&self, policy: TransferVerification) -> Option<u64> {
+        let Some(proof) = self.proofs.first() else {
+            return Some(0);
+        };
+        if self.proofs.len() != 1 {
+            return None;
+        }
+        let pass = policy
+            .readback_bytes(proof.source_entry().item.metadata.size?)
+            .checked_mul(2)?;
+        let current = if self.reading {
+            let read = proof.validation_bytes();
+            if read > pass {
+                return None;
+            }
+            read
+        } else {
+            0
+        };
+        match self.phase {
+            Phase::Copying => Some(0),
+            Phase::Before => Some(current),
+            Phase::Capture => Some(pass),
+            Phase::After => pass.checked_add(current),
+            Phase::Finalize => pass.checked_mul(2),
+            Phase::Halted => None,
+        }
+    }
     pub(super) fn has_pending(&self) -> bool {
         !self.proofs.is_empty()
     }
@@ -561,6 +590,10 @@ impl MoveWork {
                 durability_confirmed,
             } => {
                 job.progress.source_files_removed += 1;
+                job.work_budget.removed(
+                    self.proofs[0].source_entry().item.metadata.size,
+                    job.verification,
+                );
                 if state == TransferSourceRemoval::DeletePending {
                     job.progress.source_delete_pending += 1;
                 }

@@ -98,3 +98,10 @@ Calculating until their work budgets can be measured reliably.
 Obsolete isolated build trees were removed after validating their absolute paths
 and excluding reparse-point escapes. The cleanup freed 32.91 GiB before the fresh
 qualification builds; the current build, test evidence and pinned SDKs remain.
+
+## Subsequent transfer ETA qualification
+
+The [12 November accounting follow-up](2026-11-12-transfer-eta.md) adds approximate
+ETA for sampled Copy and cross-volume Move using actual outstanding verification
+and source-removal proof work. The earlier Calculating limitation above describes
+the previous qualified build, not the subsequent implementation.
