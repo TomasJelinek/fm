@@ -3,6 +3,8 @@ use crate::providers::{MountedFilesystem, ProviderEntry, ProviderTarget};
 use midnight_core::{EntryId, EntryKind, EntryMetadata, NavigationId, NodeToken, PaneId};
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicUsize};
 
+#[path = "tree_checksum_capture_tests.rs"]
+mod checksum_capture_tests;
 #[path = "tree_editor_capture_tests.rs"]
 mod editor_capture_tests;
 
@@ -106,10 +108,15 @@ pub(super) fn fixture() -> Fixture {
 }
 
 fn fixture_with_extra_directories(extra: usize) -> Fixture {
+    fixture_with_directory_kind(extra, EntryKind::Directory)
+}
+
+pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixture {
     let directory_root = tempfile::tempdir().unwrap();
     let mut file = directory(3, "file.txt");
     file.kind = EntryKind::File;
     let mut roots = vec![directory(1, "z-parent"), directory(2, "a-parent"), file];
+    roots[0].kind = kind;
     roots.extend((0..extra).map(|i| directory(i as u64 + 10, &format!("b-folder-{i:03}"))));
     let entries: Arc<[midnight_core::Entry]> = roots
         .iter()

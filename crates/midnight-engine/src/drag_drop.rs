@@ -263,6 +263,10 @@ struct State {
     prepare: Option<Prepare>,
     internal: Option<internal::Work>,
     pending_internal: Option<InternalDropRequest>,
+    preview: Option<preview::Work>,
+    pending_preview: Option<InternalDropPreviewRequest>,
+    preview_epoch: Option<preview::Epoch>,
+    preview_revision: DragPreviewRevision,
     retired: Vec<Box<dyn Send>>,
     highest_drag: u64,
     highest_host: u64,
@@ -279,8 +283,13 @@ struct Start {
 #[path = "drag_drop_internal.rs"]
 mod internal;
 
+#[path = "drag_drop_preview.rs"]
+mod preview;
+
 impl State {
     fn clear_source(&mut self) -> Option<bool> {
+        self.clear_preview();
+        self.preview_revision = DragPreviewRevision::default();
         let running = self.source.take().map(|source| {
             source.cancel.cancel();
             let running = source.running;
@@ -514,6 +523,7 @@ impl Controller {
     pub(crate) async fn start(&self, id: DragId) {
         let command = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.clear_preview();
             let host = state
                 .host
                 .as_ref()
@@ -686,6 +696,15 @@ fn prepare_worker(
             .take();
         if let Some(work) = work {
             internal::execute(work, &state, &snapshots, &events, &cancel);
+            continue;
+        }
+        let preview = state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .preview
+            .take();
+        if let Some(preview) = preview {
+            preview::execute(preview, &state, &snapshots, &events);
             continue;
         }
         let Some(request) = state

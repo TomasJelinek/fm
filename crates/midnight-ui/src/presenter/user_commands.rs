@@ -445,3 +445,30 @@ impl Presenter {
         }
     }
 }
+
+impl Presenter {
+    pub(super) fn clear_finished_command_jobs(&mut self, without_errors: bool) {
+        for index in (0..self.command_launches.jobs.len()).rev() {
+            let job = &self.command_launches.jobs[index];
+            if !job.finished
+                || (without_errors
+                    && (job.error.is_some()
+                        || job
+                            .summary
+                            .as_ref()
+                            .is_some_and(|summary| summary.error.is_some())))
+            {
+                continue;
+            }
+            let id = job.id;
+            let job = self.command_launches.jobs.remove(index);
+            if self.command_launches.preview_ready == Some(id) {
+                self.command_launches.preview_ready = None;
+            }
+            if self.command_launches.preview_requested == Some(id) {
+                self.command_launches.preview_requested = None;
+            }
+            self.retired.push(Box::new(job));
+        }
+    }
+}

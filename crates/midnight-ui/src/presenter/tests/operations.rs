@@ -246,3 +246,96 @@ fn stale_confirmation_and_failed_enqueue_do_not_confirm_another_operation() {
     });
     assert!(p.operations.preview.is_none());
 }
+
+#[test]
+fn jobs_cancelled_delete_confirmation_is_hidden_until_worker_retires_and_never_becomes_history() {
+    for before_preview in [true, false] {
+        let mut p = ready();
+        p.start_operation(
+            PaneId::Left,
+            MutationKind::Delete(DeleteMode::Permanent),
+            &|_| true,
+        );
+        let id = p.operations.pending.unwrap();
+        assert!(
+            p.has_live_operations(),
+            "shutdown must still cancel preparation"
+        );
+        assert!(crate::job_presentation::rows(&p).is_empty());
+        if !before_preview {
+            let progress = Arc::make_mut(&mut p.operations.progress[0]);
+            progress.state = OperationState::AwaitingConfirmation;
+            p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+                OperationPreview {
+                    id,
+                    kind: MutationKind::Delete(DeleteMode::Permanent),
+                    files: 1,
+                    folders: 0,
+                    file_bytes: None,
+                    sample: vec![],
+                },
+            ))));
+        }
+        p.cancel_operation(
+            &id.0.to_string(),
+            &|command| matches!(command, Command::CancelOperation(actual) if actual == id),
+        );
+        let mut done = (*p.operations.progress[0]).clone();
+        done.state = OperationState::Cancelled;
+        p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
+            done.clone(),
+        ))));
+        p.apply(Event::Operation(OperationEvent::Progress(Arc::new(done))));
+        assert!(crate::job_presentation::rows(&p).is_empty());
+        assert!(p.operations.unconfirmed.is_empty());
+        assert!(!p.has_live_operations());
+        assert!(
+            p.operations.refresh.is_empty(),
+            "an unstarted cancellation should not refresh panels"
+        );
+    }
+}
+
+#[test]
+fn jobs_preparation_errors_and_cancelled_confirmed_delete_remain_visible() {
+    for accepted in [false, true] {
+        let mut p = ready();
+        p.start_operation(
+            PaneId::Left,
+            MutationKind::Delete(DeleteMode::Permanent),
+            &|_| true,
+        );
+        let id = p.operations.pending.unwrap();
+        p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+            OperationPreview {
+                id,
+                kind: MutationKind::Delete(DeleteMode::Permanent),
+                files: 1,
+                folders: 0,
+                file_bytes: None,
+                sample: vec![],
+            },
+        ))));
+        if accepted {
+            p.confirm_operation(&id.0.to_string(), String::new(), &|_| true);
+        }
+        let mut done = (*p.operations.progress[0]).clone();
+        if accepted {
+            done.state = OperationState::Cancelled;
+        } else {
+            done.state = OperationState::Failed;
+            done.failed = 1;
+            done.errors.push(FsError::from_io(
+                "prepare",
+                &done.source_directory,
+                io::Error::other("Cannot inspect selected file"),
+            ));
+        }
+        p.apply(Event::Operation(OperationEvent::Progress(Arc::new(done))));
+        assert_eq!(crate::job_presentation::rows(&p).len(), 1);
+        assert!(p.operations.unconfirmed.is_empty());
+        if !accepted {
+            assert!(p.desktop.notice.is_some());
+        }
+    }
+}

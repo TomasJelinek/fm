@@ -47,7 +47,7 @@ fn native_directory_and_metadata_failures_keep_exact_paths_and_reasons() {
     assert_eq!((last.bytes, last.errors), (17, 2));
     let text = report_text(&last);
     assert!(text.contains("root/denied 資料"));
-    assert!(text.contains("test read directory"));
+    assert!(text.contains("resolve directory size target"));
     assert!(text.contains("PermissionDenied"));
     assert!(text.contains("root/missing metadata"));
     assert!(text.contains("NotFound"));

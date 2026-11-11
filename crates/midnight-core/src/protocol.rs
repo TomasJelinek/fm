@@ -63,6 +63,7 @@ pub enum Command {
         cancel: crate::Cancellation,
     },
     Tree(Box<crate::TreeCommand>),
+    ProbeFolderPresence(Arc<crate::FolderPresenceRequest>),
     NetworkNavigate {
         pane: PaneId,
         navigation: NavigationId,
@@ -74,6 +75,7 @@ pub enum Command {
     CancelUserCommand(crate::UserCommandRequestId),
     StartChecksums(Box<crate::ChecksumRequest>),
     StartSelectedChecksums(Box<crate::SelectedChecksumRequest>),
+    StartCapturedChecksums(Box<crate::CapturedChecksumRequest>),
     VerifyChecksumManifest(Box<crate::ChecksumVerifyRequest>),
     CancelChecksums {
         job: crate::ChecksumJobId,
@@ -159,6 +161,7 @@ pub enum Command {
     EnqueueTransferWithMetadata(Box<crate::MetadataTransferRequest>),
     EnqueueArchiveCopy(crate::ArchiveCopyRequest),
     DecideCopy(crate::CopyDecision),
+    DecideRename(crate::CopyDecision),
     CancelCopy(crate::OperationId),
     AttachDragDrop {
         host: crate::DragHost,
@@ -188,6 +191,12 @@ pub enum Command {
     },
     RejectDrop(crate::DropToken),
     InternalDrop(Box<crate::InternalDropRequest>),
+    PreviewInternalDrop(Box<crate::InternalDropPreviewRequest>),
+    CompleteInternalDropPreview {
+        id: crate::DragId,
+        revision: crate::DragPreviewRevision,
+        target: Arc<dyn crate::CapturedDropDirectory>,
+    },
     CompleteInternalDrop {
         id: crate::DragId,
         target: Arc<dyn crate::CapturedDropDirectory>,
@@ -197,6 +206,7 @@ pub enum Command {
         pane: PaneId,
         revision: SearchRevision,
     },
+    SummarizeRectangle(Arc<crate::RectangleSummaryRequest>),
     Selection(SelectionRequest),
     ListVolumes,
     ListDesktopContext,
@@ -340,9 +350,15 @@ pub enum Command {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    RectangleSummary {
+        pane: PaneId,
+        token: Arc<()>,
+        totals: crate::ArchiveSelectionTotals,
+    },
     FileList(Box<crate::FileListEvent>),
     ArchiveSizes(Box<crate::ArchiveSizeEvent>),
     Tree(Box<crate::TreeEvent>),
+    FolderPresence(Box<crate::FolderPresenceSnapshot>),
     NetworkAvailability(bool),
     NetworkUpdated {
         pane: PaneId,

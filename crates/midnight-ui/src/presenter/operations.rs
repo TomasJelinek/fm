@@ -7,6 +7,12 @@ pub(crate) struct OperationsState {
     pub(crate) pending: Option<OperationId>,
     pub(crate) preview: Option<Arc<OperationPreview>>,
     pub(crate) progress: Vec<Arc<OperationProgress>>,
+    pub(crate) rename_conflicts: Vec<Arc<CopyConflict>>,
+    pub(super) rename_versions: std::collections::HashMap<OperationId, u64>,
+    pub(super) rename_deferred: std::collections::HashSet<(OperationId, u64)>,
+    pub(super) rename_selected: Option<(OperationId, u64)>,
+    pub(crate) unconfirmed: std::collections::HashSet<OperationId>,
+    pub(super) forgotten_through: u64,
     pub(crate) metadata_conflicts: Vec<Arc<MetadataConflict>>,
     pub(crate) metadata_results: Vec<Arc<MetadataResult>>,
     pub(crate) closing: bool,
@@ -137,6 +143,7 @@ impl Presenter {
             self.operations.next_id = next;
             self.operations.pending = Some(id);
             self.operations.preview = None;
+            self.operations.unconfirmed.insert(id);
             // Register immediately: closing before Preparing arrives must not abandon a job.
             self.operations.progress.push(Arc::new(OperationProgress {
                 id,
@@ -189,12 +196,18 @@ impl Presenter {
             MutationKind::CreateDirectory | MutationKind::CreateFile => Some(name),
         };
         if send(Command::ConfirmOperation { id, new_name: name }) {
+            self.operations.unconfirmed.remove(&id);
             self.operations.pending = None;
             self.operations.preview = None;
         }
     }
     pub(crate) fn cancel_operation(&mut self, token: &str, send: &dyn Fn(Command) -> bool) {
-        let Ok(id) = token.parse::<u64>().map(OperationId) else {
+        let Ok(id) = token
+            .strip_prefix("rename-job:")
+            .unwrap_or(token)
+            .parse::<u64>()
+            .map(OperationId)
+        else {
             return;
         };
         if send(Command::CancelOperation(id)) && self.operations.pending == Some(id) {
@@ -218,6 +231,7 @@ impl Presenter {
         self.retire_metadata();
         self.operations.closing = true;
         self.cancel_tree_editor(None);
+        self.cancel_tree_checksums(None);
         self.retire_warning_viewer();
         self.operations.pending = None;
         self.operations.preview = None;
@@ -225,6 +239,10 @@ impl Presenter {
         self.copies.failures.clear();
         self.copies.deferred_decisions.clear();
         self.operations.metadata_conflicts.clear();
+        self.operations.rename_conflicts.clear();
+        self.operations.rename_versions.clear();
+        self.operations.rename_deferred.clear();
+        self.operations.rename_selected = None;
         for job in &self.command_launches.jobs {
             if !job.finished {
                 let _ = send(Command::CancelUserCommand(job.id));
@@ -255,6 +273,9 @@ impl Presenter {
         match event {
             OperationEvent::MetadataPreview(preview) => self.apply_metadata_preview(preview),
             OperationEvent::MetadataResult(result) => {
+                if self.forgotten_operation(result.id) {
+                    return None;
+                }
                 self.operations
                     .metadata_results
                     .retain(|old| old.id != result.id);
@@ -264,6 +285,7 @@ impl Presenter {
                 }
             }
             OperationEvent::MetadataConflict(conflict) => self.apply_metadata_conflict(conflict),
+            OperationEvent::RenameConflict(conflict) => self.apply_rename_conflict(conflict),
             OperationEvent::Preview(preview) => {
                 if preview.kind != MutationKind::EditMetadata
                     && self.operations.pending == Some(preview.id)
@@ -273,6 +295,31 @@ impl Presenter {
                 }
             }
             OperationEvent::Progress(progress) => {
+                if self.forgotten_operation(progress.id) {
+                    return None;
+                }
+                let unconfirmed = self.operations.unconfirmed.contains(&progress.id);
+                if unconfirmed
+                    && progress.state == OperationState::Cancelled
+                    && progress.failed == 0
+                    && progress.completed == 0
+                    && progress.processed_entries == 0
+                    && progress
+                        .errors
+                        .iter()
+                        .all(|error| error.kind == std::io::ErrorKind::Interrupted)
+                {
+                    self.forget_unconfirmed_operation(progress.id);
+                    return None;
+                }
+                if progress.state.is_terminal()
+                    || matches!(
+                        progress.state,
+                        OperationState::Queued | OperationState::Running
+                    )
+                {
+                    self.operations.unconfirmed.remove(&progress.id);
+                }
                 if self
                     .operations
                     .progress
@@ -282,6 +329,7 @@ impl Presenter {
                     self.copies.automatic_jobs.observe_mutation(&progress);
                 }
                 if progress.state.is_terminal() {
+                    self.retire_rename_decision(progress.id);
                     self.operations
                         .metadata_conflicts
                         .retain(|conflict| conflict.id != progress.id);

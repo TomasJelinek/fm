@@ -112,9 +112,40 @@ pub enum StorageKind {
     Unknown,
 }
 
+/// Native directory identity used only for read-only sizing cycle detection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SizeDirectoryIdentity {
+    pub device: u64,
+    pub object: [u8; 16],
+}
+
+/// Native directory target for read-only sizing, with links resolved by the OS.
+/// This live observation is neither a pinned snapshot nor mutation authority.
+#[derive(Clone, Debug)]
+pub struct SizeDirectoryTarget {
+    pub path: PathBuf,
+    pub identity: SizeDirectoryIdentity,
+}
+
 /// Blocking directory enumeration and metadata access; call on a worker thread.
 /// Paths and names retain their native identity without Unicode normalization.
 pub trait DirectoryService: Send + Sync + 'static {
+    /// Resolve an ordinary directory or directory-link target for explicit sizing.
+    /// `None` means a successfully inspected non-directory (for example a file link).
+    /// Unsupported providers may still scan ordinary directories, but cannot follow links.
+    /// All resolution/identity calls belong on bounded backend workers.
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryTarget>, FsError> {
+        Err(FsError::from_io(
+            "resolve directory size target",
+            path,
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
     /// Streams names and types, optionally with cached metadata, without following links.
     /// Cancellation or a false callback return stops enumeration cooperatively.
     ///

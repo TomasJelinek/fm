@@ -1,4 +1,4 @@
-//! Late replies from a blocked metadata classifier must not undo cancellation.
+//! Late replies from blocked native destination validation must not undo cancellation.
 use super::*;
 use std::sync::{Condvar, atomic::AtomicBool};
 
@@ -16,7 +16,14 @@ impl Drop for ReleaseDevice {
     }
 }
 impl TransferService for BlockedDevice {
-    fn native_drop_device(&self, _: &Path, cancel: &Cancellation) -> Result<Option<u64>, FsError> {
+    fn native_drop_device(&self, _: &Path, _: &Cancellation) -> Result<Option<u64>, FsError> {
+        panic!("cancelled drop cannot start device classification")
+    }
+    fn prepare_transfer_destination(
+        &self,
+        _: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
         self.started.store(true, Ordering::SeqCst);
         let mut released = self.released.lock().unwrap();
         while !*released {
@@ -28,7 +35,10 @@ impl TransferService for BlockedDevice {
                 "cancelled metadata lookup",
             ));
         }
-        Ok(Some(7))
+        Err(error(
+            io::ErrorKind::Unsupported,
+            "test destination was not cancelled",
+        ))
     }
     fn prepare_transfer_source(
         &self,
@@ -36,13 +46,6 @@ impl TransferService for BlockedDevice {
         _: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
         panic!("cancelled drop cannot start source preparation")
-    }
-    fn prepare_transfer_destination(
-        &self,
-        _: &Path,
-        _: &Cancellation,
-    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        panic!("cancelled drop cannot start destination preparation")
     }
 }
 

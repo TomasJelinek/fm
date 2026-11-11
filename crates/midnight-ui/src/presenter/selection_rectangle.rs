@@ -67,6 +67,15 @@ pub(super) struct Preview {
     capture: Capture,
     ranges: SelectionRanges,
     mode: SelectionMode,
+    token: Arc<()>,
+    cancel: Cancellation,
+    submitted: bool,
+    totals: Option<ArchiveSelectionTotals>,
+}
+impl Drop for Preview {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 impl Preview {
     pub(super) fn visible(&self, pane: &Pane, entry: &Entry, selected: bool) -> bool {
@@ -110,12 +119,71 @@ impl Presenter {
             p.rectangle_preview = None;
             return false;
         }
+        if p.rectangle_preview.as_ref().is_some_and(|old| {
+            old.capture.matches(p) && old.mode == mode && old.ranges.spans() == ranges.spans()
+        }) {
+            return true;
+        }
         p.rectangle_preview = Some(Preview {
             capture: capture.clone(),
             ranges,
             mode,
+            token: Arc::new(()),
+            cancel: Cancellation::default(),
+            submitted: false,
+            totals: None,
         });
         true
+    }
+    pub(crate) fn flush_rectangle_summary(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        let p = &mut self.panes[pane.index()];
+        let Some(preview) = p.rectangle_preview.as_ref() else {
+            return;
+        };
+        if preview.submitted || !preview.capture.matches(p) {
+            return;
+        }
+        let seed = if let Some(publication) = &p.tree.publication {
+            RectangleSelectionSeed::Tree(publication.selection.clone())
+        } else if let Some(archive) = &p.archive {
+            RectangleSelectionSeed::Archive {
+                selected: archive.selected.clone(),
+                full: p.index.clone(),
+            }
+        } else {
+            RectangleSelectionSeed::Native(p.selected.clone())
+        };
+        let request = RectangleSummaryRequest {
+            pane,
+            token: preview.token.clone(),
+            view: p.display_index().clone(),
+            seed,
+            ranges: preview.ranges.clone(),
+            mode: preview.mode,
+            cancel: preview.cancel.clone(),
+        };
+        if send(Command::SummarizeRectangle(Arc::new(request))) {
+            p.rectangle_preview
+                .as_mut()
+                .expect("retained gesture")
+                .submitted = true;
+        }
+    }
+    pub(super) fn apply_rectangle_summary(
+        &mut self,
+        pane: PaneId,
+        token: Arc<()>,
+        totals: ArchiveSelectionTotals,
+    ) {
+        let p = &mut self.panes[pane.index()];
+        if p.rectangle_preview.as_ref().is_some_and(|preview| {
+            Arc::ptr_eq(&preview.token, &token) && preview.capture.matches(p)
+        }) {
+            p.rectangle_preview
+                .as_mut()
+                .expect("validated preview")
+                .totals = Some(totals);
+        }
     }
     pub(crate) fn cancel_rectangle(&mut self, pane: PaneId) {
         self.panes[pane.index()].rectangle_preview = None;
@@ -139,5 +207,14 @@ impl Presenter {
         } else {
             self.send_selection(pane, SelectionAction::Ranges { ranges, mode }, send)
         }
+    }
+}
+
+impl Pane {
+    pub(super) fn rectangle_summary(&self) -> Option<Option<ArchiveSelectionTotals>> {
+        self.rectangle_preview
+            .as_ref()
+            .filter(|preview| preview.capture.matches(self))
+            .map(|preview| preview.totals)
     }
 }

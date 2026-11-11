@@ -51,49 +51,31 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         String::new()
     };
     let select = rename_selection_end(&name, preview.sample.first().map(|item| item.kind));
-    let mut body = match kind {
-        MutationKind::CreateFile => "Create an empty file without overwriting an existing name.".into(),
-        MutationKind::CreateDirectory => "Enter an absolute path or a path relative to this panel, including '..'. Missing folders are created; existing intermediate folders are reused. Links are not followed.".into(),
-        MutationKind::Rename => "Rename the focused entry. Existing names are never overwritten.".into(),
-        MutationKind::EditMetadata => String::new(),
-        MutationKind::Delete(mode) => format!("{}\n\n{}", delete_summary::summary(preview, &presenter.number_locale),
-            if mode == DeleteMode::Trash { "Move these items to the system Trash? If unavailable, they will remain in place." }
-            else { "Permanently delete these items and folder contents? This cannot be undone. Links are removed without deleting their targets." }),
-    };
-    if let Some(progress) = state
+    let location = state
         .progress
         .iter()
         .find(|progress| progress.id == preview.id)
-    {
-        body = format!(
-            "Location: {}\n\n{body}",
-            progress.source_directory.display()
-        );
-    }
-    if !matches!(kind, MutationKind::Delete(_)) {
-        for item in &preview.sample {
-            let size = item.metadata.size.map_or_else(
-                || "—".into(),
-                |bytes| {
-                    size_presentation::file_size(
-                        bytes,
-                        SizeDisplay::Bytes,
-                        &presenter.number_locale,
-                    )
-                },
-            );
-            let date = time_presentation::modified(&item.metadata)
-                .map(|value| format!("{} {}", value.date, value.time))
-                .unwrap_or_else(|| "—".into());
-            body.push_str(&format!(
-                "\n{} · {size} bytes · {date}",
-                item.path.display()
-            ));
-        }
-        if preview.files + preview.folders > preview.sample.len() as u64 {
-            body.push_str("\n… Additional selected targets included.");
-        }
-    }
+        .map(|progress| progress.source_directory.as_path());
+    let body = match kind {
+        MutationKind::Rename => preview.sample.first().map_or_else(
+            || "Choose a new name.".into(),
+            |item| format!("Current item\n{}", item.path.display()),
+        ),
+        MutationKind::CreateFile | MutationKind::CreateDirectory => location.map_or_else(
+            || "Enter a name.".into(),
+            |path| format!("Location\n{}", path.display()),
+        ),
+        MutationKind::EditMetadata => String::new(),
+        MutationKind::Delete(mode) => format!(
+            "{}\n\n{}",
+            delete_summary::summary(preview, &presenter.number_locale),
+            if mode == DeleteMode::Trash {
+                "Move these items to the system Trash? If unavailable, they will remain in place."
+            } else {
+                "Permanently delete these items and folder contents? This cannot be undone. Links are removed without deleting their targets."
+            }
+        ),
+    };
     window.set_operation_title(title(kind).into());
     let (role, kind_id, warning) = match kind {
         MutationKind::Rename => (ActionIcon::Rename, 0, ""),

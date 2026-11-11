@@ -1,4 +1,9 @@
 # Native dialog windows
+> Superseded window policy (11 November): only modeless working windows are to
+> move freely outside the main application. Attributes / Times / Case remains
+> embedded; do not migrate it. Ordinary forms are modal without taskbar entries,
+> and Ctrl+M Make File List is now modal. The inventory below is historical where
+> it conflicts with the [current follow-up](../plans/2026-11-11-dialog-polish-followup.md).
 
 Date: 10 November 2026. Status: implementation design; not a completion claim.
 

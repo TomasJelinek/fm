@@ -10,7 +10,8 @@ pub(super) struct Job {
     pub(super) status: Status,
     pub(super) targets: Vec<Arc<dyn PreparedMutation>>,
     directory: Option<Arc<dyn PreparedDirectory>>,
-    name: Option<OsString>,
+    pub(super) name: Option<OsString>,
+    pub(super) rename_conflicts: Arc<super::rename::ConflictState>,
     preview: OperationPreview,
     pub(super) metadata: Option<super::metadata::Edit>,
     pub(super) metadata_budget: Arc<Semaphore>,
@@ -83,6 +84,7 @@ pub(super) fn prepare(
         targets: vec![],
         directory: None,
         name: None,
+        rename_conflicts: Arc::default(),
         metadata: None,
         metadata_budget,
         predecessors: Default::default(),
@@ -273,6 +275,9 @@ impl Job {
     pub(super) fn execute(self, outbox: Outbox) -> OperationProgress {
         if self.metadata.is_some() {
             return super::metadata::execute(self, outbox);
+        }
+        if self.progress().kind == MutationKind::Rename {
+            return super::rename::execute(self, outbox);
         }
         let mut progress = self.progress();
         let count = progress.total as usize;

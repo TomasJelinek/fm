@@ -2,7 +2,7 @@
 // Each integration crate exercises a different subset of this shared fixture.
 #![allow(dead_code)]
 #[path = "modeless.rs"]
-mod modeless;
+pub(super) mod modeless;
 use midnight_core::*;
 use midnight_engine::Engine;
 use midnight_ui::{Presenter, install, refresh};
@@ -498,6 +498,7 @@ impl Harness {
         // Startup preferences restore both tabs through the installed presenter.
         // Streaming rows are visible before disclosure is available, so wait for
         // the completed listings rather than clicking an inert loading row.
+        // A completed presence probe may already replace Unknown with HasFolders.
         let mut preferences = UserPreferences::default();
         preferences.tabs[0].paths = vec![path.clone()];
         preferences.tabs[1].paths = vec![path.clone()];
@@ -527,13 +528,13 @@ impl Harness {
                 .iter()
                 .all(|rows| {
                     rows.iter()
-                        .any(|row| row.name == "folder" && row.tree_disclosure == 1)
+                        .any(|row| row.name == "folder" && matches!(row.tree_disclosure, 1 | 3))
                 })
         });
         h.until(|h| {
             h.rows()
                 .iter()
-                .any(|row| row.name == "folder" && row.tree_disclosure == 1)
+                .any(|row| row.name == "folder" && matches!(row.tree_disclosure, 1 | 3))
         });
         let identity = h
             .rows()
@@ -586,6 +587,20 @@ impl Harness {
             .window()
             .dispatch_event(WindowEvent::WindowActiveChanged(true));
         child
+    }
+
+    pub fn tool_window(&self) -> Rc<MinimalSoftwareWindow> {
+        let children: Vec<_> = self
+            .windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .filter(|window| window.window().is_visible())
+            .cloned()
+            .collect();
+        assert_eq!(children.len(), 1, "expected one independent tool window");
+        assert!(!self.ui.window.get_dialog_input_blocked());
+        children[0].clone()
     }
 
     pub fn rows(&self) -> Vec<midnight_ui::FileRow> {
@@ -721,11 +736,24 @@ impl Harness {
             }
         }
         panic!(
-            "condition did not settle within five seconds: copy={:?}, left_error={}, right_error={}, selected={:?}",
+            "condition did not settle within five seconds: copy={:?}, left_error={}, right_error={}, selected={:?}, loading={:?}, folder_disclosures={:?}",
             self.copy_progress.last(),
             self.ui.window.get_left_error(),
             self.ui.window.get_right_error(),
-            self.selection.as_ref().map(|s| s.len())
+            self.selection.as_ref().map(|s| s.len()),
+            (
+                self.ui.window.get_left_loading(),
+                self.ui.window.get_right_loading()
+            ),
+            [
+                self.ui.window.get_left_rows(),
+                self.ui.window.get_right_rows()
+            ]
+            .map(|rows| rows
+                .iter()
+                .filter(|row| row.name == "folder")
+                .map(|row| (row.name.to_string(), row.tree_disclosure))
+                .collect::<Vec<_>>())
         );
     }
 }

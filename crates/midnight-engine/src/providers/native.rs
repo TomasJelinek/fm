@@ -15,6 +15,9 @@ use std::{
 mod nodes;
 use nodes::NativeNodes;
 
+#[path = "native_presence.rs"]
+mod presence;
+
 #[cfg(test)]
 #[path = "native_diagnostic_tests.rs"]
 mod diagnostic_tests;

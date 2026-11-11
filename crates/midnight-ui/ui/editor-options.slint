@@ -1,4 +1,4 @@
-import { Button } from "std-widgets.slint";
+import { ActionButton } from "action-icons.slint";
 import { HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
 import { ArgumentEditor } from "argument-editor.slint";
 import { Theme } from "theme.slint";
@@ -53,7 +53,7 @@ export component EditorOptions inherits VerticalLayout {
                 hint: "Choose a program or enter its complete path."; min-width: 0px; horizontal-stretch: 1;
                 edited => { EditorOptionsView.edit(EditorOptionsView.draft); }
             }
-            Button { text: "Browse…"; accessible-label: "Browse editor executable";
+            ActionButton { text: "Browse…"; accessible-label: "Browse editor executable";
                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                 enabled: !EditorOptionsView.busy; clicked => { EditorOptionsView.browse(); } }
         }

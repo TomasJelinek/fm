@@ -560,7 +560,7 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             root(2, "prázdná"),
             Entry::new(
                 EntryId(3),
-                "never-probe-link-root".into(),
+                "unsupported-link-root".into(),
                 EntryKind::DirectoryLink,
             ),
         ],
@@ -576,7 +576,7 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             bytes: 4,
             files: 4,
             skipped_links: 2,
-            errors: 1,
+            errors: 3,
             finished: true,
             warnings: results[&EntryId(1)].warnings.clone(),
         }
@@ -588,12 +588,19 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             .unwrap()
             .summary()
             .observed,
-        1
+        3
     );
     assert_eq!(
         results.len(),
-        2,
-        "a directory-link root must not start a scan"
+        3,
+        "an unsupported directory-link root reports its own partial result"
+    );
+    assert_eq!(
+        (
+            results[&EntryId(3)].errors,
+            results[&EntryId(3)].skipped_links
+        ),
+        (1, 1)
     );
     assert_eq!(
         results[&EntryId(2)],

@@ -313,7 +313,7 @@ fn old_directory_token_rejects_a_new_symlink_but_explicit_link_navigation_works(
     ));
     assert_eq!(client.call(Request::CloseMount { mount }), Response::Unit);
     let (mount, link) = client.resolve(&path);
-    assert_eq!(link.kind, Kind::Symlink);
+    assert_eq!(link.kind, Kind::DirectoryLink);
     let Response::Page {
         cursor, entries, ..
     } = client.call(Request::ListBegin {

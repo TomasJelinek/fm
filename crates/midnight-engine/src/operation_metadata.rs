@@ -94,6 +94,8 @@ impl Edit {
                 id,
                 revision: 0,
                 patch: MetadataPatch::default(),
+                localized_times: Default::default(),
+                time_input_format: None,
                 capabilities: MetadataCapabilities::default(),
                 total: targets.len() as u64,
                 conflicts: 0,
@@ -111,6 +113,48 @@ impl Edit {
         };
         edit.update(0, MetadataPatch::default(), targets, cancel);
         Ok(edit)
+    }
+
+    /// Native locale discovery and formatting stay on this preparation worker.
+    pub(super) fn localize(&mut self, locale: Option<&dyn LocaleService>) {
+        self.preview.localized_times.clear();
+        self.preview.time_input_format = locale.and_then(LocaleService::datetime_input_format);
+        let Some(locale) = locale else {
+            return;
+        };
+        let times = self
+            .preview
+            .sample
+            .iter()
+            .flat_map(|row| {
+                [&row.current, &row.proposed]
+                    .into_iter()
+                    .flat_map(|snapshot| {
+                        [snapshot.created, snapshot.modified, snapshot.accessed]
+                            .into_iter()
+                            .flatten()
+                    })
+            })
+            .chain(
+                [
+                    self.preview.patch.created,
+                    self.preview.patch.modified,
+                    self.preview.patch.accessed,
+                ]
+                .into_iter()
+                .filter_map(|edit| match edit {
+                    TimeEdit::Set(value) => Some(value),
+                    _ => None,
+                }),
+            );
+        for value in times {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                self.preview.localized_times.entry(value)
+                && let Some(text) = locale.format_datetime(value)
+            {
+                entry.insert(text);
+            }
+        }
     }
 
     pub(super) fn update(

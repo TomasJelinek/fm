@@ -4,7 +4,7 @@ use super::*;
 use midnight_core::StorageKind;
 use midnight_work_budget::{Gate, IO_SLOTS, Permit};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     io,
     sync::{
         Arc,
@@ -80,12 +80,13 @@ pub(crate) fn compute_batched(
                     budget,
                     cancel: local_cancel,
                     active: Cell::new(false),
+                    resolution_permit: RefCell::new(None),
                 };
                 while !local_cancel.is_cancelled() {
                     let Some(root) = roots.get(next.fetch_add(1, Ordering::Relaxed)) else {
                         break;
                     };
-                    if root.kind == EntryKind::Directory
+                    if matches!(root.kind, EntryKind::Directory | EntryKind::DirectoryLink)
                         && !scan_root(
                             &source,
                             root,
@@ -145,29 +146,67 @@ struct BudgetedSource<'a> {
     budget: &'a Arc<IoBudget>,
     cancel: &'a Cancellation,
     active: Cell<bool>,
+    resolution_permit: RefCell<Option<(u8, Permit)>>,
+}
+
+impl BudgetedSource<'_> {
+    fn io_cost(&self, path: &Path, cancel: &Cancellation) -> Option<u8> {
+        let _classification = self.budget.acquire_classification(cancel)?;
+        let kind = self
+            .filesystem
+            .storage_kind(path)
+            .unwrap_or(StorageKind::Unknown);
+        Some(if kind == StorageKind::LocalSsd {
+            1
+        } else {
+            IO_SLOTS
+        })
+    }
 }
 
 impl ScanSource for BudgetedSource<'_> {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryTarget>, FsError> {
+        let Some((cost, permit)) = self.io_cost(path, cancel).and_then(|cost| {
+            self.budget
+                .acquire_io(cost, cancel)
+                .map(|permit| (cost, permit))
+        }) else {
+            return Err(FsError::from_io(
+                "resolve directory size target",
+                path,
+                io::ErrorKind::Interrupted.into(),
+            ));
+        };
+        let result = self.filesystem.resolve_size_directory(path, cancel);
+        // Keep the ticket through the following enumeration. Otherwise a small
+        // waiting root spends its only fair turn resolving identity, then queues
+        // behind the large iterator again without counting any contents.
+        *self.resolution_permit.borrow_mut() = Some((cost, permit));
+        result
+    }
+    fn finish_size_resolution(&self) {
+        self.resolution_permit.take();
+    }
     fn read_directory(
         &self,
         path: &Path,
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        let kind = {
-            let Some(_classification) = self.budget.acquire_classification(cancel) else {
-                return Ok(());
-            };
-            self.filesystem
-                .storage_kind(path)
-                .unwrap_or(StorageKind::Unknown)
+        let Some(cost) = self.io_cost(path, cancel) else {
+            return Ok(());
         };
-        let cost = if kind == StorageKind::LocalSsd {
-            1
-        } else {
-            IO_SLOTS
-        };
-        let mut permit = self.budget.acquire_io(cost, cancel);
+        let mut permit = self
+            .resolution_permit
+            .take()
+            .and_then(|(held_cost, permit)| (held_cost == cost).then_some(permit));
+        if permit.is_none() {
+            permit = self.budget.acquire_io(cost, cancel);
+        }
         if permit.is_none() {
             return Ok(());
         }

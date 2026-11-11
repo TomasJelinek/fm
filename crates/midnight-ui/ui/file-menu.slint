@@ -24,7 +24,8 @@ export component FileActionMenu inherits Rectangle {
         }
     }
     pure function action-enabled(index: int) -> bool {
-        return root.mutable-target || (root.action-codes[index] != 3 && root.action-codes[index] != 4);
+        // Dismissal closes next tick; reject input throughout that interval.
+        return !root.committing && (root.mutable-target || (root.action-codes[index] != 3 && root.action-codes[index] != 4));
     }
     function choose(index: int) {
         if !root.action-enabled(index) { return; }
@@ -38,9 +39,10 @@ export component FileActionMenu inherits Rectangle {
         border-radius: 4px;
         focus := FocusScope {
             focus-changed-event => {
-                if !self.has-focus && !root.committing { root.dismissed(root.token); }
+                if !self.has-focus && !root.committing { root.committing = true; root.dismissed(root.token); }
             }
             key-pressed(event) => {
+                if root.committing { return accept; }
                 if event.text == Key.Escape {
                     root.committing = true;
                     root.dismissed(root.token);

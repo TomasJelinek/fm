@@ -110,7 +110,7 @@ fn tree_editor_capture_rejects_unacknowledged_forged_stale_and_parent_rows() {
     assert_eq!(capacity.available_permits(), 4);
 }
 
-fn one_root(kind: EntryKind) -> Fixture {
+pub(super) fn one_root(kind: EntryKind) -> Fixture {
     let directory_root = tempfile::tempdir().unwrap();
     let mut row = directory(3, "file.txt");
     row.kind = kind;

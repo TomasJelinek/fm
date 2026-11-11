@@ -223,6 +223,77 @@ impl Prepared {
 }
 
 impl PreparedMutation for Prepared {
+    fn prepare_rename_replacement(
+        &self,
+        new_name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedRenameReplacement, FsError> {
+        use midnight_core::{TransferIdentity, TransferService};
+        self.revalidate(cancel)?;
+        validate_name(new_name, &self.item.path)?;
+        if self.item.kind != EntryKind::File {
+            return Err(error(
+                &self.item.path,
+                ErrorKind::Unsupported,
+                "Rename replacement requires two ordinary files",
+            ));
+        }
+        let identity = |value: Identity| {
+            let mut object = [0; 16];
+            object[..8].copy_from_slice(&value.inode.to_le_bytes());
+            TransferIdentity {
+                device: value.device,
+                object,
+            }
+        };
+        let service = crate::LinuxFileSystem::new(None);
+        let directory = service.prepare_move_destination(&self.parent_path, cancel)?;
+        if directory.identity() != identity(self.parent_identity) {
+            return Err(error(
+                &self.parent_path,
+                ErrorKind::InvalidInput,
+                "the parent directory changed",
+            ));
+        }
+        let movement = service.prepare_move_source(&self.item.path, cancel)?;
+        if movement.capture.entry().identity != identity(self.identity) {
+            return Err(error(
+                &self.item.path,
+                ErrorKind::InvalidInput,
+                "the selected entry changed",
+            ));
+        }
+        let target = directory.prepare_target(new_name, cancel)?.ok_or_else(|| {
+            error(
+                &self.item.path,
+                ErrorKind::NotFound,
+                "Rename destination disappeared",
+            )
+        })?;
+        if target.entry().item.kind != EntryKind::File
+            || target.entry().identity == movement.capture.entry().identity
+        {
+            return Err(error(
+                &target.entry().item.path,
+                ErrorKind::InvalidInput,
+                "Cannot replace a directory, link, source itself or hard-link alias",
+            ));
+        }
+        if !directory.supports_native_move_replacement(movement.capture.entry().identity) {
+            return Err(error(
+                &target.entry().item.path,
+                ErrorKind::Unsupported,
+                "Recoverable Rename replacement requires a qualified local filesystem and protected parent.",
+            ));
+        }
+        self.revalidate(cancel)?;
+        Ok(midnight_core::PreparedRenameReplacement {
+            movement,
+            directory,
+            target,
+        })
+    }
+
     fn item(&self) -> &MutationItem {
         &self.item
     }

@@ -78,6 +78,7 @@ component MetadataButton inherits Rectangle {
 
 component MetadataTime inherits GridLayout {
     in property <string> label;
+    in property <string> example;
     in property <bool> enabled;
     in-out property <int> mode;
     in-out property <string> value;
@@ -96,9 +97,10 @@ component MetadataTime inherits GridLayout {
         row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
         accessible-label: root.label + " timestamp";
         enabled: root.enabled && root.mode != 0; text <=> root.value;
-        horizontal-stretch: 1;
-        placeholder-text: root.mode == 2 ? "Now (captured at review)" : "2026-11-06T12:30:00+01:00";
-        hint: "ISO timestamp with an explicit UTC offset or Z. Ambiguous local times are rejected.";
+        horizontal-stretch: 1; vertical-stretch: 0;
+        min-height: Theme.control-height; max-height: Theme.control-height;
+        placeholder-text: root.mode == 2 ? "Now (captured at review)" : root.example;
+        hint: "Use the shown date/time format with a four-digit year and explicit UTC offset or Z. ISO timestamps are also accepted.";
         edited => { root.mode = 1; root.edited(); }
     }
     MetadataButton {
@@ -117,6 +119,7 @@ export component MetadataDialog inherits Rectangle {
     in property <string> revision;
     in property <string> summary;
     in property <string> preview-text;
+    in property <string> timestamp-example: "2026-11-06T12:30:00+01:00";
     in property <[MetadataFileRow]> rows;
     in property <string> list-status;
     in property <bool> preview-current;
@@ -202,13 +205,15 @@ export component MetadataDialog inherits Rectangle {
                 text: root.summary + "\n\n" + root.preview-text;
                 min-height: 0px; vertical-stretch: 1;
             }
-            if !root.reviewing : ScrollView {
+            if !root.reviewing : editor-scroll := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: as-needed;
                 content-width: max(self.visible-width, Theme.font-size * 18);
-                VerticalLayout {
+                content-height: max(self.visible-height, fields.preferred-height);
+                fields := VerticalLayout {
+                    height: editor-scroll.content-height;
                     spacing: 10px; alignment: start;
-            Text { text: root.summary; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+            Text { text: root.summary; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
             WrappingCheckBox {
                 text: "Include subfolders"; checked <=> root.draft.recursive;
                 hint: "Applies to Attributes, Times and Case together. Descendants are processed before their parent. Links and mount points are not followed. Large batches can exceed the explicit resource budget.";
@@ -259,11 +264,11 @@ export component MetadataDialog inherits Rectangle {
                     }
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
-                        Text { text: "Enable a field, then enter a date/time with UTC offset or choose Now."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-                        MetadataTime { narrow: root.narrow-fields; label: "Modified"; enabled: root.can-modified; mode <=> root.draft.modified-mode; value <=> root.draft.modified-text; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-fields; label: "Created"; enabled: root.can-created; mode <=> root.draft.created-mode; value <=> root.draft.created-text; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-fields; label: "Accessed"; enabled: root.can-accessed; mode <=> root.draft.accessed-mode; value <=> root.draft.accessed-text; edited => { root.edited(); } }
-                        Text { text: "Now is captured once when reviewing, for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+                        Text { text: "Enable a field, then enter a date/time (" + root.timestamp-example + ") or choose Now."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
+                        MetadataTime { narrow: root.narrow-fields; example: root.timestamp-example; label: "Modified"; enabled: root.can-modified; mode <=> root.draft.modified-mode; value <=> root.draft.modified-text; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-fields; example: root.timestamp-example; label: "Created"; enabled: root.can-created; mode <=> root.draft.created-mode; value <=> root.draft.created-text; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-fields; example: root.timestamp-example; label: "Accessed"; enabled: root.can-accessed; mode <=> root.draft.accessed-mode; value <=> root.draft.accessed-text; edited => { root.edited(); } }
+                        Text { text: "Now is captured once when reviewing, for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
                     }
                     if root.topic == 2 : VerticalLayout {
                         spacing: 12px; alignment: start;
@@ -310,22 +315,17 @@ export component MetadataDialog inherits Rectangle {
                 dismiss-hint: "Close the editor without applying the draft (Escape).";
                 dismiss => { root.cancel(); }
                 if !root.reviewing : HintedActionButton {
-                    text: "Refresh"; enabled: !root.busy;
-                    hint: "Read the captured files again and check the current draft. This does not apply changes.";
-                    clicked => { root.review-requested = false; root.preview(root.draft); }
-                }
-                if !root.reviewing : HintedActionButton {
-                    text: "Review changes"; enabled: !root.busy;
+                    text: "Review changes"; enabled: !root.busy; primary: true; fallback-icon: FallbackIcons.view;
                     hint: "Check the captured files and exact draft, then review the confirmation before Apply.";
                     clicked => { root.review-requested = true; root.preview(root.draft); }
                 }
                 if root.reviewing : HintedActionButton {
-                    text: "Back to editing";
+                    text: "Back to editing"; fallback-icon: FallbackIcons.edit;
                     hint: "Keep this draft and return to its editable fields.";
                     clicked => { root.dismiss-hints(); root.reviewing = false; root.review-requested = false; }
                 }
                 if root.reviewing : HintedActionButton {
-                    text: "Apply"; enabled: root.ready && root.preview-current && !root.busy
+                    text: "Apply"; primary: true; fallback-icon: FallbackIcons.done; enabled: root.ready && root.preview-current && !root.busy
                         && !root.draft-edited && root.reviewed-revision == root.revision;
                     hint: "Queue the exact reviewed draft. Conflicts offer Skip, Skip all or Cancel. Completed changes are retained if later steps fail.";
                     clicked => { root.confirm(0); }

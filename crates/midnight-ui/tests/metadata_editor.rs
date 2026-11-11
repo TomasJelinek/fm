@@ -121,7 +121,7 @@ fn attributes_use_one_compact_three_state_control_each() {
                 .as_str(),
             value
         );
-        ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+        ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
         assert_eq!(drafts.borrow().last().unwrap().read_only, expected);
     }
     ui::key(&test.window, Key::Escape);
@@ -270,14 +270,14 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     choose_attribute(&test, "Hidden", "Clear");
     choose_attribute(&test, "Read-only", "Clear");
     settle(&mut test);
-    render::snapshot(&test, "metadata-before-refresh");
-    action_is_not_vertically_clipped(&test, "Refresh");
-    ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+    render::snapshot(&test, "metadata-before-review");
+    action_is_not_vertically_clipped(&test, "Review changes");
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert_eq!(
         drafts
             .borrow()
             .last()
-            .expect("Refresh validates the current draft")
+            .expect("Review validates the current draft")
             .read_only,
         2
     );
@@ -327,11 +327,11 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     ui::click_popup(&test.window, "Include subfolders", AccessibleRole::Checkbox);
     for tab in ["Times", "Case", "Attributes"] {
         ui::click_popup(&test.window, tab, AccessibleRole::Button);
-        ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+        ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
         assert!(drafts.borrow().last().unwrap().recursive);
     }
     ui::click_popup(&test.window, "Include subfolders", AccessibleRole::Checkbox);
-    ui::click_popup(&test.window, "Refresh", AccessibleRole::Button);
+    ui::click_popup(&test.window, "Review changes", AccessibleRole::Button);
     assert!(!drafts.borrow().last().unwrap().recursive);
 
     test.resize(1040, 720);
@@ -346,6 +346,25 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
                 ui::click_popup(&test.window, tab, AccessibleRole::Button);
                 settle(&mut test);
                 render::snapshot(&test, &format!("metadata-{tab}-{density}-{font}"));
+                if tab == "Times" {
+                    let explanation = ui::popup_item(
+                        &test.window,
+                        "Now is captured once when reviewing, for all chosen fields and files. An explicit offset distinguishes repeated daylight-saving hours.",
+                        AccessibleRole::Text,
+                    );
+                    let status = ui::popup_item(
+                        &test.window,
+                        "Draft changed. Review it again before applying.",
+                        AccessibleRole::Text,
+                    );
+                    let body = explanation.geometry();
+                    let bottom = explanation.map_to_native_window(body.origin).y + body.height();
+                    let status_top = status.map_to_native_window(status.geometry().origin).y;
+                    assert!(
+                        bottom <= status_top,
+                        "wrapped time help overlaps status: density={density}, font={font}, help_bottom={bottom}, status_top={status_top}"
+                    );
+                }
                 let apply = ui::popup_item(&test.window, "Review changes", AccessibleRole::Button);
                 action_is_not_vertically_clipped(&test, "Review changes");
                 let area = apply.geometry();
@@ -413,7 +432,7 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
         test.window.invoke_apply_fonts("".into(), font, font);
         test.resize(320, 200);
         settle(&mut test);
-        for action in ["Refresh", "Review changes", "Cancel"] {
+        for action in ["Review changes", "Cancel"] {
             action_is_not_vertically_clipped(&test, action);
         }
         render::snapshot(&test, &format!("metadata-minimum-{density}-{font}"));
@@ -422,4 +441,53 @@ fn metadata_editor_requires_review_and_keeps_sections_readable() {
     slint::platform::update_timers_and_animations();
     assert!(test.window.get_metadata_token().is_empty());
     test.window.hide().unwrap();
+}
+
+#[test]
+fn timestamp_fields_are_single_line_and_refresh_has_no_duplicate_action() {
+    let mut test = ui::TestUi::new();
+    test.window.set_metadata_can_modified(true);
+    test.window.set_metadata_can_created(true);
+    test.window.set_metadata_can_accessed(true);
+    test.window
+        .set_metadata_timestamp_example("06. 11. 2026 12:30:00 +01:00".into());
+    test.window.set_metadata_token("times:1".into());
+    settle(&mut test);
+    ui::click_popup(&test.window, "Times", AccessibleRole::Button);
+    for (density, font, width, height) in
+        [(0, 11, 1340, 820), (1, 32, 1340, 960), (0, 13, 600, 700)]
+    {
+        test.window.invoke_apply_preferences(0, density);
+        test.window.invoke_apply_fonts("".into(), font, font);
+        test.resize(width, height);
+        settle(&mut test);
+        for label in ["Modified", "Created", "Accessed"] {
+            let field = ui::popup_item(
+                &test.window,
+                &format!("{label} timestamp"),
+                AccessibleRole::TextInput,
+            );
+            let now = ui::popup_item(
+                &test.window,
+                &format!("{label}: Now"),
+                AccessibleRole::Button,
+            );
+            // The accessible text input is inset in its single-line edit frame.
+            assert!(
+                field.geometry().height() <= now.geometry().height() + 1.0,
+                "{label} input must not stretch into a tall editor: {:?} vs {:?}",
+                field.geometry(),
+                now.geometry()
+            );
+        }
+        let inner = WindowInner::from_pub(test.window.window());
+        for popup in inner.active_popups().iter() {
+            assert!(!has_label(
+                ItemRc::new_root(popup.component.clone()),
+                "Refresh"
+            ));
+        }
+        action_is_not_vertically_clipped(&test, "Review changes");
+    }
+    ui::key(&test.window, Key::Escape);
 }

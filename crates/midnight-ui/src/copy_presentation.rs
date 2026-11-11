@@ -111,6 +111,19 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             }
         }
     }
+    if let Some((id, version)) = presenter.active_rename_decision() {
+        if presenter.operations.preview.is_none()
+            && presenter.copies.draft.is_none()
+            && let Some(conflict) = presenter
+                .operations
+                .rename_conflicts
+                .iter()
+                .find(|c| c.id == id && c.version == version)
+        {
+            refresh_conflict(window, presenter, conflict, "rename");
+        }
+        return;
+    }
     let Some((id, version)) = presenter.active_copy_decision() else {
         if !window.get_copy_token().is_empty() {
             window.set_copy_token("".into());
@@ -138,7 +151,16 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     else {
         return;
     };
-    let token: SharedString = format!("copy:{}:{}", conflict.id.0, conflict.version).into();
+    refresh_conflict(window, presenter, conflict, "copy");
+}
+
+fn refresh_conflict(
+    window: &MainWindow,
+    presenter: &Presenter,
+    conflict: &CopyConflict,
+    prefix: &str,
+) {
+    let token: SharedString = format!("{prefix}:{}:{}", conflict.id.0, conflict.version).into();
     if window.get_copy_token() == token {
         return;
     }

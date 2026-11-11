@@ -69,7 +69,12 @@ impl Presenter {
             for progress in self.copies.progress.iter().filter(|p| p.id >= owner) {
                 tracker.observe_copy(progress);
             }
-            for progress in self.operations.progress.iter().filter(|p| p.id >= owner) {
+            for progress in self
+                .operations
+                .progress
+                .iter()
+                .filter(|p| p.id >= owner && !self.operations.unconfirmed.contains(&p.id))
+            {
                 tracker.observe_mutation(progress);
             }
         }

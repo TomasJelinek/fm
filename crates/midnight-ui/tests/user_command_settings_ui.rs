@@ -140,10 +140,20 @@ fn cancel_restores_applied_command_edits_and_order() {
     h.open();
     let window = h.ui.window.clone_strong();
     let view = window.global::<UserCommandSettingsView>();
-    view.invoke_move(view.get_token(), 1);
+    h.action("Move Custom Command down");
+    // Settle the new draft revision before the next user edit starts validation.
+    h.ui.draw();
     assert_eq!(h.rows()[0].id, "two");
     h.text("Command name", "Previewed command name");
     h.settle();
+    assert!(
+        view.get_can_apply(),
+        "draft name={:?}, dirty={}, error={:?}, validation={:?}",
+        view.get_draft().name,
+        view.get_dirty(),
+        view.get_error(),
+        view.get_validation()
+    );
     h.action("Apply Custom Command");
     assert!(
         h.rows()
@@ -155,6 +165,31 @@ fn cancel_restores_applied_command_edits_and_order() {
     h.open();
     assert_eq!(h.rows()[0].id, "one");
     assert_eq!(h.rows()[0].name, "First command");
+    assert_eq!(h.save_count(), 0);
+}
+
+#[test]
+fn batched_accessibility_edit_after_reorder_keeps_current_draft_validation() {
+    let mut h = Harness::new();
+    h.open();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    // AccessKit can deliver consecutive actions before the next event-loop tick.
+    // Leave the reorder's draft-revision notification pending while editing.
+    view.invoke_move(view.get_token(), 1);
+    h.text("Command name", "Batched accessible command");
+    h.settle();
+    assert!(
+        view.get_can_apply(),
+        "current draft validation was cancelled: name={:?}, dirty={}, error={:?}, validation={:?}",
+        view.get_draft().name,
+        view.get_dirty(),
+        view.get_error(),
+        view.get_validation()
+    );
+    h.action("Apply Custom Command");
+    assert_eq!(h.rows()[1].id, "one");
+    assert_eq!(h.rows()[1].name, "Batched accessible command");
     assert_eq!(h.save_count(), 0);
 }
 

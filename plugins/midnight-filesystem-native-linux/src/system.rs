@@ -139,7 +139,7 @@ impl Directory {
                     libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 )
             };
-            let info = if fd >= 0 {
+            let mut info = if fd >= 0 {
                 crate::adapter::info(&owned(fd)?.metadata().map_err(Failure::from_io)?)
             } else {
                 let error = os_error();
@@ -158,6 +158,23 @@ impl Directory {
                     metadata: Metadata::default(),
                 }
             };
+            if info.kind == Kind::Symlink {
+                cancel(context)?;
+                // SAFETY: the live DIR and terminated child name are retained.
+                // O_PATH|O_DIRECTORY only probes directory kind; it neither reads
+                // target contents nor replaces the link's no-follow metadata.
+                let target = owned(unsafe {
+                    libc::openat(
+                        libc::dirfd(self.handle),
+                        name.as_ptr(),
+                        libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    )
+                });
+                cancel(context)?;
+                if target.is_ok() {
+                    info.kind = Kind::DirectoryLink;
+                }
+            }
             return Ok(Some(NativeEntry {
                 name: OsString::from_vec(name.to_bytes().to_vec()),
                 info,

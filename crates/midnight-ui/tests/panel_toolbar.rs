@@ -119,3 +119,49 @@ fn sort_and_hot_path_actions_are_available_without_detailed_headers() {
     assert_eq!(added.borrow().len(), 2);
     ui.window.hide().unwrap();
 }
+
+#[test]
+fn pointer_action_does_not_leave_a_checked_looking_outline_but_keyboard_focus_is_visible() {
+    let mut test = ui::TestUi::new();
+    let calls = Rc::new(std::cell::Cell::new(0));
+    let count = calls.clone();
+    test.window
+        .on_open_about_window(move || count.set(count.get() + 1));
+    let button = ui::root_item(
+        &test.window,
+        "About Midnight Explorer",
+        AccessibleRole::Button,
+    );
+    let rect = button.geometry();
+    let origin = button.map_to_native_window(rect.origin);
+    let points = [
+        (origin.x, origin.y + rect.height() / 2.0),
+        (origin.x + rect.width() / 2.0, origin.y),
+        (
+            origin.x + rect.width() - 1.0,
+            origin.y + rect.height() / 2.0,
+        ),
+        (
+            origin.x + rect.width() / 2.0,
+            origin.y + rect.height() - 1.0,
+        ),
+    ];
+    test.draw();
+    let idle = points.map(|(x, y)| test.pixel(x, y));
+    ui::click_root(
+        &test.window,
+        "About Midnight Explorer",
+        AccessibleRole::Button,
+    );
+    test.window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerExited);
+    test.draw();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(points.map(|(x, y)| test.pixel(x, y)), idle);
+    render::snapshot(&test, "toolbar-after-pointer-action");
+    ui::key(&test.window, slint::platform::Key::Space);
+    test.draw();
+    assert_eq!(calls.get(), 2);
+    assert_ne!(points.map(|(x, y)| test.pixel(x, y)), idle);
+}

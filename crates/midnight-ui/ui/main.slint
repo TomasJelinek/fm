@@ -73,7 +73,9 @@ export { TooltipPlacement }
 import { LocationRow } from "navigation-models.slint";
 export { LocationRow }
 import { FilePane } from "file-pane.slint";
+import { DragBadge } from "drag-feedback.slint";
 import { SharedToolbar } from "shared-toolbar.slint";
+import { NavigationFocus } from "navigation-controls.slint";
 import { OmissionText } from "path-text.slint";
 import { PathPasteView } from "path-editor.slint";
 export { PathPasteView }
@@ -86,6 +88,7 @@ export { FunctionSlot } from "function-models.slint";
 export component MainWindow inherits Window {
     in property <bool> dialog-input-blocked;
     callback open-help-window();
+    in-out property <int> help-topic: 0;
     callback open-about-window();
     callback open-notice-window();
     callback refresh-information-windows();
@@ -113,6 +116,9 @@ export component MainWindow inherits Window {
     callback drag-host-closed();
     callback drag-invalidate-targets();
     in property <bool> drag-active;
+    in property <int> drag-feedback-state;
+    in property <length> drag-x: -1px;
+    in property <length> drag-y: -1px;
     in-out property <bool> touch-contact;
     callback release-drag-input();
     in property <int> drag-hover-pane: -1;
@@ -181,6 +187,7 @@ export component MainWindow inherits Window {
     callback cancel-operation(string);
     callback cancel-job(string);
     callback copy-job-details(string);
+    callback clear-finished-jobs(bool);
     callback network-connections(bool);
     callback refresh-operation-windows();
     callback close-operation-windows();
@@ -244,6 +251,7 @@ export component MainWindow inherits Window {
     in property <string> metadata-revision;
     in property <bool> metadata-start-case;
     in property <string> metadata-summary;
+    in property <string> metadata-timestamp-example: "2026-11-06T12:30:00+01:00";
     in property <string> metadata-preview-text;
     in property <[MetadataFileRow]> metadata-rows;
     in property <string> metadata-list-status;
@@ -328,7 +336,7 @@ export component MainWindow inherits Window {
         || root.height < root.fixed-layout-height;
     private property <bool> single-panel: root.panel-zoomed || root.compact-window;
     background: Theme.window-background;
-    default-font-family: Theme.font-family != "" ? Theme.font-family : "Segoe UI";
+    default-font-family: Theme.effective-font-family;
     default-font-size: Theme.font-size;
     init => { Palette.color-scheme = ColorScheme.dark; }
     in property <int> active-pane;
@@ -655,9 +663,10 @@ export component MainWindow inherits Window {
     private property <int> main-menu-generation;
     public function show-app-menu(menu: int) {
         root.drag-invalidate-targets();
-        if menu == 0 { root.open-help-window(); } else if menu == 1 { user-menu.show(); }
+        if menu == 0 { root.help-topic = 0; root.open-help-window(); } else if menu == 1 { user-menu.show(); }
         else { root.main-menu-generation += 1; main-menu.show(); }
     }
+    public function show-filter-help() { root.help-topic = 1; root.open-help-window(); }
     public function show-about() { root.drag-invalidate-targets(); root.open-about-window(); }
     public function show-bookmarks(pane: int) {
         root.open-hot-paths-window(pane);
@@ -705,6 +714,7 @@ export component MainWindow inherits Window {
       min-width: 0px; min-height: 0px;
       preferred-width: 0px; preferred-height: 0px;
       capture-key-pressed(event) => {
+        NavigationFocus.keyboard = true;
         if root.dialog-input-blocked { return accept; }
         root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
         if event.text == Key.Escape && SelectionRectangle.cancel() { return accept; }
@@ -1196,7 +1206,9 @@ export component MainWindow inherits Window {
             action(token, action) => {
                 file-menu.close(); root.file-menu-action(token, action); root.focus-files();
             }
-            dismissed(token) => { file-menu.close(); root.file-menu-dismissed(token); }
+            // Focus loss can run while Slint borrows its focus state. The Rust
+            // callback retires this exact token and closes the popup next tick.
+            dismissed(token) => { root.file-menu-dismissed(token); }
         }
     }
     metadata-popup := PopupWindow {
@@ -1210,6 +1222,7 @@ export component MainWindow inherits Window {
                 move-dialog(dx, dy) => { metadata-popup-frame.move-by(dx, dy); }
                 token: root.metadata-token; revision: root.metadata-revision;
                 summary: root.metadata-summary; preview-text: root.metadata-preview-text;
+                timestamp-example: root.metadata-timestamp-example;
                 rows: root.metadata-rows; list-status: root.metadata-list-status;
                 preview-current: root.metadata-preview-current;
                 error: root.metadata-error; ready: root.metadata-ready; busy: root.metadata-busy;
@@ -1377,6 +1390,13 @@ export component MainWindow inherits Window {
                 action(action) => { main-menu.close(); root.function-action(action, root.active-pane); }
             }
         }
+    }
+    if root.drag-active && root.drag-feedback-state != 0 && !root.dialog-input-blocked
+        && root.drag-x >= 0px && root.drag-y >= 0px && root.drag-x < root.width && root.drag-y < root.height : DragBadge {
+        state: root.drag-feedback-state; label: root.drag-label;
+        width: min(max(0px, root.width - 8px), self.preferred-width);
+        x: max(4px, min(root.drag-x + 16px, root.width - self.width - 4px));
+        y: max(4px, min(root.drag-y + 20px, root.height - self.height - 4px));
     }
     // Native owner-modal dialogs retain the main surface but gate its input.
     if root.dialog-input-blocked: TouchArea {

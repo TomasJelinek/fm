@@ -28,6 +28,15 @@ pub struct MutationItem {
     pub metadata: EntryMetadata,
 }
 
+/// Pinned file/file conflict. Preparation never mutates either namespace. The
+/// source must still match the original PreparedMutation and the destination its
+/// retained parent. Only explicit consent may call the native Move capability;
+/// Unsupported/CrossDevice never authorize a copy or delete-first fallback.
+pub struct PreparedRenameReplacement {
+    pub movement: crate::PreparedTransferMove,
+    pub directory: Arc<dyn crate::TransferDirectory>,
+    pub target: Arc<dyn crate::TransferTarget>,
+}
 /// An identity captured on a worker before confirmation. Implementations must
 /// revalidate it before mutation and never follow directory links recursively.
 /// No operation may silently replace another entry or fall back from trash to
@@ -77,6 +86,23 @@ pub trait PreparedMutation: Send + Sync {
             std::io::ErrorKind::Unsupported.into(),
         ));
         result
+    }
+    /// Prepare a pinned regular-file collision for recoverable native replacement.
+    /// Reject links, directories, the source itself and distinct hard-link aliases.
+    fn prepare_rename_replacement(
+        &self,
+        new_name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<PreparedRenameReplacement, FsError> {
+        let _ = (new_name, cancel);
+        Err(FsError::from_io(
+            "prepare Rename replacement",
+            &self.item().path,
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Recoverable Rename replacement is unavailable on this filesystem.",
+            ),
+        ))
     }
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError>;
     fn delete(

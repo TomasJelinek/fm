@@ -8,8 +8,13 @@ Select the basename without its extension (a leading-dot filename is selected in
 full), following Salamander `src/fileswn5.cpp:2329`. Enter accepts, Escape cancels.
 Names remain Unicode; source identities retain native path bytes/code units.
 Only a single basename is accepted, with native validation on the backend.
-Rename never overwrites an existing destination; a collision gives a clear error
-and leaves both entries intact. Case-only renames must use tested native behavior.
+Rename first attempts a no-replace native rename. A regular-file collision opens
+the shared Copy/Move overwrite decision, with both files' metadata. Replacement
+requires explicit, versioned consent and revalidates the captured source and target;
+a changed target requires a new decision. Self/hardlink collisions, directory and
+link replacement remain rejected. Do not delete the target first or fall back to
+copying. Case-only renames use tested native behavior. See the
+[replacement contract](../../verification/2026-11-11-rename-overwrite.md).
 
 Delete/F8 operates on the accepted multiselection, or the focused entry if empty.
 The user-confirmed default is system Trash, with Shift+Delete/Shift+F8 requesting
@@ -26,8 +31,10 @@ synthetic 16 ms tests alone do not prove smooth visible scrolling.
 
 F7 creates a new directory, including a nested relative path, based on Salamander
 `src/fileswn5.cpp:1946`. Existing intermediate directories may be reused; the
-final name must be absent. Validate the entire input before creating anything;
-reject absolute paths, dot/dotdot components and links inside the entered path.
+final name must be absent. Absolute paths and relative paths containing `..` are
+supported, including targets outside the current panel. Resolve relative input
+against the captured base; preserve native component-walk semantics, validate
+names and reject unsafe link substitution rather than lexically deleting `..`.
 Keep a pinned base directory. Cancellation/failure can leave new intermediate
 directories; report this honestly and never remove unrelated directories to undo it.
 
@@ -44,7 +51,9 @@ The bottom toolbar extends through F12: F11 connects and F12 disconnects a netwo
 drive using Windows system UI (Salamander `salamand.rc:100–104`,
 `mainwnd3.cpp:3848`). The optional native capability controls availability; other
 platforms do not receive Windows drive assumptions. Midnight Explorer never collects passwords.
-Options follows F12. Jobs exposes bounded queue/progress/cancellation details.
+Options uses the rightmost shared-toolbar gear. Jobs exposes bounded operation
+admission/progress/cancellation and session-only retained history. Clearing finished
+history never cancels active work; canceled confirmation drafts leave no job row.
 
 Panel modes and future media preview architecture are specified in
 [panel views and thumbnails](2026-11-05-panel-views-thumbnails-design.md).

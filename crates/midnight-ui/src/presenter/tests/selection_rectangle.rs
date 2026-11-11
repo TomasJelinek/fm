@@ -152,3 +152,54 @@ fn obsolete_index_is_not_kept_alive_by_gesture_and_stale_archive_payload_is_reti
     std::thread::spawn(move || drop(retired)).join().unwrap();
     assert!(weak.upgrade().is_none());
 }
+
+#[test]
+fn rectangle_status_updates_before_release_and_discards_old_worker_results() {
+    let mut p = stable_panel();
+    let capture = p.capture_rectangle(PaneId::Left).unwrap();
+    assert!(p.preview_rectangle(PaneId::Left, &capture, ranges(), SelectionMode::Replace));
+    let sent = RefCell::new(Vec::new());
+    p.flush_rectangle_summary(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    let Command::SummarizeRectangle(request) = sent.borrow_mut().pop().unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        p.panel_details(PaneId::Left)[0].value,
+        "Updating selection…"
+    );
+    let mut totals = ArchiveSelectionTotals::default();
+    totals.change(EntryKind::File, Some(1234), true);
+    p.apply(Event::RectangleSummary {
+        pane: PaneId::Left,
+        token: request.token.clone(),
+        totals,
+    });
+    assert!(p.panel_details(PaneId::Left)[0].value.contains("1 file"));
+    assert!(p.panel_details(PaneId::Left)[1].value.contains("bytes"));
+    assert!(
+        p.panes[0].selected.is_empty(),
+        "gesture has not committed any selection"
+    );
+    let changed = SelectionRanges::new(6, vec![SelectionSpan { first: 0, last: 0 }]).unwrap();
+    assert!(p.preview_rectangle(PaneId::Left, &capture, changed, SelectionMode::Replace));
+    assert!(request.cancel.is_cancelled());
+    p.apply(Event::RectangleSummary {
+        pane: PaneId::Left,
+        token: request.token.clone(),
+        totals,
+    });
+    assert_eq!(
+        p.panel_details(PaneId::Left)[0].value,
+        "Updating selection…"
+    );
+    p.cancel_rectangle(PaneId::Left);
+    p.apply(Event::RectangleSummary {
+        pane: PaneId::Left,
+        token: request.token.clone(),
+        totals,
+    });
+    assert!(p.panes[0].rectangle_summary().is_none());
+}

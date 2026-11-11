@@ -16,6 +16,9 @@ struct Harness {
 
 impl Harness {
     fn new(names: &[(&str, bool)]) -> Self {
+        Self::with_locale(names, None)
+    }
+    fn with_locale(names: &[(&str, bool)], locale: Option<Arc<dyn LocaleService>>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut entries = Vec::new();
         for (index, (name, folder)) in names.iter().enumerate() {
@@ -63,6 +66,7 @@ impl Harness {
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
             Some(Arc::new(LocalFileSystem::new(None))),
+            locale,
             snapshots,
             Outbox {
                 sender,
@@ -614,4 +618,64 @@ async fn cancellation_at_conflict_still_delivers_completed_item_outcomes() {
         fs::read(h.directory.path().join("STRASSE")).unwrap(),
         b"existing"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn metadata_preview_captures_native_locale_on_worker_for_current_and_proposed_times() {
+    struct Locale(std::thread::ThreadId);
+    impl LocaleService for Locale {
+        fn number_locale(&self) -> Result<NumberLocale, FsError> {
+            Ok(NumberLocale::default())
+        }
+        fn datetime_input_format(&self) -> Option<DateTimeInputFormat> {
+            assert_ne!(
+                std::thread::current().id(),
+                self.0,
+                "locale discovery must use a worker"
+            );
+            Some(DateTimeInputFormat {
+                pattern: "%d. %m. %Y %H:%M:%S".into(),
+                am_pm: ["".into(), "".into()],
+            })
+        }
+        fn format_datetime(&self, _: std::time::SystemTime) -> Option<LocalizedDateTime> {
+            assert_ne!(
+                std::thread::current().id(),
+                self.0,
+                "native formatting must use a worker"
+            );
+            Some(LocalizedDateTime {
+                date: "native date".into(),
+                time: "native time".into(),
+            })
+        }
+    }
+    let mut harness = Harness::with_locale(
+        &[("žluťoučký.txt", false)],
+        Some(Arc::new(Locale(std::thread::current().id()))),
+    );
+    harness.controller.prepare(harness.request.clone()).await;
+    let initial = harness.preview(0).await;
+    assert_eq!(
+        initial.time_input_format.as_ref().unwrap().pattern,
+        "%d. %m. %Y %H:%M:%S"
+    );
+    let current = initial.sample[0].current.modified.unwrap();
+    assert_eq!(initial.localized_times[&current].date, "native date");
+    let proposed = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    harness
+        .controller
+        .preview_metadata(
+            initial.id,
+            1,
+            MetadataPatch {
+                modified: TimeEdit::Set(proposed),
+                ..Default::default()
+            },
+        )
+        .await;
+    let reviewed = harness.preview(1).await;
+    assert_eq!(reviewed.localized_times[&proposed].time, "native time");
+    assert_eq!(reviewed.sample[0].proposed.modified, Some(proposed));
+    assert_eq!(reviewed.id, initial.id);
 }

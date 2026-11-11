@@ -1,5 +1,15 @@
 # Native Dialog Windows Implementation Plan
 
+> **Historical plan — superseded on 11 November.** The
+> [current follow-up](2026-11-11-dialog-polish-followup.md) is authoritative.
+> Only modeless working tools require free movement outside the main window.
+> Attributes / Times / Case stays embedded; do not execute its migration tasks.
+> Ordinary confirmations/settings are modal without taskbar items, and Ctrl+M
+> Make File List is now owner-modal with no separate taskbar entry. Existing
+> native modal hosts need policy review; do not migrate more embedded modal forms
+> under this plan. The original goals, taskbar classification and task checklist
+> below are retained as historical implementation context where they conflict.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move every remaining application dialog into a resizable native window

@@ -297,3 +297,40 @@ fn disabled_command_allows_explicit_preview_but_never_execution() {
         })
     );
 }
+
+#[test]
+fn jobs_clear_finished_commands_preserves_active_and_error_receipts() {
+    let (mut p, _) = loaded(true);
+    for index in 0..3 {
+        assert!(p.request_user_command(PaneId::Left, "test-command", false, &|_| true));
+        if index == 2 {
+            continue;
+        }
+        let job = p.command_launches.jobs.last().unwrap();
+        p.apply(Event::UserCommand(Box::new(UserCommandEvent {
+            request: job.id,
+            command: job.command.clone(),
+            update: UserCommandUpdate::Finished(UserCommandSummary {
+                planned: 1,
+                started: u64::from(index == 0),
+                not_started: u64::from(index != 0),
+                cancelled: false,
+                error: (index == 1).then(|| {
+                    FsError::from_io(
+                        "launch",
+                        std::path::Path::new("program"),
+                        std::io::Error::other("Launch denied"),
+                    )
+                }),
+            }),
+        })));
+    }
+    p.clear_finished_jobs(true);
+    assert_eq!(p.command_launches.jobs.len(), 2);
+    assert!(p.command_launches.jobs[0].error.is_some());
+    assert!(!p.command_launches.jobs[1].finished);
+    p.clear_finished_jobs(false);
+    assert_eq!(p.command_launches.jobs.len(), 1);
+    assert!(!p.command_launches.jobs[0].finished);
+    assert!(!p.take_retired().is_empty());
+}

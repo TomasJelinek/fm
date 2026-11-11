@@ -1,6 +1,6 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
-import { Button, ScrollView } from "std-widgets.slint";
-import { HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { ScrollView } from "std-widgets.slint";
+import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogHeader } from "dialog-frame.slint";
@@ -17,6 +17,7 @@ export component PanelFilterDialog inherits Rectangle {
     callback apply(bool, int, string, bool);
     callback cancel();
     callback clear();
+    callback help();
     callback move-dialog(length, length);
     changed width => { if root.width < 400px { footer.focus-dismiss(); } }
     changed height => { if root.height < 280px { footer.focus-dismiss(); } }
@@ -31,11 +32,12 @@ export component PanelFilterDialog inherits Rectangle {
     border-width: 1px; border-color: Theme.active-frame;
     FocusScope {
         key-pressed(event) => {
+            if event.text == Key.F1 { root.help(); return accept; }
             if event.text == Key.Escape { root.cancel(); return accept; }
             return reject;
         }
         VerticalLayout {
-            padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 12px;
+            padding: root.height < 280px ? 8px : 16px; spacing: root.height < 280px ? 4px : 8px;
             DialogHeader { title: "Panel filter"; fallback-icon: FallbackIcons.filter; compact: root.height < 280px;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
@@ -43,7 +45,7 @@ export component PanelFilterDialog inherits Rectangle {
                 min-height: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
-                    spacing: 12px; alignment: start;
+                    spacing: 8px; alignment: start;
                     mode := HintedComboBox {
                         model: ["Masks", "Regex", "Expression"]; enabled: !root.model.busy; min-height: Theme.control-height;
                         accessible-label: "Filter mode";
@@ -67,13 +69,29 @@ export component PanelFilterDialog inherits Rectangle {
                     if root.model.error != "": ErrorNotice { text: root.model.error; }
                 }
             }
-            footer := DialogFooter {
-                compact-height: root.height < 280px;
-                dismiss => { root.cancel(); }
-                Button { text: "OK"; enabled: !root.model.busy; min-width: 80px; min-height: Theme.control-height;
-                    clicked => { root.apply(true, mode.current-index, expression.text, names.checked); } }
-                if root.model.enabled : Button { text: "Show all"; min-width: 80px; min-height: Theme.control-height;
-                    clicked => { root.clear(); } }
+            HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton {
+                    text: "Help"; fallback-icon: FallbackIcons.help;
+                    hint: "Examples and supported filter syntax (F1).";
+                    min-height: Theme.control-height; horizontal-stretch: 0;
+                    clicked => { root.help(); }
+                }
+                footer := DialogFooter {
+                    compact-height: root.height < 280px;
+                    dismiss => { root.cancel(); }
+                    if root.model.enabled : HintedActionButton {
+                        text: "Show all"; min-height: Theme.control-height;
+                        hint: "Remove this panel's applied filter.";
+                        clicked => { root.clear(); }
+                    }
+                    HintedActionButton {
+                        text: "OK"; primary: true; enabled: !root.model.busy;
+                        min-width: 72px; min-height: Theme.control-height;
+                        hint: "Apply the filter to this panel.";
+                        clicked => { root.apply(true, mode.current-index, expression.text, names.checked); }
+                    }
+                }
             }
         }
     }

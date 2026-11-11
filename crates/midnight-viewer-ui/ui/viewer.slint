@@ -75,7 +75,7 @@ export component ViewerWindow inherits Window {
     in property <length> ui-font-size: 12px;
     in property <string> ui-font-family;
     default-font-size: compact ? min(ui-font-size, 12px) : ui-font-size;
-    default-font-family: ui-font-family;
+    default-font-family: root.ui-font-family != "" ? root.ui-font-family : "Segoe UI";
     // Keep compact controls readable at the minimum window size. Normal rows
     // follow the selected UI font and the active native widget metrics.
     private property <length> effective-ui-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;

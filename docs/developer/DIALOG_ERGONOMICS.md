@@ -30,16 +30,19 @@ separately; this document is not a claim that every item is already released.
 - Every application dialog and auxiliary window is resizable. Lists, preview
   areas and editors use additional space; action buttons remain accessible.
   Narrow layouts stack controls and scroll their content instead of overlapping.
-  Dialogs have a top-right close button with the same behavior as Cancel. Native
-  dialog windows may move outside the main window and onto another monitor.
-  The earlier embedded popup implementation cannot meet that requirement: the
-  pinned Slint Winit backend clamps those popups to the owner. Migrate forms to
-  independent Slint Window hosts, retaining backend request/draft identities.
-- Ordinary dialogs belong to the main application and do not add separate
-  Windows taskbar buttons. Set ownership before first show; retain the normal
-  title bar, resizing and movement onto other monitors. Independent working
-  windows (Find, Checksums, Make File List, viewers and comparators) keep taskbar
-  and Alt+Tab access, with the same application identity for system grouping.
+  Dialogs have a top-right close button with the same behavior as Cancel.
+  Under the [11 November policy](../superpowers/plans/2026-11-11-dialog-polish-followup.md),
+  only modeless working windows require free movement outside the main window.
+  Attributes / Times / Case remains embedded. Do not migrate other embedded modal
+  forms to satisfy the superseded all-native-window requirement; existing native
+  modal hosts still need a policy review.
+- Ordinary confirmations and settings are modal and do not add separate Windows
+  taskbar buttons. Existing native ordinary hosts set ownership before first show
+  and retain normal title bars and resizing. Independent working windows (Find,
+  Checksums, viewers and comparators) keep taskbar and Alt+Tab access, with the same
+  application identity for system grouping. Help/About remain ordinary dialogs
+  even when modeless. Make File List uses an owner-modal native host with no
+  separate taskbar item.
 - Options follows OK/Cancel: OK validates and saves the complete current form,
   then closes only after successful persistence. Cancel discards the draft and
   restores live previews, including the theme. Validation remains cancellable;

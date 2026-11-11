@@ -46,6 +46,9 @@ impl Presenter {
     }
 
     pub(crate) fn defer_copy_decision(&mut self, token: &str) {
+        if self.defer_rename_decision(token) {
+            return;
+        }
         let key = self
             .copies
             .conflicts
@@ -66,6 +69,10 @@ impl Presenter {
     }
 
     pub(crate) fn resolve_copy_decision(&mut self, token: &str) {
+        if self.resolve_rename_decision(token) {
+            return;
+        }
+        self.operations.rename_selected = None;
         let key = self
             .copies
             .conflicts

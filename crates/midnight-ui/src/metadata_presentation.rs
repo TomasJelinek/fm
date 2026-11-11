@@ -79,7 +79,13 @@ pub(super) fn bind(
         p.dirty_metadata(token.as_str());
     });
     callback!(on_preview_metadata, |p, s, token, draft| {
-        p.preview_metadata(token.as_str(), metadata_input::patch(&draft), s);
+        let format = p
+            .metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.time_input_format.as_ref());
+        let patch = metadata_input::patch(&draft, format);
+        p.preview_metadata(token.as_str(), patch, s);
     });
     callback!(on_confirm_metadata, |p, s, token, revision, policy| {
         p.confirm_metadata(token.as_str(), revision.as_str(), policy, s);
@@ -102,6 +108,15 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     {
         dismiss_controls(window);
     }
+    window.set_metadata_timestamp_example(
+        metadata_input::timestamp_example(
+            state
+                .preview
+                .as_ref()
+                .and_then(|preview| preview.time_input_format.as_ref()),
+        )
+        .into(),
+    );
     window.set_metadata_start_case(state.start_case);
     window.set_metadata_revision(state.revision.to_string().into());
     window.set_metadata_error(state.error.as_str().into());
@@ -202,13 +217,18 @@ pub(super) fn show_conflict(window: &MainWindow, conflict: &MetadataConflict, fo
     window.invoke_show_metadata_conflict();
 }
 
-fn time(time: std::time::SystemTime) -> String {
-    time_presentation::utc_fallback(time)
+fn time(time: std::time::SystemTime, preview: &MetadataPreview) -> String {
+    preview
+        .localized_times
+        .get(&time)
+        .cloned()
+        .or_else(|| time_presentation::utc_fallback(time))
         .map(|value| format!("{} {}", value.date, value.time))
         .unwrap_or_else(|| "outside the display calendar".into())
 }
 
-fn requested(patch: &MetadataPatch) -> String {
+fn requested(preview: &MetadataPreview) -> String {
+    let patch = &preview.patch;
     let mut changes = Vec::new();
     for (flag, name) in [
         (EDIT_READ_ONLY, "Read-only"),
@@ -242,7 +262,7 @@ fn requested(patch: &MetadataPatch) -> String {
         ("Accessed", patch.accessed),
     ] {
         if let TimeEdit::Set(value) = value {
-            changes.push(format!("{name}: {}", time(value)));
+            changes.push(format!("{name}: {}", time(value, preview)));
         }
     }
     if let Some(case) = patch.case {
@@ -259,9 +279,9 @@ fn requested(patch: &MetadataPatch) -> String {
 
 fn preview_text(preview: &MetadataPreview) -> String {
     if preview.revision == 0 {
-        "Draft not previewed. Refresh or Preview changes to inspect the current draft.".into()
+        "Draft not previewed. Review changes to inspect the current draft.".into()
     } else {
-        requested(&preview.patch)
+        requested(preview)
     }
 }
 
@@ -280,9 +300,9 @@ fn preview_status(presenter: &Presenter) -> String {
         .as_ref()
         .is_some_and(|preview| preview.revision > 0)
     {
-        "Draft changed; the preview is stale. Refresh or Preview changes before Apply.".into()
+        "Draft changed; the preview is stale. Review changes before Apply.".into()
     } else {
-        "Draft not previewed. Refresh or Preview changes to inspect the current draft.".into()
+        "Draft not previewed. Review changes to inspect the current draft.".into()
     }
 }
 
@@ -308,10 +328,7 @@ impl Model for MetadataRows {
         }
         let presenter = self.presenter.borrow();
         let preview = presenter.metadata.preview.as_ref()?;
-        preview
-            .sample
-            .get(index)
-            .map(|row| file_row(row, &preview.patch))
+        preview.sample.get(index).map(|row| file_row(row, preview))
     }
     fn model_tracker(&self) -> &dyn ModelTracker {
         &self.notify
@@ -357,7 +374,8 @@ fn attributes(snapshot: &MetadataSnapshot) -> String {
     }
 }
 
-fn file_row(row: &MetadataPreviewRow, patch: &MetadataPatch) -> MetadataFileRow {
+fn file_row(row: &MetadataPreviewRow, preview: &MetadataPreview) -> MetadataFileRow {
+    let patch = &preview.patch;
     let name = row.path.file_name().unwrap_or_default().to_string_lossy();
     let proposed = row
         .proposed_name
@@ -376,9 +394,11 @@ fn file_row(row: &MetadataPreviewRow, patch: &MetadataPatch) -> MetadataFileRow 
     ]
     .into_iter()
     .map(|(label, before, edit)| {
-        let before = before.map(time).unwrap_or_else(|| "Unavailable".into());
+        let before = before
+            .map(|value| time(value, preview))
+            .unwrap_or_else(|| "Unavailable".into());
         match edit {
-            TimeEdit::Set(value) => format!("{label}: {before} → {}", time(value)),
+            TimeEdit::Set(value) => format!("{label}: {before} → {}", time(value, preview)),
             TimeEdit::Keep => format!("{label}: {before} (unchanged)"),
             TimeEdit::Now => format!("{label}: {before} → Now (awaiting preview)"),
         }
@@ -449,6 +469,8 @@ mod tests {
             id: OperationId(1),
             revision,
             patch: MetadataPatch::default(),
+            localized_times: Default::default(),
+            time_input_format: None,
             capabilities: MetadataCapabilities::default(),
             total: 1,
             conflicts: 0,
@@ -479,6 +501,35 @@ mod tests {
         assert!(!preview_status(&presenter).contains("No changes requested"));
         presenter.metadata.busy = true;
         assert!(preview_status(&presenter).contains("Preparing preview"));
+    }
+
+    #[test]
+    fn metadata_review_uses_worker_localized_time_without_reinterpreting_it() {
+        let mut preview = empty_preview(1);
+        preview.patch.modified = TimeEdit::Set(UNIX_EPOCH);
+        preview.localized_times.insert(
+            UNIX_EPOCH,
+            LocalizedDateTime {
+                date: "1. 1. 1970".into(),
+                time: "1:00:00".into(),
+            },
+        );
+        assert_eq!(preview_text(&preview), "Modified: 1. 1. 1970 1:00:00");
+        let row = MetadataPreviewRow {
+            path: "žluťoučký.txt".into(),
+            proposed_name: None,
+            current: MetadataSnapshot {
+                modified: Some(UNIX_EPOCH),
+                ..Default::default()
+            },
+            proposed: MetadataSnapshot::default(),
+            issue: None,
+        };
+        assert!(
+            file_row(&row, &preview)
+                .times
+                .contains("Modified: 1. 1. 1970 1:00:00 → 1. 1. 1970 1:00:00")
+        );
     }
 
     #[test]

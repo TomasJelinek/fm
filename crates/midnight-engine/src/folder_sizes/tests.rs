@@ -14,6 +14,7 @@ use std::{
 #[derive(Default)]
 pub(super) struct Tree {
     directories: HashMap<PathBuf, Vec<Entry>>,
+    links: HashMap<PathBuf, PathBuf>,
     lengths: HashMap<PathBuf, u64>,
     pub(super) unreadable: HashSet<PathBuf>,
     reads: Mutex<Vec<PathBuf>>,
@@ -33,6 +34,33 @@ impl Tree {
 }
 
 impl DirectoryService for Tree {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Option<SizeDirectoryTarget>, FsError> {
+        use std::hash::{Hash, Hasher};
+        let resolved = self.links.get(path).map_or(path, PathBuf::as_path);
+        if self.unreadable.contains(resolved) {
+            return Err(FsError::from_io(
+                "resolve directory size target",
+                path,
+                io::ErrorKind::PermissionDenied.into(),
+            ));
+        }
+        if !self.directories.contains_key(resolved) {
+            return Ok(None);
+        }
+        let mut identity = std::collections::hash_map::DefaultHasher::new();
+        resolved.hash(&mut identity);
+        Ok(Some(SizeDirectoryTarget {
+            path: resolved.to_owned(),
+            identity: SizeDirectoryIdentity {
+                device: 1,
+                object: u128::from(identity.finish()).to_le_bytes(),
+            },
+        }))
+    }
     fn read_directory(
         &self,
         path: &Path,
@@ -171,7 +199,7 @@ fn nested_unicode_directories_sum_regular_file_lengths_and_empty_directory_is_ze
 }
 
 #[test]
-fn symlinks_and_special_files_are_neither_followed_nor_opened() {
+fn non_directory_symlinks_and_special_files_are_not_opened() {
     let mut tree = Tree::default();
     tree.directory(
         "root/dir",
@@ -201,7 +229,7 @@ fn symlinks_and_special_files_are_neither_followed_nor_opened() {
 }
 
 #[test]
-fn directory_links_are_counted_as_skipped_without_recursing_or_reading_target_metadata() {
+fn directory_links_count_target_contents_in_recursive_and_explicit_root_scans() {
     let mut tree = Tree::default();
     tree.directory(
         "root/dir",
@@ -212,6 +240,8 @@ fn directory_links_are_counted_as_skipped_without_recursing_or_reading_target_me
         vec![item(3, "root/dir/junction/payload", EntryKind::File)],
     );
     tree.length("root/dir/junction/payload", 999);
+    tree.links
+        .insert("root/direct-link".into(), "root/dir/junction".into());
     let result = finished(
         &tree,
         &[
@@ -221,17 +251,128 @@ fn directory_links_are_counted_as_skipped_without_recursing_or_reading_target_me
     );
     assert_eq!(
         result,
-        [(
-            EntryId(1),
-            FolderSize {
-                skipped_links: 1,
-                finished: true,
-                ..FolderSize::default()
-            }
-        )]
+        [
+            (
+                EntryId(1),
+                FolderSize {
+                    bytes: 999,
+                    files: 1,
+                    finished: true,
+                    ..FolderSize::default()
+                }
+            ),
+            (
+                EntryId(4),
+                FolderSize {
+                    bytes: 999,
+                    files: 1,
+                    finished: true,
+                    ..FolderSize::default()
+                }
+            )
+        ]
     );
-    assert_eq!(*tree.reads.lock().unwrap(), [PathBuf::from("root/dir")]);
-    assert!(tree.metadata_reads.lock().unwrap().is_empty());
+    assert_eq!(tree.metadata_reads.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn size_link_ancestor_and_self_cycles_stop_before_recounting_files() {
+    let mut tree = Tree::default();
+    tree.directory(
+        "root",
+        vec![
+            item(2, "root/file", EntryKind::File),
+            item(3, "root/self", EntryKind::DirectoryLink),
+            item(4, "root/child", EntryKind::Directory),
+        ],
+    );
+    tree.directory(
+        "root/child",
+        vec![
+            item(5, "root/child/file", EntryKind::File),
+            item(6, "root/child/up", EntryKind::DirectoryLink),
+        ],
+    );
+    tree.links.insert("root/self".into(), "root".into());
+    tree.links.insert("root/child/up".into(), "root".into());
+    tree.length("root/file", 7);
+    tree.length("root/child/file", 11);
+    let results = finished(&tree, &[item(1, "root", EntryKind::Directory)]);
+    assert_eq!(
+        results[0].1,
+        FolderSize {
+            bytes: 18,
+            files: 2,
+            skipped_links: 2,
+            finished: true,
+            ..FolderSize::default()
+        }
+    );
+    assert_eq!(
+        tree.reads.lock().unwrap().len(),
+        2,
+        "cycles are never enumerated again"
+    );
+}
+
+#[test]
+fn size_link_noncyclic_aliases_keep_their_independent_logical_contents() {
+    let mut tree = Tree::default();
+    tree.directory(
+        "root",
+        vec![
+            item(2, "root/first", EntryKind::DirectoryLink),
+            item(3, "root/second", EntryKind::DirectoryLink),
+        ],
+    );
+    tree.directory(
+        "elsewhere",
+        vec![item(4, "elsewhere/file", EntryKind::File)],
+    );
+    tree.links.insert("root/first".into(), "elsewhere".into());
+    tree.links.insert("root/second".into(), "elsewhere".into());
+    tree.length("elsewhere/file", 5);
+    let results = finished(&tree, &[item(1, "root", EntryKind::Directory)]);
+    assert_eq!(results[0].1.bytes, 10);
+    assert_eq!(results[0].1.files, 2);
+    assert_eq!(results[0].1.skipped_links, 0);
+    assert_eq!(results[0].1.errors, 0);
+}
+
+#[test]
+fn size_link_inaccessible_target_keeps_partial_bytes_and_warning_details() {
+    let mut tree = Tree::default();
+    tree.directory(
+        "root",
+        vec![
+            item(2, "root/file", EntryKind::File),
+            item(3, "root/denied", EntryKind::DirectoryLink),
+        ],
+    );
+    tree.length("root/file", 7);
+    tree.links
+        .insert("root/denied".into(), "inaccessible".into());
+    tree.unreadable.insert("inaccessible".into());
+    let mut last = None;
+    compute(
+        &tree,
+        &[item(1, "root", EntryKind::Directory)],
+        &Cancellation::default(),
+        &mut |_, size| {
+            last = Some(size);
+            true
+        },
+    );
+    let size = last.unwrap();
+    assert!(size.finished);
+    assert_eq!(
+        (size.bytes, size.files, size.errors, size.skipped_links),
+        (7, 1, 1, 1)
+    );
+    let warnings = size.warnings.unwrap();
+    assert_eq!(warnings.summary().observed, 1);
+    assert!(warnings.summary().tooltip.contains("PermissionDenied"));
+    assert!(warnings.summary().tooltip.contains("denied"));
 }
 
 #[test]

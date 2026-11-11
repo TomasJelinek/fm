@@ -221,7 +221,7 @@ fn late_internal_acceptance_cannot_clear_marks_from_a_new_source_navigation() {
     let (mut p, base) = loaded();
     set_selected(&mut p, PaneId::Left, &[EntryId(1)]);
     assert!(p.begin_file_drag(PaneId::Left, 1, &identity(&p, 1), &|_| true));
-    let drag = DragId(p.drag_drop.lifecycle.active.unwrap().id);
+    let drag = DragId(p.drag_drop.lifecycle.active().unwrap().id);
     p.apply_with_sender(
         Event::DragDrop(DragDropEvent::Prepared {
             id: drag,
@@ -349,4 +349,85 @@ fn unavailable_native_gesture_keeps_the_next_gesture_eligible_for_native_draggin
         p.release_file_drag(None, InternalDropIntent::Copy, &send);
         previous = Some(id);
     }
+}
+
+#[test]
+fn drag_hover_is_latest_only_and_escape_cancels_under_queue_backpressure() {
+    use crate::presenter::drag_drop::preview::Status;
+    let (mut p, _) = loaded();
+    assert!(p.begin_file_drag(PaneId::Left, 1, &identity(&p, 1), &|_| true));
+    let id = DragId(p.drag_drop.lifecycle.active().unwrap().id);
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::Prepared { id, item_count: 1 }),
+        &|_| true,
+    );
+    let destination = InternalDropDestination::PaneRoot {
+        pane: PaneId::Left,
+        navigation: NavigationId(p.panes[0].generation),
+    };
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.update_drag_preview(Some(destination.clone()), InternalDropIntent::Auto, &send);
+    let first = match sent.borrow_mut().remove(0) {
+        Command::PreviewInternalDrop(request) => *request,
+        _ => panic!("hover preview"),
+    };
+    assert_eq!(p.drag_preview_status(), Status::Pending);
+    p.update_drag_preview(Some(destination.clone()), InternalDropIntent::Copy, &send);
+    let second = match sent.borrow_mut().remove(0) {
+        Command::PreviewInternalDrop(request) => *request,
+        _ => panic!("changed modifier preview"),
+    };
+    assert!(first.cancel.is_cancelled());
+    assert!(second.revision.0 > first.revision.0);
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::InternalPreview {
+            id,
+            revision: first.revision,
+            intent: Some(TransferIntent::Move),
+        }),
+        &send,
+    );
+    assert_eq!(
+        p.drag_preview_status(),
+        Status::Pending,
+        "late reply cannot claim Move for the current Copy gesture"
+    );
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::InternalPreview {
+            id,
+            revision: second.revision,
+            intent: Some(TransferIntent::Copy),
+        }),
+        &send,
+    );
+    assert_eq!(
+        p.drag_preview_status(),
+        Status::Allowed(TransferIntent::Copy)
+    );
+    assert!(sent.borrow().is_empty(), "hover never admits a transfer");
+    p.cancel_file_drag(&|_| false);
+    assert!(
+        second.cancel.is_cancelled(),
+        "Escape revokes worker checks even with a full command queue"
+    );
+    assert!(p.drag_drop.lifecycle.active().is_none());
+    p.apply_with_sender(
+        Event::DragDrop(DragDropEvent::InternalPreview {
+            id,
+            revision: second.revision,
+            intent: Some(TransferIntent::Move),
+        }),
+        &|_| false,
+    );
+    assert_eq!(p.drag_preview_status(), Status::Rejected);
+    p.release_file_drag(Some(destination), InternalDropIntent::Move, &send);
+    assert!(
+        sent.borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::InternalDrop(_)))
+    );
 }

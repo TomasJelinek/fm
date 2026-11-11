@@ -67,7 +67,11 @@ impl Session {
                 requested
                     && row.selectable
                     && !row.context_only
-                    && row.entry.kind == midnight_core::EntryKind::Directory
+                    && matches!(
+                        row.entry.kind,
+                        midnight_core::EntryKind::Directory
+                            | midnight_core::EntryKind::DirectoryLink
+                    )
             })
             .map(|(_, row)| (row.id, row.depth));
         let count = rows.clone().count();

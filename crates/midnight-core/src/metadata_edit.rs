@@ -121,6 +121,9 @@ pub struct MetadataPreview {
     pub id: OperationId,
     pub revision: u64,
     pub patch: MetadataPatch,
+    /// Worker-captured locale text; absent entries retain an explicit UTC fallback.
+    pub localized_times: std::collections::HashMap<SystemTime, crate::LocalizedDateTime>,
+    pub time_input_format: Option<crate::DateTimeInputFormat>,
     /// Capabilities common to all selected roots. Descendants are checked when discovered.
     pub capabilities: MetadataCapabilities,
     pub total: u64,

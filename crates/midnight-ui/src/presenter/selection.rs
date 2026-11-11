@@ -128,6 +128,7 @@ impl Presenter {
 
     /// Retry internal rebases after bounded command-channel backpressure.
     pub fn flush_selection(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_folder_presence(send);
         self.flush_trees(send);
         self.flush_copy_selection(send);
         self.flush_tree_refresh(send);

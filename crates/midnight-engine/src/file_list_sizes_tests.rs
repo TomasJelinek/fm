@@ -70,8 +70,9 @@ fn completed_native_sizes_are_frozen_once_and_survive_panel_navigation() {
     let entries = entries(&capture);
     let frozen = captured.freeze(&entries, &Cancellation::default()).unwrap();
     assert_eq!(frozen.directory_size(entries[0]), Some(10));
-    for entry in &entries[1..] {
-        assert_eq!(frozen.directory_size(entry), None);
+    assert_eq!(frozen.directory_size(entries[3]), Some(13));
+    for index in [1, 2, 4] {
+        assert_eq!(frozen.directory_size(entries[index]), None);
     }
     sizes
         .lock()

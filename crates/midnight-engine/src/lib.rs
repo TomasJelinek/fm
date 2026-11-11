@@ -24,6 +24,7 @@ mod filters;
 mod find;
 mod find_sort;
 mod find_worker;
+mod folder_presence;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
@@ -44,6 +45,7 @@ mod path_picker;
 mod preferences;
 pub mod providers;
 pub mod reclaim;
+mod rectangle_summary;
 mod scan_cache;
 mod search;
 mod selection;
@@ -400,6 +402,13 @@ impl Engine {
             self.outbox.clone(),
             watcher.as_ref().map(watch::Controller::handle),
         );
+        let folder_presence = folder_presence::Controller::new(
+            self.filesystem.clone(),
+            snapshots.clone(),
+            listing_budgets.clone(),
+            self.outbox.clone(),
+            &mut tasks,
+        );
         let mut neighborhood = network_neighborhood::Controller::new(
             self.locale.clone(),
             self.outbox.clone(),
@@ -443,6 +452,7 @@ impl Engine {
         );
         let operations = operations::Controller::new(
             self.mutations,
+            self.locale.clone(),
             snapshots.clone(),
             self.outbox.clone(),
             mutation_gate,
@@ -458,6 +468,8 @@ impl Engine {
             &mut tasks,
         );
         let search = search::Controller::new(snapshots.clone(), self.outbox.clone(), &mut tasks);
+        let rectangle_summaries =
+            rectangle_summary::Controller::new(self.outbox.clone(), &mut tasks);
         let selected_sizes =
             selection_sizes::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
         let archive_sizes = archive_sizes::Controller::new(snapshots.clone(), self.outbox.clone());
@@ -505,6 +517,7 @@ impl Engine {
                     if let Some((pane, navigation)) = navigation_request {
                         if navigation_high_water[pane.index()].is_some_and(|old| navigation <= old) { continue; }
                         navigation_high_water[pane.index()] = Some(navigation);
+                        folder_presence.cancel(pane);
                     }
                     let resort = matches!(&command, Some(Command::Resort { .. }));
                     let desired_source = match &command {
@@ -553,6 +566,12 @@ impl Engine {
                         Some(Command::StartSelectedChecksums(request)) => {
                             let (job, generation) = (request.job, request.generation);
                             if let Err(error) = checksums.start_selected(*request) {
+                                self.outbox.send(Event::ChecksumRejected(Box::new(midnight_core::ChecksumRejected { job, generation, error }))).await;
+                            }
+                        }
+                        Some(Command::StartCapturedChecksums(request)) => {
+                            let (job, generation) = (request.job, request.generation);
+                            if let Err(error) = checksums.start_captured(*request).await {
                                 self.outbox.send(Event::ChecksumRejected(Box::new(midnight_core::ChecksumRejected { job, generation, error }))).await;
                             }
                         }
@@ -667,6 +686,7 @@ impl Engine {
                         Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,
                         Some(Command::ConfirmMetadata { id, revision, conflicts }) => operations.confirm_metadata(id, revision, conflicts).await,
                         Some(Command::ResolveMetadataConflict { id, token, choice }) => operations.resolve_metadata_conflict(id, token, choice).await,
+                        Some(Command::DecideRename(decision)) => operations.decide_rename(decision).await,
                         Some(Command::CompareDirectories(request)) => comparison.compare(request),
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
@@ -698,6 +718,13 @@ impl Engine {
                             }
                         },
                         Some(Command::CompleteInternalDrop { id, target }) => drag_drop.complete_internal(id, target).await,
+                        Some(Command::PreviewInternalDrop(request)) => {
+                            if let Some(command) = drag_drop.preview_internal(*request).await
+                                && let Some(event) = trees.submit(command).await {
+                                self.outbox.send(Event::Tree(Box::new(event))).await;
+                            }
+                        },
+                        Some(Command::CompleteInternalDropPreview { id, revision, target }) => drag_drop.complete_preview(id, revision, target).await,
                         Some(Command::Search(request)) => search.query(request),
                         Some(Command::CancelSearch { pane, revision }) => search.cancel(pane, revision),
                         None | Some(Command::Shutdown) => break,
@@ -706,6 +733,8 @@ impl Engine {
                                 self.outbox.send(Event::Tree(Box::new(event))).await;
                             }
                         },
+                        Some(Command::SummarizeRectangle(request)) => rectangle_summaries.submit(request),
+                        Some(Command::ProbeFolderPresence(request)) => folder_presence.submit(request).await,
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
@@ -811,11 +840,11 @@ impl Engine {
                                     let roots: std::borrow::Cow<'_, [Entry]> = match &selection {
                                         None => std::borrow::Cow::Borrowed(&snapshot.entries),
                                         Some(selection) => std::borrow::Cow::Owned(snapshot.entries.iter()
-                                            .filter(|entry| entry.kind == EntryKind::Directory && selection.contains_path(&entry.path))
+                                            .filter(|entry| matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) && selection.contains_path(&entry.path))
                                             .cloned().collect()),
                                     };
                                     let paths: HashMap<_, _> = roots.iter()
-                                        .filter(|entry| entry.kind == EntryKind::Directory)
+                                        .filter(|entry| matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink))
                                         .map(|entry| (entry.id, entry.path.clone())).collect();
                                     folder_sizes::compute_batched(filesystem.as_ref(), &roots, &worker_cancel, &mut |entry, size| {
                                         let Some(path) = paths.get(&entry) else { return false; };
@@ -953,6 +982,7 @@ impl Engine {
 
         commands.close();
         drag_drop.shutdown();
+        drop(folder_presence);
         user_commands.stop();
         find.shutdown();
         operations.shutdown();
@@ -1219,7 +1249,7 @@ fn publish_listing(
             if cancel.is_cancelled() {
                 return;
             }
-            if entry.kind == EntryKind::Directory {
+            if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
                 // Native directory-entry lengths are not recursive totals.
                 entry.metadata.size = sizes
                     .get(&entry.path)

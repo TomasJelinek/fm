@@ -21,8 +21,8 @@ pub(super) fn folder_size(
                 file_size(value.bytes, display, locale),
                 0,
                 format!(
-                    "Complete logical size; {} files. Links and special files are excluded.",
-                    value.files
+                    "Complete logical size; {} files. {} file links or directory cycles skipped; special files excluded.",
+                    value.files, value.skipped_links
                 ),
             );
         }
@@ -75,6 +75,26 @@ pub(super) fn folder_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_cycle_omissions_are_explained_without_an_error_marker() {
+        let size = FolderSize {
+            bytes: 23,
+            files: 3,
+            skipped_links: 2,
+            finished: true,
+            ..Default::default()
+        };
+        let (text, state, tooltip) = folder_size(
+            Some(&size),
+            false,
+            true,
+            SizeDisplay::Bytes,
+            &NumberLocale::default(),
+        );
+        assert_eq!((text.as_str(), state), ("23", 0));
+        assert!(tooltip.contains("2 file links or directory cycles skipped"));
+    }
 
     #[test]
     fn actual_errors_are_distinct_from_unfinished_or_cancelled_estimates() {

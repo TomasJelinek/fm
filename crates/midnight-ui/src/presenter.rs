@@ -32,7 +32,9 @@ mod find_tests;
 mod find_unix_tests;
 #[cfg(all(test, windows))]
 mod find_windows_tests;
+mod folder_presence;
 mod fonts;
+mod job_history;
 pub(crate) mod keyboard;
 pub(crate) mod keyboard_editor;
 mod metadata;
@@ -46,6 +48,7 @@ mod panel_warnings;
 mod panel_warnings_tests;
 pub(crate) mod path_paste;
 mod preferences;
+mod rename_decisions;
 mod search;
 mod selection;
 mod selection_actions;
@@ -58,6 +61,7 @@ mod tabs;
 mod terminal;
 mod tree;
 mod tree_capture;
+mod tree_checksums;
 mod tree_clipboard;
 mod tree_copy;
 mod tree_drag;
@@ -122,7 +126,9 @@ impl SizeScanScope {
             .get(path)
             .and_then(|id| self.index.by_id.get(id))
             .and_then(|index| self.entries.get(*index))
-            .is_some_and(|entry| entry.kind == EntryKind::Directory)
+            .is_some_and(|entry| {
+                matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+            })
             && self
                 .selection
                 .as_ref()
@@ -151,6 +157,7 @@ pub(crate) struct Pane {
     pub(crate) size_scan_attempted: bool,
     selection_sizes: selection_sizes::State,
     entry_size_scans: Vec<entry_sizes::EntrySizeScope>,
+    folder_presence: folder_presence::State,
     pub(crate) preserve_viewport: bool,
     size_scan_generation: u64,
     pub(crate) selected: Arc<SelectionSnapshot>,
@@ -339,6 +346,7 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.cancel_tree_checksums(None);
         self.retire_warning_viewer();
         self.cancel_panel_filter();
         self.retired.push(Box::new(mem::take(&mut self.file_list)));
@@ -420,7 +428,7 @@ impl Presenter {
         if self
             .drag_drop
             .lifecycle
-            .active
+            .active()
             .is_some_and(|g| g.source.pane == pane.index())
         {
             self.cancel_file_drag(send);
@@ -713,6 +721,19 @@ impl Presenter {
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        if let Event::FolderPresence(result) = event {
+            self.apply_folder_presence(result);
+            return;
+        }
+        if let Event::RectangleSummary {
+            pane,
+            token,
+            totals,
+        } = event
+        {
+            self.apply_rectangle_summary(pane, token, totals);
+            return;
+        }
         if let Event::SizeWarningsReady { request, result } = event {
             self.apply_size_warning_report(request, result);
             return;
@@ -1499,6 +1520,7 @@ impl Pane {
             size_scan_scope: None,
             size_scan_attempted: false,
             entry_size_scans: Vec::new(),
+            folder_presence: folder_presence::State::default(),
             preserve_viewport: false,
             size_scan_generation: 0,
             selection_sizes: selection_sizes::State::default(),

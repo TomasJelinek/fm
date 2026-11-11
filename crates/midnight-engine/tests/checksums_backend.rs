@@ -1,5 +1,6 @@
-//! Standalone backend integration until root wires the engine actor/protocol.
+//! Standalone checksum worker integration; actor and tree admission are tested separately.
 #[path = "../src/checksum.rs"]
+#[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
 mod checksum;
 
 use midnight_core::*;

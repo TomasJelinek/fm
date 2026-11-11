@@ -190,6 +190,7 @@ impl Harness {
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
             Some(Arc::new(FakeService(calls.clone()))),
+            None,
             snapshots,
             Outbox {
                 sender,

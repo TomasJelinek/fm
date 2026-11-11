@@ -136,6 +136,26 @@ impl Presenter {
             return;
         };
         if tree_error {
+            if p.tree_view().is_none() {
+                let Some(error) = p.root_presence_diagnostic(entry.id) else {
+                    return;
+                };
+                if let Some(content) = error.details().cloned() {
+                    let title = format!("Folder error - {}.txt", entry.display_name);
+                    self.show_generated_diagnostic(title, content);
+                } else {
+                    let mut body = error.as_str().to_owned();
+                    body.push_str("\n\nFolder\n");
+                    if let Some(path) = entry.native_path() {
+                        crate::error_presentation::append_path(&mut body, path);
+                    } else {
+                        body.push_str(&entry.display_name);
+                    }
+                    self.retire_warning_viewer();
+                    self.desktop.report("Folder listing error", body);
+                }
+                return;
+            }
             let Some(row) = p.tree_view().and_then(|view| {
                 view.index
                     .row_positions

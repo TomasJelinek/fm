@@ -14,7 +14,19 @@ impl Presenter {
         if p.network_hides_rows() {
             return Vec::new();
         }
-        let archive = p.archive_selection_summary();
+        let rectangle = p.rectangle_summary();
+        if rectangle == Some(None) {
+            return vec![PanelDetail {
+                identity: format!("detail:{}:rectangle-pending", p.generation),
+                label: "Selected",
+                value: "Updating selection…".into(),
+                explanation: String::new(),
+            }];
+        }
+        let archive = rectangle
+            .flatten()
+            .map(|totals| (totals.files(), totals.folders(), totals.file_bytes(), false))
+            .or_else(|| p.archive_selection_summary());
         if archive.is_some()
             || (p.tree_view().is_none()
                 && (!p.selected.is_empty()
@@ -76,6 +88,7 @@ impl Presenter {
                 });
             }
             if folders > 0
+                && rectangle.is_none()
                 && !pending
                 && let Some(value) = p
                     .selected_folder_sizes()
@@ -118,7 +131,7 @@ impl Presenter {
             .filter(|_| p.showing_stream())
             .unwrap_or(&entry.metadata);
         let size = match entry.kind {
-            EntryKind::Directory => p.folder_size(entry).map(|size| {
+            EntryKind::Directory | EntryKind::DirectoryLink => p.folder_size(entry).map(|size| {
                 if size.finished && size.errors == 0 {
                     self.number_locale.format_u64(size.bytes)
                 } else {

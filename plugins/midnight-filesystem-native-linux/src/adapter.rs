@@ -41,7 +41,17 @@ impl NativeAdapter for Linux {
     }
     fn stat(path: &Path, context: &CallContext<'_>) -> Result<NativeInfo, Failure> {
         let file = system::open_path(path, libc::O_PATH | libc::O_NOFOLLOW, context)?;
-        Ok(info(&file.metadata().map_err(Failure::from_io)?))
+        let mut info = info(&file.metadata().map_err(Failure::from_io)?);
+        if info.kind == Kind::Symlink {
+            // Match listing hints when the SDK revalidates a directory token,
+            // while retaining metadata from the original no-follow descriptor.
+            let target = system::open_path(path, libc::O_PATH | libc::O_DIRECTORY, context);
+            system::cancel(context)?;
+            if target.is_ok() {
+                info.kind = Kind::DirectoryLink;
+            }
+        }
+        Ok(info)
     }
     fn list(path: &Path, context: &CallContext<'_>) -> Result<system::Directory, Failure> {
         system::Directory::open(path, context)

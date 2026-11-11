@@ -65,7 +65,7 @@ fn plugin_controls_toggle_only_available_packages_and_request_refresh() {
         1,
         "invalid packages must not be configurable"
     );
-    click_popup(&ui.window, "Refresh plugins", AccessibleRole::Button);
+    click_popup(&ui.window, "Rescan all plugins", AccessibleRole::Button);
     assert_eq!(refreshes.get(), 1);
 }
 
@@ -81,7 +81,7 @@ fn plugin_viewer_list_fits_its_catalog_with_heading_arrows_and_bottom_refresh() 
     let list = ui::popup_item(&h.ui.window, "Viewer priority", AccessibleRole::List);
     let row = ui::popup_item(&h.ui.window, "Source viewer · 1", AccessibleRole::ListItem);
     let arrow = ui::popup_item(&h.ui.window, "Move viewer up", AccessibleRole::Button);
-    let refresh = ui::popup_item(&h.ui.window, "Refresh plugins", AccessibleRole::Button);
+    let refresh = ui::popup_item(&h.ui.window, "Rescan all plugins", AccessibleRole::Button);
     assert!(
         list.geometry().size.height >= row.geometry().size.height * 3.0 - 1.0
             && list.geometry().size.height <= row.geometry().size.height * 3.0 + 4.0,
@@ -521,7 +521,7 @@ fn thumbnailer_discovery_failure_is_visible_and_refresh_waits_for_all_catalogs()
             .contains("Thumbnail helper is missing")
     );
     h.sent.borrow_mut().clear();
-    h.click("Refresh plugins", AccessibleRole::Button);
+    h.click("Rescan all plugins", AccessibleRole::Button);
     h.ui.window.global::<ViewerPluginsView>().invoke_refresh();
     assert_eq!(
         h.sent

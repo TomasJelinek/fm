@@ -31,6 +31,8 @@ pub(crate) use midnight_core::TreeBranchAction as BranchAction;
 
 #[path = "tree_action_capture.rs"]
 mod action_capture;
+#[path = "tree_checksums.rs"]
+mod checksums;
 #[path = "tree_navigation.rs"]
 mod navigation;
 #[path = "tree_refresh.rs"]

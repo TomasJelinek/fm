@@ -71,9 +71,21 @@ Options is open saves independently without persisting other previewed settings;
 Options Cancel preserves that accepted history.
 
 The system Save picker only chooses a path. It does not create a file or authorize
-overwriting. The modeless native window owns editable fields and presentation only.
+overwriting. The owner-modal native dialog owns editable fields and presentation
+only, with no separate taskbar item. Cancel begins closing immediately; if the
+backend queue is full, the retained draft retries cancellation and cannot admit a
+later Replace/Append confirmation.
 Input capture is immutable, and successful output clears selection only when the
 original panel/view/selection revision still matches.
+
+The reference inspected on 11 November is Salamander's
+`src/mainwnd4.cpp::CMainWindow::MakeFileList`: `CFileListDialog::Execute` returning
+OK gates output, while Cancel produces no export. Its
+`src/dialogs.cpp::CFileListDialog::Validate` rejects directory destinations and
+asks before replacing an existing file; `src/fileswn6.cpp::CFilesWindow::MakeFileList`
+uses selected entries or the focused fallback. The current implementation retains
+that modal admission behavior and adds pinned, versioned overwrite/append consent
+and recoverable publication. No reference code is copied.
 
 See [user workflow](../MAKE_FILE_LIST.md) and
 [design](../superpowers/specs/2026-11-09-make-file-list-design.md).

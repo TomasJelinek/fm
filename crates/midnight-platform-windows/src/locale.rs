@@ -28,7 +28,11 @@ struct WindowsLocale {
     date_pattern: Vec<u16>,
     time_pattern: Vec<u16>,
     timezone: DYNAMIC_TIME_ZONE_INFORMATION,
+    input_format: Option<midnight_core::DateTimeInputFormat>,
 }
+
+#[path = "locale_input.rs"]
+mod input;
 
 static SNAPSHOT: OnceLock<Result<WindowsLocale, FsError>> = OnceLock::new();
 static NAME: OnceLock<Result<Vec<u16>, FsError>> = OnceLock::new();
@@ -36,6 +40,10 @@ static NAME: OnceLock<Result<Vec<u16>, FsError>> = OnceLock::new();
 impl LocaleService for WindowsFileSystem {
     fn number_locale(&self) -> Result<NumberLocale, FsError> {
         Ok(snapshot()?.numbers.clone())
+    }
+
+    fn datetime_input_format(&self) -> Option<midnight_core::DateTimeInputFormat> {
+        snapshot().ok()?.input_format.clone()
     }
 
     fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
@@ -161,7 +169,7 @@ impl WindowsLocale {
         if unsafe { GetDynamicTimeZoneInformation(&mut timezone) } == TIME_ZONE_ID_INVALID {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self {
+        let mut locale = Self {
             numbers,
             name: collation_name()
                 .map_err(|error| io::Error::new(error.kind, error.message))?
@@ -169,7 +177,10 @@ impl WindowsLocale {
             date_pattern: locale_value(LOCALE_SSHORTDATE)?,
             time_pattern: locale_value(LOCALE_STIMEFORMAT)?,
             timezone,
-        })
+            input_format: None,
+        };
+        locale.input_format = input::capture(&locale);
+        Ok(locale)
     }
 
     fn format(&self, local: &SYSTEMTIME) -> io::Result<LocalizedDateTime> {

@@ -2232,3 +2232,15 @@ preserves the originally pressed action and pane. An unassigned slot is disabled
 At normal widths action text takes priority over icons; compact minimum-width
 cells retain key labels and expose full descriptions through tooltips/accessibility.
 See [the shortcut matrix](../../KEYBOARD_SHORTCUTS.md) for the default layers.
+
+
+### Dialogy, průběžný výběr a junctiony (11. listopadu 2026)
+
+Aktuální [rozšíření návrhu](2026-11-11-dialogs-selection-and-folder-probes.md)
+sjednocuje fonty a tlačítka, mění Ctrl+M na modální dialog, zpřesňuje Find a
+Attributes, doplňuje čištění dokončených Jobs a průběžné součty taženého výběru.
+Počítání velikostí sleduje cíle junctionů se záchytem cyklů podle identity na
+aktuální větvi. Zjišťování podsložek začíná pro viditelné řádky před prvním
+rozbalením a nesmí samo měnit autoritu panelu na stromovou. Zpětná vazba
+Copy/Move/Not allowed při tažení je pouze náhled; skutečný drop znovu validuje
+zdroj i cíl. Toto rozšíření nahrazuje starší odlišné popisy těchto chování.

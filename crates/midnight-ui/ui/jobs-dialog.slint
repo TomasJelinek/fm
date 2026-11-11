@@ -15,6 +15,7 @@ export struct OperationRow {
 
 export global JobsView {
     pure callback find([OperationRow], string) -> int;
+    pure callback has-finished([OperationRow], bool) -> bool;
 }
 
 component JobRow inherits Rectangle {
@@ -63,6 +64,10 @@ export component OperationsBody inherits Rectangle {
     callback cancel(string);
     callback resolve(string);
     callback copy-details(string);
+    callback clear-finished(bool);
+    function repair-selection() {
+        root.selected-identity = root.rows.length == 0 ? "" : root.rows[JobsView.find(root.rows, root.selected-identity)].identity;
+    }
     callback close();
     callback move-dialog(length, length);
     private property <bool> compact: root.height < 350px;
@@ -73,7 +78,7 @@ export component OperationsBody inherits Rectangle {
         list-focus.focus();
     }
     changed rows => {
-        if root.selected-identity == "" && root.rows.length > 0 { root.selected-identity = root.rows[0].identity; }
+        root.repair-selection();
     }
     FocusScope {
         capture-key-pressed(event) => {
@@ -157,6 +162,26 @@ export component OperationsBody inherits Rectangle {
                 }
             }
             Rectangle { height: 1px; background: Theme.frame; }
+            ScrollView {
+                min-width: 0px;
+                height: max(Theme.control-height, clear-all.preferred-height) + 12px;
+                horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                HorizontalLayout {
+                    alignment: start; spacing: 8px;
+                    clear-all := HintedActionButton {
+                        text: "Clear all finished";
+                        enabled: JobsView.has-finished(root.rows, false);
+                        hint: "Remove all finished jobs from this session's history.";
+                        clicked => { root.clear-finished(false); root.repair-selection(); }
+                    }
+                    HintedActionButton {
+                        text: "Clear finished without errors";
+                        enabled: JobsView.has-finished(root.rows, true);
+                        hint: "Remove finished jobs without errors and keep jobs that need attention.";
+                        clicked => { root.clear-finished(true); root.repair-selection(); }
+                    }
+                }
+            }
             footer := DialogFooter {
                 compact-height: root.height < 280px;
                 dismiss-text: "Close";

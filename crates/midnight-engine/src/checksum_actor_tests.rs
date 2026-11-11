@@ -1,4 +1,6 @@
 use super::*;
+#[path = "checksum_capture_actor_tests.rs"]
+mod captured;
 use std::sync::{
     Condvar,
     atomic::{AtomicBool, Ordering},

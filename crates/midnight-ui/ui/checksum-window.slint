@@ -1,4 +1,4 @@
-import { Button, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { ErrorNotice, ErrorGlyph } from "error-notice.slint";
 import { Theme } from "theme.slint";
@@ -6,7 +6,7 @@ import { CloseButton } from "close-button.slint";
 import { ToolWindow } from "tool-window.slint";
 import { DialogTabs } from "dialog-tabs.slint";
 import { DialogFooter } from "dialog-footer.slint";
-import { FallbackIcons } from "action-icons.slint";
+import { FallbackIcons, ActionButton } from "action-icons.slint";
 import { ChecksumOptions, ChecksumOutputPicker, ChecksumDraft } from "checksum-controls.slint";
 import { ChecksumResults, ChecksumDisplayRow } from "checksum-results.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
@@ -110,7 +110,7 @@ export component ChecksumWindow inherits ToolWindow {
             Text { text: root.error != "" ? "Checksum error" : root.verifying ? "Verification needs attention" : "Some results are incomplete";
                 color: Theme.error-text; overflow: elide; vertical-alignment: center;
                 min-width: 0px; horizontal-stretch: 1; }
-            Button { text: "Details"; clicked => { root.page = 3; } }
+            ActionButton { text: "Details"; clicked => { root.page = 3; } }
             CloseButton { label: "Dismiss checksum warning";
                 hint: "Dismiss this notice. Diagnostics remain available in Details.";
                 width: Theme.control-height; clicked => { root.attention-dismissed = true; } }
@@ -217,7 +217,7 @@ export component ChecksumWindow inherits ToolWindow {
             dismiss-text: "Close"; dismiss-hint: "Close this checksum window (Escape). Running work is cancelled.";
             compact-height: root.compact; dismiss => { root.close-session(); }
             if root.running || root.page == 1: HintedActionButton {
-                text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate";
+                text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate"; primary: !root.running;
                 fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.checksums;
                 enabled: !root.stopping && !root.saving && !root.picker-busy && (root.running || (root.has-algorithm && root.has-captured-files));
                 hint: root.running ? "Stop calculation and keep completed results." : "Calculate again using the captured selection and these options.";
@@ -240,14 +240,14 @@ export component ChecksumWindow inherits ToolWindow {
                 clicked => { root.browse-manifest(false, root.output-algorithm); }
             }
             if root.page == 2 || root.saving: HintedActionButton {
-                text: root.save-stopping ? "Stopping…" : root.saving ? "Stop save" : "Save";
+                text: root.save-stopping ? "Stopping…" : root.saving ? "Stop save" : "Save"; primary: !root.saving;
                 fallback-icon: root.saving ? FallbackIcons.close : FallbackIcons.save-again;
                 enabled: root.saving ? !root.save-stopping : root.can-submit;
                 hint: root.saving ? "Cancel writing the manifest." : "Save completed checksums to the new manifest file.";
                 clicked => { if root.saving { root.stop-save(); } else { root.submit-save(); } }
             }
             if root.page == 4 && !root.running: HintedActionButton {
-                text: "Verify"; fallback-icon: FallbackIcons.checksums;
+                text: "Verify"; primary: true; fallback-icon: FallbackIcons.checksums;
                 enabled: !root.saving && !root.picker-busy && root.manifest-path != "";
                 hint: "Read the checksum file and compare every listed file on background workers.";
                 clicked => { root.submit-verify(); }

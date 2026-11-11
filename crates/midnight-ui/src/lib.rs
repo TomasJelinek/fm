@@ -133,7 +133,16 @@ impl Rows {
     }
 
     fn refresh(&self, pane: &presenter::Pane, first: usize, end: usize, data_changed: bool) {
-        let structure = RowStructure::from_pane(pane);
+        self.refresh_structure(RowStructure::from_pane(pane), first, end, data_changed);
+    }
+
+    fn refresh_structure(
+        &self,
+        structure: RowStructure,
+        first: usize,
+        end: usize,
+        data_changed: bool,
+    ) {
         if self.structure.replace(structure) != structure {
             // New identities or ordering deliberately invalidate an in-flight
             // pointer gesture. Ordinary acknowledgments must keep delegates alive.
@@ -190,19 +199,13 @@ impl Model for Rows {
             &entry.metadata
         };
         let directory = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
-        let (size, size_state, size_hint) = if entry.kind == EntryKind::Directory {
+        let (size, size_state, size_hint) = if directory {
             size_presentation::folder_size(
                 pane.folder_size(entry),
                 pane.folder_size_running(entry),
                 pane.size_scan_attempted && pane.tree_view().is_none(),
                 state.preferences.values.size_display,
                 &state.number_locale,
-            )
-        } else if entry.kind == EntryKind::DirectoryLink {
-            (
-                "<DIR>".into(),
-                0,
-                "Automatic size scans do not follow folder links.".into(),
             )
         } else {
             (
@@ -243,11 +246,7 @@ impl Model for Rows {
             parent_entry: false,
             tree_depth: pane.tree_row(index).map_or(0, |row| row.depth as i32),
             tree_disclosure: pane.tree_row(index).map_or_else(
-                || {
-                    i32::from(
-                        entry.kind == EntryKind::Directory && pane.root_disclosure_available(),
-                    )
-                },
+                || pane.root_presence_disclosure(entry),
                 |row| match row.disclosure {
                     TreeDisclosure::None => 0,
                     TreeDisclosure::Unknown => 1,
@@ -260,8 +259,10 @@ impl Model for Rows {
             ),
             tree_error: pane
                 .tree_row(index)
-                .and_then(|row| row.error.as_deref())
-                .unwrap_or_default()
+                .map_or_else(
+                    || pane.root_presence_error(entry.id),
+                    |row| row.error.as_deref().unwrap_or_default(),
+                )
                 .into(),
             tree_expanded: pane.tree_row(index).is_some_and(|row| row.expanded),
             prefix_end: i32::try_from(pane.search_prefix_end(index)).unwrap_or(0),
@@ -357,6 +358,16 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 }
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
+    // Native tools copy the owner appearance below; publish this revision first.
+    window.invoke_apply_fonts(
+        presenter.preferences.values.font_family.as_str().into(),
+        i32::from(presenter.preferences.values.desktop_font_size),
+        i32::from(presenter.preferences.values.touch_font_size),
+    );
+    window.invoke_apply_preferences(
+        presenter.preferences.theme_index(),
+        presenter.preferences.density_index(),
+    );
     window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
     window.set_right_native_filesystem(presenter.panes[1].native_capabilities());
     window.set_left_can_measure_folders(presenter.panes[0].can_measure_folders());
@@ -510,17 +521,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_restored_panel_ratio(
         f32::from(presenter.preferences.values.panel_split_basis_points) / 10_000.0,
     );
-    window.invoke_apply_fonts(
-        presenter.preferences.values.font_family.as_str().into(),
-        i32::from(presenter.preferences.values.desktop_font_size),
-        i32::from(presenter.preferences.values.touch_font_size),
-    );
     window.set_desktop_feedback_important(
         presenter.desktop.terminal_guidance.is_some() || !presenter.desktop.error.is_empty(),
-    );
-    window.invoke_apply_preferences(
-        presenter.preferences.theme_index(),
-        presenter.preferences.density_index(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
     window.set_preferences_saving(presenter.preferences.saving);
@@ -979,6 +981,9 @@ pub fn install(
             );
         }
     });
+    callback!(on_clear_finished_jobs, |_w, p, _s, without_errors| {
+        p.clear_finished_jobs(without_errors);
+    });
     callback!(on_copy_job_details, false, |_w, p, s, token| {
         if let Some(row) = job_presentation::rows(p)
             .into_iter()
@@ -1013,6 +1018,8 @@ pub fn install(
                     p.resolve_copy_decision(token.as_str());
                     p.active_copy_decision()
                         .is_some_and(|(id, _)| token == format!("copy-job:{}", id.0))
+                        || p.active_rename_decision()
+                            .is_some_and(|(id, _)| token == format!("rename-job:{}", id.0))
                 } else {
                     false
                 };

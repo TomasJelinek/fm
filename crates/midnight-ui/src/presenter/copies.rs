@@ -119,6 +119,10 @@ impl Presenter {
         name: String,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if token.starts_with("rename:") {
+            self.decide_rename(token, choice, send);
+            return;
+        }
         if token.starts_with("copy-error:") {
             self.decide_copy_failure(token, choice, send);
             return;

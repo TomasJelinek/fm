@@ -11,6 +11,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "locale_input.rs"]
+mod input;
+
 struct LocaleNames {
     numeric: CString,
     time: CString,
@@ -148,6 +151,10 @@ fn capture() -> Result<Locales, FsError> {
 }
 
 impl LocaleService for LinuxFileSystem {
+    fn datetime_input_format(&self) -> Option<midnight_core::DateTimeInputFormat> {
+        CURRENT.with(|value| input::capture(&value.as_ref().ok()?.time))
+    }
+
     fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
         modified(value)
     }

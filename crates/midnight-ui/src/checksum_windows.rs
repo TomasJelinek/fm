@@ -275,7 +275,9 @@ fn refresh(
         }
         w.set_picker_busy(s.picker.is_some());
         w.set_verifying(s.verification.is_some());
-        w.set_has_captured_files(!s.files.selection.is_empty() || s.files.fallback.is_some());
+        w.set_has_captured_files(
+            s.tree_sources.is_some() || !s.files.selection.is_empty() || s.files.fallback.is_some(),
+        );
         w.set_generation_token(s.generation.0.to_string().into());
         w.set_running(s.running);
         w.set_stopping(s.stopping);

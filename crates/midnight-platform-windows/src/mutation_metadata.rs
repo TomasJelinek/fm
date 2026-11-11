@@ -14,6 +14,7 @@ use windows_sys::{
     Wdk::Storage::FileSystem::FILE_OPEN,
     Win32::{
         Foundation::{FILETIME, INVALID_HANDLE_VALUE},
+        Globalization::{CSTR_EQUAL, CompareStringOrdinal},
         Storage::FileSystem::*,
         System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_COMPRESSION},
     },
@@ -44,6 +45,8 @@ pub(super) fn name_available(
     };
     if native::identity(&existing).map_err(|e| failure("identify name collision", path, e))?
         != item.identity
+        || !same_name_ignoring_case(name, &item.name)
+            .map_err(|e| failure("compare case alias", path, e))?
     {
         return Err(collision());
     }
@@ -89,6 +92,30 @@ pub(super) fn name_available(
         Err(collision())
     } else {
         Ok(())
+    }
+}
+
+// The same file ID may be reached through another hard-link name (including a
+// case variant of that name). Only a case variant of the selected basename can
+// be a case-only rename. The exact-name scan above still rejects a second entry
+// in a case-sensitive directory. Raw UTF-16 and ordinal folding preserve native
+// Unicode names without depending on the application's display locale.
+fn same_name_ignoring_case(left: &OsStr, right: &OsStr) -> io::Result<bool> {
+    let left: Vec<_> = left.encode_wide().collect();
+    let right: Vec<_> = right.encode_wide().collect();
+    let length = |units: &[u16]| {
+        i32::try_from(units.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))
+    };
+    let left_len = length(&left)?;
+    let right_len = length(&right)?;
+    // SAFETY: live UTF-16 buffers and checked explicit lengths; no terminators are required.
+    let compared =
+        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    if compared == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(compared == CSTR_EQUAL)
     }
 }
 

@@ -315,6 +315,57 @@ fn close_cancels_queued_clipboard_even_when_backend_command_queue_is_full() {
 }
 
 #[test]
+fn cancelling_file_list_conflict_blocks_confirmation_while_cancel_queue_is_full() {
+    for append in [false, true] {
+        let (mut p, id) = fixture(&|_| true);
+        let path = std::env::temp_dir().join("existing-list.txt");
+        p.generate_file_list(id, 2, path.to_string_lossy().into_owned(), append, &|_| {
+            true
+        });
+        let generation = p.file_list.session.as_ref().unwrap().generation;
+        p.apply_file_list(FileListEvent {
+            id,
+            generation,
+            result: Ok(FileListUpdate::Conflict {
+                entry: TransferEntry {
+                    item: MutationItem {
+                        path,
+                        kind: EntryKind::File,
+                        metadata: EntryMetadata::default(),
+                    },
+                    identity: TransferIdentity {
+                        device: 1,
+                        object: [0; 16],
+                    },
+                },
+                append,
+            }),
+        });
+        assert!(p.file_list.session.as_ref().unwrap().can_confirm());
+        let template = p.file_list.session.as_ref().unwrap().template.clone();
+        assert!(!p.close_file_list(id, &|command| {
+            assert!(matches!(command, Command::CancelFileList { id: actual, generation: current } if actual == id && current == generation));
+            false
+        }));
+        let session = p.file_list.session.as_ref().unwrap();
+        assert!(session.closing);
+        assert!(!session.can_confirm(), "closing must hide Replace/Append");
+        assert!(
+            session.conflict.is_some(),
+            "retain the draft until cancellation is queued"
+        );
+        assert_eq!(session.template, template);
+        assert_eq!(session.append, append);
+        p.confirm_file_list(id, &|_| panic!("Cancel must prevent later confirmation"));
+        p.flush_file_list(&|command| {
+            assert!(matches!(command, Command::CancelFileList { id: actual, generation: current } if actual == id && current == generation));
+            true
+        });
+        assert!(p.file_list.session.is_none());
+    }
+}
+
+#[test]
 fn viewer_failure_keeps_draft_and_cancel_discards_undelivered_viewer() {
     let (mut p, id) = fixture(&|_| true);
     p.generate_file_list(id, 1, String::new(), false, &|_| true);

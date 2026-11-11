@@ -94,8 +94,7 @@ pub(super) fn pixels(
     // mailbox. Production never performs the large pixel copy on this thread.
     #[cfg(test)]
     {
-        return pixel_preparation::prepare(frame)?
-            .ok_or_else(|| "Frame has no raster pixels.".into());
+        pixel_preparation::prepare(frame)?.ok_or_else(|| "Frame has no raster pixels.".into())
     }
     #[cfg(not(test))]
     Err("Prepared viewer pixels do not match the current frame.".into())

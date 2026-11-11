@@ -9,7 +9,7 @@ mod ui;
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{
-    ComponentHandle,
+    ComponentHandle, Model,
     platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::{
@@ -361,6 +361,15 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui.draw();
     assert!(ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
+    assert!(
+        !ui.window.get_operations_visible(),
+        "cancelled transfer confirmation must not open Jobs"
+    );
+    assert_eq!(
+        ui.window.get_operations().row_count(),
+        0,
+        "cancelled transfer confirmation has no history receipt"
+    );
 
     ui::key(&ui.window, shortcut);
     ui.draw();

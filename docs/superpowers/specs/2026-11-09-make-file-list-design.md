@@ -27,8 +27,10 @@ Reviewed local Salamander `src/mainwnd4.cpp::CMainWindow::MakeFileList`,
 
 ## Approach and integration
 
-A native resizable modeless tool window captures an immutable provider-neutral
-listing/selection snapshot. Template parsing is pure core code; enumeration,
+A resizable owner-modal window captures an immutable provider-neutral
+listing/selection snapshot. It has the Make File List icon and title, no independent
+taskbar item, and a preview that fills the remaining client area as it grows.
+Cancel/Escape restores the owner. This supersedes the earlier modeless choice. Template parsing is pure core code; enumeration,
 formatting, environment expansion, disk/clipboard access and cleanup run in bounded
 backend services. Native and archive rows use their own identities; expanded-tree
 rows use occurrence identities. No archive extraction or directory recursion is

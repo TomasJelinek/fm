@@ -139,16 +139,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 prefix: part.prefix.into(),
             })
             .collect();
-        let details = presenter
-            .panel_details(pane)
-            .into_iter()
-            .map(|field| DetailRow {
-                identity: field.identity.into(),
-                label: field.label.into(),
-                value: field.value.into(),
-                explanation: field.explanation.into(),
-            })
-            .collect();
+        refresh_details(window, details_rows(presenter, pane), pane);
         let back = history_choices(presenter, pane, false);
         let forward = history_choices(presenter, pane, true);
         if pane == PaneId::Left {
@@ -157,12 +148,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 paths,
                 |row| row.identity.clone(),
                 |model| window.set_left_path_parts(model),
-            );
-            navigation_models::update(
-                window.get_left_details(),
-                details,
-                |row| row.identity.clone(),
-                |model| window.set_left_details(model),
             );
             navigation_models::update(
                 window.get_left_back_history(),
@@ -184,12 +169,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 |model| window.set_right_path_parts(model),
             );
             navigation_models::update(
-                window.get_right_details(),
-                details,
-                |row| row.identity.clone(),
-                |model| window.set_right_details(model),
-            );
-            navigation_models::update(
                 window.get_right_back_history(),
                 back,
                 |row| row.identity.clone(),
@@ -209,4 +188,37 @@ pub(super) fn bookmark_id(presenter: &Presenter, token: &str) -> Option<Bookmark
     let (revision, id) = token.strip_prefix("bookmark:")?.split_once(':')?;
     (revision.parse::<u64>().ok()? == presenter.preferences.revision.0)
         .then_some(BookmarkId(id.parse::<u64>().ok()?))
+}
+
+/// Capture the bounded status projection before Slint can notify model observers.
+pub(crate) fn details_rows(presenter: &Presenter, pane: PaneId) -> Vec<DetailRow> {
+    presenter
+        .panel_details(pane)
+        .into_iter()
+        .map(|field| DetailRow {
+            identity: field.identity.into(),
+            label: field.label.into(),
+            value: field.value.into(),
+            explanation: field.explanation.into(),
+        })
+        .collect()
+}
+
+/// Publish the status snapshot without retaining a presenter borrow.
+pub(crate) fn refresh_details(window: &MainWindow, details: Vec<DetailRow>, pane: PaneId) {
+    if pane == PaneId::Left {
+        navigation_models::update(
+            window.get_left_details(),
+            details,
+            |row| row.identity.clone(),
+            |model| window.set_left_details(model),
+        );
+    } else {
+        navigation_models::update(
+            window.get_right_details(),
+            details,
+            |row| row.identity.clone(),
+            |model| window.set_right_details(model),
+        );
+    }
 }

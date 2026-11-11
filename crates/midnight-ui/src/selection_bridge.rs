@@ -95,6 +95,7 @@ fn layout(window: &MainWindow, presenter: &Presenter, pane: PaneId) -> (Layout, 
 }
 fn available(window: &MainWindow) -> bool {
     window.window().is_visible()
+        && !window.get_dialog_input_blocked()
         && !window.get_touch_contact()
         && !window.get_drag_active()
         && window.get_copy_draft_token().is_empty()
@@ -146,12 +147,8 @@ fn repaint(window: &MainWindow, presenter: &Rc<RefCell<Presenter>>, pane: PaneId
         )
     };
     if let Some(rows) = model.as_any().downcast_ref::<Rows>() {
-        rows.refresh(
-            &presenter.borrow().panes[pane.index()],
-            first.max(0) as usize,
-            end.max(0) as usize,
-            true,
-        );
+        let structure = crate::RowStructure::from_pane(&presenter.borrow().panes[pane.index()]);
+        rows.refresh_structure(structure, first.max(0) as usize, end.max(0) as usize, true);
     }
 }
 impl Bridge {
@@ -162,6 +159,8 @@ impl Bridge {
         window.global::<SelectionRectangle>().set_active(false);
         window.global::<SelectionRectangle>().set_pane(-1);
         repaint(window, &self.presenter, pane);
+        let details = crate::panel_models::details_rows(&self.presenter.borrow(), pane);
+        crate::panel_models::refresh_details(window, details, pane);
     }
     fn cancel(&self, window: &MainWindow) -> bool {
         let gesture = self.gesture.borrow_mut().take();
@@ -184,7 +183,9 @@ impl Bridge {
         let Some(mut gesture) = self.gesture.borrow_mut().take() else {
             return false;
         };
-        let Ok(presenter) = self.presenter.try_borrow() else {
+        // This path will mutate preview/selection or finish deferred cancellation.
+        // A shared refresh borrow permits reads but must defer all of that work.
+        let Ok(presenter) = self.presenter.try_borrow_mut() else {
             *self.gesture.borrow_mut() = Some(gesture);
             return false;
         };
@@ -264,6 +265,9 @@ impl Bridge {
             self.clear(window, gesture.pane);
             return false;
         }
+        self.presenter
+            .borrow_mut()
+            .flush_rectangle_summary(gesture.pane, self.send.as_ref());
         let x1 = gesture.anchor.0.clamp(0.0, current.grid.width);
         let x2 = pointer.0.clamp(0.0, current.grid.width);
         let y1 = (gesture.anchor.1 + offset).clamp(0.0, current.height);
@@ -277,6 +281,8 @@ impl Bridge {
         global.set_height((y1 - y2).abs());
         global.set_active(true);
         repaint(window, &self.presenter, pane);
+        let details = crate::panel_models::details_rows(&self.presenter.borrow(), pane);
+        crate::panel_models::refresh_details(window, details, pane);
         true
     }
     fn input(

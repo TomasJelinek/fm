@@ -29,6 +29,7 @@ struct Work {
     request: Request,
     cancel: Cancellation,
     retention: Arc<ChecksumRetention>,
+    source: Option<Arc<dyn CapturedChecksumFiles>>,
 }
 enum Request {
     Calculate(ChecksumRequest),
@@ -156,7 +157,19 @@ impl Controller {
         cancel: Cancellation,
         retention: Arc<ChecksumRetention>,
     ) -> Result<(), FsError> {
-        self.admit(Request::Calculate(request), cancel, retention)
+        self.admit(Request::Calculate(request), cancel, retention, None)
+    }
+    pub(super) async fn start_captured_reserved(
+        &self,
+        request: ChecksumRequest,
+        cancel: Cancellation,
+        retention: Arc<ChecksumRetention>,
+        source: Option<Arc<dyn CapturedChecksumFiles>>,
+    ) -> Result<(), FsError> {
+        let cleanup = source.clone();
+        let result = self.admit(Request::Calculate(request), cancel, retention, source);
+        let _ = tokio::task::spawn_blocking(move || drop(cleanup)).await;
+        result
     }
     pub(super) fn verify_reserved(
         &self,
@@ -164,7 +177,7 @@ impl Controller {
         cancel: Cancellation,
         retention: Arc<ChecksumRetention>,
     ) -> Result<(), FsError> {
-        self.admit(Request::Verify(request), cancel, retention)
+        self.admit(Request::Verify(request), cancel, retention, None)
     }
     #[cfg(test)]
     #[allow(dead_code)] // Used by path-included native integration tests.
@@ -177,6 +190,7 @@ impl Controller {
         request: Request,
         cancel: Cancellation,
         retention: Arc<ChecksumRetention>,
+        source: Option<Arc<dyn CapturedChecksumFiles>>,
     ) -> Result<(), FsError> {
         let fail = |kind, text| worker::failure(Path::new(""), kind, text);
         let key = request.key();
@@ -204,6 +218,7 @@ impl Controller {
             request,
             cancel,
             retention,
+            source,
         };
         if self.requests.try_send(work).is_err() {
             registry.remove(&key);
@@ -270,7 +285,7 @@ async fn run(
     registry: Registry,
     stop: Cancellation,
 ) {
-    loop {
+    'jobs: loop {
         if stop.is_cancelled() {
             break;
         }
@@ -282,7 +297,8 @@ async fn run(
         let key = work.request.key();
         let permit = loop {
             if stop.is_cancelled() {
-                return;
+                let _ = tokio::task::spawn_blocking(move || drop(work)).await;
+                break 'jobs;
             }
             if let Ok(permit) = workers().try_acquire_owned() {
                 break permit;
@@ -295,14 +311,17 @@ async fn run(
         let cancellation = work.cancel.clone();
         let completed = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            // Provider registration remains live until all actual native reads return.
+            let source = work.source;
             let sending_job = work.cancel.clone();
             let send = |update| send_update(&events, key, update, &stopping, &sending_job);
             if !send(ChecksumUpdate::Started) {
                 work.cancel.cancel();
             }
             match work.request {
-                Request::Calculate(request) => worker::calculate(
+                Request::Calculate(request) => worker::calculate_captured(
                     request,
+                    source.as_deref(),
                     provider.as_ref(),
                     &work.cancel,
                     work.retention,
@@ -353,6 +372,8 @@ async fn run(
     {
         cancel.cancel();
     }
+    incoming.close();
+    let _ = tokio::task::spawn_blocking(move || while incoming.try_recv().is_ok() {}).await;
 }
 fn send_update(
     sender: &mpsc::Sender<ChecksumEvent>,

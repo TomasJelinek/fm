@@ -7,6 +7,12 @@ mod tests;
 
 pub(crate) fn install(window: &MainWindow) {
     window.global::<JobsView>().on_find(find);
+    window.global::<JobsView>().on_has_finished(has_finished);
+}
+
+pub(crate) fn has_finished(rows: ModelRc<OperationRow>, without_errors: bool) -> bool {
+    rows.iter()
+        .any(|row| !row.active && (!without_errors || !row.failed))
 }
 
 pub(crate) fn find(rows: ModelRc<OperationRow>, identity: SharedString) -> i32 {
@@ -31,6 +37,7 @@ pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
         .operations
         .progress
         .iter()
+        .filter(|progress| !p.operations.unconfirmed.contains(&progress.id))
         .map(|progress| (progress.id, mutation(p, progress)))
         .chain(
             p.copies
@@ -81,7 +88,9 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         detail.push_str(&format!("\n\n{}", progress.message));
     }
     OperationRow {
-        identity: if progress.kind == MutationKind::EditMetadata {
+        identity: if progress.kind == MutationKind::Rename {
+            format!("rename-job:{}", progress.id.0).into()
+        } else if progress.kind == MutationKind::EditMetadata {
             format!("metadata-job:{}", progress.id.0).into()
         } else {
             progress.id.0.to_string().into()
@@ -102,7 +111,11 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
             .operations
             .metadata_conflicts
             .iter()
-            .any(|conflict| conflict.id == progress.id),
+            .any(|conflict| conflict.id == progress.id)
+            || p.operations
+                .rename_conflicts
+                .iter()
+                .any(|conflict| conflict.id == progress.id),
         failed: progress.failed > 0
             || !progress.errors.is_empty()
             || matches!(
@@ -249,7 +262,10 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             .iter()
             .any(|conflict| conflict.id == progress.id)
             || failure.is_some(),
-        failed: failure.is_some()
+        failed: (progress.state.is_terminal()
+            && (progress.source_residual_count > 0
+                || progress.source_removal_durability_unconfirmed > 0))
+            || failure.is_some()
             || progress.failed > 0
             || !progress.errors.is_empty()
             || matches!(progress.state, S::Failed | S::CompletedWithErrors),

@@ -346,10 +346,50 @@ fn automatic_jobs_remember_trimmed_failure_and_cancellation_outcomes() {
 
 #[test]
 fn reopened_automatic_jobs_select_current_work_and_manual_jobs_keep_selection() {
+    use i_slint_core::{
+        accessibility::{AccessibilityAction, AccessibleStringProperty},
+        item_tree::ItemRc,
+        window::WindowInner,
+    };
+    use slint::platform::WindowAdapter;
+
+    fn job(h: &Harness, identity: &str) -> ItemRc {
+        fn find(item: ItemRc, identity: &str) -> Option<ItemRc> {
+            if item.accessible_role() == AccessibleRole::ListItem
+                && item
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .is_some_and(|value| value == identity)
+            {
+                return Some(item);
+            }
+            let mut child = item.first_child();
+            while let Some(item) = child {
+                child = item.next_sibling();
+                if let Some(found) = find(item, identity) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let native = h.ui.child();
+        let root = ItemRc::new_root(WindowInner::from_pub(native.window()).component());
+        find(root, identity).unwrap_or_else(|| panic!("missing job {identity}"))
+    }
+    fn selected(h: &Harness, identity: &str) {
+        assert_eq!(
+            job(h, identity)
+                .accessible_string_property(AccessibleStringProperty::Checked)
+                .as_deref(),
+            Some("true"),
+            "expected selected job {identity}"
+        );
+    }
+
     let mut h = Harness::new();
     h.start(1);
     h.progress(1, TransferIntent::Copy, CopyOperationState::Completed);
     h.start(2);
+    selected(&h, "copy-job:2");
     h.ui.click("Copy details");
     assert!(
         h.commands
@@ -364,8 +404,14 @@ fn reopened_automatic_jobs_select_current_work_and_manual_jobs_keep_selection() 
     );
     h.ui.window.invoke_show_operations();
     h.ui.draw();
+    selected(&h, "copy-job:2");
+    // Reusing modeless Jobs preserves focus on the last action button. Focus the
+    // selected row before using list navigation, as a user or accessibility client does.
+    job(&h, "copy-job:2").accessible_action(&AccessibilityAction::Default);
     h.ui.key(Key::DownArrow);
+    selected(&h, "copy-job:1");
     h.start(3);
+    selected(&h, "copy-job:1");
     h.ui.click("Copy details");
     assert!(
         h.commands

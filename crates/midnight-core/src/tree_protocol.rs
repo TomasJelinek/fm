@@ -230,6 +230,7 @@ pub enum TreeCommand {
     },
     Clipboard(crate::TreeClipboardRequest),
     Edit(crate::TreeEditorRequest),
+    Checksums(crate::TreeChecksumRequest),
     Transfer(crate::TreeTransferRequest),
     Sizes(crate::TreeSizeCommand),
     /// Root-ready and this request may arrive in either order. Both root Arcs must match.
@@ -272,6 +273,11 @@ pub enum TreeNavigationTarget {
 /// Nest under `Event::Tree(Box<TreeEvent>)` when the production presenter is connected.
 #[derive(Clone, Debug)]
 pub enum TreeEvent {
+    ChecksumsCaptured {
+        stamp: TreeViewStamp,
+        request: TreeRequestId,
+        result: Result<crate::TreeChecksumCapture, TreeDiagnostic>,
+    },
     EditorCaptured {
         stamp: TreeViewStamp,
         request: TreeRequestId,

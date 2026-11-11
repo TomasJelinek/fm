@@ -113,7 +113,12 @@ impl Presenter {
         else {
             return;
         };
-        if row.entry.kind != EntryKind::Directory || !row.selectable || row.context_only {
+        if !matches!(
+            row.entry.kind,
+            EntryKind::Directory | EntryKind::DirectoryLink
+        ) || !row.selectable
+            || row.context_only
+        {
             return;
         }
         let id = row.id;

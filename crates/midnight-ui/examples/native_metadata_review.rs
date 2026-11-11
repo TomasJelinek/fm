@@ -115,6 +115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 id,
                                 revision,
                                 patch,
+                                localized_times: Default::default(),
+                                time_input_format: None,
                                 capabilities: MetadataCapabilities {
                                     windows_attributes: 39,
                                     compressed: true,

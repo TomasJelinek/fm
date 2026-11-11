@@ -153,6 +153,7 @@ impl Presenter {
             revision: self.metadata.revision,
             conflicts,
         }) {
+            self.operations.unconfirmed.remove(&id);
             self.operations.pending = None;
             self.operations.preview = None;
             self.retire_metadata();

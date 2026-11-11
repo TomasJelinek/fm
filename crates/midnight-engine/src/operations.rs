@@ -17,6 +17,8 @@ use tokio::{
 
 #[path = "operation_metadata.rs"]
 mod metadata;
+#[path = "operation_rename.rs"]
+mod rename;
 #[path = "operation_worker.rs"]
 mod worker;
 type Status = Arc<Mutex<OperationProgress>>;
@@ -51,6 +53,7 @@ enum Message {
     PreviewMetadata(OperationId, u64, MetadataPatch),
     ConfirmMetadata(OperationId, u64, MetadataConflictPolicy, Arc<Predecessors>),
     ResolveMetadataConflict(OperationId, u64, MetadataConflictPolicy),
+    DecideRename(CopyDecision),
     Wake,
 }
 
@@ -67,6 +70,7 @@ pub(crate) struct Controller {
 impl Controller {
     pub(crate) fn new(
         service: Option<Arc<dyn MutationService>>,
+        locale: Option<Arc<dyn LocaleService>>,
         snapshots: Snapshots,
         outbox: Outbox,
         mutation_gate: Arc<Semaphore>,
@@ -79,6 +83,7 @@ impl Controller {
         tasks.spawn(run(
             receiver,
             service,
+            locale,
             registry.clone(),
             cancel.clone(),
             outbox.clone(),
@@ -235,6 +240,9 @@ impl Controller {
             .send(Message::ResolveMetadataConflict(id, token, choice))
             .await;
     }
+    pub(crate) async fn decide_rename(&self, decision: CopyDecision) {
+        let _ = self.sender.send(Message::DecideRename(decision)).await;
+    }
     pub(crate) fn cancel(&self, id: OperationId) {
         if let Some(job) = self
             .registry
@@ -283,6 +291,7 @@ async fn finish(registry: &Registry, outbox: &Outbox, progress: OperationProgres
 async fn run(
     mut receiver: mpsc::Receiver<Message>,
     service: Option<Arc<dyn MutationService>>,
+    locale: Option<Arc<dyn LocaleService>>,
     registry: Registry,
     cancel: Cancellation,
     outbox: Outbox,
@@ -298,6 +307,7 @@ async fn run(
     let mut conflict_states = HashMap::<OperationId, Arc<metadata::ConflictState>>::new();
     let mut queued = VecDeque::<worker::Job>::new();
     let mut timer = tokio::time::interval(Duration::from_millis(50));
+    let mut rename_states: HashMap<OperationId, Arc<rename::ConflictState>> = HashMap::new();
     let mut accepting = true;
     loop {
         tokio::select! {
@@ -305,13 +315,17 @@ async fn run(
                 Some(Message::Prepare(request, job_cancel, status)) => {
                     let budget = budget.clone();
                     let service = service.clone();
+                    let locale = locale.clone();
                     let metadata_budget = metadata_budget.clone();
                     preparing.spawn(async move {
                         let original = status.clone();
                         let permit = budget.acquire_owned().await.expect("operation semaphore stays open");
                         let result = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            worker::prepare(request, service, job_cancel, status, metadata_budget)
+                            worker::prepare(request, service, job_cancel, status, metadata_budget).map(|mut job| {
+                                if let Some(edit) = &mut job.metadata { edit.localize(locale.as_deref()); }
+                                job
+                            })
                         }).await;
                         (original, result)
                     });
@@ -339,7 +353,7 @@ async fn run(
                     if awaiting && revision > 0 && drafts.get(&id).is_none_or(|(latest, _)| revision > *latest) {
                         if let Some(job) = prepared.remove(&id) {
                             if job.metadata.as_ref().is_some_and(|edit| revision > edit.preview.revision) {
-                                spawn_preview(&mut preparing, job, revision, patch, budget.clone());
+                                spawn_preview(&mut preparing, job, revision, patch, budget.clone(), locale.clone());
                             } else { prepared.insert(id, job); }
                         } else { drafts.insert(id, (revision, patch)); }
                     }
@@ -363,6 +377,9 @@ async fn run(
                 Some(Message::ResolveMetadataConflict(id, token, choice)) => {
                     if let Some(state) = conflict_states.get(&id) { state.resolve(token, choice); }
                 }
+                Some(Message::DecideRename(decision)) => {
+                    if let Some(state) = rename_states.get(&decision.id) { state.resolve(decision); }
+                }
                 Some(Message::Wake) => {}
                 None => { accepting = false; cancel.cancel(); }
             },
@@ -373,7 +390,7 @@ async fn run(
                         let id = job.progress().id;
                         if let Some((revision, patch)) = drafts.remove(&id)
                             && job.metadata.as_ref().is_some_and(|edit| revision > edit.preview.revision) {
-                            spawn_preview(&mut preparing, job, revision, patch, budget.clone());
+                            spawn_preview(&mut preparing, job, revision, patch, budget.clone(), locale.clone());
                             continue;
                         }
                         job.set_state(OperationState::AwaitingConfirmation);
@@ -382,6 +399,9 @@ async fn run(
                         if let Some(edit) = &job.metadata {
                             conflict_states.insert(id, edit.conflict_state.clone());
                             outbox.send(Event::Operation(OperationEvent::MetadataPreview(Arc::new(edit.preview.clone())))).await;
+                        }
+                        if job.progress().kind == MutationKind::Rename {
+                            rename_states.insert(id, job.rename_conflicts.clone());
                         }
                         prepared.insert(job.progress().id, job);
                     }
@@ -459,6 +479,12 @@ async fn run(
                 .contains_key(id)
         });
         conflict_states.retain(|id, _| {
+            registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(id)
+        });
+        rename_states.retain(|id, _| {
             registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -555,6 +581,7 @@ fn spawn_preview(
     revision: u64,
     patch: MetadataPatch,
     budget: Arc<Semaphore>,
+    locale: Option<Arc<dyn LocaleService>>,
 ) {
     job.set_state(OperationState::Preparing);
     tasks.spawn(async move {
@@ -567,6 +594,7 @@ fn spawn_preview(
             let _permit = permit;
             if let Some(edit) = &mut job.metadata {
                 edit.update(revision, patch, &job.targets, &job.cancel);
+                edit.localize(locale.as_deref());
             }
             Ok(job)
         })

@@ -1,4 +1,5 @@
-import { Button, ListView } from "std-widgets.slint";
+import { ActionButton } from "action-icons.slint";
+import { ListView } from "std-widgets.slint";
 import { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow } from "user-command-models.slint";
 import { UserCommandForm } from "user-command-form.slint";
 import { Theme } from "theme.slint";
@@ -79,9 +80,15 @@ export component UserCommandOptions inherits VerticalLayout {
         }
     }
     private property <string> draft-revision: UserCommandSettingsView.draft-revision;
-    changed draft-revision => { validate.stop(); root.checking = false; }
+    private property <string> validation-revision;
+    changed draft-revision => {
+        // Accessibility actions can edit the new draft before this notification runs.
+        // Retire only validation that was armed for an older draft.
+        if root.validation-revision != root.draft-revision { validate.stop(); root.checking = false; }
+    }
     spacing: 8px; alignment: start;
     function edited() {
+        root.validation-revision = UserCommandSettingsView.draft-revision;
         UserCommandSettingsView.dirty = true;
         UserCommandSettingsView.can-apply = false; UserCommandSettingsView.can-preview = false;
         root.checking = true; UserCommandSettingsView.draft-edited(UserCommandSettingsView.token, UserCommandSettingsView.draft);
@@ -92,7 +99,9 @@ export component UserCommandOptions inherits VerticalLayout {
         interval: 120ms; running: false;
         triggered => {
             self.stop(); root.checking = false;
-            UserCommandSettingsView.validate(UserCommandSettingsView.token, UserCommandSettingsView.draft);
+            if root.validation-revision == UserCommandSettingsView.draft-revision {
+                UserCommandSettingsView.validate(UserCommandSettingsView.token, UserCommandSettingsView.draft);
+            }
         }
     }
     Text { text: "Menu contents"; color: Theme.strong-text; font-size: Theme.font-size; }
@@ -166,19 +175,19 @@ export component UserCommandOptions inherits VerticalLayout {
     if UserCommandSettingsView.dirty : Text { text: "Save or discard the draft before reordering commands."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
     GridLayout {
         spacing: 6px;
-        Button { text: "New"; accessible-label: "New Custom Command";
+        ActionButton { text: "New"; accessible-label: "New Custom Command";
             row: 0; col: 0;
             enabled: UserCommandSettingsView.ready && !UserCommandSettingsView.dirty && UserCommandSettingsView.rows.length < 128;
             clicked => { UserCommandSettingsView.new-command(); } }
-        Button { text: "Delete"; accessible-label: "Delete Custom Command";
+        ActionButton { text: "Delete"; destructive: true; accessible-label: "Delete Custom Command";
             row: 0; col: 1;
             enabled: UserCommandSettingsView.ready && UserCommandSettingsView.can-delete && !UserCommandSettingsView.dirty;
             clicked => { UserCommandSettingsView.delete(UserCommandSettingsView.token); } }
-        Button { text: "Up"; accessible-label: "Move Custom Command up";
+        ActionButton { text: "Up"; accessible-label: "Move Custom Command up";
             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 2;
             enabled: UserCommandSettingsView.can-up && !UserCommandSettingsView.dirty;
             clicked => { UserCommandSettingsView.move(UserCommandSettingsView.token, -1); } }
-        Button { text: "Down"; accessible-label: "Move Custom Command down";
+        ActionButton { text: "Down"; accessible-label: "Move Custom Command down";
             row: root.narrow ? 1 : 0; col: root.narrow ? 1 : 3;
             enabled: UserCommandSettingsView.can-down && !UserCommandSettingsView.dirty;
             clicked => { UserCommandSettingsView.move(UserCommandSettingsView.token, 1); } }

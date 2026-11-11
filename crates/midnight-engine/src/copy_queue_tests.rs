@@ -33,6 +33,7 @@ impl Mutations {
         let (sender, events) = mpsc::channel(64);
         let controller = operations::Controller::new(
             Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
+            None,
             snapshots,
             Outbox {
                 sender,

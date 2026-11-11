@@ -48,14 +48,15 @@ export component NoticeDialog inherits Rectangle {
                     height: max(32px, Theme.control-height, copy-button.preferred-height) + (root.width < 500px ? 14px : 0px);
                     horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
                     HorizontalLayout {
+                        alignment: start;
                 copy-button := HintedActionButton {
-                    text: "Copy details"; hint: "Copy the complete message, including paths, to the clipboard.";
+                    text: "Copy details"; fallback-icon: FallbackIcons.copy; hint: "Copy the complete message, including paths, to the clipboard.";
                     clicked => { root.copy-details(); }
                 }
                     }
                 }
                 close-button := HintedActionButton {
-                    text: "Close"; hint: "Close this message (Escape).";
+                    text: "Close"; fallback-icon: FallbackIcons.close; hint: "Close this message (Escape).";
                     clicked => { root.close(); }
                 }
             }

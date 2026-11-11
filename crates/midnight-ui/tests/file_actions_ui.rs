@@ -7,7 +7,7 @@ mod selection;
 #[path = "support/ui.rs"]
 mod ui;
 
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{accessibility::AccessibilityAction, items::AccessibleRole};
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{
@@ -452,6 +452,43 @@ fn fallback_menu_escape_and_outside_click_release_the_captured_menu() {
 }
 
 #[test]
+fn fallback_menu_dismissal_blocks_batched_keyboard_and_accessibility_actions() {
+    let mut h = Harness::new();
+    for escape in [true, false] {
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let point = h.row(1);
+        h.right(point, true);
+        h.right(point, false);
+        h.apply(Event::ShellMenuFinished {
+            request: h.menu_request(),
+            result: Ok(ShellMenuOutcome::Unavailable),
+        });
+        let copy = ui::popup_item(&h.ui.window, "Copy", AccessibleRole::Button);
+        h.commands.borrow_mut().clear();
+        if escape {
+            ui::key(&h.ui.window, Key::Escape);
+            ui::key(&h.ui.window, Key::Return);
+            ui::key(&h.ui.window, Key::Space);
+        } else {
+            h.ui.window
+                .window()
+                .dispatch_event(WindowEvent::WindowActiveChanged(false));
+        }
+        // Dismissal has reached the component, but the exact-token retirement
+        // timer has not run. Even a previously captured accessibility item is inert.
+        assert!(!h.ui.window.get_file_menu_token().is_empty());
+        copy.accessible_action(&AccessibilityAction::Default);
+        assert!(h.commands.borrow().is_empty());
+        h.draw();
+        assert!(!ui::has_popup(&h.ui.window));
+        assert!(h.ui.window.get_file_menu_token().is_empty());
+        assert!(h.commands.borrow().is_empty());
+    }
+}
+
+#[test]
 fn copy_progress_can_take_focus_from_a_fallback_menu_without_reentrant_borrow() {
     let mut h = Harness::new();
     h.ui.window.invoke_file_clipboard(0, 1);
@@ -475,7 +512,34 @@ fn copy_progress_can_take_focus_from_a_fallback_menu_without_reentrant_borrow() 
             intent: FileClipboardIntent::Copy,
         }),
     });
+    assert!(h.ui.window.get_operations_visible());
+    let children: Vec<_> = h
+        .windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .filter(|window| window.window().is_visible())
+        .cloned()
+        .collect();
+    assert_eq!(children.len(), 1, "Jobs must open its own visible window");
+    let jobs = &children[0];
+    assert!(!Rc::ptr_eq(jobs, &h.ui.native));
+    // Jobs uses a separate native window. MinimalSoftwareWindow does not emit
+    // the OS activation handoff, unlike the former owner popup. Keep the
+    // presenter borrowed while focus leaves to verify dismissal stays deferred.
+    {
+        let _presenter = h.presenter.borrow();
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(false));
+        jobs.window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        assert!(!h.ui.window.get_file_menu_token().is_empty());
+    }
+    h.draw();
+    assert!(!ui::has_popup(&h.ui.window));
     assert!(h.ui.window.get_file_menu_token().is_empty());
+    assert!(jobs.window().is_visible());
     assert!(
         h.commands
             .borrow()

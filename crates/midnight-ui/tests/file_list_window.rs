@@ -194,6 +194,10 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
         assert_eq!(windows.borrow().len(), cycle + 2);
         let native = windows.borrow().last().unwrap().clone();
         assert!(native.window().is_visible());
+        assert!(
+            main.get_dialog_input_blocked(),
+            "Make File List is modal to its owner"
+        );
         let (id, generation) = commands
             .borrow()
             .iter()
@@ -211,9 +215,17 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
             "a full queue keeps the owner alive"
         );
         assert!(main.window().is_visible());
+        assert!(
+            main.get_dialog_input_blocked(),
+            "rejected cancellation retains the modal lease"
+        );
         accepting.set(true);
         native.window().dispatch_event(WindowEvent::CloseRequested);
         assert!(!native.window().is_visible());
+        assert!(
+            !main.get_dialog_input_blocked(),
+            "accepted close releases the owner"
+        );
         assert!(commands.borrow().iter().any(|command| {
             matches!(command, Command::CancelFileList { id: closed, generation: closed_generation }
                 if *closed == id && *closed_generation == generation)
@@ -233,4 +245,78 @@ fn file_list_native_close_waits_for_exact_request_release_and_does_not_reopen() 
     main.invoke_close_file_list_window();
     main.hide().unwrap();
     state.borrow_mut().retire_all();
+}
+
+#[test]
+fn file_list_preview_grows_with_the_window_and_resize_preserves_the_draft_caret() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let window = FileListWindow::new().unwrap();
+    window.invoke_apply_preferences(3, 0, "".into(), 13, 18);
+    window.set_template_text("文档$(FileName)$(CRLF)".into());
+    window.set_preview_text("文档.txt\nnotes.txt\n".into());
+    window.set_summary("2 selected items".into());
+    let edits = Rc::new(Cell::new(0));
+    let observed = edits.clone();
+    window.on_template_edited(move |_| observed.set(observed.get() + 1));
+    let weak = window.as_weak();
+    window.on_cancel(move || weak.upgrade().unwrap().hide().unwrap());
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    draw(&native, 720, 520, "file-list-preview-normal");
+    window.invoke_focus_template_at(6);
+    let preview =
+        modeless::accessible_item(&native, AccessibleRole::TextInput, "File list preview").unwrap();
+    let old_height = preview.geometry().height();
+    draw(&native, 1000, 820, "file-list-preview-expanded");
+    let new_height = preview.geometry().height();
+    assert!(
+        new_height >= old_height + 260.0,
+        "extra height belongs to preview: {old_height} -> {new_height}"
+    );
+    assert_eq!(window.get_template_cursor(), 6);
+    assert_eq!(window.get_template_anchor(), 6);
+    assert_eq!(window.get_template_text(), "文档$(FileName)$(CRLF)");
+    assert_eq!(edits.get(), 0, "resizing does not edit or submit a draft");
+    let bounds = preview.geometry();
+    let origin = preview.map_to_native_window(bounds.origin);
+    let position = slint::LogicalPosition::new(origin.x + 20.0, origin.y + 20.0);
+    native.window().dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+    native
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+    native
+        .window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "x".into() });
+    native
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text: "x".into() });
+    assert_eq!(
+        preview
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap(),
+        "文档.txt\nnotes.txt\n",
+        "preview remains read-only"
+    );
+    for (density, font) in [(0, 11), (1, 32)] {
+        window.invoke_apply_preferences(3, density, "".into(), font, font);
+        draw(&native, 320, 200, "file-list-preview-compact");
+        let cancel = modeless::accessible_item(&native, AccessibleRole::Button, "Cancel").unwrap();
+        let rect = cancel.geometry();
+        let at = cancel.map_to_native_window(rect.origin);
+        assert!(
+            at.x >= 0.0
+                && at.y >= 0.0
+                && at.x + rect.width() <= 320.5
+                && at.y + rect.height() <= 200.5
+        );
+    }
+    click(&native, "Cancel");
+    assert!(!window.window().is_visible());
 }

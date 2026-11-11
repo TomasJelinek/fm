@@ -172,7 +172,10 @@ impl State {
             ) {
                 summary.folders += 1;
             }
-            if row.entry.kind != EntryKind::Directory {
+            if !matches!(
+                row.entry.kind,
+                EntryKind::Directory | EntryKind::DirectoryLink
+            ) {
                 continue;
             }
             if let Some(size) = self.values.get(&row.id) {
@@ -317,7 +320,9 @@ fn scan(
             Ok(ProviderTarget::Native(path)) => native.push(Entry::new(
                 EntryId(occurrence.row.0),
                 path.clone(),
-                EntryKind::Directory,
+                captured.view.rows[captured.view.index.row_positions[&occurrence.row]]
+                    .entry
+                    .kind,
             )),
             Ok(ProviderTarget::Archive(target)) => {
                 let mut latest = FolderSize::default();

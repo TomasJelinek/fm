@@ -40,6 +40,7 @@ impl Controller {
                 request: target_request,
             } = &request.destination
             {
+                state.clear_preview();
                 state.source.as_mut().expect("validated source").released = true;
                 let command = TreeCommand::CaptureDropDirectory {
                     id: request.id,
@@ -50,6 +51,7 @@ impl Controller {
                 state.pending_internal = Some(request);
                 return Some(command);
             } else {
+                state.clear_preview();
                 state.source.as_mut().expect("validated source").released = true;
                 Self::schedule_internal(&mut state, request, None, self.transfers.clone())
             }
@@ -159,7 +161,7 @@ impl Controller {
     }
 }
 
-fn folder(
+pub(super) fn folder(
     snapshots: &Snapshots,
     target: &InternalDropDestination,
     captured: Option<&dyn CapturedDropDirectory>,
@@ -252,6 +254,11 @@ pub(super) fn execute(
             work.target.as_deref(),
             &work.cancel,
         )?;
+        // Release is an independent admission boundary. A pending or successful
+        // hover preview never substitutes for current native self/ancestry checks.
+        if let Some(service) = work.service.as_deref() {
+            super::preview::validate(service, &work.files, &destination, &work.cancel)?;
+        }
         let intent = resolve_intent(
             work.request.intent,
             work.service.as_deref(),

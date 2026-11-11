@@ -171,7 +171,7 @@ export component OperationDialog inherits Rectangle {
                         horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
                         HorizontalLayout { alignment: end;
                             confirm-button := HintedActionButton {
-                                primary: true;
+                                primary: true; destructive: root.dangerous;
                                 text: root.confirm-text; enabled: root.confirm-enabled && (!root.has-name || name.text != "");
                                 accessible-role: none;
                                 hint: root.dangerous ? "Permanently delete the confirmed targets. This cannot be undone." : root.confirm-text;

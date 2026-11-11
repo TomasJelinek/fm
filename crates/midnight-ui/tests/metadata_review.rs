@@ -139,6 +139,8 @@ fn review_workflow(scenario: Scenario) {
             id,
             revision,
             patch,
+            localized_times: Default::default(),
+            time_input_format: None,
             capabilities: MetadataCapabilities {
                 windows_attributes: EDIT_READ_ONLY | EDIT_HIDDEN | EDIT_SYSTEM | EDIT_ARCHIVE,
                 compressed: true,

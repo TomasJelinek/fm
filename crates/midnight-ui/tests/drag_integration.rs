@@ -13,13 +13,19 @@ use slint::{
     ComponentHandle,
     platform::{Key, PointerEventButton, WindowEvent},
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 struct Harness {
     ui: ui::TestUi,
     windows: owned_windows::Windows,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
+    refuse_cancel: Rc<Cell<bool>>,
     send: Rc<dyn Fn(Command) -> bool>,
 }
 
@@ -35,7 +41,12 @@ impl Harness {
         let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
         let commands = Rc::new(RefCell::new(Vec::new()));
         let captured = commands.clone();
+        let refuse_cancel = Rc::new(Cell::new(false));
+        let denied = refuse_cancel.clone();
         let send: Rc<dyn Fn(Command) -> bool> = Rc::new(move |command| {
+            if denied.get() && matches!(command, Command::CancelDrag(_)) {
+                return false;
+            }
             captured.borrow_mut().push(command);
             true
         });
@@ -93,6 +104,7 @@ impl Harness {
             windows,
             presenter,
             commands,
+            refuse_cancel,
             send,
         }
     }
@@ -106,7 +118,11 @@ impl Harness {
     }
 
     fn start(&mut self) -> DragId {
-        let start = ui::root_position(&self.ui.window, "file 文档.bin", AccessibleRole::ListItem);
+        self.start_item("file 文档.bin")
+    }
+
+    fn start_item(&mut self, name: &str) -> DragId {
+        let start = ui::root_position(&self.ui.window, name, AccessibleRole::ListItem);
         self.ui
             .window
             .window()
@@ -126,10 +142,7 @@ impl Harness {
             .rev()
             .find_map(|command| match command {
                 Command::PrepareDrag { id, files, .. } => {
-                    assert_eq!(
-                        files.fallback.as_ref().unwrap().file_name().unwrap(),
-                        "file 文档.bin"
-                    );
+                    assert_eq!(files.fallback.as_ref().unwrap().file_name().unwrap(), name);
                     Some(*id)
                 }
                 _ => None,
@@ -143,6 +156,70 @@ impl Harness {
             self.send.as_ref(),
         );
         refresh(&self.ui.window, &self.presenter.borrow());
+        self.ui.draw();
+    }
+
+    fn preview_request(
+        &self,
+        id: DragId,
+        pane: PaneId,
+        entry: EntryId,
+        intent: InternalDropIntent,
+    ) -> InternalDropPreviewRequest {
+        assert_eq!(self.ui.window.get_drag_feedback_state(), 2);
+        assert_eq!(self.ui.window.get_drag_hover_pane(), -1);
+        assert_eq!(self.ui.window.get_drag_hover_row(), -1);
+        assert_eq!(self.ui.window.get_drag_label(), "Checking destination…");
+        let commands = self.commands.borrow();
+        let request = commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::PreviewInternalDrop(request) if request.id == id => {
+                    Some(request.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("hover must ask the backend to validate its captured destination");
+        let navigation = commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Navigate {
+                    pane: target,
+                    navigation,
+                    ..
+                } if *target == pane => Some(*navigation),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(request.intent, intent);
+        assert!(!request.cancel.is_cancelled());
+        assert!(matches!(request.destination,
+            InternalDropDestination::PanelEntry {
+                pane: target, navigation: captured, entry: target_entry,
+            } if target == pane && captured == navigation && target_entry == entry
+        ));
+        request
+    }
+
+    fn preview_result(
+        &mut self,
+        request: &InternalDropPreviewRequest,
+        position: slint::LogicalPosition,
+        intent: Option<TransferIntent>,
+    ) {
+        self.presenter.borrow_mut().apply_with_sender(
+            Event::DragDrop(DragDropEvent::InternalPreview {
+                id: request.id,
+                revision: request.revision,
+                intent,
+            }),
+            self.send.as_ref(),
+        );
+        // Refresh the installed bridge at its unchanged pointer position, just
+        // as its regular timer does after a worker receipt reaches the presenter.
+        self.ui.window.invoke_drag_moved(position.x, position.y);
         self.ui.draw();
     }
 
@@ -181,18 +258,33 @@ fn internal_drop_highlights_the_exact_folder_and_captures_its_identity() {
     let mut h = Harness::new();
     let id = h.start();
     h.prepared(id);
+    let local = ui::root_position(&h.ui.window, "local destination", AccessibleRole::ListItem);
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: local });
+    h.ui.draw();
+    let stale = h.preview_request(id, PaneId::Left, EntryId(3), InternalDropIntent::Auto);
     h.ui.window
         .window()
         .dispatch_event(WindowEvent::PointerMoved {
             position: h.target(),
         });
     h.ui.draw();
+    let request = h.preview_request(id, PaneId::Right, EntryId(2), InternalDropIntent::Auto);
+    assert!(stale.cancel.is_cancelled());
+    assert_ne!(stale.revision, request.revision);
+    h.preview_result(&stale, h.target(), Some(TransferIntent::Move));
+    assert_eq!(h.ui.window.get_drag_feedback_state(), 2);
+    assert_eq!(h.ui.window.get_drag_hover_pane(), -1);
+    h.preview_result(&request, h.target(), Some(TransferIntent::Copy));
+    assert_eq!(h.ui.window.get_drag_feedback_state(), 3);
     assert_eq!(h.ui.window.get_drag_hover_pane(), 1);
     assert_eq!(h.ui.window.get_drag_hover_row(), 1);
     assert!(h.ui.window.get_drag_label().contains("hovered subfolder"));
     render::snapshot(&h.ui, "drag-copy-target");
     h.release();
     assert!(!h.ui.window.get_drag_active());
+    assert!(request.cancel.is_cancelled());
     let commands = h.commands.borrow();
     let drops: Vec<_> = commands
         .iter()
@@ -337,12 +429,37 @@ fn touch_scrolling_and_right_button_movement_never_prepare_file_drags() {
 #[test]
 fn folder_drops_request_volume_default_or_explicit_modifiers_and_reject_link_requests() {
     let mut h = Harness::new();
-    for (control, shift, link, expected) in [
-        (false, false, false, Some(InternalDropIntent::Auto)),
-        (true, false, false, Some(InternalDropIntent::Copy)),
-        (false, true, false, Some(InternalDropIntent::Move)),
-        (true, true, false, None),
-        (false, false, true, None),
+    for (control, shift, link, expected, resolved) in [
+        (
+            false,
+            false,
+            false,
+            Some(InternalDropIntent::Auto),
+            Some(TransferIntent::Copy),
+        ),
+        (
+            false,
+            false,
+            false,
+            Some(InternalDropIntent::Auto),
+            Some(TransferIntent::Move),
+        ),
+        (
+            true,
+            false,
+            false,
+            Some(InternalDropIntent::Copy),
+            Some(TransferIntent::Copy),
+        ),
+        (
+            false,
+            true,
+            false,
+            Some(InternalDropIntent::Move),
+            Some(TransferIntent::Move),
+        ),
+        (true, true, false, None, None),
+        (false, false, true, None, None),
     ] {
         let id = h.start();
         h.prepared(id);
@@ -367,6 +484,20 @@ fn folder_drops_request_volume_default_or_explicit_modifiers_and_reject_link_req
             .window()
             .dispatch_event(WindowEvent::PointerMoved { position });
         h.ui.draw();
+        if let Some(intent) = expected {
+            let preview = h.preview_request(id, PaneId::Left, EntryId(3), intent);
+            h.preview_result(&preview, position, resolved);
+            assert_eq!(
+                h.ui.window.get_drag_feedback_state(),
+                if resolved == Some(TransferIntent::Move) {
+                    4
+                } else {
+                    3
+                }
+            );
+        } else {
+            assert_eq!(h.ui.window.get_drag_feedback_state(), 5);
+        }
         assert_eq!(
             h.ui.window.get_drag_hover_pane(),
             if expected.is_some() { 0 } else { -1 }
@@ -436,6 +567,13 @@ fn folder_targets_follow_actual_scrolled_cells_in_details_brief_and_thumbnail_mo
                     .window()
                     .dispatch_event(WindowEvent::PointerMoved { position });
                 h.ui.draw();
+                let preview = h.preview_request(
+                    id,
+                    PaneId::Right,
+                    EntryId(row as u64 + 1),
+                    InternalDropIntent::Auto,
+                );
+                h.preview_result(&preview, position, Some(TransferIntent::Copy));
                 assert_eq!(
                     h.ui.window.get_drag_hover_row(),
                     row,
@@ -474,6 +612,8 @@ fn scrolling_during_a_stationary_drag_drops_on_the_newly_visible_folder() {
             .window()
             .dispatch_event(WindowEvent::PointerMoved { position });
         h.ui.draw();
+        let preview = h.preview_request(id, PaneId::Right, EntryId(2), InternalDropIntent::Auto);
+        h.preview_result(&preview, position, Some(TransferIntent::Copy));
         assert!(h.ui.window.get_drag_label().contains("hovered subfolder"));
 
         let next_row = if mode == 2 {
@@ -500,6 +640,7 @@ fn scrolling_during_a_stationary_drag_drops_on_the_newly_visible_folder() {
                 position,
                 button: PointerEventButton::Left,
             });
+        assert!(preview.cancel.is_cancelled());
         let commands = h.commands.borrow();
         let request = commands.iter().find_map(|command| match command {
             Command::InternalDrop(request) if request.id == id => Some(request),
@@ -514,6 +655,41 @@ fn scrolling_during_a_stationary_drag_drops_on_the_newly_visible_folder() {
             } if *entry == EntryId(next_row as u64 + 1)
         ));
     }
+}
+
+#[test]
+fn rejected_self_directory_and_late_preview_cannot_highlight_or_submit_a_drop() {
+    let mut h = Harness::new();
+    let id = h.start_item("local destination");
+    h.prepared(id);
+    let position = ui::root_position(&h.ui.window, "local destination", AccessibleRole::ListItem);
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    h.ui.draw();
+    let preview = h.preview_request(id, PaneId::Left, EntryId(3), InternalDropIntent::Auto);
+    h.preview_result(&preview, position, None);
+    assert_eq!(h.ui.window.get_drag_feedback_state(), 5);
+    assert_eq!(h.ui.window.get_drag_hover_pane(), -1);
+    assert_eq!(h.ui.window.get_drag_hover_row(), -1);
+    // A second receipt cannot replace the backend's completed rejection.
+    h.preview_result(&preview, position, Some(TransferIntent::Move));
+    assert_eq!(h.ui.window.get_drag_feedback_state(), 5);
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    assert!(preview.cancel.is_cancelled());
+    h.preview_result(&preview, position, Some(TransferIntent::Copy));
+    assert!(!h.ui.window.get_drag_active());
+    assert_eq!(h.ui.window.get_drag_feedback_state(), 0);
+    assert!(
+        !h.commands.borrow().iter().any(|command| {
+            matches!(command, Command::InternalDrop(request) if request.id == id)
+        })
+    );
 }
 
 #[test]
@@ -550,4 +726,93 @@ fn parent_file_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
             )
         );
     }
+}
+
+#[test]
+fn focus_loss_and_escape_defer_exact_cancellation_across_presenter_borrows_and_queue_pressure() {
+    let mut h = Harness::new();
+    for (mutable, escape) in [(false, false), (true, false), (false, true), (true, true)] {
+        let id = h.start();
+        h.prepared(id);
+        h.refuse_cancel.set(true);
+        let target = h.target();
+        let cancel = || {
+            if escape {
+                assert!(h.ui.window.invoke_drag_escape());
+            } else {
+                h.ui.window
+                    .window()
+                    .dispatch_event(WindowEvent::WindowActiveChanged(false));
+            }
+            assert!(!h.ui.window.get_drag_active());
+            h.ui.window.invoke_drag_released(target.x, target.y);
+        };
+        if mutable {
+            let _guard = h.presenter.borrow_mut();
+            cancel();
+        } else {
+            let _guard = h.presenter.borrow();
+            cancel();
+        }
+        h.release();
+        h.settle();
+        assert!(!h.ui.window.get_drag_active());
+        assert!(!h.commands.borrow().iter().any(|command| {
+            matches!(command, Command::InternalDrop(request) if request.id == id)
+                || matches!(command, Command::CancelDrag(actual) if *actual == id)
+        }));
+        h.refuse_cancel.set(false);
+        h.settle();
+        assert_eq!(
+            h.commands
+                .borrow()
+                .iter()
+                .filter(|command| {
+                    matches!(command, Command::CancelDrag(actual) if *actual == id)
+                })
+                .count(),
+            1,
+            "deferred cleanup must retain the exact backend cancellation under pressure"
+        );
+        h.prepared(id);
+        assert!(
+            !h.ui.window.get_drag_active(),
+            "late preparation cannot revive cancelled input"
+        );
+        h.ui.window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    }
+}
+
+#[test]
+fn deferred_focus_loss_cannot_cancel_a_later_gesture_after_the_old_backend_receipt() {
+    let mut h = Harness::new();
+    let old = h.start();
+    h.prepared(old);
+    {
+        let _guard = h.presenter.borrow_mut();
+        h.ui.window.invoke_drag_cancel();
+    }
+    h.presenter.borrow_mut().apply_with_sender(
+        Event::DragDrop(DragDropEvent::Finished {
+            id: old,
+            outcome: DragFinish::Cancelled,
+        }),
+        h.send.as_ref(),
+    );
+    h.release();
+    let current = h.start();
+    assert_ne!(current, old);
+    h.prepared(current);
+    h.settle();
+    assert!(h.ui.window.get_drag_active());
+    assert!(
+        !h.commands
+            .borrow()
+            .iter()
+            .any(|command| { matches!(command, Command::CancelDrag(id) if *id == current) })
+    );
+    assert!(h.ui.window.invoke_drag_escape());
+    h.release();
 }

@@ -83,7 +83,7 @@ export component CopyConflictDialog inherits Rectangle {
             }
             if root.can-replace : HorizontalLayout {
                 spacing: 8px;
-                HintedActionButton { text: "Replace · keep original"; hint: "Publish the verified copy and retain the displaced file in a private recovery folder. Recent Jobs show recovery locations."; clicked => { root.decide(4, ""); } }
+                HintedActionButton { text: "Replace · keep original"; hint: "Replace the destination and retain the displaced file in a private recovery folder. Recent Jobs show recovery locations."; clicked => { root.decide(4, ""); } }
                 HintedActionButton { text: "Replace all · keep originals"; hint: "Use recoverable replacement for remaining compatible file conflicts in this job. Changed targets require a new decision."; clicked => { root.decide(5, ""); } }
             }
             if root.can-merge : HorizontalLayout {

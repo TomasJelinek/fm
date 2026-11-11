@@ -218,6 +218,15 @@ fn open(
             window.set_initial_name(main.get_operation_name());
             window.set_selection_end(main.get_operation_selection_end());
             window.set_has_name(main.get_operation_has_name());
+            window.set_input_label(
+                match main.get_operation_kind() {
+                    0 => "New name",
+                    3 => "Folder name or path",
+                    4 => "File name",
+                    _ => "",
+                }
+                .into(),
+            );
             window.set_dangerous(main.get_operation_dangerous());
             window.set_native_icon(main.get_operation_icon());
         }

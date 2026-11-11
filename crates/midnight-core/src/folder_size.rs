@@ -4,7 +4,8 @@
 pub struct FolderSizeScanId(pub u64);
 
 /// Logical file lengths, not allocated disk usage or a filesystem snapshot.
-/// Links and special files are excluded; errors make a result explicitly partial.
+/// Native directory links are followed; file links and ancestry cycles are skipped.
+/// Special files are excluded; errors make a result explicitly partial.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderSize {
     pub bytes: u64,

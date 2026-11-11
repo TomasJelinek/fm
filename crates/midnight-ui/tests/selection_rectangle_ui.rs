@@ -577,3 +577,155 @@ fn brief_partial_columns_produce_disjoint_ranges_through_actual_cells() {
     assert!(h.flags()[rows]);
     assert!(!h.flags()[rows + 4]);
 }
+
+#[test]
+fn live_rectangle_row_and_details_notifications_release_presenter_borrows() {
+    use i_slint_core::model::{ModelChangeListener, ModelChangeListenerBox};
+    use std::pin::Pin;
+
+    struct BorrowProbe {
+        presenter: Rc<RefCell<Presenter>>,
+        calls: Cell<usize>,
+    }
+    impl BorrowProbe {
+        fn changed(&self) {
+            assert!(
+                self.presenter.try_borrow_mut().is_ok(),
+                "notification holds presenter borrow"
+            );
+            self.calls.set(self.calls.get() + 1);
+        }
+    }
+    impl ModelChangeListener for BorrowProbe {
+        fn row_changed(self: Pin<&Self>, _: usize) {
+            self.changed();
+        }
+        fn row_added(self: Pin<&Self>, _: usize, _: usize) {
+            self.changed();
+        }
+        fn row_removed(self: Pin<&Self>, _: usize, _: usize) {
+            self.changed();
+        }
+        fn reset(self: Pin<&Self>) {
+            self.changed();
+        }
+    }
+
+    let h = Harness::new(5);
+    h.start();
+    let rows = h.ui.window.get_left_rows();
+    let row_probe = ModelChangeListenerBox::new(BorrowProbe {
+        presenter: h.presenter.clone(),
+        calls: Cell::new(0),
+    });
+    rows.model_tracker()
+        .attach_peer(row_probe.as_ref().model_peer());
+    let (x, y) = h.top();
+    h.pointer(x, y, 1);
+    assert!(row_probe.calls.get() > 0);
+    assert!(h.ui.window.global::<SelectionRectangle>().get_active());
+
+    // Retain the live projection's identities while forcing a status repaint.
+    // Its notification must be allowed to synchronously cancel or edit state.
+    let details = h.ui.window.get_left_details();
+    let values: Vec<_> = (0..details.row_count())
+        .map(|index| {
+            let mut row = details.row_data(index).unwrap();
+            row.value = "Previous status".into();
+            row
+        })
+        .collect();
+    assert!(!values.is_empty());
+    let details = Rc::new(slint::VecModel::from(values));
+    h.ui.window.set_left_details(details.clone().into());
+    let detail_probe = ModelChangeListenerBox::new(BorrowProbe {
+        presenter: h.presenter.clone(),
+        calls: Cell::new(0),
+    });
+    details
+        .model_tracker()
+        .attach_peer(detail_probe.as_ref().model_peer());
+    h.pointer(x + 1.0, y, 1);
+    assert!(detail_probe.calls.get() > 0);
+    assert_eq!(details.row_data(0).unwrap().value, "Updating selection…");
+    // Detach observers before the unrelated full-window close refresh.
+    drop(detail_probe);
+    drop(row_probe);
+    assert!(h.ui.window.global::<SelectionRectangle>().invoke_cancel());
+}
+
+#[test]
+fn owner_modal_gate_cancels_live_rectangle_and_refuses_new_gestures() {
+    let h = Harness::new(5);
+    h.start();
+    let (x, y) = h.top();
+    h.pointer(x, y, 1);
+    assert!(h.ui.window.global::<SelectionRectangle>().get_active());
+    h.ui.window.set_dialog_input_blocked(true);
+    let rectangle = h.ui.window.global::<SelectionRectangle>();
+    assert!(!rectangle.invoke_input(1, 0, x, y, false, false));
+    assert!(!rectangle.get_active());
+    assert_eq!(rectangle.get_pane(), -1);
+    assert!(!rectangle.invoke_input(0, 0, x, y, false, false));
+    h.pointer(x, y, 2);
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::Selection(_)))
+    );
+    h.ui.window.set_dialog_input_blocked(false);
+    h.start();
+    assert!(rectangle.invoke_cancel());
+}
+
+#[test]
+fn rectangle_cancellation_defers_mutations_during_shared_or_exclusive_presenter_borrow() {
+    let h = Harness::new(5);
+    for mutable in [false, true] {
+        h.start();
+        let (x, y) = h.top();
+        h.pointer(x, y, 1);
+        let rectangle = h.ui.window.global::<SelectionRectangle>();
+        assert!(rectangle.get_active());
+        let cancel = || {
+            assert!(rectangle.invoke_cancel());
+            assert!(!rectangle.get_active());
+            // A synchronous release/update must wait for the same borrow too.
+            assert!(!rectangle.invoke_input(2, 0, x, y, false, false));
+        };
+        if mutable {
+            let _guard = h.presenter.borrow_mut();
+            cancel();
+        } else {
+            let _guard = h.presenter.borrow();
+            cancel();
+        }
+        assert!(!rectangle.invoke_input(1, 0, x, y, false, false));
+        h.pointer(x, y, 2);
+        assert_eq!(rectangle.get_pane(), -1);
+        assert!(h.flags().into_iter().all(|selected| !selected));
+        assert!(!h.commands.borrow().iter().any(|command| matches!(
+            command,
+            Command::Selection(SelectionRequest {
+                action: SelectionAction::Ranges { .. },
+                ..
+            })
+        )));
+        assert!(
+            !h.ui
+                .window
+                .get_left_details()
+                .iter()
+                .any(|row| row.value == "Updating selection…")
+        );
+        h.start();
+        h.pointer(x, y, 1);
+        assert!(
+            rectangle.get_active(),
+            "old cancellation cannot discard a later rectangle"
+        );
+        assert!(rectangle.invoke_cancel());
+        h.pointer(x, y, 2);
+    }
+}

@@ -160,11 +160,84 @@ impl PreparedMutation for WindowsMutation {
         metadata::edit(self, patch, name, cancel)
     }
 
+    fn prepare_rename_replacement(
+        &self,
+        new_name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedRenameReplacement, FsError> {
+        use midnight_core::{TransferIdentity, TransferService};
+        checked(cancel, &self.item.path)?;
+        validate_name(new_name)
+            .map_err(|e| failure("prepare Rename replacement", &self.item.path, e))?;
+        if self.item.kind != EntryKind::File {
+            return Err(invalid(
+                &self.item.path,
+                "Rename replacement requires two ordinary files",
+            ));
+        }
+        let _source = self.revalidate(false)?;
+        let parent = native::identity(&self.parent)
+            .map_err(|e| failure("read parent identity", &self.item.path, e))?;
+        let service = WindowsFileSystem::new(None);
+        let directory = service
+            .prepare_move_destination(self.item.path.parent().expect("prepared parent"), cancel)?;
+        if directory.identity()
+            != (TransferIdentity {
+                device: parent.volume,
+                object: parent.id,
+            })
+        {
+            return Err(changed(&self.item.path));
+        }
+        let movement = service.prepare_move_source(&self.item.path, cancel)?;
+        if movement.capture.entry().identity
+            != (TransferIdentity {
+                device: self.identity.volume,
+                object: self.identity.id,
+            })
+        {
+            return Err(changed(&self.item.path));
+        }
+        let target = directory.prepare_target(new_name, cancel)?.ok_or_else(|| {
+            failure(
+                "prepare Rename replacement",
+                &self.item.path,
+                io::ErrorKind::NotFound.into(),
+            )
+        })?;
+        if target.entry().item.kind != EntryKind::File
+            || target.entry().identity == movement.capture.entry().identity
+        {
+            return Err(invalid(
+                &target.entry().item.path,
+                "Cannot replace a directory, link, source itself or hard-link alias",
+            ));
+        }
+        if !directory.supports_native_move_replacement(movement.capture.entry().identity) {
+            return Err(failure(
+                "prepare Rename replacement",
+                &target.entry().item.path,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Recoverable Rename replacement requires a supported local fixed NTFS destination.",
+                ),
+            ));
+        }
+        self.revalidate(false)?;
+        Ok(midnight_core::PreparedRenameReplacement {
+            movement,
+            directory,
+            target,
+        })
+    }
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
         let path = &self.item.path;
         checked(cancel, path)?;
         validate_name(new_name).map_err(|e| failure("rename", path, e))?;
         let source = self.revalidate(true)?;
+        // NT can accept a no-replace rename onto a distinct hard-link alias.
+        // Check the entry name while this handle denies concurrent delete/rename.
+        metadata::name_available(self, new_name, cancel)?;
         checked(cancel, path)?;
         native::rename(&source, new_name).map_err(|e| failure("rename", path, e))?;
         Ok(path.with_file_name(new_name))

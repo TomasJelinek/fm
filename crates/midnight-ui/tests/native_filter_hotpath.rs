@@ -249,3 +249,47 @@ mod hotpaths_form;
 
 #[path = "support/native_panel_failure.rs"]
 mod failure;
+
+#[test]
+fn native_filter_help_blocks_owner_pointer_and_keyboard_until_help_closes() {
+    let h = Harness::new();
+    h.main.invoke_open_panel_filter(0);
+    let filter = h.child();
+    forms::click_control(&filter, "File filter expression", AccessibleRole::TextInput);
+    replace(&filter, "*.draft");
+    key(&filter, Key::F1);
+    let help = h.windows.borrow().last().unwrap().clone();
+    assert!(!Rc::ptr_eq(&help, &filter));
+    assert!(help.window().is_visible());
+    modeless::draw(&help, 700, 500, "filter-expression-help");
+    modeless::draw(&filter, 560, 440, "filter-owner-blocked-by-help");
+    h.commands.borrow_mut().clear();
+
+    // The software adapter has no OS EnableWindow. These exercise the Slint
+    // pointer/key gate used on Linux instead of merely inspecting a modal count.
+    replace(&filter, "wrong");
+    key(&filter, Key::Return);
+    key(&filter, Key::Escape);
+    modeless::click(&filter, "Show all");
+    modeless::click(&filter, "OK");
+    modeless::click(&filter, "Cancel");
+    assert_eq!(value(&filter), "*.draft");
+    assert!(h.commands.borrow().is_empty());
+    assert!(filter.window().is_visible() && help.window().is_visible());
+    assert!(h.main.get_dialog_input_blocked());
+
+    key(&help, Key::Escape);
+    assert!(!help.window().is_visible());
+    assert!(filter.window().is_visible());
+    assert!(h.main.get_dialog_input_blocked());
+    forms::click_control(&filter, "File filter expression", AccessibleRole::TextInput);
+    replace(&filter, "*.after-help");
+    key(&filter, Key::Return);
+    assert!(h.commands.borrow().iter().any(|command| {
+        matches!(command, Command::ValidatePanelFilter(request)
+            if request.pane == PaneId::Left && request.filter.expression == "*.after-help")
+    }));
+    key(&filter, Key::Escape);
+    assert!(!filter.window().is_visible());
+    assert!(!h.main.get_dialog_input_blocked());
+}

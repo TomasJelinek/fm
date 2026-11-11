@@ -89,7 +89,7 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 compact-height: root.height < 280px;
                 dismiss-text: root.model.busy ? "Cancel" : "Close";
                 dismiss => { root.cancel(); }
-                HintedActionButton { text: "Compare"; enabled: !root.model.busy; min-height: Theme.control-height;
+                HintedActionButton { text: "Compare"; primary: true; enabled: !root.model.busy; min-height: Theme.control-height;
                     fallback-icon: FallbackIcons.compare-directories;
                     hint: "Replace both selections with differences: files present on only one side, plus the larger or newer file for enabled criteria. No files are changed.";
                     clicked => { root.submit(sizes.checked, times.checked, names.checked, tolerance.text, directories.checked); } }

@@ -6,8 +6,10 @@ The workflow follows Salamander's Make File List: export the selected displayed
 files and folders, or the focused real entry when nothing is selected. `..` is
 always excluded. Output follows the captured panel order, including active filters.
 
-The window is modeless, movable and resizable. Navigation and selection changes
-after opening it do not change its captured input. Preview generation, formatting,
+The resizable dialog is modal, with its own title/action icon and no separate
+taskbar item. The preview fills the remaining space as the window grows;
+Escape/Cancel restores the main window. Its input is an immutable capture, so
+background refreshes do not retarget the export. Preview generation, formatting,
 file access and clipboard access happen on backend workers.
 
 ## Template

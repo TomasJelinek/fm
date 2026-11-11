@@ -1202,13 +1202,13 @@ mod tests {
 
     #[test]
     fn version_two_preserves_unicode_font_family_and_independent_sizes() {
-        let json = r#"{"version":2,"theme":"dark","density":"touch","windows_shell":"cmd","font_family":"文档 é 🧪","desktop_font_size":12,"touch_font_size":19}"#;
+        let json = r#"{"version":2,"theme":"dark","density":"touch","windows_shell":"cmd","font_family":"文档 é 🧪","desktop_font_size":11,"touch_font_size":19}"#;
         let decoded = decode_preferences(json.as_bytes()).unwrap();
         let encoded = encode_preferences(decoded).unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(stored["version"], 10);
         assert_eq!(stored["font_family"], "文档 é 🧪");
-        assert_eq!(stored["desktop_font_size"], 12);
+        assert_eq!(stored["desktop_font_size"], 11);
         assert_eq!(stored["touch_font_size"], 19);
     }
 
@@ -1219,7 +1219,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preferences.font_family, "");
-        assert_eq!(preferences.desktop_font_size, 11);
+        assert_eq!(preferences.desktop_font_size, 12);
         assert_eq!(preferences.touch_font_size, 15);
         let migrated = encode_preferences(preferences.clone()).unwrap();
         assert_eq!(

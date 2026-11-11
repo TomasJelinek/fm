@@ -39,7 +39,7 @@ export component ComparatorWindow inherits Window {
     in property <string> ui-font-family;
     // Match the viewer's minimum-size controls without changing document fonts.
     default-font-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
-    default-font-family: root.ui-font-family;
+    default-font-family: root.ui-font-family != "" ? root.ui-font-family : "Segoe UI";
     private property <length> effective-ui-size: root.compact ? min(root.ui-font-size, 12px) : root.ui-font-size;
     private property <length> control-height: max(max(30px, root.effective-ui-size + 14px), control-metrics.preferred-height);
     control-metrics := Button { visible: false; text: "Aa"; }

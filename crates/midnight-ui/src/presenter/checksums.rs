@@ -25,6 +25,7 @@ fn preferred_algorithm(algorithms: ChecksumAlgorithms) -> ChecksumAlgorithm {
 #[derive(Default)]
 pub(crate) struct ChecksumState {
     pub sessions: HashMap<ChecksumJobId, ChecksumSession>,
+    pub(super) tree: Option<tree_checksums::Pending>,
     next_job: u64,
     next_save: u64,
 }
@@ -33,6 +34,7 @@ pub(crate) struct ChecksumSession {
     pub revision: u64,
     pub directory: PathBuf,
     pub files: SelectedFiles,
+    pub tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,
     pub generation: ChecksumGeneration,
     pub algorithms: ChecksumAlgorithms,
     pub recursive: bool,
@@ -124,6 +126,10 @@ impl ChecksumState {
 
 impl Presenter {
     pub(crate) fn request_checksums(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_checksums(pane, send);
+            return;
+        }
         if !self.tree_action_allowed(pane) {
             return;
         }
@@ -168,15 +174,28 @@ impl Presenter {
         files: SelectedFiles,
         send: &dyn Fn(Command) -> bool,
     ) -> Option<ChecksumJobId> {
+        self.open_checksum_sources(directory, files, None, send)
+    }
+
+    pub(super) fn open_checksum_sources(
+        &mut self,
+        directory: PathBuf,
+        files: SelectedFiles,
+        tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,
+        send: &dyn Fn(Command) -> bool,
+    ) -> Option<ChecksumJobId> {
         if self.checksums.sessions.len() >= MAX_CHECKSUM_WINDOWS || self.operations.closing {
             self.desktop.report(
                 "Checksums",
                 "Close one of the four checksum windows first.".into(),
             );
-            self.retired.push(Box::new(files));
+            self.retired.push(Box::new((files, tree_sources)));
             return None;
         }
-        let id = ChecksumJobId(self.checksums.next_job.checked_add(1)?);
+        let Some(id) = self.checksums.next_job.checked_add(1).map(ChecksumJobId) else {
+            self.retired.push(Box::new((files, tree_sources)));
+            return None;
+        };
         self.checksums.next_job = id.0;
         let algorithms = self.preferences.values.checksum_algorithms;
         let manifest = files
@@ -195,8 +214,8 @@ impl Presenter {
                     })
             })
             .cloned();
-        let verify_initial =
-            manifest.is_some() || (files.selection.is_empty() && files.fallback.is_none());
+        let verify_initial = manifest.is_some()
+            || (tree_sources.is_none() && files.selection.is_empty() && files.fallback.is_none());
         let algorithm = preferred_algorithm(algorithms);
         self.checksums.sessions.insert(
             id,
@@ -211,6 +230,7 @@ impl Presenter {
                 picker: None,
                 directory,
                 files,
+                tree_sources,
                 generation: ChecksumGeneration(0),
                 algorithms,
                 recursive: false,
@@ -246,16 +266,26 @@ impl Presenter {
         let Some(generation) = s.generation.0.checked_add(1).map(ChecksumGeneration) else {
             return false;
         };
-        if !send(Command::StartSelectedChecksums(Box::new(
-            SelectedChecksumRequest {
+        let command = if let Some(sources) = &s.tree_sources {
+            Command::StartCapturedChecksums(Box::new(CapturedChecksumRequest {
+                job: id,
+                generation,
+                sources: sources.clone(),
+                algorithms,
+                recursive,
+                limits: ChecksumLimits::default(),
+            }))
+        } else {
+            Command::StartSelectedChecksums(Box::new(SelectedChecksumRequest {
                 job: id,
                 generation,
                 files: s.files.clone(),
                 algorithms,
                 recursive,
                 limits: ChecksumLimits::default(),
-            },
-        ))) {
+            }))
+        };
+        if !send(command) {
             s.error = "Checksum queue is busy. Try Calculate again.".into();
             return false;
         }

@@ -34,6 +34,9 @@ impl Key {
                 .iter()
                 .any(|c| self.token == format!("metadata:{}:{}", c.id.0, c.token))
         } else {
+            if let Some((id, version)) = p.active_rename_decision() {
+                return self.token == format!("rename:{}:{}", id.0, version);
+            }
             let active = p.active_copy_decision();
             p.copies.conflicts.iter().any(|c| {
                 active == Some((c.id, c.version))
@@ -262,7 +265,9 @@ fn open(
         window.set_body(main.get_copy_body());
         window.set_initial_name(main.get_copy_name());
         window.set_native_icon(main.get_action_icons().copy);
-        window.set_allow_alternate_name(!main.get_copy_is_failure());
+        window.set_allow_alternate_name(
+            !main.get_copy_is_failure() && !key.token.starts_with("rename:"),
+        );
         window.set_can_replace(main.get_copy_can_replace());
         window.set_can_merge(main.get_copy_can_merge());
         window.set_failure_mode(main.get_copy_is_failure());

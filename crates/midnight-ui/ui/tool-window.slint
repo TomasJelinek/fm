@@ -7,7 +7,7 @@ export component ToolWindow inherits Window {
     preferred-width: 860px; preferred-height: 620px;
     min-width: 320px; min-height: 200px;
     background: Theme.window-background;
-    default-font-family: Theme.font-family; default-font-size: Theme.font-size;
+    default-font-family: Theme.effective-font-family; default-font-size: Theme.font-size;
     callback request-close();
     public function focus-content() { scope.focus(); }
     public function apply-tool-theme(scheme: int, density: int, family: string, desktop: int, touch: int) {

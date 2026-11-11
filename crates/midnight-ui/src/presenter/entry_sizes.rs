@@ -26,7 +26,7 @@ impl Presenter {
         };
         let Some(target) = p
             .entry_by_id(entry)
-            .filter(|entry| entry.kind == EntryKind::Directory)
+            .filter(|entry| matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink))
         else {
             return;
         };

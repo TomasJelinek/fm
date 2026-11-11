@@ -47,6 +47,31 @@ fn selected_size_scan_keeps_unselected_cached_values_and_running_state() {
 }
 
 #[test]
+fn selected_directory_link_runs_without_admitting_unselected_directories() {
+    let mut p = ready(8);
+    p.folder_sizes(PaneId::Left, &|_| true);
+    assert!(p.panes[0].entry_size_running(&p.panes[0].path.join("link")));
+    assert!(!p.panes[0].entry_size_running(&p.panes[0].path.join("selected-資料")));
+    assert!(!p.panes[0].entry_size_running(&p.panes[0].path.join("unselected")));
+    let scan = p.panes[0].size_scan.expect("selected directory-link scan");
+    p.apply(Event::FolderSizeUpdated {
+        pane: PaneId::Left,
+        navigation: NavigationId(p.panes[0].generation),
+        scan,
+        entry: EntryId(4),
+        size: FolderSize {
+            bytes: 123,
+            finished: true,
+            ..Default::default()
+        },
+    });
+    assert_eq!(
+        p.panes[0].folder_sizes[&p.panes[0].path.join("link")].bytes,
+        123
+    );
+}
+
+#[test]
 fn size_scan_waits_for_the_exact_pending_selection_revision() {
     let mut p = ready(0);
     p.panes[0].selection_revision = SelectionRevision(8);

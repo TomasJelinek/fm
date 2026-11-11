@@ -33,6 +33,7 @@ struct SaveState {
 enum Capture {
     Paths(ChecksumRequest),
     Selected(SelectedChecksumRequest),
+    Captured(CapturedChecksumRequest),
     Verify(ChecksumVerifyRequest),
 }
 struct Start {
@@ -100,6 +101,24 @@ impl Controller {
         // Reserve the entire bounded expansion before retaining a queued selection.
         let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
         self.admit(Capture::Selected(request), key, retention)
+    }
+    pub(crate) async fn start_captured(
+        &self,
+        request: CapturedChecksumRequest,
+    ) -> Result<(), FsError> {
+        // Keep a worker-retired owner even when synchronous admission rejects.
+        let source = request.sources.clone();
+        let result = (|| {
+            request.limits.validate().map_err(invalid)?;
+            if request.job.0 == 0 || request.generation.0 == 0 {
+                return Err(invalid("Zero checksum job/generation."));
+            }
+            let key = (request.job, request.generation);
+            let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
+            self.admit(Capture::Captured(request), key, retention)
+        })();
+        let _ = tokio::task::spawn_blocking(move || drop(source)).await;
+        result
     }
     pub(crate) fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
         let key = (request.job, request.generation);
@@ -372,7 +391,10 @@ async fn run(
         tokio::select! {
             received = input.recv() => match received {
                 Some(Input::Start(start)) => {
-                    if !is_current(&state.lock().unwrap_or_else(|error| error.into_inner()), start.key) { continue; }
+                    if !is_current(&state.lock().unwrap_or_else(|error| error.into_inner()), start.key) {
+                        let _ = tokio::task::spawn_blocking(move || drop(start)).await;
+                        continue;
+                    }
                     send_guarded(&outbox, Event::Checksum(Box::new(ChecksumEvent { job: start.key.0,
                         generation: start.key.1, update: ChecksumUpdate::Queued })), &stop, Some((&state, start.key))).await;
                     let key = start.key;
@@ -384,11 +406,21 @@ async fn run(
                         continue;
                     }
                     let prepared = tokio::task::spawn_blocking(move || {
-                        resolve(start.capture, &start.cancel).map(|request| (request, start.retention))
+                        let source = match &start.capture {
+                            Capture::Captured(request) => Some(request.sources.clone()),
+                            _ => None,
+                        };
+                        resolve(start.capture, &start.cancel)
+                            .map(|request| (request, start.retention, source))
                     }).await;
                     match prepared {
-                        Ok(Ok((request, retention))) => {
-                            if let Err(error) = backend.start_reserved(request, cancel, retention) {
+                        Ok(Ok((request, retention, source))) => {
+                            let admitted = if source.is_some() {
+                                backend.start_captured_reserved(request, cancel, retention, source).await
+                            } else {
+                                backend.start_reserved(request, cancel, retention)
+                            };
+                            if let Err(error) = admitted {
                                 rejected(&outbox, key, error, &stop).await;
                             }
                         }
@@ -428,9 +460,9 @@ async fn run(
     // Await native work, then release results. Never abort a future holding native ownership.
     backend.shutdown().await;
     while saves.join_next().await.is_some() {}
-    while input.try_recv().is_ok() {}
     let state = state.clone();
     let _ = tokio::task::spawn_blocking(move || {
+        while input.try_recv().is_ok() {}
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         state.jobs.clear();
         state.saves.clear();
@@ -441,6 +473,14 @@ async fn run(
 fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, FsError> {
     let request = match capture {
         Capture::Paths(request) => request,
+        Capture::Captured(captured) => ChecksumRequest {
+            job: captured.job,
+            generation: captured.generation,
+            targets: captured.sources.resolve(cancel)?,
+            algorithms: captured.algorithms,
+            recursive: captured.recursive,
+            limits: captured.limits,
+        },
         Capture::Verify(_) => {
             return Err(invalid(
                 "Verification capture cannot be used for calculation.",

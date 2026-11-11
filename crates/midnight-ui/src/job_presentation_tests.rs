@@ -145,7 +145,7 @@ fn copy_and_mutation_jobs_share_chronological_order_and_stable_identity() {
         rows.iter()
             .map(|row| row.identity.as_str())
             .collect::<Vec<_>>(),
-        ["copy-job:3", "2", "copy-job:1"]
+        ["copy-job:3", "rename-job:2", "copy-job:1"]
     );
     assert!(rows[1].determinate);
     assert_eq!(rows[1].progress, 0.0);

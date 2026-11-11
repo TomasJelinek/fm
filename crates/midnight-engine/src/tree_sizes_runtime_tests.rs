@@ -262,7 +262,9 @@ async fn cancelled_partial_scan(fail_metadata: bool) {
     );
     assert_eq!(partial.bytes, 17);
     assert_eq!(partial.files, 1);
-    assert_eq!(partial.skipped_links, 1);
+    // The link is still queued behind the blocked child; cancellation must not
+    // invent a completed resolution or a skipped-target fact for it.
+    assert_eq!(partial.skipped_links, 0);
     if fail_metadata {
         let text = warning_text(partial);
         assert!(text.contains("unreadable"));

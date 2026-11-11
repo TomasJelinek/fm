@@ -39,7 +39,8 @@ impl Aggregate {
             eligible: entries
                 .iter()
                 .filter(|entry| {
-                    entry.kind == EntryKind::Directory && selection.contains_path(&entry.path)
+                    matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                        && selection.contains_path(&entry.path)
                 })
                 .map(|entry| entry.path.clone())
                 .collect(),
@@ -165,8 +166,8 @@ mod tests {
             totals.summary(),
             Summary {
                 folders: 4,
-                complete: 1,
-                complete_bytes: Some(21),
+                complete: 2,
+                complete_bytes: Some(576),
                 partial: 1,
                 partial_bytes: Some(8),
             }

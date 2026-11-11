@@ -14,11 +14,15 @@ use std::{
     time::Duration,
 };
 
+#[path = "panel_filter_help.rs"]
+mod help;
+
 struct Record {
     generation: u64,
     session: DialogSession,
     window: PanelFilterWindow,
     host: DialogHost,
+    help: RefCell<Option<help::Record>>,
 }
 struct Context {
     main: slint::Weak<MainWindow>,
@@ -92,6 +96,9 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         // Updating status/theme never calls begin or rewrites the edited controls.
         record.window.set_model(main.get_panel_filter_view());
         dialog_presentation::apply(&record.window, p);
+        if let Some(help) = record.help.borrow().as_ref() {
+            dialog_presentation::apply(&help.window, p);
+        }
         return;
     }
     let generation = p.filter_dialog.generation;
@@ -115,6 +122,12 @@ fn open(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) -> Result<Record, P
         DialogModality::OwnerModal,
         PanelFilterWindow::new,
     )?;
+    let weak = window.as_weak();
+    DialogOwner::new(&window).set_input_gate(move |blocked| {
+        if let Some(window) = weak.upgrade() {
+            window.set_dialog_input_blocked(blocked);
+        }
+    });
     crate::tooltip::install_panel_filter(&window)?;
     dialog_presentation::apply(&window, p);
     window.set_model(main.get_panel_filter_view());
@@ -156,6 +169,12 @@ fn open(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) -> Result<Record, P
             act(&ctx, session, |p, _| p.cancel_panel_filter());
         }
     });
+    let weak = Rc::downgrade(ctx);
+    window.on_help(move || {
+        if let Some(ctx) = weak.upgrade() {
+            help::show(&ctx, session);
+        }
+    });
     let weak = window.as_weak();
     window.window().on_close_requested(move || {
         if let Some(window) = weak.upgrade() {
@@ -170,6 +189,7 @@ fn open(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) -> Result<Record, P
         session,
         window,
         host,
+        help: RefCell::default(),
     })
 }
 fn act(
@@ -206,6 +226,7 @@ fn act(
 }
 fn close(record: Option<Rc<Record>>, explicit: bool) {
     if let Some(record) = record {
+        help::close(&record, false);
         if explicit {
             record
                 .host

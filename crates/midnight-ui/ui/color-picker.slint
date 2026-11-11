@@ -1,15 +1,17 @@
-import { ScrollView, Button } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { DialogHeader } from "dialog-frame.slint";
-import { FallbackIcons } from "action-icons.slint";
+import { FallbackIcons, ActionButton } from "action-icons.slint";
 import { ColorPickerControls } from "color-picker-controls.slint";
 
 // The scrollable editor and fixed footer are shared by the popup and fixtures.
 export component ColorPicker inherits Rectangle {
     in property <color> initial;
+    private property <bool> stacked-footer: root.width < use-color.min-width + cancel-color.min-width + 24px;
     callback accepted(color);
     callback cancelled();
     min-width: 0px; min-height: 0px;
+    preferred-width: 0px; preferred-height: 0px;
     init => { root.reset-color(root.initial); }
     public function reset-color(value: color) {
         controls.set-color(value);
@@ -18,6 +20,9 @@ export component ColorPicker inherits Rectangle {
     public function focus-default() { use-color.focus(); }
     forward-focus: use-color;
     VerticalLayout {
+        // The parent allocates this viewport; responsive footer columns must not
+        // feed their width-dependent intrinsic size back into that allocation.
+        x: 0px; y: 0px; width: root.width; height: root.height;
         spacing: 8px;
         scroll := ScrollView {
             min-width: 0px; min-height: 0px; vertical-stretch: 1;
@@ -29,20 +34,28 @@ export component ColorPicker inherits Rectangle {
             }
         }
         Rectangle { height: 1px; background: Theme.frame; }
-        HorizontalLayout {
+        // Keep full captions and real button minima. When they cannot share the
+        // available width, Cancel gets its own row instead of overflowing the popup.
+        GridLayout {
             spacing: 8px;
             Rectangle {
+                row: 0; col: 0; rowspan: root.stacked-footer ? 2 : 1;
                 background: controls.current; border-width: 1px; border-color: Theme.frame;
                 min-width: 0px; max-width: Theme.control-height * 2;
                 horizontal-stretch: 1; height: Theme.control-height;
             }
-            Rectangle { horizontal-stretch: 1; }
-            use-color := Button {
-                text: "Use color"; min-height: Theme.control-height;
+            Rectangle {
+                row: 0; col: 1; rowspan: root.stacked-footer ? 2 : 1;
+                min-width: 0px; horizontal-stretch: 1;
+            }
+            use-color := ActionButton {
+                row: 0; col: 2;
+                text: "Use color"; primary: true; fallback-icon: FallbackIcons.done; min-height: Theme.control-height;
                 clicked => { root.accepted(controls.current); }
             }
-            Button {
-                text: "Cancel"; min-height: Theme.control-height;
+            cancel-color := ActionButton {
+                row: root.stacked-footer ? 1 : 0; col: root.stacked-footer ? 2 : 3;
+                text: "Cancel"; fallback-icon: FallbackIcons.close; min-height: Theme.control-height;
                 clicked => { root.cancelled(); }
             }
         }

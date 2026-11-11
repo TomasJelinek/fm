@@ -106,9 +106,11 @@ impl Pane {
 impl Presenter {
     /// Retire presentation before a location transition; restore only an exact root alias.
     pub(super) fn clear_tree(&mut self, pane: PaneId, navigation: Option<NavigationId>) {
+        self.clear_folder_presence(pane);
         self.cancel_tree_transfer(Some(pane));
         self.cancel_tree_clipboard(Some(pane));
         self.cancel_tree_editor(Some(pane));
+        self.cancel_tree_checksums(Some(pane));
         self.cancel_tree_drag(Some(pane));
         if self.filter_dialog.open && self.filter_dialog.pane == pane {
             self.cancel_panel_filter();
@@ -373,6 +375,7 @@ impl Presenter {
         self.flush_tree_transfer(send);
         self.flush_tree_clipboard(send);
         self.flush_tree_editor(send);
+        self.flush_tree_checksums(send);
         self.flush_tree_drag(send);
     }
 
@@ -467,6 +470,9 @@ impl Presenter {
             | TreeEvent::EditorCaptured {
                 result: Err(error), ..
             }
+            | TreeEvent::ChecksumsCaptured {
+                result: Err(error), ..
+            }
             | TreeEvent::DropDirectoryCaptured {
                 result: Err(error), ..
             } => Some(error),
@@ -476,6 +482,13 @@ impl Presenter {
             self.retired.push(Box::new(content.clone()));
         }
         match event {
+            TreeEvent::ChecksumsCaptured {
+                stamp,
+                request,
+                result,
+            } => {
+                self.tree_checksums_captured(stamp, request, result, send);
+            }
             TreeEvent::EditorCaptured {
                 stamp,
                 request,

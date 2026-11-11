@@ -467,7 +467,10 @@ editor scope and shortcuts reserved for later stages.
 - `.` in the drive dropdown, or click **. As Other Panel**: open the opposite
   panel's current folder. Enter in files opens the focused folder or file.
 - Shift+drive letter: switch the focused file pane on Windows.
-- F2: rename the focused item; F7: create an absolute or relative folder path,
+- F2: rename the focused item. A regular-file name collision uses the shared
+  overwrite prompt; replacement requires confirmation of that exact destination.
+  Self, hardlink, directory and link replacement remain protected.
+  F7: create an absolute or relative folder path,
   including `..` and missing intermediate folders. Paths may leave the active panel.
 - Shift+F4 or the shared toolbar's **New empty file** button: enter a filename and press
   Enter to create a zero-byte file. Escape cancels; existing entries are never
@@ -493,8 +496,9 @@ editor scope and shortcuts reserved for later stages.
   with a two-second timestamp tolerance. Name-case matching and unmatched
   directories are configurable. Matching metadata does **not** verify file contents;
   content and recursive comparison are planned extensions.
-- Ctrl+F12 opens a saved per-panel file filter. Choose wildcard masks or a Rust
-  regular expression, with explicit case sensitivity. Directories remain visible;
+- Ctrl+F12 opens a saved per-panel file filter. Choose wildcard masks, a Rust
+  regular expression, or the supported metadata expression language, with explicit
+  case sensitivity. Help/F1 explains each mode with examples. Directories remain visible;
   the filter combines with typing-based filename search. Invalid expressions do
   not replace the active filter.
 - Ctrl+Shift+C or **Compare files** in the shared top toolbar compares two

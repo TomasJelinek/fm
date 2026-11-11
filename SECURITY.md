@@ -172,7 +172,13 @@ is made. Tests mutate fresh, owned fixtures only; they never empty a user's Tras
   No terminal is started by selection, navigation, icons or path insertion.
   Native Properties is also an explicit host-UI action. Unsupported native
   properties fall back to read-only metadata rather than opening/executing files.
-- Recursive size scans skip explicit links/special files, use checked totals and
+- Read-only native size scans follow directory links through OS-resolved targets
+  and stable volume/file identities. An active ancestry set stops cycles before
+  recounting contents; independent noncyclic aliases retain logical totals.
+  File links/special-file contents are skipped. Resolution acquires the existing
+  bounded I/O capacity, and ordinary directories retain the compatibility path
+  for providers without identity resolution; such providers cannot follow links.
+  Size scans use checked totals and
   mark access/resource failures as partial. Completed partial values retain `≈`
   but lose the active scan's amber/bold style, so denied access cannot look like
   endless computation. They are live estimates, not atomic

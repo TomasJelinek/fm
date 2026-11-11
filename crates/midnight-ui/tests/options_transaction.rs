@@ -183,7 +183,7 @@ fn cancel_escape_and_x_restore_preview_without_writing_settings() {
         h.ui.draw();
         assert!(!ui::has_popup(&h.ui.window));
         assert_eq!(h.ui.window.get_theme_index(), 0);
-        assert_eq!(h.ui.window.get_desktop_font_size(), 11);
+        assert_eq!(h.ui.window.get_desktop_font_size(), 12);
         assert!(!h.ui.window.get_sizes_in_bytes());
         assert!(h.saves().is_empty());
     }
@@ -208,7 +208,7 @@ fn reset_defaults_is_a_preview_and_cancel_restores_the_saved_options() {
         h.ui.window.get_theme_index(),
         PreferenceTheme::default().index()
     );
-    assert_eq!(h.ui.window.get_desktop_font_size(), 11);
+    assert_eq!(h.ui.window.get_desktop_font_size(), 12);
     assert!(!h.ui.window.get_sizes_in_bytes());
     assert!(!h.ui.window.get_quick_search_filter());
     assert!(h.ui.window.get_thumbnails_enabled());

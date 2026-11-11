@@ -263,14 +263,14 @@ fn native_operation_rename_retains_exact_target_text_and_caret_across_resize_and
     for pane in [PaneId::Left, PaneId::Right] {
         let (id, child) = h.operation(pane, 0);
         key(&child, "renamed 文档"); // The initial basename is selected, extension preserved.
-        assert_eq!(value(&child, "Rename"), "renamed 文档.txt");
+        assert_eq!(value(&child, "New name"), "renamed 文档.txt");
         key(&child, Key::End);
         key(&child, Key::LeftArrow);
         h.main.invoke_activate(1 - pane.index() as i32);
         modeless::draw(&child, 320, 200, "rename-compact");
         modeless::draw(&h.windows.borrow()[0], 1350, 850, "renamed-owner-resize");
         refresh(&h.main, &h.state.borrow());
-        assert_eq!(value(&child, "Rename"), "renamed 文档.txt");
+        assert_eq!(value(&child, "New name"), "renamed 文档.txt");
         key(&child, "X");
         key(&child, Key::Return);
         assert!(matches!(h.commands.borrow().as_slice(),
@@ -290,8 +290,8 @@ fn native_operation_rename_retains_exact_target_text_and_caret_across_resize_and
 fn native_operation_create_rejects_empty_then_accepts_unicode_and_parent_segments() {
     let h = Harness::new();
     for (pane, action, label, name) in [
-        (PaneId::Left, 3, "Create directory", "../new 文档/inside"),
-        (PaneId::Right, 4, "New empty file", "created 文档.txt"),
+        (PaneId::Left, 3, "Folder name or path", "../new 文档/inside"),
+        (PaneId::Right, 4, "File name", "created 文档.txt"),
     ] {
         let (id, child) = h.operation(pane, action);
         key(&child, Key::Return);
@@ -405,7 +405,7 @@ fn native_operation_rejected_confirmation_keeps_same_child_and_edited_name_for_r
     assert!(child.window().is_visible());
     assert_eq!(h.windows.borrow().len(), 2);
     refresh(&h.main, &h.state.borrow());
-    assert_eq!(value(&child, "Rename"), "retry 文档.txt");
+    assert_eq!(value(&child, "New name"), "retry 文档.txt");
     h.accepting.set(true);
     key(&child, Key::Return);
     assert!(matches!(h.commands.borrow().as_slice(),
@@ -441,7 +441,7 @@ fn native_operation_controls_remain_reachable_at_320_by_200_across_appearance_pr
                     &format!("native-rename-{theme:?}-{density:?}-{font}"),
                 );
                 for (label, role) in [
-                    ("Rename", AccessibleRole::TextInput),
+                    ("New name", AccessibleRole::TextInput),
                     ("Cancel", AccessibleRole::Button),
                     ("Rename", AccessibleRole::Button),
                 ] {

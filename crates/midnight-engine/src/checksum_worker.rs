@@ -11,6 +11,66 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) fn calculate_captured(
+    request: ChecksumRequest,
+    source: Option<&dyn CapturedChecksumFiles>,
+    service: &dyn TransferService,
+    cancel: &Cancellation,
+    retention: Arc<ChecksumRetention>,
+    emit: impl FnMut(ChecksumUpdate) -> bool,
+) -> Arc<ChecksumRun> {
+    // Check retained provider contexts again after waiting for the serial worker.
+    // A changed source never substitutes new paths into an already queued request.
+    let validation = source.map_or(Ok(()), |source| {
+        let targets = source.resolve(cancel)?;
+        if targets.len() == request.targets.len()
+            && targets
+                .iter()
+                .zip(&request.targets)
+                .all(|(current, original)| {
+                    current.path == original.path && current.kind == original.kind
+                })
+        {
+            Ok(())
+        } else {
+            Err(failure(
+                Path::new(""),
+                io::ErrorKind::InvalidData,
+                "Captured checksum targets changed.",
+            ))
+        }
+    });
+    if let Err(error) = validation {
+        let cancelled = cancel.is_cancelled() || error.kind == io::ErrorKind::Interrupted;
+        return Arc::new(ChecksumRun {
+            job: request.job,
+            generation: request.generation,
+            algorithms: request.algorithms,
+            captured_roots: request
+                .targets
+                .into_iter()
+                .map(|target| target.path)
+                .collect(),
+            rows: Arc::from([]),
+            summary: ChecksumSummary {
+                completion: if cancelled {
+                    ChecksumCompletion::Cancelled
+                } else {
+                    ChecksumCompletion::Failed
+                },
+                progress: ChecksumProgress {
+                    errors: u64::from(!cancelled),
+                    ..Default::default()
+                },
+                reached_budgets: vec![],
+                diagnostics: vec![error],
+            },
+            retention,
+        });
+    }
+    calculate(request, service, cancel, retention, emit)
+}
+
 pub(super) fn calculate(
     request: ChecksumRequest,
     service: &dyn TransferService,

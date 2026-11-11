@@ -14,15 +14,29 @@ use std::{
 
 /// Construction performs no IO. All service calls and final drops belong on backend workers.
 /// Both successful discovery and failures remain fixed for this application session.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct InstalledProvider {
     directory: Option<PathBuf>,
     home: Option<PathBuf>,
     provider: OnceLock<Result<NativeProvider, Failure>>,
     captures: OnceLock<Arc<CaptureCache>>,
+    size_directories: OnceLock<Arc<dyn DirectoryService>>,
+}
+
+impl std::fmt::Debug for InstalledProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstalledProvider")
+            .field("directory", &self.directory)
+            .finish_non_exhaustive()
+    }
 }
 
 impl InstalledProvider {
+    /// Install the explicit host-native directory-size identity resolver once.
+    /// This never substitutes for the installed provider's listing/stat service.
+    pub fn set_size_directory_service(&self, service: Arc<dyn DirectoryService>) -> bool {
+        self.size_directories.set(service).is_ok()
+    }
     /// The application's singleton is pinned until exit to avoid native cleanup on the UI thread.
     pub fn shared(home: Option<PathBuf>) -> Arc<Self> {
         static SERVICE: OnceLock<Arc<InstalledProvider>> = OnceLock::new();
@@ -117,7 +131,33 @@ impl InstalledProvider {
 #[path = "installed_capture_tests.rs"]
 mod capture_tests;
 
+#[cfg(test)]
+#[path = "installed_size_tests.rs"]
+mod size_tests;
+
 impl DirectoryService for InstalledProvider {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryTarget>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(FsError::from_io(
+                "resolve directory size target",
+                path,
+                std::io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        self.service("resolve directory size target", path)?;
+        let Some(service) = self.size_directories.get() else {
+            return Err(FsError::from_io(
+                "resolve directory size target",
+                path,
+                std::io::ErrorKind::Unsupported.into(),
+            ));
+        };
+        service.resolve_size_directory(path, cancel)
+    }
     fn read_directory(
         &self,
         path: &Path,

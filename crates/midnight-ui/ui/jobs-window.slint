@@ -10,6 +10,7 @@ export component JobsWindow inherits DialogWindow {
     callback cancel(string);
     callback resolve(string);
     callback copy-details(string);
+    callback clear-finished(bool);
     callback request-dismiss();
     request-close => { root.request-dismiss(); }
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
@@ -24,6 +25,7 @@ export component JobsWindow inherits DialogWindow {
         cancel(identity) => { root.cancel(identity); }
         resolve(identity) => { root.resolve(identity); }
         copy-details(identity) => { root.copy-details(identity); }
+        clear-finished(without-errors) => { root.clear-finished(without-errors); }
         close => { root.request-dismiss(); }
     }
 }

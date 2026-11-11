@@ -109,9 +109,12 @@ between moving redraws; uploads mean a new retained pixel allocation was admitte
 | Plain text, owned 600-line fixture | 17.199 | 19.403 | 23.746 | 25.713 |
 
 Every final drag reaches the requested 0.7 position, with changing visible content
-during the gesture. Final content is ready 77-125 ms after release in the GPU
-runs. Thumb responsiveness is measured separately and is not substituted for
-these content measurements. JSON still has a 123.643 ms maximum content-update
+during the gesture. Final content is ready 77-125 ms after release in the main GPU
+runs; the JSON repeat completes in 131.071 ms. The original
+`final-native-json-drag.txt` reports 77.312 ms and
+`final-native-json-drag-repeat.txt` reports 131.071 ms under
+`_build/qa/text-scroll-20261111/`. Thumb responsiveness is measured separately
+and is not substituted for these content measurements. JSON still has a 123.643 ms maximum content-update
 gap during dragging; a repeat observed 92.406 ms. This outlier is retained in the
 results rather than discarded. Source and Markdown maximum drag gaps were
 52.870 and 43.650 ms, respectively.
@@ -171,3 +174,38 @@ production viewer code, is
 `cargo fmt --all --check`, `git diff --check` and the source-size check pass:
 1,893 handwritten source files, all at or below 100,000 bytes. Generated probes,
 fixtures, snapshots, logs, toolchains and executables are excluded from Git.
+## Later bounded-refill qualification
+
+A later isolated change starts a retained-raster refill at the same logical
+lookahead on scaled displays, capped at half the available guard. It does not
+increase the raster allocation budget or load the complete source. Two alternating
+baseline/candidate runs used the supplied JSON, native parent placement, 2.25 DPI
+scale, a 2250x1575 window and FemtoVG/WGPU DX12 with no concurrent builds.
+
+| Run | Input-to-redraw p95 | Content-motion longest gap | Final content after release |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 24.732 ms | 117.253 ms | 122.283 ms |
+| Candidate 1 | 23.851 ms | 78.999 ms | 124.171 ms |
+| Baseline 2 | 17.363 ms | 92.523 ms | 121.343 ms |
+| Candidate 2 | 18.216 ms | 77.588 ms | 118.498 ms |
+
+The largest content-motion gap improved in both pairs (about 33% and 16%).
+Typical frame latency and final seek latency were similar; these measurements do
+not establish a uniformly faster frame rate or uninterrupted phone-like motion.
+The bounded lead change is retained for the reduced refill stalls. Each run
+reaches position 0.70000005 with changed, nonblank content during dragging.
+The crop check is a CPU rerender, not GPU compositor readback.
+
+The software-renderer JSON run also passes: p95 redraw 20.808 ms, maximum content
+gap 69.889 ms and final content 95.373 ms. Native GPU wheel runs pass for the exact
+JSON, Markdown and C++ files, with 13-14 rendered positions per notch. Their
+measured largest gaps still range up to 80.063 ms; further smoothing remains a
+performance task, not a claim made by this patch.
+
+Logs are `_build/qa/json-refill-20261111/{baseline,candidate}*-json-drag.txt`
+and `candidate-{json-software,json-wheel,md-wheel,source-wheel}.txt`.
+Candidate probe SHA-256:
+`a4f5e6f674aaf220bb1d21d27df1b376626170ef49842df04039708c4c92acdc`.
+Its independently built viewer packages were deployed to a hash-matched protected
+runtime before measurement. An initial attempt without that registration was
+stopped before first content and is excluded from the timing comparison.

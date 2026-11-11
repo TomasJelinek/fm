@@ -20,6 +20,24 @@ that page. Neither action automatically verifies a manifest or follows its entri
 Folders can be selected and recursion explicitly enabled. Provider/archive content
 is not silently interpreted as a native pathname.
 
+In an adopted inline tree, Ctrl+F8 instead submits `TreeChecksumRequest` with the
+exact acknowledged projection, selection allocation/revision and focused fallback.
+The model worker resolves all occurrences together and requires native ordinary
+files/directories; an unselected fallback must be a regular file. Selected expanded
+directories keep their own provider paths. Parent rows, filter-only context, links,
+archive members and unsupported rows are refused. A changed projection or source
+navigation cancels pending capture; switching the active pane cannot retarget it.
+
+`StartCapturedChecksums` feeds the same serial actor/controller. The window retains
+opaque provider ownership for recalculation, using a shared four-slot tree action
+permit. An opened window survives panel navigation. The actor resolves captured
+targets on a worker, and the serial checksum worker checks their provider contexts
+again before native reads. It retains those providers until actual I/O returns,
+including cancellation and shutdown. Rejected/queued owners are also retired on
+workers. The backend supplies suggested directory/sidecar paths; UI row captions
+and displayed paths never authorize checksum reads. Formats, explicit recursion,
+file verification, export and the ordinary checksum job/result budgets are shared.
+
 The actor expands the captured selection on backend workers. `StartChecksums`
 also accepts explicit captured targets for internal callers. Both feed the same
 controller and budgets. Later panel navigation, sorting or selection cannot

@@ -167,8 +167,8 @@ async fn captured_directories_only_are_read_and_unselected_cached_totals_survive
         .unwrap();
     assert_eq!(
         sizes(&mut events, 1).await.len(),
-        2,
-        "ordinary directories only"
+        3,
+        "ordinary directories and the explicitly unsupported directory link"
     );
     tree.reads.lock().unwrap().clear();
     tree.selected.store(9, Ordering::Relaxed);
@@ -187,7 +187,7 @@ async fn captured_directories_only_are_read_and_unselected_cached_totals_survive
         .unwrap();
     assert_eq!(
         sizes(&mut events, 2).await,
-        HashMap::from([(EntryId(1), 9)])
+        HashMap::from([(EntryId(1), 9), (EntryId(4), 0)])
     );
     assert_eq!(
         *tree.reads.lock().unwrap(),
@@ -241,10 +241,15 @@ async fn captured_directories_only_are_read_and_unselected_cached_totals_survive
             })
             .await
             .unwrap();
-        assert!(sizes(&mut events, scan).await.is_empty());
+        let expected = if names == ["link"] {
+            HashMap::from([(EntryId(4), 0)])
+        } else {
+            HashMap::new()
+        };
+        assert_eq!(sizes(&mut events, scan).await, expected);
         assert!(
             tree.reads.lock().unwrap().is_empty(),
-            "files, links and empty explicit scope must not fall back to all roots"
+            "files, unsupported links and empty explicit scope must not fall back to all roots"
         );
     }
     commands.send(Command::Shutdown).await.unwrap();
@@ -349,7 +354,7 @@ async fn selected_status_reads_cached_totals_and_tracks_global_and_individual_sc
     let all = scan_summary(&mut events, 1, 1, 2, 18).await;
     assert_eq!(
         (all.folders, all.complete, all.complete_bytes, all.partial),
-        (3, 2, Some(18), 0)
+        (3, 2, Some(18), 1)
     );
     commands.send(request(2, &["unselected"])).await.unwrap();
     assert_eq!(summary(&mut events, 2).await.complete_bytes, Some(11));

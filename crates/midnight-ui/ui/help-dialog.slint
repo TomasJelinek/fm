@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { FilterHelp } from "filter-help.slint";
 import { DialogText } from "dialog-text.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
@@ -6,6 +7,7 @@ import { FallbackIcons } from "action-icons.slint";
 import { DialogHeader } from "dialog-frame.slint";
 
 export component HelpBody inherits Rectangle {
+    in property <int> topic;
     in property <image> close-icon;
     in property <string> shortcuts: ShortcutHints.help();
     callback close();
@@ -20,13 +22,13 @@ export component HelpBody inherits Rectangle {
         }
     VerticalLayout {
         padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 13px;
-        DialogHeader { title: "Midnight Explorer keyboard help"; compact: root.height < 280px;
+        DialogHeader { title: root.topic == 1 ? "Filtering files" : "Midnight Explorer keyboard help"; compact: root.height < 280px;
             fallback-icon: FallbackIcons.help;
             close-label: "Close dialog"; close => { root.close(); }
             dragged(dx, dy) => { root.move-dialog(dx, dy); } }
         DialogText {
             min-height: 0px; vertical-stretch: 1;
-            text: "Change application shortcuts in Options → Keyboard. The bindings below are your current settings. Native editor and IME keys retain their usual behavior; operating-system shortcuts may take precedence.\n\n"
+            text: root.topic == 1 ? FilterHelp.text : "Change application shortcuts in Options → Keyboard. The bindings below are your current settings. Native editor and IME keys retain their usual behavior; operating-system shortcuts may take precedence.\n\n"
                 + root.shortcuts
                 + "\n\nMouse: a plain left double-click opens a file or folder. Ctrl+click toggles selection, Shift+click selects a range, and Ctrl+Shift+click adds a range. Middle-click closes a folder tab. Drag the panel divider to resize; double-click it to center. Right-click files or drives for available system/application actions. Right-click a path prefix to copy it."
                 + "\n\nTyping in a file panel searches Unicode filename prefixes, ignoring case. Options can filter the list to matches. Amber folder sizes are still being counted; ≈ means a partial or approximate total. Links and special files are excluded from size scans. A small C on the icon indicates native filesystem compression."

@@ -4,12 +4,19 @@ use chrono::DateTime;
 use midnight_core::*;
 use std::time::{Duration, UNIX_EPOCH};
 
-pub(crate) fn patch(draft: &MetadataDraft) -> Result<MetadataPatch, String> {
+#[path = "metadata_datetime.rs"]
+mod datetime;
+pub(crate) use datetime::example as timestamp_example;
+
+pub(crate) fn patch(
+    draft: &MetadataDraft,
+    format: Option<&DateTimeInputFormat>,
+) -> Result<MetadataPatch, String> {
     let mut edit = MetadataPatch {
         compressed: state(draft.compressed)?,
-        created: timestamp(draft.created_mode, &draft.created_text)?,
-        modified: timestamp(draft.modified_mode, &draft.modified_text)?,
-        accessed: timestamp(draft.accessed_mode, &draft.accessed_text)?,
+        created: timestamp(draft.created_mode, &draft.created_text, format)?,
+        modified: timestamp(draft.modified_mode, &draft.modified_text, format)?,
+        accessed: timestamp(draft.accessed_mode, &draft.accessed_text, format)?,
         recursive: draft.recursive,
         ..Default::default()
     };
@@ -65,20 +72,23 @@ fn state(value: i32) -> Result<Option<bool>, String> {
     }
 }
 
-fn timestamp(mode: i32, text: &str) -> Result<TimeEdit, String> {
+fn timestamp(
+    mode: i32,
+    text: &str,
+    format: Option<&DateTimeInputFormat>,
+) -> Result<TimeEdit, String> {
     match mode {
         0 => return Ok(TimeEdit::Keep),
         2 => return Ok(TimeEdit::Now),
         1 => {}
         _ => return Err("Choose a timestamp action.".into()),
     }
-    if text.len() > 64 {
+    if text.len() > 256 {
         return Err("Timestamp is too long.".into());
     }
-    let value = DateTime::parse_from_rfc3339(text.trim()).map_err(|_| {
-        "Use an ISO timestamp with an explicit timezone, e.g. 2026-11-06T12:30:00+01:00."
-            .to_string()
-    })?;
+    let value = DateTime::parse_from_rfc3339(text.trim()).ok()
+        .or_else(|| format.and_then(|format| datetime::parse(text, format)))
+        .ok_or_else(|| format!("Use a four-digit year and explicit UTC offset, e.g. {}. ISO timestamps are also accepted.", timestamp_example(format)))?;
     let nanos = value.timestamp_subsec_nanos();
     if nanos >= 1_000_000_000 {
         return Err("Leap seconds cannot be represented as a filesystem timestamp.".into());
@@ -102,12 +112,15 @@ mod tests {
 
     #[test]
     fn opening_attributes_has_no_edits_and_case_has_explicit_opt_in() {
-        assert!(patch(&MetadataDraft::default()).unwrap().is_empty());
+        assert!(patch(&MetadataDraft::default(), None).unwrap().is_empty());
         let draft = MetadataDraft {
             case_enabled: true,
             ..Default::default()
         };
-        assert_eq!(patch(&draft).unwrap().case, Some(CaseChange::default()));
+        assert_eq!(
+            patch(&draft, None).unwrap().case,
+            Some(CaseChange::default())
+        );
     }
 
     #[test]
@@ -119,7 +132,7 @@ mod tests {
             compressed: 2,
             ..Default::default()
         };
-        let edit = patch(&draft).unwrap();
+        let edit = patch(&draft, None).unwrap();
         assert_eq!(
             edit.windows_mask,
             EDIT_READ_ONLY | EDIT_HIDDEN | EDIT_ARCHIVE
@@ -136,14 +149,14 @@ mod tests {
             unix_mode: "640".into(),
             ..Default::default()
         };
-        let edit = patch(&draft).unwrap();
+        let edit = patch(&draft, None).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o777, 0o640));
         draft.unix_mode = "2750".into();
-        let edit = patch(&draft).unwrap();
+        let edit = patch(&draft, None).unwrap();
         assert_eq!((edit.unix_mask, edit.unix_value), (0o7777, 0o2750));
         for invalid in ["", "75", "888", "10000", "-755", "0x755"] {
             draft.unix_mode = invalid.into();
-            assert!(patch(&draft).is_err(), "{invalid}");
+            assert!(patch(&draft, None).is_err(), "{invalid}");
         }
     }
 
@@ -155,7 +168,7 @@ mod tests {
             accessed_mode: 2,
             ..Default::default()
         };
-        let edit = patch(&draft).unwrap();
+        let edit = patch(&draft, None).unwrap();
         assert_eq!(
             edit.modified,
             TimeEdit::Set(UNIX_EPOCH + Duration::from_millis(1125))
@@ -167,23 +180,53 @@ mod tests {
             "2016-12-31T23:59:60Z",
         ] {
             draft.modified_text = invalid.into();
-            assert!(patch(&draft).is_err(), "{invalid}");
+            assert!(patch(&draft, None).is_err(), "{invalid}");
         }
     }
 
     #[test]
+    fn captured_locale_is_used_by_the_typed_patch_without_relaxing_time_validation() {
+        let format = DateTimeInputFormat {
+            pattern: "%d. %m. %Y %H:%M:%S".into(),
+            am_pm: ["".into(), "".into()],
+        };
+        let mut draft = MetadataDraft {
+            modified_mode: 1,
+            modified_text: "01. 01. 1970 01:00:01 +01:00".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            patch(&draft, Some(&format)).unwrap().modified,
+            TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1))
+        );
+        assert!(
+            patch(&draft, None).is_err(),
+            "there is no guessed locale without a captured format"
+        );
+        draft.modified_text = "31. 12. 2016 23:59:60 Z".into();
+        assert!(
+            patch(&draft, Some(&format))
+                .unwrap_err()
+                .contains("Leap seconds")
+        );
+        draft.modified_text = "01. 01. 1970 01:00:01".into();
+        assert!(patch(&draft, Some(&format)).is_err());
+    }
+
+    #[test]
     fn repeated_daylight_saving_hour_is_disambiguated_by_explicit_offset() {
-        let TimeEdit::Set(earlier) = timestamp(1, "2026-10-25T02:30:00+02:00").unwrap() else {
+        let TimeEdit::Set(earlier) = timestamp(1, "2026-10-25T02:30:00+02:00", None).unwrap()
+        else {
             panic!("explicit timestamp")
         };
-        let TimeEdit::Set(later) = timestamp(1, "2026-10-25T02:30:00+01:00").unwrap() else {
+        let TimeEdit::Set(later) = timestamp(1, "2026-10-25T02:30:00+01:00", None).unwrap() else {
             panic!("explicit timestamp")
         };
         assert_eq!(
             later.duration_since(earlier).unwrap(),
             Duration::from_secs(3600)
         );
-        assert!(timestamp(1, "2026-10-25T02:30:00").is_err());
+        assert!(timestamp(1, "2026-10-25T02:30:00", None).is_err());
     }
 
     #[test]
@@ -213,7 +256,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(patch(&draft).is_err());
+            assert!(patch(&draft, None).is_err());
         }
     }
 }

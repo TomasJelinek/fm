@@ -587,3 +587,78 @@ fn duplicate_groups_are_visible_aligned_and_keyboard_reachable_at_minimum_size()
     );
     window.hide().unwrap();
 }
+
+#[test]
+fn find_form_labels_align_and_basic_controls_fit_without_scrolling() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = FindWindow::new().unwrap();
+    window.set_roots(
+        Rc::new(slint::VecModel::from(vec![slint::SharedString::from(
+            "D:\\fixtures\\資料",
+        )]))
+        .into(),
+    );
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    for (scheme, density, font, width, height) in [
+        (0, 0, 13, 780, 560),
+        (1, 1, 17, 900, 700),
+        (3, 0, 22, 1100, 800),
+    ] {
+        window.invoke_apply_preferences(scheme, density, "".into(), font, font);
+        modeless::draw(
+            &native,
+            width,
+            height,
+            &format!("find-form-{scheme}-{density}-{font}"),
+        );
+        let item = |role, label| {
+            modeless::accessible_item(&native, role, label)
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        let name = item(AccessibleRole::TextInput, "File name masks");
+        let label = item(AccessibleRole::Text, "File name");
+        let folders = item(AccessibleRole::Combobox, "Search folders");
+        let folder_label = item(AccessibleRole::Text, "Search folders");
+        let mode = item(AccessibleRole::Combobox, "Find match mode");
+        let text = item(AccessibleRole::TextInput, "Text to find");
+        for control in [
+            &name,
+            &folders,
+            &mode,
+            &text,
+            &item(AccessibleRole::Checkbox, "Subfolders"),
+            &item(AccessibleRole::Checkbox, "Match name case"),
+            &item(AccessibleRole::Checkbox, "Containing text"),
+            &item(AccessibleRole::Button, "More options"),
+        ] {
+            assert_visible_through_clips(control);
+        }
+        let name_area = bounds(&name);
+        let folders_area = bounds(&folders);
+        let text_area = bounds(&text);
+        assert!(
+            bounds(&label).2 <= name_area.0,
+            "name needs its own visible label"
+        );
+        assert!((bounds(&label).0 - bounds(&folder_label).0).abs() <= 1.0);
+        assert!((name_area.0 - folders_area.0).abs() <= 1.0);
+        assert!((name_area.0 - text_area.0).abs() <= 1.0);
+        assert!(
+            bounds(&mode).0 >= name_area.2,
+            "matching mode belongs beside the name"
+        );
+        assert!(
+            bounds(&mode).2 - bounds(&mode).0 < name_area.2 - name_area.0,
+            "mode is compact, name gets remaining width"
+        );
+        assert!(name_area.3 < folders_area.1 && folders_area.3 < text_area.1);
+        let results = bounds(&item(AccessibleRole::List, "Find results"));
+        assert!(
+            results.3 - results.1 >= height as f32 * 0.35,
+            "results keep useful space at normal sizes: {results:?}"
+        );
+    }
+    window.hide().unwrap();
+}

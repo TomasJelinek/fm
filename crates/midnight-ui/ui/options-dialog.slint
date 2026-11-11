@@ -329,7 +329,7 @@ export component OptionsBody inherits Rectangle {
             Rectangle { horizontal-stretch: 1; min-width: 0px; }
             save-button := HintedActionButton {
                 native-icon: root.action-icons.done; fallback-icon: FallbackIcons.done;
-                text: "OK"; min-height: Theme.control-height;
+                text: "OK"; primary: true; min-height: Theme.control-height;
                 enabled: root.preferences-ready && !root.options-busy && !root.page-busy && ColorOptionsView.picker-field < 0;
                 hint: ColorOptionsView.picker-field >= 0 ? "Use color or Cancel to finish choosing a color first."
                     : root.save-status != "" ? root.save-status + "\nValidate changes on all pages, save settings and close Options."

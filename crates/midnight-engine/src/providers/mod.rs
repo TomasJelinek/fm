@@ -3,6 +3,7 @@
 //! All methods, including dropping the last lease, run on backend workers.
 //! Existing native and archive routes remain in production until migration parity.
 mod archive;
+pub(crate) mod folder_probe;
 mod lease;
 mod native;
 mod registry;

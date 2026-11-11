@@ -560,3 +560,125 @@ fn native_jobs_failed_creation_reports_visibly_and_only_explicit_open_retries() 
     h.children(1);
     assert!(h.commands.borrow().is_empty());
 }
+
+#[test]
+fn native_rename_overwrite_uses_shared_decision_and_exact_mutation_dispatch() {
+    let h = Harness::new();
+    h.main.invoke_show_operations();
+    h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
+        OperationProgress {
+            id: OperationId(90),
+            kind: MutationKind::Rename,
+            state: OperationState::Running,
+            total: 1,
+            completed: 0,
+            failed: 0,
+            processed_entries: 0,
+            throughput: Arc::default(),
+            current_path: Some("source/old.txt".into()),
+            message: String::new(),
+            errors: vec![],
+            source_directory: "source".into(),
+            renamed_to: None,
+        },
+    ))));
+    let item = |name| MutationItem {
+        path: std::path::PathBuf::from(name),
+        kind: EntryKind::File,
+        metadata: EntryMetadata::default(),
+    };
+    h.apply(Event::Operation(OperationEvent::RenameConflict(Arc::new(
+        CopyConflict {
+            id: OperationId(90),
+            version: 5,
+            source: item("source/old.txt"),
+            target: item("source/existing.txt"),
+            destination: "source/existing.txt".into(),
+            can_replace: true,
+            can_merge: false,
+        },
+    ))));
+    let decision = h.children(2).pop().unwrap();
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|c| !matches!(c, Command::DecideRename(_)))
+    );
+    modeless::click(&decision, "Decide later");
+    let jobs = h.children(1).remove(0);
+    modeless::click(&jobs, "Resolve");
+    let decision = h.children(2).pop().unwrap();
+    modeless::click(&decision, "Replace · keep original");
+    assert!(h.commands.borrow().iter().any(|command| matches!(
+        command,
+        Command::DecideRename(CopyDecision {
+            id: OperationId(90),
+            version: 5,
+            choice: CopyChoice::ReplaceRecoverable { all: false }
+        })
+    )));
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|command| !matches!(command, Command::DecideCopy(_)))
+    );
+    h.children(1);
+}
+
+#[test]
+fn native_jobs_clear_actions_preserve_active_work_and_repair_selected_details() {
+    let h = Harness::new();
+    h.main.invoke_show_operations();
+    h.start(1);
+    h.complete(1);
+    h.start(2);
+    let mut failed = CopyProgress::queued(
+        OperationId(2),
+        "failed-target".into(),
+        1,
+        TransferIntent::Move,
+    );
+    failed.state = CopyOperationState::Failed;
+    failed.failed = 1;
+    h.apply(Event::Copy(CopyEvent::Progress(Arc::new(failed))));
+    h.start(3);
+    let jobs = h.children(1).remove(0);
+    h.commands.borrow_mut().clear();
+    modeless::click(&jobs, "Clear finished without errors");
+    assert_eq!(
+        h.main
+            .get_operations()
+            .iter()
+            .map(|r| r.identity.to_string())
+            .collect::<Vec<_>>(),
+        ["copy-job:3", "copy-job:2"]
+    );
+    assert!(
+        h.commands.borrow().is_empty(),
+        "clearing receipts must not dispatch cancellation or filesystem work"
+    );
+    modeless::draw(&jobs, 700, 500, "jobs-cleared-success");
+    modeless::click(&jobs, "Copy details");
+    assert!(h.commands.borrow().iter().any(
+        |command| matches!(command, Command::CopyText { text, .. } if text.contains("Queued"))
+    ));
+    h.commands.borrow_mut().clear();
+    modeless::click(&jobs, "Clear all finished");
+    assert_eq!(
+        h.main
+            .get_operations()
+            .iter()
+            .map(|r| r.identity.to_string())
+            .collect::<Vec<_>>(),
+        ["copy-job:3"]
+    );
+    assert!(h.commands.borrow().is_empty());
+    h.complete(3);
+    modeless::draw(&jobs, 700, 500, "jobs-last-completed");
+    modeless::click(&jobs, "Clear all finished");
+    assert_eq!(h.main.get_operations().row_count(), 0);
+    modeless::draw(&jobs, 320, 200, "jobs-empty-compact");
+    h.children(1);
+}

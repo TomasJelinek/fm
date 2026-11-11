@@ -1,4 +1,5 @@
-import { Button, ListView } from "std-widgets.slint";
+import { ActionButton } from "action-icons.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
@@ -175,7 +176,7 @@ export component ChecksumResults inherits FocusScope {
             ListView {
                 x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
                 horizontal-scrollbar-policy: always-off;
-                for label[index] in ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32", "full row"]: Button {
+                for label[index] in ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32", "full row"]: ActionButton {
                     text: "Copy " + label; enabled: index == 5 || root.algorithms[index];
                     clicked => { root.copy-menu(index == 5 ? root.output-algorithm : index, index == 5); }
                 }

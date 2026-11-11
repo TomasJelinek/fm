@@ -58,7 +58,7 @@ impl Presenter {
             files: None,
         });
         self.flush_tree_drag(send);
-        self.drag_drop.lifecycle.active.is_some()
+        self.drag_drop.lifecycle.active().is_some()
     }
 
     pub(super) fn cancel_tree_drag(&mut self, pane: Option<PaneId>) {
@@ -152,7 +152,7 @@ impl Presenter {
         if let Some(mut source) = self.drag_drop.tree.source.take() {
             let pane = source.capture.view.stamp.pane;
             let live = self.drag_drop.pointer_down
-                && self.drag_drop.lifecycle.active.is_some_and(|gesture| {
+                && self.drag_drop.lifecycle.active().is_some_and(|gesture| {
                     gesture.id == source.id.0 && gesture.source == self.drag_stamp(pane)
                 });
             let status = source
@@ -283,6 +283,11 @@ impl Presenter {
         result: Result<Arc<dyn CapturedDropDirectory>, TreeDiagnostic>,
         send: &dyn Fn(Command) -> bool,
     ) {
+        let mut result = Some(result);
+        if self.tree_drag_preview_captured(stamp, request, id, &mut result) {
+            return;
+        }
+        let result = result.expect("unhandled final drop receipt");
         let Some(pending) = self.drag_drop.tree.destination.as_mut().filter(|pending| {
             pending.id == id && pending.view.stamp == stamp && pending.request == request
         }) else {

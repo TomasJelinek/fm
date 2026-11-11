@@ -13,6 +13,9 @@ use std::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DragId(pub u64);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DragPreviewRevision(pub u64);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DropToken(pub u64);
 
@@ -41,6 +44,19 @@ pub struct InternalDropRequest {
     pub destination: InternalDropDestination,
     pub intent: InternalDropIntent,
     pub verification: crate::TransferVerification,
+}
+
+/// Latest speculative hover only. This never reserves transfer admission or
+/// grants release authority; the actual drop resolves its destination again.
+#[derive(Clone, Debug)]
+pub struct InternalDropPreviewRequest {
+    pub id: DragId,
+    pub revision: DragPreviewRevision,
+    pub destination: InternalDropDestination,
+    pub intent: InternalDropIntent,
+    /// Cancel synchronously when the pointer, modifiers or gesture change,
+    /// even if a newer command cannot yet enter the bounded backend queue.
+    pub cancel: Cancellation,
 }
 
 /// Modifier choice for an internal drag. Auto moves only when every source and
@@ -204,6 +220,12 @@ pub enum DragDropEvent {
     Prepared {
         id: DragId,
         item_count: usize,
+    },
+    InternalPreview {
+        id: DragId,
+        revision: DragPreviewRevision,
+        /// None means unavailable or invalid, never an optimistic Copy guess.
+        intent: Option<TransferIntent>,
     },
     Finished {
         id: DragId,

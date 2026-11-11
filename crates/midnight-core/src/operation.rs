@@ -81,4 +81,5 @@ pub enum OperationEvent {
     MetadataPreview(Arc<crate::MetadataPreview>),
     MetadataResult(Arc<crate::MetadataResult>),
     MetadataConflict(Arc<crate::MetadataConflict>),
+    RenameConflict(Arc<crate::CopyConflict>),
 }

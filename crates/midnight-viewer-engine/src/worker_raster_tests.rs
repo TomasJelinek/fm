@@ -487,6 +487,68 @@ fn retained_short_incomplete_fragment_falls_back_without_losing_source_progress(
 }
 
 #[test]
+fn retained_refill_preserves_logical_lead_on_scaled_monitors() {
+    for scale in [1.0_f32, 1.25, 1.5, 2.25] {
+        for direction in [-1.0, 1.0] {
+            let (mut worker, output) = retained(viewer::MODE_SOURCE);
+            worker.geometry = ViewerGeometry {
+                width: (240.0 * scale) as u32,
+                height: (100.0 * scale) as u32,
+                scale,
+            };
+            worker.reflow(&output);
+            worker.origin[1] = 768.0 * scale;
+            worker.reset_raster_context();
+            let first = paint(&mut worker, &output);
+            let info = first.raster.as_ref().unwrap();
+            let edge = if direction > 0.0 {
+                info.coverage_max[1]
+            } else {
+                info.coverage_min[1]
+            };
+            let origin = [0.0, edge - direction * 48.0 * f64::from(scale)];
+            pan(&mut worker, &output, info, 1, origin, false);
+            let refreshed = paint(&mut worker, &output);
+            let next = refreshed.raster.as_ref().unwrap();
+            assert_eq!(next.surface, info.surface);
+            assert_ne!(
+                next.pixel_id, info.pixel_id,
+                "scale {scale}, direction {direction}: refill must start before the last 48 logical pixels"
+            );
+            assert!((next.origin[1] - origin[1]).abs() < 0.001);
+            assert!(if direction > 0.0 {
+                next.coverage_max[1] > info.coverage_max[1]
+            } else {
+                next.coverage_min[1] < info.coverage_min[1]
+            });
+            assert!(worker.viewport_request.is_none());
+            assert!(refreshed.pixels.len() <= 6 * 1024 * 1024 * 4);
+        }
+    }
+}
+
+#[test]
+fn retained_refill_budget_limited_guard_does_not_replace_stationary_pixels() {
+    let (mut worker, output) = retained(viewer::MODE_SOURCE);
+    worker.geometry = ViewerGeometry {
+        width: 2048,
+        height: 2048,
+        scale: 8.0,
+    };
+    worker.reflow(&output);
+    worker.origin = [768.0, 6144.0];
+    worker.reset_raster_context();
+    let first = paint(&mut worker, &output);
+    let info = first.raster.as_ref().unwrap();
+    assert!(info.coverage_max[1] - info.origin[1] < 64.0 * 8.0);
+    pan(&mut worker, &output, info, 1, info.origin, false);
+    let unchanged = paint(&mut worker, &output);
+    assert_eq!(unchanged.raster.as_ref().unwrap().pixel_id, info.pixel_id);
+    assert!(Arc::ptr_eq(&first.pixels, &unchanged.pixels));
+    assert!(unchanged.pixels.len() <= 6 * 1024 * 1024 * 4);
+}
+
+#[test]
 fn retained_guard_preserves_logical_lookahead_on_scaled_monitors() {
     for scale in [1.0_f32, 1.25, 1.5, 2.25] {
         let geometry = ViewerGeometry {

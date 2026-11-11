@@ -512,11 +512,19 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
             for (width, height) in [(860, 620), (320, 200)] {
                 window.set_show_details(false);
                 draw(&native, width, height);
-                click(&native, "Details");
+                click_footer_action(&native, width, height, "Details");
+                assert!(
+                    window.get_show_details(),
+                    "Details: theme={scheme}, density={density}, {width}x{height}"
+                );
                 draw(&native, width, height);
-                click(&native, "Copy");
-                click(&native, "Query");
-                click(&native, "Close");
+                click_footer_action(&native, width, height, "Copy");
+                click_footer_action(&native, width, height, "Query");
+                assert!(
+                    !window.get_show_details(),
+                    "Query: theme={scheme}, density={density}, {width}x{height}"
+                );
+                click_footer_action(&native, width, height, "Close");
             }
         }
     }
@@ -524,4 +532,56 @@ fn find_actions_and_details_remain_accessible_in_every_theme_and_density() {
     assert_eq!(closed.get(), cases);
     assert_eq!(copies.get(), cases);
     window.hide().unwrap();
+}
+
+// Compact footers keep Close fixed and scroll the remaining real controls. A
+// button's center can be inside the window but underneath that fixed Close area.
+fn click_footer_action(native: &MinimalSoftwareWindow, width: u32, height: u32, label: &str) {
+    use i_slint_core::{
+        item_tree::{ItemRc, ParentItemTraversalMode},
+        items::{AccessibleRole, Flickable},
+    };
+    let bounds = |item: &ItemRc| {
+        let rect = item.geometry();
+        let at = item.map_to_native_window(rect.origin);
+        (at.x, at.y, at.x + rect.width(), at.y + rect.height())
+    };
+    for _ in 0..4 {
+        draw(native, width, height);
+        let item = modeless::accessible_item(native, AccessibleRole::Button, label)
+            .unwrap_or_else(|| panic!("missing footer action {label} at {width}x{height}"));
+        let area = bounds(&item);
+        let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+        let mut scroll = None;
+        while let Some(ancestor) = parent {
+            if ancestor.downcast::<Flickable>().is_some() {
+                let clip = bounds(&ancestor);
+                let delta = if area.0 < clip.0 - 0.5 {
+                    clip.0 - area.0
+                } else if area.2 > clip.2 + 0.5 {
+                    clip.2 - area.2
+                } else {
+                    0.0
+                };
+                if delta != 0.0 {
+                    scroll = Some((clip, delta));
+                    break;
+                }
+            }
+            parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+        let Some((clip, delta_x)) = scroll else {
+            click(native, label);
+            return;
+        };
+        native
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(clip.0 + 4.0, clip.1 + 4.0),
+                delta_x,
+                delta_y: 0.0,
+            });
+        slint::platform::update_timers_and_animations();
+    }
+    panic!("footer action {label} could not be exposed at {width}x{height}");
 }

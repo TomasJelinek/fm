@@ -116,7 +116,7 @@ editor and never submit, activate a file or start a terminal.
 ## Fonts and settings
 
 Options selects an installed font family and independent Desktop/Touch base
-sizes, default11/15 logical pixels and permitted8–32. Empty family means the
+sizes, default 12/15 logical pixels and permitted 8–32. Empty family means the
 application default. Other text styles derive their size from the active base;
 controls grow to fit, and touch targets retain their minimum. Ordinary strings
 and metadata elide visually with full values available in tooltips.

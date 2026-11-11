@@ -177,6 +177,31 @@ fn archive_clipboard_capture_never_exports_a_container_or_temporary_path() {
 }
 
 #[test]
+fn checksum_capture_rejects_selected_archive_descendant_without_native_fallback() {
+    let (mut session, _mount, _directory) = archive_fixture();
+    let parent = session.projection().rows[0].id;
+    let expanded = expand(&mut session, parent);
+    let selected = select(
+        &mut session,
+        TreeSelectionAction::Toggle(expanded.view.rows[1].id),
+    );
+    let capacity = Arc::new(Semaphore::new(1));
+    let request = midnight_core::TreeChecksumRequest {
+        request: TreeRequestId(session.last_request.0 + 1),
+        selection_revision: selected.selection_revision,
+        selection: selected.selection,
+        fallback: None,
+        view: selected.view,
+        cancel: Cancellation::default(),
+    };
+    assert!(matches!(
+        session.capture_checksums(&request, &capacity, &Cancellation::default()),
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(capacity.available_permits(), 1);
+}
+
+#[test]
 fn changed_archive_source_rejects_capture_without_a_native_target_fallback() {
     let (mut session, mount, _directory) = archive_fixture();
     let parent = session.projection().rows[0].id;

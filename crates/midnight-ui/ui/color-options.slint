@@ -1,7 +1,8 @@
+import { ActionButton } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
-import { Button, ListView } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { TipBody } from "controls.slint";
@@ -277,7 +278,7 @@ export component ColorOptions inherits VerticalLayout {
             hint: "Empty rules preserve folder and file theme colors. Color rules never hide files. Changes apply after validation.";
             clicked => { ColorOptionsView.action(4); }
         }
-        Button { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+        ActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
             text: "Discard changes"; enabled: !ColorOptionsView.busy; clicked => { ColorOptionsView.action(5); } }
     }
 }

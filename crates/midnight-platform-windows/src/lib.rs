@@ -35,6 +35,7 @@ mod open;
 mod path_picker;
 mod settings;
 mod shell_menu;
+mod size_directory;
 mod sort_keys;
 mod storage_kind;
 mod terminal_process;
@@ -63,6 +64,13 @@ impl WindowsFileSystem {
 }
 
 impl DirectoryService for WindowsFileSystem {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryTarget>, FsError> {
+        size_directory::resolve(path, cancel)
+    }
     fn read_directory(
         &self,
         path: &Path,

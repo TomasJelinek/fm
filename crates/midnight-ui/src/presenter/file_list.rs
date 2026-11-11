@@ -1,4 +1,4 @@
-//! Modeless file-list drafts keep their original selection and never perform I/O.
+//! Modal file-list drafts keep their original selection and never perform I/O.
 use super::*;
 
 #[cfg(test)]
@@ -80,6 +80,10 @@ pub(crate) struct FileListSession {
 impl FileListSession {
     pub fn busy(&self) -> bool {
         self.running || self.waiting || self.closing || self.picker.is_some()
+    }
+
+    pub fn can_confirm(&self) -> bool {
+        !self.closing && self.conflict.is_some()
     }
 }
 
@@ -482,7 +486,7 @@ impl Presenter {
             .file_list
             .session
             .as_mut()
-            .filter(|s| s.id == id && s.conflict.is_some())
+            .filter(|s| s.id == id && s.can_confirm())
         else {
             return;
         };

@@ -275,7 +275,7 @@ impl Default for UserPreferences {
             density: UiDensity::default(),
             windows_shell: WindowsShell::default(),
             font_family: String::new(),
-            desktop_font_size: 11,
+            desktop_font_size: 12,
             touch_font_size: 15,
             quick_search_filter: false,
             size_display: SizeDisplay::default(),

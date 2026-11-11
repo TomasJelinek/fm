@@ -483,12 +483,17 @@ impl Worker {
             std::array::from_fn(|axis| self.raster.base[axis] + f64::from(maximum[axis]));
         let limits_min = [Some(local_min[0]), (!page.before).then_some(local_min[1])];
         let limits_max = [Some(local_max[0]), (!page.after).then_some(local_max[1])];
+        let guards = guard(self.geometry, maximum[0] > 0.0);
         let reusable = self.raster.cache.as_ref().is_some_and(|cache| {
             let inside = inside(origin, cache.info.coverage_min, cache.info.coverage_max);
             let near_edge = (0..2).any(|axis| {
-                (origin[axis] - cache.info.coverage_min[axis] < 64.0
+                // Keep refill time constant in logical coordinates too. A budget-limited
+                // guard must still retain enough center coverage to avoid repaint loops.
+                let lead =
+                    (64.0 * f64::from(self.geometry.scale)).min(f64::from(guards[axis]) / 2.0);
+                (origin[axis] - cache.info.coverage_min[axis] < lead
                     && cache.info.coverage_min[axis] > local_min[axis] + 1.0)
-                    || (cache.info.coverage_max[axis] - origin[axis] < 64.0
+                    || (cache.info.coverage_max[axis] - origin[axis] < lead
                         && cache.info.coverage_max[axis] < local_max[axis] - 1.0)
             });
             inside
@@ -507,7 +512,6 @@ impl Worker {
             } else {
                 0
             };
-            let guards = guard(self.geometry, maximum[0] > 0.0);
             // Integer padding preserves exact phase at the acknowledged camera, even near BOF.
             let before: [u32; 2] = std::array::from_fn(|axis| {
                 guards[axis].min(self.origin[axis].max(0.0).ceil() as u32)

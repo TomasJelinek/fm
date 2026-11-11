@@ -1,5 +1,10 @@
 //! UI input and geometry only; native payloads and filesystem work stay on workers.
-use crate::{MainWindow, Presenter, drag_lifecycle::Phase, pane, presenter::drag_drop::invalidate};
+use crate::{
+    MainWindow, Presenter,
+    drag_lifecycle::{GestureSnapshot, Phase},
+    pane,
+    presenter::drag_drop::invalidate,
+};
 use i_slint_core::window::{WindowInner, WindowKind};
 use midnight_core::*;
 use slint::{
@@ -23,6 +28,7 @@ type DragVisual = (
     i32,
     InternalDropIntent,
     slint::SharedString,
+    i32,
 );
 
 struct Target {
@@ -39,6 +45,8 @@ struct Bridge {
     cursor: Cell<slint::LogicalPosition>,
     modifiers: Cell<(bool, bool, bool)>,
     handoff: Cell<bool>,
+    gesture: GestureSnapshot,
+    cancel_pending: Cell<Option<DragId>>,
     visual: RefCell<Option<DragVisual>>,
     lifetime: RefCell<Option<(u64, Cancellation)>>,
     timer: slint::Timer,
@@ -66,6 +74,7 @@ fn host(window: &MainWindow) -> Option<NativeDragWindow> {
 
 fn rectangles(window: &MainWindow) -> [Option<DropRect>; 2] {
     if !window.window().is_visible()
+        || window.get_dialog_input_blocked()
         || !window.get_copy_draft_token().is_empty()
         || !window.get_operation_token().is_empty()
         || WindowInner::from_pub(window.window())
@@ -127,51 +136,128 @@ impl Bridge {
             *self.lifetime.borrow_mut() = Some((host.generation, host.lifetime.clone()));
         }
     }
-    fn update(&self, window: &MainWindow, p: &Presenter) {
-        let active = p.drag_drop.lifecycle.active;
+    fn flush_cancel(&self) -> bool {
+        let Some(id) = self.cancel_pending.get() else {
+            return true;
+        };
+        let Ok(mut p) = self.presenter.try_borrow_mut() else {
+            return false;
+        };
+        self.cancel_pending.set(None);
+        if p.drag_drop
+            .lifecycle
+            .active()
+            .is_some_and(|gesture| gesture.id == id.0)
+        {
+            // Presenter retains the exact CancelDrag in its existing retry queue
+            // even when backend backpressure outlives this local gesture.
+            p.cancel_file_drag(self.send.as_ref());
+        }
+        true
+    }
+
+    fn update(&self, window: &MainWindow) {
+        use crate::presenter::drag_drop::preview::Status;
+        if !self.flush_cancel() {
+            return;
+        }
+        let Ok(mut p) = self.presenter.try_borrow_mut() else {
+            return;
+        };
+        let active = p.drag_drop.lifecycle.active();
         let target = active
             .filter(|g| g.phase == Phase::Ready)
-            .and_then(|_| self.target(window, p));
+            .and_then(|_| self.target(window, &p));
+        let intent = self.intent();
+        p.update_drag_preview(
+            target.as_ref().map(|target| target.destination.clone()),
+            intent,
+            self.send.as_ref(),
+        );
+        let feedback = match active.map(|g| g.phase) {
+            None | Some(Phase::Native) => 0,
+            Some(Phase::Ready) => match p.drag_preview_status() {
+                Status::Pending => 2,
+                Status::Allowed(TransferIntent::Copy) => 3,
+                Status::Allowed(TransferIntent::Move) => 4,
+                Status::Rejected => 5,
+            },
+            _ => 1,
+        };
         let hover = if active.is_some_and(|g| g.phase != Phase::Native) {
-            target.as_ref().map(|target| target.pane)
+            target
+                .as_ref()
+                .filter(|_| matches!(feedback, 3 | 4))
+                .map(|target| target.pane)
         } else {
             p.drag_drop.hover
         };
-        let row = target.as_ref().map_or(-1, |target| target.row);
-        let intent = self.intent();
+        if active.is_some_and(|g| g.phase != Phase::Native) {
+            p.drag_drop.hover = hover;
+        }
+        let row = target
+            .as_ref()
+            .filter(|_| matches!(feedback, 3 | 4))
+            .map_or(-1, |target| target.row);
+        let item_count = p.drag_drop.item_count;
         let visual = (
             active.map(|g| g.phase),
-            p.drag_drop.item_count,
+            item_count,
             hover,
             row,
             intent,
             target
                 .as_ref()
                 .map_or_else(Default::default, |target| target.name.clone()),
+            feedback,
         );
+        // Property updates may synchronously report lost focus/cancellation.
+        // Never keep the Presenter borrow across those callbacks.
+        drop(p);
+        let previous_feedback = self.visual.borrow().as_ref().map_or(0, |visual| visual.6);
         if self.visual.borrow().as_ref() != Some(&visual) {
             *self.visual.borrow_mut() = Some(visual);
-            refresh(window, p);
+            window.set_drag_active(active.is_some());
+            if self.gesture.current() != active {
+                return;
+            }
             window.set_drag_hover_pane(hover.map_or(-1, |pane| pane.index() as i32));
             window.set_drag_hover_row(row);
-            let action = match intent {
-                InternalDropIntent::Auto => "Drop",
-                InternalDropIntent::Move => "Move",
-                InternalDropIntent::Copy => "Copy",
-            };
+            window.set_drag_feedback_state(feedback);
             let destination = target
                 .as_ref()
                 .filter(|target| target.row >= 0)
                 .map_or("this panel", |target| target.name.as_str());
-            window.set_drag_label(if active.is_none() {
-                "Copy into this panel".into()
-            } else {
-                format!(
-                    "{action} {} item(s) into {destination}",
-                    p.drag_drop.item_count
+            window.set_drag_label(match feedback {
+                1 => "Preparing drag…".into(),
+                2 => "Checking destination…".into(),
+                3 | 4 => format!(
+                    "{} {} item(s) into {destination}",
+                    if feedback == 3 { "Copy" } else { "Move" },
+                    item_count
                 )
-                .into()
+                .into(),
+                5 => "Not allowed here".into(),
+                _ => "Copy into this panel".into(),
             });
+        }
+        let cursor = self.cursor.get();
+        window.set_drag_x(cursor.x);
+        window.set_drag_y(cursor.y);
+        // Slint may restore its normal pointer during dispatch. Reapply only for
+        // our internal gesture, then restore once; native OLE owns external feedback.
+        if feedback != 0 || previous_feedback != 0 {
+            use slint::winit_030::winit::window::CursorIcon;
+            let cursor = match feedback {
+                1 | 2 => CursorIcon::Progress,
+                3 => CursorIcon::Copy,
+                4 => CursorIcon::Move,
+                5 => CursorIcon::NotAllowed,
+                _ => CursorIcon::Default,
+            };
+            window
+                .window()
+                .with_winit_window(|window| window.set_cursor(cursor));
         }
     }
     fn publish(&self, window: &MainWindow) {
@@ -243,24 +329,7 @@ impl Bridge {
         }
         self.cursor.set(slint::LogicalPosition::new(x, y));
         self.publish(window);
-        let target = self
-            .target(window, &self.presenter.borrow())
-            .map(|target| target.pane);
-        let mut p = self.presenter.borrow_mut();
-        if p.drag_drop
-            .lifecycle
-            .active
-            .is_some_and(|g| g.phase != Phase::Native)
-        {
-            p.drag_drop.hover = p
-                .drag_drop
-                .lifecycle
-                .active
-                .filter(|g| g.phase == Phase::Ready)
-                .and(target);
-        }
-        drop(p);
-        self.update(window, &self.presenter.borrow());
+        self.update(window);
     }
 
     fn released(&self, window: &MainWindow, x: f32, y: f32) {
@@ -269,41 +338,58 @@ impl Bridge {
         }
         self.cursor.set(slint::LogicalPosition::new(x, y));
         self.publish(window);
-        let (target, intent) = {
-            let p = self.presenter.borrow();
-            let target = self.target(window, &p);
-            let intent = self.intent();
-            (target, intent)
+        self.update(window);
+        if !self.flush_cancel() {
+            return;
+        }
+        let Ok(mut p) = self.presenter.try_borrow_mut() else {
+            self.cancel(window, false);
+            return;
         };
-        let mut p = self.presenter.borrow_mut();
+        let target = self.target(window, &p).filter(|_| {
+            !matches!(
+                p.drag_preview_status(),
+                crate::presenter::drag_drop::preview::Status::Rejected
+            )
+        });
+        let intent = self.intent();
         p.release_file_drag(
             target.map(|target| target.destination),
             intent,
             self.send.as_ref(),
         );
         drop(p);
-        self.update(window, &self.presenter.borrow());
+        self.update(window);
     }
 
     fn cancel(&self, window: &MainWindow, force: bool) -> bool {
         if self.handoff.get() {
             return false;
         }
-        let mut p = self.presenter.borrow_mut();
-        let active = p
-            .drag_drop
-            .lifecycle
-            .active
-            .is_some_and(|g| force || g.phase != Phase::Native);
-        if active {
-            p.cancel_file_drag(self.send.as_ref());
+        let Some(gesture) = self
+            .gesture
+            .current()
+            .filter(|g| force || g.phase != Phase::Native)
+        else {
+            return false;
+        };
+        self.cancel_pending.set(Some(DragId(gesture.id)));
+        window.set_drag_active(false);
+        window.set_drag_hover_pane(-1);
+        window.set_drag_hover_row(-1);
+        window.set_drag_feedback_state(0);
+        // The timer retries this exact ID while refresh owns a Presenter borrow.
+        // Every release/new-gesture/native-handoff path drains it first.
+        if self.flush_cancel() {
+            self.update(window);
         }
-        drop(p);
-        self.update(window, &self.presenter.borrow());
-        active
+        true
     }
 
     fn poll(&self, window: &MainWindow) {
+        if !self.flush_cancel() {
+            return;
+        }
         self.publish(window);
         let id = {
             let Ok(presenter) = self.presenter.try_borrow() else {
@@ -319,7 +405,12 @@ impl Bridge {
                 .flatten()
         };
         if let Some(id) = id {
-            let armed = self.presenter.borrow_mut().arm_native_drag(id);
+            let armed = {
+                let Ok(mut p) = self.presenter.try_borrow_mut() else {
+                    return;
+                };
+                p.arm_native_drag(id)
+            };
             if armed {
                 // Mark the native phase before releasing Slint's and the OS's
                 // grabs. Their synchronous cancel/release notifications are not
@@ -344,7 +435,7 @@ impl Bridge {
                 }
             }
         }
-        self.update(window, &self.presenter.borrow());
+        self.update(window);
     }
 }
 
@@ -353,7 +444,13 @@ pub(crate) fn install(
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
-    let targets = presenter.borrow().drag_drop.targets.clone();
+    let (targets, gesture) = {
+        let p = presenter.borrow();
+        (
+            p.drag_drop.targets.clone(),
+            p.drag_drop.lifecycle.snapshot(),
+        )
+    };
     let bridge = Rc::new(Bridge {
         presenter,
         send,
@@ -361,6 +458,8 @@ pub(crate) fn install(
         cursor: Cell::new(slint::LogicalPosition::new(-1.0, -1.0)),
         modifiers: Cell::new((false, false, false)),
         handoff: Cell::new(false),
+        gesture,
+        cancel_pending: Cell::new(None),
         visual: RefCell::new(None),
         lifetime: RefCell::new(None),
         timer: slint::Timer::default(),
@@ -376,8 +475,13 @@ pub(crate) fn install(
             return false;
         };
         state.cursor.set(slint::LogicalPosition::new(x, y));
+        if !state.flush_cancel() {
+            return false;
+        }
         let started = {
-            let mut p = state.presenter.borrow_mut();
+            let Ok(mut p) = state.presenter.try_borrow_mut() else {
+                return false;
+            };
             p.attach_drag_host(
                 host(&window).unwrap_or(NativeDragWindow::Unsupported),
                 state.send.as_ref(),
@@ -390,6 +494,7 @@ pub(crate) fn install(
         };
         crate::refresh(&window, &state.presenter.borrow());
         state.publish(&window);
+        state.update(&window);
         started
     });
     let weak = window.as_weak();
@@ -403,10 +508,8 @@ pub(crate) fn install(
     let state = bridge.clone();
     window.on_drag_modifiers(move |control, shift, link| {
         state.modifiers.set((control, shift, link));
-        if let Some(window) = weak.upgrade()
-            && let Ok(p) = state.presenter.try_borrow()
-        {
-            state.update(&window, &p);
+        if let Some(window) = weak.upgrade() {
+            state.update(&window);
         }
     });
     let weak = window.as_weak();
@@ -450,7 +553,7 @@ pub(crate) fn install(
 }
 
 pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
-    let active = p.drag_drop.lifecycle.active;
+    let active = p.drag_drop.lifecycle.active();
     window.set_drag_active(active.is_some());
     if active.is_none() && p.drag_drop.hover.is_none() {
         window.set_drag_hover_pane(-1);

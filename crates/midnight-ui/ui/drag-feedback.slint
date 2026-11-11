@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { FallbackIcons } from "action-icons.slint";
 
 // Input-transparent caption; a folder destination is outlined by its own row.
 export component DragFeedback inherits Rectangle {
@@ -17,6 +18,36 @@ export component DragFeedback inherits Rectangle {
             x: 8px; width: parent.width - 16px; height: parent.height;
             text: root.label == "" ? "Copy here" : root.label;
             color: Theme.text; font-size: Theme.font-size; overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Input-transparent feedback follows the pointer even over an unavailable target.
+// 1 = preparing, 2 = checking, 3 = copy, 4 = move, 5 = unavailable.
+export component DragBadge inherits Rectangle {
+    in property <string> label;
+    in property <int> state;
+    min-width: 0px;
+    preferred-width: caption.preferred-width + Theme.icon-size + 30px;
+    height: max(Theme.control-height, Theme.font-size + 14px);
+    border-width: 1px; border-radius: 4px;
+    border-color: root.state == 5 ? Theme.error-text : Theme.active-frame;
+    background: root.state == 5 ? Theme.error-background : Theme.surface;
+    accessible-role: text; accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 6px;
+        cross-axis-alignment: center;
+        Image {
+            width: Theme.icon-size; height: Theme.icon-size;
+            source: root.state == 3 ? FallbackIcons.copy : root.state == 4 ? FallbackIcons.move-item
+                : root.state == 5 ? FallbackIcons.close : FallbackIcons.refresh;
+            colorize: root.state == 5 ? Theme.error-text : Theme.text;
+        }
+        caption := Text {
+            text: root.label; color: root.state == 5 ? Theme.error-text : Theme.text;
+            font-family: Theme.effective-font-family; font-size: Theme.font-size;
+            min-width: 0px; horizontal-stretch: 1; overflow: elide;
             vertical-alignment: center;
         }
     }

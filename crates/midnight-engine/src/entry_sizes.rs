@@ -133,11 +133,10 @@ impl Controller {
                 if worker_cancel.is_cancelled() {
                     return false;
                 }
-                let Some(root) = snapshot
-                    .entries
-                    .iter()
-                    .find(|row| row.id == entry && row.kind == EntryKind::Directory)
-                else {
+                let Some(root) = snapshot.entries.iter().find(|row| {
+                    row.id == entry
+                        && matches!(row.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                }) else {
                     return false;
                 };
                 folder_sizes::compute_batched(

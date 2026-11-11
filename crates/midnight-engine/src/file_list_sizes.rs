@@ -101,7 +101,7 @@ impl Captured {
             let cache = cache.lock().unwrap_or_else(|error| error.into_inner());
             for entry in entries {
                 check(cancel)?;
-                if entry.kind == EntryKind::Directory
+                if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
                     && let Some(path) = entry.native_path()
                     && let Some(size) = cache.get(path)
                     && size.finished
@@ -126,7 +126,7 @@ impl Captured {
 
 impl Frozen {
     pub(crate) fn directory_size(&self, entry: &Entry) -> Option<u64> {
-        if entry.kind != EntryKind::Directory {
+        if !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
             return None;
         }
         if entry.virtual_node.is_some() {

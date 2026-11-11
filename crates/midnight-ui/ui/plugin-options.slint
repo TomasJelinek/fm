@@ -1,3 +1,4 @@
+import { FallbackIcons } from "action-icons.slint";
 import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
 import { TipBody } from "controls.slint";
@@ -244,9 +245,10 @@ export component PluginOptions inherits VerticalLayout {
     HorizontalLayout {
         Rectangle { horizontal-stretch: 1; }
         HintedActionButton {
-            text: ViewerPluginsView.pending ? "Refreshing…" : "Refresh plugins";
+            text: ViewerPluginsView.pending ? "Rescanning…" : "Rescan all plugins";
             enabled: !ViewerPluginsView.pending;
-            hint: "Refresh installed viewer, filesystem and thumbnailer packages.";
+            fallback-icon: FallbackIcons.refresh;
+            hint: "Rescan all installed viewer, filesystem and thumbnailer packages.";
             clicked => { ViewerPluginsView.refresh(); }
         }
     }

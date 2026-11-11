@@ -1,5 +1,7 @@
-//! A native modeless window; all generation, clipboard and file work is delegated.
-use crate::dialog_host::{CloseDisposition, DialogHost, DialogOwner, DialogSessions};
+//! An owned modal draft; all generation, clipboard and file work is delegated.
+use crate::dialog_host::{
+    CloseDisposition, DialogHost, DialogModality, DialogOwner, DialogSessions,
+};
 use crate::presenter::file_list::{FileListSession, PRESETS, VARIABLES};
 use crate::tool_window_failure::Failures;
 use crate::{FileListWindow, MainWindow, Presenter, Theme};
@@ -172,7 +174,7 @@ fn sync(window: &FileListWindow, s: &FileListSession, locale: &NumberLocale) {
     window.set_preview_text(s.preview.clone().into());
     window.set_summary(s.summary.clone().into());
     window.set_error_text(s.error.clone().into());
-    window.set_conflict_pending(s.conflict.is_some());
+    window.set_conflict_pending(s.can_confirm());
     if let Some(entry) = &s.conflict {
         let item = &entry.item;
         let bytes = item.metadata.size.map_or_else(
@@ -205,8 +207,13 @@ fn create(
         .borrow_mut()
         .allocate()
         .map_err(slint::PlatformError::from)?;
-    let (window, host) =
-        DialogHost::create_tool(session, DialogOwner::new(main), FileListWindow::new)?;
+    main.invoke_drag_invalidate_targets();
+    let (window, host) = DialogHost::create(
+        session,
+        DialogOwner::new(main),
+        DialogModality::OwnerModal,
+        FileListWindow::new,
+    )?;
     let host = Rc::new(host);
     crate::tooltip::install_file_list(&window)?;
     apply_theme(main, &window);

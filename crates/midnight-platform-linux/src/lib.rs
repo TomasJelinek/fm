@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 mod clipboard;
 mod clipboard_text;
 mod desktop;
+mod directory_links;
 mod editor;
 mod file_clipboard;
 mod file_drag_drop;
@@ -30,6 +31,7 @@ mod open;
 mod path_picker;
 mod settings;
 mod shell_menu;
+mod size_directory;
 #[allow(unsafe_code)]
 mod sort_keys;
 mod storage_kind;
@@ -56,13 +58,23 @@ impl LinuxFileSystem {
 }
 
 impl DirectoryService for LinuxFileSystem {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryTarget>, FsError> {
+        size_directory::resolve(path, cancel)
+    }
     fn read_directory(
         &self,
         path: &Path,
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        self.local.read_directory(path, cancel, emit)
+        self.local.read_directory(path, cancel, &mut |mut entry| {
+            directory_links::classify(&mut entry, cancel);
+            !cancel.is_cancelled() && emit(entry)
+        })
     }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         metadata::read(path)

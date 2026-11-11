@@ -113,13 +113,35 @@ The [10 November prefix-search report](../verification/2026-11-10-tree-prefix-se
 records the current verification and deployment scope separately from the earlier
 filter/sort evidence below.
 
+## Subfolder presence
+
+Flat-panel subfolder hints are independent of tree adoption. At most 256 viewport
+directory IDs are probed against the exact completed listing, with one coalescing
+worker per pane, the existing listing capacity and shared I/O budget. Native
+enumeration stops at the first folder; archive probes retain the captured member
+and mount identity. Links are visible children but are not recursively probed.
+Empty/has-folder hints are held in a bounded display cache. Selection, flat action
+authority and navigation stay unchanged until the user's ordinary disclosure
+click requests exact tree adoption. Navigation, refresh and viewport replacement
+cancel obsolete probes. Failed probes preserve provider details for the existing
+warning tooltip and detail viewer, and never become an empty-folder result.
+
+Presence is an existential display hint, not a validated child listing. Native
+probes use the injected directory service, validate each immediate child path and
+stop at the first folder without retaining file rows, issuing node tokens or
+enriching file metadata. Repeated file records cannot change the answer; actual
+expansion retains the full provider identity and duplicate-node validation.
+File-only directories have no arbitrary record-count cutoff. Cancellation and
+the worker/I/O limits bound concurrent work; archive probes retain their existing
+captured-mount validation and resource policy.
+
 ## Directory sizes
 
-Ctrl+Shift+S uses the exact acknowledged tree selection: selected ordinary
-directories, or every selectable ordinary directory in the current projection
+Ctrl+Shift+S uses the exact acknowledged tree selection: selected directories
+and native directory links, or every selectable folder in the current projection
 when there are no marks, including descendants in expanded branches. This means
 all projected rows, not just those inside the scroll viewport. Hidden/collapsed
-descendants, context-only filter ancestors and links are excluded. A
+descendants and context-only filter ancestors are excluded. A
 files-only selection does not fall back to all folders. Space captures the focused
 directory before its selection toggle, then advances the visible caret while the
 backend measures that original occurrence. Insert never starts measurement.
@@ -141,8 +163,17 @@ not a transactional filesystem snapshot.
 Running values remain highlighted estimates. Actual read failures retain the
 partial-result marker and error indication; the error glyph stays immediately
 beside its size rather than at the opposite edge of the Size column. An unfinished
-or cancelled scan alone is not a filesystem error. Automatic scans do not follow
-directory links/junctions, which display a dash instead of a duplicate target total.
+or cancelled scan alone is not a filesystem error. Native size scans follow
+directory junction/link targets using native final-path resolution and stable
+directory identities. The active ancestry set stops self/ancestor cycles before
+recounting contents; separate noncyclic aliases and separately selected roots keep
+independent logical totals. Cycle/file-link omissions appear as skipped counts in
+the size tooltip, without an access-error marker. Failed target resolution keeps
+partial bytes and the existing detailed warning report. Providers without the
+identity service retain ordinary-directory sizing and report unsupported links.
+The cycle-detection state grows with active traversal depth and is released as
+each branch unwinds. It has no arbitrary directory/depth cutoff; the existing
+pending-path memory budget and bounded worker/I/O capacity remain in force.
 
 Each pane admits one executing job and at most eight waiting captured requests.
 Cancellation retains capacity and provider ownership until the actual calls
@@ -205,6 +236,27 @@ absolute provider paths retain valid internal `..` components; parent navigation
 itself is rejected. An external editor receives a live path, so later filesystem
 replacement and the editor's own modifications are outside a file-manager
 transaction. See the [editor qualification](../verification/2026-11-11-tree-external-editor.md).
+
+## Checksums from expanded panels
+
+Ctrl+F8 captures the acknowledged occurrence selection, including selected native
+directories inside expanded branches and ordinary root files. Without marks only
+the focused regular native file is used, matching the flat checksum workflow.
+The exact originating pane, projection, selection revision and request are checked
+before the existing independent checksum window opens. Pending selection settles
+before capture; outer queue refusal retains the original intent. Navigation,
+reprojection or shutdown cancels pending work and late/duplicate receipts cannot
+open another window. Parent/context/link/archive/unsupported rows are excluded.
+
+`TreeChecksumRequest` resolves through retained provider contexts on the model
+worker; `StartCapturedChecksums` carries opaque ownership into the ordinary checksum
+actor. Recalculation retains those roots across later panel changes. Native reads,
+provider revalidation and final disposal run on workers, with ownership retained
+through in-flight calls even after cancellation. A nonrecursive first calculation
+reports selected directories as skipped; Options can explicitly enable recursion.
+Focused sidecars still prefill Verify file without starting it. The existing
+algorithm choices, result formatting, native manifest pickers and verified export
+contract remain in [CHECKSUMS.md](CHECKSUMS.md).
 
 ## Copy from expanded panels
 

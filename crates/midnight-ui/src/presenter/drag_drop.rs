@@ -3,6 +3,9 @@ use super::*;
 use crate::drag_lifecycle::{DragLifecycle, Phase, SourceStamp};
 use std::collections::VecDeque;
 
+#[path = "drag_preview.rs"]
+pub(crate) mod preview;
+
 #[derive(Default)]
 pub(crate) struct DragDropState {
     pub(crate) lifecycle: DragLifecycle,
@@ -15,6 +18,7 @@ pub(crate) struct DragDropState {
     gesture_fallback: bool,
     pub(crate) pointer_down: bool,
     pub(crate) item_count: usize,
+    pub(crate) preview: preview::State,
     pub(crate) hover: Option<PaneId>,
     pub(super) tree: tree_drag::State,
     origins: HashMap<DragId, copy_selection::CapturedOrigins>,
@@ -55,7 +59,7 @@ impl Presenter {
         if self.operations.closing
             || self.drag_drop.closed
             || !self.drag_drop.cancelled.is_empty()
-            || self.drag_drop.lifecycle.active.is_some()
+            || self.drag_drop.lifecycle.active().is_some()
             || self.drag_drop.tree.destination.is_some()
             || self.drag_drop.origins.len() >= 32
             || self.selection_actions[pane.index()].is_some()
@@ -111,7 +115,7 @@ impl Presenter {
                 send,
             );
         }
-        self.drag_drop.lifecycle.active.is_some()
+        self.drag_drop.lifecycle.active().is_some()
     }
 
     pub(super) fn start_file_drag(&mut self, pane: PaneId, row: usize) -> Option<DragId> {
@@ -153,7 +157,7 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         self.desktop.requests.remove(&request);
-        let Some(gesture) = self.drag_drop.lifecycle.active.filter(|g| g.id == id.0) else {
+        let Some(gesture) = self.drag_drop.lifecycle.active().filter(|g| g.id == id.0) else {
             self.retired.push(Box::new(files));
             return;
         };
@@ -179,6 +183,7 @@ impl Presenter {
     }
 
     pub(crate) fn cancel_file_drag(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.cancel_drag_preview();
         self.cancel_tree_drag(None);
         if let Some(gesture) = self.drag_drop.lifecycle.cancel() {
             self.queue_cancelled_drag(DragId(gesture.id));
@@ -208,6 +213,7 @@ impl Presenter {
         intent: InternalDropIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.cancel_drag_preview();
         self.drag_drop.pointer_down = false;
         let Some(gesture) = self.drag_drop.lifecycle.release() else {
             self.retired.push(Box::new(target));
@@ -307,7 +313,7 @@ impl Presenter {
     pub(crate) fn drag_native_ready(&self) -> Option<DragId> {
         self.drag_drop
             .lifecycle
-            .active
+            .active()
             .filter(|gesture| {
                 gesture.phase == Phase::Ready
                     && self.drag_drop.pointer_down
@@ -321,6 +327,7 @@ impl Presenter {
         if self.drag_native_ready() != Some(id) {
             return false;
         }
+        self.cancel_drag_preview();
         self.drag_drop.lifecycle.native_started(id.0)
     }
 
@@ -436,7 +443,7 @@ impl Presenter {
     }
 
     pub(crate) fn flush_drag_commands(&mut self, send: &dyn Fn(Command) -> bool) {
-        if let Some(gesture) = self.drag_drop.lifecycle.active {
+        if let Some(gesture) = self.drag_drop.lifecycle.active() {
             let pane = if gesture.source.pane == 0 {
                 PaneId::Left
             } else {
@@ -584,6 +591,13 @@ impl Presenter {
                         pane.filter(|pane| targets.targets.iter().any(|t| t.pane == *pane));
                 }
             }
+            DragDropEvent::InternalPreview {
+                id,
+                revision,
+                intent,
+            } => {
+                self.apply_drag_preview(id, revision, intent);
+            }
             DragDropEvent::Prepared { id, item_count } => {
                 self.flush_drag_commands(send);
                 if self.drag_drop.pointer_down && self.drag_drop.lifecycle.prepared(id.0) {
@@ -591,7 +605,7 @@ impl Presenter {
                 } else if !self
                     .drag_drop
                     .lifecycle
-                    .active
+                    .active()
                     .is_some_and(|g| g.id == id.0)
                 {
                     self.queue_cancelled_drag(id);
@@ -601,7 +615,7 @@ impl Presenter {
                 let refresh = self
                     .drag_drop
                     .lifecycle
-                    .active
+                    .active()
                     .filter(|gesture| {
                         gesture.id == id.0
                             && gesture.phase == Phase::Native
@@ -627,12 +641,12 @@ impl Presenter {
                 if self
                     .drag_drop
                     .lifecycle
-                    .active
+                    .active()
                     .is_some_and(|g| g.id == id.0)
                 {
                     if outcome == DragFinish::Unavailable && self.drag_drop.pointer_down {
                         self.drag_drop.gesture_fallback = true;
-                        self.drag_drop.lifecycle.active.as_mut().unwrap().phase = Phase::Ready;
+                        self.drag_drop.lifecycle.ready_fallback(id.0);
                         self.desktop.status =
                             "External dragging is unavailable here; copy between panels.".into();
                     } else {
@@ -700,7 +714,7 @@ impl Presenter {
                 if id.is_some_and(|id| {
                     self.drag_drop
                         .lifecycle
-                        .active
+                        .active()
                         .is_some_and(|g| g.id == id.0)
                 }) {
                     self.cancel_file_drag(send);

@@ -23,6 +23,8 @@ fn preview(revision: u64, patch: MetadataPatch) -> Event {
         id: OperationId(1),
         revision,
         patch,
+        localized_times: Default::default(),
+        time_input_format: None,
         capabilities: MetadataCapabilities {
             rename: true,
             ..Default::default()

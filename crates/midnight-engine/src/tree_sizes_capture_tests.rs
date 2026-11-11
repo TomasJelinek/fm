@@ -34,6 +34,37 @@ fn collapsed_tree_measures_ordinary_directory_rows() {
 }
 
 #[test]
+fn native_directory_link_is_captured_for_bulk_and_exact_single_size_scope() {
+    let mut fixture =
+        tests::fixture_with_directory_kind(0, midnight_core::EntryKind::DirectoryLink);
+    let bulk = request(&mut fixture.session, TreeSizeScope::SelectionOrVisible);
+    let link = bulk
+        .view
+        .rows
+        .iter()
+        .find(|row| row.entry.kind == midnight_core::EntryKind::DirectoryLink)
+        .unwrap()
+        .id;
+    let captured = fixture
+        .session
+        .capture_sizes(&bulk, &Cancellation::default())
+        .unwrap();
+    assert_eq!(captured.targets.len(), 2);
+    assert!(captured.targets.iter().any(|target| target.row == link));
+    let single = request(&mut fixture.session, TreeSizeScope::Single(link));
+    let captured = fixture
+        .session
+        .capture_sizes(&single, &Cancellation::default())
+        .unwrap();
+    assert_eq!(captured.targets.len(), 1);
+    assert_eq!(captured.targets[0].row, link);
+    assert!(matches!(
+        captured.targets[0].captured.target.value().unwrap(),
+        crate::providers::ProviderTarget::Native(_)
+    ));
+}
+
+#[test]
 fn empty_selection_includes_visible_expanded_descendants() {
     let mut fixture = tests::fixture();
     let parent = fixture.session.projection().rows[1].id;

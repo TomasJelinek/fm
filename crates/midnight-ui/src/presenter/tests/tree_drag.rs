@@ -19,7 +19,7 @@ fn start(p: &mut Presenter) -> (DragId, TreeClipboardRequest) {
         sent.borrow_mut().push(command);
         true
     }));
-    let id = DragId(p.drag_drop.lifecycle.active.unwrap().id);
+    let id = DragId(p.drag_drop.lifecycle.active().unwrap().id);
     let request = sent
         .into_inner()
         .into_iter()
@@ -322,4 +322,60 @@ fn tree_drop_rejects_stale_navigation_or_a_mismatched_capture_without_resolving_
         assert!(p.drag_drop.tree.destination.is_none());
         reclaim(&mut p, &drops);
     }
+}
+
+#[test]
+fn hover_tree_capture_is_separate_from_release_and_stale_receipts_retire_off_ui() {
+    let mut p = loaded();
+    let id = ready(&mut p);
+    let identity = p.panes[0].row_identity(&p.panes[0].tree_row(1).unwrap().entry);
+    let target = p
+        .preview_internal_drag_target(PaneId::Left, Some((2, &identity)))
+        .unwrap();
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    p.update_drag_preview(Some(target.clone()), InternalDropIntent::Auto, &send);
+    let request = match sent.borrow_mut().remove(0) {
+        Command::PreviewInternalDrop(request) => *request,
+        _ => panic!("hover preview"),
+    };
+    let InternalDropDestination::TreeOccurrence {
+        view,
+        request: capture,
+        row,
+        ..
+    } = &request.destination
+    else {
+        panic!("tree hover")
+    };
+    let drops = Arc::new(AtomicUsize::new(0));
+    p.apply_with_sender(
+        folder_receipt(id, view.stamp, *capture, *row, drops.clone()),
+        &|_| false,
+    );
+    assert!(
+        p.drag_drop.tree.destination.is_none(),
+        "hover never occupies final drop capture state"
+    );
+    p.update_drag_preview(Some(target.clone()), InternalDropIntent::Auto, &send);
+    assert!(sent.borrow().iter().any(|command| matches!(command, Command::CompleteInternalDropPreview { id: actual, revision, .. } if *actual == id && *revision == request.revision)));
+    assert!(sent.borrow().iter().all(|command| !matches!(
+        command,
+        Command::CompleteInternalDrop { .. } | Command::InternalDrop(_)
+    )));
+    sent.borrow_mut().clear();
+    p.update_drag_preview(None, InternalDropIntent::Auto, &send);
+    assert!(request.cancel.is_cancelled());
+    reclaim(&mut p, &drops);
+    let late = Arc::new(AtomicUsize::new(0));
+    p.apply_with_sender(
+        folder_receipt(id, view.stamp, *capture, *row, late.clone()),
+        &send,
+    );
+    assert!(sent.borrow().is_empty());
+    reclaim(&mut p, &late);
+    p.cancel_file_drag(&|_| true);
 }

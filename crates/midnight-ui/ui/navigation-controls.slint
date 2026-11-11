@@ -9,6 +9,12 @@ import { TabRow, BookmarkRow, NavigationChoiceRow } from "navigation-models.slin
 import { ActionIcons, NativeActionImage, FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 
+// Pointer activation is not a persistent checked state. Keyboard navigation still
+// has a visible focus indicator, shared by all action buttons in this window.
+export global NavigationFocus {
+    in-out property <bool> keyboard: false;
+}
+
 export component NavigationButton inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
@@ -27,7 +33,7 @@ export component NavigationButton inherits Rectangle {
     height: Theme.control-height;
     border-radius: 3px;
     border-width: 1px;
-    border-color: focus.has-focus ? Theme.active-frame : transparent;
+    border-color: focus.has-focus && NavigationFocus.keyboard ? Theme.active-frame : transparent;
     background: area.has-hover && root.enabled ? Theme.hover : transparent;
     accessible-role: button;
     accessible-label: root.hint;
@@ -49,6 +55,7 @@ export component NavigationButton inherits Rectangle {
     focus := FocusScope {
         enabled: root.enabled;
         key-pressed(event) => {
+            NavigationFocus.keyboard = true;
             if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
                 && (event.text == Key.Return || event.text == Key.Space) {
                 root.clicked(); return accept;
@@ -64,6 +71,7 @@ export component NavigationButton inherits Rectangle {
             private property <bool> left-pressed;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
+                    NavigationFocus.keyboard = false;
                     self.pressed-id = root.identity; self.pressed-revision = root.model-revision;
                     self.pressed-context = root.press-context;
                     self.middle-pressed = event.button == PointerEventButton.middle;
@@ -209,7 +217,8 @@ export component TabStrip inherits Rectangle {
                     }
                     tab-focus := FocusScope {
                         key-pressed(event) => {
-                            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
+                            NavigationFocus.keyboard = true;
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
                                 && (event.text == Key.Return || event.text == Key.Space) {
                                 root.selected(tab.identity); return accept;
                             }
@@ -223,6 +232,7 @@ export component TabStrip inherits Rectangle {
                             private property <bool> left-pressed;
                             pointer-event(event) => {
                                 if event.kind == PointerEventKind.down {
+                    NavigationFocus.keyboard = false;
                                     self.pressed-id = tab.identity; self.pressed-revision = root.revision;
                                     self.middle-pressed = event.button == PointerEventButton.middle;
                                     self.left-pressed = event.button == PointerEventButton.left;
@@ -265,6 +275,7 @@ export component TabStrip inherits Rectangle {
                 private property <bool> left-pressed;
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
+                    NavigationFocus.keyboard = false;
                         self.left-pressed = event.button == PointerEventButton.left;
                     } else if event.kind == PointerEventKind.cancel {
                         self.left-pressed = false;

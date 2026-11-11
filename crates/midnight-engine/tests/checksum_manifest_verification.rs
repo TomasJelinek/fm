@@ -1,4 +1,5 @@
 #[path = "../src/checksum.rs"]
+#[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
 mod checksum;
 
 use midnight_core::*;

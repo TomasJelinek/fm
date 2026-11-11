@@ -77,6 +77,7 @@ information_window!(
         self.refresh(main);
     },
     fn refresh(&self, main: &MainWindow) {
+        self.set_topic(main.get_help_topic());
         self.set_shortcuts(main.global::<ShortcutHints>().invoke_help());
     }
 );

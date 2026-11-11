@@ -149,6 +149,9 @@ fn synchronize(
     window
         .global::<JobsView>()
         .on_find(crate::job_presentation::find);
+    window
+        .global::<JobsView>()
+        .on_has_finished(crate::job_presentation::has_finished);
     window.set_rows(main.get_operations());
     window.set_requested_identity(main.get_command_preview_token());
     macro_rules! action {
@@ -170,6 +173,7 @@ fn synchronize(
     action!(on_cancel, invoke_cancel_job);
     action!(on_resolve, invoke_resolve_copy);
     action!(on_copy_details, invoke_copy_job_details);
+    action!(on_clear_finished, invoke_clear_finished_jobs);
     let weak = Rc::downgrade(ctx);
     window.on_request_dismiss(move || {
         if let Some(ctx) = weak.upgrade() {

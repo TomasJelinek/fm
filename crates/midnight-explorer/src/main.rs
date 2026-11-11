@@ -132,6 +132,7 @@ fn run() -> Result<(), String> {
     };
     let local = Arc::new(LocalFileSystem::new(home_directory()));
     let filesystem = midnight_native_filesystem_host::InstalledProvider::shared(home_directory());
+    filesystem.set_size_directory_service(local.clone());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(16)
