@@ -95,3 +95,50 @@ fn admitted_capture_observes_the_live_job_cancellation() {
     cancel.store(true, Ordering::Release);
     assert!(matches!(worker.join().unwrap(), Err(e) if e.kind() == io::ErrorKind::Interrupted));
 }
+
+struct CooperativeSource {
+    cancelled: Arc<AtomicBool>,
+}
+impl Source for CooperativeSource {
+    fn length(&self) -> u64 {
+        1
+    }
+    fn version(&self) -> Vec<u8> {
+        vec![1]
+    }
+    fn validate(&self) -> io::Result<()> {
+        Ok(())
+    }
+    fn read_at(&self, _: u64, _: u32) -> io::Result<Vec<u8>> {
+        Ok(vec![5])
+    }
+    fn read_at_cooperative(
+        &self,
+        _: u64,
+        _: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Vec<u8>> {
+        self.cancelled.store(true, Ordering::Release);
+        if cancelled() {
+            Err(io::ErrorKind::Interrupted.into())
+        } else {
+            Ok(vec![5])
+        }
+    }
+}
+#[test]
+fn pinned_capture_preserves_live_cooperative_read_cancellation() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let captured = flag.clone();
+    let capture = pin_capture(Arc::new(move |_| {
+        Ok(Arc::new(CooperativeSource {
+            cancelled: captured.clone(),
+        }))
+    }));
+    let source = capture(&AtomicBool::new(false)).unwrap();
+    let result = source.read_at_cooperative(0, 1, &|| flag.load(Ordering::Acquire));
+    assert!(
+        matches!(result, Err(error) if error.kind() == io::ErrorKind::Interrupted),
+        "frozen capture lost cooperative source behavior"
+    );
+}

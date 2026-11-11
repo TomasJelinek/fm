@@ -43,8 +43,9 @@ pub(super) fn install(
 fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     let Some(draft) = &presenter.copies.draft else {
         if !window.get_copy_draft_token().is_empty() {
+            // The native host restores its captured invoking item on explicit
+            // close. Background retirement must not change owner focus.
             window.set_copy_draft_token("".into());
-            window.invoke_focus_files();
         }
         return;
     };
@@ -75,7 +76,6 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
     window.set_copy_draft_destination(destination.as_ref().into());
     window.set_copy_draft_selection_end(destination.len().min(i32::MAX as usize) as i32);
     window.set_copy_draft_token(draft.token.as_str().into());
-    window.invoke_show_copy_draft();
 }
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {

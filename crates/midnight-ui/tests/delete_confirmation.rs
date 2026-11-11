@@ -1,17 +1,23 @@
 //! Delete confirmation renders a bounded summary of the worker's captured metadata.
-#[path = "support/render.rs"]
-mod render;
+#[allow(dead_code)]
+#[path = "support/modeless.rs"]
+mod modeless;
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/ui.rs"]
 mod ui;
 
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
+use slint::platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow};
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 use ui::TestUi;
 
 #[test]
 fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
-    let mut ui = TestUi::new();
+    let (ui, windows) = owned_windows::with_buffer(
+        slint::platform::software_renderer::RepaintBufferType::NewBuffer,
+    );
     let path = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("delete-fixture");
     let state = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -82,7 +88,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         file_bytes: Some(3_000),
         sample: sample.clone(),
     };
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(
         !body.contains("žluťoučký"),
         "multiple targets must not list names: {body}"
@@ -93,12 +99,12 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(!body.contains("0 folders"));
     assert!(body.contains("system Trash"));
     assert!(!ui.window.get_operation_dangerous());
-    render::snapshot(&ui, "delete-multiple-files");
+    snapshot(&windows, "delete-multiple-files");
 
     preview.files = 1;
     preview.file_bytes = Some(1_000);
     preview.sample = vec![sample[0].clone()];
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("Name: žluťoučký 文档 🦀.txt"), "{body}");
     assert!(body.contains("Size: 1 000 bytes"), "{body}");
     assert!(
@@ -106,20 +112,20 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         "{body}"
     );
     assert!(!body.contains(sample[0].path.to_string_lossy().as_ref()));
-    render::snapshot(&ui, "delete-single-file");
+    snapshot(&windows, "delete-single-file");
 
     preview.kind = MutationKind::Delete(DeleteMode::Permanent);
     preview.files = 2;
     preview.folders = 3;
     preview.file_bytes = Some(3_000);
     preview.sample = sample.clone();
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("2 files and 3 folders"), "{body}");
     assert!(body.contains("Files size: 3 000 bytes"), "{body}");
     assert!(body.contains("cannot be undone"));
     assert!(!body.contains("žluťoučký"));
     assert!(ui.window.get_operation_dangerous());
-    render::snapshot(&ui, "delete-mixed-permanent");
+    snapshot(&windows, "delete-mixed-permanent");
 
     preview.files = 0;
     preview.folders = 1;
@@ -128,7 +134,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.sample[0].path = path.join("složka 文档 🦀");
     preview.sample[0].kind = EntryKind::Directory;
     preview.sample[0].metadata.size = Some(999_999);
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("1 folder"), "{body}");
     assert!(!body.contains("0 files"));
     assert!(!body.contains("bytes"));
@@ -137,10 +143,10 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         body.contains("Modified: 6. listopadu 2026 9:05 PM"),
         "{body}"
     );
-    render::snapshot(&ui, "delete-single-folder");
+    snapshot(&windows, "delete-single-folder");
 
     preview.folders = 2;
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("2 folders"), "{body}");
     assert!(!body.contains("složka"));
 
@@ -148,7 +154,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.folders = u64::MAX;
     preview.file_bytes = None;
     preview.sample.clear();
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("18 446 744 073 709 551 615 files"), "{body}");
     assert!(
         body.contains("18 446 744 073 709 551 615 folders"),
@@ -160,22 +166,32 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.folders = 0;
     preview.sample = vec![sample[0].clone()];
     preview.sample[0].metadata = EntryMetadata::default();
-    let body = show(&mut ui, &state, &commands, preview.clone());
+    let body = show(&ui, &windows, &state, &commands, preview.clone());
     assert!(body.contains("Size: Unavailable"), "{body}");
     assert!(body.contains("Modified: Unavailable"), "{body}");
     assert!(!body.contains("0 bytes"));
 
     preview.sample[0].metadata.modified = Some(std::time::UNIX_EPOCH);
-    let body = show(&mut ui, &state, &commands, preview);
+    let body = show(&ui, &windows, &state, &commands, preview);
     assert!(body.contains("Modified: 1970-01-01 00:00:00 UTC"), "{body}");
 }
 
 fn show(
-    ui: &mut TestUi,
+    ui: &TestUi,
+    windows: &owned_windows::Windows,
     state: &Rc<RefCell<Presenter>>,
     commands: &Rc<RefCell<Vec<Command>>>,
     mut preview: OperationPreview,
 ) -> String {
+    if !ui.window.get_operation_token().is_empty() {
+        let previous = OperationId(ui.window.get_operation_token().parse().unwrap());
+        commands.borrow_mut().clear();
+        owned_windows::child_key(windows, Key::Escape);
+        assert!(
+            matches!(commands.borrow().as_slice(), [Command::CancelOperation(id)] if *id == previous)
+        );
+        assert!(ui.window.get_operation_token().is_empty());
+    }
     commands.borrow_mut().clear();
     ui.window.invoke_mutation(
         0,
@@ -198,7 +214,18 @@ fn show(
         .borrow_mut()
         .apply(Event::Operation(OperationEvent::Preview(Arc::new(preview))));
     refresh(&ui.window, &state.borrow());
-    ui.draw();
+    let child = child(windows);
+    modeless::draw(&child, 540, 360, "summary-layout");
+    let body = ui.window.get_operation_body();
+    assert!(
+        has_text(
+            i_slint_core::item_tree::ItemRc::new_root(
+                i_slint_core::window::WindowInner::from_pub(child.window()).component()
+            ),
+            &body
+        ),
+        "the actual native child must display the bounded metadata summary"
+    );
     assert!(
         commands.borrow().iter().all(|command| matches!(
             command,
@@ -207,4 +234,44 @@ fn show(
         "opening confirmation must not start folder scans or confirm deletion"
     );
     ui.window.get_operation_body().to_string()
+}
+
+fn child(windows: &owned_windows::Windows) -> Rc<MinimalSoftwareWindow> {
+    let visible: Vec<_> = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .filter(|window| window.window().is_visible())
+        .cloned()
+        .collect();
+    assert_eq!(
+        visible.len(),
+        1,
+        "exactly one native confirmation must be visible"
+    );
+    visible.into_iter().next().unwrap()
+}
+fn snapshot(windows: &owned_windows::Windows, label: &str) {
+    modeless::draw(&child(windows), 540, 360, label);
+}
+fn has_text(item: i_slint_core::item_tree::ItemRc, value: &str) -> bool {
+    use i_slint_core::items::{ComplexText, SimpleText};
+    let text = item
+        .downcast::<SimpleText>()
+        .map(|text| text.as_pin_ref().text())
+        .or_else(|| {
+            item.downcast::<ComplexText>()
+                .map(|text| text.as_pin_ref().text())
+        });
+    if item.is_visible() && text.is_some_and(|text| text == value) {
+        return true;
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if has_text(item, value) {
+            return true;
+        }
+    }
+    false
 }

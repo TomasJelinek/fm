@@ -83,7 +83,7 @@ class WorkerPackages(unittest.TestCase):
         manifest = source / "archive/plugin.toml"
         original = manifest.read_text()
         for old, new in [('kind="filesystem-worker"', 'kind="viewer"'),
-                         (self.target, "wrong-target"), ('protocol=1', 'protocol=true'), ('protocol=1', 'protocol=3'),
+                         (self.target, "wrong-target"), ('protocol=1', 'protocol=true'), ('protocol=1', 'protocol=4'),
                          ('entry_executable="archive-worker"', 'entry_executable="../worker"'),
                          ('formats=["zip","gzip","tar","tar-gzip","7z"]', 'formats=["rar"]')]:
             with self.subTest(new=new):
@@ -99,6 +99,15 @@ class WorkerPackages(unittest.TestCase):
         inventory = packaging.copy_filesystem_packages(self.stage, source, self.target)
         self.assertEqual(inventory[0]["kind"], "filesystem-worker")
         self.assertIn("protocol=2", (self.stage / "filesystems/archive/plugin.toml").read_text())
+        self.assertEqual((self.stage / "filesystems/archive/archive-worker").read_bytes(), b"archive fixture")
+
+    def test_cooperative_filesystem_protocol_three_preserves_manifest_and_executable(self):
+        source = self.filesystem()
+        manifest = source / "archive/plugin.toml"
+        manifest.write_text(manifest.read_text().replace("protocol=1", "protocol=3"))
+        inventory = packaging.copy_filesystem_packages(self.stage, source, self.target)
+        self.assertEqual(inventory[0]["kind"], "filesystem-worker")
+        self.assertIn("protocol=3", (self.stage / "filesystems/archive/plugin.toml").read_text())
         self.assertEqual((self.stage / "filesystems/archive/archive-worker").read_bytes(), b"archive fixture")
 
     def test_optional_stable_member_ids_are_preserved_with_boolean_type(self):

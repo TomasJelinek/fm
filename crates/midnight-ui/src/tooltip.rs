@@ -5,7 +5,7 @@
 //! adding a backend with native popup windows. This observer never consumes input.
 use crate::{
     AboutWindow, ChecksumWindow, FileListWindow, FindWindow, HelpWindow, MainWindow, NoticeWindow,
-    TooltipPlacement,
+    OperationWindow, TooltipPlacement,
 };
 use i_slint_core::{
     items::TooltipArea,
@@ -38,6 +38,7 @@ enum Target {
     Help(slint::Weak<HelpWindow>),
     About(slint::Weak<AboutWindow>),
     Notice(slint::Weak<NoticeWindow>),
+    Operation(slint::Weak<OperationWindow>),
 }
 enum Host {
     Main(MainWindow),
@@ -47,6 +48,7 @@ enum Host {
     Help(HelpWindow),
     About(AboutWindow),
     Notice(NoticeWindow),
+    Operation(OperationWindow),
 }
 impl Target {
     fn upgrade(&self) -> Option<Host> {
@@ -58,6 +60,7 @@ impl Target {
             Self::Help(window) => window.upgrade().map(Host::Help),
             Self::About(window) => window.upgrade().map(Host::About),
             Self::Notice(window) => window.upgrade().map(Host::Notice),
+            Self::Operation(window) => window.upgrade().map(Host::Operation),
         }
     }
 }
@@ -71,6 +74,7 @@ impl Host {
             Self::Help(window) => window.window(),
             Self::About(window) => window.window(),
             Self::Notice(window) => window.window(),
+            Self::Operation(window) => window.window(),
         }
     }
     fn placement(&self) -> TooltipPlacement<'_> {
@@ -82,6 +86,7 @@ impl Host {
             Self::Help(window) => window.global::<TooltipPlacement>(),
             Self::About(window) => window.global::<TooltipPlacement>(),
             Self::Notice(window) => window.global::<TooltipPlacement>(),
+            Self::Operation(window) => window.global::<TooltipPlacement>(),
         }
     }
     fn synchronize(&self) -> bool {
@@ -106,6 +111,9 @@ pub(crate) fn install_help(window: &HelpWindow) -> Result<(), PlatformError> {
 }
 pub(crate) fn install_about(window: &AboutWindow) -> Result<(), PlatformError> {
     register(Target::About(window.as_weak()))
+}
+pub(crate) fn install_operation(window: &OperationWindow) -> Result<(), PlatformError> {
+    register(Target::Operation(window.as_weak()))
 }
 pub(crate) fn install_notice(window: &NoticeWindow) -> Result<(), PlatformError> {
     register(Target::Notice(window.as_weak()))

@@ -68,6 +68,17 @@ impl Source for FrozenSource {
         self.validate()?;
         Ok(bytes)
     }
+    fn read_at_cooperative(
+        &self,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Vec<u8>> {
+        self.validate()?;
+        let bytes = self.source.read_at_cooperative(offset, length, cancelled)?;
+        self.validate()?;
+        Ok(bytes)
+    }
     fn confirmed_local_ssd(&self) -> bool {
         self.source.confirmed_local_ssd()
     }

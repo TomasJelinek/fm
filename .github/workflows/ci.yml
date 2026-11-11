@@ -328,6 +328,12 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      # The full generated UI suite otherwise fills the hosted runner disk.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -417,7 +423,7 @@ jobs:
         if: runner.os == 'Linux'
         run: bash scripts/check-source-size.sh
       - name: Test
-        run: cargo test --workspace --locked
+        run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
       - name: Native viewer ABI rejection fixture
         shell: pwsh
         run: |

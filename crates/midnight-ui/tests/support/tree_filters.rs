@@ -1,10 +1,15 @@
 //! Controlled providers with the production Engine and installed presenter callbacks.
 // Each integration crate exercises a different subset of this shared fixture.
 #![allow(dead_code)]
+#[path = "modeless.rs"]
+mod modeless;
 use midnight_core::*;
 use midnight_engine::Engine;
 use midnight_ui::{Presenter, install, refresh};
-use slint::Model;
+use slint::{
+    ComponentHandle, Model,
+    platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -233,6 +238,7 @@ impl ArchiveMount for Archive {
 
 pub struct Harness {
     pub ui: super::ui::TestUi,
+    windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
     pub presenter: Rc<RefCell<Presenter>>,
     pub calls: Arc<Calls>,
     pub requests: Rc<RefCell<Vec<TreeReprojectRequest>>>,
@@ -371,7 +377,24 @@ impl Harness {
         transfer: Option<Arc<dyn TransferService>>,
         native: Option<NativeServices>,
     ) -> Self {
-        let ui = super::ui::TestUi::new();
+        let windows = Rc::new(RefCell::new(Vec::new()));
+        slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+        let window = midnight_ui::MainWindow::new().unwrap();
+        window.set_preferences_ready(true);
+        midnight_ui::install_file_keys(&window);
+        window.show().unwrap();
+        window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let owner_adapter = windows.borrow()[0].clone();
+        let mut ui = super::ui::TestUi {
+            window,
+            native: owner_adapter,
+            pixels: Vec::new(),
+            width: 1340,
+            height: 820,
+        };
+        ui.resize(1340, 820);
         let calls = Arc::new(Calls {
             children: children.iter().map(|name| (*name).to_owned()).collect(),
             size_fixture,
@@ -451,6 +474,7 @@ impl Harness {
         install(&ui.window, presenter.clone(), send.clone());
         let mut h = Self {
             ui,
+            windows,
             presenter,
             calls,
             requests,
@@ -539,6 +563,29 @@ impl Harness {
         });
         h.calls.frozen.store(true, Ordering::SeqCst);
         h
+    }
+
+    pub fn dialog(&self) -> Rc<MinimalSoftwareWindow> {
+        let children: Vec<_> = self
+            .windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .filter(|window| window.window().is_visible())
+            .cloned()
+            .collect();
+        assert_eq!(
+            children.len(),
+            1,
+            "tree transfer must use a separate native child"
+        );
+        assert!(self.ui.window.get_dialog_input_blocked());
+        let child = children[0].clone();
+        modeless::draw(&child, 640, 420, "tree-transfer-child");
+        child
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        child
     }
 
     pub fn rows(&self) -> Vec<midnight_ui::FileRow> {

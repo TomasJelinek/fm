@@ -17,6 +17,23 @@ pub trait Source: Send + Sync {
     fn version(&self) -> Vec<u8>;
     fn validate(&self) -> io::Result<()>;
     fn read_at(&self, offset: u64, length: u32) -> io::Result<Vec<u8>>;
+    /// A cancellable preview read. Providers without cooperative support drain the
+    /// admitted call and suppress its result; real capacity remains occupied.
+    fn read_at_cooperative(
+        &self,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Vec<u8>> {
+        if cancelled() {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        let bytes = self.read_at(offset, length)?;
+        if cancelled() {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        Ok(bytes)
+    }
     fn confirmed_local_ssd(&self) -> bool {
         false
     }
@@ -107,7 +124,10 @@ pub fn decode(
                                         },
                                     )
                                     .ok_or_else(cancelled)?;
-                                source.read_at(offset, length)?
+                                source.read_at_cooperative(offset, length, &|| {
+                                    cancel.load(Ordering::Acquire)
+                                        || broker_stop.load(Ordering::Acquire)
+                                })?
                             };
                             if bytes.len() as u64 != end - offset {
                                 return Err(io::Error::other("Source returned a short read"));

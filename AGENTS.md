@@ -14,3 +14,9 @@
 - Follow [CODE_STYLE.md](CODE_STYLE.md) and [SECURITY.md](SECURITY.md). Keep platform
   implementations separate and all non-UI work in backend services. Build, test
   and generated output belongs under `_build/`; toolchain caches use `.tools/`.
+- During local implementation, run targeted tests for changed behavior and its
+  direct integration boundaries. Defer full test suites until the planned
+  implementation is complete; do not repeatedly rerun broad suites between tasks.
+- Work on independent tasks in parallel with explicit file ownership. Coordinate
+  shared UI integration and Cargo target directories to avoid conflicting edits
+  or redundant builds.

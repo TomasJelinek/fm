@@ -36,7 +36,7 @@ available member/block CRCs before publishing any bytes. Solid-block siblings
 are drained for integrity, while only the requested member is staged; unrelated blocks remain compressed. Corrupt payloads
 can therefore be listed but fail when read, just as with ZIP.
 TAR indexes checked u64 ranges without reading its file payloads. Selected members
-stream directly into private host-owned TEMP files through protocol 2. Compressed
+stream directly into private host-owned TEMP files through the protocol-2 staging format (protocol3 in this release). Compressed
 TAR must decode and validate its complete outer stream into one private scratch
 file to discover headers; member leases reuse checked ranges of that verified file.
 Standalone compressed streams use the same verified scratch storage. No complete
@@ -64,12 +64,15 @@ watchdog is renewed by completed bounded I/O and actual decoded-byte progress;
 archive decoding opts out of an aggregate CPU deadline. A blocked OS I/O call can
 delay its owning backend's cleanup until that call returns.
 
-Thumbnail viewport cancellation does not cancel an admitted read on this shared
-browsing mount. A ZIP member or solid 7z block may finish complete staging and CRC
-verification after the thumbnail decoder's ten-second timeout or cancellation.
-The thumbnail worker retains its slot until that read drains, suppresses stale
-publication, and leaves the mount available for navigation. Progress can renew the
-idle watchdog; it is not a hard twenty-second completion deadline.
+Protocol3 supports cooperative thumbnail member cancellation at StageBegin,
+StageAppend, StageProgress and StageSeal exchanges. The host rejects a valid
+checkpoint with Failed(Cancelled); the worker unwinds and returns one matching
+terminal acknowledgement, preserving the immutable archive for another request.
+The host retires only that request's unpublished member spool. Source-reader
+Interrupted remains retryable and is not used for this handshake. Ordinary hard
+cancellation and legacy installed protocol1/2 workers retain session-ending
+semantics. Decoder timeout and viewport cancellation both reach the cooperative
+path; an already-running OS call or decoder interval can still delay it.
 
 Build and test using `scripts/build.ps1` or `scripts/build.sh`, with Cargo/Rust and
 Python 3 on PATH, providing an offline

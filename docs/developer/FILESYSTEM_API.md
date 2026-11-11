@@ -1,6 +1,6 @@
 # Read-only filesystem worker API
 
-`midnight-filesystem-api` version `0.3.0` implements protocols **1 and 2** for independent
+`midnight-filesystem-api` version `0.4.0` implements protocols **1, 2 and 3** for independent
 archive filesystem executables. It supports opening one captured byte source,
 listing directories and reading members. The application integrates this with
 pane navigation, selection, sorting, filtering, tabs, F3 viewing and verified F5
@@ -26,7 +26,7 @@ and tests. Its public dependencies are pinned registry packages:
 
 ```toml
 [dependencies]
-midnight-filesystem-api = { version = "=0.3.0", registry = "midnight" }
+midnight-filesystem-api = { version = "=0.4.0", registry = "midnight" }
 midnight-worker-sdk = { version = "=0.2.0", registry = "midnight" }
 ```
 
@@ -48,7 +48,7 @@ kind = "filesystem-worker"
 version = "0.1.0"
 entry_executable = "example-archive.exe"
 target = "x86_64-pc-windows-msvc"
-protocol = 2
+protocol = 3
 stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 ```
@@ -110,7 +110,7 @@ archive addresses retain their decoder independently of subsequent suffix edits.
 4. The host sends serial `List` and `Read` requests. Each has one terminal reply;
    nested source broker exchanges are allowed before that reply. Request IDs
    strictly increase; stale or mismatched responses fail the session.
-5. `Close`, pipe closure, worker failure, cancellation or deadline ends the
+5. `Close`, pipe closure, worker failure, hard cancellation or deadline ends the
    session. The current host terminates the worker when its last mount lease is
    released; destruction never waits for a child on the UI thread.
 
@@ -215,10 +215,10 @@ one tab does not invalidate a viewer still reading that captured member.
 `Failed` carries one of `Invalid`, `Unsupported`, `Limit`, `Cancelled`,
 `SourceChanged`, `NotFound`, `ReadOnly`, `Corrupt` or `Io`, plus at most 4096 UTF-8
 diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
-through an external utility or a host path. The current host ends the mount on a
-failed exchange. Protocol violations, truncated frames and unexpected replies
-also fail closed. Cancellation is host process termination, not an in-band
-request that promises the mount survives. Deadlines apply to blocking pipe reads
+through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
+protocol-3 cooperative cancellation acknowledgement described below. Protocol violations, truncated frames and unexpected replies
+also fail closed. Ordinary cancellation remains host process termination; only
+the separate protocol-3 cooperative read can preserve the mount. Deadlines apply to blocking pipe reads
 as well as decoding; timeout/cancellation can therefore surface as a closed-pipe
 or interrupted operation diagnostic.
 
@@ -289,3 +289,35 @@ resource bounds. Host integration additionally exercises discovery, source
 brokering, changed-source failure and absent/duplicate providers. Current
 platform qualification and exact commands are recorded in the
 [implementation checkpoint](../archive-filesystem-development.md).
+
+## Protocol 3 cooperative member staging cancellation (MEDIA-01)
+
+Protocol 3 is an explicit installed-worker opt-in, preserving protocol 2 wire
+messages and resource bounds while adding a request-local cancellation contract.
+Ordinary hard cancellation retains session-ending semantics under every protocol.
+A cooperative preview read against legacy protocol 1/2 drains under an independent
+hard token and suppresses its canceled result. No extra worker, mount, queue,
+source authority or native path is added.
+
+The thumbnail broker passes viewport cancellation OR decoder shutdown/timeout into
+a separate cooperative member read. At the next valid StageBegin, StageAppend,
+StageProgress or StageSeal exchange, the host may reply Failed(Cancelled) for the
+active request instead of performing that staging operation. The worker unwinds
+that prepare call and sends exactly one matching terminal Failed(Cancelled), then
+accepts the next strictly increasing request. SourceRead is not interrupted this
+way: generic decoder readers can retry Interrupted, so cancellation is observed at
+the existing bounded staging/progress checkpoints instead.
+
+Only a host-initiated cancellation with the exact terminal acknowledgement keeps
+the session alive. The host retires only that request's pending/sealed member spool;
+existing scratch, member cache and outstanding leases remain valid. A normal
+terminal result racing cancellation is validated but cannot publish newly prepared
+content. Source changes, malformed frames, wrong IDs, unexpected acknowledgement,
+I/O errors and the idle watchdog still fail closed. The hard watchdog remains armed
+while the cancellation acknowledgement drains and cannot be renewed by chatter.
+Real decoder/I/O capacity remains held until native I/O and spool retirement finish.
+
+This is cooperative cancellation, not an OS-call deadline. One already-admitted
+bounded source/spool call or decoder work interval can delay the next checkpoint.
+CRC/length validation still gates every successful content publication. All existing
+memory, chunk, cache, process and decoder-window limits remain unchanged.

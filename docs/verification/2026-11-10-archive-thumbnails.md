@@ -197,3 +197,108 @@ aggregate performance/budget stress require their own evidence. The final
 integrated lint/rebuild and matching deployment hashes passed separately from
 this installed probe. Successful backend cache assertions alone do not establish
 full UI behavior, all-format reopen qualification or generic remote-provider previews.
+
+### 11 November MEDIA-01 follow-up design and regression sequence
+
+Status: scoped implementation, unit/lint and installed-worker gates passed. Final
+combined application verification belongs to the enclosing batch. The 10 November
+evidence above is unchanged. The approved change is the protocol-3 cooperative member-staging
+contract in FILESYSTEM_API.md, using independent public API packages only.
+Passing a live viewport flag into the old read would kill the shared mount;
+spawning a separate preview mount would consume extra process/memory capacity.
+The chosen path cancels one negotiated staging request and drains its terminal
+acknowledgement before releasing existing permits.
+
+- [x] Public API: add explicit Protocol::V3 with unchanged v1/v2 bytes and v2
+  streaming records, package API 0.4.0 normally, and consume the package from the
+  independent archive worker. Test codec/version and package validation boundaries.
+- [x] Host: add a default-compatible ArchiveMount::read_cooperative and staged
+  cancellation state in session.rs; add request-scoped abandonment in staging.rs.
+  RED/GREEN tests cover each staging checkpoint, wrong acknowledgements, terminal
+  races, source mutation, cached/retained leases and scratch preservation.
+- [x] Worker: preserve Cancelled from staging replies in broker.rs. ZIP and solid
+  7z tests cancel actual preparation, assert no seal/partial publication, then list
+  and prepare again on the same Archive. Include cancellation during solid sibling
+  discard progress and ordinary reader Interrupted compatibility.
+- [x] Thumbnail: expose a cancellation-aware Source read and pass both viewport
+  and broker_stop causes. Test cooperative cancellation and legacy drain fallback,
+  keeping both real worker slots occupied until read/cleanup completion.
+- [x] Run public API, isolated plugin, host and thumbnail affected suites with
+  pinned tools, fresh QA TEMP and explicit build roots. Root owns final combined
+  build, deployment and installed-worker qualification. Record commands and real
+  outcomes here; no native or Linux result is implied by unit tests.
+
+Owned implementation files are core/archive.rs, thumbnail-host/{decode,
+archive_source}.rs, filesystem-host/{session,staging,discovery}.rs and focused
+new test modules; public filesystem-api wire/version/package metadata; independent
+archive-worker broker/main/package metadata and tests. No UI code, native-dialog
+code, third-party dependency or resource-limit relaxation was introduced.
+
+### 11 November MEDIA-01 verification results
+
+The explicit protocol-3 API is packaged as `midnight-filesystem-api 0.4.0`; legacy
+helpers still emit protocol 1 and the protocol-2 drain path remains covered.
+Only the first-party package version/checksum changes in the independent worker
+lockfile. The normal SDK exporter created a new immutable bundle at
+`_build/media-cancel/sdk/worker-sdk-1794390611415302600/`; the earlier pinned bundle
+was not changed. The plugin still depends only on packaged public APIs.
+
+The initial Windows RED gates observed two missing protocol-3 codec failures,
+four shared-mount/cache-retention failures, two dropped cooperative-source
+forwarding failures and one lost worker cancellation error. Ordinary ZIP/solid-7z
+unwind/retry controls were already green. The resulting scoped gates are:
+
+| Gate | Result |
+| --- | --- |
+| Public API full tests (`--manifest-path filesystem-api/Cargo.toml`) | 13 passed |
+| Host + thumbnail all targets | 78 passed, 20 installed/benchmark opt-ins ignored |
+| Host terminal/watchdog follow-up | 9 cooperative tests passed, including two additional checks |
+| Independent archive plugin all targets | 41 passed, 4 fixture/measurement opt-ins ignored |
+| Host/thumbnail and independent plugin strict all-target Clippy | Passed |
+| Python worker-package validation | 8 passed, 1 existing skipped |
+| Installed image helper: cooperative viewport/timeout, queued deadline, pixel control | 3 passed |
+| Installed archive package: cooperative ZIP/7z, all formats, hard cancel, pathless source | 4 passed |
+| Linux core/archive host/thumbnail/API unit gates | 51 / (26 + 2 follow-up) / 25 / 13 passed |
+
+The final Linux host rerun passed all nine cooperative tests, including the two
+new terminal/watchdog cases. Counting those two additions once gives 117 unique
+passing Linux tests across the scoped gates. The host had one installed opt-in
+ignored and thumbnail had five. Its first
+thumbnail fixture attempt used checkout `_build` on DrvFS, which cannot satisfy
+the private-cache mode-0700 contract. Repeating with the documented
+`MIDNIGHT_NATIVE_TEST_ROOT=$TMPDIR` on private ext4 passed; production checks and
+permissions were unchanged. These are unit and decoder-worker checks, not a Linux
+desktop or native panel latency claim.
+
+Windows commands used pinned Rust, `--locked --offline`, a fresh process-local
+TEMP/TMP, host target `_build`, and independent plugin target
+`_build/archive-filesystems/backend`. Exact command orchestration and logs are in
+`_build/qa/media-cancel-20261111/windows-green.ps1`, `api-{red,green}.log`,
+`host-thumbnail-{red,green,clippy}.log`, `host-terminal-{green,clippy}.log`,
+`plugin-{red,green,clippy,package}.log`, `package-{red,green}.log`, and
+`installed-decoder-{cancellation,pixels}.log`. Linux logs are
+`_build/qa/native-operation-windows/linux-media-unit.log`,
+`linux-media-thumbnail-final.log`, `linux-media-api.log`, and
+`linux-media-host-final.log`.
+
+The release archive package is `_build/media-cancel/package`, advertises protocol
+3, and includes normal third-party notices. Its executable SHA256 is
+`92EF3B1C52E945A28DDADC278373173FC69955866E8211D9AF7FBA172DD94C37`.
+The same hash was verified after normal private deployment to
+`C:/Users/tjelinek/MidnightExplorer-20261111-media-v3-92ef3b1c/filesystems/archive/`.
+This unregistered qualification runtime retains the previous application EXE; only
+the new host test executables ran against its installed workers.
+
+`installed.ps1` sets `ARCHIVE_CAPTURE_INSTALLATION` to that private runtime and
+`MIDNIGHT_ARCHIVE_FIXTURES=_build/media-cancel/fixtures`. The exported Stored-ZIP
+and solid Copy-7z cases each cancel after 512 KiB of additional source reads and
+assert that the complete 2 MiB payload was not drained. Both retain an unrelated
+cached member without another source read, preserve the directory identities, and
+successfully retry the canceled member on the same mount. A separate all-format
+case validates 11 formats and rejects corrupt ZIP/7z fixtures; hard cancellation
+still poisons its session, and captured pathless content retains exact authority.
+Logs: `installed-cooperative-archive.log`, `installed-all-formats.log`,
+`installed-hard-cancel.log` and `installed-captured-source.log` under the same QA
+directory. These checks establish cooperative protocol behavior and bounded work
+at existing checkpoints; they do not promise cancellation during an active OS call
+or qualify native panel frame pacing.

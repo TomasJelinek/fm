@@ -152,3 +152,97 @@ fn actual_sandboxed_image_provider_returns_pixels_and_honors_cancellation() {
         .is_err()
     );
 }
+
+#[test]
+#[ignore = "Run with MIDNIGHT_IMAGE_TEST_HELPER pointing to the separately built provider"]
+fn decoder_cooperative_source_observes_viewport_and_timeout_cancellation() {
+    use std::sync::atomic::Ordering;
+    let _serial = SERIAL.lock().unwrap();
+    struct Blocked {
+        entered: AtomicBool,
+        observed: AtomicBool,
+    }
+    impl Source for Blocked {
+        fn length(&self) -> u64 {
+            256
+        }
+        fn version(&self) -> Vec<u8> {
+            vec![1]
+        }
+        fn validate(&self) -> io::Result<()> {
+            Ok(())
+        }
+        fn read_at(&self, _: u64, _: u32) -> io::Result<Vec<u8>> {
+            panic!("decoder lost cooperative cancellation")
+        }
+        fn read_at_cooperative(
+            &self,
+            _: u64,
+            _: u32,
+            cancelled: &dyn Fn() -> bool,
+        ) -> io::Result<Vec<u8>> {
+            self.entered.store(true, Ordering::Release);
+            let deadline = std::time::Instant::now() + Duration::from_secs(4);
+            while !cancelled() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(cancelled(), "decoder stop did not reach in-flight source");
+            assert_eq!(
+                midnight_work_budget::shared_io().snapshot().available,
+                0,
+                "I/O capacity released before source cleanup"
+            );
+            self.observed.store(true, Ordering::Release);
+            Err(io::ErrorKind::Interrupted.into())
+        }
+    }
+    let helper = std::env::var_os("MIDNIGHT_IMAGE_TEST_HELPER").unwrap();
+    for viewport in [true, false] {
+        let source = Blocked {
+            entered: AtomicBool::new(false),
+            observed: AtomicBool::new(false),
+        };
+        let cancel = AtomicBool::new(false);
+        let error = std::thread::scope(|scope| {
+            if viewport {
+                scope.spawn(|| {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+                    while !source.entered.load(Ordering::Acquire)
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    cancel.store(true, Ordering::Release);
+                });
+            }
+            decode::decode(
+                std::path::Path::new(&helper),
+                &source,
+                Request {
+                    id: 1,
+                    source_length: 256,
+                    width: 32,
+                    height: 32,
+                    frame: 0,
+                },
+                &cancel,
+                Duration::from_secs(2),
+            )
+            .unwrap_err()
+        });
+        assert_eq!(
+            error.kind(),
+            if viewport {
+                io::ErrorKind::Interrupted
+            } else {
+                io::ErrorKind::TimedOut
+            }
+        );
+        assert!(source.entered.load(Ordering::Acquire));
+        assert!(source.observed.load(Ordering::Acquire));
+        assert_eq!(
+            midnight_work_budget::shared_io().snapshot().available,
+            midnight_work_budget::IO_SLOTS
+        );
+    }
+}

@@ -1,3 +1,5 @@
+#[path = "support/window_input.rs"]
+mod input;
 #[allow(dead_code)]
 #[path = "support/modeless.rs"]
 mod modeless;
@@ -40,6 +42,22 @@ fn multi_window_ui() -> (ui::TestUi, NativeWindows) {
     (test, windows)
 }
 
+fn draft_child(windows: &NativeWindows) -> Rc<MinimalSoftwareWindow> {
+    let child = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .rev()
+        .find(|window| window.window().is_visible())
+        .cloned()
+        .expect("native draft child");
+    modeless::draw(&child, 720, 520, "transfer-draft");
+    child
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    child
+}
+
 fn dismiss_native_notice(windows: &NativeWindows) {
     let child = windows.borrow().last().unwrap().clone();
     assert!(child.window().is_visible());
@@ -55,60 +73,66 @@ fn dismiss_native_notice(windows: &NativeWindows) {
 #[test]
 fn copy_confirmation_shows_the_complete_source_above_the_destination() {
     use i_slint_core::items::AccessibleRole;
-    let mut test = ui::TestUi::new();
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let dialog = midnight_ui::OperationWindow::new().unwrap();
     let body = "checksums.sha256\n\nFrom\nD:\\downloads\\119115";
-    test.window.set_copy_draft_body(body.into());
-    test.window.set_copy_draft_destination("D:\\temp".into());
-    test.window.set_copy_draft_metadata_enabled(true);
+    dialog.set_title_text("Copy".into());
+    dialog.set_confirm_text("Copy".into());
+    dialog.set_body(body.into());
+    dialog.set_initial_name("D:\\temp".into());
+    dialog.set_has_name(true);
+    dialog.set_input_label("Destination folder".into());
+    dialog.set_option_visible(true);
+    dialog.set_option_enabled(true);
+    dialog.set_option_label("Preserve exact modified time".into());
+    dialog.show().unwrap();
+    let child = windows.borrow()[0].clone();
     for (density, font) in [(0, 13), (1, 15), (0, 22)] {
-        test.window.invoke_apply_preferences(3, density);
-        test.window.invoke_apply_fonts("".into(), font, font);
-        test.window.set_copy_draft_token("layout".into());
-        test.window.invoke_show_copy_draft();
-        test.draw();
-        modeless::bitmap::snapshot(
-            &test.pixels,
-            test.width,
-            test.height,
-            &format!("copy-source-{density}-{font}"),
-        );
-        let source = ui::root_item(&test.window, body, AccessibleRole::Text);
-        let label = ui::root_item(&test.window, "Destination folder", AccessibleRole::Text);
+        dialog.invoke_apply_preferences(3, density, "".into(), font, font);
+        dialog.invoke_begin();
+        modeless::draw(&child, 720, 520, &format!("copy-source-{density}-{font}"));
+        let source = modeless::accessible_item(&child, AccessibleRole::Text, body).unwrap();
+        let label =
+            modeless::accessible_item(&child, AccessibleRole::Text, "Destination folder").unwrap();
         let source_rect = source.geometry();
         let source_top = source.map_to_native_window(source_rect.origin).y;
         let label_top = label.map_to_native_window(label.geometry().origin).y;
+        assert!(source.is_visible() && label.is_visible());
         assert!(
             source_top + source_rect.size.height <= label_top,
-            "Source path is clipped beneath the destination label: bottom={}, label={label_top}, font={font}, density={density}",
+            "Source path is clipped beneath destination: bottom={}, label={label_top}, font={font}, density={density}",
             source_top + source_rect.size.height
         );
-        let input = ui::root_item(
-            &test.window,
-            "Destination folder",
-            AccessibleRole::TextInput,
-        );
+        let editor =
+            modeless::accessible_item(&child, AccessibleRole::TextInput, "Destination folder")
+                .unwrap();
         assert!(
-            input.geometry().size.height < font as f32 * 3.0,
+            editor.geometry().size.height < font as f32 * 3.0,
             "Destination must stay single-line"
         );
-        ui::key(&test.window, Key::Escape);
     }
-    test.window.invoke_apply_preferences(3, 0);
-    test.window.invoke_apply_fonts("".into(), 13, 15);
-    test.resize(320, 200);
-    modeless::bitmap::snapshot(&test.pixels, test.width, test.height, "copy-source-compact");
+    dialog.invoke_apply_preferences(3, 0, "".into(), 13, 15);
+    modeless::draw(&child, 320, 200, "copy-source-compact");
     for (label, role) in [
         ("Destination folder", AccessibleRole::TextInput),
         ("Cancel", AccessibleRole::Button),
         ("Copy", AccessibleRole::Button),
     ] {
-        let position = ui::root_position(&test.window, label, role);
+        let item = modeless::accessible_item(&child, role, label).unwrap();
+        let rect = item.geometry();
+        let origin = item.map_to_native_window(rect.origin);
         assert!(
-            (0.0..320.0).contains(&position.x) && (0.0..200.0).contains(&position.y),
-            "{label} must remain reachable in a small window: {position:?}"
+            item.is_visible()
+                && origin.x >= 0.0
+                && origin.y >= 0.0
+                && origin.x + rect.size.width <= 320.5
+                && origin.y + rect.size.height <= 200.5,
+            "{label} must remain reachable in a small child: {origin:?} {:?}",
+            rect.size
         );
     }
-    test.window.hide().unwrap();
+    dialog.hide().unwrap();
 }
 
 #[test]
@@ -148,7 +172,7 @@ impl ArchiveMount for NoIoArchive {
 #[test]
 fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
-    let mut ui = ui::TestUi::new();
+    let (mut ui, windows) = multi_window_ui();
     let root = std::env::temp_dir().join("archive dialog 文档");
     let state = Rc::new(RefCell::new(Presenter::new(
         root.clone(),
@@ -223,30 +247,30 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     ui::key(&ui.window, Key::F5);
     ui.draw();
     assert!(!ui.window.get_copy_draft_token().is_empty());
-    let option = ui::root_item(
-        &ui.window,
-        "Preserve exact modified time",
+    let child = draft_child(&windows);
+    let option = modeless::accessible_item(
+        &child,
         AccessibleRole::Checkbox,
-    );
+        "Preserve exact modified time",
+    )
+    .unwrap();
     assert_eq!(
         option
             .accessible_string_property(AccessibleStringProperty::Enabled)
             .unwrap(),
         "false"
     );
-    ui::click_root(
-        &ui.window,
-        "Preserve exact modified time",
-        AccessibleRole::Checkbox,
-    );
+    input::click(&child, &option);
     assert_eq!(
         option
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
         "false"
     );
-    ui.window.invoke_focus_files();
-    ui::key(&ui.window, Key::Return);
+    let editor =
+        modeless::accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
+    input::click(&child, &editor);
+    input::key(&child, Key::Return);
     ui.draw();
     let commands = commands.borrow();
     let [Command::EnqueueArchiveCopy(request)] = commands.as_slice() else {
@@ -329,37 +353,24 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         );
     }
     assert!(commands.borrow().is_empty());
-    modeless::bitmap::snapshot(
-        &ui.pixels,
-        ui.width,
-        ui.height,
-        if moving {
-            "move-recovery-dialog"
-        } else {
-            "copy-dialog"
-        },
-    );
+    let child = draft_child(&windows);
     if moving {
-        ui.resize(320, 200);
-        modeless::bitmap::snapshot(
-            &ui.pixels,
-            ui.width,
-            ui.height,
-            "move-recovery-dialog-small",
-        );
+        modeless::draw(&child, 320, 200, "move-dialog-small");
     }
-    ui::key(&ui.window, Key::Escape);
+    input::key(&child, Key::Escape);
     ui.draw();
     assert!(ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
 
     ui::key(&ui.window, shortcut);
     ui.draw();
-    let option = ui::root_item(
-        &ui.window,
-        "Preserve exact modified time",
+    let child = draft_child(&windows);
+    let option = modeless::accessible_item(
+        &child,
         i_slint_core::items::AccessibleRole::Checkbox,
-    );
+        "Preserve exact modified time",
+    )
+    .unwrap();
     assert_eq!(
         option
             .accessible_string_property(
@@ -370,13 +381,15 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         "every new draft must start unchecked",
     );
     if preserve {
-        ui::click_root(
-            &ui.window,
-            "Preserve exact modified time",
-            i_slint_core::items::AccessibleRole::Checkbox,
-        );
+        input::click(&child, &option);
         // Restore path focus without activating the form or changing the option.
-        ui.window.invoke_focus_files();
+        let editor = modeless::accessible_item(
+            &child,
+            i_slint_core::items::AccessibleRole::TextInput,
+            "Destination folder",
+        )
+        .unwrap();
+        input::click(&child, &editor);
         assert_eq!(
             option
                 .accessible_string_property(
@@ -388,14 +401,14 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     }
     let destination = base.join("another target");
     // Both directions include the optional checkbox and stay within the modal form.
-    let inner = i_slint_core::window::WindowInner::from_pub(ui.window.window());
+    let inner = i_slint_core::window::WindowInner::from_pub(child.window());
     let editor = inner.focus_item.borrow().upgrade().unwrap();
     for reverse in [false, true] {
         for _ in 0..4 {
             if reverse {
-                ui::chord(&ui.window, &[Key::Shift], Key::Tab);
+                input::chord(&child, &[Key::Shift], Key::Tab);
             } else {
-                ui::key(&ui.window, Key::Tab);
+                input::key(&child, Key::Tab);
             }
         }
         assert_eq!(
@@ -404,21 +417,32 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
             "focus must wrap inside the form"
         );
     }
-    ui::chord(&ui.window, &[Key::Control], "a");
-    ui::key(&ui.window, destination.to_string_lossy().as_ref());
+    input::chord(&child, &[Key::Control], "a");
+    input::key(&child, destination.to_string_lossy().as_ref());
+    let before_retry = windows.borrow().len();
     accepting.set(false);
-    ui::key(&ui.window, Key::Return);
+    input::key(&child, Key::Return);
     ui.draw();
     assert_eq!(
         windows.borrow().len(),
-        2,
-        "admission error has a native notice"
+        before_retry,
+        "admission error stays in the same editable native draft"
     );
     assert!(ui.window.get_dialog_input_blocked());
     assert!(!ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
-    dismiss_native_notice(&windows);
-    ui.draw();
+    assert!(child.window().is_visible());
+    let error = ui.window.get_copy_draft_error();
+    assert!(!error.is_empty());
+    assert!(
+        modeless::accessible_item(
+            &child,
+            i_slint_core::items::AccessibleRole::Text,
+            error.as_str()
+        )
+        .is_some_and(|item| item.is_visible()),
+        "admission error must be visible in the draft"
+    );
     assert!(!ui::has_popup(&ui.window));
     // An unrelated asynchronous notice also must not discard the edited target.
     ui.window.set_message_title("Background notice".into());
@@ -427,7 +451,7 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
     ui.draw();
     dismiss_native_notice(&windows);
     accepting.set(true);
-    ui::key(&ui.window, Key::Return);
+    input::key(&child, Key::Return);
     ui.draw();
     let queued = commands.borrow();
     assert_eq!(queued.len(), 1);

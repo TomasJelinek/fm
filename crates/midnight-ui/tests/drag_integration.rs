@@ -1,4 +1,6 @@
 //! Installed drag bridge: raw capture, cancellation, panel geometry and internal fallback.
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/ui.rs"]
@@ -15,6 +17,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 struct Harness {
     ui: ui::TestUi,
+    windows: owned_windows::Windows,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
     send: Rc<dyn Fn(Command) -> bool>,
@@ -26,7 +29,7 @@ impl Harness {
     }
 
     fn with_targets(count: usize) -> Self {
-        let mut ui = ui::TestUi::new();
+        let (mut ui, windows) = owned_windows::new();
         let left = std::env::temp_dir().join("drag source 文档");
         let right = std::env::temp_dir().join("drag target & $(literal)");
         let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
@@ -87,6 +90,7 @@ impl Harness {
         ui.draw();
         Self {
             ui,
+            windows,
             presenter,
             commands,
             send,
@@ -290,9 +294,9 @@ fn published_regions_follow_swapping_zoom_and_modal_exclusion() {
     assert!(!h.ui.window.get_copy_draft_token().is_empty());
     assert!(
         targets.lock().unwrap().targets.is_empty(),
-        "the persistent copy overlay excludes native drops on every poll"
+        "the owned copy form excludes native drops on every poll"
     );
-    ui::key(&h.ui.window, Key::Escape);
+    owned_windows::child_key(&h.windows, Key::Escape);
     h.settle();
     assert!(!targets.lock().unwrap().targets.is_empty());
 }

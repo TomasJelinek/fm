@@ -1,113 +1,116 @@
-//! Confirm defaults through actual keyboard input, without filesystem operations.
-#[path = "support/ui.rs"]
-mod ui;
+//! Confirm defaults through actual child-window keyboard input, without filesystem operations.
+#[path = "support/window_input.rs"]
+mod input;
+#[path = "support/modeless.rs"]
+mod modeless;
 
 use i_slint_core::{
     item_tree::ItemRc,
     items::{AccessibleRole, FocusReason, FocusScope},
     window::WindowInner,
 };
-use slint::{ComponentHandle, platform::Key};
+use midnight_ui::OperationWindow;
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
+};
 use std::{cell::RefCell, rc::Rc};
+
+fn window() -> (OperationWindow, Rc<MinimalSoftwareWindow>) {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = OperationWindow::new().unwrap();
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    modeless::draw(&native, 640, 420, "operation-default");
+    (window, native)
+}
 
 #[test]
 fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
-    let mut ui = ui::TestUi::new();
+    let (window, child) = window();
     let confirmations = Rc::new(RefCell::new(Vec::new()));
-    let cancellations = Rc::new(RefCell::new(Vec::new()));
+    let cancellations = Rc::new(RefCell::new(0));
     let sink = confirmations.clone();
-    ui.window.on_confirm_copy_draft(move |token, path| {
-        sink.borrow_mut().push((token, path));
-    });
+    window.on_confirm(move |path| sink.borrow_mut().push(path));
     let sink = cancellations.clone();
-    ui.window.on_cancel_copy_draft(move |token| {
-        sink.borrow_mut().push(token);
-    });
+    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
     let path = "D:\\target 文档\\";
-    ui.window.set_copy_draft_destination(path.into());
-    ui.window.set_copy_draft_metadata_enabled(true);
-    for moving in [false, true] {
-        ui.window.set_copy_draft_move(moving);
-        ui.window.set_copy_draft_token("default-action".into());
-        ui.window.invoke_show_copy_draft();
-        ui.draw();
+    window.set_initial_name(path.into());
+    window.set_has_name(true);
+    window.set_option_visible(true);
+    window.set_option_enabled(true);
+    window.set_option_label("Preserve exact modified time".into());
+    for title in ["Copy", "Move"] {
+        window.set_title_text(title.into());
+        window.set_confirm_text(title.into());
+        window.invoke_begin();
         confirmations.borrow_mut().clear();
-        cancellations.borrow_mut().clear();
-        assert!(confirmations.borrow().is_empty());
-        ui::key(&ui.window, Key::Return);
+        *cancellations.borrow_mut() = 0;
+        input::key(&child, Key::Return);
         assert_eq!(
             confirmations.borrow().as_slice(),
-            &[("default-action".into(), path.into())]
+            &[slint::SharedString::from(path)]
         );
-        assert!(cancellations.borrow().is_empty());
+        assert_eq!(*cancellations.borrow(), 0);
 
-        // A checkbox does not replace the dialog's default action. Space toggles
-        // the option; Enter proceeds with the same literal destination.
+        // Space toggles the option; Enter retains the same default action.
         confirmations.borrow_mut().clear();
-        ui.window.invoke_show_copy_draft();
-        ui::key(&ui.window, Key::Tab);
-        ui::key(&ui.window, Key::Space);
+        window.invoke_begin();
+        input::key(&child, Key::Tab);
+        input::key(&child, Key::Space);
         assert!(confirmations.borrow().is_empty());
-        ui::key(&ui.window, Key::Return);
+        input::key(&child, Key::Return);
         assert_eq!(confirmations.borrow().len(), 1);
 
         confirmations.borrow_mut().clear();
-        ui.window.invoke_show_copy_draft();
-        ui::key(&ui.window, Key::Escape);
-        assert_eq!(cancellations.borrow().len(), 1);
+        window.invoke_begin();
+        input::key(&child, Key::Escape);
+        assert_eq!(*cancellations.borrow(), 1);
         assert!(confirmations.borrow().is_empty());
 
-        ui.window.invoke_show_copy_draft();
-        ui::key(&ui.window, Key::Tab);
-        ui::key(&ui.window, Key::Tab);
-        ui::key(&ui.window, Key::Return);
-        assert_eq!(cancellations.borrow().len(), 2);
+        window.invoke_begin();
+        input::key(&child, Key::Tab);
+        input::key(&child, Key::Tab);
+        input::key(&child, Key::Return);
+        assert_eq!(*cancellations.borrow(), 2);
         assert!(confirmations.borrow().is_empty());
 
-        ui.window.set_copy_draft_destination("".into());
-        ui.window.invoke_show_copy_draft();
-        ui::key(&ui.window, Key::Return);
+        window.set_initial_name("".into());
+        window.invoke_begin();
+        input::key(&child, Key::Return);
         assert!(
             confirmations.borrow().is_empty(),
             "empty destinations never submit"
         );
-        ui.window.set_copy_draft_token("".into());
-        ui.window.set_copy_draft_destination(path.into());
+        window.set_initial_name(path.into());
     }
 }
 
 #[test]
 fn delete_default_does_not_remove_explicit_cancellation() {
-    let mut ui = ui::TestUi::new();
-    let confirmed = Rc::new(RefCell::new(Vec::new()));
-    let cancelled = Rc::new(RefCell::new(Vec::new()));
+    let (window, child) = window();
+    let confirmed = Rc::new(RefCell::new(0));
+    let cancelled = Rc::new(RefCell::new(0));
     let sink = confirmed.clone();
-    ui.window
-        .on_confirm_operation(move |token, _| sink.borrow_mut().push(token));
+    window.on_confirm(move |_| *sink.borrow_mut() += 1);
     let sink = cancelled.clone();
-    ui.window
-        .on_cancel_operation(move |token| sink.borrow_mut().push(token));
-    ui.window.set_operation_has_name(false);
-    ui.window.set_operation_title("Permanently delete".into());
-    ui.window.set_operation_dangerous(true);
-    ui.window.set_operation_token("delete-1".into());
-    ui.window.invoke_begin_operation();
-    ui.draw();
-    assert!(confirmed.borrow().is_empty());
-    ui::key(&ui.window, Key::Escape);
-    ui.window.invoke_begin_operation();
-    ui::click_root(&ui.window, "Cancel", AccessibleRole::Button);
-    ui.window.invoke_begin_operation();
-    ui::click_root(&ui.window, "Cancel dialog", AccessibleRole::Button);
-    assert_eq!(cancelled.borrow().len(), 3);
-    assert!(confirmed.borrow().is_empty());
-    ui.window.invoke_begin_operation();
-    ui::key(&ui.window, Key::Return);
-    assert_eq!(
-        confirmed.borrow().as_slice(),
-        &[slint::SharedString::from("delete-1")]
-    );
-    assert_eq!(cancelled.borrow().len(), 3);
+    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
+    window.set_has_name(false);
+    window.set_title_text("Permanently delete".into());
+    window.set_confirm_text("Permanently delete".into());
+    window.set_dangerous(true);
+    window.invoke_begin();
+    input::key(&child, Key::Escape);
+    window.invoke_begin();
+    modeless::click(&child, "Cancel");
+    // Native X is covered through the installed host in native_operation_windows.
+    assert_eq!(*cancelled.borrow(), 2);
+    assert_eq!(*confirmed.borrow(), 0);
+    window.invoke_begin();
+    input::key(&child, Key::Return);
+    assert_eq!(*confirmed.borrow(), 1);
+    assert_eq!(*cancelled.borrow(), 2);
 }
 
 fn focus_scope(item: ItemRc) -> Option<ItemRc> {
@@ -125,34 +128,29 @@ fn focus_scope(item: ItemRc) -> Option<ItemRc> {
 }
 
 #[test]
-fn enter_on_focused_header_close_cancels_instead_of_confirming_delete() {
-    let mut ui = ui::TestUi::new();
-    let confirmed = Rc::new(RefCell::new(Vec::new()));
-    let cancelled = Rc::new(RefCell::new(Vec::new()));
+fn enter_on_accessibility_focused_cancel_never_confirms_delete() {
+    let (window, child) = window();
+    let confirmed = Rc::new(RefCell::new(0));
+    let cancelled = Rc::new(RefCell::new(0));
     let sink = confirmed.clone();
-    ui.window
-        .on_confirm_operation(move |token, _| sink.borrow_mut().push(token));
+    window.on_confirm(move |_| *sink.borrow_mut() += 1);
     let sink = cancelled.clone();
-    ui.window
-        .on_cancel_operation(move |token| sink.borrow_mut().push(token));
-    ui.window.set_operation_has_name(false);
-    ui.window.set_operation_token("focused-close".into());
+    window.on_request_dismiss(move || *sink.borrow_mut() += 1);
+    window.set_has_name(false);
     for dangerous in [false, true] {
-        ui.window.set_operation_dangerous(dangerous);
-        ui.window.invoke_begin_operation();
-        ui.draw();
-        let close = ui::root_item(&ui.window, "Cancel dialog", AccessibleRole::Button);
-        let scope = focus_scope(close).expect("close button keyboard focus scope");
-        let inner = WindowInner::from_pub(ui.window.window());
-        // Exercise the same focus route an accessibility client can request.
-        // Calling accessible-action-default would bypass key capture entirely.
+        window.set_dangerous(dangerous);
+        window.invoke_begin();
+        let cancel = modeless::accessible_item(&child, AccessibleRole::Button, "Cancel").unwrap();
+        let scope = focus_scope(cancel).expect("Cancel keyboard focus scope");
+        let inner = WindowInner::from_pub(child.window());
         inner.set_focus_item(&scope, true, FocusReason::Programmatic);
         assert_eq!(inner.focus_item.borrow().upgrade().as_ref(), Some(&scope));
-        ui::key(&ui.window, Key::Return);
-        assert!(
-            confirmed.borrow().is_empty(),
-            "Enter on the focused close button must never confirm deletion"
+        input::key(&child, Key::Return);
+        assert_eq!(
+            *confirmed.borrow(),
+            0,
+            "Enter on Cancel never confirms deletion"
         );
-        assert_eq!(cancelled.borrow().len(), if dangerous { 2 } else { 1 });
+        assert_eq!(*cancelled.borrow(), if dangerous { 2 } else { 1 });
     }
 }

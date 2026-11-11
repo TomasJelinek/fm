@@ -161,61 +161,7 @@ fn dialogs_keep_actions_visible_in_all_themes_and_densities() {
                 );
             }
             let label = format!("theme-{scheme}-density-{density}-font-{font}");
-            for (kind, title, has_name, warning) in [
-                (0, "Rename", true, ""),
-                (
-                    1,
-                    "Move to Trash",
-                    false,
-                    "Selected items will be removed from this folder and moved to Trash.",
-                ),
-                (
-                    2,
-                    "Permanently delete",
-                    false,
-                    "Permanent deletion cannot be undone.",
-                ),
-                (3, "Create directory", true, ""),
-                (4, "New empty file", true, ""),
-            ] {
-                test.window.set_operation_token("1".into());
-                test.window.set_operation_title(title.into());
-                test.window.set_operation_kind(kind);
-                test.window.set_operation_has_name(has_name);
-                test.window.set_operation_dangerous(kind == 2);
-                test.window.set_operation_warning(warning.into());
-                test.window.set_operation_name("文档 👩🏽‍💻.txt".into());
-                test.window.set_operation_body(format!("Location: /very/long/文档/e\u{301}/👩🏽‍💻/folder\n\n{}\n123 456 789 bytes · 06.11.2026 10:20:30", "source-file-with-long-Unicode-name-文档.txt\n".repeat(20)).into());
-                test.window.invoke_begin_operation();
-                test.draw();
-                let body = test.window.get_operation_body();
-                let text = find_text(
-                    ItemRc::new_root(WindowInner::from_pub(test.window.window()).component()),
-                    &body,
-                )
-                .unwrap();
-                assert_eq!(
-                    text.geometry().origin,
-                    Default::default(),
-                    "Dialog text must start at its scrollable content origin, not be centered/clipped"
-                );
-                assert!(
-                    text.geometry().height() >= body.lines().count() as f32 * font as f32,
-                    "Every body line needs scrollable space; a fixed-height text clips its beginning/end: {:?}",
-                    text.geometry()
-                );
-                for label in [title, "Cancel"] {
-                    inside(
-                        &test,
-                        ui::root_item(&test.window, label, AccessibleRole::Button),
-                        label,
-                    );
-                }
-                if font != 32 {
-                    snapshot(&test, &format!("{label}-operation-{kind}"));
-                }
-                test.window.set_operation_token("".into());
-            }
+            // Native operation form layout is covered by native_operation_layout.
             test.window.set_copy_token("copy:1:1".into());
             test.window.set_copy_name("文档 👩🏽‍💻.txt".into());
             test.window.set_copy_body(format!("Source\n/very/long/文档/source.txt\n123 456 bytes · 06.11.2026 10:20:30\n\nExisting destination\n/very/long/文档/destination.txt\n234 567 bytes · 05.11.2026 08:00:00\n\n{}", "Choose another name or skip. Replacement is unavailable.").into());

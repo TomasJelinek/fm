@@ -1,4 +1,6 @@
 //! Owned native files through installed UI events, presenter and production Engine.
+#[path = "support/window_input.rs"]
+mod input;
 #[path = "support/operations_native.rs"]
 mod native;
 #[path = "support/ui.rs"]
@@ -14,7 +16,7 @@ use std::fs;
 
 fn confirm_copy(h: &mut native::Harness, after: usize) -> std::sync::Arc<CopyProgress> {
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
-    ui::key(&h.ui.window, Key::Return);
+    input::key(&h.dialog(), Key::Return);
     let progress = h.copy_finished(after);
     assert_eq!(
         progress.state,
@@ -58,7 +60,7 @@ fn real_f5_multiselection_toolbar_copy_and_f6_move_preserve_bytes_and_clear_sele
     ui::key(&h.ui.window, Key::F6);
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
     assert!(h.ui.window.get_copy_draft_move());
-    ui::key(&h.ui.window, Key::Escape);
+    input::key(&h.dialog(), Key::Escape);
     h.until(|h| h.ui.window.get_copy_draft_token().is_empty());
     assert!(h.left.join("část 文档 🦀.txt").exists());
     let start = h.copies.len();
@@ -84,10 +86,20 @@ fn real_delete_confirmation_cancel_and_shift_f8_permanently_delete_only_the_sele
     h.until(|h| !h.ui.window.get_operation_token().is_empty());
     assert!(!h.ui.window.get_operation_dangerous());
     assert!(h.ui.window.get_operation_body().contains("nested"));
-    ui::key(&h.ui.window, Key::Escape);
-    h.until(|h| h.ui.window.get_operation_token().is_empty());
+    let cancelled = h.ui.window.get_operation_token().parse::<u64>().unwrap();
+    input::key(&h.dialog(), Key::Escape);
+    // Cancellation is asynchronous and its terminal reply refreshes the pane.
+    // Start the second operation only after that exact cancellation and refresh.
+    h.until(|h| {
+        h.operations.iter().any(|progress| {
+            progress.id == OperationId(cancelled) && progress.state == OperationState::Cancelled
+        }) && h.ui.window.get_operation_token().is_empty()
+            && !h.ui.window.get_left_loading()
+    });
+    assert!(!h.ui.window.get_dialog_input_blocked());
+    assert!(!ui::has_popup(&h.ui.window));
     assert!(h.left.join("nested/child.txt").exists());
-    h.ui.window.invoke_focus_files();
+    h.focus(PaneId::Left, "nested", false);
     h.ui.window
         .window()
         .dispatch_event(WindowEvent::KeyPressed {
@@ -102,7 +114,7 @@ fn real_delete_confirmation_cancel_and_shift_f8_permanently_delete_only_the_sele
     h.until(|h| !h.ui.window.get_operation_token().is_empty());
     assert!(h.ui.window.get_operation_dangerous());
     let start = h.operations.len();
-    ui::key(&h.ui.window, Key::Return);
+    input::key(&h.dialog(), Key::Return);
     h.until(|h| {
         h.operations
             .iter()

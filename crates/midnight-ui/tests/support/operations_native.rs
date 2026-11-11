@@ -1,10 +1,15 @@
 //! Real UI -> Engine -> native filesystem fixture; never reads or saves user preferences.
 #![allow(dead_code)]
+#[path = "modeless.rs"]
+mod modeless;
 use midnight_core::*;
 use midnight_engine::Engine;
 use midnight_platform::LocalFileSystem;
 use midnight_ui::{Presenter, install, refresh};
-use slint::Model;
+use slint::{
+    ComponentHandle, Model,
+    platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+};
 use std::{
     cell::{Cell, RefCell},
     fs,
@@ -27,6 +32,7 @@ impl SettingsService for Settings {
 
 pub struct Harness {
     pub ui: super::ui::TestUi,
+    windows: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
     pub root: PathBuf,
     pub left: PathBuf,
     pub right: PathBuf,
@@ -47,8 +53,11 @@ pub struct Harness {
 
 impl Harness {
     pub fn new() -> Self {
-        let parent =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/operations-find");
+        let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/operations-find")
+            });
         fs::create_dir_all(&parent).unwrap();
         let parent = parent.canonicalize().unwrap();
         let stamp = SystemTime::now()
@@ -92,7 +101,24 @@ impl Harness {
             .with_locale(service)
             .with_settings(Arc::new(Settings(preferences)));
         let engine = runtime.spawn(engine.run(receive));
-        let ui = super::ui::TestUi::new();
+        let windows = Rc::new(RefCell::new(Vec::new()));
+        slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+        let window = midnight_ui::MainWindow::new().unwrap();
+        window.set_preferences_ready(true);
+        midnight_ui::install_file_keys(&window);
+        window.show().unwrap();
+        window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        let native = windows.borrow()[0].clone();
+        let mut ui = super::ui::TestUi {
+            window,
+            native,
+            pixels: Vec::new(),
+            width: 1340,
+            height: 820,
+        };
+        ui.resize(1340, 820);
         let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
         let sender = commands.clone();
         let internal_drops = Rc::new(Cell::new(0));
@@ -106,6 +132,7 @@ impl Harness {
         install(&ui.window, presenter.clone(), send.clone());
         let mut h = Self {
             ui,
+            windows,
             root,
             left,
             right,
@@ -134,6 +161,29 @@ impl Harness {
                     .any(|row| row.name == "target folder")
         });
         h
+    }
+
+    pub fn dialog(&self) -> Rc<MinimalSoftwareWindow> {
+        let children: Vec<_> = self
+            .windows
+            .borrow()
+            .iter()
+            .skip(1)
+            .filter(|window| window.window().is_visible())
+            .cloned()
+            .collect();
+        assert_eq!(
+            children.len(),
+            1,
+            "operation must use a separate native child"
+        );
+        assert!(self.ui.window.get_dialog_input_blocked());
+        let child = children[0].clone();
+        modeless::draw(&child, 640, 420, "native-filesystem-operation");
+        child
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        child
     }
 
     pub fn rows(&self, pane: PaneId) -> Vec<midnight_ui::FileRow> {

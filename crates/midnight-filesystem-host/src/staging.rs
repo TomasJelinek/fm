@@ -83,6 +83,9 @@ impl Staging {
         if request != message.request() {
             return Err(invalid());
         }
+        // Ordinary member writes and cancellation use the same effect-free checks.
+        // Scratch preparation during Open retains its separate existing contract.
+        self.cancellation_checkpoint(operation, message)?;
         let reply = match message {
             Message::StageBegin {
                 purpose,
@@ -217,6 +220,13 @@ impl Staging {
         };
         Ok(Some(reply))
     }
+    pub(crate) fn cache_member(&mut self, entry: u64, lease: Lease) {
+        self.cache.retain(|(id, _)| *id != entry);
+        self.cache.push_back((entry, lease));
+        if self.cache.len() > CACHE_ENTRIES {
+            self.cache.pop_front();
+        }
+    }
     fn pending_mut(&mut self, stage: u64, request: u64) -> io::Result<&mut Pending> {
         self.pending
             .as_mut()
@@ -228,6 +238,14 @@ impl Staging {
         &mut self,
         operation: &Message,
         reply: &Message,
+    ) -> io::Result<Option<Lease>> {
+        self.terminal_with_cache(operation, reply, true)
+    }
+    pub(crate) fn terminal_with_cache(
+        &mut self,
+        operation: &Message,
+        reply: &Message,
+        cache: bool,
     ) -> io::Result<Option<Lease>> {
         if operation.request() != reply.request() || self.pending.is_some() {
             return Err(invalid());
@@ -282,10 +300,8 @@ impl Staging {
                 if matches!(sealed.purpose, StagePurpose::Member { .. }) {
                     self.sealed.remove(stage);
                 }
-                self.cache.retain(|(id, _)| id != entry);
-                self.cache.push_back((*entry, lease.clone()));
-                if self.cache.len() > CACHE_ENTRIES {
-                    self.cache.pop_front();
+                if cache {
+                    self.cache_member(*entry, lease.clone());
                 }
                 Ok(Some(lease))
             }
@@ -303,3 +319,6 @@ fn invalid() -> io::Error {
 #[cfg(test)]
 #[path = "staging_tests.rs"]
 mod tests;
+
+#[path = "staging_cancel.rs"]
+mod cancel;

@@ -21,6 +21,15 @@ pub enum Protocol {
     #[default]
     V1 = 1,
     V2 = 2,
+    /// Streaming with acknowledged request-local member cancellation.
+    V3 = 3,
+}
+
+impl Protocol {
+    /// Protocols with host-owned staging and policy-ready containment.
+    pub fn supports_staging(self) -> bool {
+        matches!(self, Self::V2 | Self::V3)
+    }
 }
 
 impl TryFrom<u16> for Protocol {
@@ -29,6 +38,7 @@ impl TryFrom<u16> for Protocol {
         match value {
             1 => Ok(Self::V1),
             2 => Ok(Self::V2),
+            3 => Ok(Self::V3),
             _ => Err(invalid()),
         }
     }

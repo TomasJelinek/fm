@@ -148,7 +148,7 @@ impl Mount {
         cancel: &Cancellation,
     ) -> Result<Arc<Self>, FsError> {
         let fail = |error: io::Error| FsError::from_io("open archive", path, error);
-        let staging = Arc::new(Mutex::new(if package.protocol == Protocol::V2 {
+        let staging = Arc::new(Mutex::new(if package.protocol.supports_staging() {
             Some(
                 crate::staging::Staging::open(
                     &std::env::temp_dir().join("MidnightExplorer-archive-spool"),
@@ -167,7 +167,7 @@ impl Mount {
                     "Two archive mounts are already active; close one first",
                 ))
             })?;
-        let spawned = if package.protocol == Protocol::V2 {
+        let spawned = if package.protocol.supports_staging() {
             midnight_worker_platform::spawn_with_policy(
                 &package.executable,
                 midnight_worker_platform::ResourcePolicy {
@@ -239,7 +239,7 @@ impl Mount {
         });
         {
             let mut channel = mount.channel.lock().unwrap_or_else(|e| e.into_inner());
-            if package.protocol == Protocol::V2 {
+            if package.protocol.supports_staging() {
                 midnight_worker_sdk::read_policy_ready(&mut channel.output).map_err(fail)?;
             } else {
                 midnight_worker_sdk::read_ready(&mut channel.output).map_err(fail)?;
@@ -260,8 +260,25 @@ impl Mount {
         cancel: &Cancellation,
         message: impl FnOnce(u64) -> Message,
     ) -> Result<Message, FsError> {
+        self.exchange_read(cancel, None, message)
+    }
+    fn exchange_read(
+        &self,
+        cancel: &Cancellation,
+        cooperative: Option<&dyn Fn() -> bool>,
+        message: impl FnOnce(u64) -> Message,
+    ) -> Result<Message, FsError> {
         let fail = |error: io::Error| FsError::from_io("archive", &self.container, error);
+        let interrupted = || fail(io::ErrorKind::Interrupted.into());
+        if cooperative.is_some_and(|cancelled| cancelled()) {
+            return Err(interrupted());
+        }
         let mut channel = self.channel.lock().unwrap_or_else(|e| e.into_inner());
+        if cooperative.is_some_and(|cancelled| cancelled()) {
+            return Err(interrupted());
+        }
+        let mut canceled_safely = false;
+        let mut cancel_sent = false;
         self.ensure_active(cancel).map_err(fail)?;
         self.validate()
             .inspect_err(|_| self.supervision.stop.store(true, Ordering::Release))?;
@@ -283,7 +300,7 @@ impl Mount {
                 length,
                 ..
             } = operation
-                && self.protocol == Protocol::V2
+                && self.protocol.supports_staging()
             {
                 let cached = self
                     .staging
@@ -294,6 +311,11 @@ impl Mount {
                 if let Some(lease) = cached {
                     let bytes = lease.read(offset, length).map_err(fail)?;
                     self.validate()?;
+                    self.ensure_active(cancel).map_err(fail)?;
+                    if cooperative.is_some_and(|cancelled| cancelled()) {
+                        canceled_safely = true;
+                        return Err(interrupted());
+                    }
                     return Ok(Message::Content {
                         request,
                         eof: bytes.len() < length as usize,
@@ -312,6 +334,29 @@ impl Mount {
                 }
                 if self.supervision.stop.load(Ordering::Acquire) || cancel.is_cancelled() {
                     return Err(fail(io::ErrorKind::Interrupted.into()));
+                }
+                if cancel_sent {
+                    if !matches!(&reply, Message::Failed { code: api::ErrorCode::Cancelled, .. }) {
+                        return Err(fail(io::ErrorKind::InvalidData.into()));
+                    }
+                    self.validate()?;
+                    self.ensure_active(cancel).map_err(fail)?;
+                    self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                        .ok_or_else(interrupted)?.abandon_member(request).map_err(fail)?;
+                    canceled_safely = true;
+                    return Err(interrupted());
+                }
+                if cooperative.is_some() {
+                    let checkpoint = self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                        .ok_or_else(interrupted)?.cancellation_checkpoint(&operation, &reply).map_err(fail)?;
+                    if checkpoint && cooperative.is_some_and(|cancelled| cancelled()) {
+                        self.validate()?;
+                        self.ensure_active(cancel).map_err(fail)?;
+                        api::write_message_with_protocol(&mut channel.input, self.protocol,
+                            &Message::Failed { request, code: api::ErrorCode::Cancelled, message: "Preview read cancelled".into() }).map_err(fail)?;
+                        cancel_sent = true;
+                        continue;
+                    }
                 }
                 match reply {
                     Message::SourceRead { offset, length, .. } => {
@@ -354,7 +399,7 @@ impl Mount {
                         )));
                     }
                     other => {
-                        if self.protocol == Protocol::V2 {
+                        if self.protocol.supports_staging() {
                             let mut staging =
                                 self.staging.lock().unwrap_or_else(|e| e.into_inner());
                             let staging = staging
@@ -378,12 +423,23 @@ impl Mount {
                             }
                             self.validate()?;
                             self.ensure_active(cancel).map_err(fail)?;
-                            let lease = staging.terminal(&operation, &other).map_err(fail)?;
+                            let lease = if cooperative.is_some() {
+                                staging.terminal_with_cache(&operation, &other, false)
+                            } else { staging.terminal(&operation, &other) }.map_err(fail)?;
                             if let (Some(lease), Message::Read { offset, length, .. }) =
                                 (lease, &operation)
                             {
                                 let bytes = lease.read(*offset, *length).map_err(fail)?;
                                 self.validate()?;
+                                self.ensure_active(cancel).map_err(fail)?;
+                                if cooperative.is_some_and(|cancelled| cancelled()) {
+                                    staging.abandon_member(request).map_err(fail)?;
+                                    canceled_safely = true;
+                                    return Err(interrupted());
+                                }
+                                if cooperative.is_some() && let Message::Read { entry, .. } = operation {
+                                    staging.cache_member(entry, lease);
+                                }
                                 return Ok(Message::Content {
                                     request,
                                     eof: bytes.len() < *length as usize,
@@ -415,7 +471,7 @@ impl Mount {
             .deadline
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
-        if result.is_err() {
+        if result.is_err() && !canceled_safely {
             self.supervision.stop.store(true, Ordering::Release);
         }
         result
@@ -578,6 +634,46 @@ impl ArchiveMount for Mount {
             }
         }
     }
+    fn read_cooperative(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        let interrupted = || {
+            FsError::from_io(
+                "archive preview",
+                &self.container,
+                io::ErrorKind::Interrupted.into(),
+            )
+        };
+        if cancelled() {
+            return Err(interrupted());
+        }
+        let independent = Cancellation::default();
+        if self.protocol != Protocol::V3 {
+            let bytes = self.read(entry, offset, length, &independent)?;
+            return if cancelled() {
+                Err(interrupted())
+            } else {
+                Ok(bytes)
+            };
+        }
+        match self.exchange_read(&independent, Some(cancelled), |request| Message::Read {
+            request,
+            entry,
+            offset,
+            length,
+        })? {
+            Message::Content { bytes, .. } if bytes.len() <= length as usize => Ok(bytes),
+            _ => Err(FsError::from_io(
+                "archive read",
+                &self.container,
+                io::ErrorKind::InvalidData.into(),
+            )),
+        }
+    }
     fn read(
         &self,
         entry: u64,
@@ -618,3 +714,7 @@ mod completion_tests;
 #[cfg(test)]
 #[path = "member_identity_tests.rs"]
 mod member_identity_tests;
+
+#[cfg(test)]
+#[path = "cooperative_tests.rs"]
+mod cooperative_tests;

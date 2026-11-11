@@ -1,9 +1,17 @@
 //! Real keyboard/pointer routing; mock commands never touch a filesystem.
+#[allow(dead_code)] // This fixture uses the platform/render helpers, not its pointer helpers.
+#[path = "support/modeless.rs"]
+mod modeless;
 #[path = "support/ui.rs"]
 mod ui;
+#[path = "support/window_input.rs"]
+mod window_input;
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
-use slint::platform::Key;
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
+};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -14,7 +22,7 @@ use ui::{TestUi, chord, key};
 
 #[test]
 fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
-    let mut ui = TestUi::new();
+    let (mut ui, windows) = main_with_children();
     let path = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("fixture");
     let state = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -60,7 +68,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
     ui.window.invoke_row_click(0, 1, false, false);
     ui.window.invoke_focus_files();
     commands.borrow_mut().clear();
-    key(&ui.window, Key::F2);
+    key_current(&ui, &windows, Key::F2);
     let request = commands
         .borrow()
         .iter()
@@ -88,8 +96,8 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         ))));
     refresh(&ui.window, &state.borrow());
     ui.draw();
-    key(&ui.window, "new"); // Only the basename is selected; .txt survives.
-    key(&ui.window, Key::Return);
+    key_current(&ui, &windows, "new"); // Only the basename is selected; .txt survives.
+    key_current(&ui, &windows, Key::Return);
     assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: Some(name) } if *id == request.id && name == "new.txt")));
     assert!(ui.window.get_operation_token().is_empty());
@@ -144,7 +152,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
             command,
             Command::ConfirmOperation { .. } | Command::CancelOperation(_)
         )));
-        key(&ui.window, Key::Return);
+        key_current(&ui, &windows, Key::Return);
         assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: None } if *id == deletion.id)));
         assert!(
@@ -156,8 +164,8 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
     }
     ui.window.invoke_focus_command();
     commands.borrow_mut().clear();
-    key(&ui.window, Key::Delete);
-    chord(&ui.window, &[Key::Shift], Key::F4);
+    key_current(&ui, &windows, Key::Delete);
+    chord_current(&ui, &windows, &[Key::Shift], Key::F4);
     assert!(
         !commands
             .borrow()
@@ -171,9 +179,9 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         ui.window.invoke_focus_files();
         commands.borrow_mut().clear();
         if kind == MutationKind::CreateFile {
-            chord(&ui.window, &[Key::Shift], Key::F4);
+            chord_current(&ui, &windows, &[Key::Shift], Key::F4);
         } else {
-            key(&ui.window, Key::F7);
+            key_current(&ui, &windows, Key::F7);
         }
         assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::PrepareOperation(request) if request.kind == kind)));
@@ -199,31 +207,22 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
             ))));
         refresh(&ui.window, &state.borrow());
         ui.draw();
-        key(&ui.window, expected_name);
+        key_current(&ui, &windows, expected_name);
         let expected_name = if kind == MutationKind::CreateFile {
             reject_confirmation.set(true);
-            key(&ui.window, Key::Return);
+            key_current(&ui, &windows, Key::Return);
             assert_eq!(ui.window.get_operation_token(), creation.id.0.to_string());
-            assert_eq!(
-                ui.window.get_focused_pane(),
-                -1,
-                "failed submission must retain dialog focus"
+            assert!(
+                ui.window.get_dialog_input_blocked(),
+                "failed submission retains owner modality"
             );
-            key(&ui.window, "1");
-            key(&ui.window, Key::Escape);
-            assert_eq!(ui.window.get_operation_token(), creation.id.0.to_string());
-            assert_eq!(
-                ui.window.get_focused_pane(),
-                -1,
-                "failed cancellation must retain dialog focus"
-            );
-            key(&ui.window, "2");
+            key_current(&ui, &windows, "1");
             reject_confirmation.set(false);
-            format!("{expected_name}12")
+            format!("{expected_name}1")
         } else {
             expected_name.to_owned()
         };
-        key(&ui.window, Key::Return);
+        key_current(&ui, &windows, Key::Return);
         assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: Some(name) }
             if *id == creation.id && *name == expected_name)));
@@ -231,7 +230,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
 }
 
 #[test]
-fn empty_file_toolbar_uses_its_panel_and_escape_does_not_confirm() {
+fn empty_file_toolbar_uses_its_panel() {
     let mut ui = TestUi::new();
     let commands = Rc::new(RefCell::new(Vec::new()));
     let sink = commands.clone();
@@ -244,24 +243,6 @@ fn empty_file_toolbar_uses_its_panel_and_escape_does_not_confirm() {
         i_slint_core::items::AccessibleRole::Button,
     );
     assert_eq!(commands.borrow().as_slice(), &[(0, 4)]);
-    // The shared name dialog consumes Escape without submitting the draft.
-    let cancelled = Rc::new(RefCell::new(Vec::new()));
-    let sink = cancelled.clone();
-    ui.window
-        .on_cancel_operation(move |token| sink.borrow_mut().push(token));
-    ui.window
-        .on_confirm_operation(|_, _| panic!("Escape must not create a file"));
-    ui.window.set_operation_token("41".into());
-    ui.window.set_operation_title("New empty file".into());
-    ui.window.set_operation_has_name(true);
-    ui.window.invoke_begin_operation();
-    ui.draw();
-    key(&ui.window, "draft.txt");
-    key(&ui.window, Key::Escape);
-    assert_eq!(
-        cancelled.borrow().as_slice(),
-        &[slint::SharedString::from("41")]
-    );
 }
 
 #[test]
@@ -293,4 +274,52 @@ fn clicking_after_breadcrumb_edits_path_and_enter_submits_unicode() {
     key(&ui.window, Key::Escape);
     assert_eq!(paths.borrow().len(), 1);
     assert_eq!(ui.window.get_left_path_draft(), "C:\\folder");
+}
+
+type ChildWindows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
+fn main_with_children() -> (TestUi, ChildWindows) {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();
+    let window = midnight_ui::MainWindow::new().unwrap();
+    midnight_ui::install_file_keys(&window);
+    window.set_preferences_ready(true);
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    let mut test = TestUi {
+        window,
+        native,
+        pixels: Vec::new(),
+        width: 0,
+        height: 0,
+    };
+    test.resize(1340, 820);
+    (test, windows)
+}
+fn current(test: &TestUi, windows: &ChildWindows) -> Rc<MinimalSoftwareWindow> {
+    slint::platform::update_timers_and_animations();
+    let child = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .rev()
+        .find(|adapter| adapter.window().is_visible())
+        .cloned();
+    if let Some(child) = child {
+        assert!(test.window.get_dialog_input_blocked());
+        modeless::draw(&child, 640, 420, "mutation-child");
+        child
+    } else {
+        test.native.clone()
+    }
+}
+fn key_current(test: &TestUi, windows: &ChildWindows, key: impl Into<slint::SharedString>) {
+    window_input::key(&current(test, windows), key);
+}
+fn chord_current(
+    test: &TestUi,
+    windows: &ChildWindows,
+    modifiers: &[Key],
+    key: impl Into<slint::SharedString>,
+) {
+    window_input::chord(&current(test, windows), modifiers, key);
 }

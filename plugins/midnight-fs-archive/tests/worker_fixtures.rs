@@ -79,3 +79,39 @@ fn export_worker_fixtures() {
     corrupt[32 + PAYLOAD.len() + 512] ^= 1;
     fs::write(root.join("corrupt.7z"), corrupt).unwrap();
 }
+
+#[test]
+#[ignore = "exports cooperative cancellation fixtures under _build"]
+fn export_cooperative_fixtures() {
+    let root =
+        PathBuf::from(std::env::var_os("MIDNIGHT_ARCHIVE_FIXTURES").expect("fixture output"));
+    assert!(root.components().any(|part| part.as_os_str() == "_build"));
+    fs::create_dir_all(&root).unwrap();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("cached.bin", options).unwrap();
+    zip.write_all(b"keep").unwrap();
+    zip.start_file("large.bin", options).unwrap();
+    zip.write_all(&vec![42; 2 * 1024 * 1024]).unwrap();
+    fs::write(root.join("cancel.zip"), zip.finish().unwrap().into_inner()).unwrap();
+    let mut seven = sevenz_rust2::ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
+    seven.set_content_methods(vec![sevenz_rust2::EncoderConfiguration::new(
+        sevenz_rust2::EncoderMethod::COPY,
+    )]);
+    seven
+        .push_archive_entries(
+            vec![
+                sevenz_rust2::ArchiveEntry::new_file("cached.bin"),
+                sevenz_rust2::ArchiveEntry::new_file("../discard"),
+                sevenz_rust2::ArchiveEntry::new_file("large.bin"),
+            ],
+            vec![
+                sevenz_rust2::SourceReader::new(Cursor::new(b"keep".to_vec())),
+                sevenz_rust2::SourceReader::new(Cursor::new(vec![3; 2 * 1024 * 1024])),
+                sevenz_rust2::SourceReader::new(Cursor::new(vec![42; 4])),
+            ],
+        )
+        .unwrap();
+    fs::write(root.join("cancel.7z"), seven.finish().unwrap().into_inner()).unwrap();
+}

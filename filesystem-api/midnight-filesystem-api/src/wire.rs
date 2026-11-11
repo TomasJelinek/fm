@@ -10,7 +10,7 @@ pub fn write_message_with_protocol(
     protocol: Protocol,
     message: &Message,
 ) -> io::Result<()> {
-    if protocol == Protocol::V2 {
+    if protocol.supports_staging() {
         streaming::validate(message)?;
     } else if streaming::tag(message).is_some() {
         return Err(invalid());
@@ -60,7 +60,7 @@ pub fn write_message_with_protocol(
                     put64(&mut data, size);
                 }
                 data.push(u8::from(node.readable));
-                if protocol == Protocol::V2 {
+                if protocol.supports_staging() {
                     timestamp::write(&mut data, node.modified)?;
                 }
             }
@@ -177,7 +177,7 @@ pub fn read_message_with_protocol(
                         None
                     },
                     readable: boolean(&mut data)?,
-                    modified: if protocol == Protocol::V2 {
+                    modified: if protocol.supports_staging() {
                         timestamp::read(&mut data)?
                     } else {
                         None
@@ -227,13 +227,13 @@ pub fn read_message_with_protocol(
             message: string(&mut data, 4096)?,
         },
         10 => Message::Close { request },
-        11..=21 if protocol == Protocol::V2 => streaming::read(tag, request, &mut data)?,
+        11..=21 if protocol.supports_staging() => streaming::read(tag, request, &mut data)?,
         _ => return Err(invalid()),
     };
     if data.position() != length as u64 {
         return Err(invalid());
     }
-    if protocol == Protocol::V2 {
+    if protocol.supports_staging() {
         streaming::validate(&message)?;
     }
     Ok(message)

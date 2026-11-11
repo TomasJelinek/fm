@@ -2,7 +2,10 @@
 
 Status: resumed at the user's explicit request, 9 November 2026. The implementation
 must support generic archive member content on private TEMP disk and index-only
-ZIP browsing. No JPEG-specific decoder changes are part of this work.
+ZIP browsing. The 11 November MEDIA-01 extension adds negotiated cooperative
+thumbnail read cancellation, with scoped implementation and installed-worker gates
+passed; final combined application acceptance remains separate. No JPEG-specific
+decoder changes are part of this work.
 
 The resumed requirements supersede the earlier proposed per-file, total expanded
 data and aggregate disk byte quotas below: encoded sources and decoded members
@@ -13,8 +16,12 @@ quota proposals in historical sections are not implementation requirements.
 
 ## Resumed implementation decisions
 
-The implemented executable contract is filesystem API 0.3, explicit protocol 2.
-Default protocol-1 helpers preserve the released bytes. SourceRead is valid during
+The current executable contract is filesystem API 0.4, explicit protocol 3.
+It preserves protocol-2 staging records and adds request-local cancellation at
+validated member staging/progress checkpoints. Legacy protocol-1/2 behavior and
+default protocol-1 helper bytes remain unchanged. See the
+[current cancellation contract](../../developer/FILESYSTEM_API.md) and
+[MEDIA-01 evidence](../../verification/2026-11-10-archive-thumbnails.md). SourceRead is valid during
 any operation. Host stages support bounded append/ack, seal, scratch reads and a
 terminal ContentReady range; IDs never expose a path or native handle. Sealed
 member stages belong to their creating request and selected member. Scratch

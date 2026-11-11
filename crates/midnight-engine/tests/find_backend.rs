@@ -159,7 +159,14 @@ fn strict_utf8_bom_unicode_folding_and_matches_crossing_chunks() {
     bytes.extend(vec![b'x'; 65_531]);
     bytes.extend("Straße 文档\n".as_bytes());
     fs::write(&path, &bytes).unwrap();
-    fs::write(temporary.path().join("malformed.txt"), [0xff, 0xfe, 0, 0]).unwrap();
+    // BOM-marked UTF-16 is supported; its NUL code point is valid but nonmatching.
+    fs::write(temporary.path().join("valid-utf16.txt"), [0xff, 0xfe, 0, 0]).unwrap();
+    // Keep one genuinely malformed UTF-8 source to test incomplete/error reporting.
+    fs::write(
+        temporary.path().join("malformed.txt"),
+        [0xef, 0xbb, 0xbf, 0xff],
+    )
+    .unwrap();
     let mut query = request(vec![temporary.path().to_owned()]);
     query.masks = "*.txt".into();
     query.content = Some(FindContentQuery {

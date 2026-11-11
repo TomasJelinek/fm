@@ -1,4 +1,6 @@
 //! Installed Slint keys and real native transfers; the OS clipboard alone is in memory.
+#[path = "support/window_input.rs"]
+mod input;
 #[path = "support/tree_move_native.rs"]
 mod native;
 #[path = "support/tree_filters.rs"]
@@ -234,7 +236,7 @@ fn exercise(pane: PaneId, intent: FileClipboardIntent) {
             "Cut/Paste waits for explicit Move confirmation"
         );
         assert!(fixture.root.join("folder/large/payload.bin").is_file());
-        ui::key(&h.ui.window, Key::Return);
+        input::key(&h.dialog(), Key::Return);
     }
     h.until(|h| {
         h.copy_progress

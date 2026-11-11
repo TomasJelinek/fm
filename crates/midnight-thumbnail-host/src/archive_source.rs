@@ -1,6 +1,6 @@
 //! Read-only archive member leases. Display labels never become native operation paths.
 use crate::{decode::Source, service::Capture};
-use midnight_core::{ArchiveMount, ArchiveNode, Cancellation, EntryKind};
+use midnight_core::{ArchiveMount, ArchiveNode, EntryKind};
 use std::{
     io,
     sync::{
@@ -85,6 +85,14 @@ impl Source for Member {
         self.descriptor.mount.validate().map_err(io::Error::other)
     }
     fn read_at(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
+        self.read_at_cooperative(offset, length, &|| false)
+    }
+    fn read_at_cooperative(
+        &self,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Vec<u8>> {
         if length == 0
             || length as usize > midnight_thumbnail_api::MAX_READ_BYTES
             || offset
@@ -94,22 +102,14 @@ impl Source for Member {
             return Err(invalid("Archive thumbnail read outside captured content"));
         }
         self.validate()?;
-        // Canceling an in-flight exchange kills the shared archive process. Drain this bounded
-        // read under the mount watchdog; decoder/service cancellation stops new reads and stale
-        // publication while retaining the real worker permit until this call actually returns.
-        // A ZIP member or solid 7z block can require complete staging/CRC verification. Its
-        // completed-I/O watchdog renews on progress, so neither cancellation nor the decoder's
-        // ten-second timeout promises a hard deadline for the shared archive read to return.
+        // Negotiated hosts cancel one member preparation at staging checkpoints.
+        // Legacy mounts drain under an independent token. Neither releases the real
+        // decoder/I/O capacity before this call and native cleanup have returned.
         let bytes = self
             .descriptor
             .mount
-            .read(
-                self.descriptor.node.id.entry,
-                offset,
-                length,
-                &Cancellation::default(),
-            )
-            .map_err(io::Error::other)?;
+            .read_cooperative(self.descriptor.node.id.entry, offset, length, cancelled)
+            .map_err(|error| io::Error::new(error.kind, error))?;
         self.validate()?;
         if bytes.len() != length as usize {
             return Err(io::Error::new(

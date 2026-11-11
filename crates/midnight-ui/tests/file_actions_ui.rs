@@ -1,3 +1,5 @@
+#[path = "support/owned_windows.rs"]
+mod owned_windows;
 #[path = "support/selection.rs"]
 mod selection;
 #[path = "support/ui.rs"]
@@ -14,6 +16,7 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
 struct Harness {
     ui: ui::TestUi,
+    windows: owned_windows::Windows,
     presenter: Rc<RefCell<Presenter>>,
     commands: Rc<RefCell<Vec<Command>>>,
     base: PathBuf,
@@ -21,7 +24,7 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let ui = ui::TestUi::new();
+        let (ui, windows) = owned_windows::new();
         let base = std::env::temp_dir().join("UI clipboard 文档 & $(literal)");
         let presenter = Rc::new(RefCell::new(Presenter::new(
             base.clone(),
@@ -39,6 +42,7 @@ impl Harness {
         );
         let mut h = Self {
             ui,
+            windows,
             presenter,
             commands,
             base,
@@ -231,7 +235,7 @@ fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
         command,
         Command::EnqueueCopy(_) | Command::EnqueueMove(_) | Command::EnqueueClipboardMove(_)
     )));
-    ui::key(&h.ui.window, Key::Return);
+    owned_windows::child_key(&h.windows, Key::Return);
     h.draw();
     let commands = h.commands.borrow();
     let request = commands

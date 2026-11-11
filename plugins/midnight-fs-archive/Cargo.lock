@@ -197,9 +197,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "midnight-filesystem-api"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "76f5bcd797d86fbf6c4516de9b08163edfd47578e6af6d3bdbf324ade412bbeb"
+checksum = "9157d62a316f1d1a4ebc34dc8fbc28c99d52ec5afce232f31e0ca2c03a9b7b23"
 
 [[package]]
 name = "midnight-fs-archive"

@@ -123,6 +123,31 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
         length: u32,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, FsError>;
+    /// Cancel one preview read without invalidating a shared mount. Legacy providers drain
+    /// an admitted read under an independent token, then suppress its canceled result.
+    fn read_cooperative(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        let interrupted = || {
+            FsError::from_io(
+                "archive preview",
+                std::path::Path::new(""),
+                std::io::ErrorKind::Interrupted.into(),
+            )
+        };
+        if cancelled() {
+            return Err(interrupted());
+        }
+        let bytes = self.read(entry, offset, length, &Cancellation::default())?;
+        if cancelled() {
+            return Err(interrupted());
+        }
+        Ok(bytes)
+    }
     fn validate(&self) -> Result<(), FsError>;
 
     /// Backend-only native container locator held by this mount. This is not a member path.

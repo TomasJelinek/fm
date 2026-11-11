@@ -105,14 +105,6 @@ fn draw(test: &mut ui::TestUi) {
     }
 }
 
-fn root_title(test: &ui::TestUi, title: &str) -> ItemRc {
-    find_text(
-        ItemRc::new_root(WindowInner::from_pub(test.window.window()).component()),
-        title,
-    )
-    .unwrap()
-}
-
 fn inside(test: &ui::TestUi, item: &ItemRc, label: &str) {
     if let Some(error) = bounds_error(test, item, label) {
         panic!("{error}");
@@ -428,6 +420,25 @@ fn scrolling_dialogs_open_at_minimum_size_with_keyboard_close_available() {
             ..Default::default()
         });
     draw(&mut test);
+    let focused = WindowInner::from_pub(test.window.window())
+        .focus_item
+        .borrow()
+        .upgrade();
+    assert!(
+        focused.is_some(),
+        "compact comparison lost keyboard focus before Escape"
+    );
+    eprintln!(
+        "compact comparison focus: {:?}",
+        focused.as_ref().map(|item| (
+            item.accessible_role(),
+            item.geometry(),
+            item.is_visible(),
+            item.accessible_string_property(
+                i_slint_core::accessibility::AccessibleStringProperty::Label
+            )
+        ))
+    );
     ui::key(&test.window, Key::Escape);
     draw(&mut test);
     assert!(
@@ -448,52 +459,5 @@ fn scrolling_dialogs_open_at_minimum_size_with_keyboard_close_available() {
     );
 }
 
-#[test]
-fn operation_and_copy_prompts_move_without_losing_the_name_draft() {
-    use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
-    let mut test = ui::TestUi::new();
-    for (kind, title, has_name) in [
-        (0, "Rename", true),
-        (1, "Move to Trash", false),
-        (2, "Permanently delete", false),
-        (3, "Create directory", true),
-        (4, "New empty file", true),
-    ] {
-        test.window.set_operation_token("operation:1".into());
-        test.window.set_operation_title(title.into());
-        test.window.set_operation_kind(kind);
-        test.window.set_operation_has_name(has_name);
-        test.window.set_operation_name("draft.txt".into());
-        test.window.invoke_begin_operation();
-        draw(&mut test);
-        let item = root_title(&test, title);
-        moves(&mut test, item);
-        if has_name {
-            let field = ui::root_item(&test.window, title, AccessibleRole::TextInput);
-            assert_eq!(
-                field
-                    .accessible_string_property(AccessibleStringProperty::Value)
-                    .unwrap()
-                    .as_str(),
-                "draft.txt"
-            );
-            ui::key(&test.window, "Ω");
-            assert!(
-                field
-                    .accessible_string_property(AccessibleStringProperty::Value)
-                    .unwrap()
-                    .contains('Ω'),
-                "dragging the header must keep keyboard focus in {title}"
-            );
-        }
-        test.window.set_operation_token("".into());
-        draw(&mut test);
-    }
-    test.window.set_copy_draft_token("copy-draft:1".into());
-    test.window.set_copy_draft_destination("destination".into());
-    test.window.invoke_show_copy_draft();
-    draw(&mut test);
-    let item = root_title(&test, "Copy");
-    moves(&mut test, item);
-    test.window.set_copy_draft_token("".into());
-}
+// Native operation movement/caret and WM_CLOSE coverage lives in
+// native_operation_windows and the opt-in native operation desktop probe.

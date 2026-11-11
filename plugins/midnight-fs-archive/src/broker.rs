@@ -22,10 +22,10 @@ impl<R: Read, W: Write> Transport for Pipes<R, W> {
         self.receive()
     }
     fn receive(&mut self) -> io::Result<Message> {
-        api::read_message_with_protocol(&mut self.input, Protocol::V2)
+        api::read_message_with_protocol(&mut self.input, Protocol::V3)
     }
     fn send(&mut self, message: &Message) -> io::Result<()> {
-        api::write_message_with_protocol(&mut self.output, Protocol::V2, message)
+        api::write_message_with_protocol(&mut self.output, Protocol::V3, message)
     }
 }
 #[derive(Clone)]
@@ -59,8 +59,31 @@ impl Broker {
         if reply.request() != self.request.get() {
             return Err(invalid());
         }
-        if let Message::Failed { message, .. } = reply {
-            return Err(io::Error::other(message));
+        if let Message::Failed {
+            code,
+            message: diagnostic,
+            ..
+        } = reply
+        {
+            // Only staging checkpoints use cooperative cancellation. Returning
+            // Interrupted to a generic source reader can make it retry forever.
+            let checkpoint = matches!(
+                message,
+                Message::StageBegin {
+                    purpose: StagePurpose::Member { .. },
+                    ..
+                } | Message::StageAppend { .. }
+                    | Message::StageProgress { .. }
+                    | Message::StageSeal { .. }
+            );
+            return Err(io::Error::new(
+                if code == api::ErrorCode::Cancelled && checkpoint {
+                    io::ErrorKind::Interrupted
+                } else {
+                    io::ErrorKind::Other
+                },
+                diagnostic,
+            ));
         }
         Ok(reply)
     }
@@ -182,4 +205,51 @@ fn invalid() -> io::Error {
         io::ErrorKind::InvalidData,
         "Invalid archive broker response",
     )
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    struct Reply;
+    impl Transport for Reply {
+        fn exchange(&mut self, message: &Message) -> io::Result<Message> {
+            Ok(Message::Failed {
+                request: message.request(),
+                code: api::ErrorCode::Cancelled,
+                message: "canceled".into(),
+            })
+        }
+        fn receive(&mut self) -> io::Result<Message> {
+            unreachable!()
+        }
+        fn send(&mut self, _: &Message) -> io::Result<()> {
+            unreachable!()
+        }
+    }
+    fn broker() -> Broker {
+        Broker {
+            transport: Rc::new(RefCell::new(Box::new(Reply))),
+            request: Rc::new(Cell::new(7)),
+        }
+    }
+    #[test]
+    fn cooperative_staging_failure_reaches_format_as_cancellation() {
+        let broker = broker();
+        for result in [
+            broker
+                .begin(StagePurpose::Member { entry: 2 }, Some(4), 4)
+                .map(|_| ()),
+            broker.append(1, 0, b"data"),
+            broker.progress(1, 4),
+            broker.seal(1, 4),
+        ] {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        }
+    }
+    #[test]
+    fn cooperative_cancel_is_not_a_retryable_source_interruption() {
+        let mut source = broker().source(4);
+        let error = source.read(&mut [0; 4]).unwrap_err();
+        assert_ne!(error.kind(), io::ErrorKind::Interrupted);
+    }
 }

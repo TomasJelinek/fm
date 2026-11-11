@@ -1,4 +1,6 @@
 //! Real F6 callbacks and queue against native files in fresh private fixtures.
+#[path = "support/window_input.rs"]
+mod input;
 #[path = "support/tree_move_native.rs"]
 mod native;
 #[path = "support/tree_filters.rs"]
@@ -32,7 +34,7 @@ fn exercise(pane: PaneId) {
     ui::key(&h.ui.window, Key::F6);
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
     assert!(!h.ui.window.get_copy_draft_metadata_enabled());
-    ui::key(&h.ui.window, Key::Return);
+    input::key(&h.dialog(), Key::Return);
     h.until(|h| {
         h.copy_progress
             .last()
@@ -123,7 +125,7 @@ fn top_level_move_removes_the_row_and_preserves_the_expanded_tree_session() {
     h.ui.window.invoke_focus_files();
     ui::key(&h.ui.window, Key::F6);
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
-    ui::key(&h.ui.window, Key::Return);
+    input::key(&h.dialog(), Key::Return);
     h.until(|h| {
         h.copy_progress
             .last()
@@ -226,7 +228,7 @@ fn root_transfer_updates_both_trees(intent: TransferIntent) {
         },
     );
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
-    ui::key(&h.ui.window, Key::Return);
+    input::key(&h.dialog(), Key::Return);
     h.until(|h| {
         h.copy_progress
             .last()

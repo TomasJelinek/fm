@@ -1,4 +1,6 @@
 //! F5 through real Slint callbacks, tree actor and verified copy queue.
+#[path = "support/window_input.rs"]
+mod input;
 #[path = "support/tree_filters.rs"]
 mod support;
 #[path = "support/tree_copy.rs"]
@@ -38,7 +40,7 @@ fn exercise(pane: PaneId, archive: bool) {
             .get_copy_draft_body()
             .contains("2 selected items")
     );
-    ui::key(&h.ui.window, Key::Return);
+    input::key(&h.dialog(), Key::Return);
     h.until(|h| {
         h.copy_progress
             .last()

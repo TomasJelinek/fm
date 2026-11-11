@@ -13,6 +13,8 @@ import { HelpWindow } from "help-window.slint";
 import { AboutWindow } from "about-window.slint";
 import { NoticeWindow } from "notice-window.slint";
 export { HelpWindow, AboutWindow, NoticeWindow }
+import { OperationWindow } from "operation-window.slint";
+export { OperationWindow }
 
 import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollView, Palette } from "std-widgets.slint";
@@ -44,7 +46,7 @@ import { ColorOptionsView, FilenameColorDraft } from "color-options.slint";
 export { ColorOptionsView, FilenameColorDraft }
 import { FilenameColorPresentation } from "filename-colors.slint";
 export { FilenameColorPresentation }
-import { OperationDialog } from "operation-controls.slint";
+
 import { OperationsBody, OperationRow, JobsView } from "jobs-dialog.slint";
 import { SpeedChartData } from "operation-speed-chart.slint";
 export { SpeedChartData }
@@ -175,7 +177,9 @@ export component MainWindow inherits Window {
     callback cancel-job(string);
     callback copy-job-details(string);
     callback network-connections(bool);
-    public function begin-operation() { operation-dialog.begin(); }
+    callback refresh-operation-windows();
+    callback close-operation-windows();
+    public function begin-operation() { root.refresh-operation-windows(); }
     out property <bool> operations-visible;
     in-out property <string> operations-auto-copy;
     private property <bool> operations-resume-after-decision;
@@ -234,7 +238,7 @@ export component MainWindow inherits Window {
     in-out property <bool> copy-draft-preserve-time;
     callback confirm-copy-draft(string, string);
     callback cancel-copy-draft(string);
-    public function show-copy-draft() { root.drag-invalidate-targets(); copy-draft-dialog.begin(); }
+    public function show-copy-draft() { root.drag-invalidate-targets(); root.refresh-operation-windows(); }
     in property <string> metadata-conflict-token;
     in property <string> metadata-conflict-body;
     callback decide-metadata-conflict(string, int);
@@ -616,8 +620,7 @@ export component MainWindow inherits Window {
         Theme.touch-font-size = touch;
     }
     public function focus-files() {
-        if root.copy-draft-token != "" { copy-draft-dialog.focus-input(); }
-        else if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); }
+        if root.active-pane == 0 { left.focus-list(); } else { right.focus-list(); }
     }
     public function reset-files-input(pane: int) {
         if pane == 0 { left.reset-search-context(); } else { right.reset-search-context(); }
@@ -1147,26 +1150,6 @@ export component MainWindow inherits Window {
         }
       }
     }
-    operation-frame := DialogFrame {
-        visible: root.operation-token != "";
-        width: root.width; height: root.height;
-        desired-width: max(520px, Theme.font-size * 28);
-        desired-height: operation-dialog.preferred-dialog-height; dim: true;
-        changed visible => { if self.visible { self.reset(); } }
-        operation-dialog := OperationDialog {
-            move-dialog(dx, dy) => { operation-frame.move-by(dx, dy); }
-            title: root.operation-title; body: root.operation-body;
-            initial-name: root.operation-name; selection-end: root.operation-selection-end;
-            has-name: root.operation-has-name; dangerous: root.operation-dangerous;
-            native-icon: root.operation-icon; warning: root.operation-warning;
-            fallback-icon: root.operation-kind == 0 ? FallbackIcons.rename
-                : root.operation-kind == 3 ? FallbackIcons.new-folder
-                : root.operation-kind == 4 ? FallbackIcons.new-file : FallbackIcons.delete;
-            confirm-text: root.operation-title;
-            confirm(name) => { root.confirm-operation(root.operation-token, name); }
-            cancel => { root.cancel-operation(root.operation-token); }
-        }
-    }
     custom-commands-popup := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
@@ -1217,26 +1200,6 @@ export component MainWindow inherits Window {
                 copy-details(id) => { root.copy-job-details(id); }
                 close => { root.close-operations(); }
             }
-        }
-    }
-    copy-draft-frame := DialogFrame {
-        visible: root.copy-draft-token != "";
-        width: root.width; height: root.height;
-        desired-width: max(580px, Theme.font-size * 26);
-        desired-height: copy-draft-dialog.preferred-dialog-height; dim: true;
-        changed visible => { if self.visible { self.reset(); } }
-        copy-draft-dialog := OperationDialog {
-            move-dialog(dx, dy) => { copy-draft-frame.move-by(dx, dy); }
-            title: root.copy-draft-move ? "Move" : "Copy"; body: root.copy-draft-body; has-name: true;
-            initial-name: root.copy-draft-destination; selection-end: root.copy-draft-selection-end;
-            input-label: "Destination folder"; confirm-text: root.copy-draft-move ? "Move" : "Copy"; warning: root.copy-draft-error;
-            native-icon: root.action-icons.copy; fallback-icon: FallbackIcons.copy;
-            option-visible: true; option-enabled: root.copy-draft-metadata-enabled;
-            option-checked <=> root.copy-draft-preserve-time;
-            option-label: "Preserve exact modified time";
-            option-hint: "Verify each destination file’s exact modified time. Up to 64 native regular files; folders, links and archive members are unsupported. Unsupported precision fails instead of rounding; earlier completed copies may remain.";
-            confirm(destination) => { root.confirm-copy-draft(root.copy-draft-token, destination); }
-            cancel => { root.cancel-copy-draft(root.copy-draft-token); }
         }
     }
     copy-popup := PopupWindow {

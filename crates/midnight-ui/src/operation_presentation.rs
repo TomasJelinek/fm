@@ -120,7 +120,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_operation_has_name(has_name);
     window.set_operation_dangerous(kind == MutationKind::Delete(DeleteMode::Permanent));
     window.set_operation_token(token);
-    window.invoke_begin_operation();
 }
 
 fn rename_selection_end(name: &str, kind: Option<EntryKind>) -> usize {

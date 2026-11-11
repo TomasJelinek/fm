@@ -281,3 +281,6 @@ fn native_owned_dialog_has_no_separate_taskbar_button() {
     event_loop_result.unwrap();
     assert!(result.borrow().is_ok(), "{:?}", result.borrow());
 }
+
+#[path = "native_operation_desktop_tests.rs"]
+mod operation_adapters;

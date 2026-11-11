@@ -238,3 +238,68 @@ fn cancelled_capture_does_not_read_or_poison_shared_mount() {
         b"first"
     );
 }
+
+#[derive(Debug)]
+struct CooperativeMount {
+    inner: Mount,
+    flag: Arc<AtomicBool>,
+}
+impl ArchiveMount for CooperativeMount {
+    fn id(&self) -> u64 {
+        self.inner.id()
+    }
+    fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        self.inner.list(directory, cancel)
+    }
+    fn read(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u8>, FsError> {
+        self.inner.read(entry, offset, length, cancel)
+    }
+    fn read_cooperative(
+        &self,
+        _: u64,
+        _: u64,
+        _: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, FsError> {
+        self.flag.store(true, Ordering::Release);
+        assert!(cancelled(), "live request flag did not reach archive read");
+        Err(FsError::from_io(
+            "fixture",
+            std::path::Path::new(""),
+            io::ErrorKind::Interrupted.into(),
+        ))
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        self.inner.validate()
+    }
+    fn persistent_member_identity(
+        &self,
+        entry: u64,
+        revision: &[u8],
+    ) -> Result<Option<Vec<u8>>, FsError> {
+        self.inner.persistent_member_identity(entry, revision)
+    }
+}
+#[test]
+fn archive_member_forwards_cooperative_cancel_without_using_hard_read() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let inner = Arc::new(Mount::new(8));
+    let mut request = descriptor(inner, 2);
+    let mount = Arc::new(CooperativeMount {
+        inner: Mount::new(8),
+        flag: flag.clone(),
+    });
+    request.mount = mount.clone();
+    let source = request.capture()(&AtomicBool::new(false)).unwrap();
+    assert!(
+        matches!(source.read_at_cooperative(0, 5, &|| flag.load(Ordering::Acquire)), Err(error) if error.kind() == io::ErrorKind::Interrupted)
+    );
+    assert_eq!(mount.inner.reads.load(Ordering::Relaxed), 0);
+    assert!(mount.validate().is_ok());
+}

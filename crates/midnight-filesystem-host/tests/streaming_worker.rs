@@ -54,6 +54,12 @@ fn setup() -> (Catalog, PathBuf, Arc<Measured>, CapturedFile) {
     let path = PathBuf::from(
         std::env::var_os("MIDNIGHT_ARCHIVE_TEST_ZIP").expect("explicit read-only ZIP fixture"),
     );
+    setup_path(installation, path)
+}
+fn setup_path(
+    installation: PathBuf,
+    path: PathBuf,
+) -> (Catalog, PathBuf, Arc<Measured>, CapturedFile) {
     let catalog = Catalog::discover(&installation).unwrap();
     assert!(catalog.diagnostics.is_empty(), "{:?}", catalog.diagnostics);
     let source = Arc::new(Measured {
@@ -77,7 +83,7 @@ fn large_zip_browses_by_index_and_member_reads_use_verified_private_disk_cache()
         "qualification must exceed old source ceiling"
     );
     let (package, format) = catalog.choose(&path).unwrap();
-    assert_eq!(package.protocol, midnight_filesystem_api::Protocol::V2);
+    assert!(package.protocol.supports_staging());
     let cancel = Cancellation::default();
     let mount = Mount::open_captured(package, format, &path, captured, &cancel).unwrap();
     let nodes = mount.list(1, &cancel).unwrap();
@@ -206,5 +212,87 @@ fn all_supported_formats_use_the_same_verified_stage_protocol() {
                 "{name}"
             );
         }
+    }
+}
+
+#[test]
+#[ignore = "requires protected protocol3 worker and exported MIDNIGHT_ARCHIVE_FIXTURES"]
+fn cooperative_installed_zip_and_solid_sevenzip_keep_mount_and_cached_member() {
+    let installation = PathBuf::from(std::env::var_os("ARCHIVE_CAPTURE_INSTALLATION").unwrap());
+    let fixtures = PathBuf::from(std::env::var_os("MIDNIGHT_ARCHIVE_FIXTURES").unwrap());
+    for name in ["cancel.zip", "cancel.7z"] {
+        let (catalog, path, measured, source) =
+            setup_path(installation.clone(), fixtures.join(name));
+        let (package, format) = catalog.choose(&path).unwrap();
+        assert_eq!(package.protocol, midnight_filesystem_api::Protocol::V3);
+        let mount =
+            Mount::open_captured(package, format, &path, source, &Cancellation::default()).unwrap();
+        let nodes = mount.list(1, &Cancellation::default()).unwrap();
+        let cached = nodes
+            .iter()
+            .find(|node| node.display_name == "cached.bin")
+            .unwrap();
+        let target = nodes
+            .iter()
+            .find(|node| node.display_name == "large.bin")
+            .unwrap();
+        assert_eq!(
+            mount
+                .read(cached.id.entry, 0, 4, &Cancellation::default())
+                .unwrap(),
+            b"keep"
+        );
+        let before = measured.bytes.load(Ordering::Relaxed);
+        measured
+            .cancel_after
+            .store(before + 2 * 256 * 1024, Ordering::Release);
+        let result =
+            mount.read_cooperative(target.id.entry, 0, 4, &|| measured.cancel.is_cancelled());
+        assert_eq!(
+            result.unwrap_err().kind,
+            std::io::ErrorKind::Interrupted,
+            "{name}"
+        );
+        assert!(measured.cancel.is_cancelled());
+        let after = measured.bytes.load(Ordering::Relaxed);
+        assert!(
+            after - before < 2 * 1024 * 1024,
+            "{name} drained the complete 2MiB payload after cancellation"
+        );
+        measured.cancel_after.store(0, Ordering::Release);
+        assert_eq!(
+            mount
+                .read(cached.id.entry, 0, 4, &Cancellation::default())
+                .unwrap(),
+            b"keep"
+        );
+        assert_eq!(
+            measured.bytes.load(Ordering::Relaxed),
+            after,
+            "cancellation evicted an unrelated cached member"
+        );
+        let listed = mount.list(1, &Cancellation::default()).unwrap();
+        assert_eq!(
+            listed.iter().map(|node| node.id).collect::<Vec<_>>(),
+            nodes.iter().map(|node| node.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            mount
+                .read_cooperative(target.id.entry, 0, 4, &|| false)
+                .unwrap(),
+            [42; 4]
+        );
+        assert_eq!(
+            mount
+                .read(
+                    target.id.entry,
+                    target.size.unwrap() - 4,
+                    4,
+                    &Cancellation::default()
+                )
+                .unwrap(),
+            [42; 4]
+        );
+        assert!(mount.validate().is_ok());
     }
 }

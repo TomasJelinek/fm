@@ -17,7 +17,11 @@ use std::{
     time::Duration,
 };
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
+struct TestPlatform(
+    Rc<MinimalSoftwareWindow>,
+    Rc<Cell<Duration>>,
+    Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+);
 #[cfg(windows)]
 #[path = "support/windows_keys.rs"]
 mod platform_keys;
@@ -26,7 +30,13 @@ mod platform_keys;
 mod platform_keys;
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
+        let child = if self.2.borrow().is_empty() {
+            self.0.clone()
+        } else {
+            MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer)
+        };
+        self.2.borrow_mut().push(child.clone());
+        Ok(child)
     }
     fn duration_since_start(&self) -> Duration {
         self.1.get()
@@ -85,7 +95,13 @@ fn complete(
 fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(TestPlatform(
+        native.clone(),
+        time.clone(),
+        windows.clone(),
+    )))
+    .unwrap();
     let window = MainWindow::new().unwrap();
     window.show().unwrap();
     window
@@ -399,24 +415,56 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     // F5 now captures a copy draft and deliberately contains file shortcuts.
     key(&window, Key::F5);
     assert!(!window.get_copy_draft_token().is_empty());
-    assert_eq!(window.get_focused_pane(), -1);
+    assert!(window.get_dialog_input_blocked());
     assert!(
         commands.borrow().is_empty(),
         "opening a copy draft does not queue a copy"
     );
-    key(&window, Key::Escape);
+    let child = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .find(|child| child.window().is_visible())
+        .unwrap()
+        .clone();
+    child
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    child.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    child.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert!(!window.get_dialog_input_blocked());
     assert!(window.get_copy_draft_token().is_empty());
     assert_eq!(window.get_focused_pane(), 0);
     // F6 similarly waits for explicit recovery confirmation and releases focus on Escape.
     key(&window, Key::F6);
     assert!(!window.get_copy_draft_token().is_empty());
     assert!(window.get_copy_draft_move());
-    assert_eq!(window.get_focused_pane(), -1);
+    assert!(window.get_dialog_input_blocked());
     assert!(
         commands.borrow().is_empty(),
         "opening a Move draft does not queue a transfer"
     );
-    key(&window, Key::Escape);
+    let child = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .find(|child| child.window().is_visible())
+        .unwrap()
+        .clone();
+    child
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    child.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    child.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert!(!window.get_dialog_input_blocked());
     assert!(window.get_copy_draft_token().is_empty());
     assert_eq!(window.get_focused_pane(), 0);
     hold(&window, Key::Control, true);

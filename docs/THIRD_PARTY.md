@@ -379,3 +379,11 @@ existing native-host or documented macOS cross-target provenance.
 python3 -B -m unittest discover -s scripts/tests -v
 python3 -B scripts/dependency-inventory.py --metadata-dir _build/qa/dependency-inventory --check
 ```
+
+The 11 November MEDIA-01 follow-up advances only the first-party
+`midnight-filesystem-api` package from 0.3.0 to 0.4.0 for negotiated cooperative
+archive staging cancellation. The independent archive plugin consumes its new
+immutable public SDK package; its lockfile changes only that package/version and
+checksum. No third-party dependency, feature or license selection changed. This
+note supplements the historical dependency captures above; it is not a new full
+inventory capture.

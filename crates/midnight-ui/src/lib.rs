@@ -7,6 +7,7 @@ mod checksum_windows;
 mod color_options;
 mod command_line;
 mod commander_presentation;
+mod copy_draft_windows;
 mod copy_presentation;
 mod detail_attributes;
 mod dialog_focus;
@@ -29,11 +30,14 @@ mod job_presentation;
 mod job_speed;
 mod metadata_input;
 mod metadata_presentation;
+#[cfg(test)]
+mod native_operation_tests;
 mod native_path_edit;
 mod native_shortcuts;
 mod navigation_models;
 mod operation_detail;
 mod operation_presentation;
+mod operation_windows;
 mod panel_models;
 mod panel_pointer;
 mod panel_view_navigation;
@@ -369,6 +373,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     shortcut_bridge::refresh_bindings(window, presenter);
     shell_bridge::update(window, presenter);
     operation_presentation::refresh(window, presenter);
+    window.invoke_refresh_operation_windows();
     window.set_action_icons(action_icons::palette(presenter));
     panel_models::refresh(window, presenter);
     let mut choices = navigation_models::ordered_choices(presenter);
@@ -870,6 +875,7 @@ pub fn install(
     scroll_input::install(window);
     shell_bridge::install(window, presenter.clone(), send.clone());
     copy_presentation::install(window, presenter.clone(), send.clone());
+    operation_windows::install(window, presenter.clone(), send.clone());
     drag_bridge::install(window, presenter.clone(), send.clone());
     selection_bridge::install(window, presenter.clone(), send.clone());
     window.set_font_choices(Rc::new(font_model::FontRows::new(presenter.clone())).into());
@@ -1494,6 +1500,7 @@ pub fn install(
                     window.invoke_close_find_windows();
                     window.invoke_close_checksum_windows();
                     window.invoke_close_file_list_window();
+                    window.invoke_close_operation_windows();
                     window.invoke_close_information_windows();
                     let _ = window.hide();
                 }

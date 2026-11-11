@@ -21,7 +21,7 @@ kind = "filesystem-worker"
 version = "0.1.0"
 entry_executable = "midnight-fs-archive"
 target = "$target"
-protocol = 2
+protocol = 3
 stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 EOF

@@ -38,10 +38,20 @@ impl Source for CountedSource {
         })
     }
     fn read_at(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
+        self.read_at_cooperative(offset, length, &|| false)
+    }
+    fn read_at_cooperative(
+        &self,
+        offset: u64,
+        length: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Vec<u8>> {
         self.reads.fetch_add(1, Ordering::Relaxed);
-        self.source.read_at(offset, length).inspect_err(|error| {
-            eprintln!("probe member read offset={offset} length={length} failed: {error}");
-        })
+        self.source
+            .read_at_cooperative(offset, length, cancelled)
+            .inspect_err(|error| {
+                eprintln!("probe member read offset={offset} length={length} failed: {error}");
+            })
     }
 }
 
