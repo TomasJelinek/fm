@@ -92,6 +92,16 @@ fn sort_and_hot_path_actions_are_available_without_detailed_headers() {
         star_origin.x + star_rect.width() <= arrow_origin.x + 0.5,
         "the star and dropdown must have disjoint hit targets"
     );
+    ui.window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(
+                arrow_origin.x + arrow_rect.width() / 2.0,
+                arrow_origin.y + arrow_rect.height() / 2.0,
+            ),
+        });
+    ui.draw();
+    render::snapshot(&ui, "toolbar-hot-paths-hover");
     drop((star, arrow));
     ui::click_root(
         &ui.window,

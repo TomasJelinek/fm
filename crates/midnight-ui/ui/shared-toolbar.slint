@@ -159,15 +159,15 @@ export component SharedToolbar inherits Rectangle {
                 width: root.tool-width + root.arrow-width; height: root.control-height;
                 border-width: 1px; border-color: Theme.frame; border-radius: 4px;
                 NavigationButton {
-                    x: 0px; y: 0px;
-                    width: root.tool-width; height: root.control-height; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
+                    x: 1px; y: 1px;
+                    width: root.tool-width - 1px; height: root.control-height - 2px; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
                     native-icon: root.action-icons.bookmarks; icon: FallbackIcons.bookmarks;
                     hint: "Add current path to Hot Paths";
                     clicked => { root.bookmark-add(); root.focus-files(); }
                 }
                 hot-path-picker := CompactPicker {
                     path-labels: true;
-                    x: root.tool-width; width: root.arrow-width; height: root.control-height;
+                    x: root.tool-width; y: 1px; width: root.arrow-width - 1px; height: root.control-height - 2px;
                     minimum-control-width: 0px; framed: false; arrow-trigger-only: true;
                     choices: root.hot-path-choices; model-revision: root.choice-revision; context: root.context-key; press-context: root.press-context; press-cancelled: root.press-cancelled;
                     separator-before-key: "add-hot-path";

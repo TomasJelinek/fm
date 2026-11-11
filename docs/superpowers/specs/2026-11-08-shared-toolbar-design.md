@@ -15,6 +15,12 @@ Existing native/archive and parent-only enablement gates remain. Tooltips use
 configured shortcut labels. The checksum symbol is an original SVG hash/check
 mark, also replacing the unrelated Properties artwork in the Checksums menu.
 
+Split controls (Hot Paths, Back/Forward history, and the command-row shell chooser)
+keep both clickable halves one logical pixel inside their shared outer frame.
+The centered dropdown arrow and hover/focus surfaces therefore stay inside the
+border in desktop and touch layouts, without changing the outer control size or
+combining the primary action with opening its menu.
+
 The latest follow-up moves Options from the footer to a fixed gear button at the
 right end of this toolbar. An application moon icon immediately to its right
 opens About with the application version. These two application-wide controls

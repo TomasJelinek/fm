@@ -109,10 +109,10 @@ export component HistoryNavigation inherits Rectangle {
     background: Theme.surface;
     border-width: 1px; border-radius: 4px; border-color: Theme.frame;
     HorizontalLayout {
-        spacing: 0px; cross-axis-alignment: center;
+        padding: 1px; spacing: 0px; cross-axis-alignment: center;
         NavigationButton {
-            height: root.control-height; context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
-            width: root.primary-width; icon: root.icon; native-icon: root.native-icon;
+            height: root.control-height - 2px; context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
+            width: root.primary-width - 1px; icon: root.icon; native-icon: root.native-icon;
             hint: root.hint; enabled: root.model.length > 0;
             model-revision: root.revision;
             identity: root.model.length > 0 ? root.model[0].identity : "";
@@ -120,8 +120,8 @@ export component HistoryNavigation inherits Rectangle {
         }
         CompactPicker {
             path-labels: true;
-            height: root.control-height; context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
-            width: root.arrow-width; minimum-control-width: 0px;
+            height: root.control-height - 2px; context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
+            width: root.arrow-width - 1px; minimum-control-width: 0px;
             framed: false;
             choices: root.model; model-revision: root.revision;
             show-row-icons: false; popup-align-right: true;

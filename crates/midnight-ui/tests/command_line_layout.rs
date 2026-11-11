@@ -6,7 +6,10 @@ mod ui;
 
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole};
 use midnight_ui::{NavigationChoiceRow, Theme};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel, platform::Key};
+use slint::{
+    ComponentHandle, ModelRc, SharedString, VecModel,
+    platform::{Key, WindowEvent},
+};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -44,6 +47,64 @@ fn in_command_row(item: ItemRc, top: f32, height: f32, label: &str) {
         "{label} must fit in command row {top}..{}, got {origin:?} {rect:?}",
         top + height
     );
+}
+
+fn shell_hover_preserves_frame(test: &mut ui::TestUi, launch_label: &str, top: f32, height: f32) {
+    let targets = [
+        ui::root_item(&test.window, launch_label, AccessibleRole::Button),
+        ui::root_item(&test.window, "Command shell", AccessibleRole::Combobox),
+    ];
+    let bounds = targets.map(|item| {
+        let rect = item.geometry();
+        let origin = item.map_to_native_window(rect.origin);
+        (origin.x, origin.y, rect.width(), rect.height())
+    });
+    let [(left, _, primary_width, _), (arrow_left, _, arrow_width, _)] = bounds;
+    let frame_points = [
+        (left + primary_width / 2.0, top),
+        (left + primary_width / 2.0, top + height - 1.0),
+        (arrow_left + arrow_width / 2.0, top),
+        (arrow_left + arrow_width / 2.0, top + height - 1.0),
+        (left - 1.0, top + height / 2.0),
+        (arrow_left + arrow_width, top + height / 2.0),
+    ];
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerExited);
+    test.draw();
+    let frame_before = frame_points.map(|(x, y)| test.pixel(x, y));
+    for (index, (left, top, width, height)) in bounds.into_iter().enumerate() {
+        let mut interior_before = Vec::new();
+        for y in top.ceil() as usize + 2..(top + height).floor() as usize - 2 {
+            for x in left.ceil() as usize + 2..(left + width).floor() as usize - 2 {
+                interior_before.push((x, y, test.pixels[y * test.width + x]));
+            }
+        }
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(left + width / 2.0, top + height / 2.0),
+            });
+        test.draw();
+        if test.window.global::<Theme>().get_scheme() == 0 {
+            render::snapshot(test, &format!("shell-split-hover-{index}"));
+        }
+        assert_eq!(
+            frame_points.map(|(x, y)| test.pixel(x, y)),
+            frame_before,
+            "hovering shell split target {index} must preserve its outer frame"
+        );
+        assert!(
+            interior_before
+                .iter()
+                .any(|&(x, y, before)| test.pixels[y * test.width + x] != before),
+            "shell split target {index} must still paint visible hover feedback"
+        );
+    }
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerExited);
+    test.draw();
 }
 
 #[test]
@@ -130,25 +191,27 @@ fn command_editor_and_controls_match_the_footer_across_themes_and_font_sizes() {
                             > test.window.get_command_path_width()
                     );
                     assert!(test.window.get_command_input_width() >= 300.0);
-                    for (label, role) in [
-                        ("Command shell".to_owned(), AccessibleRole::Combobox),
+                    let launch_label = format!("Open PowerShell\nWorking folder: {path}");
+                    for (label, role, inset) in [
+                        ("Command shell".to_owned(), AccessibleRole::Combobox, 1.0),
                         (
                             "Executed command history".to_owned(),
                             AccessibleRole::Combobox,
+                            0.0,
                         ),
-                        (
-                            format!("Open PowerShell\nWorking folder: {path}"),
-                            AccessibleRole::Button,
-                        ),
-                        ("Run".to_owned(), AccessibleRole::Button),
-                        ("Command line".to_owned(), AccessibleRole::TextInput),
+                        (launch_label.clone(), AccessibleRole::Button, 1.0),
+                        ("Run".to_owned(), AccessibleRole::Button, 0.0),
+                        ("Command line".to_owned(), AccessibleRole::TextInput, 0.0),
                     ] {
                         in_command_row(
                             ui::root_item(&test.window, &label, role),
-                            top,
-                            height,
+                            top + inset,
+                            height - 2.0 * inset,
                             &label,
                         );
+                    }
+                    if width == 1340 && font == 11 {
+                        shell_hover_preserves_frame(&mut test, &launch_label, top, height);
                     }
                 }
             }
