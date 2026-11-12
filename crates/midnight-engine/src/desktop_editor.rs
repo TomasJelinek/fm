@@ -110,7 +110,7 @@ impl Desktop {
                     let _ = children
                         .send(TrackedChild {
                             child,
-                            _slot: slot,
+                            _slot: Arc::new(slot),
                             completion: None,
                         })
                         .await;

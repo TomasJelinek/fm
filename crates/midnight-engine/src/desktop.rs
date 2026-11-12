@@ -18,7 +18,7 @@ use tokio::{
 mod editor;
 
 const ICON_CAPACITY: usize = 256;
-const MAX_TERMINALS: usize = 8;
+const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
 const MAX_OPEN_HELPERS: usize = 16;
 
 pub(crate) struct Desktop {
@@ -38,7 +38,7 @@ pub(crate) struct Desktop {
 
 pub(crate) struct TrackedChild {
     pub(crate) child: Box<dyn TerminalProcess>,
-    pub(crate) _slot: OwnedSemaphorePermit,
+    pub(crate) _slot: Arc<OwnedSemaphorePermit>,
     pub(crate) completion: Option<(DesktopRequestId, PathBuf)>,
 }
 
@@ -101,11 +101,15 @@ impl Desktop {
         self.icons.clone()
     }
 
-    pub(crate) fn command_runtime(&self) -> crate::user_command_runtime::Runtime {
+    pub(crate) fn command_runtime(
+        &self,
+        tracker: crate::user_command_runtime::ProcessTracker,
+    ) -> crate::user_command_runtime::Runtime {
         crate::user_command_runtime::Runtime::new(
             self.launch_budget.clone(),
             self.terminal_slots.clone(),
             self.children.clone(),
+            tracker,
         )
     }
 
@@ -176,7 +180,7 @@ impl Desktop {
                     let _ = children
                         .send(TrackedChild {
                             child,
-                            _slot: slot,
+                            _slot: Arc::new(slot),
                             completion: None,
                         })
                         .await;
@@ -259,7 +263,7 @@ impl Desktop {
                     let _ = children
                         .send(TrackedChild {
                             child,
-                            _slot: slot,
+                            _slot: Arc::new(slot),
                             completion: Some((request, path)),
                         })
                         .await;

@@ -33,6 +33,7 @@ async fn full_queue_rejects_visibly_and_consumes_the_request_id_without_losing_o
     let (input, mut queued) = mpsc::channel(1);
     let controller = Controller {
         input,
+        retirement: RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
         state: Arc::default(),
         stop: Cancellation::default(),
         available: true,
@@ -90,9 +91,11 @@ async fn successful_preview_is_terminal_and_removes_active_cancellation_state() 
         Arc::new(Semaphore::new(1)),
         Arc::new(Semaphore::new(1)),
         children,
+        crate::user_command_runtime::ProcessTracker::try_start().unwrap(),
     );
     let (sender, mut events) = mpsc::channel(16);
     let controller = Controller::new(
+        Retirement::testing(),
         Some(Arc::new(Native(barrier))),
         Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
         runtime,
@@ -186,13 +189,19 @@ async fn cancellation_and_shutdown_keep_native_launch_and_process_permits_until_
     let launches = Arc::new(Semaphore::new(1));
     let processes = Arc::new(Semaphore::new(1));
     let (children, _reaper) = mpsc::channel(1);
-    let runtime = Runtime::new(launches.clone(), processes.clone(), children);
+    let runtime = Runtime::new(
+        launches.clone(),
+        processes.clone(),
+        children,
+        crate::user_command_runtime::ProcessTracker::try_start().unwrap(),
+    );
     let (sender, _events) = mpsc::channel(16);
     let outbox = Outbox {
         sender,
         wakeup: Arc::new(|| {}),
     };
     let controller = Controller::new(
+        Retirement::testing(),
         Some(Arc::new(Native(barrier.clone()))),
         Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
         runtime,

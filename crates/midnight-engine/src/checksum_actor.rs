@@ -1,5 +1,8 @@
 //! Engine adapter: immutable captures, retained backend results and cancellable saves.
+use crate::retirement::WorkerOwned;
 use crate::{Outbox, checksum};
+use checksum::ownership::{MAX_SAVES, Service};
+pub(crate) use checksum::ownership::{RETIREMENT_CAPACITY, Retirement};
 use midnight_core::*;
 use std::{
     collections::HashMap,
@@ -37,10 +40,11 @@ enum Capture {
     Verify(ChecksumVerifyRequest),
 }
 struct Start {
-    capture: Capture,
+    capture: Option<Capture>,
     key: Key,
     cancel: Cancellation,
-    retention: Arc<ChecksumRetention>,
+    retention: Option<Arc<ChecksumRetention>>,
+    service: Service,
 }
 struct Save {
     id: ChecksumManifestId,
@@ -48,10 +52,12 @@ struct Save {
     request: ChecksumManifestRequest,
     run: Arc<ChecksumRun>,
     cancel: Cancellation,
+    worker: Option<tokio::sync::OwnedSemaphorePermit>,
+    service: Service,
 }
 enum Input {
-    Start(Start),
-    Save(Save),
+    Start(WorkerOwned<Start>),
+    Save(WorkerOwned<Save>),
 }
 
 pub(crate) struct Controller {
@@ -59,14 +65,20 @@ pub(crate) struct Controller {
     state: Arc<Mutex<State>>,
     lifetime: Cancellation,
     available: bool,
+    service: Service,
+    retirement: crate::retirement::RetirementDomain,
+    intake: tokio::sync::Mutex<crate::retirement::RetirementWaiter>,
     task: Option<JoinHandle<()>>,
 }
 impl Controller {
     pub(crate) fn new(
+        retirement: Retirement,
         service: Option<Arc<dyn TransferService>>,
         outbox: Outbox,
         mutation: Arc<Semaphore>,
     ) -> Self {
+        let service = Service::new(retirement.service, service);
+        let available = service.available();
         let (input, receiver) = mpsc::channel(32);
         let state = Arc::new(Mutex::new(State::default()));
         let lifetime = Cancellation::default();
@@ -82,7 +94,10 @@ impl Controller {
             input,
             state,
             lifetime,
-            available: service.is_some(),
+            available,
+            service,
+            retirement: retirement.domain,
+            intake: tokio::sync::Mutex::new(retirement.intake),
             task: Some(task),
         }
     }
@@ -90,7 +105,7 @@ impl Controller {
         let bytes = request.validate().map_err(invalid)?;
         let key = (request.job, request.generation);
         let retention = checksum::reserve(bytes, request.limits.max_retained_bytes)?;
-        self.admit(Capture::Paths(request), key, retention)
+        self.admit_plain(Capture::Paths(request), key, retention)
     }
     pub(crate) fn start_selected(&self, request: SelectedChecksumRequest) -> Result<(), FsError> {
         request.limits.validate().map_err(invalid)?;
@@ -100,74 +115,126 @@ impl Controller {
         let key = (request.job, request.generation);
         // Reserve the entire bounded expansion before retaining a queued selection.
         let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
-        self.admit(Capture::Selected(request), key, retention)
+        self.admit_plain(Capture::Selected(request), key, retention)
     }
     pub(crate) async fn start_captured(
         &self,
         request: CapturedChecksumRequest,
     ) -> Result<(), FsError> {
-        // Keep a worker-retired owner even when synchronous admission rejects.
-        let source = request.sources.clone();
-        let result = (|| {
-            request.limits.validate().map_err(invalid)?;
-            if request.job.0 == 0 || request.generation.0 == 0 {
-                return Err(invalid("Zero checksum job/generation."));
+        // The enclosing guarded EngineRun owns this request while intake waits.
+        // Keep the single intake locked until any rejected owner is actually retired.
+        let mut intake = self.intake.lock().await;
+        let lease = intake.reserve().await;
+        let key = (request.job, request.generation);
+        let mut start = lease.own(Start {
+            capture: Some(Capture::Captured(request)),
+            key,
+            cancel: self.lifetime.child(),
+            retention: None,
+            service: self.service.clone(),
+        });
+        let validation = match start.capture.as_ref().expect("owned capture") {
+            Capture::Captured(request) => {
+                request.limits.validate().map_err(invalid).and_then(|()| {
+                    if request.job.0 == 0 || request.generation.0 == 0 {
+                        return Err(invalid("Zero checksum job/generation."));
+                    }
+                    checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)
+                })
             }
-            let key = (request.job, request.generation);
-            let retention = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
-            self.admit(Capture::Captured(request), key, retention)
-        })();
-        let _ = tokio::task::spawn_blocking(move || drop(source)).await;
-        result
+            _ => unreachable!("captured intake owns a captured request"),
+        };
+        match validation {
+            Ok(retention) => start.retention = Some(retention),
+            Err(error) => {
+                let _ = start.retire().await;
+                return Err(error);
+            }
+        }
+        match self.admit(start) {
+            Ok(()) => Ok(()),
+            Err((error, start)) => {
+                let _ = start.retire().await;
+                Err(error)
+            }
+        }
     }
     pub(crate) fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
         let key = (request.job, request.generation);
         let retention = checksum::reserve_verification(&request)?;
-        self.admit(Capture::Verify(request), key, retention)
+        self.admit_plain(Capture::Verify(request), key, retention)
     }
-    fn admit(
+    fn admit_plain(
         &self,
         capture: Capture,
         key: Key,
         retention: Arc<ChecksumRetention>,
     ) -> Result<(), FsError> {
+        // Only path/selection/manifest data reaches this synchronous helper.
+        // Provider-bearing captured requests use the reserved async intake above.
+        let lease = self.retirement.try_reserve().map_err(|_| {
+            failure(
+                io::ErrorKind::WouldBlock,
+                "Checksum cleanup capacity is occupied.",
+            )
+        })?;
+        let start = lease.own(Start {
+            capture: Some(capture),
+            key,
+            cancel: self.lifetime.child(),
+            retention: Some(retention),
+            service: self.service.clone(),
+        });
+        self.admit(start).map_err(|(error, start)| {
+            drop(start);
+            error
+        })
+    }
+    fn admit(&self, start: WorkerOwned<Start>) -> Result<(), (FsError, WorkerOwned<Start>)> {
         if !self.available {
-            return Err(failure(
-                io::ErrorKind::Unsupported,
-                "Native checksum reads are unavailable.",
+            return Err((
+                failure(
+                    io::ErrorKind::Unsupported,
+                    "Native checksum reads are unavailable.",
+                ),
+                start,
             ));
         }
         if self.lifetime.is_cancelled() {
-            return Err(cancelled());
+            return Err((cancelled(), start));
         }
+        let key = start.key;
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(job) = state.jobs.get(&key.0) {
             if job.generation >= key.1 {
-                return Err(invalid(
-                    "Checksum generation is obsolete or already admitted.",
+                return Err((
+                    invalid("Checksum generation is obsolete or already admitted."),
+                    start,
                 ));
             }
         } else if key.0.0 <= state.highest_job || state.jobs.len() >= MAX_CHECKSUM_JOBS {
-            return Err(failure(
-                io::ErrorKind::WouldBlock,
-                "Checksum jobs are full or the released job ID was reused.",
+            return Err((
+                failure(
+                    io::ErrorKind::WouldBlock,
+                    "Checksum jobs are full or the released job ID was reused.",
+                ),
+                start,
             ));
         }
-        let cancel = self.lifetime.child();
-        self.input
-            .try_send(Input::Start(Start {
-                capture,
-                key,
-                cancel: cancel.clone(),
-                retention,
-            }))
-            .map_err(|_| {
+        let cancel = start.cancel.clone();
+        if let Err(error) = self.input.try_send(Input::Start(start)) {
+            let Input::Start(start) = error.into_inner() else {
+                unreachable!("submitted Start")
+            };
+            return Err((
                 failure(
                     io::ErrorKind::WouldBlock,
                     "Checksum admission queue is full or closed.",
-                )
-            })?;
-        // Queue publication and state replacement occur under the same lock.
+                ),
+                start,
+            ));
+        }
+        // Queue publication and state replacement still occur under the same lock.
         if let Some(old) = state.jobs.insert(
             key.0,
             Job {
@@ -226,7 +293,7 @@ impl Controller {
         if self.lifetime.is_cancelled() {
             return Err(cancelled());
         }
-        if state.saves.len() >= 2 {
+        if state.saves.len() >= MAX_SAVES {
             return Err(failure(
                 io::ErrorKind::WouldBlock,
                 "Two checksum manifests are pending or active.",
@@ -246,20 +313,29 @@ impl Controller {
                 invalid("No completed retained result exists for this checksum generation.")
             })?;
         let cancel = self.lifetime.child();
-        self.input
-            .try_send(Input::Save(Save {
-                id,
-                key,
-                request,
-                run,
-                cancel: cancel.clone(),
-            }))
-            .map_err(|_| {
-                failure(
-                    io::ErrorKind::WouldBlock,
-                    "Checksum manifest admission queue is full or closed.",
-                )
-            })?;
+        // Reserve queue space before adopting a save payload. Rejected synchronous
+        // requests cannot accumulate extra retiring save owners outside the two slots.
+        let queue = self.input.try_reserve().map_err(|_| {
+            failure(
+                io::ErrorKind::WouldBlock,
+                "Checksum manifest admission queue is full or closed.",
+            )
+        })?;
+        let lease = self.retirement.try_reserve().map_err(|_| {
+            failure(
+                io::ErrorKind::WouldBlock,
+                "Checksum cleanup capacity is occupied.",
+            )
+        })?;
+        queue.send(Input::Save(lease.own(Save {
+            id,
+            key,
+            request,
+            run,
+            cancel: cancel.clone(),
+            worker: None,
+            service: self.service.clone(),
+        })));
         state.saves.insert(id, SaveState { key, cancel });
         Ok(())
     }
@@ -352,7 +428,8 @@ async fn rejected(outbox: &Outbox, key: Key, error: FsError, stop: &Cancellation
 }
 async fn manifest_event(
     outbox: &Outbox,
-    save: &Save,
+    id: ChecksumManifestId,
+    key: Key,
     update: ChecksumManifestUpdate,
     stop: &Cancellation,
     state: &Arc<Mutex<State>>,
@@ -360,29 +437,29 @@ async fn manifest_event(
     send_guarded(
         outbox,
         Event::ChecksumManifest(Box::new(ChecksumManifestEvent {
-            save_id: save.id,
-            job: save.key.0,
-            generation: save.key.1,
+            save_id: id,
+            job: key.0,
+            generation: key.1,
             update,
         })),
         stop,
-        Some((state, save.key)),
+        Some((state, key)),
     )
     .await;
 }
 
 async fn run(
-    service: Option<Arc<dyn TransferService>>,
+    service: Service,
     outbox: Outbox,
     mutation: Arc<Semaphore>,
     mut input: mpsc::Receiver<Input>,
     state: Arc<Mutex<State>>,
     stop: Cancellation,
 ) {
-    let Some(service) = service else {
+    if !service.available() {
         return;
-    };
-    let mut backend = checksum::Controller::new(service.clone());
+    }
+    let mut backend = checksum::Controller::from_service(service);
     let mut saves = JoinSet::new();
     loop {
         if stop.is_cancelled() {
@@ -392,35 +469,16 @@ async fn run(
             received = input.recv() => match received {
                 Some(Input::Start(start)) => {
                     if !is_current(&state.lock().unwrap_or_else(|error| error.into_inner()), start.key) {
-                        let _ = tokio::task::spawn_blocking(move || drop(start)).await;
+                        let _ = start.retire().await;
                         continue;
                     }
                     send_guarded(&outbox, Event::Checksum(Box::new(ChecksumEvent { job: start.key.0,
                         generation: start.key.1, update: ChecksumUpdate::Queued })), &stop, Some((&state, start.key))).await;
                     let key = start.key;
-                    let cancel = start.cancel.clone();
-                    if let Capture::Verify(request) = start.capture {
-                        if let Err(error) = backend.verify_reserved(request, cancel, start.retention) {
-                            rejected(&outbox, key, error, &stop).await;
-                        }
-                        continue;
-                    }
-                    let prepared = tokio::task::spawn_blocking(move || {
-                        let source = match &start.capture {
-                            Capture::Captured(request) => Some(request.sources.clone()),
-                            _ => None,
-                        };
-                        resolve(start.capture, &start.cancel)
-                            .map(|request| (request, start.retention, source))
-                    }).await;
+                    let prepared = tokio::task::spawn_blocking(move || prepare(start)).await;
                     match prepared {
-                        Ok(Ok((request, retention, source))) => {
-                            let admitted = if source.is_some() {
-                                backend.start_captured_reserved(request, cancel, retention, source).await
-                            } else {
-                                backend.start_reserved(request, cancel, retention)
-                            };
-                            if let Err(error) = admitted {
+                        Ok(Ok(work)) => {
+                            if let Err(error) = backend.admit_prepared(work).await {
                                 rejected(&outbox, key, error, &stop).await;
                             }
                         }
@@ -430,8 +488,8 @@ async fn run(
                     }
                 }
                 Some(Input::Save(save)) => {
-                    manifest_event(&outbox, &save, ChecksumManifestUpdate::Queued, &stop, &state).await;
-                    saves.spawn(export(save, service.clone(), outbox.clone(), mutation.clone(), state.clone(), stop.clone()));
+                    manifest_event(&outbox, save.id, save.key, ChecksumManifestUpdate::Queued, &stop, &state).await;
+                    saves.spawn(export(save, outbox.clone(), mutation.clone(), state.clone(), stop.clone()));
                 }
                 None => break,
             },
@@ -460,14 +518,52 @@ async fn run(
     // Await native work, then release results. Never abort a future holding native ownership.
     backend.shutdown().await;
     while saves.join_next().await.is_some() {}
+    while let Ok(input) = input.try_recv() {
+        match input {
+            Input::Start(start) => {
+                let _ = start.retire().await;
+            }
+            Input::Save(save) => {
+                let _ = save.retire().await;
+            }
+        }
+    }
     let state = state.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        while input.try_recv().is_ok() {}
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         state.jobs.clear();
         state.saves.clear();
     })
     .await;
+}
+
+fn prepare(owned: WorkerOwned<Start>) -> Result<WorkerOwned<checksum::Work>, FsError> {
+    let (payload, lease) = owned.into_parts();
+    let mut start = payload;
+    let capture = start.capture.take().expect("pending checksum capture");
+    let source = match &capture {
+        Capture::Captured(request) => Some(request.sources.clone()),
+        _ => None,
+    };
+    let work = match capture {
+        Capture::Verify(request) => checksum::Work::verify(
+            request,
+            start.cancel.clone(),
+            start.retention.take().expect("reserved quota"),
+            start.service.clone(),
+        ),
+        capture => {
+            let request = resolve(capture, &start.cancel)?;
+            checksum::Work::calculate(
+                request,
+                start.cancel.clone(),
+                start.retention.take().expect("reserved quota"),
+                source,
+                start.service.clone(),
+            )
+        }
+    };
+    Ok(lease.own(work))
 }
 
 fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, FsError> {
@@ -529,13 +625,14 @@ fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, F
 }
 
 async fn export(
-    save: Save,
-    service: Arc<dyn TransferService>,
+    mut save: WorkerOwned<Save>,
     outbox: Outbox,
     mutation: Arc<Semaphore>,
     state: Arc<Mutex<State>>,
     stop: Cancellation,
 ) {
+    let id = save.id;
+    let key = save.key;
     let permit = loop {
         if save.cancel.is_cancelled() {
             break Err(cancelled());
@@ -569,12 +666,19 @@ async fn export(
             {
                 (outbox.wakeup)();
             }
-            let request = save.request.clone();
-            let run = save.run.clone();
-            let cancel = save.cancel.clone();
+            save.worker = Some(permit);
             match tokio::task::spawn_blocking(move || {
-                let _permit = permit; // Includes stage cleanup on every return path.
-                checksum::save_manifest(&run, &request, service.as_ref(), &cancel)
+                let (payload, lease) = save.into_parts();
+                let save = payload;
+                let result = checksum::save_manifest(
+                    &save.run,
+                    &save.request,
+                    save.service.provider(),
+                    &save.cancel,
+                );
+                drop(save); // Includes native cleanup before the mutation permit is released.
+                drop(lease);
+                result
             })
             .await
             {
@@ -585,18 +689,22 @@ async fn export(
                 )),
             }
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            let _ = save.retire().await;
+            Err(error)
+        }
     };
     // Cleanup finished before releasing admission capacity or delivering terminal status.
     let current = {
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        state.saves.remove(&save.id);
-        is_current(&state, save.key)
+        state.saves.remove(&id);
+        is_current(&state, key)
     };
     if current {
         manifest_event(
             &outbox,
-            &save,
+            id,
+            key,
             ChecksumManifestUpdate::Finished(result),
             &stop,
             &state,
@@ -608,3 +716,7 @@ async fn export(
 #[cfg(test)]
 #[path = "checksum_actor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "checksum_actor_retirement_tests.rs"]
+mod retirement_tests;

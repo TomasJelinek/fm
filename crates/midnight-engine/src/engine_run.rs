@@ -1,5 +1,5 @@
 //! The suspended engine future is owned before its first poll.
-use crate::{EngineServices, retirement::*};
+use crate::{retirement::*, task_lifetime::TaskLifetime};
 use std::{
     future::Future,
     pin::Pin,
@@ -12,7 +12,7 @@ struct Run {
     // Keep original service owners until after the future/controllers are retired,
     // including normal completion, whose inner future drops locals during poll.
     // Independent actors must additionally guard their own last-owner boundaries.
-    _services: EngineServices,
+    _services: TaskLifetime,
 }
 /// Engine execution owned before its first poll; dropping it schedules retirement.
 ///
@@ -26,7 +26,7 @@ impl EngineRun {
     pub(crate) fn new(
         lease: RetirementLease,
         future: impl Future<Output = ()> + Send + 'static,
-        services: EngineServices,
+        services: TaskLifetime,
     ) -> Self {
         Self {
             owned: Some(lease.own(Run {

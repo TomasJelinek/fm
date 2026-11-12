@@ -13,8 +13,10 @@ async fn recursive_links_are_skipped_without_abandoning_regular_siblings() {
     fs::write(directory.join("regular"), b"abc").unwrap();
     fs::write(temp.path().join("outside"), b"do not hash through link").unwrap();
     symlink(temp.path().join("outside"), directory.join("link")).unwrap();
-    let mut controller =
-        checksum::Controller::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let mut controller = checksum::Controller::new(
+        checksum::Retirement::testing(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    );
     let mut request =
         ChecksumRequest::new(ChecksumJobId(80), ChecksumGeneration(1), vec![directory]);
     request.recursive = true;
@@ -41,7 +43,8 @@ async fn native_raw_name_can_be_hashed_but_never_lossily_exported() {
     let path = temp.path().join(OsString::from_vec(vec![b'x', 0xff]));
     fs::write(&path, b"abc").unwrap();
     let provider = Arc::new(midnight_platform::LocalFileSystem::new(None));
-    let mut controller = checksum::Controller::new(provider.clone());
+    let mut controller =
+        checksum::Controller::new(checksum::Retirement::testing(), provider.clone());
     controller
         .start(ChecksumRequest::new(
             ChecksumJobId(81),

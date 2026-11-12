@@ -81,6 +81,7 @@ async fn checksum_capture_provider_lives_through_blocked_read_and_queued_shutdow
     let _release = ReleaseOnDrop(barrier.clone());
     let (sender, _events) = mpsc::channel(32);
     let controller = Controller::new(
+        Retirement::testing(),
         Some(Arc::new(Reading(barrier.clone()))),
         Outbox {
             sender,
@@ -138,6 +139,7 @@ async fn checksum_capture_rejected_admission_retires_provider_on_worker() {
     let _quota = checksum::test_quota_fixture().await;
     let (sender, _events) = mpsc::channel(1);
     let controller = Controller::new(
+        Retirement::testing(),
         None,
         Outbox {
             sender,

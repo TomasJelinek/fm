@@ -1,5 +1,5 @@
 //! Fixed-slot modeless Find sessions. Native work and retained results stay bounded.
-use crate::{Outbox, find_worker};
+use crate::{Outbox, find_worker, task_lifetime::TaskLifetime};
 #[path = "find_order_task.rs"]
 mod sorting;
 use midnight_core::*;
@@ -47,13 +47,24 @@ struct Validation {
     state: Arc<Mutex<State>>,
 }
 
+#[derive(Clone)]
+struct Services {
+    native: Option<Arc<dyn FindService>>,
+    scope: TaskLifetime,
+}
+
 impl Controller {
     pub(crate) fn new(
+        scope: TaskLifetime,
         service: Option<Arc<dyn FindService>>,
         locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
+        let services = Services {
+            native: service.clone(),
+            scope: scope.clone(),
+        };
         let lifetime = Cancellation::default();
         let budget = Arc::new(Semaphore::new(2));
         let slots = (0..MAX_FIND_SESSIONS)
@@ -61,22 +72,23 @@ impl Controller {
                 let (input, receiver) = watch::channel(Intent::default());
                 let (sorts, sort_input) = watch::channel(0);
                 let state = Arc::new(Mutex::new(State::default()));
-                tasks.spawn(sorting::run(
+                tasks.spawn(scope.future(sorting::run(
+                    scope.clone(),
                     state.clone(),
                     locale.clone(),
                     outbox.clone(),
                     sort_input,
                     lifetime.clone(),
-                ));
-                tasks.spawn(run_slot(
-                    service.clone(),
+                )));
+                tasks.spawn(scope.future(run_slot(
+                    services.clone(),
                     outbox.clone(),
                     state.clone(),
                     receiver,
                     budget.clone(),
                     lifetime.clone(),
                     sorts.clone(),
-                ));
+                )));
                 Slot {
                     input,
                     sorts,
@@ -85,12 +97,12 @@ impl Controller {
             })
             .collect();
         let (validations, receiver) = mpsc::channel(16);
-        tasks.spawn(run_validations(
-            service.clone(),
+        tasks.spawn(scope.future(run_validations(
+            services,
             outbox,
             receiver,
             lifetime.clone(),
-        ));
+        )));
         Self {
             slots,
             validations,
@@ -281,7 +293,7 @@ impl Drop for Controller {
 }
 
 async fn run_slot(
-    service: Option<Arc<dyn FindService>>,
+    services: Services,
     outbox: Outbox,
     state: Arc<Mutex<State>>,
     mut input: watch::Receiver<Intent>,
@@ -297,7 +309,7 @@ async fn run_slot(
         if lifetime.is_cancelled() {
             return;
         }
-        let Some(service) = service.clone() else {
+        let Some(service) = services.native.clone() else {
             continue;
         };
         let worker_request = request.clone();
@@ -320,7 +332,7 @@ async fn run_slot(
             let location = find_worker::CurrentDirectory::default();
             let worker_location = location.clone();
             let worker_sorts = sorts.clone();
-            let mut worker = tokio::task::spawn_blocking(move || {
+            let mut worker = tokio::task::spawn_blocking(services.scope.blocking(move || {
                 let _permit = permit;
                 find_worker::search_with_location(
                     service.as_ref(),
@@ -343,7 +355,7 @@ async fn run_slot(
                     &worker_location,
                     accepted_at,
                 )
-            });
+            }));
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await; // first sample is at250ms, never an initial burst
@@ -386,7 +398,7 @@ async fn run_slot(
         let request = request.clone();
         let outbox = outbox.clone();
         let lifetime = lifetime.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = tokio::task::spawn_blocking(services.scope.blocking(move || {
             publish(
                 &outbox,
                 &state,
@@ -394,7 +406,7 @@ async fn run_slot(
                 FindUpdate::Finished(summary),
                 &lifetime,
             )
-        })
+        }))
         .await;
     }
 }
@@ -468,7 +480,7 @@ fn publish(
 }
 
 async fn run_validations(
-    service: Option<Arc<dyn FindService>>,
+    services: Services,
     outbox: Outbox,
     mut input: mpsc::Receiver<Validation>,
     lifetime: Cancellation,
@@ -477,12 +489,12 @@ async fn run_validations(
         if lifetime.is_cancelled() {
             return;
         }
-        let Some(service) = service.clone() else {
+        let Some(service) = services.native.clone() else {
             continue;
         };
         let outbox = outbox.clone();
         let cancel = lifetime.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = tokio::task::spawn_blocking(services.scope.blocking(move || {
             let request = validation.request;
             let current = || {
                 validation
@@ -532,7 +544,7 @@ async fn run_validations(
                     }
                 }
             }
-        })
+        }))
         .await;
     }
 }

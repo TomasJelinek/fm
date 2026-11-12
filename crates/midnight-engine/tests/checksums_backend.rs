@@ -1,4 +1,8 @@
 //! Standalone checksum worker integration; actor and tree admission are tested separately.
+#[path = "../src/retirement.rs"]
+#[allow(dead_code)]
+mod retirement;
+
 #[path = "../src/checksum.rs"]
 #[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
 mod checksum;
@@ -20,8 +24,10 @@ async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified(
     let temp = fixture();
     let path = temp.path().join("č文🦀 abc.txt");
     fs::write(&path, b"abc").unwrap();
-    let mut service =
-        checksum::Controller::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let mut service = checksum::Controller::new(
+        checksum::Retirement::testing(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    );
     let mut request =
         ChecksumRequest::new(ChecksumJobId(1), ChecksumGeneration(1), vec![path.clone()]);
     request.algorithms = ChecksumAlgorithms::all();
@@ -113,7 +119,8 @@ async fn recursion_is_explicit_and_partial_manifests_require_exact_acknowledgeme
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("empty.txt"), b"").unwrap();
     let provider = Arc::new(midnight_platform::LocalFileSystem::new(None));
-    let mut controller = checksum::Controller::new(provider.clone());
+    let mut controller =
+        checksum::Controller::new(checksum::Retirement::testing(), provider.clone());
     let request = ChecksumRequest::new(
         ChecksumJobId(2),
         ChecksumGeneration(1),
@@ -187,7 +194,8 @@ async fn unknown_recursive_failure_requires_explicit_incomplete_discovery_acknow
     let path = temp.path().join("good.txt");
     fs::write(&path, b"abc").unwrap();
     let provider = Arc::new(midnight_platform::LocalFileSystem::new(None));
-    let mut controller = checksum::Controller::new(provider.clone());
+    let mut controller =
+        checksum::Controller::new(checksum::Retirement::testing(), provider.clone());
     let mut request = ChecksumRequest::new(
         ChecksumJobId(70),
         ChecksumGeneration(1),
@@ -229,8 +237,10 @@ async fn captured_metadata_change_is_not_silently_hashed_as_the_old_selection() 
     let temp = fixture();
     let path = temp.path().join("changed.txt");
     fs::write(&path, b"now much longer").unwrap();
-    let mut controller =
-        checksum::Controller::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let mut controller = checksum::Controller::new(
+        checksum::Retirement::testing(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    );
     let mut request = ChecksumRequest::new(ChecksumJobId(3), ChecksumGeneration(1), vec![path]);
     request.targets[0].size = Some(1);
     controller.start(request).unwrap();
@@ -251,8 +261,10 @@ async fn recursive_depth_node_and_memory_limits_report_incomplete_discovery() {
     let root = temp.path().join("root");
     fs::create_dir_all(root.join("child/deeper")).unwrap();
     fs::write(root.join("child/deeper/file"), b"unvisited").unwrap();
-    let mut controller =
-        checksum::Controller::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let mut controller = checksum::Controller::new(
+        checksum::Retirement::testing(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    );
     for (index, budget) in [
         ChecksumBudget::Depth,
         ChecksumBudget::Nodes,

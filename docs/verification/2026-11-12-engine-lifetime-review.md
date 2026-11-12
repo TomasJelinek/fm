@@ -10,6 +10,16 @@ ownership changes are useful independently. The current batch must not claim LIF
 service references and provider-bearing work in other independently spawned actors still need guards.
 No additional blocker was found by inspection in the changed root/receiver/snapshot/drag paths below.
 
+## Follow-up status
+
+This review describes the earlier 74-slot implementation. The later
+[child-task ownership batch](2026-11-12-task-services.md) guards Find, preference and
+font service children, checksum payloads and Custom Command captures/processes.
+Its ledger is 144 payload slots plus four intake waiters and a separate eight-slot
+process tracker. These changes address the corresponding findings below; desktop,
+watch, clipboard and builder-replacement gaps remain separately open. Historical
+observations and original verification are retained rather than rewritten.
+
 ## Reviewed changed boundaries
 
 - `engine_lifetime.rs:25`: startup creates the retirement worker and reserves engine resources before

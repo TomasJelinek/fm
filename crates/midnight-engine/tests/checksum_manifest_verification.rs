@@ -1,3 +1,7 @@
+#[path = "../src/retirement.rs"]
+#[allow(dead_code)]
+mod retirement;
+
 #[path = "../src/checksum.rs"]
 #[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
 mod checksum;
@@ -20,8 +24,10 @@ mod links;
 mod native_fixture;
 
 async fn verify(path: &std::path::Path) -> Arc<ChecksumRun> {
-    let mut controller =
-        checksum::Controller::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let mut controller = checksum::Controller::new(
+        checksum::Retirement::testing(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    );
     controller
         .verify(ChecksumVerifyRequest {
             job: ChecksumJobId(1),
@@ -137,8 +143,10 @@ async fn malformed_manifest_fails_as_a_whole_and_cancelled_queue_never_reads_tar
     assert_eq!(run.summary.completion, ChecksumCompletion::Failed);
     assert!(run.rows.is_empty());
     drop(run);
-    let mut controller =
-        checksum::Controller::new(Arc::new(midnight_platform::LocalFileSystem::new(None)));
+    let mut controller = checksum::Controller::new(
+        checksum::Retirement::testing(),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    );
     controller
         .verify(ChecksumVerifyRequest {
             job: ChecksumJobId(1),

@@ -101,7 +101,12 @@ fn setup(
         sender,
         wakeup: Arc::new(|| {}),
     };
-    let controller = Controller::new(Some(Arc::new(Provider(barrier))), outbox, gate);
+    let controller = Controller::new(
+        Retirement::testing(),
+        Some(Arc::new(Provider(barrier))),
+        outbox,
+        gate,
+    );
     let directory = std::env::current_dir().unwrap().join("_build/tmp");
     controller.state.lock().unwrap().jobs.insert(
         ChecksumJobId(1),
@@ -217,12 +222,17 @@ async fn cancelled_native_export_keeps_mutation_permit_and_shutdown_waits_for_cl
 
 #[tokio::test]
 async fn full_queue_rejects_whole_request_without_superseding_an_admitted_generation() {
+    let retirement = Retirement::testing();
+    let service = Service::new(retirement.service, None);
     let (input, _receiver) = mpsc::channel(32);
     let controller = Controller {
         input,
         state: Arc::default(),
         lifetime: Cancellation::default(),
         available: true,
+        service,
+        retirement: retirement.domain,
+        intake: tokio::sync::Mutex::new(retirement.intake),
         task: None,
     };
     let path = std::env::current_dir().unwrap().join("_build/tmp/source");
@@ -233,7 +243,7 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
         // This test fills this actor's channel, independently of process-wide
         // quota used concurrently by other tests. Global quota has its own tests.
         controller
-            .admit(
+            .admit_plain(
                 Capture::Paths(request),
                 (ChecksumJobId(id), ChecksumGeneration(1)),
                 ChecksumRetention::new(()),
@@ -244,7 +254,7 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
     request.limits.max_retained_bytes = 1;
     assert_eq!(
         controller
-            .admit(
+            .admit_plain(
                 Capture::Paths(request),
                 (ChecksumJobId(1), ChecksumGeneration(2)),
                 ChecksumRetention::new(()),

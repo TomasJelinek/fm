@@ -1,5 +1,7 @@
 //! Bounded Custom Commands actor. Preview and execution are distinct backend intents.
+use crate::retirement::{RetirementDomain, RetirementLease, WorkerOwned};
 use crate::{Outbox, user_command_prepare, user_command_runtime::Runtime};
+
 use midnight_core::*;
 use std::{
     collections::HashMap,
@@ -12,6 +14,22 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinHandle,
 };
+
+pub(crate) const MAX_JOBS: usize = 32;
+pub(crate) struct Retirement {
+    pub(crate) domain: RetirementDomain,
+    pub(crate) service: RetirementLease,
+}
+struct Services {
+    native: Option<Arc<dyn UserCommandService>>,
+    files: Option<Arc<dyn TransferService>>,
+}
+struct PreparedOwner {
+    plan: user_command_prepare::Prepared,
+    services: Arc<WorkerOwned<Services>>,
+    retention: Arc<UserCommandRetention>,
+}
+type Prepared = Arc<WorkerOwned<PreparedOwner>>;
 
 #[derive(Default)]
 struct State {
@@ -30,7 +48,8 @@ struct Lease {
 }
 fn jobs() -> Arc<Semaphore> {
     static JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    JOBS.get_or_init(|| Arc::new(Semaphore::new(32))).clone()
+    JOBS.get_or_init(|| Arc::new(Semaphore::new(MAX_JOBS)))
+        .clone()
 }
 fn memory() -> Arc<Semaphore> {
     static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -39,7 +58,8 @@ fn memory() -> Arc<Semaphore> {
         .clone()
 }
 pub(crate) struct Controller {
-    input: mpsc::Sender<Work>,
+    input: mpsc::Sender<WorkerOwned<Work>>,
+    retirement: RetirementDomain,
     state: Arc<Mutex<State>>,
     stop: Cancellation,
     available: bool,
@@ -47,18 +67,19 @@ pub(crate) struct Controller {
 }
 impl Controller {
     pub(crate) fn new(
+        retirement: Retirement,
         native: Option<Arc<dyn UserCommandService>>,
         files: Option<Arc<dyn TransferService>>,
         runtime: Runtime,
         outbox: Outbox,
     ) -> Self {
-        let (input, incoming) = mpsc::channel(32);
+        let (input, incoming) = mpsc::channel(MAX_JOBS);
         let state = Arc::new(Mutex::new(State::default()));
         let stop = Cancellation::default();
         let available = native.is_some() && files.is_some();
+        let services = Arc::new(retirement.service.own(Services { native, files }));
         let task = tokio::spawn(run(
-            native,
-            files,
+            services,
             runtime,
             outbox,
             incoming,
@@ -67,6 +88,7 @@ impl Controller {
         ));
         Self {
             input,
+            retirement: retirement.domain,
             state,
             stop,
             available,
@@ -108,10 +130,16 @@ impl Controller {
                     "Custom Command target/result budget is full (64 MiB).",
                 )
             })?;
+        let ownership = self.retirement.try_reserve().map_err(|_| {
+            failure(
+                io::ErrorKind::WouldBlock,
+                "Custom Command cleanup capacity is full.",
+            )
+        })?;
         let cancel = self.stop.child();
         let id = request.id;
         self.input
-            .try_send(Work {
+            .try_send(ownership.own(Work {
                 request,
                 preview,
                 cancel: cancel.clone(),
@@ -119,7 +147,7 @@ impl Controller {
                     _job: job,
                     _memory: memory,
                 }),
-            })
+            }))
             .map_err(|_| {
                 failure(
                     io::ErrorKind::WouldBlock,
@@ -161,26 +189,27 @@ struct Context {
     runtime: Runtime,
     outbox: Outbox,
     stop: Cancellation,
+    services: Arc<WorkerOwned<Services>>,
 }
 async fn run(
-    native: Option<Arc<dyn UserCommandService>>,
-    files: Option<Arc<dyn TransferService>>,
+    services: Arc<WorkerOwned<Services>>,
     runtime: Runtime,
     outbox: Outbox,
-    mut input: mpsc::Receiver<Work>,
+    mut input: mpsc::Receiver<WorkerOwned<Work>>,
     state: Arc<Mutex<State>>,
     stop: Cancellation,
 ) {
-    let (Some(native), Some(files)) = (native, files) else {
+    let (Some(native), Some(files)) = (services.native.clone(), services.files.clone()) else {
         return;
     };
-    let context = Context {
+    let context = Arc::new(Context {
         native,
         files,
         runtime,
         outbox,
         stop,
-    };
+        services,
+    });
     loop {
         if context.stop.is_cancelled() {
             break;
@@ -207,7 +236,7 @@ async fn run(
         .requests
         .clear();
 }
-async fn execute(work: Work, context: &Context) {
+async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
     let id = work.request.id;
     let command = work.request.command.clone();
     let cancel = work.cancel.clone();
@@ -215,13 +244,18 @@ async fn execute(work: Work, context: &Context) {
     let preview = work.preview;
     send(context, id, &command, UserCommandUpdate::Queued, None).await;
     send(context, id, &command, UserCommandUpdate::Preparing, None).await;
-    let native = context.native.clone();
-    let files = context.files.clone();
+    let context_owner = context.clone();
     let prepared = tokio::task::spawn_blocking(move || {
+        let (payload, ownership) = work.into_parts();
+        let work = payload;
         let prepared = if work.preview {
-            user_command_prepare::prepare_preview(&work.request, files.as_ref(), &work.cancel)
+            user_command_prepare::prepare_preview(
+                &work.request,
+                context_owner.files.as_ref(),
+                &work.cancel,
+            )
         } else {
-            user_command_prepare::prepare(&work.request, files.as_ref(), &work.cancel)
+            user_command_prepare::prepare(&work.request, context_owner.files.as_ref(), &work.cancel)
         }?;
         for process in prepared.processes.iter() {
             let _permit = midnight_work_budget::shared_io()
@@ -229,13 +263,19 @@ async fn execute(work: Work, context: &Context) {
                     work.cancel.is_cancelled()
                 })
                 .ok_or_else(cancelled)?;
-            native.validate_user_command(process, &work.cancel)?;
+            context_owner
+                .native
+                .validate_user_command(process, &work.cancel)?;
         }
         prepared.revalidate(&work.cancel)?;
-        Ok::<_, FsError>(prepared)
+        Ok::<_, FsError>(Arc::new(ownership.own(PreparedOwner {
+            plan: prepared,
+            services: context_owner.services.clone(),
+            retention: work.retention.clone(),
+        })))
     })
     .await;
-    let prepared = match prepared {
+    let prepared: Prepared = match prepared {
         Ok(Ok(prepared)) => prepared,
         result => {
             let error = match result {
@@ -255,9 +295,28 @@ async fn execute(work: Work, context: &Context) {
             return;
         }
     };
-    let planned = prepared.processes.len() as u64;
+    let planned = prepared.plan.processes.len() as u64;
     if preview {
-        let result = tokio::task::spawn_blocking(move || prepared.into_preview(retention)).await;
+        let result = tokio::task::spawn_blocking(move || {
+            let owner = Arc::try_unwrap(prepared).map_err(|_| {
+                failure(
+                    io::ErrorKind::Other,
+                    "Preview ownership changed unexpectedly.",
+                )
+            })?;
+            let (owner, ownership) = owner.into_parts();
+            let PreparedOwner {
+                plan,
+                services,
+                retention: held,
+            } = owner;
+            let preview = plan.into_preview(retention);
+            drop(services);
+            drop(held);
+            drop(ownership);
+            preview
+        })
+        .await;
         match result {
             Ok(Ok(preview)) if !cancel.is_cancelled() => {
                 if send(
@@ -295,7 +354,7 @@ async fn execute(work: Work, context: &Context) {
     }
     let mut started = 0u64;
     let mut error = None;
-    for index in 0..prepared.processes.len() {
+    for index in 0..prepared.plan.processes.len() {
         if cancel.is_cancelled() {
             break;
         }
@@ -307,22 +366,29 @@ async fn execute(work: Work, context: &Context) {
             }
         };
         let pinned = prepared.clone();
-        let native = context.native.clone();
+        let context_owner = context.clone();
         let stopping = cancel.clone();
         let launched = tokio::task::spawn_blocking(move || {
             // Both permits and metadata pins survive an async cancellation until native return.
             let _launch = reservation.launch;
-            pinned.revalidate_for(index, &stopping)?;
-            native
-                .launch_user_command(&pinned.processes[index], &stopping)
-                .map(|child| (child, reservation.process))
+            pinned.plan.revalidate_for(index, &stopping)?;
+            context_owner
+                .native
+                .launch_user_command(&pinned.plan.processes[index], &stopping)
+                .map(|child| {
+                    reservation.ticket.own(
+                        child,
+                        reservation.process,
+                        context_owner.services.clone(),
+                    )
+                })
         })
         .await;
         match launched {
-            Ok(Ok((child, slot))) => {
+            Ok(Ok(child)) => {
                 let process_id = child.id();
                 started += 1;
-                let tracking = context.runtime.track(child, slot).await;
+                let tracking = context.runtime.track(child).await;
                 send(
                     context,
                     id,
@@ -352,7 +418,9 @@ async fn execute(work: Work, context: &Context) {
             }
         }
     }
-    let _ = tokio::task::spawn_blocking(move || drop(prepared)).await;
+    if let Ok(prepared) = Arc::try_unwrap(prepared) {
+        let _ = prepared.retire().await;
+    }
     drop(retention);
     finish(
         context,
@@ -433,3 +501,16 @@ fn failure(kind: io::ErrorKind, message: &str) -> FsError {
 #[cfg(test)]
 #[path = "user_command_actor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "user_command_pin_tests.rs"]
+mod pin_tests;
+
+#[cfg(test)]
+impl Retirement {
+    fn testing() -> Self {
+        let domain = RetirementDomain::try_start(MAX_JOBS + 1, 0).unwrap();
+        let service = domain.try_reserve().unwrap();
+        Self { domain, service }
+    }
+}

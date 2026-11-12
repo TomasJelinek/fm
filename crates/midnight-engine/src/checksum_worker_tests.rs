@@ -357,7 +357,8 @@ fn empty_stream_has_all_four_standard_digests() {
 async fn controller_cancellation_and_retained_job_quota_are_bounded() {
     let _quota_fixture = super::super::test_quota_fixture().await;
     let provider = Arc::new(Provider::new(b"abc"));
-    let mut controller = super::super::Controller::new(provider);
+    let mut controller =
+        super::super::Controller::new(super::super::Retirement::testing(), provider);
     assert!(controller.try_next().is_none());
     let mut runs = Vec::new();
     for job in 1..=32 {
@@ -411,7 +412,8 @@ async fn cancellation_and_shutdown_retain_an_inflight_read_and_its_io_permit() {
     let _release = ReleaseOnDrop(barrier.clone());
     let mut provider = Provider::new(b"abc");
     provider.barrier = Some(barrier.clone());
-    let controller = super::super::Controller::new(Arc::new(provider));
+    let controller =
+        super::super::Controller::new(super::super::Retirement::testing(), Arc::new(provider));
     controller.start(request()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), barrier.entered.notified())
         .await

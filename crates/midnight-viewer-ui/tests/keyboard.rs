@@ -51,16 +51,32 @@ fn actual_search_widget_keeps_spaces_and_exposes_escape_to_host() {
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(320.0, 200.0),
     });
-    window.set_image_mode(true);
-    window.set_document_page(2);
     window.set_document_pages(4096);
     let mut compact_pixels = vec![slint::Rgb8Pixel::default(); 320 * 200];
-    native.draw_if_needed(|renderer| {
-        renderer.render(&mut compact_pixels, 320);
-    });
-    assert_eq!(window.window().size(), slint::PhysicalSize::new(320, 200));
-    assert!((270.0..=308.0).contains(&window.get_content_width()));
-    assert!(window.get_content_height() > 100.0);
+    // A compact PDF reserves two footer rows for page and zoom controls. Keep
+    // the larger viewport contract for text/images; ui_polish also clicks every
+    // PDF footer action at this minimum size and checks its actual bounds.
+    for (mode, image, page, minimum_height) in [
+        ("text", false, 0, 100.0),
+        ("image", true, 0, 100.0),
+        ("PDF", true, 2, 40.0),
+    ] {
+        window.set_image_mode(image);
+        window.set_document_page(page);
+        native.draw_if_needed(|renderer| {
+            renderer.render(&mut compact_pixels, 320);
+        });
+        assert_eq!(window.window().size(), slint::PhysicalSize::new(320, 200));
+        assert!((270.0..=308.0).contains(&window.get_content_width()));
+        assert!(
+            window.get_content_height() > minimum_height,
+            "compact {mode} content: {}x{} at {},{}",
+            window.get_content_width(),
+            window.get_content_height(),
+            window.get_content_left(),
+            window.get_content_top(),
+        );
+    }
     window.set_image_mode(false);
     window.set_document_page(0);
     window.set_compact(false);

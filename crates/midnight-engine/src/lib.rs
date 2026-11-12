@@ -19,6 +19,7 @@ mod engine_commands;
 mod engine_lifetime;
 mod engine_run;
 mod retirement;
+mod task_lifetime;
 pub use engine_lifetime::EngineLifetime;
 pub use engine_run::EngineRun;
 #[cfg(test)]
@@ -71,6 +72,8 @@ mod size_warning_requests;
 mod size_warnings;
 pub mod snapshot;
 mod streaming_selection;
+#[cfg(test)]
+mod task_service_tests;
 mod tree_actor;
 mod tree_clipboard;
 mod tree_controller;
@@ -161,6 +164,7 @@ impl Request {
 
 pub struct Engine {
     services: retirement::WorkerOwned<EngineServices>,
+    run: retirement::RetirementLease,
     commands: retirement::RetirementLease,
     resources: engine_lifetime::Resources,
 }
@@ -305,7 +309,8 @@ impl Engine {
             },
         };
         Self {
-            services: lifetime.run.own(services),
+            services: lifetime.services.own(services),
+            run: lifetime.run,
             commands: lifetime.commands,
             resources: lifetime.resources,
         }
@@ -412,10 +417,14 @@ impl Engine {
 
     /// Take command ownership synchronously, including before the first future poll.
     pub fn run(self, commands: mpsc::Receiver<Command>) -> EngineRun {
-        let (services, lease) = self.services.into_parts();
-        let active = services.clone();
+        let active = (*self.services).clone();
+        let scope = task_lifetime::TaskLifetime::new(Arc::new(self.services));
         let commands = self.commands.own(engine_commands::CommandInbox(commands));
-        EngineRun::new(lease, active.run_inner(commands, self.resources), services)
+        EngineRun::new(
+            self.run,
+            active.run_inner(commands, self.resources, scope.clone()),
+            scope,
+        )
     }
 }
 
@@ -424,6 +433,7 @@ impl EngineServices {
         self,
         mut commands: retirement::WorkerOwned<engine_commands::CommandInbox>,
         resources: engine_lifetime::Resources,
+        scope: task_lifetime::TaskLifetime,
     ) {
         // Reserve capacity for each pane even when the other pane accumulates
         // uncancellable OS reads on unavailable media.
@@ -436,6 +446,7 @@ impl EngineServices {
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
         let mut find = find::Controller::new(
+            scope.clone(),
             self.find,
             self.locale.clone(),
             self.outbox.clone(),
@@ -446,11 +457,16 @@ impl EngineServices {
             mpsc::channel::<selection::PreparedProperties>(2);
         let properties_budget = Arc::new(Semaphore::new(2));
         let archive_selection_budget = Arc::new(Semaphore::new(2));
-        let fonts = fonts::Controller::new(self.settings.clone(), self.outbox.clone(), &mut tasks);
+        let fonts = fonts::Controller::new(
+            scope.clone(),
+            self.settings.clone(),
+            self.outbox.clone(),
+            &mut tasks,
+        );
         let viewer_plugins = viewer_plugins::Controller::new(self.outbox.clone(), &mut tasks);
-        let settings = self
-            .settings
-            .map(|service| preferences::Controller::new(service, self.outbox.clone(), &mut tasks));
+        let settings = self.settings.map(|service| {
+            preferences::Controller::new(scope.clone(), service, self.outbox.clone(), &mut tasks)
+        });
         let watcher = self.watch.map(|native| {
             watch::Controller::new(
                 self.filesystem.clone(),
@@ -512,12 +528,14 @@ impl EngineServices {
             snapshots.clone(),
         );
         let user_commands = user_commands::Controller::new(
+            resources.user_commands,
             self.user_commands,
             self.transfers.clone(),
-            desktop.command_runtime(),
+            desktop.command_runtime(resources.user_command_processes),
             self.outbox.clone(),
         );
         let checksums = checksum_actor::Controller::new(
+            resources.checksums,
             self.transfers.clone(),
             self.outbox.clone(),
             mutation_gate.clone(),

@@ -49,17 +49,25 @@ bugs were reproduced. Startup now reserves a plain cleanup worker and bounded sl
 before taking provider ownership. The synchronous Engine run wrapper owns suspended
 execution and the complete command inbox; Copy/Move/Delete handoffs, shared snapshots
 and drag state retain their cleanup reservations through actual destruction.
-The [engine contract](developer/ENGINE_LIFETIME.md) describes the 74-slot ledger and
-late reserved-send handling. [Integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
-records Windows affected suites and Linux targeted results. Targeted tests cover first-poll/drop, blocked dispatch,
-runtime shutdown, native-before-provider order and completed/unconsumed preparation.
-No data-integrity failure was reproduced. A single blocked native destructor or held
-send permit can stall the bounded cleanup domain; UI/executor Drop does not wait.
+The [engine contract](developer/ENGINE_LIFETIME.md) now describes 144 payload slots,
+four bounded intake waiters and a separate eight-slot native process tracker. The
+[initial integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
+remains historical; the [child-task verification](verification/2026-11-12-task-services.md)
+records the additional shared service guard for Find, preferences and fonts,
+[checksum capture retirement](verification/2026-11-12-checksum-retirement.md), and
+[Custom Command ownership](verification/2026-11-12-user-command-lifetime.md).
+Targeted tests cover first-poll/drop, blocked dispatch, runtime shutdown,
+native-before-provider order and completed/unconsumed preparation. No data-integrity
+failure was reproduced. A single blocked native destructor or held send permit can
+stall its bounded cleanup domain; UI/executor Drop does not wait. Custom Command
+process quota remains occupied through observed exit and actual native destruction.
 
-This is not full LIFE-01 closure. Independently spawned service clones and raw requests
-in Find, checksum and custom-command actors need the additional ownership protection
-recorded in [the review](verification/2026-11-12-engine-lifetime-review.md).
-The [runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
+This is not full LIFE-01 closure. Independently spawned desktop/watch/clipboard
+work and ordinary terminal/editor process returns need further protection; repeated
+Engine builder replacement also remains open. The
+[remaining boundary review](verification/2026-11-12-remaining-service-ownership.md)
+records the next audit findings. The
+[runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
 tracks implementation and outstanding cross-actor qualification.
 
 ## Viewer position follow-up found on 12 November
@@ -75,7 +83,12 @@ refills; the original failed traces remain preserved. See the
 **SCROLL-02 — P1, investigate D3D pacing:** the final valid 12-case matrix has 10 original
 wheel/drag guard passes and two D3D sparse-frame failures. A preserved pre-change probe
 reproduces 230–652 ms D3D gaps on the same Markdown/runtime/geometry, so the observed
-large delay is not unique to the coordinate change. The cause remains unassigned.
+large delay is not unique to the coordinate change. Fresh locked-desktop attribution
+places all 55 interior samples from nine slow moving redraws in the DX12 swapchain
+frame-latency wait, before Slint item rendering. Windows LockApp owned the foreground;
+valid foreground and actual-application qualification remain pending after unlock.
+See the [D3D attribution](verification/2026-11-12-d3d-scroll-pacing.md). No renderer
+policy or performance gate was changed.
 Qualify native input-to-presentation pacing without source scans, weakening the existing
 guards, or claiming CPU-source crop correspondence as GPU readback. Software at BAT0.1
 preserves approximately +135,+135,-135 pixel motion and returns to the same thumb

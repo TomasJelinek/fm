@@ -1,6 +1,12 @@
 //! Backend-only checksum controller. One process-wide worker, bounded queues and retained quota.
 //! The host must await shutdown during normal close; UI/protocol integration is separate.
+use crate::retirement::WorkerOwned;
 use midnight_core::*;
+#[path = "checksum_retirement.rs"]
+pub(crate) mod ownership;
+#[cfg(test)]
+pub(crate) use ownership::Retirement;
+use ownership::Service;
 use std::{
     collections::HashMap,
     io,
@@ -25,11 +31,53 @@ pub use manifest::save_manifest;
 
 type Key = (ChecksumJobId, ChecksumGeneration);
 type Registry = Arc<Mutex<HashMap<Key, Cancellation>>>;
-struct Work {
-    request: Request,
+pub(super) struct Work {
+    request: Option<Request>,
     cancel: Cancellation,
-    retention: Arc<ChecksumRetention>,
+    // Captured native/provider ownership closes before quota, worker permit and service.
     source: Option<Arc<dyn CapturedChecksumFiles>>,
+    retention: Arc<ChecksumRetention>,
+    worker: Option<OwnedSemaphorePermit>,
+    service: Service,
+}
+impl Work {
+    pub(super) fn calculate(
+        request: ChecksumRequest,
+        cancel: Cancellation,
+        retention: Arc<ChecksumRetention>,
+        source: Option<Arc<dyn CapturedChecksumFiles>>,
+        service: Service,
+    ) -> Self {
+        Self {
+            request: Some(Request::Calculate(request)),
+            cancel,
+            source,
+            retention,
+            worker: None,
+            service,
+        }
+    }
+    pub(super) fn verify(
+        request: ChecksumVerifyRequest,
+        cancel: Cancellation,
+        retention: Arc<ChecksumRetention>,
+        service: Service,
+    ) -> Self {
+        Self {
+            request: Some(Request::Verify(request)),
+            cancel,
+            source: None,
+            retention,
+            worker: None,
+            service,
+        }
+    }
+    fn key(&self) -> Key {
+        self.request
+            .as_ref()
+            .expect("pending checksum request")
+            .key()
+    }
 }
 enum Request {
     Calculate(ChecksumRequest),
@@ -106,15 +154,18 @@ pub(super) fn reserve_verification(
 }
 
 pub struct Controller {
-    requests: mpsc::Sender<Work>,
+    requests: mpsc::Sender<WorkerOwned<Work>>,
+    _service: Service,
+    #[cfg(test)]
+    retirement: Option<crate::retirement::RetirementDomain>,
     events: mpsc::Receiver<ChecksumEvent>,
     registry: Registry,
     stop: Cancellation,
     task: Option<JoinHandle<()>>,
 }
 impl Controller {
-    /// Construct and own this service on the engine/backend runtime.
-    pub fn new(service: Arc<dyn TransferService>) -> Self {
+    /// The adapter passes the already-guarded service owner into this child actor.
+    pub(super) fn from_service(service: Service) -> Self {
         let (requests, incoming) = mpsc::channel(MAX_CHECKSUM_JOBS);
         let (outgoing, events) = mpsc::channel(64);
         let registry = Registry::default();
@@ -122,17 +173,27 @@ impl Controller {
         let task = tokio::spawn(run(
             incoming,
             outgoing,
-            service,
+            service.clone(),
             registry.clone(),
             stop.clone(),
         ));
         Self {
             requests,
             events,
+            _service: service,
             registry,
             stop,
             task: Some(task),
+            #[cfg(test)]
+            retirement: None,
         }
+    }
+    #[cfg(test)]
+    pub fn new(retirement: Retirement, service: Arc<dyn TransferService>) -> Self {
+        let service = Service::new(retirement.service, Some(service));
+        let mut controller = Self::from_service(service);
+        controller.retirement = Some(retirement.domain);
+        controller
     }
     /// Nonblocking backend admission. Resource exhaustion rejects the complete request.
     #[cfg(test)]
@@ -148,52 +209,59 @@ impl Controller {
             ));
         }
         let retention = reserve(request_bytes, request.limits.max_retained_bytes)?;
-        self.start_reserved(request, self.stop.child(), retention)
+        self.admit_plain(Request::Calculate(request), self.stop.child(), retention)
     }
 
-    pub(super) fn start_reserved(
-        &self,
-        request: ChecksumRequest,
-        cancel: Cancellation,
-        retention: Arc<ChecksumRetention>,
-    ) -> Result<(), FsError> {
-        self.admit(Request::Calculate(request), cancel, retention, None)
-    }
-    pub(super) async fn start_captured_reserved(
-        &self,
-        request: ChecksumRequest,
-        cancel: Cancellation,
-        retention: Arc<ChecksumRetention>,
-        source: Option<Arc<dyn CapturedChecksumFiles>>,
-    ) -> Result<(), FsError> {
-        let cleanup = source.clone();
-        let result = self.admit(Request::Calculate(request), cancel, retention, source);
-        let _ = tokio::task::spawn_blocking(move || drop(cleanup)).await;
-        result
-    }
-    pub(super) fn verify_reserved(
-        &self,
-        request: ChecksumVerifyRequest,
-        cancel: Cancellation,
-        retention: Arc<ChecksumRetention>,
-    ) -> Result<(), FsError> {
-        self.admit(Request::Verify(request), cancel, retention, None)
+    pub(super) async fn admit_prepared(&self, work: WorkerOwned<Work>) -> Result<(), FsError> {
+        match self.admit(work) {
+            Ok(()) => Ok(()),
+            Err((error, work)) => {
+                let _ = work.retire().await;
+                Err(error)
+            }
+        }
     }
     #[cfg(test)]
     #[allow(dead_code)] // Used by path-included native integration tests.
     pub fn verify(&self, request: ChecksumVerifyRequest) -> Result<(), FsError> {
         let retention = reserve_verification(&request)?;
-        self.verify_reserved(request, self.stop.child(), retention)
+        self.admit_plain(Request::Verify(request), self.stop.child(), retention)
     }
-    fn admit(
+    #[cfg(test)]
+    fn admit_plain(
         &self,
         request: Request,
         cancel: Cancellation,
         retention: Arc<ChecksumRetention>,
-        source: Option<Arc<dyn CapturedChecksumFiles>>,
     ) -> Result<(), FsError> {
+        let lease = self
+            .retirement
+            .as_ref()
+            .expect("standalone fixture retirement")
+            .try_reserve()
+            .map_err(|_| {
+                worker::failure(
+                    Path::new(""),
+                    io::ErrorKind::WouldBlock,
+                    "Checksum cleanup capacity is occupied.",
+                )
+            })?;
+        let work = lease.own(Work {
+            request: Some(request),
+            cancel,
+            source: None,
+            retention,
+            worker: None,
+            service: self._service.clone(),
+        });
+        self.admit(work).map_err(|(error, work)| {
+            drop(work);
+            error
+        })
+    }
+    fn admit(&self, work: WorkerOwned<Work>) -> Result<(), (FsError, WorkerOwned<Work>)> {
         let fail = |kind, text| worker::failure(Path::new(""), kind, text);
-        let key = request.key();
+        let key = work.key();
         let mut registry = self
             .registry
             .lock()
@@ -202,29 +270,29 @@ impl Controller {
             .keys()
             .any(|(job, generation)| *job == key.0 && *generation >= key.1)
         {
-            return Err(fail(
-                io::ErrorKind::AlreadyExists,
-                "Checksum generation is already active or obsolete.",
+            return Err((
+                fail(
+                    io::ErrorKind::AlreadyExists,
+                    "Checksum generation is already active or obsolete.",
+                ),
+                work,
             ));
         }
-        // A recalculate starts only after the serial worker has cleaned up its predecessor.
+        // Recalculation still waits for the serial worker to clean its predecessor.
         for ((job, _), old) in registry.iter() {
             if *job == key.0 {
                 old.cancel();
             }
         }
-        registry.insert(key, cancel.clone());
-        let work = Work {
-            request,
-            cancel,
-            retention,
-            source,
-        };
-        if self.requests.try_send(work).is_err() {
+        registry.insert(key, work.cancel.clone());
+        if let Err(error) = self.requests.try_send(work) {
             registry.remove(&key);
-            return Err(fail(
-                io::ErrorKind::WouldBlock,
-                "Checksum admission queue is unavailable or full.",
+            return Err((
+                fail(
+                    io::ErrorKind::WouldBlock,
+                    "Checksum admission queue is unavailable or full.",
+                ),
+                error.into_inner(),
             ));
         }
         Ok(())
@@ -279,9 +347,9 @@ impl Drop for Controller {
 }
 
 async fn run(
-    mut incoming: mpsc::Receiver<Work>,
+    mut incoming: mpsc::Receiver<WorkerOwned<Work>>,
     outgoing: mpsc::Sender<ChecksumEvent>,
-    service: Arc<dyn TransferService>,
+    _service: Service,
     registry: Registry,
     stop: Cancellation,
 ) {
@@ -289,15 +357,16 @@ async fn run(
         if stop.is_cancelled() {
             break;
         }
-        let work = match tokio::time::timeout(Duration::from_millis(25), incoming.recv()).await {
+        let mut work = match tokio::time::timeout(Duration::from_millis(25), incoming.recv()).await
+        {
             Ok(Some(work)) => work,
             Ok(None) => break,
             Err(_) => continue,
         };
-        let key = work.request.key();
+        let key = work.key();
         let permit = loop {
             if stop.is_cancelled() {
-                let _ = tokio::task::spawn_blocking(move || drop(work)).await;
+                let _ = work.retire().await;
                 break 'jobs;
             }
             if let Ok(permit) = workers().try_acquire_owned() {
@@ -305,38 +374,12 @@ async fn run(
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         };
+        work.worker = Some(permit);
         let events = outgoing.clone();
         let stopping = stop.clone();
-        let provider = service.clone();
         let cancellation = work.cancel.clone();
-        let completed = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            // Provider registration remains live until all actual native reads return.
-            let source = work.source;
-            let sending_job = work.cancel.clone();
-            let send = |update| send_update(&events, key, update, &stopping, &sending_job);
-            if !send(ChecksumUpdate::Started) {
-                work.cancel.cancel();
-            }
-            match work.request {
-                Request::Calculate(request) => worker::calculate_captured(
-                    request,
-                    source.as_deref(),
-                    provider.as_ref(),
-                    &work.cancel,
-                    work.retention,
-                    send,
-                ),
-                Request::Verify(request) => verify::verify(
-                    request,
-                    provider.as_ref(),
-                    &work.cancel,
-                    work.retention,
-                    send,
-                ),
-            }
-        })
-        .await;
+        let completed =
+            tokio::task::spawn_blocking(move || execute(work, &events, &stopping)).await;
         registry
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -373,7 +416,45 @@ async fn run(
         cancel.cancel();
     }
     incoming.close();
-    let _ = tokio::task::spawn_blocking(move || while incoming.try_recv().is_ok() {}).await;
+    while let Ok(work) = incoming.try_recv() {
+        let _ = work.retire().await;
+    }
+}
+fn execute(
+    owned: WorkerOwned<Work>,
+    events: &mpsc::Sender<ChecksumEvent>,
+    stopping: &Cancellation,
+) -> Arc<ChecksumRun> {
+    let (payload, lease) = owned.into_parts();
+    // Bind after the lease so error/panic destruction keeps the slot occupied.
+    let mut work = payload;
+    let key = work.key();
+    let request = work.request.take().expect("pending checksum request");
+    let send = |update| send_update(events, key, update, stopping, &work.cancel);
+    if !send(ChecksumUpdate::Started) {
+        work.cancel.cancel();
+    }
+    let run = match request {
+        Request::Calculate(request) => worker::calculate_captured(
+            request,
+            work.source.as_deref(),
+            work.service.provider(),
+            &work.cancel,
+            work.retention.clone(),
+            send,
+        ),
+        Request::Verify(request) => verify::verify(
+            request,
+            work.service.provider(),
+            &work.cancel,
+            work.retention.clone(),
+            send,
+        ),
+    };
+    // Actual native reads are gone before the captured provider, permits and lease.
+    drop(work);
+    drop(lease);
+    run
 }
 fn send_update(
     sender: &mpsc::Sender<ChecksumEvent>,
@@ -411,9 +492,29 @@ pub(crate) async fn test_quota_fixture() -> tokio::sync::MutexGuard<'static, ()>
 }
 
 #[cfg(test)]
+pub(super) async fn test_wait_for_quota_idle() {
+    // A capture Drop-entry signal precedes the following quota field's destruction.
+    // Keep the shared fixture until automatic retirement returns the actual permit.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while jobs().available_permits() != MAX_CHECKSUM_JOBS {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("checksum quota retained after retirement");
+}
+
+#[cfg(test)]
 #[path = "checksum_controller_tests.rs"]
 mod tests;
 
 #[cfg(test)]
 #[path = "checksum_boundaries_tests.rs"]
 mod boundary_tests;
+
+#[cfg(test)]
+#[path = "checksum_retirement_fixture.rs"]
+pub(super) mod retirement_fixture;
+#[cfg(test)]
+#[path = "checksum_backend_retirement_tests.rs"]
+mod retirement_tests;

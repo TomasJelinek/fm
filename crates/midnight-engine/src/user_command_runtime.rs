@@ -1,29 +1,38 @@
 //! Shared desktop process admission and tracking, without history/ordinary-terminal actions.
 use crate::desktop::TrackedChild;
-use midnight_core::{Cancellation, FsError, TerminalProcess};
+use midnight_core::{Cancellation, FsError};
 use std::{io, path::Path, sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+
+#[path = "user_command_process_tracker.rs"]
+mod tracker;
+pub(crate) use tracker::{MAX_PROCESSES, ProcessTracker};
+use tracker::{ProcessTicket, TrackedProcess};
 
 #[derive(Clone)]
 pub(crate) struct Runtime {
     launches: Arc<Semaphore>,
     processes: Arc<Semaphore>,
     children: mpsc::Sender<TrackedChild>,
+    tracker: ProcessTracker,
 }
 pub(crate) struct Reservation {
+    pub(crate) ticket: ProcessTicket,
     pub(crate) launch: OwnedSemaphorePermit,
-    pub(crate) process: OwnedSemaphorePermit,
+    pub(crate) process: Arc<OwnedSemaphorePermit>,
 }
 impl Runtime {
     pub(crate) fn new(
         launches: Arc<Semaphore>,
         processes: Arc<Semaphore>,
         children: mpsc::Sender<TrackedChild>,
+        tracker: ProcessTracker,
     ) -> Self {
         Self {
             launches,
             processes,
             children,
+            tracker,
         }
     }
     pub(crate) async fn reserve(&self, cancel: &Cancellation) -> Result<Reservation, FsError> {
@@ -35,36 +44,29 @@ impl Runtime {
         if cancel.is_cancelled() || self.children.is_closed() {
             return Err(failure("Command launch cancelled or tracking unavailable."));
         }
-        Ok(Reservation { launch, process })
+        let ticket = self.tracker.try_reserve().map_err(|error| {
+            FsError::from_io("Custom Command process cleanup", Path::new(""), error)
+        })?;
+        Ok(Reservation {
+            ticket,
+            launch,
+            process: Arc::new(process),
+        })
     }
-    pub(crate) async fn track(
-        &self,
-        child: Box<dyn TerminalProcess>,
-        slot: OwnedSemaphorePermit,
-    ) -> Result<(), FsError> {
-        if let Err(error) = self
+    pub(crate) async fn track(&self, child: TrackedProcess) -> Result<(), FsError> {
+        let slot = child.quota();
+        if self
             .children
             .send(TrackedChild {
-                child,
+                child: Box::new(child),
                 _slot: slot,
                 completion: None,
             })
             .await
+            .is_err()
         {
-            let TrackedChild {
-                mut child,
-                _slot: slot,
-                ..
-            } = error.0;
-            // A started child is never killed or discarded because the UI/reaper closed.
-            // At most eight owners retry at a timed interval, just like the normal reaper.
-            // A wait error does not establish exit and must not release process admission.
-            tokio::spawn(async move {
-                let _slot = slot;
-                while !matches!(child.try_wait(), Ok(Some(_))) {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            });
+            // The returned tracked owner submits to the already-reserved plain
+            // tracker. Runtime loss cannot discard the child or its process quota.
             return Err(failure(
                 "Program started, but its normal process tracker closed.",
             ));

@@ -60,6 +60,7 @@ fn setup(
     let (sender, events) = mpsc::channel(capacity);
     let mut tasks = JoinSet::new();
     let controller = Controller::new(
+        crate::task_lifetime::TaskLifetime::testing(service.clone()),
         Some(service),
         Outbox {
             sender,
@@ -175,6 +176,7 @@ async fn a_blocked_font_scan_does_not_delay_preferences_saves() {
     let (fonts, mut tasks, mut events) = setup(service.clone(), 4);
     let (sender, mut saved) = mpsc::channel(4);
     let preferences = crate::preferences::Controller::new(
+        crate::task_lifetime::TaskLifetime::testing(service.clone()),
         service.clone(),
         Outbox {
             sender,

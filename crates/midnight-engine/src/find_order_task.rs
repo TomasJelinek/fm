@@ -3,6 +3,7 @@ use super::*;
 use std::time::Instant;
 
 pub(super) async fn run(
+    scope: TaskLifetime,
     state: Arc<Mutex<State>>,
     locale: Option<Arc<dyn LocaleService>>,
     outbox: Outbox,
@@ -41,7 +42,7 @@ pub(super) async fn run(
         let locale = locale.clone();
         let outbox = outbox.clone();
         last = Instant::now();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = tokio::task::spawn_blocking(scope.blocking(move || {
             let update =
                 match crate::find_sort::order(&results, sort, revision, locale.as_deref(), &cancel)
                 {
@@ -82,7 +83,7 @@ pub(super) async fn run(
                 drop(current);
                 std::thread::park_timeout(Duration::from_millis(10));
             }
-        })
+        }))
         .await;
     }
 }
