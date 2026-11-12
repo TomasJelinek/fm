@@ -422,7 +422,7 @@ impl Presenter {
         self.retired
             .push(Box::new(mem::take(&mut self.fonts.catalog)));
         self.retired
-            .push(Box::new(mem::take(&mut self.preferences.values.bookmarks)));
+            .push(Box::new(mem::take(&mut self.preferences.values)));
     }
 
     pub(crate) fn navigate(
@@ -1167,7 +1167,10 @@ impl Presenter {
                 if let Some(history) = request.history {
                     p.history_index = Some(history);
                 } else if p.history_index.and_then(|i| p.history.get(i)) != Some(&p.path) {
-                    p.history.truncate(p.history_index.map_or(0, |i| i + 1));
+                    let retained = p.history_index.map_or(0, |i| i + 1);
+                    if retained < p.history.len() {
+                        self.retired.push(Box::new(p.history.split_off(retained)));
+                    }
                     p.history.push(p.path.clone());
                     p.history_index = Some(p.history.len() - 1);
                 }

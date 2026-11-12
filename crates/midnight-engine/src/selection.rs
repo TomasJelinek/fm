@@ -618,7 +618,7 @@ fn rebase(
 pub(crate) struct PreparedProperties {
     pub(crate) request: DesktopRequestId,
     pub(crate) paths: Vec<PathBuf>,
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
 
 pub(crate) struct PropertiesInput {
@@ -628,7 +628,7 @@ pub(crate) struct PropertiesInput {
     pub(crate) fallback: Option<PathBuf>,
 }
 
-pub(crate) fn prepare_properties(
+pub(crate) async fn prepare_properties(
     input: PropertiesInput,
     budget: Arc<tokio::sync::Semaphore>,
     outbox: Outbox,
@@ -642,24 +642,25 @@ pub(crate) fn prepare_properties(
         fallback,
     } = input;
     let Ok(permit) = budget.try_acquire_owned() else {
-        tasks.spawn(async move {
-            outbox
-                .send(Event::DesktopActionFinished {
-                    request,
-                    result: Err(FsError::from_io(
-                        "prepare Properties",
-                        std::path::Path::new(""),
-                        std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            "Properties preparation is busy. Try again.",
-                        ),
-                    )),
-                })
-                .await;
-        });
+        outbox
+            .send(Event::DesktopActionFinished {
+                request,
+                result: Err(FsError::from_io(
+                    "prepare Properties",
+                    std::path::Path::new(""),
+                    std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "Properties preparation is busy. Try again.",
+                    ),
+                )),
+            })
+            .await;
         return;
     };
+    let permit = Arc::new(permit);
+    let delivery_permit = permit.clone();
     tasks.spawn(async move {
+        let _delivery_permit = delivery_permit;
         let result = tokio::task::spawn_blocking(move || {
             let paths: Vec<PathBuf> = if selection.is_empty() {
                 fallback.into_iter().collect()
@@ -1260,7 +1261,8 @@ mod tests {
             },
             ready,
             &mut tasks,
-        );
+        )
+        .await;
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), events.recv())
                 .await

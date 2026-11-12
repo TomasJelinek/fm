@@ -26,6 +26,7 @@ mod file_list_windows;
 mod filename_colors;
 mod find_windows;
 mod font_model;
+mod history_models;
 mod hot_path_windows;
 mod information_windows;
 mod job_presentation;
@@ -664,7 +665,11 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
                 format_size(space.total, &presenter.number_locale)
             ));
         }
-        let error = presenter.panel_error_text(if index == 0 { PaneId::Left } else { PaneId::Right });
+        let error = presenter.panel_error_text(if index == 0 {
+            PaneId::Left
+        } else {
+            PaneId::Right
+        });
         if index == 0 {
             window.set_left_path(location.into());
             window.set_left_volume(volume);

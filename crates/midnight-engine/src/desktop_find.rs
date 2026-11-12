@@ -70,8 +70,10 @@ impl Desktop {
         let tracking_slot = slot.clone();
         let children = self.children.clone();
         let outbox = self.outbox.clone();
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let worker = tokio::task::spawn_blocking(scope.blocking(move || {
-            let _permit = permit;
+            let _permit = worker_permit;
             let (payload, lease) = work.into_parts();
             let work = payload;
             let result = (|| {
@@ -121,6 +123,7 @@ impl Desktop {
             result
         }));
         tasks.spawn(self.scope.future(async move {
+            let _permit = permit;
             let result = match worker.await {
                 Ok(Ok(process)) => {
                     if let Some(child) = process {

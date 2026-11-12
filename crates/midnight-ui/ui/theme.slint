@@ -51,7 +51,7 @@ export global Theme {
     out property <length> toolbar-height: max(touch ? 48px : 34px, control-height + (touch ? 8px : 10px));
     out property <length> path-height: max(touch ? 48px : 32px, control-height + 8px);
     out property <length> column-height: max(touch ? 40px : 24px, small-font + 10px);
-    out property <length> status-height: touch ? 36px : 24px;
+    out property <length> status-height: max(touch ? 36px : 24px, small-font * 1.5 + 2px);
     out property <length> command-height: bottom-height;
     out property <length> bottom-height: max(touch ? 40px : 22px, font-size + (touch ? 12px : 8px));
     out property <length> window-padding: touch ? 10px : 6px;

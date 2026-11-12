@@ -45,7 +45,7 @@ impl Presenter {
         );
         let continuation = crate::error_presentation::folder_details(&error.message, &error.path);
         if !continuation.is_empty() {
-            self.desktop.notice_details.push_str("\n");
+            self.desktop.notice_details.push('\n');
             self.desktop.notice_details.push_str(&continuation);
         }
         let p = &self.panes[pane.index()];

@@ -98,15 +98,15 @@ fn recall_preserves_exact_text_and_shell_without_reviving_sudo_or_executing() {
     p.desktop.terminal_mode = TerminalMode::Elevated;
     let command = "  printf '%s' '文档 👩🏽‍💻'  ";
     p.record_command_history(entry(command, ShellFlavor::Posix));
-    let choices = p.command_history_choices();
-    assert_eq!(choices[0].0, command);
-    assert_eq!(p.recall_command(&choices[0].0).as_deref(), Some(command));
+    let token = p.preferences.values.command_history[0].command.clone();
+    assert_eq!(token, command);
+    assert_eq!(p.recall_command(&token).as_deref(), Some(command));
     assert_eq!(p.effective_terminal_mode(), TerminalMode::Standard);
     assert_eq!(p.effective_shell(), Some(ShellFlavor::Posix));
     assert!(p.desktop.requests.is_empty());
     p.clear_command_history(&|_| true);
     assert_eq!(
-        p.recall_command(&choices[0].0),
+        p.recall_command(&token),
         None,
         "stale choice cannot select a replacement row"
     );

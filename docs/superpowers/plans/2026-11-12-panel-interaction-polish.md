@@ -33,7 +33,7 @@ input checks stay serial. Source <=100000 bytes, rustfmt100, outputs under _buil
 - [x] Remaining native inline actions: open, properties, native context menu and
   comparison use captured row identities and common backend services. Unsupported
   provider capabilities stay explicit. Allocate files after tree scheduling fix.
-- [ ] Integrate and review all changes, targeted Windows/Linux validation, visual
+- [x] Integrate and review all changes, targeted Windows/Linux validation, visual
   snapshots, fresh debug build/private deployment; commit and push relevant files.
 
 Review: stale row removal/replacement; queue saturation vs unrelated publications;

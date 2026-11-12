@@ -9,7 +9,9 @@ use std::{
 pub fn assert_cwd(actual: &[u8], expected: &Path) {
     assert_eq!(actual.len() % 2, 0);
     let units = actual
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|part| u16::from_le_bytes([part[0], part[1]]))
         .collect::<Vec<_>>();
     let path = PathBuf::from(OsString::from_wide(&units));

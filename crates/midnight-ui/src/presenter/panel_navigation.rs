@@ -182,66 +182,85 @@ impl Presenter {
         self.navigate(pane, part.path, None, send)
     }
 
-    pub(crate) fn history_entries(&self, pane: PaneId, forward: bool) -> Vec<HistoryChoice> {
+    /// Cached shape for lazy history rows; path/display strings stay unallocated.
+    pub(crate) fn history_model_state(&self, pane: PaneId) -> (u8, usize, usize, Option<usize>) {
         let p = &self.panes[pane.index()];
         if let Some(network) = &p.network {
-            let indices: Vec<_> = if forward {
-                (network.history_index + 1..network.history.len()).collect()
-            } else {
-                (0..network.history_index).rev().collect()
-            };
-            return indices
-                .into_iter()
-                .map(|index| HistoryChoice {
-                    identity: format!("network-history:{}:{index}", p.generation),
-                    path: network.origin.clone(),
-                    display: Some(network.history[index].display.clone()),
-                    archive: false,
-                    network: true,
-                    index,
-                })
-                .collect();
-        }
-        if let Some(a) = &p.archive {
-            let indexes: Vec<usize> = if forward {
-                (a.history_index + 1..a.history.len()).collect()
-            } else {
-                (0..a.history_index).rev().collect()
-            };
-            return indexes
-                .into_iter()
-                .map(|index| HistoryChoice {
-                    identity: format!(
-                        "archive-history:{}:{}:{index}",
-                        p.generation,
-                        a.location.mount_id().unwrap_or(0)
-                    ),
-                    path: a.origin.clone(),
-                    display: Some(a.history[index].display_text()),
-                    archive: true,
-                    network: false,
-                    index,
-                })
-                .collect();
-        }
-        let Some(current) = p.history_index else {
-            return Vec::new();
-        };
-        let mut indexes: Vec<_> = if forward {
-            (current.saturating_add(1)..p.history.len()).collect()
+            (
+                1,
+                network.history.as_ptr() as usize,
+                network.history.len(),
+                Some(network.history_index),
+            )
+        } else if let Some(archive) = &p.archive {
+            (
+                2,
+                archive.history.as_ptr() as usize,
+                archive.history.len(),
+                Some(archive.history_index),
+            )
         } else {
-            (0..current).rev().collect()
+            (
+                0,
+                p.history.as_ptr() as usize,
+                p.history.len(),
+                p.history_index,
+            )
+        }
+    }
+
+    pub(crate) fn history_entry(
+        &self,
+        pane: PaneId,
+        forward: bool,
+        row: usize,
+    ) -> Option<HistoryChoice> {
+        let p = &self.panes[pane.index()];
+        let (_, _, length, current) = self.history_model_state(pane);
+        let current = current.filter(|index| *index < length)?;
+        let index = if forward {
+            current.checked_add(row)?.checked_add(1)?
+        } else {
+            current.checked_sub(row)?.checked_sub(1)?
         };
-        indexes
-            .drain(..)
-            .map(|index| HistoryChoice {
+        if let Some(network) = &p.network {
+            Some(HistoryChoice {
+                identity: format!("network-history:{}:{index}", p.generation),
+                path: network.origin.clone(),
+                display: Some(network.history.get(index)?.display.clone()),
+                archive: false,
+                network: true,
+                index,
+            })
+        } else if let Some(archive) = &p.archive {
+            Some(HistoryChoice {
+                identity: format!(
+                    "archive-history:{}:{}:{index}",
+                    p.generation,
+                    archive.location.mount_id().unwrap_or(0)
+                ),
+                path: archive.origin.clone(),
+                display: Some(archive.history.get(index)?.display_text()),
+                archive: true,
+                network: false,
+                index,
+            })
+        } else {
+            Some(HistoryChoice {
                 identity: format!("history:{}:{}:{index}", p.generation, u8::from(forward)),
-                path: p.history[index].clone(),
+                path: p.history.get(index)?.clone(),
                 display: None,
                 archive: false,
                 network: false,
                 index,
             })
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_entries(&self, pane: PaneId, forward: bool) -> Vec<HistoryChoice> {
+        (0..)
+            .map_while(|row| self.history_entry(pane, forward, row))
             .collect()
     }
 
@@ -252,10 +271,21 @@ impl Presenter {
         token: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        let Some(choice) = self
-            .history_entries(pane, forward)
-            .into_iter()
-            .find(|choice| choice.identity == token)
+        let (_, _, _, current) = self.history_model_state(pane);
+        let index = token
+            .rsplit(':')
+            .next()
+            .and_then(|index| index.parse::<usize>().ok());
+        let row = current.zip(index).and_then(|(current, index)| {
+            if forward {
+                index.checked_sub(current)?.checked_sub(1)
+            } else {
+                current.checked_sub(index)?.checked_sub(1)
+            }
+        });
+        let Some(choice) = row
+            .and_then(|row| self.history_entry(pane, forward, row))
+            .filter(|choice| choice.identity == token)
         else {
             return false;
         };

@@ -1,3 +1,5 @@
+mod history_models;
+mod performance;
 use super::*;
 use std::{path::PathBuf, sync::Arc};
 

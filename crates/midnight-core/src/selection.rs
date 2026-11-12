@@ -324,8 +324,13 @@ impl SelectionSnapshot {
     pub fn selected_paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.basis
             .by_path
-            .keys()
-            .filter(move |path| self.contains_path(path))
+            .iter()
+            .filter_map(move |(path, id)| {
+                let index = self.basis.by_id.get(id)?;
+                let word = self.bits.get(index / 64)?;
+                (word & (1 << (index % 64)) != 0).then_some(path)
+            })
+            .take(self.selected_count)
     }
 }
 
@@ -454,5 +459,54 @@ mod tests {
         let mut incomplete = DirectoryIndex::from_entries(&entries);
         incomplete.directory_bits.clear();
         assert!(SelectionSnapshot::from_bits(Arc::new(incomplete), vec![1]).is_err());
+    }
+
+    #[test]
+    fn enumeration_preserves_empty_sparse_and_dense_path_identity_across_words() {
+        let entries: Vec<_> = (0..130)
+            .map(|row| {
+                let id = if row == 64 {
+                    EntryId(0)
+                } else {
+                    EntryId(u64::MAX - row as u64 * 65_537)
+                };
+                let path = match row {
+                    0 => PathBuf::from("文档/é"),
+                    63 => PathBuf::from("文档/e\u{301}"),
+                    64 => PathBuf::from("👩🏽‍💻/資料"),
+                    _ => PathBuf::from(format!("مرحبا/row-{row}")),
+                };
+                Entry::new(id, path, EntryKind::File)
+            })
+            .collect();
+        let blank = SelectionSnapshot::from_bits(
+            Arc::new(DirectoryIndex::from_entries(&entries)),
+            vec![0, 0, 0],
+        )
+        .unwrap();
+        let cases = [
+            (vec![0, 0, 0], Vec::new()),
+            (
+                vec![1 | (1 << 63), 1 | (1 << 63), 0b11],
+                vec![0, 63, 64, 127, 128, 129],
+            ),
+            (vec![u64::MAX, u64::MAX, 0b11], (0..130).collect()),
+        ];
+        for (bits, expected_rows) in cases {
+            let snapshot = blank.with_bits(bits).unwrap();
+            let mut expected: Vec<_> = expected_rows
+                .iter()
+                .map(|&row| entries[row].path.clone())
+                .collect();
+            let mut actual: Vec<_> = snapshot.selected_paths().cloned().collect();
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(snapshot.len(), expected.len());
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected);
+            let mut exhausted = snapshot.selected_paths();
+            assert_eq!(exhausted.by_ref().count(), snapshot.len());
+            assert_eq!(exhausted.next(), None);
+        }
     }
 }

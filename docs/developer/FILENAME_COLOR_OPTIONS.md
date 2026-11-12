@@ -43,7 +43,8 @@ base colors:
 | --- | --- |
 | Source code and structured configuration | Blue `#3B82F6` |
 | Videos | Purple `#8B5CF6` |
-| Documents, PDF, Word and ebooks | Light cool neutral `#C4CFE0` |
+| PDF documents | Coral red `#EF5A5A` |
+| Word documents and ebooks | Light cool neutral `#C4CFE0` |
 | Images | Pink `#EC4899` |
 | Executables and installers | Orange `#F97316` |
 | Spreadsheets and tabular data, including CSV | Green `#22C55E` |
@@ -57,15 +58,17 @@ The shared contrast policy preserves a readable base color or mixes it toward
 black or white by the smallest RGB change that reaches 4.5:1 against the actual
 row background. This includes alternating rows, selection, focus and inactive
 focus in every theme. A focused marked item keeps its selection fill and adds a
-visible cursor outline, so moving the cursor never makes its mark look cleared. The displayed color can therefore differ from the stored base swatch.
+visible cursor outline, so moving the cursor never makes its mark look cleared.
+The displayed color can therefore differ from the stored base swatch.
 The neutral [Slate themes](../THEME_PROVENANCE.md#slate-variants-11-november-2026)
 use the same policy: categories retain their semantic hues, with foregrounds
 adjusted for each actual row state rather than recolored to blue, teal or violet
 just because that is the active theme's accent.
 
 Loading a saved document upgrades only an exact match for a historical shipped
-preset: the original five-rule list, the eleven-category slate/amber list, or that
-list after archives became yellow. Documents and plain text now start noticeably
+preset: the original five-rule list, the eleven-category slate/amber list, that
+list after archives became yellow, or the eleven-rule palette with bright
+document/text colors. Documents and plain text now start noticeably
 brighter on dark themes; light themes adapt the same base color for contrast.
 Any customization preserves the whole list, including its order, disabled
 rules, matching options, background choices and explicit removal of all rules.
@@ -78,3 +81,8 @@ The platform-common filename-color tests check actual mask matching for every
 category and preservation of customized preferences through encode/decode. The UI
 filename-color tests inspect actual rendered glyph pixels and contrast across
 every theme, alternating rows and all active/inactive focus/selection combinations.
+
+PDF uses its own rule before other documents. The unchanged eleven-rule preset
+with light document/text colors also migrates to the twelve-rule palette; edited
+rule lists are retained exactly. The coral base follows the requested PDF icon
+color, with the same per-theme contrast correction as every other category.

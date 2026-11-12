@@ -13,7 +13,9 @@ Aktualizace 5. listopadu: [dynamické viewer/filesystem pluginy](2026-11-05-dyna
 finalizují balení, discovery, verzované C ABI, vlastnictví a nové pořadí etap.
 Tento dokument zůstává podkladem pro obsahové kontrakty; v uvedených oblastech
 má novější návrh přednost. Každý viewer/provider včetně nativního je odstranitelný
-plugin. První rozsah zahrnuje text/source a ZIP, GZIP, TAR.GZ a 7z; Markdown později.
+plugin. Pozdější [viewer rozšíření](2026-11-05-viewer-implementation-extension.md)
+nahrazuje zde uvedené pořadí: tři samostatné text/binary, source a Markdown
+viewery přijdou před migrací nativních a archivních filesystemů.
 
 ## 1. Zadání a rozhodnutí návrhu
 
@@ -438,7 +440,9 @@ delete stále sdílí tutéž operační frontu a její konfliktní identity/zá
 
 ## 12. Pořadí implementace
 
-Aktuální pořadí a přejímku určuje
+Historické pořadí níže nahrazuje
+[viewer rozšíření](2026-11-05-viewer-implementation-extension.md).
+Původní pořadí a přejímku určuje
 [nový plugin návrh](2026-11-05-dynamic-viewer-filesystem-plugins-design.md#10-migrace-a-implementační-pořadí):
 ABI/SDK a dynamické testovací pluginy → oddělené loadery/balení → VFS identity
 a nativní plugin každého OS → text/source viewer → ZIP, GZIP, TAR/TAR.GZ a 7z.

@@ -62,7 +62,8 @@ fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selec
     let names = [
         "Source main.rs",
         "Video movie.mp4",
-        "Document report.pdf",
+        "PDF report.pdf",
+        "Document letter.docx",
         "Image photo.jpg",
         "Executable app.exe",
         "Spreadsheet table.csv",
@@ -120,7 +121,7 @@ fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selec
                             contrast(ink, background) >= 4.5,
                             "{name}: theme {theme}, state {state}, active {active}, alternate {alternate}"
                         );
-                        if matches!(index, 2 | 9)
+                        if matches!(index, 3 | 10)
                             && state == 0
                             && !window.global::<Theme>().get_light()
                         {

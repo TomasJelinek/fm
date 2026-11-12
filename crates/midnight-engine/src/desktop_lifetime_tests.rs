@@ -175,24 +175,32 @@ async fn tracking_case(kind: usize, close_receiver: bool) {
     };
     desktop.children = tracking;
     match kind {
-        0 => desktop.launch(
-            DesktopRequestId(1),
-            TerminalRequest {
-                working_directory: PathBuf::from("fixture"),
-                command: String::new(),
-                shell: ShellFlavor::Posix,
-                mode: TerminalMode::Standard,
-            },
-            &mut tasks,
-        ),
-        1 => desktop.open_entry(
-            DesktopRequestId(1),
-            PaneId::Left,
-            NavigationId(1),
-            PathBuf::from("fixture"),
-            false,
-            &mut tasks,
-        ),
+        0 => {
+            desktop
+                .launch(
+                    DesktopRequestId(1),
+                    TerminalRequest {
+                        working_directory: PathBuf::from("fixture"),
+                        command: String::new(),
+                        shell: ShellFlavor::Posix,
+                        mode: TerminalMode::Standard,
+                    },
+                    &mut tasks,
+                )
+                .await
+        }
+        1 => {
+            desktop
+                .open_entry(
+                    DesktopRequestId(1),
+                    PaneId::Left,
+                    NavigationId(1),
+                    PathBuf::from("fixture"),
+                    false,
+                    &mut tasks,
+                )
+                .await
+        }
         _ => {
             desktop
                 .edit_file(
@@ -266,14 +274,16 @@ async fn desktop_opener_completion_keeps_normal_result_and_independent_quota() {
     let _terminal_tickets: Vec<_> = (0..MAX_TERMINALS)
         .map(|_| desktop.processes.terminals.try_reserve().unwrap())
         .collect();
-    desktop.open_entry(
-        DesktopRequestId(97),
-        PaneId::Left,
-        NavigationId(1),
-        PathBuf::from("fixture"),
-        false,
-        &mut tasks,
-    );
+    desktop
+        .open_entry(
+            DesktopRequestId(97),
+            PaneId::Left,
+            NavigationId(1),
+            PathBuf::from("fixture"),
+            false,
+            &mut tasks,
+        )
+        .await;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Event::DesktopActionFinished { request, result } = events.recv().await.unwrap()

@@ -463,6 +463,15 @@ jobs:
         run: bash scripts/check-source-size.sh
       - name: Test
         run: python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts
+      - name: Qualify Linux cross-filesystem Trash
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p midnight-platform-linux --locked \
+            mutation::tests::cross_filesystem_trash_returns_unsupported_and_keeps_source \
+            -- --exact --nocapture 2>&1 | tee _build/cross-filesystem-trash.log
+          grep -Fq 'QUALIFIED cross_filesystem_trash:' _build/cross-filesystem-trash.log
       - name: Native viewer ABI rejection fixture
         shell: pwsh
         run: |

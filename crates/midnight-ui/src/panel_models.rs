@@ -45,27 +45,6 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
         .collect()
 }
 
-fn history_choices(presenter: &Presenter, pane: PaneId, forward: bool) -> Vec<NavigationChoiceRow> {
-    presenter
-        .history_entries(pane, forward)
-        .into_iter()
-        .map(|choice| {
-            let label: SharedString = choice
-                .display
-                .unwrap_or_else(|| choice.path.to_string_lossy().into_owned())
-                .into();
-            NavigationChoiceRow {
-                identity: choice.identity.into(),
-                label: label.clone(),
-                compact_label: label.clone(),
-                tooltip: label,
-                icon: presenter.desktop.image(&IconKey::folder()),
-                kind: LocationRole::Home,
-            }
-        })
-        .collect()
-}
-
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     crate::metadata_column_presentation::refresh(window, presenter);
     window.set_left_can_target_cursor(presenter.can_target_cursor(PaneId::Left));
@@ -104,26 +83,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         |row| row.identity.clone(),
         |model| window.set_hot_path_choices(model),
     );
-    let commands = presenter
-        .command_history_choices()
-        .into_iter()
-        .map(|(token, label)| NavigationChoiceRow {
-            identity: token.into(),
-            label: label.clone().into(),
-            compact_label: label.clone().into(),
-            tooltip: label.into(),
-            icon: presenter
-                .desktop
-                .image(&IconKey::action(ActionIcon::Terminal)),
-            kind: LocationRole::Home,
-        })
-        .collect();
-    navigation_models::update(
-        window.get_command_history(),
-        commands,
-        |row| row.identity.clone(),
-        |model| window.set_command_history(model),
-    );
+    history_models::refresh(window, presenter);
     window.set_command_history_revision(presenter.preferences.revision.0 as i32);
     window.set_history_revision(
         presenter.panes[0]
@@ -141,8 +101,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             })
             .collect();
         refresh_details(window, details_rows(presenter, pane), pane);
-        let back = history_choices(presenter, pane, false);
-        let forward = history_choices(presenter, pane, true);
         if pane == PaneId::Left {
             navigation_models::update(
                 window.get_left_path_parts(),
@@ -150,36 +108,12 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 |row| row.identity.clone(),
                 |model| window.set_left_path_parts(model),
             );
-            navigation_models::update(
-                window.get_left_back_history(),
-                back,
-                |row| row.identity.clone(),
-                |model| window.set_left_back_history(model),
-            );
-            navigation_models::update(
-                window.get_left_forward_history(),
-                forward,
-                |row| row.identity.clone(),
-                |model| window.set_left_forward_history(model),
-            );
         } else {
             navigation_models::update(
                 window.get_right_path_parts(),
                 paths,
                 |row| row.identity.clone(),
                 |model| window.set_right_path_parts(model),
-            );
-            navigation_models::update(
-                window.get_right_back_history(),
-                back,
-                |row| row.identity.clone(),
-                |model| window.set_right_back_history(model),
-            );
-            navigation_models::update(
-                window.get_right_forward_history(),
-                forward,
-                |row| row.identity.clone(),
-                |model| window.set_right_forward_history(model),
             );
         }
     }

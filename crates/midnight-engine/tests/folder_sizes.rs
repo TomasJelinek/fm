@@ -1539,3 +1539,59 @@ async fn duplicate_compute_command_cannot_falsely_finish_the_active_scan() {
     commands.send(Command::Shutdown).await.unwrap();
     task.await.unwrap();
 }
+
+#[tokio::test]
+async fn aborting_engine_cancels_full_and_individual_directory_scans() {
+    let mut uncancelled = Vec::new();
+    for individual in [false, true] {
+        let filesystem = Arc::new(ControlledTree::new(true));
+        let _release = ReleaseOnDrop(filesystem.clone());
+        let (commands, receiver) = mpsc::channel(4);
+        let (sender, mut events) = mpsc::channel(32);
+        let engine = tokio::spawn(
+            Engine::new(
+                Engine::lifetime().expect("engine cleanup worker"),
+                filesystem.clone(),
+                sender,
+            )
+            .run(receiver),
+        );
+        commands
+            .send(navigate(PaneId::Left, 1, Path::new("active")))
+            .await
+            .unwrap();
+        let entries = listing(&mut events, PaneId::Left, 1).await;
+        let command = if individual {
+            Command::ComputeEntrySize {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                scan: FolderSizeScanId(1),
+                entry: entries[0].id,
+            }
+        } else {
+            scan(PaneId::Left, 1, 1)
+        };
+        commands.send(command).await.unwrap();
+        entered(&filesystem).await;
+        let cancellation = filesystem.token.lock().unwrap().clone().unwrap();
+        engine.abort();
+        assert!(engine.await.unwrap_err().is_cancelled());
+        drop(events);
+        // EngineRun cancellation reaches native workers through its retirement worker.
+        let cancelled = tokio::time::timeout(Duration::from_secs(3), async {
+            while !cancellation.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        if !cancelled {
+            uncancelled.push(if individual { "individual" } else { "full" });
+        }
+        // The guard releases real worker threads even on the expected red path.
+    }
+    assert!(
+        uncancelled.is_empty(),
+        "Engine drop left scans uncancelled: {uncancelled:?}"
+    );
+}

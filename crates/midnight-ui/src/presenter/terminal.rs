@@ -36,26 +36,6 @@ impl Presenter {
         self.desktop.command_history_cursor = None;
     }
 
-    /// Exact command text is a stable callback token; a stale removed row does nothing.
-    pub(crate) fn command_history_choices(&self) -> Vec<(String, String)> {
-        self.preferences
-            .values
-            .command_history
-            .iter()
-            .map(|entry| {
-                let shell = match entry.shell {
-                    ShellFlavor::PowerShell => "PowerShell",
-                    ShellFlavor::Cmd => "cmd",
-                    ShellFlavor::Posix => "Terminal",
-                };
-                (
-                    entry.command.clone(),
-                    format!("{shell} · {}", entry.command),
-                )
-            })
-            .collect()
-    }
-
     /// Recall edits the draft only. It cannot launch or revive elevated permissions.
     pub(crate) fn recall_command(&mut self, token: &str) -> Option<String> {
         self.reset_command_history_cursor();

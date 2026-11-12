@@ -131,14 +131,21 @@ fn legacy_defaults() -> Vec<FilenameColorRule> {
 }
 
 pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
-    let mut slate_defaults = midnight_core::default_filename_colors();
+    let mut bright_defaults = midnight_core::default_filename_colors();
+    bright_defaults.remove(2);
+    bright_defaults[2].expression = "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub".into();
+    let mut slate_defaults = bright_defaults.clone();
     // Compare the complete historical list, preserving every custom rule and order.
     for index in [2, 9] {
         slate_defaults[index].style.foreground = Some(RgbColor(100, 116, 139));
     }
     let mut amber_defaults = slate_defaults.clone();
     amber_defaults[7].style.foreground = Some(RgbColor(217, 119, 6));
-    if rules == legacy_defaults() || rules == slate_defaults || rules == amber_defaults {
+    if rules == legacy_defaults()
+        || rules == bright_defaults
+        || rules == slate_defaults
+        || rules == amber_defaults
+    {
         midnight_core::default_filename_colors()
     } else {
         rules

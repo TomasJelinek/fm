@@ -140,7 +140,7 @@ impl SettingsService for LinuxFileSystem {
     fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError> {
         let path = preferences_path(std::env::var_os("XDG_CONFIG_HOME"), self.home.as_deref())
             .map_err(|error| FsError::from_io("resolve preferences", Path::new(""), error))?;
-        save_to(&path, preferences.clone())
+        save_to(&path, preferences)
             .map_err(|error| FsError::from_io("save preferences", &path, error))
     }
 }
@@ -285,8 +285,6 @@ mod tests {
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
         fs::write(&path, b"invalid JSON").unwrap();
         assert!(load_from(&path).is_err());
-        fs::write(&path, vec![b' '; 64 * 1024 + 1]).unwrap();
-        assert!(load_from(&path).is_err());
     }
 
     #[test]
@@ -352,5 +350,26 @@ mod tests {
         }
         assert!(load_from(Path::new("/dev/null")).is_err());
         assert!(save_to(&fifo, UserPreferences::default()).is_err());
+    }
+
+    #[test]
+    fn valid_preferences_at_byte_limit_load_and_one_byte_over_is_rejected() {
+        use midnight_platform_common::settings::MAX_PREFERENCES_BYTES;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("preferences.json");
+        let expected = UserPreferences::default();
+        let mut bytes = encode_preferences(expected.clone()).unwrap();
+        // Adding only JSON whitespace preserves the valid document at both lengths.
+        bytes.resize(MAX_PREFERENCES_BYTES, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(load_from(&path).unwrap(), expected);
+
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        let error = load_from(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("preferences exceed"));
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 }

@@ -10,7 +10,10 @@ popisuje [provider registry](../../developer/PROVIDER_REGISTRY.md).
 Aktuální rozsah a důkazy sleduje [implementační přehled](../../IMPLEMENTATION_BACKLOG.md).
 Navazuje na [hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md)
 a [původní viewer/VFS návrh](2026-11-04-viewer-vfs-design.md).
-Tento dokument má přednost pro registraci, binární hranici, balení a pořadí etap.
+Tento dokument určuje registraci, binární hranici a balení. Novější
+[viewer rozšíření](2026-11-05-viewer-implementation-extension.md) má přednost pro
+tři samostatné viewer balíčky, režimy ABI 1, renderer přejímku a pořadí etap:
+viewery včetně Markdownu přijdou před migrací nativních/archivních filesystemů.
 Původní pravidla Unicode, identit, bezpečného čtení, Markdownu a ověřování kopií platí dál.
 
 ## 1. Rozsah a rozhodnutí

@@ -409,6 +409,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let x = ((window.get_left_list_left() + local_x) * scale) as u32;
                 let y = ((window.get_left_list_top() + 100.0) * scale) as u32;
+                // SAFETY: the NUL-terminated title stays live through FindWindowW.
+                // The checked handle receives only integer mouse coordinates and
+                // wheel data; neither posted message contains a borrowed pointer.
                 unsafe {
                     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
                     assert!(!hwnd.is_null());

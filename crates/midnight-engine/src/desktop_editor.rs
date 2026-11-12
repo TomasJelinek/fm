@@ -9,7 +9,7 @@ struct Work {
 struct Launch {
     services: Arc<dyn EditorService>,
     scope: TaskLifetime,
-    permit: Option<OwnedSemaphorePermit>,
+    permit: Option<Arc<OwnedSemaphorePermit>>,
     ticket: Option<ProcessTicket>,
     slot: Arc<OwnedSemaphorePermit>,
 }
@@ -117,6 +117,8 @@ impl Desktop {
                 .await;
             return;
         };
+        let permit = Arc::new(permit);
+        let delivery_permit = permit.clone();
         work.launch = Some(Launch {
             services,
             scope: self.scope.clone(),
@@ -147,6 +149,7 @@ impl Desktop {
             (result, permit)
         }));
         tasks.spawn(self.scope.future(async move {
+            let _delivery_permit = delivery_permit;
             let result = worker.await;
             let (result, _permit) = match result {
                 Ok((Ok(child), permit)) => {

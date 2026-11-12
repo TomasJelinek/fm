@@ -61,9 +61,9 @@ fn reload(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
 }
 
 #[test]
-fn exact_historical_default_palette_migrates_to_eleven_requested_categories() {
+fn exact_historical_default_palette_migrates_to_current_categories() {
     let migrated = reload(legacy_defaults());
-    assert_eq!(migrated.len(), 11);
+    assert_eq!(migrated.len(), 12);
     assert_eq!(migrated, midnight_core::default_filename_colors());
     assert_eq!(reload(migrated.clone()), migrated, "migration is stable");
 }
@@ -98,7 +98,7 @@ fn any_customization_preserves_the_entire_ordered_palette() {
 }
 
 fn slate_document_defaults() -> Vec<FilenameColorRule> {
-    let mut rules = midnight_core::default_filename_colors();
+    let mut rules = bright_document_defaults();
     for index in [2, 9] {
         rules[index].style.foreground = Some(RgbColor(100, 116, 139));
     }
@@ -133,4 +133,34 @@ fn untouched_slate_document_presets_migrate_without_replacing_custom_colors() {
         }
         assert_eq!(reload(custom.clone()), custom, "customization {variation}");
     }
+}
+
+fn bright_document_defaults() -> Vec<FilenameColorRule> {
+    let mut rules = midnight_core::default_filename_colors();
+    rules.remove(2);
+    rules[2].expression = "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub".into();
+    rules
+}
+
+#[test]
+fn distinct_pdf_migrates_only_the_unchanged_eleven_rule_palette() {
+    let old = bright_document_defaults();
+    let current = midnight_core::default_filename_colors();
+    assert_eq!(reload(old.clone()), current);
+    assert_eq!(reload(current.clone()), current);
+    for variation in 0..5 {
+        let mut custom = old.clone();
+        match variation {
+            0 => custom[2].style.foreground = Some(RgbColor(195, 207, 224)),
+            1 => custom[2].expression.push_str(";*.personal"),
+            2 => custom[2].enabled = false,
+            3 => custom.swap(2, 3),
+            4 => custom[9].style.background = Some(RgbColor(1, 2, 3)),
+            _ => unreachable!(),
+        }
+        assert_eq!(reload(custom.clone()), custom, "customization {variation}");
+    }
+    let mut customized_pdf = current;
+    customized_pdf[2].style.foreground = Some(RgbColor(12, 34, 56));
+    assert_eq!(reload(customized_pdf.clone()), customized_pdf);
 }

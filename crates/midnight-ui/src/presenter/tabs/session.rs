@@ -154,15 +154,19 @@ impl Presenter {
         {
             return;
         }
-        let mut values = self.preferences.values.clone();
+        let mut tabs = self.preferences.values.tabs.clone();
         for pane in [PaneId::Left, PaneId::Right] {
             if self.tabs.restore[pane.index()].is_none() {
-                values.tabs[pane.index()] = self.tab_session(pane);
+                tabs[pane.index()] = self.tab_session(pane);
             }
         }
         // A failed navigation restores the previous displayed location; persist
         // that correction without waiting for another explicit tab action.
-        if values.tabs != self.preferences.values.tabs {
+        if tabs != self.preferences.values.tabs {
+            let values = UserPreferences {
+                tabs,
+                ..self.preferences.values.clone()
+            };
             self.update_preferences(values, send);
         }
     }

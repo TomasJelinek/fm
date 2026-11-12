@@ -2,6 +2,10 @@
 
 Datum: 4. listopadu 2026
 
+Historický návrh. Aktuální Move a přepínatelné ověřování popisuje
+[pozdější kontrakt přenosů](2026-11-10-transfer-verification-and-native-move.md).
+Níže uvedený stav k 6. listopadu není současným seznamem funkcí.
+
 Stav k 6. listopadu 2026: **SSD souběh je návrh, bez implementace**. Ověřené
 Copy je implementováno konzervativně: jedna aktivní kopírovací úloha a nejvýše
 jeden nativní I/O krok v celé frontě, na všech druzích úložiště včetně SSD→SSD.

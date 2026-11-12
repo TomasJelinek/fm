@@ -342,7 +342,7 @@ mod tests {
                 false,
                 FileKey::Bulk(3),
             ),
-            ("D".into(), true, false, false, FileKey::Bulk(5)),
+            ("D".into(), true, false, false, FileKey::Bulk(1)),
             ("i".into(), true, false, false, FileKey::Bulk(2)),
             (Key::F3.into(), true, false, false, FileKey::Sort(0)),
             (Key::F4.into(), true, false, false, FileKey::Sort(3)),
@@ -372,7 +372,7 @@ mod tests {
             ),
             (Key::Return.into(), true, false, true, FileKey::Properties),
             ("a".into(), true, true, false, FileKey::Bulk(0)),
-            ("d".into(), true, true, false, FileKey::Bulk(1)),
+            ("d".into(), true, true, false, FileKey::Consumed),
             ("i".into(), true, true, false, FileKey::Bulk(4)),
         ] {
             assert_eq!(

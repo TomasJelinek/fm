@@ -862,3 +862,6 @@ Options → Editors configures F4 using an absolute executable and a JSON array 
 literal arguments. `{file}` must occupy a complete argument; paths are never expanded
 through a shell. The platform default and launch errors are shown explicitly. See
 [external editor verification](docs/verification/external-editor.md).
+
+The [documentation map](docs/README.md) distinguishes current contracts,
+accepted future work and historical verification records.

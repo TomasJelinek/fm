@@ -20,10 +20,8 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
             "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",
             RgbColor(139, 92, 246),
         ),
-        (
-            "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub",
-            RgbColor(196, 207, 224),
-        ),
+        ("*.pdf", RgbColor(239, 90, 90)),
+        ("*.doc;*.docx;*.odt;*.rtf;*.epub", RgbColor(196, 207, 224)),
         (
             "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
             RgbColor(236, 72, 153),

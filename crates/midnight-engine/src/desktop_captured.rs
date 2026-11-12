@@ -28,8 +28,10 @@ impl Desktop {
         let services = self.services.clone();
         let locale = self.locale.clone();
         let outbox = self.outbox.clone();
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let worker = tokio::task::spawn_blocking(self.scope.blocking(move || {
-            let _permit = permit;
+            let _permit = worker_permit;
             let (payload, lease) = work.into_parts();
             let work = payload;
             let result = (|| {
@@ -47,6 +49,7 @@ impl Desktop {
             result
         }));
         tasks.spawn(self.scope.future(async move {
+            let _permit = permit;
             let result = match worker.await {
                 Ok(result) => result,
                 Err(cause) => Err(worker_error("captured properties", Path::new(""), cause)),
@@ -60,8 +63,7 @@ impl Desktop {
     pub(crate) async fn open_captured_entry(
         &self,
         request: DesktopRequestId,
-        pane: PaneId,
-        navigation: NavigationId,
+        (pane, navigation): (PaneId, NavigationId),
         source: Arc<dyn CapturedClipboardFiles>,
         cancel: Cancellation,
         row: TreeRowId,
@@ -95,8 +97,10 @@ impl Desktop {
             slot: slot.clone(),
         };
         let process_scope = Arc::new(self.scope.clone());
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let worker = tokio::task::spawn_blocking(self.scope.blocking(move || {
-            let _permit = permit;
+            let _permit = worker_permit;
             let (payload, lease) = work.into_parts();
             let work = payload;
             let result = (|| {
@@ -142,6 +146,7 @@ impl Desktop {
             result
         }));
         tasks.spawn(self.scope.future(async move {
+            let _permit = permit;
             let result = match worker.await {
                 Ok(result) => result,
                 Err(cause) => Err(worker_error("captured open", Path::new(""), cause)),

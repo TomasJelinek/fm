@@ -23,7 +23,9 @@ Check license files and notices in the pinned source, not just a crate's label.
    Sharing this Git repository does not permit dependency on private host crates.
 4. Regenerate the [direct and complete inventories](THIRD_PARTY.md), and preserve
    required copyright/license/source notices in each distributable artifact.
-5. Record the selected license branch and any concrete distribution obligations
+5. Check maintenance and RustSec advisories for the affected target/features.
+   Record unresolved findings; a clean scan is not proof of safety.
+6. Record the selected license branch and any concrete distribution obligations
    when a permissive default does not describe the actual component.
 
 The inventory reports upstream declarations, not an automated compatibility verdict.

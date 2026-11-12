@@ -191,14 +191,15 @@ impl Desktop {
             .send_modify(|version| *version = version.wrapping_add(1));
     }
 
-    pub(crate) fn launch(
+    pub(crate) async fn launch(
         &self,
         request: DesktopRequestId,
         terminal: TerminalRequest,
         tasks: &mut JoinSet<()>,
     ) {
         let Some(services) = self.services.clone() else {
-            self.fail(request, "Terminal integration is unavailable.", tasks);
+            self.fail(request, "Terminal integration is unavailable.")
+                .await;
             return;
         };
         // Exactly empty opens an interactive shell. Whitespace is still an invalid
@@ -209,43 +210,42 @@ impl Desktop {
             self.fail(
                 request,
                 "Terminal commands cannot contain NUL or consist only of whitespace.",
-                tasks,
-            );
+            )
+            .await;
             return;
         }
         let Ok(permit) = self.launch_budget.clone().try_acquire_owned() else {
-            self.fail(request, "A terminal is already being started.", tasks);
+            self.fail(request, "A terminal is already being started.")
+                .await;
             return;
         };
         let Ok(slot) = self.terminal_slots.clone().try_acquire_owned() else {
-            self.fail(
-                request,
-                "Eight terminal processes are already active.",
-                tasks,
-            );
+            self.fail(request, "Eight terminal processes are already active.")
+                .await;
             return;
         };
         let Ok(ticket) = self.processes.terminals.try_reserve() else {
-            self.fail(
-                request,
-                "Terminal process cleanup is busy. Try again.",
-                tasks,
-            );
+            self.fail(request, "Terminal process cleanup is busy. Try again.")
+                .await;
             return;
         };
         let slot = Arc::new(slot);
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let outbox = self.outbox.clone();
         let children = self.children.clone();
         let scope = self.scope.clone();
         let process_scope = Arc::new(scope.clone());
         tasks.spawn(self.scope.future(async move {
+            // Capacity covers native work and its terminal delivery, including panic.
+            let _permit = permit;
             let path = terminal.working_directory.clone();
             let history = CommandHistoryEntry {
                 command: terminal.command.clone(),
                 shell: terminal.shell,
             };
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                let _permit = permit;
+                let _permit = worker_permit;
                 services
                     .launch_terminal(&terminal)
                     .map(|child| ticket.own(child, slot, process_scope))
@@ -276,7 +276,7 @@ impl Desktop {
         }));
     }
 
-    pub(crate) fn open_entry(
+    pub(crate) async fn open_entry(
         &self,
         request: DesktopRequestId,
         pane: PaneId,
@@ -286,35 +286,38 @@ impl Desktop {
         tasks: &mut JoinSet<()>,
     ) {
         let Some(services) = self.services.clone() else {
-            self.fail(request, "Desktop file opening is unavailable.", tasks);
+            self.fail(request, "Desktop file opening is unavailable.")
+                .await;
             return;
         };
         let Ok(permit) = self.open_budget.clone().try_acquire_owned() else {
-            self.fail(request, "File opening is busy. Try again.", tasks);
+            self.fail(request, "File opening is busy. Try again.").await;
             return;
         };
         let Ok(slot) = self.open_slots.clone().try_acquire_owned() else {
-            self.fail(
-                request,
-                "Too many desktop file-opening helpers are active.",
-                tasks,
-            );
+            self.fail(request, "Too many desktop file-opening helpers are active.")
+                .await;
             return;
         };
         let Ok(ticket) = self.processes.openers.try_reserve() else {
-            self.fail(request, "Desktop opener cleanup is busy. Try again.", tasks);
+            self.fail(request, "Desktop opener cleanup is busy. Try again.")
+                .await;
             return;
         };
         let slot = Arc::new(slot);
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let outbox = self.outbox.clone();
         let children = self.children.clone();
         let scope = self.scope.clone();
         let process_scope = Arc::new(scope.clone());
         let tracking_slot = slot.clone();
         tasks.spawn(self.scope.future(async move {
+            // Capacity covers native work and its terminal delivery, including panic.
+            let _permit = permit;
             let target = path.clone();
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                let _permit = permit;
+                let _permit = worker_permit;
                 let result = if directory_only {
                     services
                         .directory_destination(&target)
@@ -349,7 +352,7 @@ impl Desktop {
         }));
     }
 
-    pub(crate) fn properties(
+    pub(crate) async fn properties(
         &self,
         filesystem: Arc<dyn FileSystem>,
         request: DesktopRequestId,
@@ -360,16 +363,21 @@ impl Desktop {
             return;
         }
         let Ok(permit) = self.property_budget.clone().try_acquire_owned() else {
-            self.fail(request, "A properties request is already open.", tasks);
+            self.fail(request, "A properties request is already open.")
+                .await;
             return;
         };
         let services = self.services.clone();
         let locale = self.locale.clone();
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let outbox = self.outbox.clone();
         let scope = self.scope.clone();
         tasks.spawn(self.scope.future(async move {
+            // Capacity covers native work and its terminal delivery, including panic.
+            let _permit = permit;
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                let _permit = permit;
+                let _permit = worker_permit;
                 show_properties(
                     filesystem.as_ref(),
                     services.as_deref(),
@@ -412,14 +420,18 @@ impl Desktop {
             return;
         };
         let scope = self.scope.clone();
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         tasks.spawn(self.scope.future(async move {
-            let result = tokio::task::spawn_blocking(
-                scope.blocking(move || (services.default_editor(), permit)),
-            )
+            let _permit = permit;
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                let _permit = worker_permit;
+                services.default_editor()
+            }))
             .await;
-            let (result, _permit) = match result {
-                Ok((result, permit)) => (result, Some(permit)),
-                Err(cause) => (Err(worker_error("find editor", Path::new(""), cause)), None),
+            let result = match result {
+                Ok(result) => result,
+                Err(cause) => Err(worker_error("find editor", Path::new(""), cause)),
             };
             outbox.send(Event::EditorDefaultResolved(result)).await;
         }));
@@ -434,20 +446,17 @@ impl Desktop {
             .await;
     }
 
-    fn fail(&self, request: DesktopRequestId, message: &'static str, tasks: &mut JoinSet<()>) {
-        let outbox = self.outbox.clone();
-        tasks.spawn(async move {
-            outbox
-                .send(Event::DesktopActionFinished {
-                    request,
-                    result: Err(FsError::from_io(
-                        "desktop action",
-                        Path::new(""),
-                        io::Error::other(message),
-                    )),
-                })
-                .await;
-        });
+    async fn fail(&self, request: DesktopRequestId, message: &'static str) {
+        self.outbox
+            .send(Event::DesktopActionFinished {
+                request,
+                result: Err(FsError::from_io(
+                    "desktop action",
+                    Path::new(""),
+                    io::Error::other(message),
+                )),
+            })
+            .await;
     }
 }
 
@@ -874,6 +883,15 @@ mod tests {
         gate: Option<Arc<IconGate>>,
         context_gate: Option<Arc<IconGate>>,
         context_calls: AtomicUsize,
+        metadata_calls: Option<Arc<AtomicUsize>>,
+        _disposed: Option<NotifyOnDrop>,
+    }
+
+    struct NotifyOnDrop(Arc<Notify>);
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
     }
 
     #[derive(Default)]
@@ -989,7 +1007,15 @@ mod tests {
             Ok(())
         }
         fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
-            unreachable!("empty test directories have no entries")
+            let calls = self
+                .metadata_calls
+                .as_ref()
+                .expect("only Properties reads metadata");
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(EntryMetadata {
+                size: Some(17),
+                ..EntryMetadata::default()
+            })
         }
     }
     impl VolumeService for Icons {
@@ -1004,6 +1030,100 @@ mod tests {
                 total: 8,
             })
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_desktop_requests_do_not_allocate_a_task_per_rejection() {
+        let (sender, events) = mpsc::channel(1);
+        sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+        let mut tasks = JoinSet::new();
+        let desktop = Desktop::testing(
+            None,
+            None,
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            &mut tasks,
+        );
+        let actors = tasks.len();
+        // Poll each rejected dispatch once, then cancel its blocked delivery.
+        // No scheduler yield or completion reaping can hide a retained response task.
+        for id in 1..=2048 {
+            let mut dispatch = std::pin::pin!(desktop.open_entry(
+                DesktopRequestId(id),
+                PaneId::Left,
+                NavigationId(1),
+                "captured/file".into(),
+                false,
+                &mut tasks,
+            ));
+            poll_fn(|context| {
+                assert!(dispatch.as_mut().poll(context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        let pending = tasks.len() - actors;
+        drop(events);
+        drop(desktop);
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(
+            pending, 0,
+            "Unsupported commands retained {pending} extra tasks"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_properties_keep_capacity_until_their_terminal_event_is_delivered() {
+        let (sender, events) = mpsc::channel(1);
+        sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+        let mut tasks = JoinSet::new();
+        let desktop = Desktop::testing(
+            None,
+            None,
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            &mut tasks,
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        for id in 1..=2 {
+            let disposed = Arc::new(Notify::new());
+            let filesystem = Arc::new(Icons {
+                metadata_calls: Some(calls.clone()),
+                _disposed: Some(NotifyOnDrop(disposed.clone())),
+                ..Icons::default()
+            });
+            {
+                let mut dispatch = std::pin::pin!(desktop.properties(
+                    filesystem,
+                    DesktopRequestId(id),
+                    vec!["captured/file".into()],
+                    &mut tasks,
+                ));
+                // Accepted work starts on this poll; a rejection waits for output.
+                // Cancel only that waiting delivery before observing provider disposal.
+                let _ = poll_fn(|context| std::task::Poll::Ready(dispatch.as_mut().poll(context)))
+                    .await;
+            }
+            // The sole filesystem Arc is dropped after the native closure finishes,
+            // or after a rejected dispatch is dropped. No timer guesses completion.
+            tokio::time::timeout(Duration::from_secs(3), disposed.notified())
+                .await
+                .unwrap();
+        }
+        let actual = calls.load(Ordering::SeqCst);
+        drop(events);
+        drop(desktop);
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(
+            actual, 1,
+            "A completed but undelivered Properties request released capacity"
+        );
     }
 
     #[tokio::test]

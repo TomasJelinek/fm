@@ -95,8 +95,7 @@ async fn captured_open_uses_exact_occurrence_and_rejects_foreign_or_ambiguous_id
         desktop
             .open_captured_entry(
                 DesktopRequestId(1),
-                pane,
-                navigation,
+                (pane, navigation),
                 Arc::new(source),
                 Cancellation::default(),
                 row,
@@ -148,8 +147,7 @@ async fn cancelled_revoked_or_changed_captures_never_invoke_desktop_services() {
                 desktop
                     .open_captured_entry(
                         DesktopRequestId(1),
-                        PaneId::Left,
-                        NavigationId(5),
+                        (PaneId::Left, NavigationId(5)),
                         Arc::new(source),
                         cancel,
                         TreeRowId(1),
@@ -199,8 +197,7 @@ async fn shared_desktop_admission_rejects_capture_without_resolving_and_retires_
             desktop
                 .open_captured_entry(
                     DesktopRequestId(1),
-                    PaneId::Left,
-                    NavigationId(5),
+                    (PaneId::Left, NavigationId(5)),
                     source,
                     Cancellation::default(),
                     TreeRowId(1),
@@ -241,8 +238,7 @@ async fn aborting_desktop_reply_retains_source_and_admission_through_native_retu
             desktop
                 .open_captured_entry(
                     DesktopRequestId(1),
-                    PaneId::Left,
-                    NavigationId(5),
+                    (PaneId::Left, NavigationId(5)),
                     source,
                     Cancellation::default(),
                     TreeRowId(1),
@@ -262,5 +258,75 @@ async fn aborting_desktop_reply_retains_source_and_admission_through_native_retu
         assert_eq!(budget.available_permits(), if properties { 0 } else { 3 });
         drop(release);
         probe.wait_for_drop().await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn completed_captured_actions_keep_capacity_until_delivery() {
+    for properties in [false, true] {
+        let probe = Arc::new(Probe::default());
+        let native = Arc::new(Native::new(probe.clone()));
+        let (mut desktop, mut tasks, _background_events) = fixture(native.clone());
+        // Keep background icon/context traffic separate from this saturated delivery queue.
+        let (sender, mut events) = mpsc::channel(1);
+        sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
+        desktop.outbox = Outbox {
+            sender,
+            wakeup: Arc::new(|| {}),
+        };
+        let budget = if properties {
+            desktop.property_budget.clone()
+        } else {
+            desktop.open_budget.clone()
+        };
+        let remaining = budget.available_permits() - 1;
+        let _held = budget
+            .clone()
+            .acquire_many_owned(remaining as u32)
+            .await
+            .unwrap();
+        let source = Arc::new(Source::new(paths(), probe.clone()));
+        if properties {
+            desktop
+                .properties_captured(
+                    native,
+                    DesktopRequestId(1),
+                    source,
+                    Cancellation::default(),
+                    &mut tasks,
+                )
+                .await;
+        } else {
+            desktop
+                .open_captured_entry(
+                    DesktopRequestId(1),
+                    (PaneId::Left, NavigationId(5)),
+                    source,
+                    Cancellation::default(),
+                    TreeRowId(1),
+                    &mut tasks,
+                )
+                .await;
+        }
+        probe.wait_for_drop().await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            budget.available_permits(),
+            0,
+            "completed captured action remains admitted while its result is blocked"
+        );
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::VolumesUpdated(_))
+        ));
+        assert!(result(&mut events).await.is_ok());
+        drop(
+            tokio::time::timeout(Duration::from_secs(5), budget.acquire_owned())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
     }
 }

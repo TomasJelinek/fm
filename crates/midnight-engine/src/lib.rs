@@ -169,6 +169,12 @@ impl Request {
     }
 }
 
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 pub struct Engine {
     services: retirement::WorkerOwned<EngineServices>,
     run: retirement::RetirementLease,
@@ -260,6 +266,13 @@ struct SizeRequest {
 
 impl SizeRequest {
     fn cancel(self) {
+        self.cancel.cancel();
+        self.task.abort();
+    }
+}
+
+impl Drop for SizeRequest {
+    fn drop(&mut self) {
         self.cancel.cancel();
         self.task.abort();
     }
@@ -557,9 +570,11 @@ impl EngineServices {
         );
 
         loop {
+            // Drain completions before accepting another continuously-ready command.
+            while tasks.try_join_next().is_some() {}
             tokio::select! {
                 Some(prepared) = properties_ready.recv() => {
-                    desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks);
+                    desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, &mut tasks).await;
                 }
                 command = commands.recv() => {
                     let mut elevated = None;
@@ -753,9 +768,14 @@ impl EngineServices {
                                 (Some(service), Ok(permit)) => {
                                     let outbox = self.outbox.clone();
                                     let worker_scope = scope.clone();
+                                    let permit = Arc::new(permit);
+                                    let worker_permit = permit.clone();
                                     tasks.spawn(scope.future(async move {
                                         let _permit = permit;
-                                        let result = tokio::task::spawn_blocking(worker_scope.blocking(move || service.manage_connections(disconnect)))
+                                        let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
+                                            let _permit = worker_permit;
+                                            service.manage_connections(disconnect)
+                                        }))
                                             .await.unwrap_or_else(|error| Err(midnight_core::FsError::from_io(
                                                 "network dialog", std::path::Path::new("Network"), std::io::Error::other(error.to_string()))));
                                         // Retain the permit through delivery so a stopped UI cannot
@@ -842,15 +862,13 @@ impl EngineServices {
                         Some(Command::LoadPreferences) => {
                             if let Some(settings) = &settings { settings.load(); }
                             else {
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::PreferencesLoaded(Ok(Default::default()))).await; });
+                                self.outbox.send(Event::PreferencesLoaded(Ok(Default::default()))).await;
                             }
                         }
                         Some(Command::SavePreferences { revision, preferences }) => {
                             if let Some(settings) = &settings { settings.save(revision, *preferences); }
                             else {
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported))) }).await; });
+                                self.outbox.send(Event::PreferencesSaved { revision, result: Err(midnight_core::FsError::from_io("save preferences", std::path::Path::new(""), std::io::Error::from(std::io::ErrorKind::Unsupported))) }).await;
                             }
                         }
                         Some(Command::PaneCommitted(visible)) => {
@@ -865,7 +883,7 @@ impl EngineServices {
                             drop(snapshots);
                             if let Some(watcher) = &watcher { watcher.set_visible(watch_target); }
                         }
-                        Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks),
+                        Some(Command::LaunchTerminal { request, terminal }) => desktop.launch(request, terminal, &mut tasks).await,
                         Some(Command::CopyText { request, text }) => clipboard.copy(request, text, &mut tasks).await,
                         Some(Command::ReadPathClipboardText { request }) => clipboard.read_text(request, &mut tasks).await,
                         Some(Command::PickPath { request, input }) => path_picker.show(request, input, &mut tasks).await,
@@ -884,18 +902,18 @@ impl EngineServices {
                             desktop.properties_captured(self.filesystem.clone(), request, source, cancel, &mut tasks).await;
                         }
                         Some(Command::OpenCapturedEntry { request, pane, navigation, row, source, cancel }) => {
-                            desktop.open_captured_entry(request, pane, navigation, source, cancel, row, &mut tasks).await;
+                            desktop.open_captured_entry(request, (pane, navigation), source, cancel, row, &mut tasks).await;
                         }
                         Some(Command::ReadCapturedFileClipboard { request, source, cancel }) => {
                             clipboard.read_captured_files(request, source, cancel, &mut tasks).await;
                         }
-                        Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks),
+                        Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks).await,
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {
                             selection::prepare_properties(selection::PropertiesInput { request, selection, view, fallback },
-                                properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks);
+                                properties_budget.clone(), self.outbox.clone(), properties_sender.clone(), &mut tasks).await;
                         }
-                        Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, false, &mut tasks),
-                        Some(Command::ResolveDirectoryLink { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, true, &mut tasks),
+                        Some(Command::OpenEntry { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, false, &mut tasks).await,
+                        Some(Command::ResolveDirectoryLink { request, pane, navigation, path }) => desktop.open_entry(request, pane, navigation, path, true, &mut tasks).await,
                         Some(Command::ArchiveSizes(command)) => archive_sizes.submit(command).await,
                         Some(Command::ComputeFolderSizes { pane, navigation, scan, selection }) => {
                             // Retrying an accepted command must not falsely finish
@@ -909,8 +927,7 @@ impl EngineServices {
                                     .filter(|_| state.pending.is_none() && state.has_native_view()).cloned()
                             };
                             if entries.is_none() || size_requests[pane.index()].as_ref().is_some_and(|request| request.navigation == navigation && scan <= request.scan) {
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await; });
+                                self.outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
                                 continue;
                             }
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
@@ -942,10 +959,13 @@ impl EngineServices {
                                 };
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if worker_cancel.is_cancelled() { return; }
+                                let permit = Arc::new(permit);
+                                let worker_permit = permit.clone();
+                                let _permit = permit;
                                 let final_cancel = worker_cancel.clone();
                                 let final_outbox = outbox.clone();
                                 let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
-                                    let _permit = permit;
+                                    let _permit = worker_permit;
                                     let roots: std::borrow::Cow<'_, [Entry]> = match &selection {
                                         None => std::borrow::Cow::Borrowed(&snapshot.entries),
                                         Some(selection) => std::borrow::Cow::Owned(snapshot.entries.iter()
@@ -975,17 +995,16 @@ impl EngineServices {
                             }
                         }
                         Some(Command::ComputeEntrySize { pane, navigation, scan, entry }) => {
-                            entry_sizes.compute(pane, navigation, scan, entry, &mut tasks);
+                            entry_sizes.compute(pane, navigation, scan, entry, &mut tasks).await;
                         }
                         Some(Command::SummarizeSelectedFolders(request)) => selected_sizes.submit(request),
                         Some(Command::CancelFolderSizes { pane, scan }) => {
-                            entry_sizes.cancel(pane, scan, &mut tasks);
+                            entry_sizes.cancel(pane, scan).await;
                             if size_requests[pane.index()].as_ref().is_some_and(|request| request.scan == scan)
                                 && let Some(old) = size_requests[pane.index()].take() {
                                 let navigation = old.navigation;
                                 old.cancel();
-                                let outbox = self.outbox.clone();
-                                tasks.spawn(async move { outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await; });
+                                self.outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
                             }
                         }
                         Some(Command::QueryVolumeInformation(request)) => volume_information.query(request),
@@ -1071,10 +1090,13 @@ impl EngineServices {
                             let space = tasks.spawn(scope.future(async move {
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if space_cancel.is_cancelled() { return; }
+                                let permit = Arc::new(permit);
+                                let worker_permit = permit.clone();
+                                let _permit = permit;
                                 let storage_outbox = outbox.clone();
                                 let storage_cancel = space_cancel.clone();
                                 let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
-                                    let _permit = permit;
+                                    let _permit = worker_permit;
                                     let kind = filesystem.storage_kind(&path).unwrap_or_default();
                                     storage_outbox.blocking_send(Event::StorageKindUpdated { pane, navigation, kind }, &storage_cancel);
                                     filesystem.space_info(&path)

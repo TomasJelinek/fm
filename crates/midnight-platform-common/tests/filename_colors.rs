@@ -155,7 +155,7 @@ fn invalid_disabled_expressions_and_excessive_rules_fail_atomically() {
 fn defaults_color_common_file_categories_and_preserve_folder_theme() {
     let preferences =
         decode_preferences(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
-    assert_eq!(preferences.filename_colors.len(), 11);
+    assert_eq!(preferences.filename_colors.len(), 12);
     let compiled = CompiledFilenameColors::new(&preferences.filename_colors).unwrap();
     let categories = ["main.RS", "app.exe", "photo.jpg", "movie.mp4", "report.pdf"];
     let colors: std::collections::HashSet<_> = categories
@@ -176,7 +176,8 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
             "#3b82f6",
         ),
         (&["movie.MP4", "clip.mkv"][..], "#8b5cf6"),
-        (&["report.pdf", "letter.docx", "book.epub"][..], "#c4cfe0"),
+        (&["report.pdf", "BOOK.PDF"][..], "#ef5a5a"),
+        (&["letter.docx", "book.epub"][..], "#c4cfe0"),
         (&["photo.jpg", "vector.svg", "image.avif"][..], "#ec4899"),
         (
             &["app.exe", "installer.msi", "program.AppImage"][..],

@@ -101,7 +101,9 @@ authentication limitations.
 
 ## Current browsing and explicit-operation milestone
 
-Rename/F2, create-directory/F7 and deletion are explicit, confirmed operations.
+Rename/F2, empty-file creation/Shift+F4, create-directory/F7 and deletion are
+explicit, confirmed operations. Empty-file creation accepts one basename,
+uses exclusive creation and never overwrites or truncates an existing entry.
 Preparation pins native identity before showing the confirmation; navigation never
 retargets a queued job. The backend permits at most 32 preparing/prepared/queued/
 running mutation jobs and 32 copy jobs, two mutation preparation workers and one
@@ -510,7 +512,7 @@ every phase. No copy is marked successful before its complete verification.
 ## Unicode acceptance
 
 Unicode covers filesystem names and paths, UI models and editing, volume labels,
-errors, CLI/configuration, and future copy/search/rename/clipboard operations.
+errors, CLI/configuration, search, rename, clipboard and copy/move operations.
 Case mapping for sorting never changes the original path or merges identities.
 Composed/decomposed spelling is preserved; filesystem-specific equivalence must
 be handled explicitly rather than by globally rewriting names.
