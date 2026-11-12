@@ -13,8 +13,10 @@ accepted the Markdown slice as `cc4857e` and checkpointed the build port/README 
 Rust bootstrap work. Merge `28cc79add548eed0d6c9e465a6fe26a5d141f9b7` is complete
 and includes that upstream head. It reconciles Docker/native bootstrap with
 reviewed cleanup/dry-run/native-setup guards and the full Docker build chain,
-whose caches belong under `.tools/docker/`. README is committed in that merge;
-the remaining seven documentation files are a separate checkpoint. The checkout is shared and
+whose caches belong under `.tools/docker/`. The merge, including README, is pushed.
+The seven-document checkpoint is committed as
+`5ab0e86f40c0164f4700da96e1ff09a3b5f65de5`.
+The checkout is shared and
 later role edits need their own source/build identity.
 This documentation reconciliation inspects source and existing reports; it does
 not execute application tests or qualify another role's changes.
@@ -62,8 +64,8 @@ does not reserve or authorize edits throughout a directory.
 | Backend agent | Archive review completed with no port; investigate the reported Windows comparator CI timeout | The Orchestrator retired the branch/worktree after accepting the source comparison. Further source edits need exact assignments; plugin-only work cannot patch host sources. |
 | Viewer agent | Thumbnail review completed with no port; bounded Markdown allocation slice accepted as `cc4857e` | Independent plugin evidence is complete for that slice; native/host latency qualification remains separate. The user's later full QA cleanup supersedes retaining its candidate DLL/receipts; future integration must rebuild from the recorded source. |
 | UI agent | Own the filter experience; verify the relayed shortcut-fixture discrepancy | Own the assigned filter UI slice; coordinate shared Presenter/API paths and native-input testing. The Orchestrator relayed fixture drift to UI; Documentation does not edit those tests. |
-| GitHub build system and build tools developer | Build-script reconciliation is integrated as `28cc79a`; execute the user's authorized deletion of the entire `_build/qa/` tree and report its measurement | Final helper/hook/syntax results are recorded below; all three reviewed branches are retired. The earlier CI run's Backend/UI failures remain separate from these build-script gates. No application/native qualification is inferred. |
-| Documentation guru | Finalize the completed merge/retirement state and preserve the other frozen docs | Current edits: `docs/ACTIVE_WORK.md` and `docs/verification/2026-11-12-branch-retirement.md`. Frozen pending files: `AGENTS.md`, `docs/FEATURE_STATUS.md`, `docs/developer/AGENT_WORKFLOW.md`, `docs/developer/TRANSFERS.md`, `docs/developer/WORKER_SDK.md`. README is already committed. Final validation/hashes for all seven pending files belong under `_build/verification/docs-20261112/`; no Git operations. |
+| GitHub build system and build tools developer | Build-script reconciliation is integrated as `28cc79a`; QA cleanup is complete after Build's accessible stage and the Orchestrator's protected-remnant cleanup | The Orchestrator verified `_build/qa/` absent and the debug executable unchanged. Final helper/hook/syntax results are recorded below; all three reviewed branches are retired. Earlier CI failures remain separate; no application/native qualification is inferred. |
+| Documentation guru | Record the cleanup correction and preserve the other checkpointed docs | Current edits: `docs/ACTIVE_WORK.md` and `docs/verification/2026-11-12-branch-retirement.md`. Other checkpointed files: `AGENTS.md`, `docs/FEATURE_STATUS.md`, `docs/developer/AGENT_WORKFLOW.md`, `docs/developer/TRANSFERS.md`, `docs/developer/WORKER_SDK.md`. README is already committed. The seven-file checkpoint hashes and this correction's validation belong under `_build/verification/docs-20261112/`; no Git operations. |
 
 The user authorized selecting useful historical branch changes, discarding obsolete
 changes and deleting branches. The Orchestrator accepted the archive/thumbnail
@@ -87,7 +89,8 @@ bounded parallelism; desktop/input and performance probes run serially.
 
 Merge ownership was exclusive: Documentation resolved `README.md`; Build resolved
 `build.sh`. The Orchestrator completed the merge. Other frozen documentation
-changes are preserved, and these remaining docs form a separate checkpoint.
+changes are preserved in checkpoint `5ab0e86`; only these two cleanup records are
+being updated now.
 Staging, commit and push remain Orchestrator-owned.
 
 ## Integrated baseline and recorded evidence
@@ -122,8 +125,9 @@ For merge `28cc79add548eed0d6c9e465a6fe26a5d141f9b7`, the Orchestrator reports:
 
 These groups are not added together as unique coverage. They are helper/hook/syntax
 results, not a live package-installation, Docker-image, application or native UI
-qualification. Documentation did not rerun them. Root also reviewed and fixed the
-[cleanup mount guard](../scripts/check-clean-mounts-linux.sh): kernel escapes use
+qualification. Documentation did not rerun them. Build implemented the
+[cleanup mount guard](../scripts/check-clean-mounts-linux.sh) fixes after the
+Orchestrator's diagnosis and review: kernel escapes use
 exactly three octal digits, and decoding preserves following filename digits and
 trailing path newlines.
 
@@ -133,9 +137,18 @@ The user explicitly authorized deleting the entire `_build/qa/` tree; Build owns
 the operation and its space measurement. QA paths retained below are historical
 provenance, not a promise that those files remain available or a prerequisite to
 reading this durable summary. New final documentation checks and seven-file hashes
-are stored under `_build/verification/docs-20261112/`, outside QA. The full QA
-cleanup measurement is pending the Build/Orchestrator handoff; the earlier four-BMP
-cleanup is a separate measurement.
+are stored under `_build/verification/docs-20261112/`, outside QA. Cleanup is
+complete: the Orchestrator verified `_build/qa/` absent. Build's accessible stage
+removed **681 roots**, with a reported space gain of **40,625,377,280 bytes**
+(about 40.6 GB). The reviewed frozen UAC helper completed the protected remnants
+at **17:15:21 CET (16:15:21Z)**, using per-directory ACL repair without traversing
+reparse targets. Its final-stage free-space change was **155,648 bytes**; the final
+free-space snapshot was **46,807,683,072 bytes**. These observations are not summed
+because unrelated disk activity continued; the earlier four-BMP cleanup is separate.
+The completion receipt is
+`_build/verification/20261112-cleanup/qa-elevated-completion.json` (`completed`,
+`directoryAbsent: true`). Protected debug SHA-256 before and after is unchanged:
+`d731397f751647c5feb6ff2ba6ec822a598711bc48ee738e452f364363138984`.
 
 Source checks used for this reconciliation include:
 

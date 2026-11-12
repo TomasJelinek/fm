@@ -89,15 +89,27 @@ For the final reconciled script batch, the Orchestrator reports:
 - Windows hooks: **seven passed**.
 - Shell syntax: **six script checks passed**.
 
-The groups are not counted as additive unique coverage. Root reviewed and fixed
-the [mount guard's kernel octal decoding](../../scripts/check-clean-mounts-linux.sh),
+The groups are not counted as additive unique coverage. Build implemented the
+[mount guard's kernel octal decoding fixes](../../scripts/check-clean-mounts-linux.sh)
+after the Orchestrator's diagnosis and review,
 including following filename digits and trailing path newlines. Documentation
 records these owner-reported gates without rerunning them or claiming a live
 package installation, Docker-image build or application/native UI qualification.
 The earlier QA script log describes its pre-merge candidate only.
 
-Final documentation checks and hashes for all seven pending files, excluding
-already committed README, are under `_build/verification/docs-20261112/`.
-The full QA cleanup measurement awaits the Build/Orchestrator handoff and is
-separate from the earlier four-BMP result above. No continued QA receipt or
-candidate-binary availability is assumed.
+The seven-document checkpoint is committed as
+`5ab0e86f40c0164f4700da96e1ff09a3b5f65de5`; merge `28cc79a` is pushed. Documentation
+checks/hashes and this cleanup correction are under
+`_build/verification/docs-20261112/`, outside QA.
+
+The full QA cleanup is complete: the Orchestrator verified `_build/qa/` absent.
+Build's accessible stage removed **681 roots**, reporting **40,625,377,280 bytes**
+of space gain (about 40.6 GB). The reviewed frozen UAC helper completed the protected
+remnants at **17:15:21 CET (16:15:21Z)** with per-directory ACL repair and no reparse
+target traversal. Its separate final-stage free-space change was **155,648 bytes**;
+the final free-space snapshot was **46,807,683,072 bytes**. Do not sum those
+observations or the earlier four-BMP result: unrelated disk activity continued.
+Receipt: `_build/verification/20261112-cleanup/qa-elevated-completion.json`, status
+`completed`, `directoryAbsent: true`. Protected debug SHA-256 before/after matches:
+`d731397f751647c5feb6ff2ba6ec822a598711bc48ee738e452f364363138984`.
+No continued QA receipt or candidate-binary availability is assumed.
