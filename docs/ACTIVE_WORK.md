@@ -49,7 +49,7 @@ success. Dated reports retain their exact source, environment and scope. Work
 below distinguishes **implementation gaps**, **source review**, **performance**
 and **qualification** rather than converting every missing receipt into missing code.
 
-## Current six-role batch and exclusive ownership
+## Current seven-role batch and exclusive ownership
 
 The [agent workflow](developer/AGENT_WORKFLOW.md) and [project rules](../AGENTS.md)
 govern assignments and handoffs. The documentation paths below are an explicit
@@ -59,18 +59,19 @@ does not reserve or authorize edits throughout a directory.
 
 | Owner | Current assignment | Ownership and coordination boundary |
 | --- | --- | --- |
-| Orchestrator | Coordinate the full goal, review findings and integrate accepted batches | Owns file reservations, API/UI integration decisions, Cargo target-directory/native-input leases and Git checkpoints. Commit/merge/push remain Orchestrator-owned. |
+| Orchestrator | Coordinate the full goal; independently critique/review proposals, changes and evidence; own integration | Owns file reservations, API/UI integration decisions, Cargo target-directory/native-input leases and Git checkpoints. Commit/merge/push remain Orchestrator-owned. |
 | Architect | Provider review completed: prepared public actions, public watch events and preserved-link transfers need separate increments | Proposed finite Rename slice below is unimplemented. Agree exact API/SDK/plugin/host files with the affected roles before cutover. |
 | Backend agent | Archive review completed with no port; investigate the reported Windows comparator CI timeout | The Orchestrator retired the branch/worktree after accepting the source comparison. Further source edits need exact assignments; plugin-only work cannot patch host sources. |
 | Viewer agent | Thumbnail review completed with no port; bounded Markdown allocation slice accepted as `cc4857e` | Independent plugin evidence is complete for that slice; native/host latency qualification remains separate. The user's later full QA cleanup supersedes retaining its candidate DLL/receipts; future integration must rebuild from the recorded source. |
 | UI agent | Own the filter experience; verify the relayed shortcut-fixture discrepancy | Own the assigned filter UI slice; coordinate shared Presenter/API paths and native-input testing. The Orchestrator relayed fixture drift to UI; Documentation does not edit those tests. |
 | GitHub build system and build tools developer | Build-script reconciliation is integrated as `28cc79a`; QA cleanup is complete after Build's accessible stage and the Orchestrator's protected-remnant cleanup | The Orchestrator verified `_build/qa/` absent and the debug executable unchanged. Final helper/hook/syntax results are recorded below; all three reviewed branches are retired. Earlier CI failures remain separate; no application/native qualification is inferred. |
-| Documentation guru | Record the cleanup correction and preserve the other checkpointed docs | Current edits: `docs/ACTIVE_WORK.md` and `docs/verification/2026-11-12-branch-retirement.md`. Other checkpointed files: `AGENTS.md`, `docs/FEATURE_STATUS.md`, `docs/developer/AGENT_WORKFLOW.md`, `docs/developer/TRANSFERS.md`, `docs/developer/WORKER_SDK.md`. README is already committed. The seven-file checkpoint hashes and this correction's validation belong under `_build/verification/docs-20261112/`; no Git operations. |
+| Perf agent | Initial read-only checkpoint review of latency, CPU, memory, I/O, contention, algorithms/data structures and hotspots using existing evidence | No source edits or benchmarks in this assignment. Later profiling and before/after measurements use Build leases; implementation roles own fixes and the Architect owns architecture. |
+| Documentation guru | Maintain design/API/user docs, status, licenses and verified evidence | Current roster edits: `AGENTS.md`, `docs/developer/AGENT_WORKFLOW.md`, `docs/ACTIVE_WORK.md`. Preserve other checkpointed docs; outputs belong under `_build/verification/docs-20261112/`. Git remains Orchestrator-owned. |
 
 The user authorized selecting useful historical branch changes, discarding obsolete
 changes and deleting branches. The Orchestrator accepted the archive/thumbnail
 source-equivalence reports and deleted their exact local/remote tips and clean
-worktrees; see the [durable retirement record](verification/2026-11-12-branch-retirement.md).
+worktrees.
 The `origin/fix/cargo` tip `8e084b3339ea3bf6cbc72567d7691af1dfb4fa7d` is now
 incorporated by upstream `a9f31d7` and completed local merge `28cc79a`, preserving
 Docker fallback/native Rust bootstrap alongside the reviewed guards.
@@ -89,8 +90,8 @@ bounded parallelism; desktop/input and performance probes run serially.
 
 Merge ownership was exclusive: Documentation resolved `README.md`; Build resolved
 `build.sh`. The Orchestrator completed the merge. Other frozen documentation
-changes are preserved in checkpoint `5ab0e86`; only these two cleanup records are
-being updated now.
+changes are preserved in checkpoint `5ab0e86`; this ledger retains the cleanup
+status.
 Staging, commit and push remain Orchestrator-owned.
 
 ## Integrated baseline and recorded evidence
@@ -263,7 +264,7 @@ their evidence or authorize edits to another role's files.
 
 | Reference | Current correction / unresolved handoff |
 | --- | --- |
-| [5 November stages](superpowers/plans/2026-11-05-follow-up-stages.md), stage 3 and opening sequence | Whole-batch-before-delete and unconditional hash/copy wording is superseded by per-file Move and the accepted full/quick/native-rename policy. Historical stage order does not suspend the current parallel six-role assignments. |
+| [5 November stages](superpowers/plans/2026-11-05-follow-up-stages.md), stage 3 and opening sequence | Whole-batch-before-delete and unconditional hash/copy wording is superseded by per-file Move and the accepted full/quick/native-rename policy. Historical stage order does not suspend the current parallel seven-role assignments. |
 | [Implementation backlog](IMPLEMENTATION_BACKLOG.md), tree introduction/consumer text | Native Delete/Rename/metadata, clipboard, focused F4, checksums, Properties/context menus, Make File List and native comparisons have captured paths. In particular the later sentence calling directory comparison guarded is stale; root-level native comparison is implemented. Generic provider writes, archive watches/attachment/nesting and complete native qualification remain open. |
 | [11 November gap audit](verification/2026-11-11-open-requirements-audit.md), tree/dialog/media/network rows | This is the named older baseline. Later reports/source add captured consumers, protocol-3 cooperative archive staging cancellation and discovery Hot Paths. Blanket native-modal migration is superseded; interactive Linux auth remains a gap. Preserve the audit as history. |
 | [Initial retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md) and LIFE-01 backlog ledger | Later service/checksum/command/mailbox/report/configuration work exists. The backlog retains both 324 and an older 308 slot figure; [current lifetime contract](developer/ENGINE_LIFETIME.md) states 324. Architect/Backend must reconcile the current ownership ledger before closure, rather than declaring all retirement work missing or complete from checkboxes. |

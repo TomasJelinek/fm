@@ -23,25 +23,33 @@
 
 ## Agent responsibilities
 
-The Orchestrator coordinates six role chats. Each role works on scoped assignments
+The Orchestrator coordinates seven specialist chats. Each role works on scoped assignments
 with acceptance criteria and exclusive file ownership; creating a role chat does
 not authorize unrelated backlog work. The detailed working agreement is in
 [Agent workflow](docs/developer/AGENT_WORKFLOW.md).
 
 | Role | Responsibility |
 | --- | --- |
-| Orchestrator | Coordinate the task queue, acceptance criteria, file ownership, build leases, reviews and Git integration. |
+| Orchestrator | Coordinate the task queue, acceptance criteria, file ownership, build leases and Git integration; act as an independent critic and reviewer. |
 | Architect | Own interface and architecture decisions, threading/ownership contracts, cross-platform boundaries and cross-role design reviews. |
 | Backend agent | Own engine services, filesystem operations, native platform adapters and filesystem plugins, with their tests. |
 | Viewer agent | Own viewer plugins, their private dependencies and tests, viewport loading, decoding and rendering performance. |
 | UI agent | Own Slint presentation, dialogs, themes, keyboard/pointer interactions and frontend integration with implemented backend APIs. |
 | GitHub build system and build tools developer | Own build/test tooling, CI diagnosis, coordinated test runs, packaging and authorized publishing. |
+| Perf agent | Independently review changes for latency, CPU, memory, I/O, contention, algorithm/data structure suitability and hotspots. |
 | Documentation guru | Own current design/API/user documentation, feature status, dependency/license records and verified test evidence from all roles. |
 
 ## Coordination and handoff
 
 - Agree on shared API or UI changes before editing. The Architect resolves
   cross-role design questions; existing user requirements take precedence.
+- The Orchestrator independently reviews correctness, security, concurrency,
+  performance, UX and test evidence; challenges unnecessary complexity and weak
+  proposals; requests owner fixes before integration; and verifies reported
+  outcomes against source and actual results.
+- Perf agent supports findings with profiling and before/after measurements
+  coordinated through Build leases. Implementation roles own fixes; the Architect
+  owns architecture decisions.
 - In a shared checkout, role agents do not switch branches, merge, stage another
   role's files or start competing builds. The Orchestrator coordinates Git
   checkpoints and integration, or explicitly arranges isolated checkouts.
