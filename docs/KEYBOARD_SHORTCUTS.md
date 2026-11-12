@@ -192,13 +192,10 @@ left double-click activates. Clicking a column header switches sorting direction
 **Ctrl+click on a folder expander** starts bounded recursive expansion inline,
 including directory symlink/junction expanders. Collapse/navigation cancels the
 asynchronous walk; cycles and other failures stay local to the affected branch.
-Known-empty directory links have no synthetic `+`. Capacity can leave expansion
-paused/incomplete with the valid tree retained; larger-than-model paging remains
-a follow-up. Ordinary row Ctrl+click keeps the selection behavior above.
-The [tree design](developer/TREE_PANEL.md#retry-diagnostics-and-recursive-expansion)
-records batching, identity guards and the 69-passing Windows tree/CSC UI gate.
-Recursive expansion is implemented and tested on Windows with software UI coverage.
-The Linux native fixture has not yet executed; new EXE packaging remains pending.
+Known-empty directory links show no `+`. Expansion can pause at its capacity
+limit while preserving the valid tree. Ordinary row Ctrl+click keeps the selection
+behavior above. See [tree behavior and limits](developer/TREE_PANEL.md#retry-diagnostics-and-recursive-expansion)
+for details.
 
 Insert and Space clamp at the last row; `..` is never selected or measured.
 In expanded trees, Space measures its focused directory independently of other

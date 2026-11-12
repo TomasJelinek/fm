@@ -14,11 +14,11 @@ and a real junction fixture. The integrated build exited 0 with zero source drif
 | Selected `native_job_windows` notice cases | 2 / 0 / 0 |
 | `operations_native_ui` | 4 / 0 / 0 |
 | Viewer image/pixel preparation | 26 / 0 / 0 |
-| Thumbnail RED group | 12 / 2 / 0 |
+| Initial thumbnail RED group | 12 / 2 / 0 |
 
 The tree/CSC UI subset is **69 passed**. Its presenter cases overlap earlier CSC
-gates and are not added to those counts. The two thumbnail failures are expected
-RED evidence for the separate Perf correction; the overall receipt is not GREEN.
+gates and are not added to those counts. The two initial thumbnail failures are
+preserved RED evidence; the later correction is qualified separately below.
 
 The broad Backend `tree-recursive-green-runtime-result.json` selected 159:
 158 passed, one legacy no-links assertion failed, none ignored, zero source drift.
@@ -33,8 +33,25 @@ Per-target summaries and matching `*-source-and-command.json` captures retain
 artifact/source identities and commands. [Behavior and guard limits](../developer/TREE_PANEL.md#retry-diagnostics-and-recursive-expansion)
 remain in the tree contract.
 
-CSC authorization remains mocked; successful Windows UAC/CSC access is unproved.
-The junction fixture is real Windows filesystem evidence. The Linux native fixture
-has not yet executed; new EXE packaging and native app qualification remain pending.
-The initial 16-result/50-ms batch bounds are not measured latency guarantees;
-no broad performance or thumbnail-fix completion is claimed.
+## Thumbnail correction and debug build
+
+Perf's correction is committed at `8e205c0`. The later
+`thumbnail-green-runtime-result.json` records **14 passed / 0 failed / 0 ignored**,
+zero source drift, completed at 23:42:42 CET on 12 November. This supersedes the
+earlier thumbnail RED result within that scope.
+
+`final-debug-build-result.json` records a normal debug build with exit 0 and zero
+source drift. `_build/debug/me.exe` is **101,768,704 bytes**, SHA-256
+`d2643b49917c29b8f5f3b0171dc075bb30058817de6f0b6b1212d8361c0f658d`.
+The registered private entrypoint is
+`C:/Users/tjelinek/MidnightExplorer-20261112-224859-d2643b49/me.exe`, with the same
+SHA-256. `final-private-entrypoint-smoke-results.json` records engine
+`--smoke-test` and native `--ui-smoke-test`, both exit 0 with unchanged fixtures.
+`final-private-qualified-debug-result.json` records source `3619070`; Root visually
+inspected `final-private-entrypoint-native.png` and found normal two-panel/toolbar
+startup without an error. The previous runtime, preferences and desktop shortcut
+are unchanged; candidate native Rename plugins were not deployed.
+
+This qualifies startup, not full viewer workflows, manual CSC/UAC access or Linux.
+The Linux native fixture remains unexecuted. Batch bounds and thumbnail tests
+establish no broad latency or SSD-performance claim.

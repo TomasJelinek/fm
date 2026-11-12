@@ -210,8 +210,9 @@ an explicit follow-up. Architect owns the API contract, Backend owns traversal/
 cycles, and UI owns modifier/state routing. Backend's broad first run retained one
 legacy fixture failure; its refined Windows junction/Delete subset passes 11/0
 with unchanged production. Those exact scopes and the separate thumbnail RED
-are recorded in the verification note. The Linux native fixture has not yet
-executed; new application EXE packaging and qualification remain pending.
+are recorded in the verification note. The new registered private runtime passes
+engine smoke and native UI startup. Its exact EXE identity and startup-only
+qualification are recorded there; the Linux native fixture has not yet executed.
 
 ## Directory sizes
 
