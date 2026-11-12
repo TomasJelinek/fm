@@ -6,10 +6,14 @@ ledger, alongside [Feature status](FEATURE_STATUS.md). It reconciles the older
 [requirement IDs](IMPLEMENTATION_BACKLOG.md) without treating their stale status
 text or stage ordering as current evidence.
 
-Reviewed source checkpoint through **`e6e086c`**: Task 1/docs merged at
-`e5cba5d`, accepted Markdown source at `255fbdc`, then HTML diagnostics at `e6e086c`.
+Recorded source/docs integration checkpoint **`cdbb29a375ef01705d7b3b4506edf0219ac38fdb`**
+is pushed, with exact remote equality verified by the Orchestrator. It contains
+Task 1/docs merged at `e5cba5d`, accepted Markdown at `255fbdc` and HTML diagnostics
+at `e6e086c`.
 Qualified runtime/UI source checkpoint: **`35a159cd00a5749f53d7f3522c64566e2c46a776`**.
-Latest completed remote-CI checkpoint: **`2e0e554`**. The qualified source includes embedded modal presentation
+Completed remote-CI checkpoint **`35a159c`** records **18 successful / 2 failed
+host jobs**, both at `compact_feedback.rs:163`; no completed CI result for
+`cdbb29a` is recorded here. The qualified source includes embedded modal presentation
 with focus/input gating, corrected selection fixtures and shared cancellable font
 catalog cold initialization. The positive-input UI gate passes **20 distinct
 tests**. The new debug EXE compiles and its **private entrypoint** passes engine
@@ -82,10 +86,10 @@ does not reserve or authorize edits throughout a directory.
 | Architect | Retain UI generated-code and accepted Rename contracts | The reviewed positive-input correction now passes the retained-focus regression and selected boundaries. Broader native qualification remains separate. Task 1's five findings are source-resolved; Windows Task 2 and Linux Task 3 source work is authorized in C; both remain unqualified, with host cutover separate. |
 | Backend agent | Continue Windows Task 2 and Linux Task 3 native plugin WIP in C | Task 1 `f3f8c59` and public docs `852ee0c` are merged into D `e5cba5d`, with exact equality of 33 incoming files. Native platform WIP remains excluded/unqualified; no new Rename capability, runtime deployment or host cutover is claimed. |
 | Viewer agent | Prepare the minimal native-worker handoff for accepted Markdown source `255fbdc` | Correctness is 72/0 plus strict Clippy. Perf accepted source integration using the 32-pass paired debug wall-time/allocator evidence, including heap and small-fixture tail costs. The worker is undeployed; native scrolling/deployment qualification remains open. |
-| UI agent | Hold the tested positive-input source at pushed UI checkpoint `35a159c` | Selected boundaries pass (20 distinct tests), private engine/native UI startup passes and the shared D engine retry passes. The original shared hashing anomaly remains preserved/unattributed, with broader native interaction acceptance separate; CMD-02 source is frozen, with targeted runtime qualification pending. |
+| UI agent | Hold corrected CMD-02 and compact-feedback fixtures frozen for Build's rerun | The first CMD-02 gate compiled, then passed 31 tests and failed five tree tests in setup (actual 8, expected 5). Natural FocusOut/caret expectations and the compact active-size fixture are now corrected in source; production is unchanged since that gate and the rerun is pending. Earlier UI/startup receipts retain their recorded scope; the initial shared hashing anomaly remains preserved/unattributed. |
 | GitHub build system and build tools developer | Preserve qualified launch receipts and the original shared failure; own Task 2/3 and Markdown performance validation | Private engine/native UI startup and shared engine retry pass. Later stable-handle checks do not identify the original changed field; no source/validator fix occurred. Corrected Markdown is not deployed. Preserve exact source/runtime identities, logs and coordinated leases. |
-| Perf agent | Retain the accepted Markdown source boundary and review remaining native/deployment evidence | `markdown-ab-acceptance-review.md` accepts source integration, including measured allocation and small-fixture tail costs. Request timings use `Instant` wall time, not process CPU time. Native scrolling, release behavior, deployment and RSS remain unqualified. |
-| Documentation guru | Maintain this compact current-state ledger only | Current edit ownership is only D `docs/ACTIVE_WORK.md`; other D/C docs remain Root-owned. Inspect source/log evidence without Git, Cargo or application runs. Freeze paths/hashes under `_build/verification/docs-20261112/` for Root's later commit. |
+| Perf agent | Retain the accepted Markdown boundary and review main-panel scrolling hotspots | `markdown-ab-acceptance-review.md` accepts source integration with measured allocation and small-fixture tail costs; request timings use `Instant` wall time, not process CPU time. `panel-scroll-review.md` is a read-only source audit of projection, invalidation and thumbnail bookkeeping; current measurements are pending and no fix is claimed. Native scrolling, release behavior, deployment and RSS remain unqualified. |
+| Documentation guru | Keep the workflow stable and this ledger current | Current edit ownership is only D `docs/developer/AGENT_WORKFLOW.md` and `docs/ACTIVE_WORK.md`; other D/C docs remain Root-owned. Inspect source/log evidence without Git, Cargo or application runs. Freeze the two-file handoff under `_build/verification/docs-20261112/` for Root's later commit. |
 
 Native Windows Task 2 and Linux Task 3 remain WIP in the existing
 `C:/Users/tjelinek/.codex/worktrees/main-deep-audit/FM` checkout and are excluded
@@ -133,7 +137,8 @@ Staging, commit and push remain Orchestrator-owned.
 
 Root pushed the 33-file UI checkpoint `35a159c` and verified `origin/main` at the
 same commit. Its sources exactly match the compiled/qualified private EXE. Plugin
-WIP remains unstaged/excluded; the completed remote CI below still names `2e0e554`.
+WIP remains unstaged/excluded. The completed CI run below also names `35a159c`
+and fails at compact-feedback coverage; local startup does not supersede that result.
 
 The positive-input gate passes **20 distinct tests**: native Filter 17/0, Filter
 library 2/0 and exact background-operation retirement 1/0. Exact-first overlaps
@@ -226,17 +231,37 @@ additional targeted gates and final debug backend/native/software startup smokes
 Those are recorded results, not tests rerun during this documentation pass, a full
 workspace/remote CI pass or accepted UAC/polkit qualification.
 
-The Orchestrator verified [GitHub run 43260032611](https://github.com/TomasJelinek/fm/actions/runs/43260032611)
-at `2e0e554` is complete: **18 successful jobs / 2 failed check jobs**. Both Linux
-and Windows fail on the same two UI library tests:
+Build's `_build/verification/build-20261112/github-checkpoint-35a159c-terminal.json`
+records completed [GitHub run 43288511891](https://github.com/TomasJelinek/fm/actions/runs/43288511891)
+at `35a159c`: **18 successful jobs / 2 failed host check jobs**. Both Linux and
+Windows fail `compact_geometry_and_unfinished_sizes_render_in_every_theme` at
+`crates/midnight-ui/tests/compact_feedback.rs:163`, in the active-versus-completed
+size-color assertion. Cargo stops at that integration target, so later workspace
+targets are not qualified by the run. The terminal receipt and failure excerpts
+establish this checkpoint's result; no completed result for `cdbb29a` is recorded.
+The compact fixture now explicitly sets `size_running=true` for the active row,
+retaining the terminal-partial and active-color assertions; its rerun is pending.
 
-- `operation_windows::lifetime_tests::embedded_operation_background_copy_retirement_keeps_owner_item_focus`
-- `panel_filter_windows::tests::installed_filter_and_help_use_only_main_window_and_reject_retired_tokens`
+The first CMD-02 compilation passed (exit 0). Its runtime gate recorded **31 passed /
+5 failed / 0 ignored** across four executed artifacts, with zero source drift.
+All five `tree_command_insertion` failures occur at the common setup assertion
+`tree_command_insertion.rs:354:9`: actual **8**, expected **5**. These are historical
+setup failures before insertion-key delivery. The corrected fixture acknowledges
+that real FocusOut collapses selected text to the caret; production is unchanged
+since the first gate. The corrected source is frozen and its rerun is pending.
+Build receipts
+are `cmd02-build-result.json`, `cmd02-runtime-gate-result.json` and
+`cmd02-runtime-failures-readable.txt` under `_build/verification/build-20261112/`.
+UI's `_build/verification/ui-20261112/cmd02/handoff.md` records both fixture
+corrections. Root independently verified all six frozen source hashes. No passing
+runtime claim is made for the corrected fixtures.
 
-Current frozen fixture corrections address both; the fresh local positive-input
-gate passes the exact lifetime test and existing Filter module. No new remote
-success is claimed. Earlier run `43239253816`, with its comparator timeout and
-Ctrl+D fixture failures, predates this checkpoint and remains historical.
+Earlier [run 43260032611](https://github.com/TomasJelinek/fm/actions/runs/43260032611)
+at `2e0e554` recorded 18 successful / 2 failed jobs in operation-background-retirement
+and Filter library tests; the later local positive-input gate passes those
+boundaries. Run `43239253816`, with comparator timeout and Ctrl+D fixture failures,
+also remains historical. Neither earlier result replaces the completed `35a159c`
+CI failure.
 
 ### Completed build-script integration
 
@@ -320,7 +345,7 @@ for the next assignment, not permission to start unreserved edits or builds.
 | NET-01 / P1 / implementation | Discovery and typed discovery Hot Paths exist; [Linux GIO](../plugins/midnight-filesystem-network/src/linux/gio.rs) explicitly aborts interactive password challenges. Live SMB/GVfs interoperability is a separate qualification gap. | Backend + Architect: host-owned ephemeral authentication/cancel flow with no credential persistence/logging. Cover stale/canceled auth, reconnect and provider removal; then qualify an owned live endpoint. |
 | FILTER-01/02, UI-01 / P1 / targeted positive-input gate passed | The retained replacement-popup focus assertion passes. Native Filter 17/0, Filter library 2/0 and exact operation-lifetime 1/0 cover 20 distinct tests; exact-first replay is not added twice. Find geometry passed with unchanged source. Private engine/native UI startup subsequently passes. | Preserve verified input/focus/lifetime and source identities. The original shared hashing anomaly remains preserved/unattributed after a passing engine retry; full native/layout/platform acceptance is not closed by these focused tests or startup smokes. Retain real pointer/key, occurrence identity, history/clear and stale-token coverage. |
 | SELECT-01 / P1 / fixture correction implemented; subset passed | [Flat](../crates/midnight-ui/tests/bulk_selection.rs) and [tree](../crates/midnight-ui/tests/tree_bulk_selection.rs) definitions match all-marks Ctrl+D and default-unassigned Ctrl+Shift+D in `2e0e554`; their recorded binary runs passed 1 and 8 tests. The earlier Linux CI failure remains historical and the combined current diagnostic failed elsewhere. | Build: finish the targeted both-pane/native/archive integrations and record exact source/artifact/commands/results. Preserve explicit files-only action/remap coverage and the wider native/layout/drag qualification requirements; this subset does not establish a full selection or remote CI pass. |
-| CMD-02 / P1 / source frozen; runtime qualification pending | The focused-name insertion implementation and focused tests are frozen in source. Captured Custom Commands remain a separate consumer. The current source snapshot has not passed its targeted runtime gate and is not qualified by the older private EXE/startup receipts. | UI + Backend + Build: qualify literal basename insertion from acknowledged native occurrence identity in both panes/remaps, preserving raw names, focus, stale rejection and shell-draft grammar. Do not derive authority from displayed archive paths or execute inserted text. Record exact source/artifact results before closure. |
+| CMD-02 / P1 / corrected fixture frozen; rerun pending | The first gate compiled, passed 31 tests and failed five tree tests in setup (`tree_command_insertion.rs:354:9`, actual 8 / expected 5), with zero source drift. Source now expects the real FocusOut collapse to the caret; production is unchanged since that gate. The corrected fixture is frozen and unqualified pending rerun. Captured Custom Commands remain separate; the older private EXE/startup does not qualify this source. | UI + Backend + Build: rerun the corrected fixtures and qualify literal basename insertion from acknowledged native occurrence identity in both panes/remaps, preserving raw names, focus, stale rejection and shell-draft grammar. Do not derive authority from displayed archive paths or execute inserted text. Record exact source/artifact results before closure. |
 | STATUS-02, PFS-02 / P1 / terminal styling implemented; targeted UI tests pass | Completed partial totals retain `≈`, yellow warnings and details with normal metadata number styling; only actively unfinished totals are highlighted, even while another root runs. Earlier recorded size/model library tests, `size_errors` 2/0, `panel_warning_details` 4/0 and `tree_folder_sizes` 7/0 passed. | Preserve these guarantees through remaining UI fixes without extending those earlier receipts to changed source, including mixed running/finished, warning-completed and cancelled/incomplete states. Full native/layout/platform qualification remains in the UI acceptance row below; these software UI passes do not close it. |
 | SCROLL-02, VIEW-PERF-01/02, MEDIA-03 / P1 / source integration accepted; native qualification open | Corrected Markdown is committed at `255fbdc`, with 72/0 and strict Clippy. Perf accepts source integration from 32 paired debug profiling passes with exact output equivalence: large-fixture request wall time falls about 23 ms → 11–15 ms, while per-request allocator peak rises 383,320/461,739 bytes and small-fixture p95 rises 0.038–0.298 ms. [Retained-seek report](verification/2026-11-12-retained-complete-page-seek.md) retains its dated XML/refill and native boundaries. | Viewer prepares the minimal native-worker handoff. Native scrolling/deployment, release/frame pacing, process memory/RSS, DPI/viewport and scroll-back qualification remain open under coordinated leases. The worker is undeployed; backend wall-time measurements do not close these requirements. |
 | LIFE-01 / P1 / source review + qualification | [Lifetime contract](developer/ENGINE_LIFETIME.md) and later service/mailbox/report/configuration reports supersede the first retirement plan's narrower status. Exhaustive closure remains unestablished. | Architect + Backend: reconcile each retained owner/task/channel/last-release path against current source; exercise first-poll/drop, blocked dispatch, shutdown and completed-unconsumed outputs with native-before-provider destruction. A blocked destructor retains real capacity; no weakening or unbounded cleanup fallback. |
@@ -370,7 +395,7 @@ gestures prove different boundaries.
 | DIALOG-02, META-02, SELECT-01, PANEL-02, NAV-01/02, NOTICE-02, THEME-02, ICON-02, DRIVE-02, STATUS-02 / UI polish | Embedded modal/focus/input source and corrected selection fixtures are in [current checkpoint scope](#qualified-ui-checkpoint-35a159c); earlier [panel/selection/palette evidence](verification/2026-11-12-panel-interaction-polish.md) retains its dated scope | UI + Build: qualify normal/320×200, desktop/touch, fonts/DPI/themes, input/focus/IME, resizing, X/Escape and captured callbacks. Ordinary modals stay embedded; independent tools retain native hosts. Preserve warning Copy/retry/close and the tested finished-partial-size presentation. Render matrices do not substitute for native/compositor checks. |
 | VIEW-01/02, SCROLL-02 / viewers and comparison | [Viewer presentation](developer/VIEWER_PRESENTATION.md), [image limits](developer/IMAGE_VIEWER_API.md), [HTML contract](developer/WEB_VIEWER_API.md), [foreground evidence](verification/2026-11-12-foreground-scroll-resume.md) | Viewer + UI + Build: native text/hex/source/Markdown/image/PDF/HTML opening/navigation/search/copy/zoom/font/persisted settings, exact user fixtures, native/archive content and text/image comparison. Qualify Linux frame pacing, physical IME, native Chromium Wayland and configurable browser key arbitration separately; preserve bounded page selection and inert content. |
 | NET-01, PLAT-02 / native environments and permissions | [Network contract](developer/NETWORK_FILESYSTEM.md), [system targets](SYSTEM_REQUIREMENTS.md), [directory authorization](verification/2026-11-11-directory-authorization.md) | Backend + UI + Build: controlled live SMB/GVfs/FUSE, Windows 10, physical Linux desktops/distribution packages, GPU/driver/filesystem and multilingual/RTL/IME evidence. Accepted UAC/polkit prompts remain unqualified by the panel report. Record exact environment, reduced-RAM measurements and artifact notices; WSL/compilation is narrower evidence. |
-| CI / complete current validation | Completed remote [run 43260032611](https://github.com/TomasJelinek/fm/actions/runs/43260032611) at `2e0e554` records 18 successful / 2 failed check jobs. Pushed UI checkpoint `35a159c` has passing local regression gates, debug compilation, private engine/native UI startup and shared engine retry | No new completed remote success is claimed. Preserve the initial unattributed hashing failure and later stable checks without claiming a source/validator fix. Local D now includes Task 1/docs (`e5cba5d`), accepted Markdown (`255fbdc`) and diagnostic-only HTML (`e6e086c`). Native WIP and worker deployment remain excluded; broader native/HTML/performance qualification is separate. |
+| CI / complete current validation | Completed remote [run 43288511891](https://github.com/TomasJelinek/fm/actions/runs/43288511891) at `35a159c` records 18 successful / 2 failed host jobs at `compact_feedback.rs:163`; later workspace targets are not qualified. The first CMD-02 gate compiled and recorded 31 passed / 5 tree-setup failures. Both fixture corrections are now frozen, with reruns pending | Qualify the corrected source; no passing rerun or completed CI result for pushed integration checkpoint `cdbb29a` is claimed. Preserve the initial unattributed hashing failure without claiming a source/validator fix. Task 1/docs (`e5cba5d`), accepted Markdown (`255fbdc`) and diagnostic-only HTML (`e6e086c`) are integrated; native WIP, worker deployment and broader native/HTML/performance qualification remain open. |
 | Dependencies / release inventory | [Dependency policy](DEPENDENCY_POLICY.md), [third-party inventory](THIRD_PARTY.md) and distribution notices | Every role + Documentation + Build: review actual pinned direct/transitive/native/test/build dependencies and enabled features on changes, verify free intended use/distribution and required notices/source offers. No trial/paid-only path or silent project-license change. No dependency changed in this documentation pass. |
 
 ### Retained extension contracts
