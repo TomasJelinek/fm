@@ -127,6 +127,8 @@ pub(super) fn one_root(kind: EntryKind) -> Fixture {
         failures: Mutex::default(),
         target_calls: AtomicUsize::new(0),
         target_failure: Mutex::default(),
+        target_paths: Mutex::default(),
+        browse_identities: Mutex::default(),
         blocked: Mutex::default(),
     });
     let root = TreeRootSnapshot {

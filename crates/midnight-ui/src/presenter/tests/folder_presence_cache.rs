@@ -10,6 +10,7 @@ fn malformed_presence_receipts_leave_the_matching_request_available() {
         vec![
             (EntryId(1), FolderPresence::Empty),
             (EntryId(999), FolderPresence::HasFolders),
+            (EntryId(3), FolderPresence::HasFolders),
         ],
     ] {
         p.apply(Event::FolderPresence(Box::new(FolderPresenceSnapshot {

@@ -1298,6 +1298,10 @@ pub fn install(
         p.disclose_tree(pane(id), identity.as_str(), s);
         let _ = w;
     });
+    callback!(on_tree_disclosure_recursive, |w, p, s, id, identity| {
+        p.disclose_tree_recursive(pane(id), identity.as_str(), s);
+        let _ = w;
+    });
     callback!(on_open, |w, p, s, id, row| {
         let id = pane(id);
         p.active = id;

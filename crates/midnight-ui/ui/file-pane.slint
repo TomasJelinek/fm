@@ -208,7 +208,7 @@ export component FilePane inherits Rectangle {
     private property <bool> controls-press-cancelled;
     private property <string> controls-press-context: root.controls-pointer-snapshot
         ? root.controls-pressed-context : root.controls-context;
-    public function capture-tree-press(x: length, y: length) {
+    public function capture-tree-press(x: length, y: length, control: bool) {
         root.controls-pressed-context = root.controls-context;
         root.controls-pointer-snapshot = true;
         root.controls-press-cancelled = false;
@@ -222,7 +222,7 @@ export component FilePane inherits Rectangle {
             let index = root.source-row(floor(local-y / root.row-height), column);
             if index >= 0 && index < root.rows.length {
                 let item = root.rows[index];
-                root.tree-press = { active: true, cancelled: false, identity: item.identity,
+                root.tree-press = { active: true, cancelled: false, control: control, identity: item.identity,
                     disclosure: item.tree-disclosure, expanded: item.tree-expanded,
                     context: root.search-context, view-mode: root.minimal ? 1 : root.view-mode };
             }
@@ -279,6 +279,7 @@ export component FilePane inherits Rectangle {
     callback sort(int);
     callback row-click(int, bool, bool);
     callback disclosure(string);
+    callback disclosure-recursive(string);
     callback warning-details(string, bool);
     callback error-details(string);
     callback row-context-menu(int, float, float, bool, bool);
@@ -716,6 +717,9 @@ export component FilePane inherits Rectangle {
                         }
                         disclosure(identity) => {
                             root.activate(); root.focus-list(); root.disclosure(identity);
+                        }
+                        disclosure-recursive(identity) => {
+                            root.activate(); root.focus-list(); root.disclosure-recursive(identity);
                         }
                         warning-details(identity, tree) => { root.activate(); root.warning-details(identity, tree); }
                         open => { root.activate(); root.focus-list(); root.open(self.row-index); }

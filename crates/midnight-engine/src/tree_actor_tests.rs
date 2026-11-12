@@ -14,6 +14,8 @@ mod rename_capture_tests;
 #[path = "tree_user_command_capture_tests.rs"]
 mod user_command_capture_tests;
 
+#[path = "tree_recursive_tests.rs"]
+mod recursive_tests;
 #[path = "tree_refresh_tests.rs"]
 mod refresh_tests;
 
@@ -25,6 +27,9 @@ struct Graph {
     failures: Mutex<std::collections::HashSet<u64>>,
     target_calls: AtomicUsize,
     target_failure: Mutex<Option<u64>>,
+    target_paths: Mutex<HashMap<u64, PathBuf>>,
+    browse_identities:
+        Mutex<HashMap<u64, Result<Option<midnight_core::SizeDirectoryIdentity>, ProviderError>>>,
     blocked: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
@@ -43,6 +48,24 @@ fn directory(value: u64, name: &str) -> ProviderEntry {
 }
 
 impl MountedFilesystem for Graph {
+    fn browse_directory_identity(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryIdentity>, ProviderError> {
+        check_cancel(cancel)?;
+        let value = u64::from_le_bytes(node.as_bytes().try_into().unwrap());
+        self.browse_identities
+            .lock()
+            .unwrap()
+            .get(&value)
+            .cloned()
+            .unwrap_or(Ok(Some(midnight_core::SizeDirectoryIdentity {
+                device: 1,
+                object: u128::from(value).to_le_bytes(),
+            })))
+    }
+
     fn list(
         &self,
         node: &NodeToken,
@@ -83,6 +106,9 @@ impl MountedFilesystem for Graph {
         if *self.target_failure.lock().unwrap() == Some(value) {
             return Err(ProviderError::ResourceLimited);
         }
+        if let Some(path) = self.target_paths.lock().unwrap().get(&value) {
+            return Ok(ProviderTarget::Native(path.clone()));
+        }
         let path = match value {
             0 => self.root_path.clone(),
             1 => self.root_path.join("z-parent"),
@@ -118,7 +144,12 @@ fn fixture_with_extra_directories(extra: usize) -> Fixture {
 }
 
 pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixture {
+    fixture_with_root_path(extra, kind, None)
+}
+
+fn fixture_with_root_path(extra: usize, kind: EntryKind, root_path: Option<PathBuf>) -> Fixture {
     let directory_root = tempfile::tempdir().unwrap();
+    let root_path = root_path.unwrap_or_else(|| directory_root.path().to_owned());
     let mut file = directory(3, "file.txt");
     file.kind = EntryKind::File;
     let mut roots = vec![directory(1, "z-parent"), directory(2, "a-parent"), file];
@@ -129,14 +160,14 @@ pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixt
         .map(|row| {
             midnight_core::Entry::new(
                 EntryId(u64::from_le_bytes(row.token.as_bytes().try_into().unwrap())),
-                directory_root.path().join(&row.display_name),
+                root_path.join(&row.display_name),
                 row.kind,
             )
         })
         .collect::<Vec<_>>()
         .into();
     let graph = Arc::new(Graph {
-        root_path: directory_root.path().to_owned(),
+        root_path,
         lists: AtomicUsize::new(0),
         rows: Mutex::new(HashMap::from([
             (0, roots),
@@ -147,6 +178,8 @@ pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixt
         failures: Mutex::default(),
         target_calls: AtomicUsize::new(0),
         target_failure: Mutex::default(),
+        target_paths: Mutex::default(),
+        browse_identities: Mutex::default(),
     });
     let root = TreeRootSnapshot {
         pane: PaneId::Left,

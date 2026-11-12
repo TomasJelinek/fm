@@ -55,11 +55,10 @@ impl Retained {
         }
     }
     fn insert(&mut self, id: EntryId, error: TreeDiagnostic, retired: &mut Vec<DeferredDrop>) {
-        if !self
-            .source
-            .entry(id)
-            .is_some_and(|entry| entry.kind == EntryKind::Directory && entry.virtual_node.is_none())
-        {
+        if !self.source.entry(id).is_some_and(|entry| {
+            matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                && entry.virtual_node.is_none()
+        }) {
             retired.push(Box::new(error));
             return;
         }
@@ -173,7 +172,9 @@ impl Pane {
         if self.retained_folder_diagnostic(entry).is_some() {
             return 6;
         }
-        if entry.kind != EntryKind::Directory || !self.root_disclosure_available() {
+        if !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+            || !self.root_disclosure_available()
+        {
             return 0;
         }
         match self
@@ -260,7 +261,9 @@ impl Presenter {
                 .min(first.saturating_add(FolderPresenceRequest::MAX_VISIBLE));
             let visible: Vec<_> = p.entries[first..end.max(first)]
                 .iter()
-                .filter(|entry| entry.kind == EntryKind::Directory)
+                .filter(|entry| {
+                    matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                })
                 .map(|entry| entry.id)
                 .collect();
             if visible != p.folder_presence.viewport {

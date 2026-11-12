@@ -64,7 +64,7 @@ fn flat_hints_arrive_before_click_without_changing_selection_or_flat_authority()
     let selection = p.panes[0].selected.clone();
     let cursor = p.panes[0].cursor;
     let request = request(&mut p);
-    assert_eq!(request.visible, [EntryId(1), EntryId(2)]);
+    assert_eq!(request.visible, [EntryId(1), EntryId(2), EntryId(3)]);
     p.apply(Event::FolderPresence(result(&request)));
     assert_eq!(
         p.panes[0].root_presence_disclosure(&p.panes[0].entries[0]),
@@ -76,7 +76,7 @@ fn flat_hints_arrive_before_click_without_changing_selection_or_flat_authority()
     );
     assert_eq!(
         p.panes[0].root_presence_disclosure(&p.panes[0].entries[2]),
-        0
+        3
     );
     assert!(p.panes[0].tree_view().is_none());
     assert!(p.panes[0].native_capabilities());
@@ -126,6 +126,36 @@ fn flat_presence_retries_outer_queue_and_rejects_foreign_or_superseded_receipts(
         p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
         3
     );
+}
+
+#[test]
+fn directory_link_presence_is_probed_and_known_empty_links_have_no_expand_affordance() {
+    let mut p = ready();
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[2]),
+        1
+    );
+    let cursor = p.panes[0].cursor;
+    let selection = p.panes[0].selected.clone();
+    let request = request(&mut p);
+    assert_eq!(request.visible, [EntryId(1), EntryId(2), EntryId(3)]);
+    let mut snapshot = result(&request);
+    snapshot.values = vec![
+        (EntryId(1), FolderPresence::Empty),
+        (EntryId(2), FolderPresence::HasFolders),
+        (EntryId(3), FolderPresence::Empty),
+    ]
+    .into();
+    p.apply(Event::FolderPresence(snapshot));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[2]),
+        5,
+        "the same empty disclosure state hides the plus for a directory link"
+    );
+    assert!(p.panes[0].root_presence_error(EntryId(3)).is_empty());
+    assert_eq!(p.panes[0].cursor, cursor);
+    assert!(Arc::ptr_eq(&p.panes[0].selected, &selection));
+    p.flush_folder_presence(&|_| panic!("known empty link metadata is cached"));
 }
 
 #[test]
@@ -323,6 +353,7 @@ fn red_folder_error_icon_uses_modal_details_instead_of_a_viewer() {
             )),
         ),
         (EntryId(2), FolderPresence::HasFolders),
+        (EntryId(3), FolderPresence::HasFolders),
     ]
     .into();
     p.apply(Event::FolderPresence(snapshot));

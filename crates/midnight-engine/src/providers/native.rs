@@ -3,7 +3,10 @@ use super::{
     FilesystemProvider, MountedFilesystem, OpenedLocation, ProviderEntry, ProviderError,
     registry::check_cancel,
 };
-use midnight_core::{Cancellation, EntryKind, FileSystem, NodeToken, ProviderId, StoredLocation};
+use midnight_core::{
+    Cancellation, EntryKind, FileSystem, NodeToken, ProviderId, SizeDirectoryIdentity,
+    StoredLocation,
+};
 use midnight_plugin_host::{CapturedFile, ContentSource};
 use std::{
     num::NonZeroU32,
@@ -182,6 +185,37 @@ struct NativeMount {
 }
 
 impl MountedFilesystem for NativeMount {
+    fn browse_directory_identity(
+        &self,
+        node: &NodeToken,
+        cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        check_cancel(cancel)?;
+        let node = self
+            .nodes
+            .lock()
+            .map_err(|_| super::registry::poisoned())?
+            .get(node)?;
+        if !matches!(node.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            return Err(ProviderError::Unsupported);
+        }
+        let identity = self
+            .filesystem
+            .browse_directory_identity(&node.path, cancel)
+            .map_err(|error| match error.kind {
+                std::io::ErrorKind::Unsupported => ProviderError::Unsupported,
+                std::io::ErrorKind::Interrupted if cancel.is_cancelled() => {
+                    ProviderError::Cancelled
+                }
+                _ => ProviderError::Failed(format!(
+                    "{error}\nNative path: {:?}\nError kind: {:?}",
+                    error.path, error.kind,
+                )),
+            })?;
+        check_cancel(cancel)?;
+        Ok(identity)
+    }
+
     fn resolve_target(
         &self,
         node: &NodeToken,

@@ -583,6 +583,7 @@ export component MainWindow inherits Window {
     callback sort(int, int);
     callback row-click(int, int, bool, bool);
     callback tree-disclosure(int, string);
+    callback tree-disclosure-recursive(int, string);
     callback panel-warning-details(int, string, bool);
     callback panel-error-details(int, string);
     callback refresh-warning-viewer();
@@ -743,7 +744,10 @@ export component MainWindow inherits Window {
     }
     public function capture-function-press(x: length, y: length) {
         function-bar.capture-press(x, y); toolbar.capture-press(x, y);
-        left.capture-tree-press(x, y); right.capture-tree-press(x, y);
+        // Reuse the native/logical modifier authority at the original press,
+        // before a Flickable can defer delivery to the expander itself.
+        let control = mod(root.function-modifiers, 2) != 0;
+        left.capture-tree-press(x, y, control); right.capture-tree-press(x, y, control);
     }
     public function release-function-press() {
         function-bar.release-press(); toolbar.release-press();
@@ -883,6 +887,7 @@ export component MainWindow inherits Window {
                 action(a) => { root.action(0, a); } navigate(p) => { root.navigate(0, p); } volume(v) => { root.volume(0, v); }
                 sort(c) => { root.sort(0, c); } row-click(r, c, s) => { root.row-click(0, r, c, s); } open(r) => { root.open(0, r); }
                 disclosure(identity) => { root.tree-disclosure(0, identity); }
+                disclosure-recursive(identity) => { root.tree-disclosure-recursive(0, identity); }
                 warning-details(identity, tree) => { root.panel-warning-details(0, identity, tree); }
                 error-details(text) => { root.panel-error-details(0, text); }
                 can-elevate: root.left-can-elevate;
@@ -966,6 +971,7 @@ export component MainWindow inherits Window {
                 action(a) => { root.action(1, a); } navigate(p) => { root.navigate(1, p); } volume(v) => { root.volume(1, v); }
                 sort(c) => { root.sort(1, c); } row-click(r, c, s) => { root.row-click(1, r, c, s); } open(r) => { root.open(1, r); }
                 disclosure(identity) => { root.tree-disclosure(1, identity); }
+                disclosure-recursive(identity) => { root.tree-disclosure-recursive(1, identity); }
                 warning-details(identity, tree) => { root.panel-warning-details(1, identity, tree); }
                 error-details(text) => { root.panel-error-details(1, text); }
                 can-elevate: root.right-can-elevate;

@@ -103,6 +103,15 @@ impl ProjectionState {
         Ok(current)
     }
 
+    /// Failed unpublished projections consume their allocated identities too.
+    pub(crate) fn advance_high_water(&mut self, other: &Self) {
+        self.next_row = TreeRowId(self.next_row.0.max(other.next_row.0));
+        self.next_alias = match (self.next_alias, other.next_alias) {
+            (Some(current), Some(next)) => Some(current.max(next)),
+            _ => None,
+        };
+    }
+
     pub(crate) fn branch(&self, row: TreeRowId) -> Option<BranchId> {
         self.branches.get(&row).copied()
     }
@@ -238,7 +247,13 @@ impl ProjectionState {
             layout,
             rows,
         )
-        .map_err(ProviderError::InvalidResponse)?;
+        .map_err(|error| match error {
+            // This classification applies only to our complete projection's
+            // local admission guards, never arbitrary provider response errors.
+            "tree projection exceeds its row budget"
+            | "tree projection exceeds its payload budget" => ProviderError::ResourceLimited,
+            _ => ProviderError::InvalidResponse(error),
+        })?;
         if let Some(previous) = previous
             && !previous.same_structure(&projection)
         {

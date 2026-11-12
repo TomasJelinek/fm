@@ -212,6 +212,17 @@ impl Mailbox {
         }
         inbox.ready.take().map(Input::Ready)
     }
+    /// A returned provider result yields to all already admitted input before
+    /// another callback starts; no native call is interrupted or detached here.
+    pub fn has_pending_input(&self) -> bool {
+        let inbox = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        inbox.closed
+            || inbox.reset
+            || inbox.completion.is_some()
+            || inbox.size_ack.is_some()
+            || !inbox.commands.is_empty()
+            || inbox.ready.is_some()
+    }
     pub fn close(&self) {
         let mut inbox = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inbox.closed = true;

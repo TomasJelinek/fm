@@ -35,6 +35,8 @@ mod action_capture;
 mod checksums;
 #[path = "tree_navigation.rs"]
 mod navigation;
+#[path = "tree_recursive.rs"]
+mod recursive;
 #[path = "tree_refresh.rs"]
 mod refresh;
 #[path = "tree_user_commands.rs"]
@@ -75,6 +77,10 @@ pub(crate) struct Session {
     pub(crate) last_request: TreeRequestId,
     maintenance: Option<Maintenance>,
     prefer_maintenance: bool,
+    recursive: Option<recursive::Walk>,
+    recursive_batch: Option<recursive::Batch>,
+    recursive_notice: Option<midnight_core::TreeEvent>,
+    recursive_publication: bool,
     watch_cache: HashMap<BranchId, (u64, Arc<crate::watch::tree::ScopeTarget>)>,
     watch_failure: Option<watch_scope::Failure>,
 }
@@ -96,6 +102,7 @@ struct WorkerPermit {
 
 enum WorkOrigin {
     User { _row: TreeRowId },
+    Recursive { walk: TreeRequestId, row: TreeRowId },
     Maintenance,
 }
 
@@ -351,6 +358,10 @@ impl Session {
             last_request: TreeRequestId(0),
             maintenance: None,
             prefer_maintenance: true,
+            recursive: None,
+            recursive_batch: None,
+            recursive_notice: None,
+            recursive_publication: false,
             watch_cache: HashMap::new(),
             watch_failure: None,
         })
@@ -391,10 +402,12 @@ impl Session {
         .map_err(|message| ProviderError::Failed(message.into()))?;
         // Publishing the initial empty selection establishes revision zero too.
         self.selection_seeded = true;
+        self.recursive_publication = false;
         Ok(publication)
     }
 
     pub(crate) fn select(&mut self, request: &TreeSelectionRequest) -> Result<(), ProviderError> {
+        self.rollback_unpublished();
         self.check_view(&request.view)?;
         self.selection.apply(request)
     }
@@ -405,15 +418,27 @@ impl Session {
         cancel: &Cancellation,
     ) -> Result<(), ProviderError> {
         let mut state = self.projection_state.clone();
-        let projection = state.build(
+        let projection = match state.build(
             &self.tree,
             &self.projection.root,
             self.projection.stamp.session,
             Some(&self.projection),
             &options,
             cancel,
-        )?;
-        let selection = self.selection.rebased(projection.clone())?;
+        ) {
+            Ok(projection) => projection,
+            Err(error) => {
+                self.projection_state.advance_high_water(&state);
+                return Err(error);
+            }
+        };
+        let selection = match self.selection.rebased(projection.clone()) {
+            Ok(selection) => selection,
+            Err(error) => {
+                self.projection_state.advance_high_water(&state);
+                return Err(error);
+            }
+        };
         self.options = options;
         self.projection_state = state;
         self.projection = projection;
@@ -525,6 +550,7 @@ impl Session {
         row: TreeRowId,
         action: BranchAction,
     ) -> Result<(), ProviderError> {
+        self.rollback_unpublished();
         self.check_row_view(view, row)?;
         if request.0 == 0 || request.0 <= self.last_request.0 {
             return Err(ProviderError::StaleReference);
@@ -537,7 +563,12 @@ impl Session {
             return Err(ProviderError::Unsupported);
         }
         self.last_request = request;
+        if action == BranchAction::ExpandRecursive {
+            self.start_recursive(branch, row, request);
+            return Ok(());
+        }
         if action == BranchAction::Collapse {
+            self.exclude_recursive(branch);
             self.queue
                 .retain(|pending| !in_subtree(&self.tree, pending.branch, branch));
             self.versions
@@ -549,7 +580,7 @@ impl Session {
             BranchAction::Probe => TreeRequest::Probe,
             BranchAction::Expand => TreeRequest::Expand,
             BranchAction::Refresh => TreeRequest::Refresh,
-            BranchAction::Collapse => unreachable!(),
+            BranchAction::ExpandRecursive | BranchAction::Collapse => unreachable!(),
         };
         self.enqueue(branch, row, kind, request)
     }
@@ -629,6 +660,7 @@ impl Session {
 
     pub(crate) fn queued(&self) -> usize {
         self.queue.len()
+            + usize::from(self.recursive_ready())
             + self
                 .maintenance
                 .as_ref()
@@ -636,20 +668,35 @@ impl Session {
     }
 
     pub(crate) fn take_work(&mut self) -> Result<Option<BranchJob>, ProviderError> {
-        self.skip_removed_refresh_branches();
-        self.queue
-            .retain(|pending| self.tree.state(pending.branch).is_some());
-        self.versions
-            .retain(|branch, _| self.tree.state(*branch).is_some());
+        let batching = self.recursive_batch_active();
+        if !batching {
+            self.skip_removed_refresh_branches();
+            self.queue
+                .retain(|pending| self.tree.state(pending.branch).is_some());
+            self.versions
+                .retain(|branch, _| self.tree.state(*branch).is_some());
+        }
         if self.queued() == 0 {
             return Ok(None);
         }
-        let maintenance = self.runnable_maintenance();
+        let maintenance = !batching && self.runnable_maintenance();
         let Some(permit) = self.budget.acquire(maintenance)? else {
             return Ok(None);
         };
         let pending = if maintenance {
             self.take_refresh_branch()?
+        } else if (batching
+            || !self
+                .queue
+                .iter()
+                .any(|pending| pending.kind != TreeRequest::Probe))
+            && self.recursive_ready()
+        {
+            let Some(pending) = self.take_recursive_branch()? else {
+                return Ok(None);
+            };
+            self.prefer_maintenance = true;
+            pending
         } else {
             let position = self
                 .queue
@@ -663,10 +710,15 @@ impl Session {
             self.prefer_maintenance = true;
             pending
         };
-        let work = self
-            .tree
-            .request(pending.branch, pending.kind)?
-            .with_cancellation(&self.lifetime);
+        let work = match self.tree.request(pending.branch, pending.kind) {
+            Ok(work) => work.with_cancellation(&self.lifetime),
+            Err(error) if matches!(pending.origin, WorkOrigin::Recursive { .. }) => {
+                let cancel = self.lifetime.clone();
+                self.pause_recursive(&error, &cancel);
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         Ok(Some(BranchJob {
             stamp: self.projection.stamp,
             pending,
@@ -683,6 +735,9 @@ impl Session {
     ) -> Result<bool, ProviderError> {
         if matches!(completion.pending.origin, WorkOrigin::Maintenance) {
             return self.apply_refresh(completion, cancel);
+        }
+        if matches!(completion.pending.origin, WorkOrigin::Recursive { .. }) {
+            return self.apply_recursive(completion, cancel);
         }
         let current = self.projection.stamp;
         if completion.stamp.pane != current.pane
@@ -724,11 +779,15 @@ impl BranchJob {
     pub(crate) fn row(&self) -> TreeRowId {
         match self.pending.origin {
             WorkOrigin::User { _row: row } => row,
+            WorkOrigin::Recursive { row, .. } => row,
             WorkOrigin::Maintenance => panic!("maintenance has no visible row"),
         }
     }
     pub(crate) fn maintenance(&self) -> bool {
         matches!(self.pending.origin, WorkOrigin::Maintenance)
+    }
+    pub(crate) fn recursive(&self) -> bool {
+        matches!(self.pending.origin, WorkOrigin::Recursive { .. })
     }
     #[cfg(test)]
     pub(crate) fn request(&self) -> TreeRequestId {

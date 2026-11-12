@@ -2,7 +2,9 @@ use super::{
     MountedFilesystem, OpenedLocation, ProviderEntry, ProviderError,
     registry::{MountPermit, Registration, check_cancel, poisoned},
 };
-use midnight_core::{Cancellation, EntryKind, MountRef, NodeRef, NodeToken, StoredLocation};
+use midnight_core::{
+    Cancellation, EntryKind, MountRef, NodeRef, NodeToken, SizeDirectoryIdentity, StoredLocation,
+};
 use midnight_plugin_host::{CapturedFile, ContentSource};
 use std::{
     collections::{HashMap, HashSet},
@@ -77,6 +79,29 @@ impl MountedLocation {
         &self.address
     }
 
+    /// Resolve browse-only identity through this retained mount. Logical node
+    /// targets remain the sole context for later action-specific preparation.
+    pub fn browse_directory_identity(
+        &self,
+        node: &NodeRef,
+        cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        if !matches!(
+            self.lease.check_node(node)?,
+            EntryKind::Directory | EntryKind::DirectoryLink
+        ) {
+            return Err(ProviderError::Unsupported);
+        }
+        let request = self.lease.lifetime.linked(cancel);
+        check_cancel(&request)?;
+        let identity = self
+            .lease
+            .mount
+            .browse_directory_identity(&node.token, &request)?;
+        check_cancel(&request)?;
+        Ok(identity)
+    }
+
     pub fn parent(
         &self,
         node: &NodeRef,
@@ -99,8 +124,8 @@ impl MountedLocation {
     }
 
     /// Folder-only branch listing. Irrelevant files neither consume retained-row
-    /// budgets nor acquire node authority. Directory links are returned for display;
-    /// callers must not recursively enumerate them automatically.
+    /// budgets nor acquire node authority. Following directory links additionally
+    /// requires browse identities and ancestor-cycle validation by the tree.
     pub fn list_folders(
         &self,
         node: &NodeRef,

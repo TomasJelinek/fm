@@ -170,6 +170,7 @@ impl TreePublication {
 pub enum TreeBranchAction {
     Probe,
     Expand,
+    ExpandRecursive,
     Collapse,
     Refresh,
 }

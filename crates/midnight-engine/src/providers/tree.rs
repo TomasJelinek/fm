@@ -1,6 +1,6 @@
 //! Backend branch occurrences. No row caption or position conveys file authority.
 use super::{MountedEntry, MountedLocation, ProviderEntry, ProviderError};
-use midnight_core::{Cancellation, EntryKind, GeneratedTextSource, NodeRef};
+use midnight_core::{Cancellation, EntryKind, GeneratedTextSource, NodeRef, SizeDirectoryIdentity};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -80,6 +80,8 @@ struct Node {
     known: Option<bool>,
     listed: bool,
     listing_version: u64,
+    browse_identity: Option<SizeDirectoryIdentity>,
+    recursive_excluded: u64,
     error: Option<ProviderError>,
     error_details: Option<Arc<dyn GeneratedTextSource>>,
     pending: Option<(u64, Cancellation)>,
@@ -115,6 +117,8 @@ pub struct BranchWork {
     location: MountedLocation,
     node: NodeRef,
     ancestors: Vec<NodeRef>,
+    ancestor_identities: Vec<SizeDirectoryIdentity>,
+    directory_link: bool,
     root: bool,
     limit: usize,
     cancel: Cancellation,
@@ -125,10 +129,25 @@ pub struct BranchResult {
     request: u64,
     kind: TreeRequest,
     rows: Result<Vec<MountedEntry>, ProviderError>,
+    identity: Option<SizeDirectoryIdentity>,
     _permit: Permit,
 }
 
 impl BranchWork {
+    fn browse_identity(&self) -> Result<Option<SizeDirectoryIdentity>, ProviderError> {
+        match self
+            .location
+            .browse_directory_identity(&self.node, &self.cancel)
+        {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => Err(ProviderError::Failed(
+                "Directory target is no longer a directory.".into(),
+            )),
+            Err(ProviderError::Unsupported) if !self.directory_link => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Link pane cancellation without revoking an independently retained target.
     pub(crate) fn with_cancellation(mut self, lifetime: &Cancellation) -> Self {
         self.cancel = self.cancel.linked(lifetime);
@@ -137,25 +156,40 @@ impl BranchWork {
 
     /// Run with a shared engine blocking-worker permit, never on the UI thread.
     pub fn run(self) -> BranchResult {
-        let rows = if self.root {
-            self.location.list(&self.node, &self.cancel)
-        } else {
-            self.location
-                .list_folders(&self.node, &self.cancel, self.limit)
-        }
-        .and_then(|rows| {
+        let mut identity = None;
+        let rows = (|| {
+            identity = self.browse_identity()?;
+            if identity.is_some_and(|identity| self.ancestor_identities.contains(&identity)) {
+                return Err(ProviderError::Failed(
+                    "Directory target repeats an ancestor.".into(),
+                ));
+            }
+            let rows = if self.root {
+                self.location.list(&self.node, &self.cancel)
+            } else {
+                self.location
+                    .list_folders(&self.node, &self.cancel, self.limit)
+            }?;
             if rows.iter().any(|row| self.ancestors.contains(&row.node)) {
                 return Err(ProviderError::InvalidResponse(
                     "ancestor cycle in directory branch",
                 ));
             }
+            // Two live observations reject a stable A-to-B retarget around this
+            // listing. They do not promise atomic namespace or snapshot identity.
+            if self.browse_identity()? != identity {
+                return Err(ProviderError::Failed(
+                    "Directory target changed while listing.".into(),
+                ));
+            }
             Ok(rows)
-        });
+        })();
         BranchResult {
             branch: self.branch,
             request: self.request,
             kind: self.kind,
             rows,
+            identity,
             _permit: self.permit,
         }
     }
@@ -173,6 +207,15 @@ impl DirectoryTree {
             node.pending = None;
         }
         TreeCheckpoint(nodes)
+    }
+
+    /// Restore the published model while preserving all identity high-water marks.
+    /// Cancellation never releases an outstanding worker's native I/O ownership.
+    pub(crate) fn rollback_unpublished(&mut self, checkpoint: TreeCheckpoint) {
+        for node in self.nodes.values() {
+            cancel_pending(node);
+        }
+        self.nodes = checkpoint.0;
     }
 
     pub(crate) fn restore(
@@ -422,6 +465,8 @@ impl DirectoryTree {
                     known: None,
                     listed: false,
                     listing_version: 0,
+                    browse_identity: None,
+                    recursive_excluded: 0,
                     error: None,
                     error_details: None,
                     pending: None,
@@ -444,7 +489,11 @@ impl DirectoryTree {
             .nodes
             .get(&branch)
             .ok_or(ProviderError::StaleReference)?;
-        if node.entry.kind != EntryKind::Directory && node.target.is_none() {
+        if !matches!(
+            node.entry.kind,
+            EntryKind::Directory | EntryKind::DirectoryLink
+        ) && node.target.is_none()
+        {
             return Err(ProviderError::Unsupported);
         }
         if kind == TreeRequest::Probe && node.expanded {
@@ -458,10 +507,16 @@ impl DirectoryTree {
             .checked_add(1)
             .ok_or(ProviderError::ResourceLimited)?;
         let mut ancestors = Vec::new();
+        let mut ancestor_identities = Vec::new();
         let mut ancestor = Some(branch);
         while let Some(id) = ancestor {
             let node = &self.nodes[&id];
             ancestors.push(node.node.clone());
+            if id != branch
+                && let Some(identity) = node.browse_identity
+            {
+                ancestor_identities.push(identity);
+            }
             if let Some(target) = &node.target {
                 ancestors.push(target.root().clone());
             }
@@ -494,6 +549,8 @@ impl DirectoryTree {
             location,
             node: target_node,
             ancestors,
+            ancestor_identities,
+            directory_link: node.entry.kind == EntryKind::DirectoryLink && node.target.is_none(),
             root: branch == self.root,
             limit: self.limits.nodes,
             cancel,
@@ -514,6 +571,9 @@ impl DirectoryTree {
             return false;
         }
         node.pending = None;
+        if result.rows.is_ok() {
+            node.browse_identity = result.identity;
+        }
         let rows = self.validate_chain(result.branch).and(result.rows);
         let outcome = rows.and_then(|rows| {
             if result.kind == TreeRequest::Probe {
@@ -658,6 +718,8 @@ impl DirectoryTree {
                         known: None,
                         listed: false,
                         listing_version: 0,
+                        browse_identity: None,
+                        recursive_excluded: 0,
                         error: None,
                         error_details: None,
                         pending: None,
@@ -734,6 +796,25 @@ impl DirectoryTree {
         true
     }
 
+    pub(crate) fn exclude_recursive(&mut self, branch: BranchId, walk: u64) {
+        if let Some(node) = self.nodes.get_mut(&branch) {
+            node.recursive_excluded = walk;
+        }
+    }
+
+    pub(crate) fn recursive_excluded(&self, branch: BranchId, walk: u64) -> bool {
+        self.nodes
+            .get(&branch)
+            .is_none_or(|node| node.recursive_excluded == walk)
+    }
+
+    pub(crate) fn cancel_work(&mut self, branch: BranchId) {
+        if let Some(node) = self.nodes.get_mut(&branch) {
+            cancel_pending(node);
+            node.pending = None;
+        }
+    }
+
     /// Preorder snapshot, built on the backend. Sibling sorting/filter ancestor
     /// closure is a subsequent projection step; this does not authorize actions.
     pub fn rows(&self) -> Vec<TreeRow> {
@@ -770,7 +851,11 @@ fn cancel_pending(node: &Node) {
     }
 }
 fn disclosure(node: &Node) -> Disclosure {
-    if node.entry.kind != EntryKind::Directory && node.target.is_none() {
+    if !matches!(
+        node.entry.kind,
+        EntryKind::Directory | EntryKind::DirectoryLink
+    ) && node.target.is_none()
+    {
         Disclosure::None
     } else if node
         .pending

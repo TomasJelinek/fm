@@ -254,6 +254,15 @@ impl Worker {
         {
             return;
         }
+        let observation = matches!(
+            &command,
+            TreeCommand::Commit(_)
+                | TreeCommand::Viewport { .. }
+                | TreeCommand::Sizes(midnight_core::TreeSizeCommand::Acknowledge { .. })
+        );
+        if !observation && let Some(session) = &mut self.session {
+            session.rollback_unpublished();
+        }
         if let TreeCommand::Sizes(command) = command {
             self.size_command(command);
             return;
@@ -627,7 +636,11 @@ impl Worker {
         }
     }
     fn pump(&mut self) {
-        if self.inflight || !self.active() || self.pending_publication.is_some() {
+        if self.inflight
+            || !self.active()
+            || self.pending_publication.is_some()
+            || self.inbox.has_pending_input()
+        {
             return;
         }
         let Some(session) = &mut self.session else {
@@ -636,7 +649,8 @@ impl Worker {
         match session.take_work() {
             Ok(Some(job)) => {
                 let maintenance = job.maintenance();
-                if !maintenance {
+                let recursive = job.recursive();
+                if !maintenance && !recursive {
                     let generation = self.generation.as_ref().expect("active generation");
                     let publication = session
                         .update_projection(&generation.cancel)
@@ -668,8 +682,32 @@ impl Worker {
             }
             Ok(None) => {}
         }
+        self.flush_recursive_notice();
         if let Some(event) = self.session.as_mut().and_then(Session::finish_refresh) {
             self.finish_watch_refresh(&event);
+            self.emit(event);
+        }
+    }
+    fn flush_recursive_notice(&mut self) {
+        if let Some(publication) = self
+            .session
+            .as_mut()
+            .and_then(Session::take_recursive_publication)
+        {
+            self.emit(TreeEvent::Published(publication));
+        }
+        if let Some(mut event) = self
+            .session
+            .as_mut()
+            .and_then(Session::take_recursive_notice)
+        {
+            // The UI accepts row diagnostics only for the exact emitted view.
+            // A newer private projection may still be coalesced behind its Commit.
+            if let TreeEvent::Rejected { stamp, .. } = &mut event
+                && let Some(emitted) = &self.awaiting_commit
+            {
+                *stamp = emitted.stamp;
+            }
             self.emit(event);
         }
     }

@@ -24,6 +24,7 @@ export component FileEntry inherits Rectangle {
     callback remember-click(string);
     callback row-click(bool, bool);
     callback disclosure(string);
+    callback disclosure-recursive(string);
     callback warning-details(string, bool);
     callback context-menu(float, float, bool, bool);
     callback open();
@@ -304,6 +305,7 @@ export component FileEntry inherits Rectangle {
         item: root.item; press: root.tree-press; context: root.tree-context; view-mode: root.view-mode;
         pressed => { root.remember-click(""); }
         disclose(identity) => { root.disclosure(identity); }
+        disclose-recursive(identity) => { root.disclosure-recursive(identity); }
     }
     if root.drop-highlight : Rectangle {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
