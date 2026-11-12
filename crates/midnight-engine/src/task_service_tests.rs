@@ -26,10 +26,54 @@ impl FindService for Service {
     }
 }
 
+impl DirectoryService for Service {
+    fn read_directory(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+        _: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        unreachable!("idle actor must not list")
+    }
+    fn entry_metadata(&self, _: &Path) -> Result<EntryMetadata, FsError> {
+        unreachable!("idle actor must not stat")
+    }
+}
+impl VolumeService for Service {
+    fn list_volumes(&self) -> Result<Vec<Volume>, FsError> {
+        unreachable!("idle actor must not query volumes")
+    }
+}
+impl StorageService for Service {
+    fn space_info(&self, _: &Path) -> Result<SpaceInfo, FsError> {
+        unreachable!("idle actor must not query storage")
+    }
+}
+impl PathPickerService for Service {
+    fn pick_path(
+        &self,
+        _: &PathPickerRequest,
+        _: &Cancellation,
+    ) -> Result<Option<std::path::PathBuf>, FsError> {
+        unreachable!("idle actor must not open chooser")
+    }
+}
+impl ShellMenuService for Service {
+    fn show_shell_menu(&self, _: &ShellMenuRequest) -> Result<ShellMenuOutcome, FsError> {
+        unreachable!("idle actor must not open menu")
+    }
+}
+
 enum Actor {
     Find,
     Preferences,
     Fonts,
+    Picker,
+    ShellMenu,
+    Volumes,
+    VolumeInformation,
+    FolderPresence,
+    EntrySizes,
 }
 fn cancelled_actor_retires_service(actor: Actor) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -69,15 +113,60 @@ fn cancelled_actor_retires_service(actor: Actor) {
                 outbox,
                 &mut tasks,
             )),
+            Actor::Picker => Box::new(crate::path_picker::Controller::new(
+                scope.clone(),
+                Some(service.clone()),
+                outbox,
+            )),
+            Actor::ShellMenu => Box::new(crate::shell_menu::Controller::new(
+                scope.clone(),
+                Some(service.clone()),
+                outbox,
+            )),
+            Actor::Volumes => Box::new(crate::volumes::Controller::new(
+                scope.clone(),
+                service.clone(),
+                None,
+                outbox,
+                tokio::sync::watch::channel(Vec::new()).0,
+                tokio::sync::watch::channel(0).0,
+                &mut tasks,
+            )),
+            Actor::VolumeInformation => Box::new(crate::volume_information::Controller::new(
+                scope.clone(),
+                service.clone(),
+                outbox,
+                &mut tasks,
+            )),
+            Actor::FolderPresence => Box::new(crate::folder_presence::Controller::new(
+                scope.clone(),
+                service.clone(),
+                crate::test_snapshots(Default::default()),
+                std::array::from_fn(|_| Arc::new(tokio::sync::Semaphore::new(1))),
+                outbox,
+                &mut tasks,
+            )),
+            Actor::EntrySizes => Box::new(crate::entry_sizes::Controller::new(
+                crate::entry_sizes::Services {
+                    filesystem: service.clone(),
+                    scope: scope.clone(),
+                },
+                outbox,
+                crate::test_snapshots(Default::default()),
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Cancellation::default(),
+                Arc::new(crate::folder_sizes::IoBudget::new()),
+                Default::default(),
+            )),
         }
     };
     drop(service);
     // Release the parent before the current-thread runtime processes child cancellation.
     drop(scope);
     assert!(dropped.try_recv().is_err());
+    drop(controller);
     tasks.abort_all();
     runtime.block_on(async { while tasks.join_next().await.is_some() {} });
-    drop(controller);
     let thread = dropped.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_ne!(
         thread,
@@ -96,6 +185,36 @@ fn settings_service_survives_parent_retirement_off_executor() {
 #[test]
 fn font_service_survives_parent_retirement_off_executor() {
     cancelled_actor_retires_service(Actor::Fonts);
+}
+
+#[test]
+fn picker_service_survives_parent_retirement_off_executor() {
+    cancelled_actor_retires_service(Actor::Picker);
+}
+
+#[test]
+fn shell_menu_service_survives_parent_retirement_off_executor() {
+    cancelled_actor_retires_service(Actor::ShellMenu);
+}
+
+#[test]
+fn volumes_service_survives_parent_retirement_off_executor() {
+    cancelled_actor_retires_service(Actor::Volumes);
+}
+
+#[test]
+fn volume_information_service_survives_parent_retirement_off_executor() {
+    cancelled_actor_retires_service(Actor::VolumeInformation);
+}
+
+#[test]
+fn folder_presence_service_survives_parent_retirement_off_executor() {
+    cancelled_actor_retires_service(Actor::FolderPresence);
+}
+
+#[test]
+fn entry_sizes_service_survives_parent_retirement_off_executor() {
+    cancelled_actor_retires_service(Actor::EntrySizes);
 }
 
 fn recorded_scope() -> (

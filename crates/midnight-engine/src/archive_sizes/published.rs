@@ -17,6 +17,26 @@ impl Published {
     fn matches(&self, source: &Arc<dyn ArchiveMount>) -> bool {
         self.source.ptr_eq(&Arc::downgrade(source))
     }
+    /// Borrow the caller's already retained mount; this helper acquires no lock
+    /// and creates no transient native owner outside the guarded snapshot state.
+    pub(crate) fn snapshot_for(
+        &self,
+        source: &Arc<dyn ArchiveMount>,
+    ) -> Option<Arc<ArchiveSizeSnapshot>> {
+        if !self.matches(source) {
+            return None;
+        }
+        self.sizes
+            .upgrade()
+            .filter(|sizes| sizes.mount == source.id())
+    }
+    #[cfg(test)]
+    pub(crate) fn testing(
+        source: &Arc<dyn ArchiveMount>,
+        sizes: &Arc<ArchiveSizeSnapshot>,
+    ) -> Self {
+        Self::new(source, sizes)
+    }
 }
 
 pub(super) fn invalidate(snapshots: &Snapshots, pane: PaneId, source: &Arc<dyn ArchiveMount>) {
@@ -39,13 +59,7 @@ pub(crate) fn snapshot(
 ) -> Option<Arc<ArchiveSizeSnapshot>> {
     let states = snapshots.lock().unwrap_or_else(|e| e.into_inner());
     let published = states[pane.index()].archive_sort_sizes.as_ref()?;
-    if !published.matches(source) {
-        return None;
-    }
-    published
-        .sizes
-        .upgrade()
-        .filter(|sizes| sizes.mount == source.id())
+    published.snapshot_for(source)
 }
 
 pub(crate) fn size(entry: &Entry, sizes: Option<&ArchiveSizeSnapshot>) -> Option<u64> {

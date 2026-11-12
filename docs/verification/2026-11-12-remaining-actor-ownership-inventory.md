@@ -6,6 +6,17 @@ or an exhaustive LIFE-01 clearance. No production edits, Cargo commands or tests
 were performed for this note. Line numbers identify the inspected source and may
 move. The three reviewed migrations do not cover the boundaries below.
 
+## Follow-up status
+
+The subsequent [native-results batch](../superpowers/plans/2026-11-12-remaining-native-results.md)
+implements guarded File List jobs/generated output, one dynamic network-provider owner,
+remaining original-service task envelopes and PathPicker Drop cancellation. This note
+retains the original inspection and proposed cases, not new execution evidence.
+[Peer review](2026-11-12-service-boundary-peer-review.md) additionally identifies native
+warning-report storage in folder-size/presence diagnostics; service envelopes alone
+do not close that boundary. Archive outputs/mailboxes and builder replacement remain
+open. Current accounting is in the [engine contract](../developer/ENGINE_LIFETIME.md).
+
 ## Highest-priority concrete native owners
 
 ### Make File List jobs and generated results

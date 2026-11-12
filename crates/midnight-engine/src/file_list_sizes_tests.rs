@@ -165,3 +165,115 @@ fn archive_sizes_use_opaque_mount_identity_and_never_size_links() {
     entry.virtual_node.as_mut().unwrap().id.mount = 98;
     assert_eq!(frozen.directory_size(&entry), None);
 }
+
+#[test]
+fn archive_binding_survives_root_retirement_but_rejects_replacement_mount_with_same_id() {
+    #[derive(Debug)]
+    struct Mount;
+    impl ArchiveMount for Mount {
+        fn id(&self) -> u64 {
+            97
+        }
+        fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+            panic!("size binding must not enumerate")
+        }
+        fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+            panic!("size binding must not read")
+        }
+        fn validate(&self) -> Result<(), FsError> {
+            Ok(())
+        }
+    }
+    let source: Arc<dyn ArchiveMount> = Arc::new(Mount);
+    let node = VirtualEntryId {
+        mount: 97,
+        entry: 2,
+    };
+    let entries: Arc<[Entry]> = vec![Entry::from_archive(ArchiveNode {
+        id: node,
+        parent: 1,
+        raw_name: Arc::from(b"folder".as_slice()),
+        display_name: "folder".into(),
+        kind: EntryKind::Directory,
+        size: None,
+        readable: false,
+        modified: None,
+    })]
+    .into();
+    let index = Arc::new(DirectoryIndex::from_entries(&entries));
+    let mut listing = ArchiveListing {
+        location: ArchiveLocation {
+            mount: Some(source.clone()),
+            directory: 1,
+            address: ArchiveAddress {
+                provider: "fixture".into(),
+                format: None,
+                container: "fixture.zip".into(),
+                source_version: vec![],
+                components: vec![],
+            },
+            trail: vec![],
+        },
+        entries: entries.clone(),
+        index: index.clone(),
+    };
+    let sizes = Arc::new(ArchiveSizeSnapshot::new(
+        97,
+        1,
+        HashMap::from([(
+            node,
+            FolderSize {
+                bytes: 42,
+                finished: true,
+                ..Default::default()
+            },
+        )]),
+    ));
+    let snapshots = crate::test_snapshots(Default::default());
+    {
+        let mut states = snapshots.lock().unwrap();
+        states[0].remember_archive_tree_root(PaneId::Left, NavigationId(1), &listing);
+        states[0].archive_sort_sizes = Some(crate::archive_sizes::published::Published::testing(
+            &source, &sizes,
+        ));
+    }
+    let capture = FileListCapture {
+        directory: String::new(),
+        source: FileListSource::Archive {
+            entries: entries.clone(),
+            view: index,
+            selected: Arc::default(),
+            fallback: Some(entries[0].id),
+        },
+    };
+    let accepted = Captured::bind(&capture, &snapshots);
+    listing.location.mount = Some(Arc::new(Mount));
+    let old_root = snapshots.lock().unwrap()[0].remember_archive_tree_root(
+        PaneId::Left,
+        NavigationId(2),
+        &listing,
+    );
+    std::thread::spawn(move || {
+        drop(old_root);
+        drop(source);
+    })
+    .join()
+    .unwrap();
+    drop(sizes);
+    let replacement = Captured::bind(&capture, &snapshots);
+    assert_eq!(
+        accepted
+            .freeze(&[&entries[0]], &Cancellation::default())
+            .unwrap()
+            .directory_size(&entries[0]),
+        Some(42)
+    );
+    assert_eq!(
+        replacement
+            .freeze(&[&entries[0]], &Cancellation::default())
+            .unwrap()
+            .directory_size(&entries[0]),
+        None,
+        "same numeric id is not the accepted mount capability"
+    );
+}

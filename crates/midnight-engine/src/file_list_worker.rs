@@ -2,27 +2,45 @@
 #[cfg(test)]
 #[path = "file_list_worker_tests.rs"]
 mod tests;
-use super::file_list_actor::sizes::Captured;
+use super::file_list_actor::{Retention, sizes::Captured};
 use super::file_list_records::{captured_record, check, error, selected};
+use crate::retirement::{RetirementLease, WorkerOwned};
 use midnight_core::*;
 use midnight_worker_platform::spool::{MAX_IO, PrivateSpoolDirectory, Spool};
 use std::{collections::BTreeMap, fmt, io, sync::Arc};
 
-pub(super) struct Text(pub(super) Spool);
+pub(super) struct OutputReservation {
+    pub(super) lease: RetirementLease,
+    pub(super) retention: Arc<Retention>,
+}
+struct Content {
+    spool: Spool,
+    #[cfg(test)]
+    after_drop: Option<Box<dyn Send + Sync>>,
+    // The token survives native Spool destruction and any test-observed unwind.
+    _retention: Arc<Retention>,
+}
+pub(super) struct Text(WorkerOwned<Content>);
+#[cfg(test)]
+impl Text {
+    fn observe_drop(&mut self, probe: Box<dyn Send + Sync>) {
+        self.0.after_drop = Some(probe);
+    }
+}
 impl fmt::Debug for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GeneratedFileList")
-            .field("bytes", &self.0.length())
+            .field("bytes", &self.0.spool.length())
             .finish()
     }
 }
 impl GeneratedTextSource for Text {
     fn length(&self) -> u64 {
-        self.0.length()
+        self.0.spool.length()
     }
     fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<usize> {
         let count = output.len().min(MAX_IO);
-        self.0.read_at(offset, &mut output[..count])
+        self.0.spool.read_at(offset, &mut output[..count])
     }
 }
 
@@ -40,13 +58,26 @@ pub(super) enum Generated {
 
 #[cfg(test)]
 fn generate(request: &FileListRequest, cancel: &Cancellation) -> Result<Generated, FsError> {
-    generate_with_sizes(request, cancel, &Captured::default())
+    let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
+    let quota = Arc::new(tokio::sync::Semaphore::new(1));
+    generate_with_sizes(
+        request,
+        cancel,
+        &Captured::default(),
+        OutputReservation {
+            lease: domain.try_reserve().unwrap(),
+            retention: Arc::new(Retention {
+                _permit: quota.try_acquire_owned().unwrap(),
+            }),
+        },
+    )
 }
 
 pub(super) fn generate_with_sizes(
     request: &FileListRequest,
     cancel: &Cancellation,
     captured_sizes: &Captured,
+    output: OutputReservation,
 ) -> Result<Generated, FsError> {
     check(cancel)?;
     if request.template.is_empty() {
@@ -129,7 +160,12 @@ pub(super) fn generate_with_sizes(
         Some(mut spool) => {
             spool.finish().map_err(|e| error(e.to_string()))?;
             Ok(Generated::Content {
-                source: Arc::new(Text(spool)),
+                source: Arc::new(Text(output.lease.own(Content {
+                    spool,
+                    #[cfg(test)]
+                    after_drop: None,
+                    _retention: output.retention,
+                }))),
                 items,
             })
         }

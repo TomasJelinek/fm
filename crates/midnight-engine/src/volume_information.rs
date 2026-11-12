@@ -1,5 +1,5 @@
 //! One explicit native detail worker and one coalesced pending request, separate from listings.
-use crate::Outbox;
+use crate::{Outbox, task_lifetime::TaskLifetime};
 use midnight_core::{
     Event, FileSystem, FsError, VolumeInformationRequest, VolumeInformationResult,
 };
@@ -12,12 +12,14 @@ pub(crate) struct Controller {
 
 impl Controller {
     pub(crate) fn new(
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let (requests, mut receiver) = watch::channel::<Option<VolumeInformationRequest>>(None);
-        tasks.spawn(async move {
+        let worker_scope = scope.clone();
+        tasks.spawn(scope.future(async move {
             while receiver.changed().await.is_ok() {
                 let Some(request) = receiver.borrow_and_update().clone() else {
                     continue;
@@ -25,7 +27,7 @@ impl Controller {
                 let filesystem = filesystem.clone();
                 let worker_outbox = outbox.clone();
                 let fallback = request.clone();
-                let completed = tokio::task::spawn_blocking(move || {
+                let completed = tokio::task::spawn_blocking(worker_scope.blocking(move || {
                     if request.cancel.is_cancelled() {
                         return;
                     }
@@ -40,7 +42,7 @@ impl Controller {
                         })),
                         &request.cancel,
                     );
-                })
+                }))
                 .await;
                 if completed.is_err() && !fallback.cancel.is_cancelled() {
                     let error = FsError::from_io(
@@ -65,7 +67,7 @@ impl Controller {
                     .await;
                 }
             }
-        });
+        }));
         Self { requests }
     }
 
@@ -164,6 +166,7 @@ mod tests {
         let (sender, mut events) = tokio::sync::mpsc::channel(1);
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
+            TaskLifetime::testing(native.clone()),
             native.clone(),
             Outbox {
                 sender,
@@ -203,6 +206,7 @@ mod tests {
         let (sender, mut events) = tokio::sync::mpsc::channel(1);
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
+            TaskLifetime::testing(native.clone()),
             native.clone(),
             Outbox {
                 sender,

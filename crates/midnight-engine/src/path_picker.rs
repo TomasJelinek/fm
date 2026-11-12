@@ -1,5 +1,5 @@
 //! One native chooser at a time, independent of navigation and filesystem workers.
-use crate::Outbox;
+use crate::{Outbox, task_lifetime::TaskLifetime};
 use midnight_core::{
     Cancellation, DesktopRequestId, Event, FsError, PathPickerRequest, PathPickerService,
     validate_picked_path,
@@ -13,16 +13,22 @@ pub(crate) struct Controller {
     shutdown: Cancellation,
     active: Option<(DesktopRequestId, Cancellation)>,
     outbox: Outbox,
+    scope: TaskLifetime,
 }
 
 impl Controller {
-    pub(crate) fn new(service: Option<Arc<dyn PathPickerService>>, outbox: Outbox) -> Self {
+    pub(crate) fn new(
+        scope: TaskLifetime,
+        service: Option<Arc<dyn PathPickerService>>,
+        outbox: Outbox,
+    ) -> Self {
         Self {
             service,
             outbox,
             budget: Arc::new(Semaphore::new(1)),
             shutdown: Cancellation::default(),
             active: None,
+            scope,
         }
     }
 
@@ -55,7 +61,7 @@ impl Controller {
         let shutdown = self.shutdown.clone();
         let service = self.service.clone();
         let outbox = self.outbox.clone();
-        tasks.spawn_blocking(move || {
+        tasks.spawn_blocking(self.scope.blocking(move || {
             // Admission stays owned until the actual native chooser and reply have finished.
             let _permit = permit;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -81,7 +87,7 @@ impl Controller {
                 ))
             });
             outbox.blocking_send(Event::PathPicked { request, result }, &shutdown);
-        });
+        }));
     }
 
     pub(crate) fn cancel(&self, request: DesktopRequestId) {
@@ -94,6 +100,12 @@ impl Controller {
 
     pub(crate) fn shutdown(&self) {
         self.shutdown.cancel();
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

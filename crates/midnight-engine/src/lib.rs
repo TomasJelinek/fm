@@ -496,8 +496,10 @@ impl EngineServices {
             self.outbox.clone(),
         );
         let mut size_warning_requests = size_warning_requests::Controller::new(self.outbox.clone());
-        let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
-        let mut path_picker = path_picker::Controller::new(self.path_picker, self.outbox.clone());
+        let shell_menu =
+            shell_menu::Controller::new(scope.clone(), self.shell_menu, self.outbox.clone());
+        let mut path_picker =
+            path_picker::Controller::new(scope.clone(), self.path_picker, self.outbox.clone());
         let snapshots: Snapshots =
             Arc::new(resources.snapshots.own(Mutex::new(Default::default())));
         let mutation_gate = Arc::new(Semaphore::new(1));
@@ -511,6 +513,7 @@ impl EngineServices {
             watcher.as_ref().map(watch::Controller::handle),
         );
         let folder_presence = folder_presence::Controller::new(
+            scope.clone(),
             self.filesystem.clone(),
             snapshots.clone(),
             listing_budgets.clone(),
@@ -518,6 +521,8 @@ impl EngineServices {
             &mut tasks,
         );
         let mut neighborhood = network_neighborhood::Controller::new(
+            resources.network,
+            scope.clone(),
             self.locale.clone(),
             self.outbox.clone(),
             snapshots.clone(),
@@ -535,6 +540,8 @@ impl EngineServices {
         let filters = filters::Controller::new(self.outbox.clone(), &mut tasks);
         let filename_colors = filename_colors::Controller::new(self.outbox.clone(), &mut tasks);
         let mut file_lists = file_list_actor::Controller::new(
+            resources.file_lists,
+            scope.clone(),
             self.transfers.clone(),
             mutation_gate.clone(),
             self.outbox.clone(),
@@ -592,7 +599,10 @@ impl EngineServices {
         let size_delivery_cancel = Cancellation::default();
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
         let mut entry_sizes = entry_sizes::Controller::new(
-            self.filesystem.clone(),
+            entry_sizes::Services {
+                filesystem: self.filesystem.clone(),
+                scope: scope.clone(),
+            },
             self.outbox.clone(),
             snapshots.clone(),
             size_budget.clone(),
@@ -602,6 +612,7 @@ impl EngineServices {
         );
         let mut size_requests: [Option<SizeRequest>; 2] = [None, None];
         let volumes = volumes::Controller::new(
+            scope.clone(),
             self.filesystem.clone(),
             self.locale.clone(),
             self.outbox.clone(),
@@ -610,6 +621,7 @@ impl EngineServices {
             &mut tasks,
         );
         let volume_information = volume_information::Controller::new(
+            scope.clone(),
             self.filesystem.clone(),
             self.outbox.clone(),
             &mut tasks,
@@ -778,13 +790,14 @@ impl EngineServices {
                             locale_requested = true;
                             let service = self.locale.clone();
                             let outbox = self.outbox.clone();
-                            tasks.spawn(async move {
-                                let result = tokio::task::spawn_blocking(move || {
+                            let worker_scope = scope.clone();
+                            tasks.spawn(scope.future(async move {
+                                let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
                                     service.map_or_else(|| Ok(midnight_core::NumberLocale::default()), |service| service.number_locale())
-                                }).await.unwrap_or_else(|error| Err(midnight_core::FsError::from_io(
+                                })).await.unwrap_or_else(|error| Err(midnight_core::FsError::from_io(
                                     "load locale", std::path::Path::new("locale"), std::io::Error::other(error.to_string()))));
                                 outbox.send(Event::LocaleLoaded(result)).await;
-                            });
+                            }));
                         }
                         Some(Command::LoadLocale) => {}
                         Some(Command::ManageNetworkConnections { disconnect }) => {
@@ -793,15 +806,16 @@ impl EngineServices {
                             match (service, permit) {
                                 (Some(service), Ok(permit)) => {
                                     let outbox = self.outbox.clone();
-                                    tasks.spawn(async move {
+                                    let worker_scope = scope.clone();
+                                    tasks.spawn(scope.future(async move {
                                         let _permit = permit;
-                                        let result = tokio::task::spawn_blocking(move || service.manage_connections(disconnect))
+                                        let result = tokio::task::spawn_blocking(worker_scope.blocking(move || service.manage_connections(disconnect)))
                                             .await.unwrap_or_else(|error| Err(midnight_core::FsError::from_io(
                                                 "network dialog", std::path::Path::new("Network"), std::io::Error::other(error.to_string()))));
                                         // Retain the permit through delivery so a stopped UI cannot
                                         // accumulate successful-but-unreported native dialog tasks.
                                         outbox.send(Event::NetworkConnectionsFinished(result)).await;
-                                    });
+                                    }));
                                 }
                                 _ => { self.outbox.send(Event::NetworkConnectionsFinished(Err(
                                     midnight_core::FsError::from_io("network dialog", std::path::Path::new("Network"),
@@ -958,7 +972,8 @@ impl EngineServices {
                             let size_observer = selected_sizes.observer.clone();
                             let scan_path = entries.as_ref().map(|snapshot| snapshot.path.clone());
                             let scan_sizes = entries.as_ref().map(|snapshot| snapshot.sizes.clone());
-                            let task = tasks.spawn(async move {
+                            let worker_scope = scope.clone();
+                            let task = tasks.spawn(scope.future(async move {
                                 let Some(snapshot) = entries else {
                                     outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: true }).await;
                                     return;
@@ -967,7 +982,7 @@ impl EngineServices {
                                 if worker_cancel.is_cancelled() { return; }
                                 let final_cancel = worker_cancel.clone();
                                 let final_outbox = outbox.clone();
-                                let result = tokio::task::spawn_blocking(move || {
+                                let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
                                     let _permit = permit;
                                     let roots: std::borrow::Cow<'_, [Entry]> = match &selection {
                                         None => std::borrow::Cow::Borrowed(&snapshot.entries),
@@ -988,11 +1003,11 @@ impl EngineServices {
                                         // Engine shutdown still interrupts a saturated UI queue.
                                         outbox.blocking_send(Event::FolderSizeUpdated { pane, navigation, scan, entry, size }, &delivery_cancel)
                                     }, &io_budget);
-                                }).await;
+                                })).await;
                                 if !final_cancel.is_cancelled() {
                                     final_outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: result.is_err() }).await;
                                 }
-                            });
+                            }));
                             if let (Some(path), Some(sizes)) = (scan_path, scan_sizes) {
                                 size_requests[pane.index()] = Some(SizeRequest { scan, navigation, path, sizes, cancel, task });
                             }
@@ -1064,7 +1079,8 @@ impl EngineServices {
                             let selection_stream = selection.streaming.clone();
                             let navigation_fallback = self.navigation_fallback.clone();
                             let denied_navigations = denied_navigations.clone();
-                            let listing = tasks.spawn(async move {
+                            let worker_scope = scope.clone();
+                            let listing = tasks.spawn(scope.future(async move {
                                 if !outbox.send(Event::ListingStarted { pane, navigation, path: listing_path.clone() }).await { return; }
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if request_cancel.is_cancelled() { return; }
@@ -1072,39 +1088,40 @@ impl EngineServices {
                                 let error_cancel = request_cancel.clone();
                                 let error_path = listing_path.clone();
                                 let error_snapshots = listing_snapshots.clone();
-                                let result = tokio::task::spawn_blocking(move || {
+                                let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
                                     list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, continued_sizes, selection_stream, navigation_fallback });
-                                }).await;
+                                })).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
                                     let failure = midnight_core::FsError::from_io("listing worker", &error_path, std::io::Error::other(error.to_string()));
                                     listing_failed(&error_snapshots, pane, navigation);
                                     error_outbox.send(Event::ListingFailed { pane, navigation, error: failure }).await;
                                 }
-                            });
+                            }));
                             let filesystem = self.filesystem.clone();
                             let outbox = self.outbox.clone();
                             let budget = auxiliary_budget.clone();
                             let space_cancel = cancel.clone();
-                            let space = tasks.spawn(async move {
+                            let worker_scope = scope.clone();
+                            let space = tasks.spawn(scope.future(async move {
                                 let Ok(permit) = budget.acquire_owned().await else { return; };
                                 if space_cancel.is_cancelled() { return; }
                                 let storage_outbox = outbox.clone();
                                 let storage_cancel = space_cancel.clone();
-                                let result = tokio::task::spawn_blocking(move || {
+                                let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
                                     let _permit = permit;
                                     let kind = filesystem.storage_kind(&path).unwrap_or_default();
                                     storage_outbox.blocking_send(Event::StorageKindUpdated { pane, navigation, kind }, &storage_cancel);
                                     filesystem.space_info(&path)
-                                }).await;
+                                })).await;
                                 if !space_cancel.is_cancelled()
                                     && let Ok(Ok(space)) = result {
                                     outbox.send(Event::SpaceUpdated { pane, navigation, space }).await;
                                 }
-                            });
+                            }));
                             requests[pane.index()] = Some(Request { navigation, cancel, tasks: vec![listing, space] });
                         }
                     }

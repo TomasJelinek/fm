@@ -2,7 +2,7 @@ use super::*;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-fn request(id: u64, generation: u64) -> FileListRequest {
+pub(super) fn request(id: u64, generation: u64) -> FileListRequest {
     let entries: Arc<[Entry]> =
         vec![Entry::new(EntryId(1), "文档.txt".into(), EntryKind::File)].into();
     FileListRequest {
@@ -22,14 +22,14 @@ fn request(id: u64, generation: u64) -> FileListRequest {
     }
 }
 
-fn controller() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
+pub(super) fn controller() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
     let (sender, events) = mpsc::channel(16);
     let outbox = Outbox {
         sender,
         wakeup: Arc::new(|| {}),
     };
     (
-        Controller::new(
+        Controller::testing(
             None,
             Arc::new(Semaphore::new(1)),
             outbox,

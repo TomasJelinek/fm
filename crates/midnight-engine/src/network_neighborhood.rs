@@ -1,5 +1,9 @@
 //! Cancellable discovery on bounded workers, separate from native file operations.
-use crate::{Outbox, Snapshots};
+use crate::{
+    Outbox, Snapshots,
+    retirement::{RetirementLease, WorkerOwned},
+    task_lifetime::TaskLifetime,
+};
 use midnight_core::*;
 use std::{
     sync::{Arc, OnceLock},
@@ -15,23 +19,68 @@ mod publication;
 mod tests;
 use publication::Publication;
 
+// Exactly one startup discovery, with no replacement/retry. All requests share
+// this one native instance; their existing two-call semaphore remains separate.
+pub(crate) const RETIREMENT_CAPACITY: usize = 1;
+pub(crate) struct Retirement {
+    pub(crate) provider: RetirementLease,
+}
+#[cfg(test)]
+impl Retirement {
+    fn testing() -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 0).unwrap();
+        Self {
+            provider: domain.try_reserve().unwrap(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Provider(Arc<WorkerOwned<Arc<dyn NetworkNeighborhood>>>);
+impl Provider {
+    fn new(lease: RetirementLease, provider: Arc<dyn NetworkNeighborhood>) -> Self {
+        Self(Arc::new(lease.own(provider)))
+    }
+    fn get(&self) -> &dyn NetworkNeighborhood {
+        let provider: &Arc<dyn NetworkNeighborhood> = &self.0;
+        provider.as_ref()
+    }
+}
+
 pub(crate) struct Controller {
     locale: Option<Arc<dyn LocaleService>>,
-    provider: Arc<OnceLock<Result<Arc<dyn NetworkNeighborhood>, NetworkFailure>>>,
+    provider: Arc<OnceLock<Result<Provider, NetworkFailure>>>,
     ready: Arc<Notify>,
     budget: Arc<Semaphore>,
     cancellations: [Cancellation; 2],
     high_water: [Option<NavigationId>; 2],
     snapshots: Snapshots,
     outbox: Outbox,
+    scope: TaskLifetime,
 }
 
 impl Controller {
     pub(crate) fn new(
+        retirement: Retirement,
+        scope: TaskLifetime,
         locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         snapshots: Snapshots,
         tasks: &mut JoinSet<()>,
+    ) -> Self {
+        Self::with_discovery(
+            retirement, scope, locale, outbox, snapshots, tasks, discover,
+        )
+    }
+    fn with_discovery(
+        retirement: Retirement,
+        scope: TaskLifetime,
+        locale: Option<Arc<dyn LocaleService>>,
+        outbox: Outbox,
+        snapshots: Snapshots,
+        tasks: &mut JoinSet<()>,
+        load: impl FnOnce() -> Result<Arc<dyn NetworkNeighborhood>, NetworkFailure> + Send + 'static,
     ) -> Self {
         let provider = Arc::new(OnceLock::new());
         let ready = Arc::new(Notify::new());
@@ -44,16 +93,17 @@ impl Controller {
             high_water: [None; 2],
             snapshots,
             outbox: outbox.clone(),
+            scope: scope.clone(),
         };
-        tasks.spawn(async move {
-            let loaded = tokio::task::spawn_blocking(discover)
+        tasks.spawn(scope.future(async move {
+            let loaded = spawn_discovery(retirement, load)
                 .await
                 .unwrap_or_else(|error| Err(failure(error.to_string())));
             let available = loaded.is_ok();
             let _ = provider.set(loaded);
             ready.notify_waiters();
             outbox.send(Event::NetworkAvailability(available)).await;
-        });
+        }));
         result
     }
     pub(crate) fn cancel(&mut self, pane: PaneId) {
@@ -97,7 +147,8 @@ impl Controller {
         );
         let budget = self.budget.clone();
         let locale = self.locale.clone();
-        tasks.spawn(async move {
+        let scope = self.scope.clone();
+        tasks.spawn(self.scope.future(async move {
             loop {
                 let notified = ready.notified();
                 if provider.get().is_some() {
@@ -116,18 +167,18 @@ impl Controller {
                     let provider = provider.clone();
                     let worker_cancel = cancel.clone();
                     let worker_publication = publication.clone();
-                    tokio::task::spawn_blocking(move || {
+                    tokio::task::spawn_blocking(scope.blocking(move || {
                         // Cancellation of the async waiter never releases a running OS call's permit.
                         let _permit = permit;
                         run(
-                            provider.as_ref(),
+                            provider.get(),
                             action,
                             sort,
                             locale.as_deref(),
                             &worker_cancel,
                             &mut |update| worker_publication.blocking_send(update),
                         )
-                    })
+                    }))
                     .await
                     .unwrap_or_else(|error| Err(failure(error.to_string())))
                 }
@@ -140,7 +191,7 @@ impl Controller {
             if let Err(error) = result {
                 publication.send_failure(error).await;
             }
-        });
+        }));
     }
 }
 impl Drop for Controller {
@@ -149,6 +200,18 @@ impl Drop for Controller {
             cancel.cancel();
         }
     }
+}
+
+fn spawn_discovery(
+    retirement: Retirement,
+    load: impl FnOnce() -> Result<Arc<dyn NetworkNeighborhood>, NetworkFailure> + Send + 'static,
+) -> tokio::task::JoinHandle<Result<Provider, NetworkFailure>> {
+    tokio::task::spawn_blocking(move || {
+        // Creation and failed-open cleanup run under the already reserved slot.
+        // No raw native owner may escape into a completed, unconsumed task result.
+        let provider = load()?;
+        Ok(Provider::new(retirement.provider, provider))
+    })
 }
 
 fn discover() -> Result<Arc<dyn NetworkNeighborhood>, NetworkFailure> {

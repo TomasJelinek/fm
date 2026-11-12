@@ -1,4 +1,6 @@
 use super::*;
+#[path = "retirement_tests.rs"]
+mod retirement_tests;
 use std::sync::{Condvar, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -95,11 +97,19 @@ impl NetworkNeighborhood for Fake {
 fn controller(provider: Fake) -> (Controller, mpsc::Receiver<Event>, Snapshots) {
     let (sender, events) = mpsc::channel(16);
     let snapshots = crate::test_snapshots(Default::default());
-    let loaded: OnceLock<Result<Arc<dyn NetworkNeighborhood>, NetworkFailure>> = OnceLock::new();
-    loaded.set(Ok(Arc::new(provider))).unwrap();
+    let loaded = OnceLock::new();
+    assert!(
+        loaded
+            .set(Ok(Provider::new(
+                Retirement::testing().provider,
+                Arc::new(provider)
+            )))
+            .is_ok()
+    );
     (
         Controller {
             locale: None,
+            scope: TaskLifetime::testing(()),
             provider: Arc::new(loaded),
             ready: Arc::new(Notify::new()),
             budget: Arc::new(Semaphore::new(2)),

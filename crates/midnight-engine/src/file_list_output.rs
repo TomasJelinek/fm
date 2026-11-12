@@ -10,8 +10,8 @@ use std::{
 pub(crate) struct FileListDestinationPin {
     path: PathBuf,
     append: bool,
-    directory: Arc<dyn TransferDirectory>,
     target: Arc<dyn TransferTarget>,
+    directory: Arc<dyn TransferDirectory>,
 }
 
 impl FileListDestinationPin {

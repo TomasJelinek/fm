@@ -1,5 +1,7 @@
 //! Independent Space-key directory requests share global scan budgets without cancelling peers.
-use crate::{CommittedSnapshot, Outbox, SharedSizes, Snapshots, folder_sizes};
+use crate::{
+    CommittedSnapshot, Outbox, SharedSizes, Snapshots, folder_sizes, task_lifetime::TaskLifetime,
+};
 use midnight_core::{
     Cancellation, EntryId, EntryKind, Event, FileSystem, FolderSizeScanId, NavigationId, PaneId,
 };
@@ -34,6 +36,11 @@ impl Request {
     }
 }
 
+pub(crate) struct Services {
+    pub(crate) filesystem: Arc<dyn FileSystem>,
+    pub(crate) scope: TaskLifetime,
+}
+
 pub(crate) struct Controller {
     filesystem: Arc<dyn FileSystem>,
     outbox: Outbox,
@@ -43,11 +50,12 @@ pub(crate) struct Controller {
     io_budget: Arc<folder_sizes::IoBudget>,
     size_observer: crate::selection_sizes::Observer,
     pending: [Vec<Request>; 2],
+    scope: TaskLifetime,
 }
 
 impl Controller {
     pub(crate) fn new(
-        filesystem: Arc<dyn FileSystem>,
+        services: Services,
         outbox: Outbox,
         snapshots: Snapshots,
         budget: Arc<Semaphore>,
@@ -55,6 +63,7 @@ impl Controller {
         io_budget: Arc<folder_sizes::IoBudget>,
         size_observer: crate::selection_sizes::Observer,
     ) -> Self {
+        let Services { filesystem, scope } = services;
         Self {
             filesystem,
             outbox,
@@ -64,6 +73,7 @@ impl Controller {
             io_budget,
             size_observer,
             pending: Default::default(),
+            scope,
         }
     }
 
@@ -122,13 +132,14 @@ impl Controller {
         let io_budget = self.io_budget.clone();
         let size_observer = self.size_observer.clone();
         let path = snapshot.path.clone();
-        let task = tasks.spawn(async move {
+        let scope = self.scope.clone();
+        let task = tasks.spawn(self.scope.future(async move {
             let Ok(permit) = budget.acquire_owned().await else {
                 return;
             };
             let final_cancel = worker_cancel.clone();
             let final_outbox = outbox.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = permit;
                 if worker_cancel.is_cancelled() {
                     return false;
@@ -171,7 +182,7 @@ impl Controller {
                     &io_budget,
                 );
                 !worker_cancel.is_cancelled()
-            })
+            }))
             .await;
             done.store(true, Ordering::Release);
             final_outbox
@@ -182,7 +193,7 @@ impl Controller {
                     cancelled: final_cancel.is_cancelled() || !matches!(result, Ok(true)),
                 })
                 .await;
-        });
+        }));
         self.pending[pane.index()].push(Request {
             navigation,
             scan,

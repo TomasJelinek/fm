@@ -38,7 +38,7 @@ impl Captured {
             ),
         };
         let mut native = None;
-        let mut archive_scope = None;
+        let mut archive = None;
         {
             let states = snapshots.lock().unwrap_or_else(|error| error.into_inner());
             for pane in [PaneId::Left, PaneId::Right] {
@@ -66,16 +66,16 @@ impl Captured {
                     && let Some(source) =
                         ready.archive().and_then(|location| location.mount.as_ref())
                 {
-                    archive_scope = Some((pane, source.clone()));
+                    archive = state
+                        .archive_sort_sizes
+                        .as_ref()
+                        .and_then(|published| published.snapshot_for(source));
                     break;
                 }
             }
         }
-        // The published lookup verifies the exact mount capability and refuses
-        // an invalidated/retired map. Do not nest its snapshots lock above.
-        let archive = archive_scope.and_then(|(pane, source)| {
-            crate::archive_sizes::published::snapshot(snapshots, pane, &source)
-        });
+        // The borrowed published lookup above keeps exact mount identity under
+        // the original snapshots lock; no raw native Arc escapes onto dispatch.
         Self {
             state: Mutex::new(State {
                 native,

@@ -51,6 +51,7 @@ async fn blocked_presence_keeps_only_latest_viewport_and_cancels_obsolete_receip
     let (sender, mut events) = tokio::sync::mpsc::channel(8);
     let mut tasks = JoinSet::new();
     let controller = Controller::new(
+        TaskLifetime::testing(filesystem.clone()),
         filesystem,
         snapshots,
         std::array::from_fn(|_| Arc::new(Semaphore::new(1))),

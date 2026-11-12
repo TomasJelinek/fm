@@ -2,6 +2,7 @@
 use crate::{
     Outbox, Snapshots,
     providers::{NativeProvider, ProviderError},
+    task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
 use std::{
@@ -25,6 +26,7 @@ pub(crate) struct Controller {
 
 impl Controller {
     pub(crate) fn new(
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
         snapshots: Snapshots,
         listings: [Arc<Semaphore>; 2],
@@ -41,11 +43,11 @@ impl Controller {
             let filesystem = filesystem.clone();
             let listing = listings[side].clone();
             let outbox = outbox.clone();
-            tasks.spawn_blocking(move || {
+            tasks.spawn_blocking(scope.blocking(move || {
                 worker(
                     pending, receiver, stopping, snapshots, filesystem, listing, outbox,
                 )
-            });
+            }));
             (lane, wake)
         });
         Self { lanes, stop }

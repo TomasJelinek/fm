@@ -18,6 +18,8 @@ pub(crate) struct Resources {
     pub(crate) drag: DragRetirement,
     pub(crate) snapshots: RetirementLease,
     pub(crate) clipboard: crate::clipboard::Retirement,
+    pub(crate) network: crate::network_neighborhood::Retirement,
+    pub(crate) file_lists: crate::file_list_actor::Retirement,
     pub(crate) watch: crate::watch::Retirement,
     pub(crate) checksums: crate::checksum_actor::Retirement,
     pub(crate) user_commands: crate::user_commands::Retirement,
@@ -43,7 +45,9 @@ impl EngineLifetime {
             + 1
             + crate::clipboard::RETIREMENT_CAPACITY
             + crate::desktop::EDITOR_RETIREMENT_CAPACITY
-            + crate::watch::RETIREMENT_CAPACITY;
+            + crate::watch::RETIREMENT_CAPACITY
+            + crate::network_neighborhood::RETIREMENT_CAPACITY
+            + crate::file_list_actor::RETIREMENT_CAPACITY;
         let domain = RetirementDomain::try_start(capacity, 6)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
@@ -73,6 +77,12 @@ impl EngineLifetime {
                         domain.try_reserve().map_err(io::Error::other)?,
                         domain.try_reserve().map_err(io::Error::other)?,
                     ],
+                },
+                file_lists: crate::file_list_actor::Retirement {
+                    domain: domain.clone(),
+                },
+                network: crate::network_neighborhood::Retirement {
+                    provider: domain.try_reserve().map_err(io::Error::other)?,
                 },
                 clipboard: crate::clipboard::Retirement {
                     worker: domain.try_reserve().map_err(io::Error::other)?,

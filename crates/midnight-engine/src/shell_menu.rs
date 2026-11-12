@@ -1,5 +1,5 @@
 //! Menus use a separate bounded worker; shell extension code never runs on the UI thread.
-use crate::{Outbox, file_targets};
+use crate::{Outbox, file_targets, task_lifetime::TaskLifetime};
 use midnight_core::*;
 use std::{io, path::Path, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
@@ -17,15 +17,25 @@ pub(crate) struct Controller {
     budget: Arc<Semaphore>,
     cancel: Cancellation,
     outbox: Outbox,
+    scope: TaskLifetime,
 }
 impl Controller {
-    pub(crate) fn new(service: Option<Arc<dyn ShellMenuService>>, outbox: Outbox) -> Self {
+    pub(crate) fn new(
+        scope: TaskLifetime,
+        service: Option<Arc<dyn ShellMenuService>>,
+        outbox: Outbox,
+    ) -> Self {
         Self {
             service,
             outbox,
             budget: Arc::new(Semaphore::new(1)),
             cancel: Cancellation::default(),
+            scope,
         }
+    }
+    #[cfg(test)]
+    fn testing(service: Option<Arc<dyn ShellMenuService>>, outbox: Outbox) -> Self {
+        Self::new(TaskLifetime::testing(service.clone()), service, outbox)
     }
     pub(crate) async fn show(&self, input: Input, tasks: &mut JoinSet<()>) {
         let Ok(permit) = self.budget.clone().try_acquire_owned() else {
@@ -45,10 +55,11 @@ impl Controller {
         let service = self.service.clone();
         let cancel = self.cancel.clone();
         let permit = Arc::new(permit);
-        tasks.spawn(async move {
+        let scope = self.scope.clone();
+        tasks.spawn(self.scope.future(async move {
             let request = input.request;
             let worker_permit = permit.clone();
-            let worker = tokio::task::spawn_blocking(move || {
+            let worker = tokio::task::spawn_blocking(scope.blocking(move || {
                 // Keep native work admitted even if its asynchronous reply task is aborted.
                 let _permit = worker_permit;
                 (|| {
@@ -70,7 +81,7 @@ impl Controller {
                         service.show_shell_menu(&request)
                     })
                 })()
-            })
+            }))
             .await;
             let result = match worker {
                 Ok(result) => result,
@@ -81,7 +92,7 @@ impl Controller {
                 .send(Event::ShellMenuFinished { request, result })
                 .await;
             drop(permit);
-        });
+        }));
     }
     pub(crate) fn shutdown(&self) {
         self.cancel.cancel();

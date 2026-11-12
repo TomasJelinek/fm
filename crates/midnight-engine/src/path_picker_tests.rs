@@ -41,7 +41,10 @@ fn controller(service: Option<Arc<dyn PathPickerService>>) -> (Controller, mpsc:
         sender,
         wakeup: Arc::new(|| {}),
     };
-    (Controller::new(service, outbox), receiver)
+    (
+        Controller::new(TaskLifetime::testing(service.clone()), service, outbox),
+        receiver,
+    )
 }
 
 async fn event(
@@ -169,3 +172,6 @@ async fn checksum_pickers_keep_kind_owner_and_raw_path_on_the_backend_worker() {
         assert_eq!(picker.budget.available_permits(), 1);
     }
 }
+
+#[path = "path_picker_lifetime_tests.rs"]
+mod lifetime_tests;

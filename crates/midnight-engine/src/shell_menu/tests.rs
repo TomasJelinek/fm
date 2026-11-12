@@ -35,7 +35,7 @@ async fn native_panic_keeps_menu_admission_bounded_until_failure_is_delivered() 
         .try_send(Event::LocaleLoaded(Ok(Default::default())))
         .unwrap();
     let (started, observed) = oneshot::channel();
-    let controller = Controller::new(
+    let controller = Controller::testing(
         Some(Arc::new(PanicMenu(Mutex::new(Some(started))))),
         Outbox {
             sender,
@@ -112,7 +112,7 @@ async fn aborting_reply_task_keeps_menu_budget_until_native_worker_returns() {
     let (started, observed) = oneshot::channel();
     let latch = Arc::new(Latch::default());
     let release = ReleaseOnDrop(latch.clone());
-    let controller = Controller::new(
+    let controller = Controller::testing(
         Some(Arc::new(BlockingMenu {
             started: Mutex::new(Some(started)),
             latch,

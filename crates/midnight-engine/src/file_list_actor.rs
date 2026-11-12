@@ -1,4 +1,7 @@
 //! Bounded generation, confirmation ownership and cancellation for file lists.
+#[cfg(test)]
+#[path = "file_list_retirement_tests.rs"]
+mod retirement_tests;
 #[path = "file_list_sizes.rs"]
 pub(super) mod sizes;
 #[cfg(test)]
@@ -8,7 +11,9 @@ use crate::{
     Outbox,
     file_list_output::*,
     file_list_records::error,
-    file_list_worker::{self, Generated, Text},
+    file_list_worker::{self, Generated, OutputReservation, Text},
+    retirement::{RetirementDomain, WorkerOwned},
+    task_lifetime::TaskLifetime,
 };
 use midnight_core::*;
 use std::{
@@ -23,27 +28,47 @@ use tokio::{
     task::JoinSet,
 };
 
+const MAX_WINDOWS: usize = 4;
+const MAX_WORKERS: usize = 2;
+pub(super) const MAX_RETAINED: usize = MAX_WINDOWS + MAX_WORKERS;
+pub(crate) const RETIREMENT_CAPACITY: usize = 2 * MAX_RETAINED;
+pub(crate) struct Retirement {
+    pub(crate) domain: RetirementDomain,
+}
+pub(super) struct Retention {
+    pub(super) _permit: OwnedSemaphorePermit,
+}
 struct Pending {
-    source: Arc<Text>,
     pin: FileListDestinationPin,
+    source: Arc<Text>,
 }
 struct Job {
-    request: FileListRequest,
+    // Native pins, generated content and captured report storage retire before
+    // their service anchor and shared logical admission token.
+    pending: Mutex<Option<Pending>>,
     sizes: Arc<sizes::Captured>,
+    request: FileListRequest,
+    output: Mutex<Option<OutputReservation>>,
     cancel: Cancellation,
     active: AtomicBool,
-    pending: Mutex<Option<Pending>>,
+    _scope: TaskLifetime,
+    _retention: Arc<Retention>,
 }
 pub(crate) struct Controller {
-    jobs: HashMap<DesktopRequestId, Arc<Job>>,
+    jobs: HashMap<DesktopRequestId, Arc<WorkerOwned<Job>>>,
     budget: Arc<Semaphore>,
     mutation: Arc<Semaphore>,
     service: Option<Arc<dyn TransferService>>,
+    scope: TaskLifetime,
+    retirement: Retirement,
+    retained: Arc<Semaphore>,
     outbox: Outbox,
     snapshots: crate::Snapshots,
 }
 impl Controller {
     pub(crate) fn new(
+        retirement: Retirement,
+        scope: TaskLifetime,
         service: Option<Arc<dyn TransferService>>,
         mutation: Arc<Semaphore>,
         outbox: Outbox,
@@ -51,9 +76,12 @@ impl Controller {
     ) -> Self {
         Self {
             jobs: HashMap::new(),
-            budget: Arc::new(Semaphore::new(2)),
+            budget: Arc::new(Semaphore::new(MAX_WORKERS)),
             mutation,
             service,
+            scope,
+            retirement,
+            retained: Arc::new(Semaphore::new(MAX_RETAINED)),
             outbox,
             snapshots,
         }
@@ -75,7 +103,7 @@ impl Controller {
             {
                 return Err(error("A file list output is already running."));
             }
-        } else if self.jobs.len() >= 4 {
+        } else if self.jobs.len() >= MAX_WINDOWS {
             return Err(error("Close a file list window before opening another."));
         }
         let permit = self
@@ -83,6 +111,20 @@ impl Controller {
             .clone()
             .try_acquire_owned()
             .map_err(|_| error("File list workers are busy. Try again."))?;
+        let retained = self.retained.clone().try_acquire_owned().map_err(|_| {
+            error("File list outputs are still in use. Close an output and try again.")
+        })?;
+        let lease = self
+            .retirement
+            .domain
+            .try_reserve()
+            .map_err(|_| error("File-list cleanup is still busy. Try again."))?;
+        let output_lease = self
+            .retirement
+            .domain
+            .try_reserve()
+            .map_err(|_| error("File-list cleanup is still busy. Try again."))?;
+        let retention = Arc::new(Retention { _permit: retained });
         // Admission must succeed before superseding the last accepted preview.
         // Otherwise transient worker pressure cancels useful work without replacing it.
         if let Some(old) = self.jobs.get(&request.id) {
@@ -96,15 +138,21 @@ impl Controller {
                 || Arc::new(sizes::Captured::bind(&request.capture, &self.snapshots)),
                 |old| old.sizes.clone(),
             );
-        let job = Arc::new(Job {
-            request,
+        let job = Arc::new(lease.own(Job {
+            pending: Mutex::new(None),
             sizes,
+            request,
+            output: Mutex::new(Some(OutputReservation {
+                lease: output_lease,
+                retention: retention.clone(),
+            })),
             cancel: Cancellation::default(),
             active: AtomicBool::new(true),
-            pending: Mutex::new(None),
-        });
+            _scope: self.scope.clone(),
+            _retention: retention,
+        }));
         self.jobs.insert(job.request.id, job.clone());
-        self.spawn(job, None, permit, tasks);
+        self.spawn(job, false, permit, tasks);
         Ok(())
     }
     pub(crate) fn confirm(
@@ -127,34 +175,43 @@ impl Controller {
             .clone()
             .try_acquire_owned()
             .map_err(|_| error("File list workers are busy. Try again."))?;
-        let pending = job
+        if job
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .ok_or_else(|| error("This file list confirmation has already been used."))?;
+            .is_none()
+        {
+            return Err(error("This file list confirmation has already been used."));
+        }
+        // Keep the native pins in the guarded Job until a native worker actually
+        // begins. Cancelling an unpolled confirmation never exposes a raw Pending.
         job.active.store(true, Ordering::Release);
-        self.spawn(job, Some(pending), permit, tasks);
+        self.spawn(job, true, permit, tasks);
         Ok(())
     }
     fn spawn(
         &self,
-        job: Arc<Job>,
-        pending: Option<Pending>,
+        job: Arc<WorkerOwned<Job>>,
+        confirmed: bool,
         permit: OwnedSemaphorePermit,
         tasks: &mut JoinSet<()>,
     ) {
         let service = self.service.clone();
         let mutation = self.mutation.clone();
         let outbox = self.outbox.clone();
-        tasks.spawn(async move {
+        let scope = self.scope.clone();
+        tasks.spawn(self.scope.future(async move {
+            // Native work keeps admission after outer cancellation; delivery
+            // keeps it after native completion until its bounded send finishes.
+            let _delivery_permit = Arc::new(permit);
+            let native_permit = _delivery_permit.clone();
             let worker = job.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                let output = run(&worker, pending, service.as_deref(), &mutation);
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                let _permit = native_permit;
+                let output = run(&worker, confirmed, service.as_deref(), &mutation);
                 worker.active.store(false, Ordering::Release);
                 output
-            })
+            }))
             .await
             .unwrap_or_else(|e| Err(error(format!("File list worker failed: {e}"))));
             job.active.store(false, Ordering::Release);
@@ -167,7 +224,7 @@ impl Controller {
                     })))
                     .await;
             }
-        });
+        }));
     }
     pub(crate) fn cancel(&mut self, id: DesktopRequestId, generation: u64) {
         if self
@@ -186,16 +243,40 @@ impl Controller {
     }
 }
 
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 fn run(
     job: &Job,
-    pending: Option<Pending>,
+    confirmed: bool,
     service: Option<&dyn TransferService>,
     mutation: &Arc<Semaphore>,
 ) -> Result<FileListUpdate, FsError> {
+    let pending = if confirmed {
+        Some(
+            job.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .ok_or_else(|| error("This file list confirmation has already been used."))?,
+        )
+    } else {
+        None
+    };
     let (source, pin) = if let Some(pending) = pending {
         (pending.source, Some(pending.pin))
     } else {
-        match file_list_worker::generate_with_sizes(&job.request, &job.cancel, &job.sizes)? {
+        let output = job
+            .output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .ok_or_else(|| error("This file-list generation has already been used."))?;
+        match file_list_worker::generate_with_sizes(&job.request, &job.cancel, &job.sizes, output)?
+        {
             Generated::Preview {
                 text,
                 items,
@@ -258,5 +339,26 @@ fn run(
             recovery: receipt.recovery,
             warning: receipt.warning,
         }),
+    }
+}
+
+#[cfg(test)]
+impl Controller {
+    fn testing(
+        service: Option<Arc<dyn TransferService>>,
+        mutation: Arc<Semaphore>,
+        outbox: Outbox,
+        snapshots: crate::Snapshots,
+    ) -> Self {
+        Self::new(
+            Retirement {
+                domain: RetirementDomain::try_start(RETIREMENT_CAPACITY, 0).unwrap(),
+            },
+            TaskLifetime::testing(service.clone()),
+            service,
+            mutation,
+            outbox,
+            snapshots,
+        )
     }
 }
