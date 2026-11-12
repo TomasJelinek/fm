@@ -22,3 +22,13 @@ only a generic document icon. Associated application icons retain precedence.
 Existing project assets not individually listed above have not been retroactively
 certified as original by this record. Third-party library and bundled asset
 notices remain in [THIRD_PARTY.md](THIRD_PARTY.md) and distribution packages.
+
+## SVG worker font fallback, 12 November 2026
+
+The independent shared image decoder embeds unmodified Noto Sans Regular, Arabic
+and Hebrew font files from the pinned cosmic-text 0.19.0 source archive. They
+remain under SIL Open Font License 1.1, with exact per-file SHA256 hashes and
+upstream/source information in [the font provenance](../plugins/image-decoder/fonts/README.md).
+The license and provenance accompany both image-worker distributions. These fonts
+are loaded from embedded memory only; no document-selected or installed font path
+is opened. Coverage and family fallback are explicitly limited as documented.

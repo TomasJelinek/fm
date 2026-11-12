@@ -1,5 +1,23 @@
 # Third-party libraries and licenses
 
+The independent image viewer and thumbnail workers now share
+`plugins/image-decoder`: the same pinned raster/color libraries plus resvg/usvg
+0.48.1 with only `text` enabled for bounded static SVG. MIT is selected for
+resvg/usvg and the existing image-rs dependency; tiny-skia's BSD-3-Clause notices
+remain intact. Source-selected image/font/file/network loading is disabled.
+Unmodified Noto Sans Regular/Arabic/Hebrew font bytes are embedded under OFL-1.1;
+see [source and hashes](../plugins/image-decoder/fonts/README.md). Both worker
+packaging paths copy the complete shared `plugins/image-decoder/notices` set,
+including font copyright/OFL/provenance. SVG reuses pinned versions. AVIF adds
+MIT dav1d 0.11.0/dav1d-sys 0.8.3 bindings, BSD-2-Clause native dav1d 1.5.4 and
+MPL-2.0 mp4parse 0.17.0. Both packages retain the full native license and the exact
+unmodified MPL parser source archive with its license/source notice. The narrowly
+patched image-rs 0.25.10 source is selected only by the three independent image
+workspaces; see [patch provenance](../vendor/image/MIDNIGHT_PATCH.md) and the
+[shared notice inventory](../plugins/midnight-viewer-image/THIRD-PARTY.md).
+No API/application license change is made. HEIC/HEIF remains unsupported pending a
+qualified packaged decoder and royalty-free distribution determination.
+
 Managed command artwork reuses the pinned `image` 0.25.10 (`MIT OR Apache-2.0`)
 for PNG encoding and pixel resizing only in `midnight-platform-common`; its new
 direct declaration enables only `png` with default features disabled. Arbitrary
@@ -36,14 +54,14 @@ Inventory updated on 12 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
 captures for the independent native macOS filesystem package only:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **64**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **66**
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **625**
-  package/version/source records, **512** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **646**
+  package/version/source records, **528** distinct crate names, including transitives.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
-The twenty-two workspaces cover the application, public viewer/filesystem/thumbnail/image/web
+The twenty-three workspaces cover the application, public viewer/filesystem/thumbnail/image/web
 APIs and worker SDK, six independent viewer plugins, archive/image/video plugins,
 the independent native Windows/Linux/macOS Browse/Read filesystem packages,
 the independent Windows/Linux Network Neighborhood plugin, and the

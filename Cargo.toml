@@ -2,7 +2,8 @@
 resolver = "2"
 members = ["crates/*"]
 # Public APIs/SDKs retain their own workspace versions when used as path dependencies.
-exclude = ["api", "filesystem-api", "image-viewer-api", "thumbnail-api", "web-viewer-api", "worker-api", "vendor/femtovg"]
+exclude = ["api", "filesystem-api", "image-viewer-api", "thumbnail-api", "web-viewer-api", "worker-api", "vendor/femtovg",
+    "vendor/image"]
 
 [workspace.package]
 version = "0.2.0"

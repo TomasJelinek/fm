@@ -6,7 +6,8 @@ param(
     [string]$FfmpegPrefix,
     [string]$FfmpegSourceArchive,
     [string]$LibclangPath,
-    [ValidateSet('debug','release')][string]$Profile='release'
+    [ValidateSet('debug','release')][string]$Profile='release',
+    [switch]$NativeOffline
 )
 $ErrorActionPreference='Stop'
 $repository=Split-Path -Parent $PSScriptRoot
@@ -30,6 +31,10 @@ if ($FfmpegPrefix) {
     $env:LIBCLANG_PATH=[System.IO.Path]::GetFullPath($LibclangPath)
     $plugins+='midnight-thumbnail-video'
 }
+$nativeScripts=Join-Path $repository 'plugins/image-decoder/native'
+$nativeJobs=if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+& (Join-Path $nativeScripts 'bootstrap-windows.ps1') -BuildRoot (Join-Path $BuildRoot 'native-tools') -Offline:$NativeOffline
+& (Join-Path $nativeScripts 'build-windows.ps1') -BuildRoot (Join-Path $BuildRoot 'native-dav1d') -Jobs $nativeJobs -Offline:$NativeOffline
 foreach ($name in $plugins) {
     $project=Join-Path $repository "plugins/$name"
     $env:CARGO_TARGET_DIR=Join-Path $BuildRoot $name
@@ -45,6 +50,10 @@ foreach ($name in $plugins) {
         $notices=Join-Path $Destination "notices/$name"
         New-Item -ItemType Directory -Force $notices | Out-Null
         Get-ChildItem -LiteralPath (Join-Path $NoticesRoot $name) | Copy-Item -Destination $notices -Recurse -Force
+        if ($name -eq 'midnight-thumbnail-image') {
+            Get-ChildItem -LiteralPath (Join-Path $repository 'plugins/image-decoder/notices') |
+                Copy-Item -Destination $notices -Recurse -Force
+        }
     } else {
         throw "Missing distribution notices for $name; stage pinned dependency license notices first"
     }

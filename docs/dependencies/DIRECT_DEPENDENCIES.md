@@ -15,6 +15,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [cef](https://crates.io/crates/cef/156.4.0%2B156.0.26) | 156.4.0+156.0.26 | Apache-2.0 OR MIT | midnight-viewer-html |
 | [chrono](https://crates.io/crates/chrono/0.4.45) | 0.4.45 | MIT OR Apache-2.0 | midnight-platform-linux, midnight-ui |
 | [crc32fast](https://crates.io/crates/crc32fast/1.5.4) | 1.5.4 | MIT OR Apache-2.0 | midnight-engine |
+| [dav1d](https://crates.io/crates/dav1d/0.11.0) | 0.11.0 | MIT | midnight-image-decoder |
 | [ffmpeg-next](https://crates.io/crates/ffmpeg-next/9.0.0) | 9.0.0 | WTFPL | midnight-thumbnail-video |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 | midnight-explorer |
 | [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | midnight-api-package, midnight-fs-archive |
@@ -27,20 +28,21 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui, midnight-ui-input, midnight-viewer-ui |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
-| [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-common, midnight-platform-linux, midnight-thumbnail-image, midnight-viewer-image |
+| image | 0.25.10 | MIT OR Apache-2.0 | midnight-image-decoder, midnight-thumbnail-image, midnight-viewer-image |
+| [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-common, midnight-platform-linux |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-linux, midnight-filesystem-native-macos, midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | midnight-filesystem-network |
 | [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
 | [md-5](https://crates.io/crates/md-5/0.10.6) | 0.10.6 | MIT OR Apache-2.0 | midnight-engine |
 | [minicbor](https://crates.io/crates/minicbor/2.3.0) | 2.3.0 | BlueOak-1.0.0 | midnight-plugin-api |
-| [moxcms](https://crates.io/crates/moxcms/0.8.1) | 0.8.1 | BSD-3-Clause OR Apache-2.0 | midnight-thumbnail-image, midnight-viewer-image |
+| [moxcms](https://crates.io/crates/moxcms/0.8.1) | 0.8.1 | BSD-3-Clause OR Apache-2.0 | midnight-image-decoder, midnight-viewer-image |
 | [notify](https://crates.io/crates/notify/8.2.1) | 8.2.1 | CC0-1.0 | midnight-platform-linux, midnight-platform-windows |
 | [parley](https://crates.io/crates/parley/0.11.1) | 0.11.1 | Apache-2.0 OR MIT | midnight-viewer-render |
 | [png](https://crates.io/crates/png/0.18.1) | 0.18.1 | MIT OR Apache-2.0 | midnight-viewer-ui |
 | [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
-| [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | midnight-platform-linux |
+| [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | midnight-image-decoder, midnight-platform-linux |
 | [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | midnight-platform-linux, midnight-worker-platform |
 | [ruzstd](https://crates.io/crates/ruzstd/0.9.1) | 0.9.1 | MIT | midnight-fs-archive |
 | [serde](https://crates.io/crates/serde/1.0.229) | 1.0.229 | MIT OR Apache-2.0 | midnight-filesystem-host, midnight-image-viewer-host, midnight-native-filesystem-host, midnight-platform-common, midnight-plugin-host, midnight-thumbnail-host, midnight-web-viewer-host |

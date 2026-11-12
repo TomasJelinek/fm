@@ -13,10 +13,17 @@ for path in "$build_root" "$output"; do
 done
 native_target="$(rustc -vV | sed -n 's/^host: //p')"
 case "$native_target" in
-    x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
-    *) echo "Unsupported Linux target: $native_target" >&2; exit 2 ;;
+    x86_64-unknown-linux-gnu) ;;
+    *) echo "Image packages currently require Linux x86-64; unqualified target: $native_target" >&2; exit 2 ;;
 esac
 mkdir -p -- "$build_root" "$output"
+native_offline=()
+[[ ${MIDNIGHT_IMAGE_NATIVE_OFFLINE:-0} != 1 ]] || native_offline+=(--offline)
+native_jobs=${CARGO_BUILD_JOBS:-2}
+source "$plugin_root/../image-decoder/native/bootstrap-linux.sh" "$build_root/native-tools" "$native_jobs" "${native_offline[@]}"
+source "$plugin_root/../image-decoder/native/build-linux.sh" "$build_root/native-dav1d" "$native_jobs" "${native_offline[@]}"
+# The native .pc prefix is absolute; an unrelated GUI sysroot must not rewrite it.
+unset PKG_CONFIG_SYSROOT_DIR
 profile=${MIDNIGHT_IMAGE_VIEWER_PROFILE:-release}
 profile_options=()
 case "$profile" in debug) ;; release) profile_options+=(--release) ;; *) echo 'Expected debug or release' >&2; exit 2 ;; esac
@@ -28,5 +35,5 @@ sed -e "s/\"target\": \"[^\"]*\"/\"target\": \"$native_target\"/" \
     "$plugin_root/image-viewer.json" > "$output/image-viewer.json"
 cp -- "$plugin_root/LICENSE" "$plugin_root/README.md" "$plugin_root/THIRD-PARTY.md" "$output/"
 mkdir -p -- "$output/notices"
-cp -R -- "$plugin_root/notices/." "$output/notices/"
+cp -R -- "$plugin_root/../image-decoder/notices/." "$output/notices/"
 echo "Image viewer package: $output"

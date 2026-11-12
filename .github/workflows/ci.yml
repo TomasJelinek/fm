@@ -160,6 +160,8 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /plugins/midnight-viewer-${{ matrix.plugin }}/
+            /plugins/image-decoder/
+            /vendor/image/
             /rust-toolchain.toml
       - uses: actions/download-artifact@v4
         with:

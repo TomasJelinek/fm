@@ -29,10 +29,10 @@ Install a package under `<application directory>/viewers/<package>/` with
   "protocol": 1,
   "id": "midnight.viewer.image",
   "name": "Images",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "target": "x86_64-pc-windows-msvc",
   "executable": "midnight-viewer-image.exe",
-  "extensions": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff"]
+  "extensions": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "svg", "avif"]
 }
 ```
 
@@ -68,6 +68,35 @@ rechecked immediately before launch. Special files, redirected paths and
 ambiguous package roles fail. No working directory, panel folder, archive, PATH
 or source filename selects executable code. These checks establish installation
 trust, not publisher authentication or protection against the trusted account.
+
+## Shared image formats
+
+The image viewer and image thumbnail workers share the independent
+`plugins/image-decoder` library. PNG, JPEG, GIF, WebP, BMP, ICO and TIFF retain
+image-rs/moxcms decoding and color management. Static SVG uses pinned resvg 0.48.1
+inside the same restricted worker boundary. Thumbnails rasterize directly at the
+requested size; the viewer retains a bounded original-size raster, so magnifying
+SVG uses image sampling rather than rerendering vectors.
+
+SVG supports paths/shapes, gradients, bounded local reuse and text from embedded
+Noto Sans fonts. It does not load system/document-selected fonts, local or remote
+images, scripts or external resources. DTDs, cycles, excessive XML/reference
+expansion, event handlers, foreign objects, and filter/mask/clip/marker/pattern
+effects fail explicitly. Encoded SVG is capped at 4 MiB, 32768 XML nodes, depth 64
+and 65536 expanded local-reference visits; the ordinary image pixel limits remain.
+The bundled Latin, Arabic and Hebrew fonts provide deterministic fallback, not
+exact system-font matching or complete Unicode coverage. See the
+[decoder contract](../../plugins/image-decoder/README.md) and its font notices.
+
+AVIF uses the same independent decoder through the narrowly patched image-rs
+constructor, with pinned static dav1d 1.5.4. It stages at most 32 MiB of encoded
+container data and rejects excess input before the tolerant parser. Both primary
+and alpha receive one-thread native settings and a 16,777,216-pixel frame limit
+before allocation; common output/edge limits still apply. This cap is specific to
+AVIF and does not change host source capture or existing streamed raster formats.
+The exact MPL-2.0 mp4parse source accompanies both packages. No public API or host
+protocol change is needed. HEIC/HEIF remains unsupported pending a qualified
+packaged decoder and distribution terms; suffix-only registration is prohibited.
 
 ## Host source and session contract
 

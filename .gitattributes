@@ -9,3 +9,8 @@
 *.png binary
 # Preserve verbatim upstream notices, including their whitespace.
 plugins/**/notices/** -whitespace
+# Preserve the imported image codec/font/license bytes from upstream archives.
+vendor/image/** -text -whitespace
+plugins/image-decoder/notices/** -text
+plugins/image-decoder/fonts/OFL.txt -text -whitespace
+plugins/image-decoder/fonts/*.ttf binary

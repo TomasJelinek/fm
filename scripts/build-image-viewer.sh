@@ -17,7 +17,10 @@ export TMPDIR="$project_root/_build/tmp"
 target_root=${CARGO_TARGET_DIR:-"$project_root/_build"}
 app_directory=${3:-"$target_root/$profile"}
 fetch_options=(--locked)
-[[ "${MIDNIGHT_VIEWERS_OFFLINE:-0}" == 1 ]] && fetch_options+=(--offline)
+if [[ "${MIDNIGHT_VIEWERS_OFFLINE:-0}" == 1 ]]; then
+    fetch_options+=(--offline)
+    [[ $viewer != image ]] || export MIDNIGHT_IMAGE_NATIVE_OFFLINE=1
+fi
 if [[ -z "$sdk_config" ]]; then
     stamp=$(find api/tools/package worker-api thumbnail-api filesystem-api image-viewer-api -type f -print0 |
         sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)

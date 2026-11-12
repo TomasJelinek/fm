@@ -3,8 +3,20 @@
   "protocol": 1,
   "id": "midnight.viewer.image",
   "name": "Image viewer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "target": "x86_64-pc-windows-msvc",
   "executable": "midnight-viewer-image.exe",
-  "extensions": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff"]
+  "extensions": [
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "ico",
+    "tif",
+    "tiff",
+    "svg",
+    "avif"
+  ]
 }

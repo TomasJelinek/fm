@@ -3,15 +3,19 @@ resolver = "2"
 
 [package]
 name = "midnight-thumbnail-image"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
 
 [dependencies]
+midnight-image-decoder = { path = "../image-decoder" }
 midnight-thumbnail-sdk = { version = "=0.2.0", registry = "midnight" }
+[dev-dependencies]
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
-moxcms = "=0.8.1"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[patch.crates-io]
+image = { path = "../../vendor/image" }

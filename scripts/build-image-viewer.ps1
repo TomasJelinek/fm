@@ -9,9 +9,11 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $WorkerSdkConfig) { $WorkerSdkConfig = $env:MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG }
 if ($env:MIDNIGHT_VIEWERS_OFFLINE -eq '1') { $Offline = $true }
-$savedEnvironment = @{}
-foreach ($variable in @('TEMP', 'TMP', 'CARGO_HOME', 'RUSTUP_HOME', 'PATH', 'CARGO_TARGET_DIR')) {
-    $savedEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable)
+# Native compiler activation can introduce many variables. Restore the complete
+# process environment, including the difference between absent and empty values.
+$savedEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+    $savedEnvironment[$entry.Key] = $entry.Value
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $projectRoot "_build/$Viewer-viewer"
@@ -67,20 +69,23 @@ try {
     if ($Offline) { $fetch += '--offline' }
     & cargo @fetch
     if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch image-viewer dependencies' }
+    $nativeOptions = @{}
+    if ($Viewer -eq 'image') { $nativeOptions.NativeOffline = [bool]$Offline }
     if ($Test) {
-        & (Join-Path $pluginRoot 'scripts/ci.ps1') -SdkConfig $WorkerSdkConfig -BuildRoot $pluginBuild
+        & (Join-Path $pluginRoot 'scripts/ci.ps1') -SdkConfig $WorkerSdkConfig -BuildRoot $pluginBuild @nativeOptions
         if ($LASTEXITCODE -ne 0) { throw 'Image-viewer tests failed' }
     }
     & (Join-Path $pluginRoot 'scripts/build.ps1') -SdkConfig $WorkerSdkConfig -BuildRoot $pluginBuild `
-        -OutputDirectory (Join-Path $AppDirectory "viewers/midnight-viewer-$Viewer") -Profile $Profile
+        -OutputDirectory (Join-Path $AppDirectory "viewers/midnight-viewer-$Viewer") -Profile $Profile @nativeOptions
     if ($LASTEXITCODE -ne 0) { throw 'Image-viewer build failed' }
 } finally {
     Pop-Location
-    foreach ($variable in $savedEnvironment.Keys) {
-        if ($null -eq $savedEnvironment[$variable]) {
+    foreach ($variable in [Environment]::GetEnvironmentVariables('Process').Keys) {
+        if (-not $savedEnvironment.ContainsKey($variable)) {
             Remove-Item -LiteralPath "Env:$variable" -ErrorAction SilentlyContinue
-        } else {
-            [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable])
         }
+    }
+    foreach ($variable in $savedEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable], 'Process')
     }
 }

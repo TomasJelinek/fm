@@ -3,7 +3,7 @@ resolver = "2"
 
 [package]
 name = "midnight-viewer-image"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -11,8 +11,10 @@ license = "MIT"
 description = "Independent restricted image viewer for Midnight Explorer"
 
 [dependencies]
+midnight-image-decoder = { path = "../image-decoder" }
 midnight-image-viewer-sdk = { version = "=0.3.0", registry = "midnight" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+[dev-dependencies]
 moxcms = "=0.8.1"
 
 [profile.release]
@@ -28,3 +30,6 @@ panic = "unwind"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[patch.crates-io]
+image = { path = "../../vendor/image" }

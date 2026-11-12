@@ -33,6 +33,7 @@ SCOPES = {
     "web-viewer-api": "web-viewer-api/Cargo.toml",
     "html-viewer": "plugins/midnight-viewer-html/Cargo.toml",
     "image-viewer": "plugins/midnight-viewer-image/Cargo.toml",
+    "image-decoder": "plugins/image-decoder/Cargo.toml",
     "pdf-viewer": "plugins/midnight-viewer-pdf/Cargo.toml",
     "archive": "plugins/midnight-fs-archive/Cargo.toml",
     "thumbnail-image": "plugins/midnight-thumbnail-image/Cargo.toml",

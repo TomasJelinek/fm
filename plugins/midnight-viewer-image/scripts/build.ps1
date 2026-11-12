@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][string]$SdkConfig,
     [Parameter(Mandatory)][string]$BuildRoot,
     [string]$OutputDirectory,
-    [ValidateSet('debug','release')][string]$Profile = 'release'
+    [ValidateSet('debug','release')][string]$Profile = 'release',
+    [switch]$NativeOffline
 )
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
@@ -22,6 +23,12 @@ New-Item -ItemType Directory -Force $BuildRoot, $OutputDirectory | Out-Null
 $nativeTarget = ((& rustc -vV | Select-String '^host: ').ToString() -replace '^host: ', '').Trim()
 if ($LASTEXITCODE -ne 0) { throw 'rustc target discovery failed' }
 if ($nativeTarget -ne 'x86_64-pc-windows-msvc') { throw "Unsupported Windows target: $nativeTarget" }
+$nativeTools = Join-Path $BuildRoot 'native-tools'
+$nativeBuild = Join-Path $BuildRoot 'native-dav1d'
+$nativeScripts = Join-Path $pluginRoot '../image-decoder/native'
+$nativeJobs = if ($env:CARGO_BUILD_JOBS) { [int]$env:CARGO_BUILD_JOBS } else { 2 }
+& (Join-Path $nativeScripts 'bootstrap-windows.ps1') -BuildRoot $nativeTools -Offline:$NativeOffline
+& (Join-Path $nativeScripts 'build-windows.ps1') -BuildRoot $nativeBuild -Jobs $nativeJobs -Offline:$NativeOffline
 $executable = 'midnight-viewer-image.exe'
 $arguments = @('build', '--config', $SdkConfig, '--manifest-path', (Join-Path $pluginRoot 'Cargo.toml'),
     '--target-dir', (Join-Path $BuildRoot 'target'), '--target', $nativeTarget, '--locked', '--offline')
@@ -38,5 +45,5 @@ foreach ($name in @('LICENSE', 'README.md', 'THIRD-PARTY.md')) {
 }
 $notices = Join-Path $OutputDirectory 'notices'
 New-Item -ItemType Directory -Force $notices | Out-Null
-Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'notices') | Copy-Item -Destination $notices -Recurse -Force
+Get-ChildItem -LiteralPath (Join-Path $pluginRoot '../image-decoder/notices') | Copy-Item -Destination $notices -Recurse -Force
 Write-Output "Image viewer package: $OutputDirectory"
