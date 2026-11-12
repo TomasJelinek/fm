@@ -176,11 +176,23 @@ Refreshing an occurrence invalidates old measurements and frozen sort values;
 navigation retires the whole scope. Native totals remain live path-based estimates,
 not a transactional filesystem snapshot.
 
-Running values remain highlighted estimates. Actual read failures retain the
-partial-result marker and error indication; the error glyph stays immediately
-beside its size rather than at the opposite edge of the Size column. An unfinished
-or cancelled scan alone is not a filesystem error. Native size scans follow
-directory junction/link targets using native final-path resolution and stable
+Highlighting follows each occurrence's active calculation flag, independently of
+warning severity. Only actively unfinished values remain highlighted estimates.
+A completed scan with inaccessible entries shows its observed partial total with
+`≈` in normal metadata color and weight, even while another root is calculating.
+Its yellow warning glyph and clickable details remain beside the size. An inactive
+unfinished or cancelled total also retains its partial marker; neither condition
+alone is a filesystem error. The [size presenter](../../crates/midnight-ui/src/size_presentation.rs)
+and [row rendering](../../crates/midnight-ui/ui/file-entry.slint) implement this
+follow-up in current source. Earlier recorded size-presentation tests passed the
+selected size/model library groups, `size_errors` (2), `panel_warning_details` (4)
+and `tree_folder_sizes` (7); see [current evidence](../ACTIVE_WORK.md#current-checkpoint).
+The latest modal-only gate does not rerun that entire scope. These
+software UI tests do not establish full native/layout qualification. A completed
+scan with warnings is not a complete count of inaccessible contents.
+
+Native size scans follow directory junction/link targets using native final-path
+resolution and stable
 directory identities. The active ancestry set stops self/ancestor cycles before
 recounting contents; separate noncyclic aliases and separately selected roots keep
 independent logical totals. Cycle/file-link omissions appear as skipped counts in
@@ -288,8 +300,13 @@ archive member/version checks remain authoritative.
 Four live captured batches share an engine-wide permit pool. Opening the draft
 does not reserve a job; confirmation uses the existing 32-job FIFO copy admission.
 Preparation validates duplicate roots, source ancestry and native destination
-ancestry before writes. The ordinary staged copy performs SHA-256 destination
-readback and uses the existing conflict, cancellation and error decisions.
+ancestry before writes. The ordinary staged copy independently reads back the
+destination under the job's frozen verification policy: Full SHA-256 by default,
+or explicit quick verification of exact size plus first/middle/last 64 KiB.
+Quick mode compares every byte for files up to 192 KiB and can miss corruption
+between samples in larger files. Source identity/revision, synchronization,
+publication, conflict consent, cancellation and error guards remain mandatory;
+see the [transfer contract](TRANSFERS.md).
 Supported distinct native regular files retain the optional exact modified-time
 policy; unsupported directory/provider metadata cannot silently downgrade it.
 
@@ -310,10 +327,16 @@ Clipboard and destructive operations have separate authority requirements.
 
 F6 shares F5's capture/draft protocol with an immutable Move intent. Native root
 files and selected native directory occurrences use the ordinary Move worker;
-archive and mixed-provider scopes are refused before preparation. Every file is
-independently verified at the destination before its native source is removed.
-Empty source directories are removed postorder; skipped or failed roots keep
-their marks. A later failure never implies rollback of earlier completed files.
+archive and mixed-provider scopes are refused before preparation. Same-volume
+native Move uses the retained rename capability without reading or hashing file
+contents. Cross-volume Move and copied children in explicit directory merges
+independently verify each copied file under the frozen Full SHA-256 or explicit
+quick size plus first/middle/last 64 KiB policy before removing that file's source.
+The quick-mode limits above apply. Source/parent identity, revisions, conflict
+consent and finalization guards remain authoritative on both routes; verification
+policy does not authorize replacing a changed object. Empty source directories
+are removed postorder; skipped or failed roots keep their marks. A later failure
+never implies rollback of earlier completed files.
 Provider ownership covers prepared authorities, descendants, finalizers and
 cleanup tickets, including a draft abandoned after failed preparation.
 
@@ -369,8 +392,11 @@ already published OS clipboard entry.
 
 Ctrl+V retains the native panel root as its destination even when a nested row
 has focus. Copy uses the ordinary verified queue; Move intent opens the existing
-Move confirmation. Native source proof, overlap rejection, independent SHA-256
-destination readback and verified per-file source removal happen in that worker.
+Move confirmation. Native source authority and overlap checks remain in that
+worker. Copied files use independent destination readback under the frozen
+Full/quick policy above, with per-file source removal for Move only after its
+proof and identity guards succeed. Same-volume native Move renames without
+content verification. Conflict consent and tree reconciliation remain unchanged.
 Cut alone does not modify files. Clipboard paths are live names, not immutable
 file identities, and external clipboard changes retain ordinary Paste behavior.
 
