@@ -1141,6 +1141,7 @@ async fn foreign_view_is_refused_before_it_can_queue_behind_provider_validation(
     let gate = Arc::new(ValidationGate::default());
     let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
+    let background_events = send.clone();
     let engine = tokio::spawn(
         Engine::new(
             Engine::lifetime().expect("engine cleanup worker"),
@@ -1167,19 +1168,42 @@ async fn foreign_view_is_refused_before_it_can_queue_behind_provider_validation(
     tokio::time::timeout(Duration::from_secs(3), gate.entered.notified())
         .await
         .unwrap();
+    // Background icon delivery is independent of the blocked tree model. Keep
+    // one such event pending so the assertion cannot depend on scheduler order.
+    background_events
+        .send(Event::IconLoaded {
+            key: IconKey::file(),
+            pixels: Arc::new(IconPixels::new(1, 1, vec![12, 34, 56, 255]).unwrap()),
+        })
+        .await
+        .unwrap();
     tree(
         &commands,
         TreeCommand::Commit(Arc::new((*publication.view).clone())),
     )
     .await;
-    let response = tokio::time::timeout(Duration::from_millis(200), events.recv()).await;
+    let response = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            match events.recv().await {
+                Some(Event::Tree(event)) => break Some(*event),
+                Some(_) => continue,
+                None => break None,
+            }
+        }
+    })
+    .await;
+    // Check exact rejection identity while validation is still blocked. Ignoring
+    // unrelated events must not restart the deadline or accept a later rejection.
+    let refused_while_blocked = matches!(&response,
+        Ok(Some(TreeEvent::Rejected { stamp, request, .. }))
+            if *stamp == publication.view.stamp && *request == TreeRequestId(0));
     gate.release();
-    assert!(
-        matches!(response, Ok(Some(Event::Tree(event))) if matches!(*event, TreeEvent::Rejected { .. })),
-        "foreign view must never enter the model queue"
-    );
     commands.send(Command::Shutdown).await.unwrap();
     engine.await.unwrap();
+    assert!(
+        refused_while_blocked,
+        "foreign view must never enter the model queue; observed {response:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
