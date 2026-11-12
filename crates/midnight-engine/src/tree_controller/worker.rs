@@ -568,8 +568,7 @@ impl Worker {
                 }
                 self.inflight = true;
                 self.maintenance_inflight = maintenance;
-                let inbox = self.inbox.clone();
-                tokio::task::spawn_blocking(move || inbox.complete(job.run()));
+                self.inbox.start_branch(job);
             }
             Err(error) => {
                 if let Some(event) = self

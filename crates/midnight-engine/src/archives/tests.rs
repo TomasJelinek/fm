@@ -54,29 +54,24 @@ async fn failed_navigation(action: ArchiveAction) -> crate::SnapshotState {
         sizes: Arc::default(),
     });
     let (sender, mut events) = tokio::sync::mpsc::channel(4);
-    let catalog = OnceLock::new();
-    catalog.set(Catalog::default()).unwrap();
-    let mut controller = Controller {
-        capture: None,
-        locale: None,
-        catalog: Arc::new(catalog),
-        budget: Arc::new(Semaphore::new(2)),
-        cancellations: std::array::from_fn(|_| Cancellation::default()),
-        outbox: Outbox {
+    let mut controller = Controller::testing(
+        Outbox {
             sender,
             wakeup: Arc::new(|| {}),
         },
-        snapshots: snapshots.clone(),
-        ready: Arc::new(Notify::new()),
-    };
-    let mut tasks = JoinSet::new();
-    controller.navigate(
-        PaneId::Left,
-        NavigationId(2),
-        action,
-        SortSpec::default(),
-        &mut tasks,
+        snapshots.clone(),
+        Arc::new(Semaphore::new(2)),
     );
+    let mut tasks = JoinSet::new();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(2),
+            action,
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
     assert!(matches!(
         events.recv().await,
         Some(Event::ArchiveListed { result: Err(_), .. })

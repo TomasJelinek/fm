@@ -4,7 +4,11 @@ pub(crate) mod published;
 pub(crate) mod scan;
 mod worker;
 
-use crate::{Outbox, Snapshots, tree_roots::ReadyRoot};
+use crate::{
+    Outbox, Snapshots,
+    retirement::{RetirementLease, WorkerOwned},
+    tree_roots::ReadyRoot,
+};
 use midnight_core::{
     ArchiveSizeCommand as Command, ArchiveSizeEvent as Event, Cancellation, EntryId,
     FolderSizeScanId, PaneId, SelectionRevision, SelectionSizeId,
@@ -16,6 +20,22 @@ use std::{
 use tokio::task::JoinHandle;
 
 const MAX_PENDING: usize = 8;
+
+/// One shared pending owner per pane, reserved before any root is admitted.
+pub(crate) const RETIREMENT_CAPACITY: usize = 2;
+pub(crate) struct Retirement {
+    pub(crate) panes: [RetirementLease; RETIREMENT_CAPACITY],
+}
+#[cfg(test)]
+impl Retirement {
+    fn testing() -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 0).unwrap();
+        Self {
+            panes: std::array::from_fn(|_| domain.try_reserve().unwrap()),
+        }
+    }
+}
 struct Request {
     ready: Arc<ReadyRoot>,
     scan: FolderSizeScanId,
@@ -39,13 +59,26 @@ struct Pending {
     flush: bool,
     closed: bool,
 }
-#[derive(Default)]
 struct Lane {
-    pending: Mutex<Pending>,
+    pending: WorkerOwned<Mutex<Pending>>,
     wake: Condvar,
     stop: Cancellation,
 }
+#[cfg(test)]
+impl Default for Lane {
+    fn default() -> Self {
+        let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
+        Self::new(domain.try_reserve().unwrap())
+    }
+}
 impl Lane {
+    fn new(lease: RetirementLease) -> Self {
+        Self {
+            pending: lease.own(Mutex::new(Pending::default())),
+            wake: Condvar::new(),
+            stop: Cancellation::default(),
+        }
+    }
     fn close(&self) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.closed = true;
@@ -64,8 +97,8 @@ pub(crate) struct Controller {
     outbox: Outbox,
 }
 impl Controller {
-    pub(crate) fn new(snapshots: Snapshots, outbox: Outbox) -> Self {
-        let lanes = std::array::from_fn(|_| Arc::new(Lane::default()));
+    pub(crate) fn new(retirement: Retirement, snapshots: Snapshots, outbox: Outbox) -> Self {
+        let lanes = retirement.panes.map(|lease| Arc::new(Lane::new(lease)));
         let workers = std::array::from_fn(|index| {
             let lane = lanes[index].clone();
             let outbox = outbox.clone();
@@ -296,3 +329,6 @@ fn admit(lane: Arc<Lane>, snapshots: Snapshots, outbox: Outbox, command: Command
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lifetime_tests;

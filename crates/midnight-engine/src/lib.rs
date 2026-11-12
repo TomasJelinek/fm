@@ -529,6 +529,8 @@ impl EngineServices {
             &mut tasks,
         );
         let mut archives = archives::Controller::new(
+            resources.archives,
+            scope.clone(),
             self.archive_capture,
             self.locale.clone(),
             self.outbox.clone(),
@@ -594,7 +596,11 @@ impl EngineServices {
             rectangle_summary::Controller::new(self.outbox.clone(), &mut tasks);
         let selected_sizes =
             selection_sizes::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
-        let archive_sizes = archive_sizes::Controller::new(snapshots.clone(), self.outbox.clone());
+        let archive_sizes = archive_sizes::Controller::new(
+            resources.archive_sizes,
+            snapshots.clone(),
+            self.outbox.clone(),
+        );
         let size_budget = Arc::new(Semaphore::new(2));
         let size_delivery_cancel = Cancellation::default();
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
@@ -653,7 +659,13 @@ impl EngineServices {
                         _ => None,
                     };
                     if let Some((pane, navigation)) = navigation_request {
-                        if navigation_high_water[pane.index()].is_some_and(|old| navigation <= old) { continue; }
+                        if navigation_high_water[pane.index()].is_some_and(|old| navigation <= old) {
+                            if let Some(Command::ArchiveNavigate { action, .. }) = command
+                                && let Err(error) = archives.retire_action(action).await {
+                                eprintln!("Stale archive input cleanup failed: {error}");
+                            }
+                            continue;
+                        }
                         navigation_high_water[pane.index()] = Some(navigation);
                         denied_navigations.begin(pane, navigation);
                         folder_presence.cancel(pane);
@@ -776,15 +788,20 @@ impl EngineServices {
                             neighborhood.navigate(pane, navigation, action, sort, &mut tasks);
                         }
                         Some(Command::ArchiveNavigate { pane, navigation, action, sort }) => {
+                            if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) {
+                                if let Err(error) = archives.retire_action(action).await {
+                                    eprintln!("Stale archive input cleanup failed: {error}");
+                                }
+                                continue;
+                            }
                             neighborhood.cancel(pane);
-                            if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) { continue; }
                             trees.invalidate(pane, navigation, sort);
                             if let Some(old) = requests[pane.index()].take() { old.cancel(); }
                             if let Some(old) = size_requests[pane.index()].take() { old.cancel(); }
                             entry_sizes.cancel_all(pane);
                             search.invalidate(pane);
                             comparison.invalidate(pane);
-                            archives.navigate(pane, navigation, action, sort, &mut tasks);
+                            archives.navigate(pane, navigation, action, sort, &mut tasks).await;
                         }
                         Some(Command::LoadLocale) if !locale_requested => {
                             locale_requested = true;
@@ -1505,3 +1522,6 @@ fn publish_listing(
         cancel,
     );
 }
+
+#[cfg(test)]
+mod native_output_test_fixture;

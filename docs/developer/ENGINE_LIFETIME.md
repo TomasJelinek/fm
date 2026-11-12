@@ -20,7 +20,7 @@ destructor joins the cleanup thread. The application shutdown grace remains boun
 
 ## Capacity and ownership
 
-One engine reserves a domain with 166 payload slots and six reusable waiter tokens:
+One engine reserves a domain with 303 payload slots and seven reusable waiter tokens:
 
 | Owners | Slots |
 | --- | ---: |
@@ -39,6 +39,8 @@ One engine reserves a domain with 166 payload slots and six reusable waiter toke
 | Clipboard inbox and one serialized rejection | 2 |
 | File List retained jobs and generated outputs | 12 |
 | Dynamically discovered network provider | 1 |
+| Archive navigation: 132 retained mounts, two requests and one intake | 135 |
+| Archive-size pending state, one per pane | 2 |
 
 Native drag admission uses Copy's existing 32 permits. It does not add another queue.
 A reservation is acquired before accepting owned payloads and remains occupied until
@@ -118,6 +120,33 @@ This does not make newly created warning-report spools metadata-only or guarante
 that every platform chooser can be forcibly interrupted. Folder-size/presence report
 egress remains a separately recorded audit boundary.
 
+## Archive navigation and queued size work
+
+Archive navigation guards accepted input through native work and reply delivery.
+Busy or stale input retires through one serialized intake acknowledgement; aborting
+that wait does not cancel cleanup. Native mounts are adopted before leaving their
+worker and exposed only through a canonical guarded proxy. A shared 132-token retention budget
+bounds native lifetime, including externally retained listings whose worker already
+exited. Its capacity covers the existing two pane registries of 64 mounts each,
+two current roots outside those registries and two workers producing replacements.
+This explicit aggregate bound is distinct from the two-request admission and host
+process limits. Arbitrary external output holders also consume this budget; it is
+not a proof that those holders cannot retain more outputs. Closed/failed sessions
+still occupy their token until final destruction. Saturation reports busy and
+accepted content is never evicted.
+Only exact raw/proxy identity reuses a guard, not matching plugin IDs or names.
+
+Each archive-size pane reserves one guard for its pending lane before it accepts a
+root. Closing marks/cancels the lane; ordinary worker draining remains unchanged.
+If a native worker unwinds with queued roots, final lane destruction still retires
+native owners outside the executor, retaining its slot through completed cleanup.
+
+Tree branch completions were separately checked: completed rows contain metadata
+and no longer retain the consumed native mount. They keep branch admission until
+mailbox drain. Queued native branch closures also retain admission through runtime
+shutdown and close their native owners on the blocking worker. These are tested
+positive controls, not reasons to add redundant completion guards.
+
 ## Qualification boundary
 
 This protects the outer run, command inbox, Copy/Move/mutation handoffs, shared snapshots,
@@ -131,5 +160,7 @@ covers File List, dynamic network discovery and subsequent service hooks, with
 [qualified results](../verification/2026-11-12-remaining-native-results.md). See the historical
 [ownership review](../verification/2026-11-12-engine-lifetime-review.md) and the current
 [child-task plan](../superpowers/plans/2026-11-12-engine-task-ownership.md).
+[Archive and mailbox qualification](../verification/2026-11-12-native-mailboxes.md)
+records the next ownership boundaries.
 [LIFE-01](../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november) remains open.
 The plugin ABI, operation authority, confirmation and checksum policy are unchanged.

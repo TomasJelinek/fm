@@ -20,6 +20,8 @@ pub(crate) struct Resources {
     pub(crate) clipboard: crate::clipboard::Retirement,
     pub(crate) network: crate::network_neighborhood::Retirement,
     pub(crate) file_lists: crate::file_list_actor::Retirement,
+    pub(crate) archive_sizes: crate::archive_sizes::Retirement,
+    pub(crate) archives: crate::archives::Retirement,
     pub(crate) watch: crate::watch::Retirement,
     pub(crate) checksums: crate::checksum_actor::Retirement,
     pub(crate) user_commands: crate::user_commands::Retirement,
@@ -47,8 +49,10 @@ impl EngineLifetime {
             + crate::desktop::EDITOR_RETIREMENT_CAPACITY
             + crate::watch::RETIREMENT_CAPACITY
             + crate::network_neighborhood::RETIREMENT_CAPACITY
-            + crate::file_list_actor::RETIREMENT_CAPACITY;
-        let domain = RetirementDomain::try_start(capacity, 6)?;
+            + crate::file_list_actor::RETIREMENT_CAPACITY
+            + crate::archive_sizes::RETIREMENT_CAPACITY
+            + crate::archives::RETIREMENT_CAPACITY;
+        let domain = RetirementDomain::try_start(capacity, 7)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
         let desktop_openers = crate::user_command_runtime::ProcessTracker::try_start_openers()?;
@@ -73,6 +77,16 @@ impl EngineLifetime {
                 },
                 snapshots: domain.try_reserve().map_err(io::Error::other)?,
                 watch: crate::watch::Retirement {
+                    panes: [
+                        domain.try_reserve().map_err(io::Error::other)?,
+                        domain.try_reserve().map_err(io::Error::other)?,
+                    ],
+                },
+                archives: crate::archives::Retirement {
+                    domain: domain.clone(),
+                    intake: domain.new_waiter().map_err(io::Error::other)?,
+                },
+                archive_sizes: crate::archive_sizes::Retirement {
                     panes: [
                         domain.try_reserve().map_err(io::Error::other)?,
                         domain.try_reserve().map_err(io::Error::other)?,

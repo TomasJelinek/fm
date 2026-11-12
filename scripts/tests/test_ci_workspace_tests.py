@@ -221,7 +221,7 @@ class WorkspaceTests(unittest.TestCase):
         def invoke(command, root, gate):
             visited.append(gate['name'])
             return (37, [artifact]) if gate['cleanup'] else (0, [])
-        self.assertEqual(runner.execute(self.root, metadata, invoke), 37)
+        self.assertEqual(runner.execute(self.root, metadata, invoke, batch_size=1), 37)
         self.assertTrue(Path(artifact['executable']).exists())
         self.assertNotIn('z_later', visited)
 

@@ -133,6 +133,7 @@ fn setup() -> (
     let snapshots = crate::test_snapshots(Default::default());
     let (sender, events) = tokio::sync::mpsc::channel(64);
     let controller = Controller::new(
+        Retirement::testing(),
         snapshots.clone(),
         Outbox {
             sender,

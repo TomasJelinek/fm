@@ -10,6 +10,9 @@ mod refresh_tests;
 #[path = "tree_refresh/housekeeping.rs"]
 mod housekeeping_tests;
 
+#[path = "tree_refresh/retained_archives.rs"]
+mod retained_archive_tests;
+
 struct Files;
 impl DirectoryService for Files {
     fn read_directory(
@@ -816,6 +819,16 @@ async fn archive_root_at(
     mount: Arc<dyn ArchiveMount>,
     generation: u64,
 ) -> TreeRootSnapshot {
+    archive_root_in_pane_at(commands, events, mount, PaneId::Left, generation).await
+}
+
+async fn archive_root_in_pane_at(
+    commands: &mpsc::Sender<Command>,
+    events: &mut mpsc::Receiver<Event>,
+    mount: Arc<dyn ArchiveMount>,
+    pane: PaneId,
+    generation: u64,
+) -> TreeRootSnapshot {
     let location = ArchiveLocation {
         mount: Some(mount),
         directory: 1,
@@ -830,7 +843,7 @@ async fn archive_root_at(
     };
     commands
         .send(Command::ArchiveNavigate {
-            pane: PaneId::Left,
+            pane,
             navigation: NavigationId(generation),
             action: ArchiveAction::List(location),
             sort: SortSpec::default(),

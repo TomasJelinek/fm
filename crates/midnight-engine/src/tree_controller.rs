@@ -344,3 +344,6 @@ fn size_command_stamp(command: &midnight_core::TreeSizeCommand) -> midnight_core
         | midnight_core::TreeSizeCommand::Cancel { stamp, .. } => *stamp,
     }
 }
+
+#[cfg(test)]
+mod lifetime_tests;

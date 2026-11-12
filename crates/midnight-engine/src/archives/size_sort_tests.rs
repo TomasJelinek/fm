@@ -101,20 +101,24 @@ impl Harness {
             sender,
             wakeup: Arc::new(|| {}),
         };
-        let catalog = OnceLock::new();
-        catalog.set(Catalog::default()).unwrap();
+        let size_domain = crate::retirement::RetirementDomain::try_start(
+            crate::archive_sizes::RETIREMENT_CAPACITY,
+            0,
+        )
+        .unwrap();
         Self {
-            navigation: Controller {
-                capture: None,
-                locale: None,
-                catalog: Arc::new(catalog),
-                budget: Arc::new(Semaphore::new(2)),
-                cancellations: std::array::from_fn(|_| Cancellation::default()),
-                outbox: outbox.clone(),
-                snapshots: snapshots.clone(),
-                ready: Arc::new(Notify::new()),
-            },
-            sizes: crate::archive_sizes::Controller::new(snapshots.clone(), outbox),
+            navigation: Controller::testing(
+                outbox.clone(),
+                snapshots.clone(),
+                Arc::new(Semaphore::new(2)),
+            ),
+            sizes: crate::archive_sizes::Controller::new(
+                crate::archive_sizes::Retirement {
+                    panes: std::array::from_fn(|_| size_domain.try_reserve().unwrap()),
+                },
+                snapshots.clone(),
+                outbox,
+            ),
             snapshots,
             events,
             tasks: JoinSet::new(),
@@ -188,16 +192,18 @@ impl Harness {
         descending: bool,
     ) -> Result<ArchiveListing, FsError> {
         self.generation += 1;
-        self.navigation.navigate(
-            PaneId::Left,
-            NavigationId(self.generation),
-            ArchiveAction::List(location(source)),
-            SortSpec {
-                column: SortColumn::Size,
-                descending,
-            },
-            &mut self.tasks,
-        );
+        self.navigation
+            .navigate(
+                PaneId::Left,
+                NavigationId(self.generation),
+                ArchiveAction::List(location(source)),
+                SortSpec {
+                    column: SortColumn::Size,
+                    descending,
+                },
+                &mut self.tasks,
+            )
+            .await;
         let Event::ArchiveListed { result, .. } = self.event().await else {
             panic!("unexpected event")
         };

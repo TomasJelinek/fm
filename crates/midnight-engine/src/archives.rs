@@ -1,15 +1,21 @@
-//! Archive navigation occupies bounded backend workers and carries only provider IDs.
-use crate::{Outbox, Snapshots};
+//! Bounded archive navigation and canonical guarded native mount ownership.
+use crate::{Outbox, Snapshots, retirement::WorkerOwned, task_lifetime::TaskLifetime};
 use midnight_core::*;
 use midnight_filesystem_host::{Catalog, Mount};
 use std::{
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 use tokio::{
-    sync::{Notify, Semaphore},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
 };
+mod navigation;
+mod ownership;
+use ownership::Mounts;
+pub(crate) use ownership::{RETIREMENT_CAPACITY, Retirement};
+#[cfg(test)]
+mod retirement_tests;
 #[cfg(test)]
 mod root_retirement_tests;
 #[cfg(test)]
@@ -17,6 +23,9 @@ mod size_sort_tests;
 #[cfg(test)]
 mod tests;
 mod timestamps;
+
+const PANES: usize = 2;
+const MAX_WORKERS: usize = 2;
 
 /// Backend capture authority. An expected revision must be validated before returning content.
 pub type ArchiveCapture = Arc<
@@ -62,18 +71,37 @@ fn capture_source(
     Ok(source)
 }
 
+struct Request {
+    action: Mutex<Option<ArchiveAction>>,
+    capture: Option<ArchiveCapture>,
+    locale: Option<Arc<dyn LocaleService>>,
+    catalog: Arc<OnceLock<Catalog>>,
+    snapshots: Snapshots,
+    pane: PaneId,
+    navigation: NavigationId,
+    sort: SortSpec,
+    cancel: Cancellation,
+    scope: TaskLifetime,
+    // Last: native input and original service owners finish cleanup first.
+    permit: Option<OwnedSemaphorePermit>,
+}
 pub(crate) struct Controller {
     capture: Option<ArchiveCapture>,
     locale: Option<Arc<dyn LocaleService>>,
     catalog: Arc<OnceLock<Catalog>>,
     budget: Arc<Semaphore>,
-    cancellations: [Cancellation; 2],
+    cancellations: [Cancellation; PANES],
     outbox: Outbox,
     snapshots: Snapshots,
     ready: Arc<Notify>,
+    mounts: Arc<Mounts>,
+    retirement: Retirement,
+    scope: TaskLifetime,
 }
 impl Controller {
     pub(crate) fn new(
+        retirement: Retirement,
+        scope: TaskLifetime,
         capture: Option<ArchiveCapture>,
         locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
@@ -86,18 +114,22 @@ impl Controller {
             capture,
             locale,
             catalog: catalog.clone(),
-            budget: Arc::new(Semaphore::new(2)),
+            budget: Arc::new(Semaphore::new(MAX_WORKERS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
             outbox: outbox.clone(),
             snapshots,
             ready: ready.clone(),
+            mounts: Arc::new(Mounts::new(retirement.domain.clone())),
+            retirement,
+            scope: scope.clone(),
         };
-        tasks.spawn(async move {
-            let discovered = tokio::task::spawn_blocking(|| {
+        let native_scope = scope.clone();
+        tasks.spawn(scope.future(async move {
+            let discovered = tokio::task::spawn_blocking(native_scope.blocking(|| {
                 let executable =
                     midnight_plugin_host::installed_executable().map_err(std::io::Error::other)?;
                 Catalog::discover(executable.parent().unwrap_or(Path::new(".")))
-            })
+            }))
             .await
             .ok()
             .and_then(Result::ok)
@@ -106,8 +138,17 @@ impl Controller {
             let _ = catalog.set(discovered);
             ready.notify_waiters();
             outbox.send(Event::ArchiveAvailability(available)).await;
-        });
+        }));
         result
+    }
+    /// Serial dispatcher rejection before normal navigation admission.
+    /// EngineRun owns the raw input while the payload-free reservation is pending.
+    pub(crate) async fn retire_action(
+        &mut self,
+        action: ArchiveAction,
+    ) -> Result<(), crate::retirement::RetirementPanic> {
+        let lease = self.retirement.intake.reserve().await;
+        lease.own((action, self.scope.clone())).retire().await
     }
     pub(crate) fn cancel(&mut self, pane: PaneId) {
         self.cancellations[pane.index()].cancel();
@@ -115,7 +156,7 @@ impl Controller {
         // A failed native navigation can still display the previous virtual snapshot.
         snapshots[pane.index()].archive_navigation = None;
     }
-    pub(crate) fn navigate(
+    pub(crate) async fn navigate(
         &mut self,
         pane: PaneId,
         navigation: NavigationId,
@@ -123,126 +164,95 @@ impl Controller {
         sort: SortSpec,
         tasks: &mut JoinSet<()>,
     ) {
+        // EngineRun protects the incoming command while this single intake waits.
+        let lease = self.retirement.intake.reserve().await;
         self.cancellations[pane.index()].cancel();
         let cancel = Cancellation::default();
         self.cancellations[pane.index()] = cancel.clone();
-        let catalog = self.catalog.clone();
-        let capture = self.capture.clone();
-        let locale = self.locale.clone();
-        let ready = self.ready.clone();
-        let snapshots = self.snapshots.clone();
+        let restore_native_on_failure = matches!(&action, ArchiveAction::Open { .. });
+        let mut request = lease.own(Request {
+            action: Mutex::new(Some(action)),
+            capture: self.capture.clone(),
+            locale: self.locale.clone(),
+            catalog: self.catalog.clone(),
+            snapshots: self.snapshots.clone(),
+            pane,
+            navigation,
+            sort,
+            cancel,
+            scope: self.scope.clone(),
+            permit: None,
+        });
         {
-            let mut states = snapshots.lock().unwrap_or_else(|e| e.into_inner());
+            let mut states = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
             states[pane.index()].archive_navigation = Some(navigation);
             states[pane.index()].pending = None;
         }
+        let Ok(permit) = self.budget.clone().try_acquire_owned() else {
+            let failure = match request.retire().await {
+                Ok(()) => error("Archive navigation workers are busy"),
+                Err(failure) => error(format!("Archive input cleanup failed: {failure}")),
+            };
+            navigation::publish(
+                &self.snapshots,
+                &self.outbox,
+                pane,
+                navigation,
+                restore_native_on_failure,
+                Err(failure),
+            )
+            .await;
+            return;
+        };
+        request.permit = Some(permit);
+        let request: Arc<WorkerOwned<Request>> = Arc::new(request);
+        let ready = self.ready.clone();
         let outbox = self.outbox.clone();
-        let permit = self.budget.clone().try_acquire_owned();
-        let restore_native_on_failure = matches!(&action, ArchiveAction::Open { .. });
-        tasks.spawn(async move {
+        let mounts = self.mounts.clone();
+        let scope = self.scope.clone();
+        tasks.spawn(self.scope.future(async move {
             loop {
                 let notified = ready.notified();
-                if catalog.get().is_some() {
+                if request.catalog.get().is_some() {
                     break;
                 }
                 notified.await;
             }
-            let worker_snapshots = snapshots.clone();
-            let result = match permit {
-                Ok(permit) => tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    let location = match action {
-                        ArchiveAction::Open { path, format } => {
-                            let (package, format) = catalog
-                                .get()
-                                .and_then(|c| c.choose_format(format, None))
-                                .ok_or_else(|| {
-                                    FsError::from_io(
-                                        "open archive",
-                                        &path,
-                                        std::io::Error::new(
-                                            std::io::ErrorKind::Unsupported,
-                                            "Compatible archive filesystem plugin is unavailable",
-                                        ),
-                                    )
-                                })?;
-                            let source = capture_source(capture.as_ref(), &path, None, &cancel)?;
-                            let mount =
-                                Mount::open_captured(package, format, &path, source, &cancel)?;
-                            ArchiveLocation {
-                                address: mount.address(),
-                                mount: Some(mount),
-                                directory: 1,
-                                trail: vec![(
-                                    1,
-                                    path.file_name()
-                                        .unwrap_or(path.as_os_str())
-                                        .to_string_lossy()
-                                        .into_owned(),
-                                )],
-                            }
-                        }
-                        ArchiveAction::List(location) if location.mount.is_none() => {
-                            restore(catalog.get(), capture.as_ref(), location.address, &cancel)?
-                        }
-                        ArchiveAction::List(location) => location,
-                    };
-                    let mount = location
-                        .mount
-                        .as_ref()
-                        .ok_or_else(|| error("Archive is unavailable"))?;
-                    mount.validate()?;
-                    let sizes =
-                        crate::archive_sizes::published::snapshot(&worker_snapshots, pane, mount);
-                    let nodes = mount.list(location.directory, &cancel)?;
-                    let mut entries: Vec<_> = nodes.into_iter().map(Entry::from_archive).collect();
-                    for entry in &mut entries {
-                        timestamps::localize(entry, locale.as_deref());
-                    }
-                    sort_entries_with_sizes(&mut entries, sort, |entry| {
-                        crate::archive_sizes::published::size(entry, sizes.as_deref())
-                    });
-                    mount.validate()?;
-                    let index = Arc::new(DirectoryIndex::from_entries(&entries));
-                    let listing = ArchiveListing {
-                        location,
-                        entries: entries.into(),
-                        index,
-                    };
-                    remember_listing(&worker_snapshots, pane, navigation, &listing, &cancel);
-                    Ok(listing)
-                })
-                .await
-                .unwrap_or_else(|e| Err(error(e.to_string()))),
-                Err(_) => Err(error("Archive navigation workers are busy")),
-            };
-            {
-                let mut states = snapshots.lock().unwrap_or_else(|e| e.into_inner());
-                let state = &mut states[pane.index()];
-                if state.archive_navigation == Some(navigation)
-                    && result.is_err()
-                    && let Some(notify) = &state.tree_notify
-                {
-                    notify.notify(navigation);
-                }
-                if state.archive_navigation == Some(navigation)
-                    && result.is_err()
-                    && restore_native_on_failure
-                    && state.archive.is_none()
-                {
-                    // Opening a native archive failed: its original native pane remains.
-                    // Saved provider tabs remain unavailable, with native actions disabled.
-                    state.archive_navigation = None;
-                }
-            }
-            outbox
-                .send(Event::ArchiveListed {
-                    pane,
-                    navigation,
-                    result,
-                })
-                .await;
-        });
+            let worker = request.clone();
+            let result = tokio::task::spawn_blocking(
+                scope.blocking(move || navigation::run(&worker, &mounts)),
+            )
+            .await
+            .unwrap_or_else(|e| Err(error(e.to_string())));
+            navigation::publish(
+                &request.snapshots,
+                &outbox,
+                pane,
+                navigation,
+                restore_native_on_failure,
+                result,
+            )
+            .await;
+        }));
+    }
+    #[cfg(test)]
+    fn testing(outbox: Outbox, snapshots: Snapshots, budget: Arc<Semaphore>) -> Self {
+        let catalog = OnceLock::new();
+        catalog.set(Catalog::default()).unwrap();
+        let retirement = Retirement::testing();
+        Self {
+            capture: None,
+            locale: None,
+            catalog: Arc::new(catalog),
+            budget,
+            cancellations: std::array::from_fn(|_| Cancellation::default()),
+            outbox,
+            snapshots,
+            ready: Arc::new(Notify::new()),
+            mounts: Arc::new(Mounts::new(retirement.domain.clone())),
+            retirement,
+            scope: TaskLifetime::testing(()),
+        }
     }
 }
 

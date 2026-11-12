@@ -1,5 +1,5 @@
 use super::*;
-use crate::tree_actor::BranchCompletion;
+use crate::tree_actor::{BranchCompletion, BranchJob};
 use std::{collections::VecDeque, sync::Mutex};
 use tokio::sync::Notify;
 
@@ -39,6 +39,11 @@ pub(super) enum PushError {
     Superseded(TreeCommand),
 }
 impl Mailbox {
+    /// Submit from the model worker; queued work retains its existing branch permit.
+    pub fn start_branch(self: &Arc<Self>, job: BranchJob) -> tokio::task::JoinHandle<()> {
+        let inbox = self.clone();
+        tokio::task::spawn_blocking(move || inbox.complete(job.run()))
+    }
     pub fn push(&self, command: TreeCommand) -> Result<(), PushError> {
         let mut inbox = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let TreeCommand::Sizes(midnight_core::TreeSizeCommand::Acknowledge { stamp, version }) =

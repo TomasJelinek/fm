@@ -16,6 +16,7 @@ import tomllib
 
 LIB_KINDS = {'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}
 WINDOWS_SHARING_ERRORS = (32, 33) if os.name == 'nt' else ()
+DEFAULT_BATCH_SIZE = 8
 
 
 def plan(metadata):
@@ -25,7 +26,10 @@ def plan(metadata):
     def eligible(package, target, field='test'):
         return target.get(field, False) and set(target.get('required-features', ())) <= features[package['id']]
     def gate(args, name='', selected=(), cleanup=False):
-        return {'args': args, 'name': name, 'packages': set(selected), 'cleanup': cleanup}
+        result = {'args': args, 'name': name, 'packages': set(selected), 'cleanup': cleanup}
+        if cleanup:
+            result['targets'] = {name: set(selected)}
+        return result
     result = []
     libraries = [(package, target) for package in packages for target in package['targets']
                  if LIB_KINDS.intersection(target['kind'])]
@@ -54,6 +58,51 @@ def plan(metadata):
     return result
 
 
+def batch_integrations(gates, batch_size):
+    """Bound live executables while retaining Cargo's workspace target selection.
+
+    A same-name group is indivisible, just as in serial execution. Its existing
+    size may exceed the requested batch size; no additional group joins it.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 8:
+        raise ValueError('Integration batch size must be an integer from 1 through 8')
+    result, pending = [], []
+    count = 0
+    def flush():
+        if not pending:
+            return
+        if len(pending) == 1:
+            result.append(pending[0])
+        else:
+            targets = {name: packages for gate in pending
+                       for name, packages in gate['targets'].items()}
+            result.append({
+                'args': [part for name in targets for part in ('--test', name)]
+                        + ['--message-format=json'],
+                'name': ', '.join(targets), 'targets': targets,
+                'packages': set().union(*targets.values()), 'cleanup': True})
+        pending.clear()
+    for gate in gates:
+        if not gate['cleanup']:
+            flush()
+            count = 0
+            result.append(gate)
+            continue
+        size = len(integration_identities(gate))
+        if pending and count + size > batch_size:
+            flush()
+            count = 0
+        pending.append(gate)
+        count += size
+    flush()
+    return result
+
+
+def integration_identities(gate):
+    return {(package, name) for name, packages in gate['targets'].items()
+            for package in packages}
+
+
 def output_root(root, metadata):
     root = root.resolve(strict=True)
     expected = root / '_build'
@@ -67,24 +116,27 @@ def retire(root, gate, artifacts):
     deps = root / 'debug/deps'
     if deps.is_symlink() or deps.resolve() != deps:
         raise ValueError('Generated test directory must not redirect outside _build/debug/deps')
+    expected = integration_identities(gate)
     selected = set()
     paths = set()
     for artifact in artifacts:
+        identity = (artifact.get('package_id'), artifact.get('target', {}).get('name'))
         if (artifact.get('reason') != 'compiler-artifact'
                 or artifact.get('target', {}).get('kind') != ['test']
-                or artifact['target'].get('name') != gate['name']
                 or not artifact.get('profile', {}).get('test')
-                or artifact.get('package_id') not in gate['packages']):
+                or identity not in expected or identity in selected):
             raise ValueError('Unexpected integration artifact identity')
         value = artifact.get('executable')
         if not isinstance(value, str):
             raise ValueError('Missing integration executable artifact')
         executable = Path(value)
-        pattern = re.escape(gate['name'].replace('-', '_')) + r'-[0-9a-f]+(?:\.exe)?'
+        pattern = re.escape(identity[1].replace('-', '_')) + r'-[0-9a-f]+(?:\.exe)?'
         if (not executable.is_absolute() or executable.is_symlink()
                 or executable.parent != deps or executable.resolve(strict=True) != executable
                 or not executable.is_file() or not re.fullmatch(pattern, executable.name)):
             raise ValueError(f'Unowned integration artifact: {executable}')
+        if executable in paths:
+            raise ValueError('Duplicate integration executable artifact')
         paths.add(executable)
         if executable.suffix == '.exe':
             pdb = executable.with_suffix('.pdb')
@@ -94,8 +146,8 @@ def retire(root, gate, artifacts):
                 if not pdb.is_file() or pdb.resolve(strict=True) != pdb:
                     raise ValueError(f'Unowned integration symbols: {pdb}')
                 paths.add(pdb)
-        selected.add(artifact['package_id'])
-    if selected != gate['packages']:
+        selected.add(identity)
+    if selected != expected:
         raise ValueError('Successful Cargo gate did not report every selected integration artifact')
     # Validate the complete set before deleting anything. No globs or recursive removal.
     identities = {path: artifact_identity(path) for path in paths}
@@ -154,7 +206,7 @@ def run_command(command, root, gate):
             if event.get('reason') == 'compiler-message':
                 print(event.get('message', {}).get('rendered', line), end='', flush=True)
             elif gate['cleanup'] and event.get('reason') == 'compiler-artifact' and event.get('target', {}).get('kind') == ['test']:
-                if len(artifacts) < len(gate['packages']):
+                if len(artifacts) < len(integration_identities(gate)):
                     artifacts.append(event)
                 else:
                     overflow = True
@@ -166,9 +218,10 @@ def run_command(command, root, gate):
     return code, artifacts
 
 
-def execute(root, metadata, invoke=run_command):
+def execute(root, metadata, invoke=run_command, batch_size=DEFAULT_BATCH_SIZE):
     target_root = output_root(root, metadata)
-    gates = plan(metadata)
+    serial = plan(metadata)
+    gates = batch_integrations(serial, batch_size)
     members = set(metadata['workspace_members'])
     names = {package['id']: package['name'] for package in metadata['packages'] if package['id'] in members}
     # Excluding a disabled unit/doctest target must not drop its member's default
@@ -177,14 +230,22 @@ def execute(root, metadata, invoke=run_command):
                       for identity, values in metadata['ci_active_features'].items()
                       for feature in values)
     feature_args = ['--features', ','.join(features)] if features else []
-    print(f'Workspace gates: {len(gates)}; integration names: {sum(gate["cleanup"] for gate in gates)}', flush=True)
-    for gate in gates:
+    print(f'Workspace gates: {len(gates)}; '
+          f'integration names: {sum(gate["cleanup"] for gate in serial)}; '
+          f'integration batch bound: {batch_size}', flush=True)
+    for index, gate in enumerate(gates, 1):
         command = ['cargo', 'test', '--workspace', '--locked'] + feature_args + gate['args']
+        started = time.monotonic()
         code, artifacts = invoke(command, root, gate)
+        finished = time.monotonic()
+        print(f'Gate {index}/{len(gates)} Cargo exit {code}; '
+              f'elapsed {finished - started:.3f}s', flush=True)
         if code:
             return code  # Retain failed output for diagnosis; never skip to later targets.
         if gate['cleanup']:
             retire(target_root, gate, artifacts)
+            print(f'Gate {index}/{len(gates)} retirement '
+                  f'{time.monotonic() - finished:.3f}s', flush=True)
     return 0
 
 
@@ -269,11 +330,15 @@ def main():
     configure_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--retire-successful-test-artifacts', action='store_true')
+    parser.add_argument('--integration-batch-size', type=int, choices=(1, 4, 8),
+                        default=DEFAULT_BATCH_SIZE,
+                        help='Maximum selected integrations per Cargo command, except atomic '
+                             'same-name groups (default: %(default)s)')
     args = parser.parse_args()
     if not args.retire_successful_test_artifacts or os.environ.get('CI', '').lower() != 'true':
         parser.error('Requires CI=true and explicit --retire-successful-test-artifacts')
     root = Path(__file__).resolve().parents[1]
-    return execute(root, load_metadata(root))
+    return execute(root, load_metadata(root), batch_size=args.integration_batch_size)
 
 if __name__ == '__main__':
     try:

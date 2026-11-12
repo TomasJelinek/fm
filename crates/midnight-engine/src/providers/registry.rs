@@ -28,6 +28,8 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    /// Shared with native-owner retirement admission; keep the pane policy in one place.
+    pub(crate) const MAX_MOUNTS: usize = MAX_MOUNTS;
     pub fn register(
         &self,
         id: ProviderId,

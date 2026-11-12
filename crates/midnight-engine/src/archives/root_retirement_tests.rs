@@ -61,32 +61,27 @@ async fn replacing_archive_root_retires_mount_on_blocking_worker_outside_snapsho
     let snapshots: Snapshots = crate::test_snapshots(Default::default());
     let retirement = remember_old_root(&snapshots);
     let (sender, mut events) = tokio::sync::mpsc::channel(1);
-    let catalog = OnceLock::new();
-    catalog.set(Catalog::default()).unwrap();
-    let mut controller = Controller {
-        capture: None,
-        locale: None,
-        catalog: Arc::new(catalog),
-        budget: Arc::new(Semaphore::new(1)),
-        cancellations: std::array::from_fn(|_| Cancellation::default()),
-        outbox: Outbox {
+    let mut controller = Controller::testing(
+        Outbox {
             sender,
             wakeup: Arc::new(|| {}),
         },
-        snapshots: snapshots.clone(),
-        ready: Arc::new(Notify::new()),
-    };
-    let mut tasks = JoinSet::new();
-    controller.navigate(
-        PaneId::Left,
-        NavigationId(2),
-        ArchiveAction::List(location(RetiringArchive {
-            snapshots: Weak::new(),
-            report: None,
-        })),
-        SortSpec::default(),
-        &mut tasks,
+        snapshots.clone(),
+        Arc::new(Semaphore::new(1)),
     );
+    let mut tasks = JoinSet::new();
+    controller
+        .navigate(
+            PaneId::Left,
+            NavigationId(2),
+            ArchiveAction::List(location(RetiringArchive {
+                snapshots: Weak::new(),
+                report: None,
+            })),
+            SortSpec::default(),
+            &mut tasks,
+        )
+        .await;
     let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
         .await
         .unwrap();

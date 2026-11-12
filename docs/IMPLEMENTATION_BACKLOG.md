@@ -49,8 +49,8 @@ bugs were reproduced. Startup now reserves a plain cleanup worker and bounded sl
 before taking provider ownership. The synchronous Engine run wrapper owns suspended
 execution and the complete command inbox; Copy/Move/Delete handoffs, shared snapshots
 and drag state retain their cleanup reservations through actual destruction.
-The [engine contract](developer/ENGINE_LIFETIME.md) now describes 166 payload slots,
-six bounded intake waiters, eight shared terminal/editor/Custom Command process
+The [engine contract](developer/ENGINE_LIFETIME.md) now describes 303 payload slots,
+seven bounded intake waiters, eight shared terminal/editor/Custom Command process
 slots and sixteen independent opener slots. The
 [initial integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
 remains historical; the [child-task verification](verification/2026-11-12-task-services.md)
@@ -75,9 +75,14 @@ records the original File List and dynamic network findings now implemented by t
 That batch also covers the remaining original service task pairs and PathPicker Drop.
 [Qualification](verification/2026-11-12-remaining-native-results.md) records the final
 Windows/Linux affected gates, debug deployment and native/software startup smokes.
-Archive results/mailboxes and newly generated warning-report ownership remain open.
-Repeated Engine builder replacement also remains open. These are inspected
-follow-ups, not claimed reproduced failures or an exhaustive completion audit. The
+Archive navigation and pending size roots now have guarded ownership; see the
+[mailbox qualification](verification/2026-11-12-native-mailboxes.md). Completed tree
+branches proved metadata-only; no redundant native guard was added. Newly generated
+warning-report ownership remains open: two actual-file Linux regressions reproduced
+caller-side final destruction; the [report-storage evidence and next contract](verification/2026-11-12-report-storage-retirement.md)
+retain the failing QA patch without registering it in the production test suite.
+Repeated Engine builder replacement also remains an inspected, unqualified follow-up.
+This is not an exhaustive completion audit. The
 [runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
 tracks implementation and outstanding cross-actor qualification.
 
@@ -112,9 +117,13 @@ invalid first-batch seek cases and final performance limitations separately.
 
 The completed Windows Test step took 50m32s across 281 serial Cargo gates; it did
 not hang. [Recorded timings and the optimization proposal](verification/2026-11-12-ci-windows-test-runtime.md)
-track a build-once or bounded-batch experiment while preserving feature selection,
-per-test environments, runner behavior, examples and doctest coverage. No workflow
-change or estimated speedup is treated as measured evidence.
+motivated bounded Cargo-native batches. The default is now eight selected integration
+executables per command; same-name workspace groups remain indivisible. Exact target
+identity validation and successful-batch retirement preserve coverage and failure
+artifacts. The [measured experiment](verification/2026-11-12-ci-test-batching.md) ran
+the same 19 tests in eight targets: batch eight was 13.8% faster than serial in paired
+local runs. This representative result is not a measured full-CI speedup. Library,
+binary, example and doctest gates and active feature selection are unchanged.
 
 ## Scope and completed baseline
 
