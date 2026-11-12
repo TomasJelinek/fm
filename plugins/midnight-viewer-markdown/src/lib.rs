@@ -3,6 +3,8 @@ pub mod markdown;
 mod page_cache;
 mod paging;
 mod plugin;
+mod retained_context;
 mod search;
 mod semantic_window;
+mod trace;
 midnight_plugin_sdk::export_viewer!(plugin::Plugin);

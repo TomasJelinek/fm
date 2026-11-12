@@ -2,6 +2,8 @@ use crate::{
     decode::{self, Decoded},
     markdown, page_cache,
     plugin::{Session, lock, send},
+    retained_context::Retained,
+    trace,
 };
 use midnight_plugin_sdk::{
     Context, Output,
@@ -13,7 +15,7 @@ pub struct Hints {
     plain: bool,
     checkpoints: BTreeSet<u64>,
     cache: page_cache::Cache,
-    context: Option<Arc<DocumentPage>>,
+    context: Option<Retained>,
 }
 impl Hints {
     pub fn new(_: &str, mode: u16) -> Self {
@@ -34,6 +36,7 @@ pub fn cached(session: &Session, request: &Viewport) -> Option<(Arc<DocumentPage
     let bom = lock(&session.metadata).bom;
     let mut hints = lock(&session.hints);
     if let Some(page) = hints.cache.get(request) {
+        trace::request("page_hit", request);
         return Some((page, hints.plain));
     }
     let context = hints.context.as_ref()?;
@@ -45,7 +48,8 @@ pub fn cached(session: &Session, request: &Viewport) -> Option<(Arc<DocumentPage
     {
         return None;
     }
-    let mut page = markdown::crop_context(context.as_ref(), &window(request))?;
+    let mut page = context.crop(&window(request))?;
+    trace::request("context_hit", request);
     page.has_before = page.source.offset > bom;
     hints.cache.insert(request, &page);
     let page = hints.cache.get(request)?;
@@ -148,6 +152,7 @@ pub fn viewport(
             )
         }
     } else {
+        trace::request("parse", &request);
         let Some((raw, checkpoints)) =
             markdown::render_context(&decoded, session.revision, page_eof, || {
                 context.is_cancelled()
@@ -165,14 +170,17 @@ pub fn viewport(
                 markdown::crop(plain, anchor, window.max_bytes.min(8192), window.max_lines)
             }
         });
+        let retained = Retained::new(&raw, &window, &decoded.anchors, || context.is_cancelled());
         let mut hints = lock(&session.hints);
         // One bounded parsed context, separate from the small final-page LRU.
         // It is revision-local and was already read on demand. Nearby anchors
         // can now reuse both bytes and parse structure while scrolling back.
-        if !context.is_cancelled() && page_cache::size(&raw) <= 1024 * 1024 {
-            // Compact parser scratch capacities for the length-based byte budget.
-            hints.context = Some(Arc::new(raw.clone()));
+        if !context.is_cancelled()
+            && let Some(retained) = retained
+        {
+            hints.context = Some(retained);
         }
+        trace::retained(&raw, hints.context.as_ref());
         hints.checkpoints.extend(checkpoints);
         while hints.checkpoints.len() > 256 {
             let second = *hints.checkpoints.iter().nth(1).unwrap();
