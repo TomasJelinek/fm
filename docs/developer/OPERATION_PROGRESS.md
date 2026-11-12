@@ -9,8 +9,14 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
 ## Lifetime and controls
 
 - Cancel in the confirmation form admits no destructive work and no Jobs receipt.
-- X, Escape and Cancel operation in progress request cancellation of that exact
-  job. A rejected command leaves the window visible with an actionable error.
+- X, Escape and Cancel operation in active progress first open an in-window
+  cancellation confirmation for that exact job and window session. Continue is
+  the default; Continue, Escape or closing the confirmation leaves the operation
+  running in its existing pause state. Other operation windows remain usable.
+- Confirming Cancel operation requests cooperative cancellation. A rejected
+  command leaves the window visible with an actionable retry. A completion or
+  replaced/stale window session while the question is open cannot send a new
+  cancellation. Completed progress closes without asking.
 - Cancellation remains cooperative: finish the safe checkpoint and clean up owned
   unpublished temporary files. Earlier committed changes remain. Jobs retains the
   final result, including cleanup errors; closing presentation never means success.

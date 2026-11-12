@@ -193,6 +193,7 @@ fn known_view(command: &TreeCommand, published: &Weak<TreeProjection>) -> bool {
         TreeCommand::Sizes(_) => return true,
         TreeCommand::RefreshLoaded(request) => &request.view,
         TreeCommand::Edit(request) => &request.view,
+        TreeCommand::Rename(request) => &request.view,
         TreeCommand::Enable {
             root,
             selected: midnight_core::TreeRootSelection::Native(selection),

@@ -46,6 +46,7 @@ mod volume_details;
 mod volume_information;
 mod watch;
 mod window_geometry;
+mod windows_argv;
 pub use window_geometry::monitor_work_area;
 
 /// Native windows volume discovery combined with safe portable directory operations.

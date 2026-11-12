@@ -130,8 +130,10 @@ all associated work succeeds. Manually opened Jobs remains open. Completed
 records remain for the current session, including when progress closes. The Jobs
 ledger is separate from the operation window. Copy, Move, Delete and Recycle use the same
 `JobProgressWindow` component, with operation-specific counts and units. Each active
-operation can have its own modeless progress window. Closing operation progress with
-X/Escape cancels that exact operation; closing the ledger does not cancel work.
+operation can have its own modeless progress window. X/Escape or Cancel operation
+asks for confirmation before cancelling that exact active operation. Continue is
+the default, and dismissing the question preserves work and its pause state. A
+completed operation closes without a question; closing the ledger does not cancel work.
 See the [interaction design](../superpowers/specs/2026-11-08-transfer-errors-design.md)
 and [Salamander reference audit](../verification/2026-11-08-transfer-error-reference-audit.md).
 

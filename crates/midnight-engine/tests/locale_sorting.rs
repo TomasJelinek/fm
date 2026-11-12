@@ -107,15 +107,13 @@ async fn listing_uses_locale_on_a_worker_and_resort_reuses_keys_without_native_c
     let caller = std::thread::current().id();
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            provider.clone(),
-            sender,
-        )
-        .with_locale(locale.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        provider.clone(),
+        sender,
     );
+    engine.configure_locale().unwrap().install(locale.clone());
+    let engine = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -171,18 +169,16 @@ async fn listing_uses_locale_on_a_worker_and_resort_reuses_keys_without_native_c
 async fn real_collation_errors_report_listing_failure_without_publishing_wrong_order() {
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(Fixture::default()),
-            sender,
-        )
-        .with_locale(Arc::new(Locale {
-            fail: true,
-            ..Default::default()
-        }))
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Fixture::default()),
+        sender,
     );
+    engine.configure_locale().unwrap().install(Arc::new(Locale {
+        fail: true,
+        ..Default::default()
+    }));
+    let engine = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

@@ -1,4 +1,6 @@
 use crate::WindowsFileSystem;
+#[path = "user_command_cwd.rs"]
+mod user_command_cwd;
 use crate::terminal_process::{self, LaunchSpec};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use midnight_core::{
@@ -110,16 +112,33 @@ pub(crate) fn prepare_user_terminal(
             ),
         ));
     }
-    if request.shell != ShellFlavor::PowerShell {
+    if !matches!(request.shell, ShellFlavor::PowerShell | ShellFlavor::Cmd) {
         return Err(FsError::from_io(
             "Custom Command terminal",
             &request.working_directory,
             io::Error::new(
                 io::ErrorKind::Unsupported,
-                "This adapter currently supports PowerShell Custom Commands.",
+                "This adapter supports PowerShell and Command Prompt Custom Commands.",
             ),
         ));
     }
+    if request.shell == ShellFlavor::Cmd && request.command.contains(['\r', '\n']) {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cmd accepts one command line. Use explicit command operators or choose PowerShell for multiline scripts.",
+            ),
+        ));
+    }
+    let directory = if request.shell == ShellFlavor::Cmd {
+        user_command_cwd::for_cmd(&request.working_directory).map_err(|cause| {
+            FsError::from_io("Custom Command cwd", &request.working_directory, cause)
+        })?
+    } else {
+        request.working_directory.clone()
+    };
     if !std::fs::metadata(&request.working_directory)
         .map_err(|cause| FsError::from_io("Custom Command cwd", &request.working_directory, cause))?
         .is_dir()
@@ -133,12 +152,16 @@ pub(crate) fn prepare_user_terminal(
             ),
         ));
     }
-    let executable = powershell_path().map_err(|cause| {
-        FsError::from_io("find system shell", &request.working_directory, cause)
-    })?;
-    let spec = terminal_command(&executable, request).map_err(|cause| {
-        FsError::from_io("Custom Command terminal", &request.working_directory, cause)
-    })?;
+    let executable = match request.shell {
+        ShellFlavor::Cmd => command_prompt_path(),
+        _ => powershell_path(),
+    }
+    .map_err(|cause| FsError::from_io("find system shell", &request.working_directory, cause))?;
+    let mut spec =
+        terminal_command_profile(&executable, request, request.shell == ShellFlavor::Cmd).map_err(
+            |cause| FsError::from_io("Custom Command terminal", &request.working_directory, cause),
+        )?;
+    spec.working_directory = directory;
     terminal_process::validate_with_environment(&spec, environment).map_err(|cause| {
         FsError::from_io("Custom Command terminal", &request.working_directory, cause)
     })?;
@@ -146,6 +169,14 @@ pub(crate) fn prepare_user_terminal(
 }
 
 fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<LaunchSpec> {
+    terminal_command_profile(executable, request, false)
+}
+
+fn terminal_command_profile(
+    executable: &Path,
+    request: &TerminalRequest,
+    cmd_environment: bool,
+) -> io::Result<LaunchSpec> {
     validate_terminal_request(request)?;
     if !executable.is_absolute()
         || !request.working_directory.is_absolute()
@@ -181,7 +212,11 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
             }
         }
         ShellFlavor::Cmd => {
-            arguments.extend(["/D", "/U", "/V:OFF"].into_iter().map(OsString::from));
+            arguments.extend(["/D", "/U"].into_iter().map(OsString::from));
+            if cmd_environment {
+                arguments.push("/E:ON".into());
+            }
+            arguments.push(if cmd_environment { "/V:ON" } else { "/V:OFF" }.into());
             if !request.command.is_empty() {
                 // cmd /S removes exactly these outer quotes. raw_arg preserves the explicit
                 // source inside them; C-runtime argument escaping would alter cmd syntax.
@@ -200,6 +235,7 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
         application: executable.into(),
         arguments,
         raw_tail,
+        cmd_environment,
         working_directory: request.working_directory.clone(),
     })
 }

@@ -358,10 +358,11 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
                 request.files.fallback,
                 Some(h.paths[pane.index()].join("source 文档.txt"))
             );
+            let id = request.id;
             drop(commands);
             h.assert_closed(&child);
-            // This synthetic sink has no terminal progress reply. Close the
-            // distinct modeless progress child through its real Escape route.
+            // This synthetic sink has no terminal progress reply. Escape asks
+            // before the distinct modeless progress child cancels its exact job.
             assert!(
                 !h.main.get_operations_visible(),
                 "progress is independent from Jobs"
@@ -385,7 +386,15 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
                 modeless::accessible_item(&jobs[0], AccessibleRole::Button, "Cancel operation")
                     .is_some()
             );
+            h.commands.borrow_mut().clear();
             key(&jobs[0], Key::Escape);
+            assert!(jobs[0].window().is_visible());
+            assert!(h.commands.borrow().is_empty(), "Escape must only ask");
+            modeless::draw(&jobs[0], 720, 500, "transfer-cancel-question");
+            assert_visible(&jobs[0], "Continue", AccessibleRole::Button);
+            modeless::click(&jobs[0], "Cancel operation");
+            assert!(matches!(h.commands.borrow().as_slice(),
+                [Command::CancelCopy(actual)] if *actual == id));
             assert!(!jobs[0].window().is_visible());
             assert!(!h.main.get_operations_visible());
             assert!(
@@ -689,8 +698,16 @@ fn trash_and_permanent_delete_share_modeless_progress_and_close_means_cancel() {
             "a refused cancel must not hide live work"
         );
         assert!(h.commands.borrow().is_empty());
+        modeless::draw(progress, 640, 420, "delete-cancel-question");
+        assert_visible(progress, "Continue", AccessibleRole::Button);
+        modeless::click(progress, "Cancel operation");
+        assert!(
+            progress.window().is_visible(),
+            "refused confirmation stays retryable"
+        );
+        assert!(h.commands.borrow().is_empty());
         h.accepting.set(true);
-        key(progress, Key::Escape);
+        modeless::click(progress, "Cancel operation");
         assert!(!progress.window().is_visible());
         assert!(matches!(h.commands.borrow().as_slice(),
             [Command::CancelOperation(actual)] if *actual == id));

@@ -49,15 +49,16 @@ async fn explicit_copy_preserves_literal_unicode_and_serializes_on_backend_worke
     let caller = std::thread::current().id();
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            sender,
-        )
-        .with_clipboard(clipboard.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
     );
+    engine
+        .configure_clipboard()
+        .unwrap()
+        .install(clipboard.clone());
+    let engine = tokio::spawn(engine.run(receiver));
     let expected = ["文档 e\u{301} 👩🏽‍💻", "1000000000000", "-rwsr-xr-t (4755)"];
     for (index, text) in expected.iter().enumerate() {
         commands
@@ -124,15 +125,16 @@ async fn invalid_clipboard_text_never_reaches_the_native_service() {
     let clipboard = Arc::new(Clipboard::default());
     let (commands, receiver) = mpsc::channel(4);
     let (sender, mut events) = mpsc::channel(4);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            sender,
-        )
-        .with_clipboard(clipboard.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
     );
+    engine
+        .configure_clipboard()
+        .unwrap()
+        .install(clipboard.clone());
+    let engine = tokio::spawn(engine.run(receiver));
     for text in ["before\0after".into(), "x".repeat(4 * 1024 * 1024 + 1)] {
         commands
             .send(Command::CopyText {

@@ -63,16 +63,19 @@ fn custom_powershell_receives_native_environment_without_evaluating_filename_sou
 }
 
 #[test]
-fn custom_cmd_is_explicitly_unsupported_before_any_spawn() {
+fn custom_cmd_refuses_caller_supplied_companions_before_any_spawn() {
     let process = UserCommandProcess {
         working_directory: std::env::current_dir().unwrap(),
         invocation: UserCommandProcessInvocation::Terminal {
             shell: ShellFlavor::Cmd,
             script: "echo %ME_FILE_PATH%".into(),
-            environment: vec![("ME_FILE_PATH".into(), "& echo unwanted".into())],
+            environment: vec![("ME_FILE_PATH_ARG".into(), "& echo unwanted".into())],
         },
     };
     let result = crate::WindowsFileSystem::new(None)
         .validate_user_command(&process, &Cancellation::default());
-    assert_eq!(result.unwrap_err().kind, std::io::ErrorKind::Unsupported);
+    assert_eq!(result.unwrap_err().kind, std::io::ErrorKind::InvalidInput);
 }
+
+#[path = "user_command_cmd_tests.rs"]
+mod cmd;

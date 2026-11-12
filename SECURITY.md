@@ -112,7 +112,9 @@ an incomplete predecessor rejects the mutation for explicit review. Later copies
 and creation jobs are independent. Native handles
 scale with the selected root count and traversal depth; resource failure is an
 error, never permission to substitute a target. Duplicate operation IDs cannot
-execute twice. Rename never overwrites. F7 accepts explicit absolute or panel-relative
+execute twice. Rename collisions require the shared, versioned overwrite prompt; explicit
+replacement retains the displaced destination for recovery. Without consent, the
+existing destination stays unchanged. F7 accepts explicit absolute or panel-relative
 paths, including `..` outside the captured panel. It walks components through native
 handles without following entered links or lexically collapsing an untraversed
 component before `..`. Explicit creation paths may cross drives/mounts; this does

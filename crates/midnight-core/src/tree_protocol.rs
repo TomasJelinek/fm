@@ -230,6 +230,7 @@ pub enum TreeCommand {
     },
     Clipboard(crate::TreeClipboardRequest),
     Edit(crate::TreeEditorRequest),
+    Rename(crate::TreeRenameRequest),
     Checksums(crate::TreeChecksumRequest),
     Transfer(crate::TreeTransferRequest),
     Delete(crate::TreeDeleteRequest),
@@ -274,6 +275,11 @@ pub enum TreeNavigationTarget {
 /// Nest under `Event::Tree(Box<TreeEvent>)` when the production presenter is connected.
 #[derive(Clone, Debug)]
 pub enum TreeEvent {
+    RenameCaptured {
+        stamp: TreeViewStamp,
+        request: TreeRequestId,
+        result: Result<Arc<dyn crate::CapturedRenameTarget>, TreeDiagnostic>,
+    },
     DeleteCaptured {
         stamp: TreeViewStamp,
         request: TreeRequestId,

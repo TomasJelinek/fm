@@ -27,11 +27,13 @@ struct Pending {
     ready: Option<Arc<ReadyRoot>>,
 }
 pub(super) struct Services {
+    pub rename: crate::tree_rename::Retirement,
     pub native: NativeProvider,
     pub locale: Option<Arc<dyn LocaleService>>,
     pub reports: crate::ReportArena,
 }
 pub(super) struct Worker {
+    rename: crate::tree_rename::Retirement,
     reports: crate::ReportArena,
     inbox: Arc<Mailbox>,
     snapshots: Snapshots,
@@ -65,9 +67,11 @@ impl Worker {
             native,
             locale,
             reports,
+            rename,
         } = services;
         let listing = budget.listing();
         Self {
+            rename,
             watch: None,
             refresh_ticket: None,
             copy_capacity,
@@ -302,6 +306,13 @@ impl Worker {
                 request: *request,
                 result: session
                     .capture_drop_directory(view, *row, *request, &self.copy_capacity, cancel)
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
+            })),
+            TreeCommand::Rename(request) => Ok(Some(TreeEvent::RenameCaptured {
+                stamp: request.view.stamp,
+                request: request.request,
+                result: session
+                    .capture_rename(request, &self.copy_capacity, &self.rename, cancel)
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Edit(request) => Ok(Some(TreeEvent::EditorCaptured {

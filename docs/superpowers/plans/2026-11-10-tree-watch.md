@@ -216,7 +216,7 @@ Files: UI `tests/support/tree_filters.rs`, `tests/tree_move.rs`; create
 fixture helpers remain separate. QA logs/progress under `_build/qa/tree-watch`.
 
 - [ ] Add a watch-enabled native harness constructor accepting `Arc<dyn
-  WatchService>`; use real `Engine::with_watch`. Synchronize accepted flat listings
+  WatchService>`; use real `Engine::configure_watch` admission and installation. Synchronize accepted flat listings
   through PaneCommitted and intercept DirectoryChanged through the same production
   `refresh_if_changed` path. Changed goes through normal tree event application.
   Track registration barriers and later debounced notifications so merely seeing

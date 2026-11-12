@@ -203,7 +203,7 @@ impl Form {
                 let reference = match self.shell()? {
                     ShellFlavor::PowerShell => format!("\"$env:{key}\""),
                     ShellFlavor::Posix => format!("\"${key}\""),
-                    ShellFlavor::Cmd => return Err("Command Prompt context references are not available. Choose a supported shell.".into()),
+                    ShellFlavor::Cmd => format!("!{key}_ARG!"),
                 };
                 if !self.script.is_empty() && !self.script.ends_with(char::is_whitespace) {
                     self.script.push(' ');

@@ -12,11 +12,13 @@ import { OperationSpeedChart } from "operation-speed-chart.slint";
 export component JobProgressWindow inherits DialogWindow {
     in property <OperationRow> job;
     in property <string> close-error;
+    in property <bool> cancel-confirmation;
     callback resolve();
     callback copy-details();
     callback set-paused(bool);
     callback show-jobs();
     callback request-dismiss();
+    callback confirm-cancel();
     private property <bool> details-visible;
     private property <bool> compact: root.height < 350px;
     title: root.job.title;
@@ -27,6 +29,7 @@ export component JobProgressWindow inherits DialogWindow {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
     init => { footer.focus-dismiss(); }
+    changed cancel-confirmation => { footer.focus-dismiss(); }
     FocusScope {
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.request-dismiss(); return accept; }
@@ -40,13 +43,29 @@ export component JobProgressWindow inherits DialogWindow {
                     : root.job.pause-requested ? "Pausing..." : root.job.state;
                 compact: root.compact; native-icon: root.job.icon;
                 fallback-icon: root.job.kind == 1 ? FallbackIcons.delete : FallbackIcons.copy;
-                close-label: root.job.active ? "Cancel operation" : "Close progress";
+                close-label: root.cancel-confirmation ? "Dismiss cancellation question"
+                    : root.job.active ? "Cancel operation" : "Close progress";
                 close => { root.request-dismiss(); }
             }
             ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
-                VerticalLayout {
+                if root.cancel-confirmation : VerticalLayout {
+                    padding-right: 8px; spacing: 10px; alignment: start;
+                    Text {
+                        text: "Cancel this operation?"; color: Theme.strong-text;
+                        font-size: Theme.font-size * 1.2; font-weight: 600; wrap: word-wrap;
+                    }
+                    Text {
+                        text: "This does not undo completed changes.";
+                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                    }
+                    if root.job.current-path != "" : Text {
+                        text: root.job.current-path; color: Theme.secondary-text;
+                        font-size: Theme.small-font; wrap: char-wrap; min-width: 0px;
+                    }
+                }
+                if !root.cancel-confirmation : VerticalLayout {
                     padding-right: 8px; spacing: 10px; alignment: start;
                     Text {
                         text: root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
@@ -102,29 +121,39 @@ export component JobProgressWindow inherits DialogWindow {
             }
             footer := DialogFooter {
                 compact-height: root.compact;
-                dismiss-text: root.job.active ? "Cancel operation" : "Close";
-                dismiss-hint: root.job.active ? "Cancel this operation (Escape). Unfinished temporary files are cleaned up." : "Close this completed operation.";
+                dismiss-fallback-icon: root.cancel-confirmation ? FallbackIcons.done : FallbackIcons.close;
+                dismiss-text: root.cancel-confirmation ? "Continue"
+                    : root.job.active ? "Cancel operation" : "Close";
+                dismiss-hint: root.cancel-confirmation ? "Keep the operation in its current running or paused state (Escape)."
+                    : root.job.active ? "Ask whether to cancel this operation (Escape)."
+                    : "Close this completed operation.";
                 dismiss => { root.request-dismiss(); }
-                if root.job.pausable : HintedActionButton {
+                if root.cancel-confirmation : HintedActionButton {
+                    text: "Cancel operation"; destructive: true;
+                    enabled: root.job.active && root.job.cancellable;
+                    hint: "Cancel this operation. Completed changes will remain.";
+                    clicked => { root.confirm-cancel(); }
+                }
+                if !root.cancel-confirmation && root.job.pausable : HintedActionButton {
                     text: root.job.pause-requested ? "Resume" : "Pause";
                     hint: "Pause or resume this operation at a safe file-operation checkpoint.";
                     clicked => { root.set-paused(!root.job.pause-requested); }
                 }
-                HintedActionButton {
+                if !root.cancel-confirmation : HintedActionButton {
                     text: root.details-visible ? "Fewer details" : "Details";
                     hint: "Show operation counters, source, destination and diagnostics.";
                     clicked => { root.details-visible = !root.details-visible; }
                 }
-                HintedActionButton {
+                if !root.cancel-confirmation : HintedActionButton {
                     text: "Jobs"; hint: "Open the session's job list.";
                     clicked => { root.show-jobs(); }
                 }
-                if !root.job.active : HintedActionButton {
+                if !root.cancel-confirmation && !root.job.active : HintedActionButton {
                     text: "Copy details"; fallback-icon: FallbackIcons.copy;
                     hint: "Copy this operation's full details and retained errors.";
                     clicked => { root.copy-details(); }
                 }
-                if root.job.attention : HintedActionButton {
+                if !root.cancel-confirmation && root.job.attention : HintedActionButton {
                     text: "Resolve"; hint: "Review this operation's pending overwrite or error decision.";
                     clicked => { root.resolve(); }
                 }

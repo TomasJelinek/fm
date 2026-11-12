@@ -710,6 +710,9 @@ fn independent_progress_windows_route_exact_jobs_and_manual_reopen_does_not_auto
     let second = h.children(2).pop().unwrap();
     h.commands.borrow_mut().clear();
     modeless::click(&first, "Cancel operation");
+    h.children(2);
+    assert!(h.commands.borrow().is_empty());
+    modeless::click(&first, "Cancel operation");
     h.children(1);
     assert!(matches!(
         h.commands.borrow().as_slice(),
@@ -717,6 +720,9 @@ fn independent_progress_windows_route_exact_jobs_and_manual_reopen_does_not_auto
     ));
     h.commands.borrow_mut().clear();
     input::key(&second, Key::Escape);
+    h.children(1);
+    assert!(h.commands.borrow().is_empty());
+    modeless::click(&second, "Cancel operation");
     h.children(0);
     assert!(matches!(
         h.commands.borrow().as_slice(),
@@ -759,8 +765,18 @@ fn progress_close_retains_window_if_cancellation_cannot_be_admitted() {
     h.children(1);
     assert!(h.commands.borrow().is_empty());
     assert!(h.main.get_operations().row_data(0).unwrap().cancellable);
+    modeless::click(&progress, "Cancel operation");
+    h.children(1);
+    assert!(h.commands.borrow().is_empty());
+    assert!(h.main.get_operations().row_data(0).unwrap().cancellable);
+    modeless::accessible_item(
+        &progress,
+        i_slint_core::items::AccessibleRole::Button,
+        "Continue",
+    )
+    .expect("rejected cancellation must retain the retryable question");
     h.refuse.set(false);
-    input::key(&progress, Key::Escape);
+    modeless::click(&progress, "Cancel operation");
     h.children(0);
     assert!(matches!(
         h.commands.borrow().as_slice(),
@@ -826,3 +842,6 @@ fn pause_and_resume_are_exact_job_requests_and_wait_for_backend_acknowledgement(
         "finished or unknown identities have no pause authority"
     );
 }
+
+#[path = "native_job_windows/confirmation.rs"]
+mod confirmation;

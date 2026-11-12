@@ -22,6 +22,7 @@ pub(super) struct Job {
     metadata_permits: Vec<tokio::sync::OwnedSemaphorePermit>,
     // Native target pins must close before the retained provider capture/permit.
     _captured_sources: Option<Arc<dyn CapturedDeleteSources>>,
+    _captured_rename: Option<Arc<dyn CapturedRenameTarget>>,
     // Release serialization only after all native pins and provider owners close.
     mutation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -203,6 +204,7 @@ fn new_job(
         predecessors: Default::default(),
         metadata_permits: vec![],
         _captured_sources: None,
+        _captured_rename: None,
         mutation_permit: None,
         preview: OperationPreview {
             id,
@@ -481,4 +483,55 @@ impl WorkerOwned<Job> {
         }
         result
     }
+}
+
+pub(super) fn prepare_captured_rename(
+    request: PrepareCapturedRename,
+    scope: super::input::RenameScope,
+    service: Option<Arc<dyn MutationService>>,
+    cancel: Cancellation,
+    status: Status,
+    metadata_budget: Arc<Semaphore>,
+) -> Result<Job, FsError> {
+    let source = &request.source_directory;
+    let service =
+        service.ok_or_else(|| error(source, "This filesystem does not support mutations."))?;
+    let mut job = new_job(
+        request.id,
+        MutationKind::Rename,
+        cancel,
+        status,
+        metadata_budget,
+    );
+    job._captured_rename = Some(request.source.clone());
+    if !scope.valid() || super::input::RenameScope::capture(request.source.as_ref()) != scope {
+        return Err(error(
+            source,
+            "The captured Rename scope changed before preparation.",
+        ));
+    }
+    if !job.cancel.wait_if_paused() {
+        return Err(FsError::from_io(
+            "prepare",
+            source,
+            io::ErrorKind::Interrupted.into(),
+        ));
+    }
+    let prepared = request.source.prepare(service.as_ref(), &job.cancel)?;
+    if super::input::RenameScope::capture(request.source.as_ref()) != scope {
+        return Err(error(
+            source,
+            "Provider returned a different captured Rename scope.",
+        ));
+    }
+    job.append_target(prepared);
+    if job.cancel.is_cancelled() {
+        return Err(FsError::from_io(
+            "prepare",
+            source,
+            io::ErrorKind::Interrupted.into(),
+        ));
+    }
+    job.status.lock().unwrap_or_else(|e| e.into_inner()).total = 1;
+    Ok(job)
 }

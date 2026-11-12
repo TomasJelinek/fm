@@ -5,7 +5,6 @@ use std::{
     io,
     mem::size_of,
     os::windows::{
-        ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
         process::ExitStatusExt,
     },
@@ -22,13 +21,14 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::SW_HIDE,
 };
 
-const MAX_PROCESS_UTF16: usize = 32767;
+use crate::windows_argv::{MAX_PROCESS_UTF16, append_argument, wide_units};
 
 #[derive(Debug)]
 pub(crate) struct LaunchSpec {
     pub application: PathBuf,
     pub arguments: Vec<OsString>,
     pub raw_tail: Option<OsString>,
+    pub cmd_environment: bool,
     pub working_directory: PathBuf,
 }
 
@@ -55,53 +55,10 @@ impl LaunchSpec {
     }
 }
 
-fn wide_units(value: &OsStr) -> io::Result<Vec<u16>> {
-    let units: Vec<_> = value.encode_wide().take(MAX_PROCESS_UTF16 + 1).collect();
-    if units.contains(&0) || units.len() >= MAX_PROCESS_UTF16 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Windows process arguments must fit native UTF16 limits and contain no NUL",
-        ));
-    }
-    Ok(units)
-}
-
 fn terminated(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut units = wide_units(value)?;
     units.push(0);
     Ok(units)
-}
-
-/// Windows C-runtime quoting for ordinary argv; raw Cmd tails bypass this function.
-fn append_argument(line: &mut Vec<u16>, argument: &OsStr, force_quotes: bool) -> io::Result<()> {
-    let units = wide_units(argument)?;
-    if !force_quotes
-        && !units.is_empty()
-        && !units
-            .iter()
-            .any(|unit| [b' ' as u16, b'\t' as u16, b'"' as u16].contains(unit))
-    {
-        line.extend(units);
-        return Ok(());
-    }
-    line.push(b'"' as u16);
-    let mut slashes = 0usize;
-    for unit in units {
-        if unit == b'\\' as u16 {
-            slashes += 1;
-            continue;
-        }
-        if unit == b'"' as u16 {
-            line.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2 + 1));
-        } else {
-            line.extend(std::iter::repeat_n(b'\\' as u16, slashes));
-        }
-        line.push(unit);
-        slashes = 0;
-    }
-    line.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2));
-    line.push(b'"' as u16);
-    Ok(())
 }
 
 struct NativeProcess {
@@ -152,7 +109,7 @@ pub(crate) fn validate_with_environment(
     environment: &[(String, OsString)],
 ) -> io::Result<()> {
     validate(spec)?;
-    crate::user_command_environment::snapshot(environment)?;
+    environment_block(spec, environment)?;
     Ok(())
 }
 #[cfg(test)]
@@ -177,7 +134,62 @@ pub(crate) fn validate(spec: &LaunchSpec) -> io::Result<()> {
     }
     terminated(spec.application.as_os_str())?;
     terminated(spec.working_directory.as_os_str())?;
-    spec.command_line()?;
+    let line = spec.command_line()?;
+    if spec.cmd_environment && line.len() - 1 > 8191 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Cmd command line exceeds its 8191 UTF16-unit limit. Choose Program or PowerShell.",
+        ));
+    }
+    Ok(())
+}
+
+fn environment_block(spec: &LaunchSpec, values: &[(String, OsString)]) -> io::Result<Vec<u16>> {
+    if spec.cmd_environment {
+        validate_cmd_expansion(spec, values)?;
+        crate::user_command_environment::snapshot_cmd(values)
+    } else {
+        crate::user_command_environment::snapshot(values)
+    }
+}
+
+fn validate_cmd_expansion(spec: &LaunchSpec, values: &[(String, OsString)]) -> io::Result<()> {
+    let source = spec
+        .raw_tail
+        .as_ref()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cmd requires literal Unicode source.",
+            )
+        })?;
+    let source = source.to_ascii_uppercase();
+    let mut units = spec.command_line()?.len() - 1;
+    // Conservative fixed-reference budget, not a shell parser or source rewrite.
+    // Count even references in literal text; never infer or add required variables.
+    for (key, value) in values {
+        let mut quoted = Vec::new();
+        append_argument(&mut quoted, value, true)?;
+        for (reference, length) in [
+            (format!("!{key}_ARG!"), quoted.len()),
+            (format!("!{key}!"), wide_units(value)?.len()),
+            (format!("%{key}%"), wide_units(value)?.len()),
+        ] {
+            units = units.saturating_add(
+                source
+                    .matches(&reference)
+                    .count()
+                    .saturating_mul(length.saturating_sub(reference.len())),
+            );
+        }
+    }
+    if units > 8191 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Cmd fixed environment references exceed its 8191 UTF16-unit line limit. Choose Program or PowerShell.",
+        ));
+    }
     Ok(())
 }
 
@@ -196,11 +208,12 @@ fn spawn_native(
             "Native terminal startup requires absolute paths",
         ));
     }
+    validate(spec)?;
     let application = terminated(spec.application.as_os_str())?;
     let directory = terminated(spec.working_directory.as_os_str())?;
     let mut line = spec.command_line()?;
     let environment = environment
-        .map(crate::user_command_environment::snapshot)
+        .map(|values| environment_block(spec, values))
         .transpose()?;
     let mut startup = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
@@ -280,6 +293,7 @@ mod tests {
                 .map(OsString::from)
                 .collect(),
             raw_tail: None,
+            cmd_environment: false,
             working_directory: PathBuf::from(r"C:\文档"),
         };
         let encoded = spec.command_line().unwrap();
@@ -297,6 +311,7 @@ mod tests {
                 .map(OsString::from)
                 .collect(),
             raw_tail: Some(raw_tail.into()),
+            cmd_environment: false,
             working_directory: PathBuf::from(r"C:\文档"),
         };
         let encoded = spec.command_line().unwrap();
@@ -315,6 +330,7 @@ mod tests {
             application: application.clone(),
             arguments: vec![],
             raw_tail: None,
+            cmd_environment: false,
             working_directory: PathBuf::from(r"C:\"),
         };
         let encoded = spec.command_line().unwrap();
@@ -363,6 +379,7 @@ mod tests {
             .map(OsString::from)
             .collect(),
             raw_tail: None,
+            cmd_environment: false,
             working_directory: cwd,
         };
         let mut process = match spawn_inner(&spec, true) {
@@ -433,6 +450,7 @@ mod tests {
             .map(OsString::from)
             .collect(),
             raw_tail: None,
+            cmd_environment: false,
             working_directory: std::env::current_dir().unwrap(),
         };
         let mut child = spawn_inner(&spec, true).unwrap();

@@ -16,7 +16,9 @@ mod diagnostic_text;
 mod drag_drop;
 mod elevation;
 mod engine_commands;
+mod engine_configuration;
 mod engine_lifetime;
+pub use engine_configuration::{ServiceAlreadyConfigured, ServiceSlot};
 mod engine_run;
 mod report_arena;
 pub use report_arena::ReportArena;
@@ -84,6 +86,7 @@ mod tree_delete;
 mod tree_diagnostics;
 mod tree_editor;
 mod tree_projection;
+mod tree_rename;
 mod tree_roots;
 mod tree_selection;
 mod tree_sizes;
@@ -318,105 +321,6 @@ impl Engine {
         }
     }
 
-    /// Only explicit retries of correlated denied navigations can invoke this service.
-    pub fn with_elevated_directories(
-        mut self,
-        service: Arc<dyn midnight_core::ElevatedDirectoryService>,
-    ) -> Self {
-        self.services.elevation = Some(service);
-        self
-    }
-
-    /// Native archive container reads require this explicit backend provider authority.
-    pub fn with_archive_capture(mut self, capture: ArchiveCapture) -> Self {
-        self.services.archive_capture = Some(capture);
-        self
-    }
-
-    /// Optional native services stay independent of the filesystem provider.
-    pub fn with_navigation_fallback(
-        mut self,
-        service: Arc<dyn midnight_core::NavigationFallbackService>,
-    ) -> Self {
-        self.services.navigation_fallback = Some(service);
-        self
-    }
-
-    /// Optional native services stay independent of the filesystem provider.
-    pub fn with_desktop(mut self, desktop: Arc<dyn DesktopServices>) -> Self {
-        self.services.desktop = Some(desktop);
-        self
-    }
-
-    /// Native change hints and polling run independently of navigation.
-    pub fn with_watch(mut self, watch: Arc<dyn WatchService>) -> Self {
-        self.services.watch = Some(watch);
-        self
-    }
-
-    /// Configuration I/O is serialized independently of browsing and native dialogs.
-    pub fn with_settings(mut self, settings: Arc<dyn SettingsService>) -> Self {
-        self.services.settings = Some(settings);
-        self
-    }
-
-    pub fn with_editor(mut self, editor: Arc<dyn midnight_core::EditorService>) -> Self {
-        self.services.editor = Some(editor);
-        self
-    }
-
-    pub fn with_clipboard(mut self, clipboard: Arc<dyn midnight_core::ClipboardService>) -> Self {
-        self.services.clipboard = Some(clipboard);
-        self
-    }
-
-    pub fn with_shell_menu(mut self, service: Arc<dyn midnight_core::ShellMenuService>) -> Self {
-        self.services.shell_menu = Some(service);
-        self
-    }
-
-    pub fn with_path_picker(mut self, service: Arc<dyn midnight_core::PathPickerService>) -> Self {
-        self.services.path_picker = Some(service);
-        self
-    }
-
-    pub fn with_transfers(mut self, service: Arc<dyn midnight_core::TransferService>) -> Self {
-        self.services.transfers = Some(service);
-        self
-    }
-
-    pub fn with_user_commands(
-        mut self,
-        service: Arc<dyn midnight_core::UserCommandService>,
-    ) -> Self {
-        self.services.user_commands = Some(service);
-        self
-    }
-
-    pub fn with_drag_drop(mut self, service: Arc<dyn midnight_core::FileDragDropService>) -> Self {
-        self.services.drag_drop = Some(service);
-        self
-    }
-
-    pub fn with_mutations(mut self, mutations: Arc<dyn midnight_core::MutationService>) -> Self {
-        self.services.mutations = Some(mutations);
-        self
-    }
-    pub fn with_network(mut self, network: Option<Arc<dyn midnight_core::NetworkService>>) -> Self {
-        self.services.network = network;
-        self
-    }
-    pub fn with_locale(mut self, locale: Arc<dyn midnight_core::LocaleService>) -> Self {
-        self.services.locale = Some(locale);
-        self
-    }
-
-    /// Optional identity-pinned native recursive search. The Find frontend is independent.
-    pub fn with_find(mut self, service: Arc<dyn midnight_core::FindService>) -> Self {
-        self.services.find = Some(service);
-        self
-    }
-
     /// Take command ownership synchronously, including before the first future poll.
     pub fn run(self, commands: mpsc::Receiver<Command>) -> EngineRun {
         let active = (*self.services).clone();
@@ -513,6 +417,7 @@ impl EngineServices {
                 filesystem: self.filesystem.clone(),
                 locale: self.locale.clone(),
                 reports: resources.reports.clone(),
+                rename: resources.tree_rename,
             },
             listing_budgets.clone(),
             mutation_gate.clone(),
@@ -853,6 +758,7 @@ impl EngineServices {
                         }
                         Some(Command::PrepareOperation(request)) => operations.prepare(request).await,
                         Some(Command::PrepareCapturedDelete(request)) => operations.prepare_captured_delete(request).await,
+                        Some(Command::PrepareCapturedRename(request)) => operations.prepare_captured_rename(request).await,
                         Some(Command::ConfirmOperation { id, new_name }) => operations.confirm(id, new_name).await,
                         Some(Command::CancelOperation(id)) => operations.cancel(id),
                         Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,

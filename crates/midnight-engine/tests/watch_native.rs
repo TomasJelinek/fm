@@ -45,15 +45,13 @@ async fn accepted_panes_receive_real_native_change_hints_and_can_reload() {
     });
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            filesystem,
-            sender,
-        )
-        .with_watch(watcher.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem,
+        sender,
     );
+    engine.configure_watch().unwrap().install(watcher.clone());
+    let engine = tokio::spawn(engine.run(receiver));
     for (pane, path) in [(PaneId::Left, &left), (PaneId::Right, &right)] {
         commands
             .send(Command::Navigate {

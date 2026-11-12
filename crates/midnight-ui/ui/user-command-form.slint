@@ -61,9 +61,11 @@ export component UserCommandForm inherits VerticalLayout {
     if UserCommandSettingsView.draft.kind == 1 : VerticalLayout {
         spacing: 6px; alignment: start;
         Text { text: "Terminal script"; color: Theme.text; font-size: Theme.font-size; }
-        HintedComboBox { model: ["PowerShell", "POSIX shell", "Command Prompt (unavailable)"];
+        HintedComboBox { model: ["PowerShell", "POSIX shell", "Command Prompt"];
             current-index <=> UserCommandSettingsView.draft.shell; accessible-label: "Custom Command shell";
-            hint: "Choose the language used by your script."; selected(value) => { root.edited(); } }
+            hint: UserCommandSettingsView.draft.shell == 2
+                ? "Command Prompt uses one command line. Inserted values are complete external-program arguments. Keep delayed expansion on. CALL, batch files and nested shells may parse them again; builtins require their own syntax."
+                : "Choose the language used by your script."; selected(value) => { root.edited(); } }
         TextEdit { text <=> UserCommandSettingsView.draft.script; accessible-label: "Custom Command script";
             height: max(90px, Theme.font-size * 5); font-size: Theme.font-size;
             edited => { root.edited(); } }
@@ -74,7 +76,9 @@ export component UserCommandForm inherits VerticalLayout {
             HintedComboBox { current-index <=> root.script-value; accessible-label: "Terminal script value";
                 row: 0; col: 0;
                 model: ["Active folder", "Other folder", "File path", "File name", "Name without extension", "Extension"];
-                hint: "Insert a quoted reference and require its captured value."; min-width: 0px; horizontal-stretch: 1; }
+                hint: UserCommandSettingsView.draft.shell == 2
+                    ? "Insert a complete external-program argument. Do not add quotes around the !ME_*_ARG! reference or use it with CALL. Builtins use raw ME_* values with their own syntax."
+                    : "Insert a quoted reference and require its captured value."; min-width: 0px; horizontal-stretch: 1; }
             ActionButton { text: "Insert value"; accessible-label: "Insert terminal script value";
                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                 clicked => { if UserCommandSettingsView.insert-variable(UserCommandSettingsView.token, UserCommandSettingsView.draft, 2, root.script-value) { root.edited(); } } }

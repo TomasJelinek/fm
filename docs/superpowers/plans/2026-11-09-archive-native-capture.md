@@ -53,7 +53,7 @@ app native_content/main/integration tests; migration docs/evidence.
 Interfaces: `Mount::open_captured(package, format, locator, source, cancel)`;
 engine `ArchiveCapture` callback accepts path, optional expected revision and
 `Cancellation`, returning `CapturedFile`/`FsError`. Engine has
-`with_archive_capture`. Missing composition returns explicit unavailable.
+`configure_archive_capture()?.install(...)`. Missing composition returns explicit unavailable.
 
 - [x] Add real-worker tests proving a pathless in-memory source opens/reads,
   retains its explicit Unicode locator, and rejects subsequent source changes.

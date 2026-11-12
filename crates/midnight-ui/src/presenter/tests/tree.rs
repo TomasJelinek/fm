@@ -1051,3 +1051,152 @@ fn adopted_tree_root_file_can_launch_viewer_and_capture_editor() {
     );
     assert!(Arc::ptr_eq(&request.view, p.panes[0].tree_view().unwrap()));
 }
+
+#[test]
+fn native_tree_rename_requests_focused_capture_without_flat_path_authority() {
+    let (mut p, root) = fixture();
+    let publication = publication(root, 1, true, true);
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication))),
+        &|_| true,
+    );
+    p.focus_display_row(PaneId::Left, 2);
+    let sent = RefCell::new(Vec::new());
+    p.start_operation(PaneId::Left, MutationKind::Rename, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert_eq!(
+        sent.borrow().len(),
+        1,
+        "F2 must request exact native tree focus, not report unavailable"
+    );
+    let sent = sent.borrow();
+    let [Command::Tree(command)] = sent.as_slice() else {
+        panic!("typed capture required")
+    };
+    let TreeCommand::Rename(request) = command.as_ref() else {
+        panic!("Rename capture required")
+    };
+    assert_eq!(request.row, TreeRowId(11));
+    assert!(Arc::ptr_eq(&request.view, p.panes[0].tree_view().unwrap()));
+    assert!(
+        p.operations.preview.is_none(),
+        "native preparation must precede confirmation"
+    );
+}
+
+#[test]
+fn native_tree_create_directory_keeps_pane_root_authority_despite_descendant_focus() {
+    let (mut p, root) = fixture();
+    let source = p.panes[0].path.clone();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root, 1, true, true,
+        )))),
+        &|_| true,
+    );
+    p.focus_display_row(PaneId::Left, 2);
+    let sent = RefCell::new(Vec::new());
+    p.start_operation(PaneId::Left, MutationKind::CreateDirectory, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    let commands = sent.borrow();
+    let [Command::PrepareOperation(request)] = commands.as_slice() else {
+        panic!("F7 prepares pane location");
+    };
+    assert_eq!(request.kind, MutationKind::CreateDirectory);
+    assert_eq!(request.source.path, source);
+    assert_eq!(
+        request.focused, None,
+        "focused descendant is not the create destination"
+    );
+}
+
+#[test]
+fn retiring_presenter_reclaims_saturated_tree_editor_capture_on_worker() {
+    #[derive(Debug)]
+    struct Source {
+        stamp: TreeViewStamp,
+        row: TreeRowId,
+        dropped: std::sync::mpsc::Sender<std::thread::ThreadId>,
+    }
+    impl Drop for Source {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(std::thread::current().id());
+        }
+    }
+    impl CapturedEditorFile for Source {
+        fn stamp(&self) -> TreeViewStamp {
+            self.stamp
+        }
+        fn row(&self) -> TreeRowId {
+            self.row
+        }
+        fn resolve(&self, _: &Cancellation) -> Result<PathBuf, FsError> {
+            panic!("UI must not resolve captured native paths")
+        }
+    }
+    let (mut p, root) = fixture();
+    p.preferences_loaded(Ok(UserPreferences::default()));
+    let mut published = publication(root, 1, true, false);
+    let mut rows = published.view.rows.to_vec();
+    rows[1].entry.kind = EntryKind::File;
+    let view = Arc::new(
+        TreeProjection::new(
+            published.view.root.clone(),
+            published.view.stamp,
+            TreeLayoutRevision(1),
+            rows,
+        )
+        .unwrap(),
+    );
+    published = TreePublication::new(
+        view.clone(),
+        SelectionRevision(0),
+        Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![0]).unwrap()),
+    )
+    .unwrap();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(published))),
+        &|_| true,
+    );
+    p.focus_display_row(PaneId::Left, 2);
+    let captured = RefCell::new(None);
+    p.edit_file(PaneId::Left, &|command| {
+        if let Command::Tree(command) = command
+            && let TreeCommand::Edit(request) = *command
+        {
+            *captured.borrow_mut() = Some(request);
+        }
+        true
+    });
+    let request = captured.into_inner().expect("typed F4 capture");
+    let (sent, received) = std::sync::mpsc::channel();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::EditorCaptured {
+            stamp: request.view.stamp,
+            request: request.request,
+            result: Ok(Arc::new(Source {
+                stamp: request.view.stamp,
+                row: request.row,
+                dropped: sent,
+            })),
+        })),
+        &|_| false,
+    );
+    p.retire_all();
+    let retired = p.take_retired();
+    std::thread::spawn(move || drop(retired)).join().unwrap();
+    drop(p);
+    assert_ne!(
+        received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        std::thread::current().id()
+    );
+}
+
+#[path = "tree_rename.rs"]
+mod rename;

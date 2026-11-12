@@ -18,9 +18,21 @@ pub(crate) fn snapshot(overrides: &[(String, OsString)]) -> io::Result<Vec<u16>>
     snapshot_with_inherited(std::env::vars_os().collect(), overrides)
 }
 
+pub(crate) fn snapshot_cmd(overrides: &[(String, OsString)]) -> io::Result<Vec<u16>> {
+    snapshot_inner(std::env::vars_os().collect(), overrides, true)
+}
+
 pub(crate) fn snapshot_with_inherited(
+    inherited: Vec<(OsString, OsString)>,
+    overrides: &[(String, OsString)],
+) -> io::Result<Vec<u16>> {
+    snapshot_inner(inherited, overrides, false)
+}
+
+fn snapshot_inner(
     mut inherited: Vec<(OsString, OsString)>,
     overrides: &[(String, OsString)],
+    cmd_arguments: bool,
 ) -> io::Result<Vec<u16>> {
     // Native Shell menu initialization can introduce this non-drive private key.
     // Do not serialize it as a custom child variable. Keep malformed values so the
@@ -56,12 +68,24 @@ pub(crate) fn snapshot_with_inherited(
         }
         inherited.push((key, OsString::from_wide(&path[..count as usize])));
     }
-    build(inherited, overrides)
+    if cmd_arguments {
+        build_inner(inherited, overrides, true)
+    } else {
+        build(inherited, overrides)
+    }
 }
 
 pub(crate) fn build(
+    inherited: Vec<(OsString, OsString)>,
+    overrides: &[(String, OsString)],
+) -> io::Result<Vec<u16>> {
+    build_inner(inherited, overrides, false)
+}
+
+fn build_inner(
     mut inherited: Vec<(OsString, OsString)>,
     overrides: &[(String, OsString)],
+    cmd_arguments: bool,
 ) -> io::Result<Vec<u16>> {
     let mut keys = HashSet::new();
     for (key, value) in overrides {
@@ -77,9 +101,10 @@ pub(crate) fn build(
     // Undeclared variables must not inherit stale values from a launching shell.
     inherited.retain(|(key, _)| {
         !key.to_str().is_some_and(|key| {
-            USER_COMMAND_ENVIRONMENT
-                .iter()
-                .any(|reserved| key.eq_ignore_ascii_case(reserved))
+            USER_COMMAND_ENVIRONMENT.iter().any(|reserved| {
+                key.eq_ignore_ascii_case(reserved)
+                    || key.eq_ignore_ascii_case(&format!("{reserved}_ARG"))
+            })
         })
     });
     inherited.extend(
@@ -87,6 +112,21 @@ pub(crate) fn build(
             .iter()
             .map(|(key, value)| (OsString::from(key), value.clone())),
     );
+    if cmd_arguments {
+        for (key, value) in overrides {
+            let mut quoted = Vec::new();
+            crate::windows_argv::append_argument(&mut quoted, value, true)?;
+            let key = format!("{key}_ARG");
+            // Cmd silently ignores oversized inherited variables. Refuse rather
+            // than silently losing captured data, including its encoded companion.
+            if key.len() + 1 + quoted.len() > 8191 {
+                return Err(invalid(
+                    "Cmd environment argument exceeds its 8191 UTF16-unit limit. Choose Program or PowerShell.",
+                ));
+            }
+            inherited.push((key.into(), OsString::from_wide(&quoted)));
+        }
+    }
     let mut total = 1usize;
     let mut records = Vec::with_capacity(inherited.len());
     for (key, value) in inherited {

@@ -252,7 +252,7 @@ until return. Do not automatically restart recursive size scans on every event.
 
 The current native transfer harness never enables watches and sends all events
 through `apply_with_sender`, which intentionally ignores legacy
-`DirectoryChanged`. Qualification must add real `with_watch`, accepted
+`DirectoryChanged`. Qualification must add real `configure_watch()?.install(...)`, accepted
 `PaneCommitted` synchronization and production hint routing, then exercise F5/F6
 past their own debounced native events. Include external root/expanded-branch
 create/remove/rename, file-only edits, manual refresh, collapse/change/re-expand,

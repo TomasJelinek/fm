@@ -483,3 +483,27 @@ fn tree_delete_rejects_selected_archive_descendants_before_native_preparation() 
     ));
     assert_eq!(capacity.available_permits(), 4);
 }
+
+#[test]
+fn tree_rename_capture_refuses_archive_rows_without_native_mutation_authority() {
+    let (mut session, _mount, _directory) = archive_fixture();
+    let view = session.publication().unwrap().view;
+    assert!(session.commit(&view));
+    let request = midnight_core::TreeRenameRequest {
+        row: view.rows[0].id,
+        view,
+        request: TreeRequestId(1),
+        cancel: Cancellation::default(),
+    };
+    let capacity = Arc::new(Semaphore::new(1));
+    assert!(matches!(
+        session.capture_rename(
+            &request,
+            &capacity,
+            &crate::tree_rename::Retirement::testing(),
+            &Cancellation::default()
+        ),
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(capacity.available_permits(), 1);
+}

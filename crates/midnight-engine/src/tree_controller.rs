@@ -19,7 +19,10 @@ mod mailbox;
 mod worker;
 use mailbox::{Generation, Mailbox};
 
+pub(crate) const CAPTURE_CAPACITY: usize = 4;
+
 pub(crate) struct Services {
+    pub(crate) rename: crate::tree_rename::Retirement,
     pub(crate) filesystem: Arc<dyn FileSystem>,
     pub(crate) locale: Option<Arc<dyn LocaleService>>,
     pub(crate) reports: crate::ReportArena,
@@ -55,6 +58,7 @@ impl Controller {
             filesystem,
             locale,
             reports,
+            rename,
         } = services;
         let lanes = std::array::from_fn(|_| Arc::new(Mailbox::default()));
         {
@@ -63,7 +67,7 @@ impl Controller {
                 states[pane].tree_notify = Some(RootReady(Arc::downgrade(&lanes[pane])));
             }
         }
-        let copy_capacity = Arc::new(Semaphore::new(4));
+        let copy_capacity = Arc::new(Semaphore::new(CAPTURE_CAPACITY));
         let workers = std::array::from_fn(|pane| {
             let mut native = NativeProvider::new(filesystem.clone());
             if let Some(locale) = &locale {
@@ -76,6 +80,7 @@ impl Controller {
                     native,
                     locale: locale.clone(),
                     reports: reports.clone(),
+                    rename: rename.clone(),
                 },
                 WorkerBudget::new(listings[pane].clone()).with_mutation_gate(mutation_gate.clone()),
                 outbox.clone(),
@@ -240,6 +245,7 @@ fn command_pane(command: &TreeCommand) -> PaneId {
         TreeCommand::Delete(request) => request.view.stamp.pane,
         TreeCommand::Clipboard(request) => request.view.stamp.pane,
         TreeCommand::Edit(request) => request.view.stamp.pane,
+        TreeCommand::Rename(request) => request.view.stamp.pane,
         TreeCommand::Checksums(request) => request.view.stamp.pane,
         TreeCommand::Select(request) => request.view.stamp.pane,
         TreeCommand::Reproject(request) => request.view.stamp.pane,
@@ -259,6 +265,7 @@ fn command_navigation(command: &TreeCommand) -> NavigationId {
         TreeCommand::Delete(request) => request.view.stamp.navigation,
         TreeCommand::Clipboard(request) => request.view.stamp.navigation,
         TreeCommand::Edit(request) => request.view.stamp.navigation,
+        TreeCommand::Rename(request) => request.view.stamp.navigation,
         TreeCommand::Checksums(request) => request.view.stamp.navigation,
         TreeCommand::Select(request) => request.view.stamp.navigation,
         TreeCommand::Reproject(request) => request.view.stamp.navigation,
@@ -306,6 +313,11 @@ fn diagnostic_rejection(command: TreeCommand, error: TreeDiagnostic, retryable: 
             result: Err(error),
         },
         TreeCommand::Transfer(request) => TreeEvent::Transfer {
+            stamp: request.view.stamp,
+            request: request.request,
+            result: Err(error),
+        },
+        TreeCommand::Rename(request) => TreeEvent::RenameCaptured {
             stamp: request.view.stamp,
             request: request.request,
             result: Err(error),

@@ -160,7 +160,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Alt+↑ / Alt+↓ in command editor | Rotate to older / newer stored commands, wrapping; terminal type stays unchanged |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |
 | F1 | Help |
-| F2 | Rename the focused file/folder; Enter confirms, Escape cancels |
+| F2 | Rename the focused native file/folder, including an expanded folder occurrence; Enter confirms, Escape cancels. Marked selection does not change the target; collisions require overwrite consent |
 | Shift+F4 in files | New empty file in the captured panel folder; Enter confirms the name, Escape cancels; existing entries are never overwritten |
 | F7 | Create an absolute or relative folder path, including `..` and missing intermediate folders |
 | Delete / F8 | Confirm moving the selection (or focused entry) to the system Trash |
@@ -306,7 +306,9 @@ Options is the gear at the right end of the top toolbar. The application moon
 icon immediately to its right opens About, including the application version;
 Escape or Close dismisses it. Both controls remain fixed when panel tools scroll.
 The bottom bar contains F1–F12 and Jobs. Jobs shows queued/running operations and
-allows cancellation. Cancellation retains changes already completed. No Trash
+allows cancellation. In active Copy/Move/Delete progress, Escape or X asks whether
+to cancel; Continue is the default, and Escape in that question leaves work running.
+Cancellation retains changes already completed. No Trash
 failure ever falls back to permanent deletion. F7 accepts paths outside the active
 pane, refuses intermediate links and leaves already-created intermediate folders
 on error. Relative paths start in the captured panel, never the process directory.

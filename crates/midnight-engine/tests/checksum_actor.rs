@@ -64,15 +64,13 @@ async fn calculation_retains_backend_results_for_verified_manifest_and_release_r
     let service = Arc::new(LocalFileSystem::new(None));
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service.clone(),
-            events,
-        )
-        .with_transfers(service)
-        .run(commands),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service.clone(),
+        events,
     );
+    engine.configure_transfers().unwrap().install(service);
+    let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),
         ChecksumGeneration(1),
@@ -118,15 +116,13 @@ async fn cancelled_calculation_and_stale_generation_have_explicit_events() {
     let service = Arc::new(LocalFileSystem::new(None));
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service.clone(),
-            events,
-        )
-        .with_transfers(service)
-        .run(commands),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service.clone(),
+        events,
     );
+    engine.configure_transfers().unwrap().install(service);
+    let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),
         ChecksumGeneration(1),
@@ -225,15 +221,13 @@ async fn captured_manifest_verification_routes_through_the_actor_and_replaces_re
     let service = Arc::new(LocalFileSystem::new(None));
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service.clone(),
-            events,
-        )
-        .with_transfers(service)
-        .run(commands),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service.clone(),
+        events,
     );
+    engine.configure_transfers().unwrap().install(service);
+    let engine = tokio::spawn(engine.run(commands));
     send.send(Command::StartChecksums(Box::new(ChecksumRequest::new(
         ChecksumJobId(1),
         ChecksumGeneration(1),

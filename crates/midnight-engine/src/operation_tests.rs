@@ -21,6 +21,8 @@ mod summary;
 mod throughput;
 #[path = "tree_delete_operation_tests.rs"]
 mod tree_delete;
+#[path = "tree_rename_operation_tests.rs"]
+mod tree_rename;
 
 #[derive(Default)]
 struct Calls {

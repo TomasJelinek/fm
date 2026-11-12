@@ -135,6 +135,7 @@ fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePerm
             native,
             locale: None,
             reports: crate::ReportArena::testing(),
+            rename: crate::tree_rename::Retirement::testing(),
         },
         budget,
         Outbox {

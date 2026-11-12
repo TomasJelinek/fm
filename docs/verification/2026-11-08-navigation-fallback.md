@@ -8,7 +8,8 @@ retried. Invalid/unsupported provider data, cancellation and resource exhaustion
 remain terminal failures.
 
 The application enables this policy with
-`Engine::with_navigation_fallback(local.clone())`. The native root service returns
+the native navigation fallback service (the current composition API is
+`engine.configure_navigation_fallback()?.install(local.clone())`). The native root service returns
 only an address; every subsequent listing still uses the installed filesystem
 provider. There is no built-in filesystem-provider bypass. Archive requests use
 their separate typed protocol and are not reinterpreted as native paths.

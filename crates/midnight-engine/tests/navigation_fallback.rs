@@ -40,15 +40,16 @@ async fn missing_unicode_descendants_recover_each_parent_and_list_the_first_exis
     let filesystem = Arc::new(LocalFileSystem::new(None));
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            filesystem.clone(),
-            sender,
-        )
-        .with_navigation_fallback(filesystem)
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem.clone(),
+        sender,
     );
+    engine
+        .configure_navigation_fallback()
+        .unwrap()
+        .install(filesystem);
+    let task = tokio::spawn(engine.run(receiver));
     commands.send(navigate(1, missing)).await.unwrap();
     let mut fallbacks = Vec::new();
     loop {
@@ -166,15 +167,16 @@ async fn cancelled_uncancellable_failure_emits_no_fallback_and_failed_root_stops
     let release = Release(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            filesystem.clone(),
-            sender,
-        )
-        .with_navigation_fallback(filesystem.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem.clone(),
+        sender,
     );
+    engine
+        .configure_navigation_fallback()
+        .unwrap()
+        .install(filesystem.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands.send(navigate(1, blocked)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), filesystem.entered.notified())
         .await

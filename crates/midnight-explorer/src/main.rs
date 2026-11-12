@@ -175,12 +175,16 @@ async fn smoke_test(
 ) -> Result<(), String> {
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(16);
-    let engine = tokio::spawn(
-        Engine::new(engine_lifetime, filesystem.clone(), sender)
-            .with_archive_capture(native_content::archive(filesystem))
-            .with_locale(midnight_platform::locale_service())
-            .run(receiver),
-    );
+    let mut engine = Engine::new(engine_lifetime, filesystem.clone(), sender);
+    engine
+        .configure_archive_capture()
+        .map_err(|error| error.to_string())?
+        .install(native_content::archive(filesystem));
+    engine
+        .configure_locale()
+        .map_err(|error| error.to_string())?
+        .install(midnight_platform::locale_service());
+    let engine = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ListVolumes)
         .await
@@ -309,32 +313,83 @@ fn run_window(
     });
     let retire_queue = reclaim::start(runtime.handle(), notify.clone());
     let retire_pending = Rc::new(RefCell::new(None::<reclaim::Retired>));
-    let engine = runtime.spawn(
-        Engine::with_wakeup(
-            engine_lifetime,
-            filesystem.clone(),
-            event_sender,
-            notify.clone(),
-        )
-        .with_archive_capture(native_content::archive(filesystem.clone()))
-        .with_elevated_directories(Arc::new(midnight_elevation::ElevatedDirectories))
-        .with_navigation_fallback(local.clone())
-        .with_shell_menu(local.clone())
-        .with_path_picker(local.clone())
-        .with_transfers(local.clone())
-        .with_find(local.clone())
-        .with_user_commands(local.clone())
-        .with_editor(local.clone())
-        .with_drag_drop(local.clone())
-        .with_locale(midnight_platform::locale_service())
-        .with_mutations(mutations)
-        .with_network(network)
-        .with_desktop(desktop)
-        .with_clipboard(Arc::new(midnight_platform::NativeClipboard))
-        .with_watch(watch)
-        .with_settings(settings)
-        .run(command_receiver),
+    let mut engine = Engine::with_wakeup(
+        engine_lifetime,
+        filesystem.clone(),
+        event_sender,
+        notify.clone(),
     );
+    engine
+        .configure_archive_capture()
+        .map_err(|error| error.to_string())?
+        .install(native_content::archive(filesystem.clone()));
+    engine
+        .configure_elevated_directories()
+        .map_err(|error| error.to_string())?
+        .install(Arc::new(midnight_elevation::ElevatedDirectories));
+    engine
+        .configure_navigation_fallback()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_shell_menu()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_path_picker()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_transfers()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_find()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_user_commands()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_editor()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_drag_drop()
+        .map_err(|error| error.to_string())?
+        .install(local.clone());
+    engine
+        .configure_locale()
+        .map_err(|error| error.to_string())?
+        .install(midnight_platform::locale_service());
+    engine
+        .configure_mutations()
+        .map_err(|error| error.to_string())?
+        .install(mutations);
+    engine
+        .configure_desktop()
+        .map_err(|error| error.to_string())?
+        .install(desktop);
+    engine
+        .configure_clipboard()
+        .map_err(|error| error.to_string())?
+        .install(Arc::new(midnight_platform::NativeClipboard));
+    engine
+        .configure_watch()
+        .map_err(|error| error.to_string())?
+        .install(watch);
+    engine
+        .configure_settings()
+        .map_err(|error| error.to_string())?
+        .install(settings);
+    if let Some(network) = network {
+        engine
+            .configure_network()
+            .map_err(|error| error.to_string())?
+            .install(network);
+    }
+    let engine = runtime.spawn(engine.run(command_receiver));
 
     let completed = Rc::new(Cell::new([false; 2]));
     let smoke_scheduled = Rc::new(Cell::new(false));

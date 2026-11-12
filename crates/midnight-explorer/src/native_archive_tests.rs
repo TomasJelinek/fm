@@ -25,15 +25,16 @@ fn start(
 ) {
     let (commands, receiver) = mpsc::channel(16);
     let (sender, events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            provider.clone(),
-            sender,
-        )
-        .with_archive_capture(archive(provider))
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        provider.clone(),
+        sender,
     );
+    engine
+        .configure_archive_capture()
+        .unwrap()
+        .install(archive(provider));
+    let task = tokio::spawn(engine.run(receiver));
     (commands, events, task)
 }
 async fn navigate(

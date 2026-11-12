@@ -71,6 +71,7 @@ mod tree_options;
 #[cfg(test)]
 mod tree_options_tests;
 mod tree_refresh;
+mod tree_rename;
 mod tree_search;
 mod tree_selection;
 mod tree_sizes;
@@ -351,6 +352,8 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.cancel_tree_editor(None);
+        self.cancel_tree_rename(None);
         self.cancel_tree_delete(None);
         self.retired
             .push(Box::new(mem::take(&mut self.operations.metadata_results)));

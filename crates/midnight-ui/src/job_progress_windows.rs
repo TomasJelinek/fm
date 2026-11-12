@@ -123,6 +123,9 @@ impl Windows {
                         record.window.set_close_error(SharedString::default());
                     }
                     record.window.set_job(row.clone());
+                    if !row.active || !row.cancellable {
+                        record.window.set_cancel_confirmation(false);
+                    }
                     close = record.automatic && row.completed && !row.failed && !row.attention;
                     true
                 } else {
@@ -176,7 +179,7 @@ impl Windows {
                 let id = row.identity.clone();
                 window.$callback(move || {
                     if let Some(context) = weak.upgrade()
-                        && context.current(&id, session)
+                        && context.interactive(&id, session)
                         && let Some(main) = context.main.upgrade()
                     {
                         main.$invoke(id.clone());
@@ -190,7 +193,7 @@ impl Windows {
         let id = row.identity.clone();
         window.on_set_paused(move |paused| {
             if let Some(context) = weak.upgrade()
-                && context.current(&id, session)
+                && context.interactive(&id, session)
                 && let Some(main) = context.main.upgrade()
             {
                 main.invoke_pause_job(id.clone(), paused);
@@ -209,7 +212,7 @@ impl Windows {
         let id = row.identity.clone();
         window.on_show_jobs(move || {
             if let Some(context) = weak.upgrade()
-                && context.current(&id, session)
+                && context.interactive(&id, session)
                 && let Some(main) = context.main.upgrade()
             {
                 main.invoke_show_operations();
@@ -220,6 +223,13 @@ impl Windows {
         window.on_request_dismiss(move || {
             if let Some(context) = weak.upgrade() {
                 context.request_close(&id, session);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        let id = row.identity.clone();
+        window.on_confirm_cancel(move || {
+            if let Some(context) = weak.upgrade() {
+                context.confirm_cancel(&id, session);
             }
         });
         let weak = window.as_weak();
@@ -249,31 +259,78 @@ impl Windows {
         if !self.current(id, session) {
             return;
         }
+        if let Some(record) = self.records.borrow().get(id)
+            && record.window.get_cancel_confirmation()
+        {
+            record.window.set_cancel_confirmation(false);
+            record.window.set_close_error(SharedString::default());
+            return;
+        }
         let Some(main) = self.main.upgrade() else {
             return;
         };
-        let row = main.get_operations().iter().find(|row| row.identity == *id);
-        if row
-            .as_ref()
-            .is_some_and(|row| row.active && row.cancellable)
+        if main
+            .get_operations()
+            .iter()
+            .any(|row| row.identity == *id && row.active && row.cancellable)
         {
-            main.invoke_cancel_job(id.clone());
-            // Admission is reflected synchronously by the exact row. A full
-            // backend queue must leave an actionable window, never silently hide it.
-            if main
-                .get_operations()
-                .iter()
-                .any(|row| row.identity == *id && row.active && row.cancellable)
-            {
-                if let Some(record) = self.records.borrow().get(id) {
-                    record.window.set_close_error(
-                        "Cancellation could not be queued. Try Cancel again.".into(),
-                    );
-                }
-                return;
+            if let Some(record) = self.records.borrow().get(id) {
+                record.window.set_close_error(SharedString::default());
+                record.window.set_cancel_confirmation(true);
             }
+            return;
         }
         self.dismiss(id, Some(session));
+    }
+    fn confirm_cancel(&self, id: &SharedString, session: DialogSession) {
+        if !self.current(id, session)
+            || !self
+                .records
+                .borrow()
+                .get(id)
+                .is_some_and(|record| record.window.get_cancel_confirmation())
+        {
+            return;
+        }
+        let Some(main) = self.main.upgrade() else {
+            return;
+        };
+        // Completion or a cancellation from another surface can win while the
+        // question is open. Only the current live row grants cancellation.
+        if !main
+            .get_operations()
+            .iter()
+            .any(|row| row.identity == *id && row.active && row.cancellable)
+        {
+            if let Some(record) = self.records.borrow().get(id) {
+                record.window.set_cancel_confirmation(false);
+            }
+            return;
+        }
+        main.invoke_cancel_job(id.clone());
+        // Admission is reflected synchronously by the exact row. A full backend
+        // queue must leave the question and its retry action visible.
+        if main
+            .get_operations()
+            .iter()
+            .any(|row| row.identity == *id && row.active && row.cancellable)
+        {
+            if let Some(record) = self.records.borrow().get(id) {
+                record.window.set_close_error(
+                    "Cancellation could not be queued. Try Cancel operation again.".into(),
+                );
+            }
+            return;
+        }
+        self.dismiss(id, Some(session));
+    }
+    fn interactive(&self, id: &SharedString, session: DialogSession) -> bool {
+        self.current(id, session)
+            && self
+                .records
+                .borrow()
+                .get(id)
+                .is_some_and(|record| !record.window.get_cancel_confirmation())
     }
     fn current(&self, id: &SharedString, session: DialogSession) -> bool {
         !self.closing.get()

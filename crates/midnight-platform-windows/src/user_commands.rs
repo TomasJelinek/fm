@@ -93,6 +93,7 @@ fn prepare(
         application: executable.to_owned(),
         arguments: arguments.to_owned(),
         raw_tail: None,
+        cmd_environment: false,
         working_directory: directory.to_owned(),
     };
     crate::terminal_process::validate(&spec).map_err(|cause| error(directory, cause))?;

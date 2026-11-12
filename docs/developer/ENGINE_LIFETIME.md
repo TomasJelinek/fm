@@ -6,7 +6,10 @@ Reserve cleanup before constructing provider-bearing services:
 ```rust,ignore
 let lifetime = midnight_engine::Engine::lifetime()?;
 // Construct native providers only after the fallible worker startup succeeds.
-let engine = midnight_engine::Engine::new(lifetime, filesystem, events);
+let mut engine = midnight_engine::Engine::new(lifetime, filesystem, events);
+let slot = engine.configure_find()?;
+// Build/transfer the optional service only after admission succeeds.
+slot.install(find_service);
 let task = runtime.spawn(engine.run(commands));
 ```
 
@@ -18,9 +21,26 @@ native work can retain its own protected owner afterward; this acknowledgement i
 a promise that a cancellation-ignoring native call has returned. No UI or executor
 destructor joins the cleanup thread. The application shutdown grace remains bounded.
 
+## One-time service configuration
+
+Optional services use `configure_*(&mut self)` to obtain a vacant `ServiceSlot`, then
+`slot.install(service)` transfers the owner into the existing startup guard. Admission
+accepts no native argument or captured factory. A duplicate returns a metadata-only
+`ServiceAlreadyConfigured` error before another service is constructed or transferred.
+Installation cannot fail, displace the original owner or reuse the consumed token.
+Dropping an unused token leaves the field vacant. An unavailable network provider
+simply skips installation; there is no owner-taking clear/replacement operation.
+
+The former consuming `with_*` setters were removed because field replacement bypassed
+the guarded bundle's destructor and could destroy a last provider owner on the caller.
+This internal Rust API migration does not change plugin ABIs, service traits, startup
+capacity or runtime behavior. Existing application composition installs each service
+once. Configuration is finished before `run` consumes the engine. Native provider and
+comparator builders are separate APIs and are unchanged by this migration.
+
 ## Capacity and ownership
 
-One engine reserves a domain with 304 payload slots and seven reusable waiter tokens:
+One engine reserves a domain with 308 payload slots and seven reusable waiter tokens:
 
 | Owners | Slots |
 | --- | ---: |
@@ -42,6 +62,7 @@ One engine reserves a domain with 304 payload slots and seven reusable waiter to
 | Archive navigation: 132 retained mounts, two requests and one intake | 135 |
 | Archive-size pending state, one per pane | 2 |
 | Shared diagnostic report arena | 1 |
+| Native tree Rename captures, sharing the four tree-action permits | 4 |
 
 Native drag admission uses Copy's existing 32 permits. It does not add another queue.
 A reservation is acquired before accepting owned payloads and remains occupied until
@@ -178,8 +199,9 @@ positive controls, not reasons to add redundant completion guards.
 This protects the outer run, command inbox, Copy/Move/mutation handoffs, shared snapshots,
 drag-owned captures and the migrated actor paths above. It is not a blanket guarantee
 for every independently spawned engine task. Other actors still require individual
-lifetime audits; repeated builder replacement remains a separate configuration-path
-limitation. The desktop/watch/clipboard follow-up is described in the
+lifetime audits. Repeated builder replacement is now prevented by one-time service
+admission before ownership; see the [configuration qualification](../verification/2026-11-12-engine-service-configuration.md).
+The desktop/watch/clipboard follow-up is described in the
 [native-service plan](../superpowers/plans/2026-11-12-native-service-retirement.md);
 [remaining native results](../superpowers/plans/2026-11-12-remaining-native-results.md)
 covers File List, dynamic network discovery and subsequent service hooks, with

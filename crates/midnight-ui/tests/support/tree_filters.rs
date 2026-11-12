@@ -425,16 +425,19 @@ impl Harness {
             Engine::lifetime().expect("engine cleanup worker"),
             directory,
             events_send,
-        )
-        .with_settings(Arc::new(Settings(calls.clone())));
+        );
+        engine
+            .configure_settings()
+            .unwrap()
+            .install(Arc::new(Settings(calls.clone())));
         if let Some(transfer) = transfer {
-            engine = engine.with_transfers(transfer);
+            engine.configure_transfers().unwrap().install(transfer);
         }
         if let Some(watch) = watch {
-            engine = engine.with_watch(watch);
+            engine.configure_watch().unwrap().install(watch);
         }
         if let Some(clipboard) = clipboard {
-            engine = engine.with_clipboard(clipboard);
+            engine.configure_clipboard().unwrap().install(clipboard);
         }
         let engine = runtime.spawn(engine.run(receive));
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));

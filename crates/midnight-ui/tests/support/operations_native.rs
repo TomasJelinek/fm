@@ -95,15 +95,24 @@ impl Harness {
         let mut preferences = UserPreferences::default();
         preferences.tabs[0].paths = vec![left.clone()];
         preferences.tabs[1].paths = vec![right.clone()];
-        let engine = Engine::new(
+        let mut engine = Engine::new(
             Engine::lifetime().expect("engine cleanup worker"),
             service.clone(),
             events_send,
-        )
-        .with_transfers(service.clone())
-        .with_mutations(service.clone())
-        .with_locale(service)
-        .with_settings(Arc::new(Settings(preferences)));
+        );
+        engine
+            .configure_transfers()
+            .unwrap()
+            .install(service.clone());
+        engine
+            .configure_mutations()
+            .unwrap()
+            .install(service.clone());
+        engine.configure_locale().unwrap().install(service);
+        engine
+            .configure_settings()
+            .unwrap()
+            .install(Arc::new(Settings(preferences)));
         let engine = runtime.spawn(engine.run(receive));
         let windows = Rc::new(RefCell::new(Vec::new()));
         slint::platform::set_platform(Box::new(modeless::Windows(windows.clone()))).unwrap();

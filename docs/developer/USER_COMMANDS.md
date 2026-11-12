@@ -65,11 +65,47 @@ Linux uses native environment values on the existing terminal builder. Parent
 environment and process cwd are never changed. Script text is not automatically
 added to command history or logs; process debug output redacts source/argv/env.
 
-Windows supports the existing PowerShell profile; Linux uses supported installed
-POSIX terminal profiles. Cmd Custom Commands return explicit Unsupported until
-hostile native environment-reference qualification is implemented. This does not
-change the existing ordinary command-bar Cmd behavior. Custom launches do not add
-an elevation/credential path. Windows loader errors use a scoped thread error
+Windows supports PowerShell and Command Prompt; Linux uses supported installed
+POSIX terminal profiles. Custom launches do not add an elevation/credential path.
+
+Custom Command Prompt uses the trusted system Cmd with `/D /U /E:ON /V:ON /S /K`.
+Its source is one literal command line: use explicit Cmd operators between
+commands, or choose PowerShell for multiline scripts. CR/LF in source is rejected
+because native command-string mode otherwise ignores subsequent physical lines.
+This restriction does not affect control characters inside captured data.
+The ordinary command-bar Cmd profile remains unchanged with `/V:OFF`.
+
+Each declared raw `ME_*` value also receives a backend-created `ME_*_ARG` companion.
+The picker inserts an unquoted delayed reference such as `!ME_FILE_PATH_ARG!` as
+one complete argument for a directly invoked external program using Windows
+C-runtime argv parsing. Do not add quotes around that reference. Companions handle
+empty arguments, quotes, trailing backslashes, Unicode and raw UTF-16 without
+inserting filenames into script source. Caller configuration cannot supply or
+replace these companion keys; undeclared inherited raw/companion keys are removed.
+
+This is an external-argv contract, not universal Cmd quoting. Builtins such as
+`echo`, `type` and `cd` use raw values with their own syntax, for example
+`type "!ME_FILE_PATH!"`. Empty raw references follow Cmd's own behavior; companions
+preserve an empty native argument. Do not pass companions through `CALL`, a batch
+file or another shell that parses expanded text again. `CALL` can re-expand percent
+variables and alter carets; arbitrary pipeline/grouped reparsing is not qualified.
+Keep delayed expansion enabled. Program mode is preferable when shell syntax is
+unnecessary.
+
+Cmd does not accept UNC/device working directories. A verbatim DOS directory can
+use its ordinary DOS spelling only after comparing both live native directory
+identities; normalization to a different trailing-dot/space name is refused.
+Captured raw environment values keep their original spelling. No cwd is
+truncated, and a native long-cwd startup error is returned rather than launching
+elsewhere. This is a shell capability boundary, not a limit on file-manager paths.
+
+The adapter refuses initial Cmd command lines, declared/encoded environment
+records and the conservative expansion of literal fixed references above 8191
+UTF-16 units. The reference budget is ASCII case-insensitive and includes repeated
+occurrences; it does not rewrite or parse shell syntax. Dynamically constructed
+script variables remain subject to Cmd's own limits. The existing aggregate
+8 MiB child environment limit remains; no value is truncated. See the
+[native qualification](../verification/2026-11-12-cmd-custom-commands.md). Windows loader errors use a scoped thread error
 mode, restored on return, to report errors without blocking loader dialogs.
 
 ## Engine protocol and lifecycle
@@ -78,7 +114,7 @@ mode, restored on return, to report errors without blocking loader dialogs.
 - `ExecuteUserCommand(Box<UserCommandRequest>)`
 - `CancelUserCommand(UserCommandRequestId)`
 - `Event::UserCommand(Box<UserCommandEvent>)`
-- `Engine::with_user_commands(Arc<dyn UserCommandService>)`
+- `engine.configure_user_commands()?.install(service)`
 
 Requests contain the stable command ID, captured configuration and native panel
 context. Native/virtual locations are explicit `Option<PathBuf>` values; do not
@@ -112,7 +148,8 @@ engine shutdown signals cancellation immediately and awaits actual native cleanu
 before aborting unrelated tasks. The existing desktop reaper retains each direct
 child's slot until confirmed exit; an uncertain wait error retains the child and
 slot for another timed poll, including when the normal reaper has closed. Normal
-runtime shutdown may abandon external-child tracking. Terminals, external
+runtime shutdown retains external-child ownership through the bounded native
+tracker until exit is observed; it does not kill those children. Terminals, external
 editors and Custom Commands share eight direct-child slots. Associations retain
 their separate helper pool.
 

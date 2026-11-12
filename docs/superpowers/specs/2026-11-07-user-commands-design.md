@@ -87,11 +87,14 @@ owned concurrently across custom commands, terminal and editor operations. A
 retained preview keeps its backend memory reservation until the UI releases it.
 These bounds limit one operation's resources, not valid filesystem path lengths.
 
-Windows uses Program or PowerShell; Linux uses Program or its POSIX terminal
-profile. Cmd custom scripts remain explicitly unavailable until hostile native
-environment references are qualified. This restriction does not disable the
-existing bottom command bar's Cmd profile. Shell variables are explicit declarations
-from the fixed `ME_*` set; undeclared inherited values are removed in the child.
+Windows uses Program, PowerShell or explicitly qualified Cmd; Linux uses Program
+or its POSIX terminal profile. Cmd keeps one literal command line and exact raw
+`ME_*` values, and provides backend-quoted `ME_*_ARG` companions for direct native
+argv references such as `!ME_FILE_PATH_ARG!`. Builtins and reparsing commands have
+different semantics; the precise limits and native evidence are in the
+[backend contract](../../developer/USER_COMMANDS.md). Ordinary command-bar Cmd is
+unchanged. Shell variables remain explicit declarations from the fixed `ME_*` set;
+undeclared inherited raw and companion values are removed in the child.
 
 Capture panel/selection/working directory at click time, resolve and validate on
 a bounded backend worker, then launch through separate Windows/Linux/macOS

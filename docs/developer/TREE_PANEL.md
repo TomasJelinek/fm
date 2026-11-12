@@ -438,12 +438,44 @@ owner. Terminal mutations queue loaded native-tree reconciliation, preserving th
 expanded view instead of replacing it with a flat listing. Capture and operation
 budgets remain the existing bounded backend limits; this is not archive write support.
 
+## Rename from expanded native panels
+
+F2 captures the focused real occurrence independently of marked selection. The exact
+acknowledged projection, request and row are checked by the tree worker; a displayed
+path, caption or original root EntryId cannot authorize a mutation. Native root files
+and expanded native directories use the existing Rename dialog. Parent and context-only
+rows are rejected; archive occurrences never acquire native write authority. Expanded
+branches remain folder-only: this does not introduce arbitrary descendant file rows.
+
+`CapturedRenameTarget` retains the provider-resolved native path and registration; capture
+is not a filesystem snapshot. Native identity is pinned during mutation preparation.
+The shared four-slot
+capture admission pool also bounds its cleanup ownership. Each capture reserves one
+slot from the existing runtime-independent retirement domain before provider capture;
+its native target and registration are destroyed before its capture permit is returned.
+The final source may safely leave a queued reply or UI pending request on any thread.
+The operation worker retains native prepared pins ahead of that source in destruction
+order. No extra cleanup thread or unbounded owner queue is introduced.
+
+Preparation uses the existing platform mutation service and checks the returned native
+path and immutable capture scope. The normal confirmation, name validation, cancellation,
+versioned overwrite consent and recovery behavior applies. No rename runs before
+confirmation, and later navigation cannot retarget admitted work. Before admission,
+navigation, reprojection and shutdown cancel pending captures; queue pressure retries
+the same focused occurrence. Completion reconciles loaded native branches through the
+existing tree maintenance route, rather than replacing the panel with a flat listing.
+
+F7 retains pane-location authority: it creates under the current pane directory, not the
+focused expanded descendant. Flat immediate-parent checks remain unchanged. See the
+[Rename verification](../verification/2026-11-12-native-tree-rename.md) for the exact
+qualified cases and remaining limitations.
+
 ## Remaining integration
 
-TREE-01 remains partially integrated. Native Delete now joins the typed capture
+TREE-01 remains partially integrated. Native Delete and Rename join the typed capture
 consumers described above: viewers, external editor, checksums, Copy/Move and native
-clipboard/drag operations. This is not generic provider write support. Rename,
-metadata editing, comparison, Custom Commands, context menus and virtual clipboard
+clipboard/drag operations. This is not generic provider write support. Metadata
+editing, comparison, Custom Commands, context menus and virtual clipboard
 export still require their own typed consumer integration and remain guarded.
 Original flat panels remain available; opening a folder returns to the ordinary
 operation path. Pane-directory actions such as terminal, bookmarks, creation and

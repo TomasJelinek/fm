@@ -194,7 +194,9 @@ new settings use 96 logical pixels for the thumbnail's longest side.
 All confirmation/form bodies retain a themed icon, title and divider, including
 native modal hosts. Rename derives initial height after applying its final text
 and font at the intended width. Cancelled operations retain existing lifetime and
-job admission rules. Header close, Escape and Cancel use the same cancellation.
+job admission rules. Header close, Escape and Cancel use the same form dismissal.
+Active Copy/Move/Delete progress instead asks for cancellation confirmation;
+Continue is the default and dismissing that question keeps work running.
 Small list controls share compact padding and centered glyphs; remove/clear actions
 use the same red cross in history, cache and custom archive extensions.
 

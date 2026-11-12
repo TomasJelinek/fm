@@ -64,15 +64,13 @@ async fn editor_dispatch_preserves_request_and_reports_worker_launch_error() {
     let service = Arc::new(Service::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            service.clone(),
-            sender,
-        )
-        .with_editor(service.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        service.clone(),
+        sender,
     );
+    engine.configure_editor().unwrap().install(service.clone());
+    let task = tokio::spawn(engine.run(receiver));
     let path = std::env::current_dir()
         .unwrap()
         .join("文档 & $HOME; ' .txt");
@@ -249,7 +247,7 @@ async fn captured_tree_editor_resolves_and_retires_only_on_workers_including_rej
             sender,
         );
         if available {
-            engine = engine.with_editor(service.clone());
+            engine.configure_editor().unwrap().install(service.clone());
         }
         let task = tokio::spawn(engine.run(receiver));
         let resolved = Arc::new(Mutex::new(Vec::new()));

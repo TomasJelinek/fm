@@ -131,6 +131,15 @@ impl Controller {
         .await;
     }
 
+    pub(crate) async fn prepare_captured_rename(&self, request: PrepareCapturedRename) {
+        let scope = input::RenameScope::capture(request.source.as_ref());
+        self.admit(
+            Input::Rename(request, scope),
+            (!scope.valid()).then_some("The captured Rename scope is invalid."),
+        )
+        .await;
+    }
+
     pub(crate) async fn prepare_captured_delete(&self, request: PrepareCapturedDelete) {
         let scope = DeleteScope::capture(request.sources.as_ref());
         self.admit(

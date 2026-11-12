@@ -158,3 +158,68 @@ fn check_history_width(item: &ItemRc) -> usize {
     }
     curves
 }
+
+#[test]
+fn cancel_question_keeps_both_actions_visible_and_continue_focused_at_compact_sizes() {
+    use std::{cell::Cell, rc::Rc};
+    let mut test = ui::TestUi::new();
+    let mut row = job("copy-job:1", "Move files");
+    row.active = true;
+    row.pausable = true;
+    row.pause_requested = true;
+    row.paused = true;
+    row.state = "Paused".into();
+    row.current_path = "D:\\資料\\selected folder\\file.txt".into();
+    test.window.set_job(row);
+    let weak = test.window.as_weak();
+    test.window.on_request_dismiss(move || {
+        weak.unwrap().set_cancel_confirmation(false);
+    });
+    let confirmed = Rc::new(Cell::new(0));
+    let count = confirmed.clone();
+    test.window
+        .on_confirm_cancel(move || count.set(count.get() + 1));
+    for (theme, density) in [(0, 0), (1, 0), (21, 1), (22, 1)] {
+        test.window
+            .invoke_apply_preferences(theme, density, "".into(), 11, 15);
+        for (width, height) in [(640, 420), (320, 200)] {
+            test.resize(width, height);
+            test.window.set_cancel_confirmation(true);
+            test.draw();
+            for label in ["Continue", "Cancel operation"] {
+                let item = ui::popup_item(&test.window, label, AccessibleRole::Button);
+                let rect = item.geometry();
+                let origin = item.map_to_native_window(rect.origin);
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(origin.x >= 0.0 && origin.y >= 0.0);
+                assert!(
+                    origin.x + rect.width() <= width as f32 + 1.0,
+                    "{label} horizontal fit"
+                );
+                assert!(
+                    origin.y + rect.height() <= height as f32 + 1.0,
+                    "{label} vertical fit"
+                );
+            }
+            test.snapshot(&format!(
+                "cancel-question-{theme}-{density}-{width}x{height}"
+            ));
+            ui::key(&test.window, Key::Return);
+            test.draw();
+            assert!(
+                !test.window.get_cancel_confirmation(),
+                "Enter must choose Continue"
+            );
+            assert_eq!(confirmed.get(), 0);
+            assert!(test.window.get_job().paused && test.window.get_job().pause_requested);
+        }
+    }
+    test.window.set_cancel_confirmation(true);
+    test.draw();
+    ui::click_popup(&test.window, "Cancel operation", AccessibleRole::Button);
+    assert_eq!(
+        confirmed.get(),
+        1,
+        "explicit pointer confirmation is reachable"
+    );
+}

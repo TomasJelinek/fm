@@ -9,6 +9,8 @@ mod checksum_capture_tests;
 mod delete_capture_tests;
 #[path = "tree_editor_capture_tests.rs"]
 mod editor_capture_tests;
+#[path = "tree_rename_capture_tests.rs"]
+mod rename_capture_tests;
 
 #[path = "tree_refresh_tests.rs"]
 mod refresh_tests;

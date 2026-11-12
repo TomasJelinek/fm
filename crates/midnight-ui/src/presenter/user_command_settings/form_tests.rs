@@ -189,3 +189,33 @@ mod unix;
 #[cfg(windows)]
 #[path = "form_windows_tests.rs"]
 mod windows;
+
+#[test]
+fn cmd_picker_declares_raw_scalar_and_inserts_complete_native_argument_companion() {
+    let original = command();
+    let mut form = Form::from_command(&original);
+    form.kind = 1;
+    form.shell = 2;
+    form.script = "program.exe literal-${not-a-template}".into();
+    form.insert_variable(2, UserCommandVariable::FileExtension)
+        .unwrap();
+    let accepted = form.command(Some(&original)).unwrap();
+    let UserCommandInvocation::Terminal {
+        script,
+        variables,
+        shell,
+    } = accepted.invocation
+    else {
+        panic!()
+    };
+    assert_eq!(shell, ShellFlavor::Cmd);
+    assert_eq!(
+        script,
+        "program.exe literal-${not-a-template} !ME_FILE_EXTENSION_ARG!"
+    );
+    assert_eq!(variables, vec![UserCommandVariable::FileExtension]);
+    assert!(
+        form.insert_variable(2, UserCommandVariable::SelectedPaths)
+            .is_err()
+    );
+}

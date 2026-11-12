@@ -75,22 +75,6 @@ impl UserCommandProcess {
                 ),
             ));
         }
-        if matches!(
-            self.invocation,
-            UserCommandProcessInvocation::Terminal {
-                shell: ShellFlavor::Cmd,
-                ..
-            }
-        ) {
-            return Err(FsError::from_io(
-                "Custom Command terminal",
-                &self.working_directory,
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Cmd Custom Commands await hostile native environment-reference qualification. Choose Program or PowerShell.",
-                ),
-            ));
-        }
         Ok(())
     }
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -199,17 +183,6 @@ pub trait UserCommandService: TerminalService {
                 self.launch_user_program(executable, arguments, &process.working_directory, cancel)
             }
             UserCommandProcessInvocation::Terminal {
-                shell: ShellFlavor::Cmd,
-                ..
-            } => Err(FsError::from_io(
-                "Custom Command terminal",
-                &process.working_directory,
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Cmd Custom Commands await hostile native environment-reference qualification. Choose Program or PowerShell.",
-                ),
-            )),
-            UserCommandProcessInvocation::Terminal {
                 shell,
                 script,
                 environment,
@@ -224,5 +197,39 @@ pub trait UserCommandService: TerminalService {
                 cancel,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cmd_metadata_keeps_fixed_raw_keys_and_cancellation_before_platform_preflight() {
+        let mut process = UserCommandProcess {
+            working_directory: std::env::temp_dir(),
+            invocation: UserCommandProcessInvocation::Terminal {
+                shell: ShellFlavor::Cmd,
+                script: "program.exe !ME_FILE_PATH_ARG!".into(),
+                environment: vec![("ME_FILE_PATH".into(), "raw %PATH% !x! &".into())],
+            },
+        };
+        assert!(process.check(&Cancellation::default()).is_ok());
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        assert_eq!(
+            process.check(&cancelled).unwrap_err().kind,
+            io::ErrorKind::Interrupted
+        );
+        let UserCommandProcessInvocation::Terminal { environment, .. } = &mut process.invocation
+        else {
+            panic!()
+        };
+        // Encoded companions belong to the native adapter, never caller authority.
+        environment[0].0 = "ME_FILE_PATH_ARG".into();
+        assert_eq!(
+            process.check(&Cancellation::default()).unwrap_err().kind,
+            io::ErrorKind::InvalidInput
+        );
     }
 }

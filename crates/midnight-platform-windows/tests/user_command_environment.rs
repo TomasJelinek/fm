@@ -5,6 +5,8 @@
 )]
 #[path = "../src/user_command_environment.rs"]
 mod environment;
+#[path = "../src/windows_argv.rs"]
+mod windows_argv;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt};
 
 #[test]
@@ -16,6 +18,11 @@ fn child_block_replaces_case_insensitive_keys_removes_undeclared_context_and_pre
         ("=C:".into(), "C:\\cwd".into()),
         ("me_file_path".into(), "stale".into()),
         ("ME_OTHER_PATH".into(), "undeclared".into()),
+        ("ME_FILE_PATH_ARG".into(), "stale encoded argument".into()),
+        (
+            "me_other_path_arg".into(),
+            "undeclared encoded argument".into(),
+        ),
         ("A".into(), "value".into()),
     ];
     let block = environment::build(inherited, &[("ME_FILE_PATH".into(), raw.clone())]).unwrap();

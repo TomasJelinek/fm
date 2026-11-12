@@ -24,15 +24,15 @@ async fn assert_network_backpressure(available: bool) {
     } else {
         None
     };
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services,
-            sender,
-        )
-        .with_network(network)
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services,
+        sender,
     );
+    if let Some(network) = network {
+        engine.configure_network().unwrap().install(network);
+    }
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ManageNetworkConnections { disconnect: false })
         .await
@@ -273,15 +273,16 @@ async fn empty_terminal_launch_reaches_adapter_but_whitespace_and_nul_do_not() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     let directory = std::env::current_dir().unwrap().join("文档 👩🏽‍💻");
     for (index, text) in ["", " \t\n", "\0", "echo before\0after", "echo exact"]
         .iter()
@@ -334,15 +335,16 @@ async fn desktop_context_and_background_icons_never_launch_commands() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands.send(Command::ListDesktopContext).await.unwrap();
     commands.send(navigation()).await.unwrap();
     let (mut context, mut listed, mut folder_icon) = (false, false, false);
@@ -384,15 +386,16 @@ async fn desktop_context_publishes_choices_before_loading_each_drive_and_special
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands.send(Command::ListDesktopContext).await.unwrap();
     let mut context_published = false;
     let mut roots = std::collections::HashSet::new();
@@ -435,15 +438,16 @@ async fn modal_properties_do_not_block_navigation_or_explicit_terminal_errors() 
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ShowProperties {
             request: DesktopRequestId(1),
@@ -510,15 +514,16 @@ async fn blocked_default_open_does_not_block_navigation_and_keeps_the_exact_path
     let _release = ReleaseOpen(services.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::OpenEntry {
             request: DesktopRequestId(7),
@@ -592,15 +597,13 @@ async fn linked_directory_is_internal_and_missing_file_is_a_contextual_error() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services)
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine.configure_desktop().unwrap().install(services);
+    let task = tokio::spawn(engine.run(receiver));
     for (id, path) in [(3, "linked-folder"), (4, "missing-open")] {
         commands
             .send(Command::OpenEntry {
@@ -651,15 +654,16 @@ async fn resolved_directory_target_keeps_the_original_activation_identity() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ResolveDirectoryLink {
             request: DesktopRequestId(81),
@@ -708,15 +712,13 @@ async fn desktop_helpers_are_reaped_and_nonzero_status_is_reported() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services)
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine.configure_desktop().unwrap().install(services);
+    let task = tokio::spawn(engine.run(receiver));
     for (id, path) in [(1, "helper-success"), (2, "helper-error")] {
         commands
             .send(Command::OpenEntry {
@@ -757,15 +759,16 @@ async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
     let _release = ReleaseOpen(services.clone());
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(
-            Engine::lifetime().expect("engine cleanup worker"),
-            services.clone(),
-            sender,
-        )
-        .with_desktop(services.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     for id in 1..=4 {
         commands
             .send(Command::OpenEntry {
