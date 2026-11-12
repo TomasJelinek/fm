@@ -174,6 +174,104 @@ fn flat_presence_navigation_cancels_work_and_failed_probe_keeps_its_reason() {
 }
 
 #[test]
+fn denied_folder_navigation_retains_row_warning_and_source_viewport() {
+    let mut p = ready();
+    let offset = p.panes[0].parent_offset();
+    p.focus_display_row(PaneId::Left, offset + 1);
+    let viewport = (offset + 1, offset + 2);
+    p.panes[0].set_tree_viewport(viewport);
+    p.panes[0].preserve_viewport = true;
+    let request = request(&mut p);
+    let destination = p.panes[0].entries[1].path.clone();
+    let mut failed_probe = result(&request);
+    failed_probe.values = vec![(
+        EntryId(2),
+        FolderPresence::Unavailable(TreeDiagnostic::new(
+            "Access denied while checking subfolders",
+        )),
+    )]
+    .into();
+    p.apply(Event::FolderPresence(failed_probe));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
+        6
+    );
+    let entries = p.panes[0].entries.clone();
+    let index = p.panes[0].index.clone();
+    let committed = p.panes[0].successful_generation;
+    let cursor = p.panes[0].cursor;
+    let parent_cursor = p.panes[0].parent_cursor;
+    let source_path = p.panes[0].path.clone();
+    assert!(p.open(PaneId::Left, offset + 1, &|_| true));
+    let denied = NavigationId(p.panes[0].generation);
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: denied,
+        error: FsError::from_io("list", &destination, io::ErrorKind::PermissionDenied.into()),
+    });
+    p.flush_folder_presence(&|_| panic!("a failed open cannot probe the retired source"));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
+        6,
+        "a denied open restores the source row with its warning"
+    );
+    assert!(!p.panes[0].root_presence_error(EntryId(2)).is_empty());
+    assert_eq!(p.panes[0].path, source_path);
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &entries));
+    assert!(Arc::ptr_eq(&p.panes[0].index, &index));
+    assert_eq!(p.panes[0].generation, denied.0);
+    assert_eq!(p.panes[0].successful_generation, committed);
+    assert_eq!(p.panes[0].cursor, cursor);
+    assert_eq!(p.panes[0].parent_cursor, parent_cursor);
+    assert_eq!(p.panes[0].tree.viewport, viewport);
+    assert!(p.panes[0].preserve_viewport);
+    assert!(!p.panes[0].root_disclosure_available());
+    p.apply(Event::FolderPresence(result(&request)));
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[1]),
+        6,
+        "a retired probe's success cannot erase the observed denial"
+    );
+    let identity = p.panes[0].row_identity(&p.panes[0].entries[1]);
+    p.disclose_tree(PaneId::Left, &identity, &|_| {
+        panic!("retained diagnostic presentation cannot revive old tree authority")
+    });
+    assert!(p.take_warning_viewer().is_none());
+
+    let replacement_path = test_root().join("replacement-root");
+    let replacement = begin(&mut p, PaneId::Left, replacement_path.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Left,
+        replacement,
+        vec![Entry::new(
+            EntryId(2),
+            replacement_path.join("different-folder"),
+            EntryKind::Directory,
+        )],
+    );
+    let mut late_denial = result(&request);
+    late_denial.values = vec![(
+        EntryId(2),
+        FolderPresence::Unavailable(TreeDiagnostic::new("obsolete failure")),
+    )]
+    .into();
+    p.apply(Event::FolderPresence(late_denial));
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: denied,
+        error: FsError::from_io("list", &destination, io::ErrorKind::PermissionDenied.into()),
+    });
+    assert_eq!(p.panes[0].generation, replacement.0);
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[0]),
+        1
+    );
+    assert!(p.panes[0].root_presence_error(EntryId(2)).is_empty());
+    assert!(p.panes[0].error.is_empty());
+}
+
+#[test]
 fn flat_presence_request_is_bounded_to_the_viewport_not_the_whole_listing() {
     let mut p = ready();
     let path = p.panes[0].path.clone();

@@ -30,6 +30,7 @@ impl Presenter {
         path: &Path,
         error: &FsError,
     ) {
+        self.panes[pane.index()].record_folder_failure(navigation, path, error, &mut self.retired);
         self.retire_warning_viewer();
         let reason = if error.kind == std::io::ErrorKind::PermissionDenied {
             "Access to this folder was denied.".into()

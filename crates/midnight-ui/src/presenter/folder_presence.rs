@@ -3,6 +3,80 @@ use super::*;
 use std::collections::VecDeque;
 
 const CACHE_ROWS: usize = 1024;
+
+/// Display provenance is independent of the current request's action authority.
+#[derive(Clone)]
+pub(super) struct Source {
+    navigation: NavigationId,
+    path: PathBuf,
+    entries: Arc<[Entry]>,
+    index: Arc<DirectoryIndex>,
+    pub(super) viewport: (usize, usize),
+}
+impl Source {
+    pub(super) fn capture(pane: &Pane) -> Option<Self> {
+        if !pane.native_capabilities() {
+            return None;
+        }
+        Some(Self {
+            navigation: pane.successful_generation?,
+            path: pane.path.clone(),
+            entries: pane.entries.clone(),
+            index: pane.index.clone(),
+            viewport: pane.tree.viewport,
+        })
+    }
+    pub(super) fn matches(&self, pane: &Pane) -> bool {
+        pane.successful_generation == Some(self.navigation)
+            && pane.path == self.path
+            && Arc::ptr_eq(&self.entries, &pane.entries)
+            && Arc::ptr_eq(&self.index, &pane.index)
+    }
+    fn entry(&self, id: EntryId) -> Option<&Entry> {
+        self.index
+            .by_id
+            .get(&id)
+            .and_then(|position| self.entries.get(*position))
+    }
+}
+
+/// One bounded diagnostic basis survives failed navigation back to these rows.
+pub(super) struct Retained {
+    source: Source,
+    values: HashMap<EntryId, TreeDiagnostic>,
+    order: VecDeque<EntryId>,
+}
+impl Retained {
+    fn new(source: Source) -> Self {
+        Self {
+            source,
+            values: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+    fn insert(&mut self, id: EntryId, error: TreeDiagnostic, retired: &mut Vec<DeferredDrop>) {
+        if !self
+            .source
+            .entry(id)
+            .is_some_and(|entry| entry.kind == EntryKind::Directory && entry.virtual_node.is_none())
+        {
+            retired.push(Box::new(error));
+            return;
+        }
+        if !self.values.contains_key(&id) {
+            while self.values.len() >= CACHE_ROWS {
+                if let Some(old) = self.order.pop_front() {
+                    retired.push(Box::new(self.values.remove(&old)));
+                }
+            }
+            self.order.push_back(id);
+        }
+        if let Some(previous) = self.values.insert(id, error) {
+            retired.push(Box::new(previous));
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     root: Option<TreeRootSnapshot>,
@@ -30,7 +104,75 @@ impl State {
     }
 }
 impl Pane {
+    pub(super) fn retain_folder_errors(&mut self, retired: &mut Vec<DeferredDrop>) {
+        let Some(source) = Source::capture(self) else {
+            return;
+        };
+        if self
+            .folder_errors
+            .as_ref()
+            .is_some_and(|errors| !errors.source.matches(self))
+        {
+            retired.push(Box::new(self.folder_errors.take()));
+        }
+        if self.folder_presence.same_root(self) {
+            for (id, value) in &self.folder_presence.values {
+                if let FolderPresence::Unavailable(error) = value {
+                    self.folder_errors
+                        .get_or_insert_with(|| Retained::new(source.clone()))
+                        .insert(*id, error.clone(), retired);
+                }
+            }
+        }
+    }
+    pub(super) fn record_folder_failure(
+        &mut self,
+        navigation: NavigationId,
+        path: &Path,
+        error: &FsError,
+        retired: &mut Vec<DeferredDrop>,
+    ) {
+        if self.generation != navigation.0 || self.loading || self.pending.is_some() {
+            return;
+        }
+        self.retain_folder_errors(retired);
+        let Some(source) = Source::capture(self) else {
+            return;
+        };
+        let Some(id) = source.index.by_path.get(path).copied() else {
+            return;
+        };
+        let errors = self
+            .folder_errors
+            .get_or_insert_with(|| Retained::new(source));
+        if error.kind == std::io::ErrorKind::Interrupted && errors.values.contains_key(&id) {
+            return;
+        }
+        errors.insert(
+            id,
+            TreeDiagnostic::new(&crate::error_presentation::describe(error)),
+            retired,
+        );
+    }
+    fn retained_folder_diagnostic(&self, entry: &Entry) -> Option<&TreeDiagnostic> {
+        if !self.native_capabilities() || self.tree_view().is_some() {
+            return None;
+        }
+        let errors = self.folder_errors.as_ref()?;
+        let source_entry = errors.source.entry(entry.id)?;
+        if errors.source.matches(self)
+            && source_entry.path == entry.path
+            && std::ptr::eq(source_entry, entry)
+        {
+            errors.values.get(&entry.id)
+        } else {
+            None
+        }
+    }
     pub(crate) fn root_presence_disclosure(&self, entry: &Entry) -> i32 {
+        if self.retained_folder_diagnostic(entry).is_some() {
+            return 6;
+        }
         if entry.kind != EntryKind::Directory || !self.root_disclosure_available() {
             return 0;
         }
@@ -51,6 +193,25 @@ impl Pane {
             .map_or("", TreeDiagnostic::as_str)
     }
     pub(super) fn root_presence_diagnostic(&self, id: EntryId) -> Option<&TreeDiagnostic> {
+        // A streamed row may reuse a committed ID. Prefer that actual row; only
+        // an ID absent from the stream can still describe the retained source.
+        let entry = self
+            .showing_stream()
+            .then(|| {
+                self.streaming_index
+                    .get(&id)
+                    .and_then(|position| self.streaming.get(*position))
+            })
+            .flatten()
+            .or_else(|| {
+                self.index
+                    .by_id
+                    .get(&id)
+                    .and_then(|position| self.entries.get(*position))
+            });
+        if let Some(error) = entry.and_then(|entry| self.retained_folder_diagnostic(entry)) {
+            return Some(error);
+        }
         if self.folder_presence.same_root(self)
             && let Some(FolderPresence::Unavailable(error)) = self.folder_presence.values.get(&id)
         {
@@ -69,6 +230,8 @@ impl Presenter {
         if self.operations.closing {
             for pane in [PaneId::Left, PaneId::Right] {
                 self.clear_folder_presence(pane);
+                self.retired
+                    .push(Box::new(self.panes[pane.index()].folder_errors.take()));
             }
             return;
         }

@@ -111,6 +111,7 @@ struct Request {
     previous_parent_cursor: bool,
     previous_selected: Arc<SelectionSnapshot>,
     previous_selection_origin: Option<SelectionOrigin>,
+    previous_view: Option<folder_presence::Source>,
     wanted_cursor: Option<PathBuf>,
     cursor_touched: bool,
     /// Refreshes and cached resorts stage privately behind the committed view.
@@ -166,6 +167,7 @@ pub(crate) struct Pane {
     selection_sizes: selection_sizes::State,
     entry_size_scans: Vec<entry_sizes::EntrySizeScope>,
     folder_presence: folder_presence::State,
+    folder_errors: Option<folder_presence::Retained>,
     pub(crate) preserve_viewport: bool,
     size_scan_generation: u64,
     pub(crate) selected: Arc<SelectionSnapshot>,
@@ -385,6 +387,7 @@ impl Presenter {
         self.tabs.retire(&mut self.retired);
         for p in &mut self.panes {
             self.retired.push(Box::new(p.error_details.take()));
+            self.retired.push(Box::new(p.folder_errors.take()));
             self.retired.push(Box::new(mem::take(&mut p.tree)));
             self.retired.push(Box::new(p.network.take()));
             self.retired.push(Box::new(p.network_pending.take()));
@@ -572,6 +575,15 @@ impl Presenter {
         resort: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
+        let p = &self.panes[pane.index()];
+        let previous_view = p
+            .pending
+            .as_ref()
+            .and_then(|request| request.previous_view.as_ref())
+            .filter(|source| source.matches(p))
+            .cloned()
+            .or_else(|| folder_presence::Source::capture(p));
+        self.panes[pane.index()].retain_folder_errors(&mut self.retired);
         // Returning to an ancestor focuses the immediate child we came through.
         self.clear_tree(pane, Some(navigation));
         // Keep the raw path, including when a second Up supersedes a loading view.
@@ -649,6 +661,7 @@ impl Presenter {
                 navigation: p.selection_committed_context,
                 location: p.path.clone(),
             }),
+            previous_view,
             wanted_cursor,
             cursor_touched: false,
             keep_rows,
@@ -1178,6 +1191,7 @@ impl Presenter {
                     .push(Box::new(mem::replace(&mut p.entries, entries)));
                 self.retired
                     .push(Box::new(mem::replace(&mut p.index, index)));
+                self.retired.push(Box::new(p.folder_errors.take()));
                 self.retired.push(Box::new(request));
                 p.retire_stream(&mut self.retired);
                 p.successful_generation = Some(navigation);
@@ -1210,6 +1224,14 @@ impl Presenter {
                     )));
                     p.cursor = request.previous_cursor;
                     p.parent_cursor = request.previous_parent_cursor;
+                    if let Some(source) = request
+                        .previous_view
+                        .as_ref()
+                        .filter(|source| source.matches(p))
+                    {
+                        p.tree.viewport = source.viewport;
+                        p.preserve_viewport = true;
+                    }
                 }
                 p.sort = p.committed_sort;
                 self.retired.push(Box::new(request));
@@ -1627,6 +1649,7 @@ impl Pane {
             size_scan_attempted: false,
             entry_size_scans: Vec::new(),
             folder_presence: folder_presence::State::default(),
+            folder_errors: None,
             preserve_viewport: false,
             size_scan_generation: 0,
             selection_sizes: selection_sizes::State::default(),

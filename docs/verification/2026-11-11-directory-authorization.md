@@ -77,5 +77,24 @@ interactive OS session and are not claimed by the nonprivileged checks. Linux
 transport tests and final combined UI qualification are recorded separately by
 the current verification run.
 
+## 12 November CSC warning-retention regression
+
+The targeted Windows gate compiled with exit 0 and zero captured source drift.
+Presenter elevation (9) and folder-presence (8) tests passed: **17 passed /
+0 failed / 0 ignored**. The corrected source retains the exact committed row's
+warning across retry admission, failed listing and Interrupted cancellation,
+restores cursor/scroll on failed return, and rejects stale/reused-row diagnostics.
+Matching current listing success retires the warning; action gates remain intact.
+
+This qualifies mocked authorization and Engine-event retention, with no real
+Windows UAC/CSC-access or fresh-EXE qualification. The overall batch remains
+incomplete: `copy_dialog` recorded 6 passed / 2 failed Unicode assertions;
+ViewerFit recorded 0 passed / 1 failed at its `content_width = 400` assertion.
+
+The receipt is `_build/verification/build-20261112/csc-compact-green-runtime-result.json`
+(12 November, 21:33:20 UTC), with
+`csc-compact-green-runtime/ui-authorization-folder-presence/summary.json` and
+`csc-compact-green-source-and-command.json` retaining counts and source/command identity.
+
 References: [Microsoft least-privilege process guidance](https://learn.microsoft.com/en-us/windows/win32/secbp/running-with-administrator-privileges),
 [polkit pkexec manual](https://polkit.pages.freedesktop.org/polkit/pkexec.1.html).

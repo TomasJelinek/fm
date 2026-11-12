@@ -100,6 +100,17 @@ fn offer(p: &mut Presenter, navigation: NavigationId, path: &Path) {
     });
 }
 
+fn assert_denied_row_warning(p: &Presenter) {
+    let pane = &p.panes[0];
+    let entry = &pane.entries[0];
+    assert_eq!(
+        pane.root_presence_disclosure(entry),
+        6,
+        "the denied folder keeps its red row warning independently of the modal"
+    );
+    assert!(!pane.root_presence_error(entry.id).is_empty());
+}
+
 #[test]
 fn modal_authorization_is_explicit_bound_to_the_denied_destination_and_single_use() {
     let (mut p, navigation, path) = denied_notice();
@@ -174,17 +185,75 @@ fn cancelled_or_denied_authorization_preserves_listing_and_reports_without_retry
     ] {
         let (mut p, navigation, path) = denied_notice();
         let entries = p.panes[0].entries.clone();
+        let index = p.panes[0].index.clone();
         let original = p.panes[0].path.clone();
+        let committed = p.panes[0].successful_generation;
+        let cursor = p.panes[0].cursor;
+        let parent_cursor = p.panes[0].parent_cursor;
+        let offset = p.panes[0].parent_offset();
+        let viewport = (offset, offset + 1);
+        p.panes[0].set_tree_viewport(viewport);
+        p.panes[0].preserve_viewport = true;
+        assert_denied_row_warning(&p);
+        let original_row_diagnostic = p.panes[0]
+            .root_presence_diagnostic(EntryId(1))
+            .cloned()
+            .unwrap();
         offer(&mut p, navigation, &path);
-        p.retry_notice_authorized(p.desktop.notice_generation, &|_| true);
+        assert_denied_row_warning(&p);
+        let commands = RefCell::new(Vec::new());
+        p.retry_notice_authorized(p.desktop.notice_generation, &|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
         let retry = NavigationId(p.panes[0].generation);
+        assert!(retry > navigation);
+        assert!(p.panes[0].loading);
+        assert_eq!(p.panes[0].successful_generation, committed);
+        assert_denied_row_warning(&p);
+        assert!(!p.panes[0].root_disclosure_available());
+        p.flush_folder_presence(&|_| panic!("a loading retry cannot probe the old source"));
+        assert_denied_row_warning(&p);
+        assert!(!p.notice_can_authorize());
+        assert_eq!(
+            commands
+                .borrow()
+                .iter()
+                .filter(|command| matches!(command,
+                    Command::RetryDirectoryWithElevation {
+                        denied_navigation, navigation: retry_navigation, ..
+                    } if *denied_navigation == navigation && *retry_navigation == retry))
+                .count(),
+            1
+        );
+        p.retry_notice_authorized(p.desktop.notice_generation, &|_| {
+            panic!("receipt already used")
+        });
         p.apply(Event::ListingFailed {
             pane: PaneId::Left,
             navigation: retry,
             error: FsError::from_io("authorized listing", &path, io::Error::new(kind, reason)),
         });
+        p.flush_folder_presence(&|_| panic!("a failed retry cannot revive stale probe authority"));
         assert_eq!(p.panes[0].path, original);
         assert!(Arc::ptr_eq(&p.panes[0].entries, &entries));
+        assert!(Arc::ptr_eq(&p.panes[0].index, &index));
+        assert_eq!(p.panes[0].generation, retry.0);
+        assert_eq!(p.panes[0].successful_generation, committed);
+        assert_denied_row_warning(&p);
+        if kind == io::ErrorKind::Interrupted {
+            assert_eq!(
+                p.panes[0].root_presence_diagnostic(EntryId(1)),
+                Some(&original_row_diagnostic),
+                "authorization cancellation must retain the row's denial and diagnostic details"
+            );
+        }
+        assert_eq!(p.panes[0].cursor, cursor);
+        assert_eq!(p.panes[0].parent_cursor, parent_cursor);
+        assert_eq!(p.panes[0].tree.viewport, viewport);
+        assert!(p.panes[0].preserve_viewport);
+        assert!(!p.panes[0].root_disclosure_available());
+        assert!(p.take_warning_viewer().is_none());
         assert!(p.desktop.notice.is_some());
         assert!(p.desktop.notice_copy.as_ref().unwrap().contains(reason));
         assert!(
@@ -197,6 +266,90 @@ fn cancelled_or_denied_authorization_preserves_listing_and_reports_without_retry
             panic!("no implicit repeated prompt")
         });
     }
+}
+
+#[test]
+fn matching_authorized_listing_success_retires_the_denied_row_warning() {
+    let (mut p, denied, path) = denied_notice();
+    let source_entries = p.panes[0].entries.clone();
+    let source_index = p.panes[0].index.clone();
+    let committed = p.panes[0].successful_generation;
+    assert_denied_row_warning(&p);
+    offer(&mut p, denied, &path);
+    p.retry_notice_authorized(p.desktop.notice_generation, &|_| true);
+    let retry = NavigationId(p.panes[0].generation);
+    assert!(retry > denied);
+    assert_denied_row_warning(&p);
+
+    finish(
+        &mut p,
+        PaneId::Left,
+        denied,
+        vec![Entry::new(
+            EntryId(1),
+            path.join("stale-child"),
+            EntryKind::Directory,
+        )],
+    );
+    assert!(p.panes[0].loading, "an old success cannot settle the retry");
+    assert_eq!(p.panes[0].generation, retry.0);
+    assert_eq!(p.panes[0].successful_generation, committed);
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &source_entries));
+    assert!(Arc::ptr_eq(&p.panes[0].index, &source_index));
+    assert_denied_row_warning(&p);
+
+    let streamed_path = path.join("streamed-child");
+    p.apply(Event::EntriesBatch {
+        pane: PaneId::Left,
+        navigation: retry,
+        entries: vec![Entry::new(
+            EntryId(1),
+            streamed_path.clone(),
+            EntryKind::Directory,
+        )],
+    });
+    let streamed = &p.panes[0].rows()[0];
+    assert_eq!(streamed.path, streamed_path);
+    assert_ne!(p.panes[0].root_presence_disclosure(streamed), 6);
+    assert!(p.panes[0].root_presence_error(EntryId(1)).is_empty());
+    assert_eq!(p.panes[0].root_presence_disclosure(&source_entries[0]), 6);
+
+    let current_path = path.join("current-child");
+    finish(
+        &mut p,
+        PaneId::Left,
+        retry,
+        vec![Entry::new(
+            EntryId(1),
+            current_path.clone(),
+            EntryKind::Directory,
+        )],
+    );
+    assert!(!p.panes[0].loading);
+    assert_eq!(p.panes[0].path, path);
+    assert_eq!(p.panes[0].generation, retry.0);
+    assert_eq!(p.panes[0].successful_generation, Some(retry));
+    assert_eq!(p.panes[0].entries[0].path, current_path);
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[0]),
+        1,
+        "a reused entry ID in the new listing must not inherit the old warning"
+    );
+    assert!(p.panes[0].root_presence_error(EntryId(1)).is_empty());
+    assert!(p.panes[0].error.is_empty());
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: denied,
+        error: FsError::from_io("list", &path, io::ErrorKind::PermissionDenied.into()),
+    });
+    offer(&mut p, denied, &path);
+    assert!(p.panes[0].root_presence_error(EntryId(1)).is_empty());
+    assert_eq!(
+        p.panes[0].root_presence_disclosure(&p.panes[0].entries[0]),
+        1
+    );
+    assert!(!p.notice_can_authorize());
+    assert!(p.take_warning_viewer().is_none());
 }
 
 #[test]
