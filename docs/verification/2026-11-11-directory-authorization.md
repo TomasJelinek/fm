@@ -86,12 +86,18 @@ warning across retry admission, failed listing and Interrupted cancellation,
 restores cursor/scroll on failed return, and rejects stale/reused-row diagnostics.
 Matching current listing success retires the warning; action gates remain intact.
 
+A separate Engine boundary gate compiled with exit 0 and no test-source drift,
+then passed **5 tests / 0 failed / 0 ignored**. It covers mocked helper denial,
+cancellation and transport in `crates/midnight-engine/tests/elevation.rs`.
+The receipt is `_build/verification/build-20261112/csc-engine-elevation-runtime-result.json`
+(12 November, 22:39:50 CET).
+
 This qualifies mocked authorization and Engine-event retention, with no real
 Windows UAC/CSC-access or fresh-EXE qualification. The overall batch remains
 incomplete: `copy_dialog` recorded 6 passed / 2 failed Unicode assertions;
 ViewerFit recorded 0 passed / 1 failed at its `content_width = 400` assertion.
 
-The receipt is `_build/verification/build-20261112/csc-compact-green-runtime-result.json`
+The UI receipt is `_build/verification/build-20261112/csc-compact-green-runtime-result.json`
 (12 November, 21:33:20 UTC), with
 `csc-compact-green-runtime/ui-authorization-folder-presence/summary.json` and
 `csc-compact-green-source-and-command.json` retaining counts and source/command identity.
