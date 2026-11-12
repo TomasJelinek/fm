@@ -285,6 +285,12 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin().lock();
         while let Ok(api::Message::Command(command)) = api::read_message(&mut stdin) {
+            #[cfg(feature = "diagnostic-timing")]
+            crate::trace::record(
+                crate::trace::Event::CommandReceived,
+                command.header.document,
+                command.header.sequence,
+            );
             if tx.send(command).is_err() {
                 break;
             }
@@ -297,9 +303,20 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
         if output.failed.load(Ordering::Acquire) {
             break;
         }
+        #[cfg(feature = "diagnostic-timing")]
+        let mut command_turn = None;
         match rx.try_recv() {
             Ok(command) => {
                 let header = command.header;
+                #[cfg(feature = "diagnostic-timing")]
+                {
+                    command_turn = Some(header);
+                    crate::trace::record(
+                        crate::trace::Event::CommandDispatch,
+                        header.document,
+                        header.sequence,
+                    );
+                }
                 if matches!(command.kind, api::CommandKind::Open { .. }) {
                     if let Some(old) = instance.take() {
                         if header.session != old.document.header.session
@@ -349,6 +366,14 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
             Err(mpsc::TryRecvError::Empty) => {}
         }
         do_message_loop_work();
+        #[cfg(feature = "diagnostic-timing")]
+        if let Some(header) = command_turn {
+            crate::trace::record(
+                crate::trace::Event::CommandTurnComplete,
+                header.document,
+                header.sequence,
+            );
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
     if let Some(current) = instance
