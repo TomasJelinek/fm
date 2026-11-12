@@ -151,6 +151,68 @@ File-only directories have no arbitrary record-count cutoff. Cancellation and
 the worker/I/O limits bound concurrent work; archive probes retain their existing
 captured-mount validation and resource policy.
 
+<a id="planned-retry-diagnostics-and-recursive-expansion"></a>
+
+## Retry diagnostics and recursive expansion
+
+CSC warning retention was implemented in the committed/pushed UI checkpoint
+`20f507c`, with **17 passed / 0 failed** targeted presenter tests. The separate
+Engine authorization tests at `3826298` passed **5 / 0**. The
+[authorization verification note](../verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression)
+records both source/test boundaries: mocked authorization, event retention and
+helper denial/cancellation/transport. Successful native CSC access through Windows
+UAC and a fresh qualified application EXE remain unproved.
+
+A denied row, including `C:\Windows\CSC`, retains its warning throughout an
+explicit elevation retry until the matching current listing actually succeeds.
+Authorization/helper admission is not listing success. Normal navigation failure
+restores the original committed cursor and scroll position; cancellation or
+another denied result preserves the original row's diagnostic. Retention is
+display-only and bound to the exact committed navigation, entries/index and raw
+row identity. Replacement rows cannot inherit it. Request generations remain
+monotonic and action/session gates stay intact; late presence/tree events cannot
+clear or mark another occurrence.
+
+**Ctrl+click on a folder expander** routes to
+`ExpandRecursive`, including directory symlink/junction expanders within the
+existing model limits. It uses one asynchronous walk per pane through the existing
+actor's depth-first continuation. The UI captures the modifier and submits the
+typed intent; traversal stays on Backend workers. Ordinary row Ctrl+click retains
+selection semantics. Recursive expansion is implemented and tested on Windows
+with software UI coverage. The integrated gate passes **69 tree/CSC UI tests**:
+62 presenter cases (tree 44, folder presence 9, elevation 9), five disclosure
+cases and two panel cases. Compilation exits 0 with zero source drift; these
+groups overlap the earlier CSC tests and are not added to them. See the
+[recursive verification note](../verification/2026-11-12-recursive-tree.md).
+
+The recursive worker batches at most **16 returned results** or **50 ms**, with elapsed
+time checked only after an actual provider callback returns. These are initial
+scheduling limits pending measurements, not a callback timeout or measured latency
+guarantee. Each batch creates one checkpoint/projection and waits for its exact
+Commit before further recursive I/O. Explicit input first rolls back unpublished
+model/continuation state; allocated branch/work IDs and row/alias high-water values
+remain consumed and monotonic.
+
+Collapse or navigation cancels obsolete traversal without releasing an in-flight
+provider permit early. Ancestor listing-version checks precede dispatch of an
+already-stacked child: a Refresh that reorders, inserts or removes children pauses
+the walk instead of resuming a stale DFS cursor. Backend compares physical target
+identities along the ancestor chain for browse-only cycle detection. Logical paths
+and captured-occurrence checks remain in force for operations; a cycle-probe
+identity grants no operation authority. Cycles, denied children and other errors
+remain local to the affected branch. Known-empty directory links have no synthetic
+`+` expander.
+
+Allocation, work/publication and stale-occurrence guards remain unchanged.
+Capacity saturation preserves the valid published tree and reports paused/
+incomplete expansion without a retry spin. Paging beyond the retained model is
+an explicit follow-up. Architect owns the API contract, Backend owns traversal/
+cycles, and UI owns modifier/state routing. Backend's broad first run retained one
+legacy fixture failure; its refined Windows junction/Delete subset passes 11/0
+with unchanged production. Those exact scopes and the separate thumbnail RED
+are recorded in the verification note. The Linux native fixture has not yet
+executed; new application EXE packaging and qualification remain pending.
+
 ## Directory sizes
 
 Ctrl+Shift+S uses the exact acknowledged tree selection: selected directories
