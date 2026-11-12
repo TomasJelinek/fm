@@ -14,7 +14,10 @@ impl Reply {
     pub fn stateless(response: Response) -> Result<Self, Failure> {
         if matches!(
             response,
-            Response::Resolved { .. } | Response::Opened { .. } | Response::Page { .. }
+            Response::Resolved { .. }
+                | Response::Opened { .. }
+                | Response::Page { .. }
+                | Response::RenamePrepared(_)
         ) {
             return Err(Failure::new(
                 ErrorCode::Invalid,

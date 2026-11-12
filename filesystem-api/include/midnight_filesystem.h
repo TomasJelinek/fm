@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 #define ME_FS_ABI_MAJOR 1
-#define ME_FS_ABI_MINOR 2
+#define ME_FS_ABI_MINOR 3
 #define ME_FS_KIND 2
 #define ME_FS_CAP_BROWSE UINT64_C(1)
 #define ME_FS_CAP_READ UINT64_C(2)
@@ -19,6 +19,7 @@ extern "C" {
 #define ME_FS_CAP_ACTIVATE UINT64_C(128)
 #define ME_FS_CAP_REFRESH UINT64_C(256)
 #define ME_FS_CAP_RESOLVE_TEXT UINT64_C(512)
+#define ME_FS_CAP_PREPARED_RENAME UINT64_C(1024)
 
 typedef uint32_t me_fs_status;
 enum { ME_FS_OK=0, ME_FS_INVALID=1, ME_FS_INCOMPATIBLE=2, ME_FS_BUSY=3,
@@ -29,7 +30,9 @@ enum { ME_FS_RESOLVE=1, ME_FS_STAT=2, ME_FS_LIST_BEGIN=3, ME_FS_LIST_NEXT=4,
        ME_FS_VALIDATE_READ=8, ME_FS_READ_AT=9, ME_FS_CLOSE_READ=10,
        ME_FS_CLOSE_MOUNT=11, ME_FS_VOLUMES=12, ME_FS_STORAGE_KIND=13,
        ME_FS_SPACE_INFO=14, ME_FS_VOLUME_LABEL=15, ME_FS_VOLUME_INFORMATION=16,
-       ME_FS_ACTIVATE=17, ME_FS_REFRESH=18, ME_FS_RESOLVE_TEXT=19 };
+       ME_FS_ACTIVATE=17, ME_FS_REFRESH=18, ME_FS_RESOLVE_TEXT=19,
+       ME_FS_PREPARE_RENAME=20, ME_FS_RENAME=21, ME_FS_GET_RENAME_STATE=22,
+       ME_FS_CLOSE_RENAME=23 };
 typedef struct { const uint8_t *data; uint64_t len; } me_fs_slice;
 typedef struct { uint64_t id; me_fs_slice bytes; } me_fs_buffer;
 typedef struct {

@@ -13,11 +13,11 @@ dependencies = [
 
 [[package]]
 name = "midnight-filesystem-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "midnight-filesystem-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "midnight-filesystem-plugin-api",
 ]

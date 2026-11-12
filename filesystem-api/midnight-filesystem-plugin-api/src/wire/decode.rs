@@ -70,6 +70,28 @@ pub fn decode_request(operation: u32, bytes: &[u8], maximum: usize) -> Result<Re
         19 => Request::ResolveText {
             text: input.text()?,
         },
+        20 => Request::PrepareRename {
+            mount: input.u64()?,
+            node: input.u64()?,
+        },
+        21 => Request::Rename {
+            prepared: input.u64()?,
+            attempt: input.u64()?,
+            name: input.rename_name()?,
+            policy: match input.u8()? {
+                0 => RenamePolicy::NoReplace,
+                1 => RenamePolicy::RecoverableCurrentEntry {
+                    conflict: input.u64()?,
+                },
+                _ => return Err(WireError::Unsupported),
+            },
+        },
+        22 => Request::GetRenameState {
+            prepared: input.u64()?,
+        },
+        23 => Request::CloseRename {
+            prepared: input.u64()?,
+        },
         _ => return Err(WireError::Unsupported),
     };
     input.finish()?;
@@ -181,6 +203,17 @@ pub fn decode_response(bytes: &[u8], maximum: usize) -> Result<Response, WireErr
             2 => ActivationTarget::Native(input.address()?),
             _ => return Err(WireError::Unsupported),
         }),
+        15 => Response::RenamePrepared(PreparedRename {
+            handle: input.u64()?,
+            source: input.rename_object()?,
+            parent_identity: input.bounded_blob(MAX_RENAME_IDENTITY_BYTES)?,
+            recoverable_replace: input.bool()?,
+        }),
+        16 => Response::RenameState(RenameState {
+            prepared: input.u64()?,
+            attempt: input.u64()?,
+            outcome: input.rename_outcome()?,
+        }),
         _ => return Err(WireError::Unsupported),
     };
     input.finish()?;
@@ -242,6 +275,149 @@ impl<'a> Reader<'a> {
             .map_err(|_| WireError::Limit)?;
         owned.extend_from_slice(bytes);
         Ok(owned)
+    }
+    fn bounded_blob(&mut self, maximum: usize) -> Result<Vec<u8>, WireError> {
+        let length = usize::try_from(self.u64()?).map_err(|_| WireError::Limit)?;
+        if length > maximum {
+            return Err(WireError::Limit);
+        }
+        let bytes = self.take(length)?;
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(length)
+            .map_err(|_| WireError::Limit)?;
+        owned.extend_from_slice(bytes);
+        Ok(owned)
+    }
+    fn rename_name(&mut self) -> Result<NativeText, WireError> {
+        let encoding = match self.u8()? {
+            1 => NameEncoding::Utf8,
+            2 => NameEncoding::WindowsUtf16Le,
+            3 => NameEncoding::UnixBytes,
+            _ => return Err(WireError::Unsupported),
+        };
+        Ok(NativeText {
+            encoding,
+            bytes: self.bounded_blob(MAX_RENAME_NAME_BYTES)?,
+        })
+    }
+    fn rename_object(&mut self) -> Result<RenameObject, WireError> {
+        let identity = self.bounded_blob(MAX_RENAME_IDENTITY_BYTES)?;
+        let revision = self.bounded_blob(MAX_REVISION)?;
+        let name = self.rename_name()?;
+        let kind = match self.u8()? {
+            1 => Kind::Directory,
+            2 => Kind::File,
+            3 => Kind::DirectoryLink,
+            4 => Kind::Symlink,
+            5 => Kind::Other,
+            _ => return Err(WireError::Unsupported),
+        };
+        Ok(RenameObject {
+            identity,
+            revision,
+            name,
+            kind,
+            metadata: self.metadata()?,
+        })
+    }
+    fn failure(&mut self) -> Result<Failure, WireError> {
+        let code = match self.u16()? {
+            1 => ErrorCode::Invalid,
+            2 => ErrorCode::Unsupported,
+            3 => ErrorCode::NotFound,
+            4 => ErrorCode::PermissionDenied,
+            5 => ErrorCode::SourceChanged,
+            6 => ErrorCode::Cancelled,
+            7 => ErrorCode::ResourceLimit,
+            8 => ErrorCode::Io,
+            9 => ErrorCode::StaleReference,
+            10 => ErrorCode::Busy,
+            11 => ErrorCode::Unavailable,
+            12 => ErrorCode::Offline,
+            13 => ErrorCode::AuthenticationRequired,
+            14 => ErrorCode::MountRequired,
+            15 => ErrorCode::TimedOut,
+            _ => return Err(WireError::Unsupported),
+        };
+        let os_code = if self.bool()? {
+            Some(i32::from_le_bytes(self.array()?))
+        } else {
+            None
+        };
+        let message = String::from_utf8(self.bounded_blob(MAX_DIAGNOSTIC)?)
+            .map_err(|_| WireError::Malformed)?;
+        Ok(Failure {
+            code,
+            os_code,
+            message,
+        })
+    }
+    fn rename_recovery(&mut self) -> Result<Vec<RenameRecovery>, WireError> {
+        let count = self.count(MAX_RENAME_RECOVERY_RECORDS)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| WireError::Limit)?;
+        let mut remaining = MAX_RENAME_RECOVERY_ADDRESS_BYTES;
+        for _ in 0..count {
+            let role = match self.u8()? {
+                0 => RenameRecoveryRole::Source,
+                1 => RenameRecoveryRole::DisplacedTarget,
+                2 => RenameRecoveryRole::EmptyStage,
+                _ => return Err(WireError::Unsupported),
+            };
+            let encoding = match self.u8()? {
+                0 => AddressEncoding::Opaque,
+                1 => AddressEncoding::WindowsUtf16Le,
+                2 => AddressEncoding::UnixBytes,
+                _ => return Err(WireError::Unsupported),
+            };
+            let bytes = self.bounded_blob(remaining)?;
+            remaining -= bytes.len();
+            let identity = self.bounded_blob(MAX_RENAME_IDENTITY_BYTES)?;
+            values.push(RenameRecovery {
+                role,
+                address: Address { encoding, bytes },
+                identity,
+            });
+        }
+        Ok(values)
+    }
+    fn rename_outcome(&mut self) -> Result<RenameOutcome, WireError> {
+        Ok(match self.u8()? {
+            0 => RenameOutcome::Ready,
+            1 => RenameOutcome::Executing,
+            2 => RenameOutcome::Conflict(RenameConflict {
+                token: self.u64()?,
+                target: self.rename_object()?,
+                can_replace: self.bool()?,
+            }),
+            3 => RenameOutcome::Unchanged(self.failure()?),
+            4 => RenameOutcome::Renamed {
+                name: self.rename_name()?,
+                same_entry: self.bool()?,
+                recovery: self.rename_recovery()?,
+                durability_confirmed: self.bool()?,
+            },
+            5 => RenameOutcome::RecoveryRequired {
+                source_location: match self.u8()? {
+                    0 => RenameSourceLocation::OriginalName,
+                    1 => RenameSourceLocation::Destination,
+                    2 => RenameSourceLocation::Recovery,
+                    3 => RenameSourceLocation::Unknown,
+                    _ => return Err(WireError::Unsupported),
+                },
+                destination_name: if self.bool()? {
+                    Some(self.rename_name()?)
+                } else {
+                    None
+                },
+                recovery: self.rename_recovery()?,
+                error: self.failure()?,
+            },
+            _ => return Err(WireError::Unsupported),
+        })
     }
     fn text(&mut self) -> Result<String, WireError> {
         String::from_utf8(self.blob()?).map_err(|_| WireError::Malformed)

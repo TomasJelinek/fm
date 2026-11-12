@@ -117,3 +117,36 @@ fn borrowed_memory_metadata_and_config_limits_fail_closed() {
         .is_err()
     );
 }
+
+#[test]
+fn prepared_rename_is_additive_and_requires_an_honest_minor_three_descriptor() {
+    assert_eq!(ABI_MAJOR, 1);
+    assert_eq!(ABI_MINOR, 3);
+    assert_eq!(CAP_PREPARED_RENAME, 1024);
+    for minor in 0..=2 {
+        assert_eq!(
+            Header {
+                abi_minor: minor,
+                minimum_host_minor: minor,
+                ..Header::v1(88)
+            }
+            .validate(88, 88),
+            Ok(())
+        );
+    }
+    let old = Header {
+        abi_minor: 2,
+        minimum_host_minor: 2,
+        ..Header::v1(88)
+    };
+    assert_eq!(old.validate(88, 88), Ok(()));
+    let header = include_str!("../../include/midnight_filesystem.h");
+    for declaration in [
+        "#define ME_FS_ABI_MINOR 3",
+        "ME_FS_CAP_PREPARED_RENAME UINT64_C(1024)",
+        "ME_FS_PREPARE_RENAME=20",
+        "ME_FS_GET_RENAME_STATE=22",
+    ] {
+        assert!(header.contains(declaration), "{declaration}");
+    }
+}

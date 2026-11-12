@@ -1,6 +1,6 @@
 //! Synchronous C declarations; pointers are borrowed only during calls unless leased.
 pub const ABI_MAJOR: u16 = 1;
-pub const ABI_MINOR: u16 = 2;
+pub const ABI_MINOR: u16 = 3;
 pub const KIND_FILESYSTEM: u32 = 2;
 pub const ENTRY_SYMBOL: &std::ffi::CStr = c"midnight_filesystem_entry_v1";
 pub type Status = u32;
@@ -24,6 +24,8 @@ pub const CAP_VOLUME_DETAILS: u64 = 64;
 pub const CAP_ACTIVATE: u64 = 128;
 pub const CAP_REFRESH: u64 = 256;
 pub const CAP_RESOLVE_TEXT: u64 = 512;
+/// Prepared same-parent Rename; requires host minor version 3.
+pub const CAP_PREPARED_RENAME: u64 = 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -166,6 +168,11 @@ pub type Entry = unsafe extern "C" fn(*mut Api, u32) -> Status;
 impl Api {
     pub fn validate(&self, capacity: u32) -> Result<(), Status> {
         self.header.validate(capacity, size_of::<Self>() as u32)?;
+        if self.capabilities & CAP_PREPARED_RENAME != 0
+            && (self.header.minimum_host_minor < 3 || self.header.abi_minor < 3)
+        {
+            return Err(INCOMPATIBLE);
+        }
         self.id.validate(128)?;
         self.version.validate(64)?;
         if self.id.len == 0
