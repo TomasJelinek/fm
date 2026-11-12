@@ -1,14 +1,6 @@
 //! Selection commands carry only shared snapshots and single raw path intents.
 use super::*;
 
-pub(super) struct PendingProperties {
-    request: DesktopRequestId,
-    navigation: NavigationId,
-    revision: SelectionRevision,
-    view: Option<Arc<DirectoryIndex>>,
-    fallback: Option<PathBuf>,
-}
-
 impl Presenter {
     pub(crate) fn bulk_selection(
         &mut self,
@@ -16,6 +8,19 @@ impl Presenter {
         operation: SelectionOperation,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.panes[pane.index()].tree_view().is_some() {
+            return self.send_tree_selection(pane, TreeSelectionAction::Bulk(operation), send);
+        }
+        if self.panes[pane.index()].network.is_some() || self.panes[pane.index()].network_request {
+            return false;
+        }
+        if self.panes[pane.index()].archive.is_some() {
+            return self.archive_bulk_selection(
+                pane,
+                ArchiveSelectionAction::Bulk(operation),
+                send,
+            );
+        }
         if self.panes[pane.index()].search_view_waiting() {
             return false;
         }
@@ -28,14 +33,28 @@ impl Presenter {
         action: SelectionAction,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if !self.panes[pane.index()].native_capabilities() {
+            return false;
+        }
+        if self.panes[pane.index()].archive.is_some() {
+            return false;
+        }
+        if !matches!(action, SelectionAction::Rebase)
+            && self.panes[pane.index()].search_view_waiting()
+        {
+            return false;
+        }
         let p = &mut self.panes[pane.index()];
         let Some(revision) = p.selection_revision.0.checked_add(1).map(SelectionRevision) else {
-            p.error = "Selection request identities are exhausted.".into();
+            p.set_error(
+                "Selection request identities are exhausted.",
+                &mut self.retired,
+            );
             return false;
         };
         let rebase = matches!(&action, SelectionAction::Rebase);
         if !rebase && p.selection_preview.len() == selection_preview::PREVIEW_CAPACITY {
-            p.error = "Selection queue is busy. Try again.".into();
+            p.set_error("Selection queue is busy. Try again.", &mut self.retired);
             return false;
         }
         let preview = (!rebase)
@@ -57,9 +76,13 @@ impl Presenter {
             false
         };
         let pending_bulk = match &action {
-            SelectionAction::Bulk(SelectionOperation::All | SelectionOperation::Invert) => {
-                Some(true)
-            }
+            SelectionAction::Bulk(
+                SelectionOperation::All
+                | SelectionOperation::FilesOnly
+                | SelectionOperation::ClearFilesOnly
+                | SelectionOperation::Invert
+                | SelectionOperation::InvertAll,
+            ) => Some(true),
             SelectionAction::Bulk(SelectionOperation::Clear) => Some(false),
             _ => None,
         };
@@ -71,6 +94,8 @@ impl Presenter {
             location: p.display_path().to_owned(),
             view: (!p.showing_stream()).then(|| p.display_index().clone()),
             seed: p.selected.clone(),
+            seed_revision: p.selection_applied,
+            authoritative: self.comparison.seeds[pane.index()].clone(),
             reset: p.selection_reset,
             action,
             toggle_directory,
@@ -81,7 +106,7 @@ impl Presenter {
             restore: p.selection_restore.clone(),
         };
         if !send(Command::Selection(request)) {
-            p.error = "Selection queue is busy. Try again.".into();
+            p.set_error("Selection queue is busy. Try again.", &mut self.retired);
             return false;
         }
         p.selection_revision = revision;
@@ -103,8 +128,13 @@ impl Presenter {
 
     /// Retry internal rebases after bounded command-channel backpressure.
     pub fn flush_selection(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_folder_presence(send);
+        self.flush_trees(send);
+        self.flush_copy_selection(send);
+        self.flush_tree_refresh(send);
         for pane in [PaneId::Left, PaneId::Right] {
-            if self.panes[pane.index()].selection_rebase_pending
+            if self.panes[pane.index()].tree_view().is_none()
+                && self.panes[pane.index()].selection_rebase_pending
                 && !self.panes[pane.index()].loading
                 && !self.panes[pane.index()].search_view_waiting()
                 && self.send_selection(pane, SelectionAction::Rebase, send)
@@ -112,6 +142,8 @@ impl Presenter {
                 self.panes[pane.index()].selection_rebase_pending = false;
             }
         }
+        self.flush_selection_sizes(send);
+        self.flush_file_list(send);
     }
 
     pub(super) fn selection_navigation_accepted(
@@ -120,18 +152,19 @@ impl Presenter {
         navigation: NavigationId,
         path: &Path,
     ) {
-        self.cancel_selection_properties(pane);
+        self.cancel_selection_actions(pane);
         let p = &mut self.panes[pane.index()];
         p.selection_preview.clear();
         if path != p.path {
             p.selection_anchor = None;
             p.selection_anchor_id = None;
         }
-        p.selection_context = if path == p.path && p.successful_generation.is_some() {
-            p.selection_committed_context
-        } else {
-            navigation
-        };
+        p.selection_context =
+            if p.archive.is_none() && path == p.path && p.successful_generation.is_some() {
+                p.selection_committed_context
+            } else {
+                navigation
+            };
         p.selection_revision = SelectionRevision(0);
         p.selection_applied = SelectionRevision(0);
         p.selection_resolved = SelectionRevision(0);
@@ -140,7 +173,7 @@ impl Presenter {
         p.selection_pending_bulk = false;
         p.selection_dirty = false;
         p.selection_rebase_pending = false;
-        p.selection_deferred = false;
+        p.selection_deferred = SelectionDefaults::NONE;
     }
 
     pub(super) fn apply_selection_event(&mut self, event: Event) -> Option<Event> {
@@ -152,11 +185,14 @@ impl Presenter {
                 selection,
                 deferred,
             } => {
+                self.copy_selection_result(pane, navigation, revision, true);
                 let p = &mut self.panes[pane.index()];
                 if navigation.0 == p.generation
                     && revision <= p.selection_revision
                     && revision > p.selection_applied
                 {
+                    self.retired
+                        .push(Box::new(self.comparison.seeds[pane.index()].take()));
                     self.retired
                         .push(Box::new(mem::replace(&mut p.selected, selection)));
                     p.selection_applied = revision;
@@ -164,7 +200,7 @@ impl Presenter {
                         .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
                     p.selection_deferred = deferred;
-                    if !deferred && !p.showing_stream() {
+                    if !deferred.any() && !p.showing_stream() {
                         p.selection_pending_bulk = false;
                     }
                 } else {
@@ -178,6 +214,7 @@ impl Presenter {
                 revision,
                 error,
             } => {
+                self.copy_selection_result(pane, navigation, revision, false);
                 let p = &mut self.panes[pane.index()];
                 if navigation.0 == p.generation
                     && revision <= p.selection_revision
@@ -187,7 +224,10 @@ impl Presenter {
                     p.selection_preview
                         .retain(|pending| pending.revision > revision);
                     p.selection_resolved = p.selection_resolved.max(revision);
-                    p.error = error.to_string();
+                    p.set_error(
+                        crate::error_presentation::describe(&error),
+                        &mut self.retired,
+                    );
                     p.selection_rebase_pending = true;
                 }
                 None
@@ -201,142 +241,10 @@ impl Presenter {
         pane: PaneId,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if !self.panes[pane.index()].search_allows_activation() {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_properties(pane, send);
             return;
         }
-        if self.selection_properties[pane.index()].is_some() {
-            self.desktop.report(
-                "Properties waiting",
-                "A Properties request is already waiting for selection.".into(),
-            );
-            return;
-        }
-        let p = &self.panes[pane.index()];
-        if p.selection_pending_bulk || p.selection_deferred || p.selection_rebase_pending {
-            self.desktop.report(
-                "Selection still loading",
-                "Wait for the folder listing and selection to finish before opening Properties."
-                    .into(),
-            );
-            return;
-        }
-        let fallback = (!p.parent_cursor)
-            .then(|| {
-                p.cursor
-                    .and_then(|id| p.entry_by_id(id))
-                    .map(|entry| entry.path.clone())
-            })
-            .flatten();
-        // A streaming single-row fallback is tiny. Multi-selection expansion is
-        // always deferred to the backend, using a shared stable view.
-        let view = (!p.showing_stream()).then(|| p.display_index().clone());
-        let pending = p.selection_revision > p.selection_resolved;
-        let selection = p.selected.clone();
-        let navigation = NavigationId(p.generation);
-        let revision = p.selection_revision;
-        if !pending && selection.is_empty() && fallback.is_none() {
-            return;
-        }
-        let request = self.desktop.request();
-        if pending {
-            self.desktop.requests.insert(request);
-            self.selection_properties[pane.index()] = Some(PendingProperties {
-                request,
-                navigation,
-                revision,
-                view,
-                fallback,
-            });
-        } else if send(Command::ShowSelectionProperties {
-            request,
-            view: view.unwrap_or_else(|| selection.basis().clone()),
-            selection,
-            fallback,
-        }) {
-            self.desktop.requests.insert(request);
-        } else {
-            self.desktop.report(
-                "Properties queue busy",
-                "Try opening Properties again.".into(),
-            );
-        }
-    }
-
-    pub(super) fn dispatch_selection_properties(
-        &mut self,
-        event: &Event,
-        send: &dyn Fn(Command) -> bool,
-    ) {
-        match event {
-            Event::SelectionChanged {
-                pane,
-                navigation,
-                revision,
-                selection,
-                ..
-            } => {
-                let slot = pane.index();
-                let matches = self.selection_properties[slot]
-                    .as_ref()
-                    .is_some_and(|pending| {
-                        pending.navigation == *navigation
-                            && pending.revision == *revision
-                            && self.panes[slot].generation == navigation.0
-                    });
-                if !matches {
-                    return;
-                }
-                let pending = self.selection_properties[slot]
-                    .take()
-                    .expect("matched pending Properties");
-                let request = pending.request;
-                if !send(Command::ShowSelectionProperties {
-                    request,
-                    selection: selection.clone(),
-                    view: pending
-                        .view
-                        .clone()
-                        .unwrap_or_else(|| selection.basis().clone()),
-                    fallback: pending.fallback.clone(),
-                }) {
-                    self.desktop.requests.remove(&request);
-                    self.desktop.report(
-                        "Properties queue busy",
-                        "Try opening Properties again.".into(),
-                    );
-                }
-                self.retired.push(Box::new(pending));
-            }
-            Event::SelectionFailed {
-                pane,
-                navigation,
-                revision,
-                ..
-            } if self.selection_properties[pane.index()]
-                .as_ref()
-                .is_some_and(|pending| {
-                    pending.navigation == *navigation && pending.revision <= *revision
-                }) =>
-            {
-                self.cancel_selection_properties(*pane);
-                self.desktop.report(
-                    "Properties cancelled",
-                    "Selection could not finish. Try opening Properties again.".into(),
-                );
-            }
-            _ => {}
-        }
-    }
-
-    pub(super) fn cancel_selection_properties(&mut self, pane: PaneId) {
-        if let Some(pending) = self.selection_properties[pane.index()].take() {
-            self.desktop.requests.remove(&pending.request);
-            self.retired.push(Box::new(pending));
-        }
-    }
-
-    pub(super) fn retire_selection_properties(&mut self) {
-        self.cancel_selection_properties(PaneId::Left);
-        self.cancel_selection_properties(PaneId::Right);
+        self.request_selection_action(pane, selection_actions::SelectionIntent::Properties, send);
     }
 }

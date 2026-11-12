@@ -31,7 +31,7 @@ fn installed_navigation_bridge_uses_ids_and_focuses_requested_panel() {
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+        .apply(Event::PreferencesLoaded(Ok(Box::default())));
     let commands = Rc::new(RefCell::new(Vec::new()));
     let sent = commands.clone();
     install(
@@ -54,15 +54,64 @@ fn installed_navigation_bridge_uses_ids_and_focuses_requested_panel() {
     assert_eq!(window.get_right_tabs().row_count(), 2);
 
     commands.borrow_mut().clear();
-    window.invoke_bookmark_add(0, "文档 $(literal) & Žlutý".into(), 1);
+    // Toolbar, menu and manager additions pass zero for automatic assignment.
+    window.invoke_bookmark_add(0, "文档 $(literal) & Žlutý".into(), 0);
     let bookmark = window.get_bookmarks().row_data(0).unwrap();
     assert_eq!(bookmark.label, "文档 $(literal) & Žlutý");
+    assert_eq!(bookmark.slot, 1);
     let saved = commands.borrow().iter().any(|command| {
         matches!(command,
         Command::SavePreferences { preferences, .. }
             if preferences.bookmarks[0].path == left)
     });
     assert!(saved, "bookmark persistence captures the raw path");
+    window.invoke_bookmark_add(0, "Same path again".into(), 0);
+    assert_eq!(window.get_bookmarks().row_count(), 1);
+    window.invoke_bookmark_add(1, "Other folder".into(), 0);
+    let second = window.get_bookmarks().row_data(1).unwrap();
+    assert_eq!(second.slot, 2);
+    assert_eq!(window.get_bookmarks().row_data(0).unwrap().slot, 1);
+    assert!(commands.borrow().iter().any(|command| matches!(command,
+        Command::SavePreferences { preferences, .. }
+            if preferences.bookmarks.len() == 2
+                && preferences.bookmarks[0].path == left
+                && preferences.bookmarks[0].slot == Some(1)
+                && preferences.bookmarks[1].path == right
+                && preferences.bookmarks[1].slot == Some(2))));
+    for choices in [
+        window.get_hot_path_choices(),
+        window.get_navigation_choices(),
+    ] {
+        let labels: Vec<_> = choices
+            .iter()
+            .filter(|row| row.identity.starts_with("bookmark:"))
+            .map(|row| row.compact_label.to_string())
+            .collect();
+        assert_eq!(labels, ["1", "2"]);
+    }
+    window.invoke_bookmark_remove(second.identity);
+    window.invoke_bookmark_assign(bookmark.identity.clone(), 10);
+    for toolbar in [window.get_left_locations(), window.get_right_locations()] {
+        assert!(
+            toolbar
+                .iter()
+                .all(|row| row.kind != midnight_ui::LocationRole::HotPath),
+            "saved paths appear in menus, not as individual toolbar buttons"
+        );
+    }
+    let hot_path = window
+        .get_hot_path_choices()
+        .iter()
+        .find(|row| row.kind == midnight_ui::LocationRole::HotPath)
+        .unwrap();
+    assert_eq!(hot_path.compact_label, "0");
+    assert_eq!(hot_path.label.as_str(), format!("0  {}", left.display()));
+    assert!(!hot_path.tooltip.contains("$(literal)"));
+    assert!(window.get_navigation_choices().iter().any(|row| {
+        row.kind == midnight_ui::LocationRole::HotPath
+            && row.identity == hot_path.identity
+            && row.label == hot_path.label
+    }));
     commands.borrow_mut().clear();
     window.invoke_bookmark_open(1, bookmark.identity.clone());
     assert!(commands.borrow().iter().any(|command| matches!(command,

@@ -1,0 +1,39 @@
+// A presentation-only path label. The complete text remains available to the
+// host and accessibility; clipping never creates an operation or clipboard path.
+export component OmissionText inherits Text {
+    text: "...";
+    // Keep three separate dots legible even with condensed application fonts.
+    letter-spacing: 1px;
+}
+
+export component PathText inherits Rectangle {
+    in property <string> text;
+    in property <brush> foreground: black;
+    in property <length> font-size;
+    in property <int> font-weight: 400;
+    in property <TextVerticalAlignment> vertical-alignment: center;
+    private property <bool> shortened: label.preferred-width > root.width;
+    min-width: dots.preferred-width;
+    preferred-width: label.preferred-width;
+    preferred-height: label.preferred-height;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    label := Text {
+        x: 0px; y: 0px;
+        width: max(0px, root.width - (root.shortened ? dots.preferred-width : 0px));
+        height: root.height;
+        text: root.text; color: root.foreground;
+        font-size: root.font-size; font-weight: root.font-weight;
+        vertical-alignment: root.vertical-alignment;
+        overflow: clip; accessible-role: none;
+    }
+    dots := OmissionText {
+        visible: root.shortened;
+        x: max(0px, root.width - self.width); y: 0px;
+        width: self.preferred-width; height: root.height;
+        text: "..."; color: root.foreground;
+        font-size: root.font-size; font-weight: root.font-weight;
+        vertical-alignment: root.vertical-alignment;
+        accessible-role: none;
+    }
+}

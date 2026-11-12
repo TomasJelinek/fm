@@ -47,13 +47,23 @@ contents are not a snapshot captured at confirmation time.
 
 `FileDispositionInfoEx` with delete and POSIX semantics removes the namespace
 entry while identity handles remain open. Filesystem/OS versions without the
-required identity or disposition support return their native error. Read-only
-attributes are not cleared. A failure or cancellation does not restore entries
-already removed.
+required identity or disposition support return their native error. Explicitly
+confirmed permanent deletion adds `FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`
+so a DOS Read-only flag does not reject an otherwise authorized deletion. The
+flag does not bypass DELETE access checks, alter ACLs or clear the attribute on
+surviving hard links. Copy/Move cleanup retains the original disposition without
+this override. A failure or cancellation does not restore entries already removed.
+See the [read-only deletion verification](../../docs/verification/2026-11-09-readonly-delete.md).
 
 F7 retains one base-directory handle and revalidates its visible identity. It
-validates the entire relative request before creation, then uses handle-relative
-`NtCreateFile` for normal components. Existing intermediate directories are
+validates the entire explicit request before creation, then uses handle-relative
+`NtCreateFile` for normal components. Absolute disk/UNC targets start at their own
+root; root-relative targets use the captured panel root. Same-drive relative
+targets use the captured base; another drive's relative current directory is
+ambiguous and requires an absolute path. Relative requests containing `..` pin
+the captured base's canonical ancestor chain and verify the base identity before
+creation. Each entered component is traversed before a later parent step, so a
+link followed by `..` cannot be silently elided. Existing intermediate directories are
 accepted, reparse intermediates are rejected, and the final component uses
 `FILE_CREATE` so an existing entry is an error. Existing intermediate handles
 remain open along the descent. Native errors can leave already-created

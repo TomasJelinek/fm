@@ -1,0 +1,11 @@
+schema_version = 1
+id = "network.linux"
+kind = "filesystem-network"
+version = "0.1.0"
+entry_library = "libmidnight_filesystem_network.so"
+target = "x86_64-unknown-linux-gnu"
+abi_major = 1
+minimum_host_minor = 2
+protocol = 1
+capabilities = ["browse", "stat", "volumes", "activate", "refresh", "resolve-text"]
+address_encoding = "opaque"

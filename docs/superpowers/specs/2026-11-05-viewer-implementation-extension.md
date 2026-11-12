@@ -6,6 +6,12 @@ without replacing its ABI, ownership, asynchronous work or safety requirements.
 This extension takes precedence over the older combined text/source plugin and
 Markdown-after-archives ordering: the user now requests three viewer packages first.
 
+Implementation details and verification are maintained in
+[viewer-implementation.md](../../verification/viewer-implementation.md), including
+the four-session limit, page-bounded selection/copy, native installation trust checks,
+restart-based plugin preferences and the actual syntax catalogue. These limits apply
+to this initial delivery; archive/native filesystem plugin migration remains separate.
+
 ## Delivery and independence
 
 Deliver three independently built viewer packages: basic text/binary, source
@@ -94,8 +100,13 @@ creation refreshes/focuses the new entry; opening an editor remains an explicit 
 action. Test cancellation, Unicode, a replaced parent and concurrent name creation.
 
 F4 opens the focused regular local file using a backend platform service. Settings
-contain an executable and an argument list, with `{file}` as a whole argument;
-the raw native path is passed directly, never interpolated into a shell command.
+contain ordered, enabled wildcard/regex associations. The first matching enabled
+rule chooses the program, literal argument list and optional working directory;
+the previous custom/system editor remains the final fallback. `{file}` is a whole
+argument, and the raw native path is passed directly, never interpolated into a
+shell command. Patterns compile on the backend; Options preserves its OK/Cancel
+transaction. See [editor associations](../../verification/2026-11-11-editor-rules.md)
+for precedence, raw-path handling, migration and argument editing.
 Configuration cannot come from the directory being viewed. Invalid/missing editor
 configuration reports an error without substituting an unrelated program.
 

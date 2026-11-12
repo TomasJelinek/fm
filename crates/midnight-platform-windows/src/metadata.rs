@@ -8,14 +8,18 @@ use windows_sys::Win32::Storage::FileSystem::{
 pub(crate) fn read(path: &Path) -> Result<EntryMetadata, FsError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| FsError::from_io("read metadata", path, error))?;
-    Ok(EntryMetadata {
+    Ok(from_native(&metadata))
+}
+
+pub(crate) fn from_native(metadata: &fs::Metadata) -> EntryMetadata {
+    EntryMetadata {
         size: metadata.is_file().then_some(metadata.len()),
         modified: metadata.modified().ok(),
         localized_modified: metadata.modified().ok().and_then(crate::locale::modified),
         compression: compression_from_attributes(metadata.file_attributes()),
         native_attributes: Some(metadata.file_attributes()),
         unix_mode: None,
-    })
+    }
 }
 
 fn compression_from_attributes(attributes: u32) -> CompressionStatus {

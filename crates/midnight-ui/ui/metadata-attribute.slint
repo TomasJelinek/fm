@@ -1,0 +1,70 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+
+// One focusable control preserves the explicit Keep/Set/Clear mutation contract.
+export component MetadataAttribute inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <string> set-caption: "Set";
+    in property <string> clear-caption: "Clear";
+    in-out property <int> choice;
+    callback edited();
+    private property <string> state-text: !root.enabled ? "Unavailable" : root.choice == 0 ? "Unchanged" : root.choice == 1 ? root.set-caption : root.clear-caption;
+    height: Theme.control-height;
+    min-width: Theme.font-size * 16;
+    horizontal-stretch: 1;
+    background: area.has-hover && root.enabled ? Theme.hover : transparent;
+    border-radius: 3px;
+    border-width: focus.has-focus ? 1px : 0px;
+    border-color: Theme.active-frame;
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-value: root.state-text;
+    accessible-description: root.state-text + ". Space cycles Unchanged, " + root.set-caption + ", " + root.clear-caption + ". Delete leaves the attribute unchanged.";
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.choice == 1;
+    accessible-action-default => { root.advance(false); }
+    forward-focus: focus;
+    function advance(reverse: bool) {
+        if root.enabled {
+            root.choice = mod(root.choice + (reverse ? 2 : 1), 3);
+            root.edited();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 4px; padding-right: 6px; spacing: 8px;
+        box := Rectangle {
+            width: max(16px, Theme.font-size * 1.1); height: self.width;
+            y: (parent.height - self.height) / 2;
+            border-width: 1px; border-radius: 3px;
+            border-color: root.enabled && root.choice != 0 ? Theme.active-frame : Theme.frame;
+            background: root.enabled && root.choice == 1 ? Theme.active-header : Theme.secondary-surface;
+            Text {
+                text: root.choice == 0 ? "−" : root.choice == 1 ? "✓" : "";
+                color: root.enabled ? Theme.text : Theme.muted-text;
+                font-size: Theme.font-size; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+        Text { text: root.label; color: root.enabled ? Theme.text : Theme.muted-text;
+            font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
+        Text { text: root.state-text; color: root.enabled && root.choice != 0 ? Theme.text : Theme.muted-text;
+            font-size: Theme.small-font; vertical-alignment: center; }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.advance(event.modifiers.shift); return accept;
+            }
+            if event.text == Key.Delete || event.text == Key.Backspace {
+                if root.choice != 0 { root.choice = 0; root.edited(); }
+                return accept;
+            }
+            reject
+        }
+        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.advance(false); } }
+    }
+    Tooltip { TipBody { text: root.accessible-description; } }
+}

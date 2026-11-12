@@ -1,5 +1,6 @@
 //! New panel controls preserve display values and dispatch stable identities.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{
     item_tree::ItemRc,
@@ -54,14 +55,23 @@ fn breadcrumbs_details_and_command_history_never_reinterpret_display_text() {
         1,
     ));
     ui.window
-        .set_left_locations(ModelRc::new(VecModel::from(vec![LocationRow {
-            identity: "drive".into(),
-            compact_label: "C:".into(),
-            is_drive: true,
-            tooltip: "Test drive".into(),
-            icon: icon.clone(),
-            ..Default::default()
-        }])));
+        .set_left_locations(ModelRc::new(VecModel::from(vec![
+            LocationRow {
+                identity: "drive".into(),
+                compact_label: "C:".into(),
+                is_drive: true,
+                tooltip: "Test drive".into(),
+                icon: icon.clone(),
+                ..Default::default()
+            },
+            LocationRow {
+                identity: "documents".into(),
+                kind: midnight_ui::LocationRole::Documents,
+                tooltip: "Test documents".into(),
+                icon: icon.clone(),
+                ..Default::default()
+            },
+        ])));
     ui.window
         .set_navigation_choices(ModelRc::new(VecModel::from(vec![NavigationChoiceRow {
             identity: "drive".into(),
@@ -76,11 +86,13 @@ fn breadcrumbs_details_and_command_history_never_reinterpret_display_text() {
             identity: "entry-1:name".into(),
             label: "Name".into(),
             value: "文档 $(literal).rs".into(),
+            ..Default::default()
         },
         DetailRow {
             identity: "entry-1:size".into(),
             label: "Size in bytes".into(),
             value: "123456789 bytes".into(),
+            ..Default::default()
         },
     ])));
     ui.window
@@ -298,8 +310,8 @@ fn caption(item: ItemRc) -> ItemRc {
 }
 
 fn assert_compact_geometry(ui: &mut TestUi) {
-    for (density, original_icon, row_height, control_height, toolbar_height) in
-        [(0, 14.0, 22.0, 24.0, 34.0), (1, 20.0, 40.0, 40.0, 48.0)]
+    for (density, file_icon, row_height, control_height, toolbar_height) in
+        [(0, 20.0, 22.0, 24.0, 34.0), (1, 38.0, 40.0, 40.0, 48.0)]
     {
         ui.window.invoke_apply_preferences(0, density);
         ui.draw();
@@ -308,9 +320,18 @@ fn assert_compact_geometry(ui: &mut TestUi) {
         assert_eq!(theme.get_control_height(), control_height);
         assert_eq!(theme.get_toolbar_height(), toolbar_height);
         for (label, role, expected) in [
-            ("selected.rs", AccessibleRole::ListItem, original_icon * 1.1),
-            ("Test drive", AccessibleRole::Button, original_icon * 1.1),
-            ("Drive or volume", AccessibleRole::Combobox, 19.8),
+            ("selected.rs", AccessibleRole::ListItem, file_icon),
+            (
+                "Test drive",
+                AccessibleRole::Button,
+                if density == 0 { 20.0 } else { 26.0 },
+            ),
+            (
+                "Test documents",
+                AccessibleRole::Button,
+                if density == 0 { 20.0 } else { 26.0 },
+            ),
+            ("Drive or volume", AccessibleRole::Combobox, 18.0),
         ] {
             let parent = ui::root_item(&ui.window, label, role);
             let image = image_items(parent.clone())
@@ -324,7 +345,7 @@ fn assert_compact_geometry(ui: &mut TestUi) {
             let (parent_x, parent_y, parent_width, parent_height) = bounds(&parent);
             assert!(
                 (width - expected).abs() < 0.05 && (height - expected).abs() < 0.05,
-                "{label}: artwork grows ten percent without enlarging its control"
+                "{label}: artwork uses its expected size without enlarging its control"
             );
             assert!(x >= parent_x && x + width <= parent_x + parent_width);
             assert!(

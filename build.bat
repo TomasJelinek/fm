@@ -14,10 +14,12 @@ goto usage
 
 :debug
 set "MIDNIGHT_BUILD_PROFILE="
+set "MIDNIGHT_VIEWER_PROFILE=debug"
 goto build
 
 :release
 set "MIDNIGHT_BUILD_PROFILE=--release"
+set "MIDNIGHT_VIEWER_PROFILE=release"
 
 :build
 pushd "%~dp0" || exit /b 1
@@ -27,13 +29,13 @@ set "TEMP=%CD%\_build\tmp"
 set "TMP=%TEMP%"
 where cargo >nul 2>nul
 if errorlevel 1 goto local_cargo
-call cargo build -p midnight-explorer --locked %MIDNIGHT_BUILD_PROFILE%
+call cargo build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
 :local_cargo
 if not exist ".tools\cargo\bin\cargo.exe" goto missing_cargo
-powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer --locked %MIDNIGHT_BUILD_PROFILE%
+powershell.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
@@ -47,6 +49,19 @@ goto done
 set "MIDNIGHT_BUILD_EXIT=1"
 
 :done
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+powershell.exe -NoLogo -NoProfile -File scripts\build-native-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+powershell.exe -NoLogo -NoProfile -File scripts\build-network-filesystem.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+powershell.exe -NoLogo -NoProfile -File scripts\build-viewers.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto exit_build
+powershell.exe -NoLogo -NoProfile -File scripts\deploy-build.ps1 -Profile %MIDNIGHT_VIEWER_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+:exit_build
 popd
 exit /b %MIDNIGHT_BUILD_EXIT%
 

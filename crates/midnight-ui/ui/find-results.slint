@@ -1,0 +1,144 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { PathText } from "path-text.slint";
+
+export struct FindRow {
+    token: string, name: string, extension: string, path: string, size: string,
+    modified: string, directory: bool, duplicate-group: string, group-start: bool, group-shade: bool,
+}
+
+component Columns inherits HorizontalLayout {
+    in property <FindRow> entry;
+    in property <bool> header;
+    in property <int> sort-column;
+    in property <bool> descending;
+    in property <bool> duplicates;
+    callback sort(int);
+    padding-left: 6px; padding-right: 6px; spacing: 10px;
+    if root.duplicates: Text {
+        width: Theme.small-font * 16;
+        text: root.header ? "Identical group" : root.entry.duplicate-group;
+        color: root.header ? Theme.secondary-text : Theme.accent;
+        font-size: root.header ? Theme.small-font : Theme.font-size;
+        font-weight: root.header || root.entry.group-start ? 600 : 400;
+        vertical-alignment: center; overflow: elide;
+    }
+    for title[index] in ["Name", "Extension", "Path", "Size", "Modified"]: Rectangle {
+        horizontal-stretch: index == 2 ? 1 : 0;
+        min-width: Theme.small-font * (index == 0 ? 16 : index == 1 ? 8 : index == 2 ? 24 : index == 3 ? 10 : 18);
+        preferred-width: self.min-width;
+        if root.header || index != 2: Text {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            text: root.header ? title + (root.sort-column == index ? (root.descending ? " ↓" : " ↑") : "")
+                : [root.entry.name, root.entry.extension, root.entry.path, root.entry.size, root.entry.modified][index];
+            color: root.header ? (root.sort-column == index ? Theme.accent : Theme.secondary-text)
+                : index == 0 ? (root.entry.directory ? Theme.directory-text : Theme.text) : Theme.secondary-text;
+            font-size: root.header ? Theme.small-font : Theme.font-size;
+            font-weight: root.header ? 600 : 400;
+            vertical-alignment: center; horizontal-alignment: index == 3 ? right : left;
+            overflow: elide;
+        }
+        if !root.header && index == 2: PathText {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            text: root.entry.path; foreground: Theme.secondary-text; font-size: Theme.font-size;
+        }
+        if root.header: Rectangle {
+            accessible-role: button; accessible-label: "Sort by " + title;
+            accessible-action-default => { root.sort(index); }
+            TouchArea { clicked => { root.sort(index); } }
+        }
+    }
+}
+
+export component FindResults inherits FocusScope {
+    in property <[FindRow]> rows;
+    in property <int> sort-column;
+    in property <bool> descending;
+    in property <bool> duplicates;
+    in property <bool> show-header: true;
+    out property <length> header-height: root.show-header ? Theme.column-height : 0px;
+    in-out property <int> selected-row: -1;
+    callback sort(int);
+    callback reveal(string);
+    callback action-key(KeyEvent) -> bool;
+    private property <length> table-width: Theme.small-font * (root.duplicates ? 92 : 76) + (root.duplicates ? 62px : 52px);
+    private property <length> row-height: Theme.row-height;
+    private property <bool> reveal-active;
+    private property <length> view-height: list.visible-height;
+    private property <length> content-height: list.content-height;
+    private property <length> content-y: list.content-y;
+    private property <int> page-size: max(1, floor(list.visible-height / root.row-height) - 1);
+    key-pressed(event) => {
+        if root.action-key(event) { return accept; }
+        if event.text == Key.DownArrow { root.selected-row = min(root.rows.length - 1, root.selected-row + 1); return accept; }
+        if event.text == Key.UpArrow { root.selected-row = root.rows.length > 0 ? max(0, root.selected-row - 1) : -1; return accept; }
+        if event.text == Key.PageDown { root.selected-row = min(root.rows.length - 1, max(0, root.selected-row) + root.page-size); return accept; }
+        if event.text == Key.PageUp { root.selected-row = root.rows.length > 0 ? max(0, root.selected-row - root.page-size) : -1; return accept; }
+        if event.text == Key.LeftArrow { list.content-x = min(0px, list.content-x + list.visible-width / 2); return accept; }
+        if event.text == Key.RightArrow { list.content-x = max(min(0px, list.visible-width - list.content-width), list.content-x - list.visible-width / 2); return accept; }
+        if event.text == Key.Home { root.selected-row = root.rows.length > 0 ? 0 : -1; return accept; }
+        if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
+        if event.text == Key.Return && root.selected-row >= 0 && root.selected-row < root.rows.length {
+            root.reveal(root.rows[root.selected-row].token); return accept;
+        }
+        reject
+    }
+    changed selected-row => {
+        root.reveal-active = true;
+        root.reveal-cursor();
+    }
+    changed view-height => { root.reveal-cursor(); }
+    changed content-height => { root.reveal-cursor(); }
+    changed content-y => { root.reveal-cursor(); }
+    function reveal-cursor() {
+        if !root.reveal-active { return; }
+        if root.selected-row < 0 || root.selected-row >= root.rows.length {
+            root.reveal-active = false; return;
+        }
+        if list.visible-height >= root.row-height
+            && list.content-height + 0.5px >= (root.selected-row + 1) * root.row-height {
+            if root.selected-row * root.row-height < -list.content-y { list.content-y = -root.selected-row * root.row-height; }
+            else if (root.selected-row + 1) * root.row-height > -list.content-y + list.visible-height + 0.5px {
+                list.content-y = list.visible-height - (root.selected-row + 1) * root.row-height;
+            }
+        }
+    }
+    if root.show-header: Rectangle {
+        x: 0px; y: 0px;
+        height: Theme.column-height; width: parent.width; clip: true; background: Theme.header;
+        Columns { x: list.content-x; width: list.content-width; height: parent.height;
+            header: true; sort-column: root.sort-column; descending: root.descending; duplicates: root.duplicates;
+            sort(column) => { root.sort(column); } }
+    }
+    list := ListView {
+        y: root.header-height; width: parent.width; height: max(0px, parent.height - self.y);
+        content-width: max(self.visible-width, root.table-width);
+        scrolled => { root.reveal-active = false; }
+        accessible-role: AccessibleRole.list; accessible-label: "Find results";
+        accessible-item-count: root.rows.length;
+        for row[index] in root.rows: Rectangle {
+            width: list.content-width; height: root.row-height;
+            background: root.selected-row == index ? Theme.cursor-background
+                : (root.duplicates ? row.group-shade : mod(index, 2) == 1) ? Theme.alternate-row : Theme.pane-background;
+            border-width: root.selected-row == index ? 1px : 0px; border-color: Theme.cursor-edge;
+            accessible-role: list-item; accessible-label: (root.duplicates ? row.duplicate-group + " · " : "")
+                + row.name + " · " + row.extension + " · " + row.path + " · " + row.size + " · " + row.modified;
+            accessible-value: row.token;
+            accessible-item-selectable: true; accessible-item-selected: root.selected-row == index; accessible-item-index: index;
+            accessible-action-default => { root.selected-row = index; root.focus(); }
+            Columns { entry: row; duplicates: root.duplicates; }
+            if root.duplicates && row.group-start: Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame;
+            }
+            TouchArea {
+                private property <string> pressed-token;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down { self.pressed-token = row.token; }
+                    if event.kind == PointerEventKind.cancel { self.pressed-token = ""; }
+                }
+                clicked => { if self.pressed-token == row.token { root.selected-row = index; root.focus(); } }
+                double-clicked => { if self.pressed-token == row.token { root.selected-row = index; root.reveal(row.token); } }
+            }
+        }
+    }
+}

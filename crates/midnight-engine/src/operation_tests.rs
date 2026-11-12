@@ -11,13 +11,29 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+#[path = "delete_pause_tests.rs"]
+mod pause;
+#[path = "operation_retirement_tests.rs"]
+mod retirement;
+#[path = "operation_summary_tests.rs"]
+mod summary;
+#[path = "delete_throughput_tests.rs"]
+mod throughput;
+#[path = "tree_delete_operation_tests.rs"]
+mod tree_delete;
+#[path = "tree_rename_operation_tests.rs"]
+mod tree_rename;
+
 #[derive(Default)]
 struct Calls {
     prepared: AtomicUsize,
     renamed: Mutex<Vec<(PathBuf, String)>>,
     created: Mutex<Vec<PathBuf>>,
+    directories: Mutex<Vec<(PathBuf, PathBuf)>>,
     deleted: Mutex<Vec<(PathBuf, DeleteMode)>>,
     blocked: std::sync::atomic::AtomicBool,
+    complete_after_cancel: std::sync::atomic::AtomicBool,
+    blocked_after_progress: std::sync::atomic::AtomicBool,
     fail_after_progress: std::sync::atomic::AtomicBool,
     cleanup_blocked: std::sync::atomic::AtomicBool,
     cleanup_entered: tokio::sync::Notify,
@@ -66,8 +82,13 @@ struct FakeDirectory {
     calls: Arc<Calls>,
 }
 impl PreparedDirectory for FakeDirectory {
-    fn create(&self, _: &Path, _: &Cancellation) -> Result<PathBuf, FsError> {
-        panic!("an empty-file request must not create a directory")
+    fn create(&self, path: &Path, _: &Cancellation) -> Result<PathBuf, FsError> {
+        self.calls
+            .directories
+            .lock()
+            .unwrap()
+            .push((self.path.clone(), path.to_owned()));
+        Ok(self.path.join(path))
     }
     fn create_file(&self, name: &OsStr, _: &Cancellation) -> Result<PathBuf, FsError> {
         if self.calls.fail_after_progress.load(Ordering::Acquire) {
@@ -106,10 +127,12 @@ impl PreparedMutation for FakeTarget {
             .unwrap()
             .push((self.item.path.clone(), mode));
         self.calls.entered.notify_one();
-        while self.calls.blocked.load(Ordering::Acquire) && !cancel.is_cancelled() {
+        while self.calls.blocked.load(Ordering::Acquire)
+            && (!cancel.is_cancelled() || self.calls.complete_after_cancel.load(Ordering::Acquire))
+        {
             std::thread::park_timeout(Duration::from_millis(5));
         }
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() && !self.calls.complete_after_cancel.load(Ordering::Acquire) {
             return Err(FsError::from_io(
                 "delete",
                 &self.item.path,
@@ -117,6 +140,9 @@ impl PreparedMutation for FakeTarget {
             ));
         }
         progress(&self.item.path);
+        while self.calls.blocked_after_progress.load(Ordering::Acquire) && !cancel.is_cancelled() {
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
         if self.calls.fail_after_progress.load(Ordering::Acquire) {
             return Err(FsError::from_io(
                 "delete",
@@ -137,6 +163,9 @@ struct Harness {
 }
 impl Harness {
     fn new(kind: MutationKind) -> Self {
+        Self::using(kind, None)
+    }
+    fn using(kind: MutationKind, service: Option<Arc<dyn MutationService>>) -> Self {
         let path = std::env::temp_dir().join("midnight-operation-worker-fixture");
         let entries: Arc<[Entry]> = vec![Entry::new(
             EntryId(7),
@@ -151,8 +180,12 @@ impl Harness {
             entries: entries.clone(),
         };
         let view = Arc::new(DirectoryIndex::from_entries(&entries));
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
+                archive: None,
+                network: None,
+                network_navigation: None,
+                archive_navigation: None,
                 visible: Some(CommittedSnapshot {
                     navigation: source.navigation,
                     path,
@@ -162,17 +195,23 @@ impl Harness {
                 ..Default::default()
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let (sender, events) = mpsc::channel(64);
         let calls = Arc::new(Calls::default());
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
-            Some(Arc::new(FakeService(calls.clone()))),
+            crate::worker_retirement::ActorRetirement::testing(),
+            Services {
+                mutation: Some(service.unwrap_or_else(|| Arc::new(FakeService(calls.clone())))),
+                locale: None,
+            },
             snapshots,
             Outbox {
                 sender,
                 wakeup: Arc::new(|| {}),
             },
+            Arc::new(Semaphore::new(1)),
+            CopyFence::default(),
             &mut tasks,
         );
         Self {
@@ -219,6 +258,10 @@ impl Harness {
 }
 impl Drop for Harness {
     fn drop(&mut self) {
+        self.calls.blocked.store(false, Ordering::Release);
+        self.calls
+            .blocked_after_progress
+            .store(false, Ordering::Release);
         self.calls.cleanup_blocked.store(false, Ordering::Release);
         self.controller.shutdown();
         self.tasks.abort_all();
@@ -263,6 +306,69 @@ async fn cancelled_confirmation_never_mutates_and_stale_snapshot_is_rejected() {
     h.controller.prepare(h.request.clone()).await;
     assert_eq!(h.finished().await.state, OperationState::Failed);
     assert!(h.calls.deleted.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn virtual_views_never_prepare_mutations_against_retained_temp_paths() {
+    for kind in [
+        MutationKind::CreateFile,
+        MutationKind::CreateDirectory,
+        MutationKind::Rename,
+        MutationKind::EditMetadata,
+        MutationKind::Delete(DeleteMode::Trash),
+        MutationKind::Delete(DeleteMode::Permanent),
+    ] {
+        for state in 0..4 {
+            let mut h = Harness::new(kind);
+            {
+                let mut snapshots = h.controller.snapshots.lock().unwrap();
+                let snapshot = &mut snapshots[0];
+                match state {
+                    0 => snapshot.archive_navigation = Some(NavigationId(2)),
+                    1 => snapshot.archive = Some((NavigationId(2), Arc::from([]))),
+                    2 => snapshot.network_navigation = Some(NavigationId(2)),
+                    3 => snapshot.network = Some((NavigationId(2), Arc::from([]))),
+                    _ => unreachable!(),
+                }
+                // The old TEMP snapshot is deliberately retained and still exactly
+                // matches the request. Provider authority must override that match.
+            }
+            h.controller.prepare(h.request.clone()).await;
+            assert_eq!(
+                h.finished().await.state,
+                OperationState::Failed,
+                "{kind:?}/{state}"
+            );
+            h.controller.confirm(h.request.id, None).await;
+            assert_eq!(
+                h.calls.prepared.load(Ordering::Relaxed),
+                0,
+                "{kind:?}/{state}"
+            );
+            assert!(h.calls.deleted.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelled_confirmation_delivery_can_be_retried_without_losing_the_request() {
+    let mut h = Harness::new(MutationKind::Delete(DeleteMode::Permanent));
+    h.controller.prepare(h.request.clone()).await;
+    h.preview().await;
+    let sender = h.controller.sender.clone();
+    let capacity: Vec<_> = sender.reserve_many(64).await.unwrap().collect();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            h.controller.confirm(h.request.id, None)
+        )
+        .await
+        .is_err()
+    );
+    drop(capacity);
+    h.controller.confirm(h.request.id, None).await;
+    assert_eq!(h.finished().await.state, OperationState::Completed);
+    assert_eq!(h.calls.deleted.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -423,6 +529,34 @@ async fn create_file_uses_captured_directory_without_focus_and_confirms_exactly_
     h.controller.cancel(h.request.id);
     assert_eq!(h.finished().await.state, OperationState::Cancelled);
     assert_eq!(h.calls.created.lock().unwrap().as_slice(), &[expected]);
+    assert!(h.calls.directories.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_directory_passes_explicit_paths_to_the_captured_native_base_after_navigation() {
+    for name in [
+        "../sibling/文档",
+        "/absolute/new",
+        "C:\\absolute\\new",
+        "\\\\server\\share\\new",
+    ] {
+        let mut h = Harness::new(MutationKind::CreateDirectory);
+        h.request.focused = None;
+        h.controller.prepare(h.request.clone()).await;
+        h.preview().await;
+        h.controller.snapshots.lock().unwrap()[0].visible = None;
+        h.controller.confirm(h.request.id, Some(name.into())).await;
+        assert_eq!(
+            h.finished().await.state,
+            OperationState::Completed,
+            "{name}"
+        );
+        assert_eq!(
+            h.calls.directories.lock().unwrap().as_slice(),
+            &[(h.request.source.path.clone(), PathBuf::from(name))]
+        );
+        assert!(h.calls.created.lock().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]

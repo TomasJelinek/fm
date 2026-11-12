@@ -1,0 +1,135 @@
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
+import { DialogText } from "dialog-text.slint";
+import { ErrorGlyph } from "error-notice.slint";
+
+component ConflictItem inherits Rectangle {
+    in property <string> heading;
+    in property <string> details;
+    min-width: 0px;
+    background: Theme.secondary-surface;
+    border-radius: 4px;
+    VerticalLayout {
+        padding: 8px; spacing: 4px;
+        Text { text: root.heading; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
+        DialogText { text: root.details; min-height: 0px; vertical-stretch: 1; }
+    }
+}
+
+export component CopyConflictDialog inherits Rectangle {
+    in property <string> body;
+    in property <string> initial-name;
+    in property <string> token;
+    in property <image> native-icon;
+    in property <bool> allow-alternate-name: true;
+    in property <bool> can-replace;
+    in property <bool> can-merge;
+    in property <bool> failure-mode;
+    in property <bool> can-retry;
+    in property <bool> can-skip;
+    in property <string> source-details;
+    in property <string> target-details;
+    callback decide(int, string);
+    callback later();
+    callback move-dialog(length, length);
+    private property <bool> compact: root.height < 280px;
+    background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+    forward-focus: scope;
+    init => { name.text = root.initial-name; later-button.focus(); }
+    changed token => { name.text = root.initial-name; }
+    scope := FocusScope {
+        forward-focus: later-button;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.later(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: root.compact ? 8px : 16px; spacing: root.compact ? 4px : 10px;
+            DialogHeader {
+                title: root.failure-mode ? "Copy/Move needs attention" : "Item already exists";
+                error: root.failure-mode; native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
+                compact: root.compact; text-size: Theme.font-size * 1.2;
+                close-label: "Cancel job"; close => { root.decide(3, ""); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            content := ScrollView {
+                min-height: 0px; min-width: 0px; vertical-stretch: 1;
+                horizontal-scrollbar-policy: as-needed;
+                content-width: max(self.visible-width, Theme.font-size * (root.can-replace ? 34 : 22));
+                VerticalLayout {
+                    spacing: root.compact ? 4px : 10px; alignment: start;
+            if root.source-details != "" && root.width >= 560px : HorizontalLayout {
+                spacing: 8px; height: Theme.font-size * 11;
+                ConflictItem { heading: "Source"; details: root.source-details; horizontal-stretch: 1; }
+                ConflictItem { heading: "Existing destination"; details: root.target-details; horizontal-stretch: 1; }
+            }
+            if root.source-details != "" && root.width < 560px : VerticalLayout {
+                spacing: 8px; height: Theme.font-size * 16;
+                ConflictItem { heading: "Source"; details: root.source-details; vertical-stretch: 1; }
+                ConflictItem { heading: "Existing destination"; details: root.target-details; vertical-stretch: 1; }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                height: root.failure-mode ? max(220px, Theme.font-size * 14) : max(50px, Theme.font-size * 4);
+                if DialogWindowStyle.native-titlebar && root.failure-mode: ErrorGlyph { }
+                if DialogWindowStyle.native-titlebar && !root.failure-mode: NativeActionImage {
+                    native-icon: root.native-icon; fallback-icon: FallbackIcons.copy;
+                    width: 24px; height: 24px;
+                }
+                DialogText { text: root.body; min-width: 0px; horizontal-stretch: 1; }
+            }
+            if root.can-replace : HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Replace · keep original"; hint: "Replace the destination and retain the displaced file in a private recovery folder. Recent Jobs show recovery locations."; clicked => { root.decide(4, ""); } }
+                HintedActionButton { text: "Replace all · keep originals"; hint: "Use recoverable replacement for remaining compatible file conflicts in this job. Changed targets require a new decision."; clicked => { root.decide(5, ""); } }
+            }
+            if root.can-merge : HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Merge folders"; hint: "Copy into this existing folder. Existing files require a separate conflict decision."; clicked => { root.decide(6, ""); } }
+                HintedActionButton { text: "Merge all folders"; hint: "Merge remaining compatible folder conflicts in this job. This does not authorize replacing files."; clicked => { root.decide(7, ""); } }
+            }
+            name := LineEdit {
+                max-height: max(Theme.control-height, self.preferred-height);
+                vertical-stretch: 0;
+                visible: root.allow-alternate-name;
+                accessible-label: "Copy under a different name";
+                accepted => { if self.text != "" { root.decide(2, self.text); } }
+            }
+            if !root.failure-mode : HorizontalLayout {
+                spacing: 8px;
+                HintedActionButton { text: "Skip"; hint: "Keep the existing item and skip this source."; clicked => { root.decide(0, ""); } }
+                HintedActionButton { text: "Skip all"; hint: "Skip all name conflicts in this job only."; clicked => { root.decide(1, ""); } }
+                if root.allow-alternate-name : HintedActionButton { text: "Copy as"; hint: "Copy using the entered name. Existing items are never replaced."; enabled: name.text != ""; clicked => { root.decide(2, name.text); } }
+            }
+                }
+            }
+            // Error actions stay beside the footer even when diagnostics exceed the viewport.
+            if root.failure-mode && (root.can-retry || root.can-skip) : ScrollView {
+                min-width: 0px;
+                height: max(32px, Theme.control-height) + 16px;
+                horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                HorizontalLayout {
+                    alignment: start; spacing: 8px; height: max(32px, Theme.control-height);
+                    if root.can-retry : HintedActionButton { text: "Retry"; hint: "Retry the failed step after resolving the problem."; clicked => { root.decide(8, ""); } }
+                    if root.can-skip : HintedActionButton { text: "Skip"; hint: "Skip this failed item and continue this job."; clicked => { root.decide(0, ""); } }
+                    if root.can-skip : HintedActionButton { text: "Skip all this error type"; hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision."; clicked => { root.decide(9, ""); } }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                ScrollView {
+                    horizontal-stretch: 1; min-width: 0px;
+                    height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), cancel-job-button.preferred-height);
+                    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+                    HorizontalLayout { alignment: end;
+                        cancel-job-button := HintedActionButton { text: "Cancel job"; hint: "Stop this job. Completed changes are retained."; clicked => { root.decide(3, ""); } }
+                    }
+                }
+                later-button := HintedActionButton { text: "Decide later"; hint: "Continue browsing; resolve this decision from Jobs."; clicked => { root.later(); } }
+            }
+        }
+    }
+}

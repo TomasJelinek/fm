@@ -21,6 +21,7 @@ export struct ActionIcons {
     help: image,
     rename: image,
     view: image,
+    find: image,
     edit: image,
     copy: image,
     move-item: image,
@@ -40,8 +41,14 @@ export struct ActionIcons {
     sort-descending: image,
 }
 
-// Embedded, monochrome fallbacks are used only when a semantic host icon is absent.
+// Original fallbacks are used only when a semantic host icon is absent.
+// Colored command artwork has separate neutral outlines for light/dark themes.
 export global FallbackIcons {
+    out property <image> checksums: Theme.light ? @image-url("icons/checksums.svg") : @image-url("icons/checksums-dark.svg");
+    out property <image> compare-files: Theme.light ? @image-url("icons/compare-files.svg") : @image-url("icons/compare-files-dark.svg");
+    out property <image> compare-directories: Theme.light ? @image-url("icons/compare-directories.svg") : @image-url("icons/compare-directories-dark.svg");
+    out property <image> filter: Theme.light ? @image-url("icons/filter.svg") : @image-url("icons/filter-dark.svg");
+    out property <image> find: Theme.light ? @image-url("icons/find.svg") : @image-url("icons/find-dark.svg");
     out property <image> drive: @image-url("icons/drive.svg");
     out property <image> network: @image-url("icons/network.svg");
     out property <image> home: @image-url("icons/home.svg");
@@ -53,22 +60,23 @@ export global FallbackIcons {
     out property <image> parent: @image-url("icons/parent.svg");
     out property <image> refresh: @image-url("icons/refresh.svg");
     out property <image> open-path: @image-url("icons/open-path.svg");
-    out property <image> bookmarks: @image-url("icons/star.svg");
+    out property <image> bookmarks: Theme.light ? @image-url("icons/star.svg") : @image-url("icons/star-dark.svg");
     out property <image> terminal: @image-url("icons/terminal.svg");
-    out property <image> options: @image-url("icons/settings.svg");
+    out property <image> options: Theme.light ? @image-url("icons/settings.svg") : @image-url("icons/settings-dark.svg");
     out property <image> run: @image-url("icons/run.svg");
     out property <image> tab-add: @image-url("icons/add.svg");
     out property <image> close-tab: @image-url("icons/close.svg");
     out property <image> remove-bookmark: @image-url("icons/close.svg");
-    out property <image> add-bookmark: @image-url("icons/bookmark-add.svg");
-    out property <image> help: @image-url("icons/help.svg");
+    out property <image> add-bookmark: Theme.light ? @image-url("icons/bookmark-add.svg") : @image-url("icons/bookmark-add-dark.svg");
+    out property <image> help: Theme.light ? @image-url("icons/help.svg") : @image-url("icons/help-dark.svg");
     out property <image> rename: @image-url("icons/rename.svg");
-    out property <image> view: @image-url("icons/view.svg");
+    out property <image> view: Theme.light ? @image-url("icons/view.svg") : @image-url("icons/view-dark.svg");
     out property <image> edit: @image-url("icons/edit.svg");
-    out property <image> copy: @image-url("icons/copy.svg");
-    out property <image> move-item: @image-url("icons/move.svg");
+    out property <image> copy: Theme.light ? @image-url("icons/copy.svg") : @image-url("icons/copy-dark.svg");
+    out property <image> move-item: Theme.light ? @image-url("icons/move.svg") : @image-url("icons/move-dark.svg");
     out property <image> new-folder: @image-url("icons/folder-add.svg");
     out property <image> new-file: @image-url("icons/file-add.svg");
+    out property <image> make-file-list: @image-url("icons/file-list.svg");
     out property <image> delete: @image-url("icons/delete.svg");
     out property <image> user-menu: @image-url("icons/user-menu.svg");
     out property <image> menu: @image-url("icons/menu.svg");
@@ -76,11 +84,18 @@ export global FallbackIcons {
     out property <image> done: @image-url("icons/done.svg");
     out property <image> close: @image-url("icons/close.svg");
     out property <image> properties: @image-url("icons/properties.svg");
-    out property <image> folder-sizes: @image-url("icons/folder-sizes.svg");
+    out property <image> attributes: Theme.light ? @image-url("icons/attributes.svg") : @image-url("icons/attributes-dark.svg");
+    out property <image> folder-sizes: Theme.light ? @image-url("icons/folder-sizes.svg") : @image-url("icons/folder-sizes-dark.svg");
     out property <image> about: @image-url("icons/about.svg");
     out property <image> exit: @image-url("icons/exit.svg");
     out property <image> sort-ascending: @image-url("icons/sort-ascending.svg");
     out property <image> sort-descending: @image-url("icons/sort-descending.svg");
+    pure public function is-colored(icon: image) -> bool {
+        return icon == FallbackIcons.checksums || icon == FallbackIcons.compare-files || icon == FallbackIcons.compare-directories
+            || icon == FallbackIcons.filter || icon == FallbackIcons.find || icon == FallbackIcons.bookmarks || icon == FallbackIcons.options
+            || icon == FallbackIcons.add-bookmark || icon == FallbackIcons.help || icon == FallbackIcons.view || icon == FallbackIcons.copy
+            || icon == FallbackIcons.move-item || icon == FallbackIcons.attributes || icon == FallbackIcons.folder-sizes || icon == FallbackIcons.make-file-list;
+    }
 }
 
 export component NativeActionImage inherits Image {
@@ -90,17 +105,88 @@ export component NativeActionImage inherits Image {
     private property <bool> native-available: native-icon.width > 0 && native-icon.height > 0;
     source: root.native-available ? root.native-icon : root.fallback-icon;
     // Transparent is Slint's uncolored-image default; host RGB and alpha survive.
-    colorize: root.native-available ? transparent : root.action-enabled ? Theme.text : Theme.muted-text;
+    colorize: root.native-available || (root.action-enabled && FallbackIcons.is-colored(root.fallback-icon))
+        ? transparent : root.action-enabled ? Theme.text : Theme.muted-text;
+    opacity: root.native-available && !root.action-enabled ? 0.45 : 1;
     image-fit: contain;
 }
 
-export component ActionButton inherits Button {
+// Keep the native button's input/focus behavior, with application-owned paint.
+// Fluent's stock primary brush follows the OS accent rather than our palette.
+export component ActionButton inherits Rectangle {
+    in property <string> text;
     in property <image> native-icon;
     in property <image> fallback-icon;
-    private property <bool> native-available: native-icon.width > 0 && native-icon.height > 0;
-    icon: root.native-available ? root.native-icon : root.fallback-icon;
-    icon-size: Theme.icon-size;
-    colorize-icon: !root.native-available;
+    in property <bool> primary;
+    in property <bool> compact;
+    in property <bool> removal-icon;
+    in property <bool> destructive;
+    in property <bool> enabled: true;
+    in property <bool> checkable;
+    in-out property <bool> checked;
+    out property <bool> has-focus: input.has-focus;
+    out property <bool> pressed: root.enabled && pointer.pressed;
+    callback clicked();
+    private property <bool> native-available: root.native-icon.width > 0 && root.native-icon.height > 0;
+    private property <image> artwork: root.native-available ? root.native-icon : root.fallback-icon;
+    private property <bool> has-icon: root.artwork.width > 0 && root.artwork.height > 0;
+    private property <color> foreground: !root.enabled ? Theme.muted-text
+        : root.destructive ? Theme.error-text : Theme.text;
+    min-width: max(32px, content.min-width);
+    min-height: max(32px, Theme.control-height, content.min-height);
+    horizontal-stretch: 0; vertical-stretch: 0;
+    forward-focus: input;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => { if root.enabled { root.activate(); } }
+    function activate() {
+        // A focused native Button can still deliver Enter after it becomes disabled.
+        if !root.enabled { return; }
+        if root.checkable { root.checked = !root.checked; }
+        input.focus();
+        root.clicked();
+    }
+    background: !root.enabled ? Theme.secondary-surface
+        : root.destructive ? Theme.error-background
+        : root.pressed ? Theme.cursor-background
+        : root.primary || root.checked ? Theme.active-header
+        : pointer.has-hover ? Theme.hover : Theme.secondary-surface;
+    border-radius: 4px;
+    border-width: root.has-focus && root.enabled ? 2px : 1px;
+    border-color: !root.enabled ? Theme.frame
+        : root.destructive ? Theme.error-text
+        : root.has-focus || root.primary || root.checked ? Theme.active-frame : Theme.frame;
+    content := HorizontalLayout {
+        padding-left: root.compact ? 4px : 12px; padding-right: root.compact ? 4px : 12px; padding-top: 5px; padding-bottom: 5px;
+        spacing: 4px; alignment: center; cross-axis-alignment: center;
+        if root.has-icon: Image {
+            source: root.artwork; image-fit: contain;
+            width: Theme.icon-size; height: Theme.icon-size;
+            colorize: root.native-available || (root.enabled && FallbackIcons.is-colored(root.fallback-icon))
+                ? transparent : root.removal-icon && root.enabled ? Theme.error-text : root.foreground;
+            opacity: root.native-available && !root.enabled ? 0.45 : 1;
+            accessible-role: none;
+        }
+        if root.text != "": Text {
+            text: root.text; color: root.foreground;
+            font-family: Theme.effective-font-family; font-size: Theme.font-size;
+            horizontal-alignment: center; vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    input := Button {
+        width: root.width; height: root.height;
+        opacity: 0; accessible-role: none;
+        text: root.text; enabled: root.enabled;
+        clicked => { root.activate(); }
+    }
+    pointer := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activate(); }
+    }
 }
 
 export component LocationImage inherits NativeActionImage {
@@ -110,5 +196,6 @@ export component LocationImage inherits NativeActionImage {
         : root.kind == LocationRole.documents ? FallbackIcons.documents
         : root.kind == LocationRole.downloads ? FallbackIcons.downloads
         : root.kind == LocationRole.hot-path ? FallbackIcons.bookmarks
+        : root.kind == LocationRole.folder ? FallbackIcons.documents
         : root.kind == LocationRole.network ? FallbackIcons.network : FallbackIcons.drive;
 }

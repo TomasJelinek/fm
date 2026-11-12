@@ -74,6 +74,7 @@ struct FairnessProbe {
     consumer: PathBuf,
     total_files: usize,
     completed_metadata: AtomicUsize,
+    producer_work_at_consumer_completion: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -160,6 +161,14 @@ impl DirectoryService for Files {
         {
             probe.completed_metadata.fetch_add(1, Ordering::SeqCst);
         }
+        if let Some(probe) = &self.fairness_probe
+            && path.parent() == Some(probe.consumer.as_path())
+        {
+            probe.producer_work_at_consumer_completion.store(
+                probe.completed_metadata.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
+        }
         if self.missing.contains(path) {
             return Err(FsError::from_io(
                 "test metadata",
@@ -215,6 +224,7 @@ fn start(
                 true
             },
             &budget,
+            &crate::ReportArena::testing(),
         );
         results
     })
@@ -222,7 +232,7 @@ fn start(
 
 fn queued(budget: &IoBudget, count: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
-    while budget.io.state.lock().unwrap().queue.len() < count {
+    while budget.io.snapshot().queued < count {
         assert!(
             Instant::now() < deadline,
             "Waiting I/O request did not enqueue"
@@ -243,7 +253,7 @@ fn a_small_ssd_root_finishes_while_another_root_is_blocked_in_io() {
     files.files("small", 1);
     files.opens.insert("big".into(), block.clone());
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let (finished, results) = mpsc::channel();
     let worker_files = files.clone();
     let worker = thread::spawn(move || {
@@ -258,6 +268,7 @@ fn a_small_ssd_root_finishes_while_another_root_is_blocked_in_io() {
                 true
             },
             &budget,
+            &crate::ReportArena::testing(),
         );
     });
     block.wait(1);
@@ -288,7 +299,7 @@ fn shared_operations(kind: StorageKind, expected: usize) {
         })
         .collect::<Vec<_>>();
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let first = start(files.clone(), roots[..4].to_vec(), budget.clone());
     let second = start(files.clone(), roots[4..].to_vec(), budget);
     block.wait(expected);
@@ -329,7 +340,7 @@ fn rotational_network_and_unknown_reads_are_serial_across_two_operations() {
 
 #[test]
 fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_request() {
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let held = budget.acquire_io(4, &Cancellation::default()).unwrap();
     let (granted, order) = mpsc::channel();
     let first_budget = budget.clone();
@@ -357,7 +368,7 @@ fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_r
 }
 
 #[test]
-fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_first() {
+fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_io_first() {
     let block = Arc::new(Blocker::default());
     let _release = ReleaseOnDrop(block.clone());
     let mut files = Files {
@@ -370,31 +381,36 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_firs
     let big_files = QUANTUM_ENTRIES + 1;
     files.files("big", big_files);
     files.files("small", 1);
-    files.fairness_probe = Some(Arc::new(FairnessProbe {
+    let probe = Arc::new(FairnessProbe {
         producer: "big".into(),
         consumer: "small".into(),
         total_files: big_files,
         completed_metadata: AtomicUsize::new(0),
-    }));
+        producer_work_at_consumer_completion: AtomicUsize::new(usize::MAX),
+    });
+    files.fairness_probe = Some(probe.clone());
     files.opens.insert("big".into(), block.clone());
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let (completed, order) = mpsc::channel();
-    let big_files = files.clone();
+    let (big_reported, wait_for_big_report) = mpsc::channel();
+    let big_source = files.clone();
     let big_budget = budget.clone();
     let big_completed = completed.clone();
     let big = thread::spawn(move || {
         compute_batched(
-            big_files.as_ref(),
+            big_source.as_ref(),
             &[root(1, "big")],
             &Cancellation::default(),
             &mut |id, size| {
                 if size.finished {
-                    big_completed.send(id).unwrap();
+                    big_completed.send((id, size)).unwrap();
+                    big_reported.send(()).unwrap();
                 }
                 true
             },
             &big_budget,
+            &crate::ReportArena::testing(),
         );
     });
     block.wait(1);
@@ -406,25 +422,43 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_firs
             &Cancellation::default(),
             &mut |id, size| {
                 if size.finished {
-                    completed.send(id).unwrap();
+                    // These are separate operations with independent result
+                    // receivers. Their callbacks can run in either order after
+                    // releasing I/O. Deliberately deliver the small result last.
+                    wait_for_big_report
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap();
+                    completed.send((id, size)).unwrap();
                 }
                 true
             },
             &small_budget,
+            &crate::ReportArena::testing(),
         );
     });
     queued(&budget, 1);
     block.release();
-    assert_eq!(
-        order.recv_timeout(Duration::from_secs(3)).unwrap(),
-        EntryId(2)
-    );
-    assert_eq!(
-        order.recv_timeout(Duration::from_secs(3)).unwrap(),
-        EntryId(1)
-    );
+    let (big_id, big_size) = order.recv_timeout(Duration::from_secs(3)).unwrap();
+    let (small_id, small_size) = order.recv_timeout(Duration::from_secs(3)).unwrap();
     big.join().unwrap();
     small.join().unwrap();
+    assert_eq!(
+        (big_id, big_size.bytes, big_size.errors),
+        (EntryId(1), big_files as u64, 0)
+    );
+    assert_eq!(
+        (small_id, small_size.bytes, small_size.errors),
+        (EntryId(2), 1, 0)
+    );
+    assert!(
+        (1..big_files).contains(
+            &probe
+                .producer_work_at_consumer_completion
+                .load(Ordering::SeqCst)
+        ),
+        "the small root must finish its I/O while the large root still has work"
+    );
+    assert_eq!(probe.completed_metadata.load(Ordering::SeqCst), big_files);
 }
 
 #[test]
@@ -445,7 +479,7 @@ fn nested_mount_hint_errors_use_conservative_io_without_losing_totals() {
     let results = start(
         files.clone(),
         vec![root(1, "left"), root(2, "right")],
-        Arc::new(IoBudget::new()),
+        Arc::new(IoBudget::isolated()),
     )
     .join()
     .unwrap();
@@ -475,7 +509,7 @@ fn rejected_progress_cancels_queued_and_running_workers_without_leaking_io_slots
         })
         .collect::<Vec<_>>();
     let files = Arc::new(files);
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     compute_batched(
         files.as_ref(),
         &roots,
@@ -485,11 +519,12 @@ fn rejected_progress_cancels_queued_and_running_workers_without_leaking_io_slots
             false
         },
         &budget,
+        &crate::ReportArena::testing(),
     );
-    assert_eq!(budget.io.state.lock().unwrap().available, 4);
-    assert!(budget.io.state.lock().unwrap().queue.is_empty());
-    assert_eq!(budget.classification.state.lock().unwrap().available, 1);
-    assert!(budget.classification.state.lock().unwrap().queue.is_empty());
+    assert_eq!(budget.io.snapshot().available, 4);
+    assert_eq!(budget.io.snapshot().queued, 0);
+    assert_eq!(budget.classification.snapshot().available, 1);
+    assert_eq!(budget.classification.snapshot().queued, 0);
 }
 
 #[test]
@@ -530,11 +565,11 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             root(2, "prázdná"),
             Entry::new(
                 EntryId(3),
-                "never-probe-link-root".into(),
+                "unsupported-link-root".into(),
                 EntryKind::DirectoryLink,
             ),
         ],
-        Arc::new(IoBudget::new()),
+        Arc::new(IoBudget::isolated()),
     )
     .join()
     .unwrap()
@@ -546,14 +581,31 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
             bytes: 4,
             files: 4,
             skipped_links: 2,
-            errors: 1,
+            errors: 3,
             finished: true,
+            warnings: results[&EntryId(1)].warnings.clone(),
         }
     );
     assert_eq!(
+        results[&EntryId(1)]
+            .warnings
+            .as_ref()
+            .unwrap()
+            .summary()
+            .observed,
+        3
+    );
+    assert_eq!(
         results.len(),
-        2,
-        "a directory-link root must not start a scan"
+        3,
+        "an unsupported directory-link root reports its own partial result"
+    );
+    assert_eq!(
+        (
+            results[&EntryId(3)].errors,
+            results[&EntryId(3)].skipped_links
+        ),
+        (1, 1)
     );
     assert_eq!(
         results[&EntryId(2)],
@@ -566,7 +618,7 @@ fn batched_unicode_totals_preserve_each_root_identity_and_partial_errors() {
 
 #[test]
 fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_elses_io() {
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let held = budget.acquire_io(4, &Cancellation::default()).unwrap();
     let cancel = Cancellation::default();
     let mut files = Files {
@@ -587,6 +639,7 @@ fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_
             &worker_cancel,
             &mut |_, _| true,
             &worker_budget,
+            &crate::ReportArena::testing(),
         );
         finished.send(()).unwrap();
     });
@@ -595,8 +648,8 @@ fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_
     completed.recv_timeout(Duration::from_secs(3)).unwrap();
     worker.join().unwrap();
     assert_eq!(files.io.maximum.load(Ordering::SeqCst), 0);
-    assert_eq!(budget.io.state.lock().unwrap().available, 0);
-    assert!(budget.io.state.lock().unwrap().queue.is_empty());
+    assert_eq!(budget.io.snapshot().available, 0);
+    assert_eq!(budget.io.snapshot().queued, 0);
     drop(held);
-    assert_eq!(budget.io.state.lock().unwrap().available, 4);
+    assert_eq!(budget.io.snapshot().available, 4);
 }

@@ -1,0 +1,791 @@
+import { ProgressIndicator, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { TipBody, CompactPicker } from "controls.slint";
+import { CompactLocationButton } from "location-controls.slint";
+import { OverflowToolbar } from "overflow-toolbar.slint";
+import { PanelList } from "panel-list.slint";
+import { SelectionRectangle } from "selection-rectangle.slint";
+import { FileEntry } from "file-entry.slint";
+import { FileColumnHeading } from "file-column-heading.slint";
+import { FileRow, TreePress } from "file-models.slint";
+import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRow, LocationRole } from "navigation-models.slint";
+import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
+import { TabStrip, NavigationButton } from "navigation-controls.slint";
+import { PathNavigation } from "path-navigation.slint";
+import { PanelDetails } from "panel-details.slint";
+import { DragFeedback } from "drag-feedback.slint";
+import { PanelViewControls } from "panel-view-controls.slint";
+import { PanelSearch, SearchTextEdit } from "panel-search.slint";
+
+export component FilePane inherits Rectangle {
+    in property <int> pane-id;
+    callback find-files();
+    in property <bool> minimal;
+    in property <bool> native-filesystem: true;
+    in property <bool> network-discovery-available;
+    in property <bool> can-compare-directories;
+    in property <bool> can-target-selection;
+    in property <bool> touch-contact;
+    in property <bool> drop-highlight;
+    in property <int> drop-row: -1;
+    in property <string> drag-label;
+    callback row-drag(int, string, float, float) -> bool;
+    callback drag-moved(float, float);
+    callback drag-modifiers(bool, bool, bool);
+    callback drag-released(float, float);
+    callback drag-cancelled();
+    in property <ActionIcons> action-icons;
+    in property <[NavigationChoiceRow]> choices;
+    in property <int> choice-index: -1;
+    in property <int> choice-revision;
+    in property <bool> active;
+    in property <[TabRow]> tabs;
+    in property <[BookmarkRow]> bookmarks;
+    in property <[NavigationChoiceRow]> hot-path-choices;
+    in property <[NavigationChoiceRow]> back-history;
+    in property <[NavigationChoiceRow]> forward-history;
+    in property <int> history-revision;
+    in property <[PathPartRow]> path-parts;
+    in property <[DetailRow]> details;
+    in property <string> free-space;
+    in property <string> bookmark-name;
+    in property <length> viewport-width;
+    in property <length> viewport-height;
+    in property <string> path;
+    in property <string> filter-label;
+    in property <[string]> volumes;
+    in property <[image]> volume-icons;
+    in property <[string]> volume-short-labels;
+    in property <[string]> volume-tooltips;
+    in property <int> volumes-revision;
+    in property <int> volume-index;
+    in property <[FileRow]> rows;
+    in property <int> view-mode;
+    in property <int> thumbnail-size: 96;
+    out property <string> hovered-row;
+    in property <string> view-mode-label;
+    in property <string> sort-label;
+    out property <int> view-columns: root.minimal || root.view-mode == 0 ? 1
+        : max(1, floor(root.list-grid-width / (root.view-mode == 1 ? 180px : root.thumbnail-size * 1px + 60px)));
+    out property <int> view-rows: max(1, floor(list.visible-height / root.row-height));
+    private property <int> page-size: root.view-columns * root.view-rows;
+    private property <int> page-count: ceil(root.rows.length / root.page-size);
+    private property <int> band-count: root.view-mode == 1
+        ? max(0, root.page-count - 1) * root.view-rows
+            + min(root.view-rows, root.rows.length - max(0, root.page-count - 1) * root.page-size)
+        : ceil(root.rows.length / root.view-columns);
+    // Numeric repeater bindings allocate a new model whenever dirtied. Layout
+    // invalidation from a row repaint must not replace pressed/clicked cells.
+    // Initial bindings provide the first layout; changed handlers then retain
+    // these counts until their integer values actually change.
+    private property <int> repeated-columns: root.view-columns;
+    private property <int> repeated-bands: root.band-count;
+    private property <bool> navigation-viewport-valid;
+    private property <bool> navigation-viewport-active;
+    private property <string> navigation-viewport-path;
+    private property <string> navigation-viewport-context;
+    private property <string> navigation-viewport-query;
+    private property <length> navigation-viewport-x;
+    private property <length> navigation-viewport-y;
+    private property <int> navigation-viewport-cursor: -1;
+    private property <bool> cursor-reveal-active;
+    private property <string> reveal-path;
+    private property <string> reveal-context;
+    private property <int> reveal-cursor-index: -1;
+    private property <length> reveal-content-height: list.content-height;
+    private property <length> reveal-visible-height: list.visible-height;
+    private property <length> reveal-content-y: list.content-y;
+    private property <length> navigation-content-x: list.content-x;
+    private property <length> navigation-content-width: list.content-width;
+    private property <length> navigation-visible-width: list.visible-width;
+    changed navigation-content-x => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+    }
+    changed navigation-content-width => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+    }
+    changed navigation-visible-width => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+    }
+    changed reveal-content-height => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+        else if root.cursor-reveal-active { root.finish-cursor-reveal(); }
+    }
+    changed reveal-visible-height => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+        else if root.cursor-reveal-active { root.finish-cursor-reveal(); }
+    }
+    changed reveal-content-y => {
+        if root.navigation-viewport-active { root.settle-navigation-viewport(); }
+        else if root.cursor-reveal-active { root.finish-cursor-reveal(); }
+    }
+    changed path => {
+        root.reset-loading-feedback();
+        if root.reveal-path != root.path { root.cursor-reveal-active = false; }
+        if root.navigation-viewport-path != root.path { root.navigation-viewport-active = false; }
+    }
+    changed search-context => {
+        if root.reveal-context != root.search-context { root.cursor-reveal-active = false; }
+        if root.navigation-viewport-context != root.search-context {
+            root.navigation-viewport-active = false;
+        }
+    }
+    changed search-query => {
+        if root.navigation-viewport-query != root.search-query {
+            root.navigation-viewport-active = false;
+        }
+    }
+    changed cursor-index => {
+        if root.reveal-cursor-index != root.cursor-index { root.cursor-reveal-active = false; }
+        if root.navigation-viewport-active && root.navigation-viewport-cursor != root.cursor-index {
+            root.navigation-viewport-active = false;
+        }
+    }
+    in property <[LocationRow]> locations;
+    in property <string> status;
+    in property <string> error;
+    in property <string> error-revision;
+    in property <bool> can-elevate;
+    callback retry-directory-elevated();
+    in property <bool> loading;
+    private property <bool> loading-feedback;
+    function reset-loading-feedback() {
+        loading-delay.stop();
+        root.loading-feedback = false;
+        if root.loading { loading-delay.start(); loading-delay.restart(); }
+    }
+    changed loading => { root.reset-loading-feedback(); }
+    loading-delay := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => { self.stop(); root.loading-feedback = root.loading; }
+    }
+    in property <bool> scroll-interaction-active;
+    in property <int> cursor-index: -1;
+    in property <int> sort-column;
+    in property <bool> descending;
+    in property <bool> sizes-in-bytes;
+    in property <string> size-column-sample: "1 024 KB";
+    in property <string> date-column-sample: "2000-12-28";
+    in property <string> time-column-sample: "23:58:58";
+    // Bounded backend samples use the same font as the rendered metadata. These
+    // measurements never depend on the viewport or instantiate extra file rows.
+    size-metric := Text { visible: false; text: root.size-column-sample; font-size: Theme.small-font; }
+    date-metric := Text { visible: false; text: root.date-column-sample; font-size: Theme.small-font; }
+    time-metric := Text { visible: false; text: root.time-column-sample; font-size: Theme.small-font; }
+    size-title-metric := Text { visible: false; text: "Size"; font-size: Theme.small-font; }
+    date-title-metric := Text { visible: false; text: "Modified"; font-size: Theme.small-font; }
+    time-title-metric := Text { visible: false; text: "Time"; font-size: Theme.small-font; }
+    private property <length> desired-size-width: max(size-metric.preferred-width + 4px,
+        size-title-metric.preferred-width + Theme.icon-size + 5px);
+    private property <length> desired-date-width: max(date-metric.preferred-width + 4px,
+        date-title-metric.preferred-width + Theme.icon-size + 5px);
+    private property <length> desired-time-width: max(time-metric.preferred-width + 4px,
+        time-title-metric.preferred-width + 4px);
+    // Preserve a usable name column at narrow splits; the copyable details retain exact values.
+    private property <length> metadata-budget: max(0px,
+        root.list-grid-width - max(90px, root.list-grid-width * 0.30) - 48px);
+    private property <float> metadata-scale: min(1,
+        root.metadata-budget / max(1px, root.desired-size-width + root.desired-date-width + root.desired-time-width));
+    private property <length> size-column-width: min(root.desired-size-width,
+        max(Theme.icon-size + 3px, root.desired-size-width * root.metadata-scale));
+    private property <length> date-column-width: root.desired-date-width * root.metadata-scale;
+    private property <length> time-column-width: root.desired-time-width * root.metadata-scale;
+    in-out property <string> search-query;
+    in property <string> search-context;
+    in property <bool> search-pending;
+    in property <int> search-count;
+    out property <bool> search-active: search.active;
+    out property <string> search-preedit: search.preedit;
+    in property <length> row-height: !root.minimal && root.view-mode == 2 ? root.thumbnail-size * 1px + 30px + Theme.font-size * 3 : Theme.row-height;
+    private property <string> previous-click-identity;
+    private property <TreePress> tree-press;
+    private property <string> controls-context: root.pane-id + ":" + root.search-context + ":" + root.filter-label;
+    private property <string> controls-pressed-context;
+    private property <bool> controls-pointer-snapshot;
+    private property <bool> controls-press-cancelled;
+    private property <string> controls-press-context: root.controls-pointer-snapshot
+        ? root.controls-pressed-context : root.controls-context;
+    public function capture-tree-press(x: length, y: length) {
+        root.controls-pressed-context = root.controls-context;
+        root.controls-pointer-snapshot = true;
+        root.controls-press-cancelled = false;
+        root.tree-press = { active: false, cancelled: false };
+        let local-x = x - list.absolute-position.x - list.content-x;
+        let local-y = y - list.absolute-position.y - list.content-y;
+        if x >= list.absolute-position.x && x < list.absolute-position.x + list.visible-width
+            && y >= list.absolute-position.y && y < list.absolute-position.y + list.visible-height
+            && local-x >= 0px && local-x < root.list-grid-width && root.row-height > 0px {
+            let column = floor(local-x / (root.list-grid-width / root.view-columns));
+            let index = root.source-row(floor(local-y / root.row-height), column);
+            if index >= 0 && index < root.rows.length {
+                let item = root.rows[index];
+                root.tree-press = { active: true, cancelled: false, identity: item.identity,
+                    disclosure: item.tree-disclosure, expanded: item.tree-expanded,
+                    context: root.search-context, view-mode: root.minimal ? 1 : root.view-mode };
+            }
+        }
+    }
+    public function release-tree-press() {
+        root.tree-press.active = false;
+        root.controls-pointer-snapshot = false;
+    }
+    public function cancel-tree-press() {
+        root.tree-press.cancelled = true;
+        root.controls-press-cancelled = true;
+    }
+    out property <bool> list-focused: search.has-focus;
+    out property <bool> volume-popup-open: volume-picker.popup-open;
+    out property <length> list-visible-height: list.visible-height;
+    out property <length> list-left: list.absolute-position.x;
+    out property <length> list-top: list.absolute-position.y;
+    out property <length> list-width: list.width;
+    out property <length> list-content-y: list.content-y;
+    out property <length> list-content-x: list.content-x;
+    // The pinned Fluent scrollbar is 14 logical px. Keep a separate 10px
+    // background gutter available even when Details rows fill the viewport.
+    out property <length> list-grid-width: max(0px, list.visible-width - 14px - 10px);
+    out property <length> path-left: path-input.absolute-position.x;
+    out property <length> path-top: path-input.absolute-position.y;
+    out property <length> path-width: path-input.width;
+    out property <length> path-control-height: path-input.height;
+    out property <string> path-draft: path-input.text;
+    out property <string> highlighted-path: path-input.highlighted-prefix;
+    out property <length> details-top: details-bar.absolute-position.y;
+    out property <length> details-left: details-bar.absolute-position.x;
+    // Include one adjacent row for the virtualized repeater's boundary cache.
+    private property <int> first-band: max(0, floor(-list.content-y / root.row-height) - 1);
+    private property <int> end-band: min(root.band-count,
+        ceil((-list.content-y + list.visible-height) / root.row-height) + 1);
+    out property <int> visible-row-start: min(root.rows.length, root.source-row(root.first-band, 0));
+    out property <int> visible-row-end: min(root.rows.length,
+        root.source-row(max(0, root.end-band - 1), root.view-columns - 1) + 1);
+    out property <int> thumbnail-row-start: min(root.rows.length,
+        root.source-row(max(0, floor(-list.content-y / root.row-height)), 0));
+    out property <int> thumbnail-row-end: min(root.rows.length,
+        root.source-row(max(0, ceil((-list.content-y + list.visible-height) / root.row-height) - 1), root.view-columns - 1) + 1);
+    callback view-mode-selected(int);
+    callback mutation(int);
+    callback action(int);
+    callback navigate(string);
+    callback path-part(string);
+    callback path-copy(string);
+    callback history-choice(bool, string);
+    callback detail-copy(string);
+    callback copy-error(string);
+    callback volume(int);
+    callback sort(int);
+    callback row-click(int, bool, bool);
+    callback disclosure(string);
+    callback warning-details(string, bool);
+    callback error-details(string);
+    callback row-context-menu(int, float, float, bool, bool);
+    callback drive-context-menu(string, float, float, bool, bool);
+    callback open(int);
+    callback key(int);
+    callback bulk-selection(int);
+    callback activate();
+    callback location(int);
+    callback navigation-choice(string);
+    callback properties();
+    callback attributes();
+    callback compare-files();
+    callback compare-directories();
+    callback filter();
+    callback clear-filter();
+    callback folder-sizes();
+    callback drive-letter(string) -> bool;
+    callback search-edited(string);
+    callback files-key(KeyEvent, bool, bool) -> int;
+    callback volume-key(KeyEvent) -> int;
+    callback search-backspace(string, int, int) -> SearchTextEdit;
+    callback insert-path();
+    callback insert-name();
+    callback drive-info();
+    callback tab-new();
+    callback tab-select(string);
+    callback tab-close(string);
+    callback bookmark-manage();
+    callback bookmark-add(string, int);
+    callback bookmark-open(string);
+    callback bookmark-remove(string);
+    callback bookmark-assign(string, int);
+    background: Theme.pane-background;
+    border-color: active ? Theme.active-frame : Theme.frame;
+    border-width: 1px;
+    border-radius: 5px;
+
+    public function focus-list() { path-input.finish-edit(); search.focus-input(); }
+    public function remember-navigation-viewport() {
+        root.navigation-viewport-path = root.path;
+        root.navigation-viewport-x = list.content-x;
+        root.navigation-viewport-y = list.content-y;
+        root.navigation-viewport-cursor = root.cursor-index;
+        root.navigation-viewport-valid = true;
+        root.navigation-viewport-active = false;
+    }
+    public function finish-navigation-viewport(failed: bool) {
+        root.navigation-viewport-active = failed && root.navigation-viewport-valid
+            && root.path == root.navigation-viewport-path;
+        root.navigation-viewport-valid = false;
+        if root.navigation-viewport-active {
+            root.navigation-viewport-context = root.search-context;
+            root.navigation-viewport-query = root.search-query;
+            root.cursor-reveal-active = false;
+            list.cancel-scroll-settle();
+            root.settle-navigation-viewport();
+        }
+    }
+    function settle-navigation-viewport() {
+        list.content-x = clamp(root.navigation-viewport-x,
+            min(0px, list.visible-width - list.content-width), 0px);
+        list.content-y = clamp(root.navigation-viewport-y,
+            min(0px, list.visible-height - list.content-height), 0px);
+    }
+    public function scroll-selection(delta: float) {
+        root.navigation-viewport-valid = false;
+        root.navigation-viewport-active = false;
+        root.cursor-reveal-active = false;
+        list.cancel-scroll-settle();
+        list.content-y = clamp(list.content-y + delta * 1px,
+            min(0px, list.visible-height - list.content-height), 0px);
+    }
+    public function reset-search-context() { search.reset-context(); }
+    public function open-volumes() { root.activate(); root.focus-list(); volume-picker.open(); }
+    public function commit-volume-shortcut() {
+        if volume-picker.popup-open { volume-picker.activate-shortcut(); }
+    }
+    public function take-location-choice(index: int) -> string {
+        return volume-picker.take-choice(index);
+    }
+    public function open-bookmarks() { root.bookmark-manage(); }
+    changed row-height => { root.reveal-cursor(); }
+    changed view-columns => {
+        root.repeated-columns = root.view-columns;
+        root.reveal-cursor();
+    }
+    changed band-count => { root.repeated-bands = root.band-count; }
+    changed view-rows => { if root.view-mode == 1 { root.reveal-cursor(); } }
+    changed view-mode => {
+        root.navigation-viewport-valid = false;
+        root.navigation-viewport-active = false;
+        // A narrow Brief/Thumbnails view can keep the previous column count.
+        root.repeated-columns = root.view-columns;
+        root.repeated-bands = root.band-count;
+        root.previous-click-identity = "";
+        root.reveal-cursor();
+    }
+    pure function source-row(band: int, column: int) -> int {
+        return root.view-mode == 1
+            ? floor(band / root.view-rows) * root.page-size
+                + column * root.view-rows + mod(band, root.view-rows)
+            : band * root.view-columns + column;
+    }
+    public function reveal-cursor() {
+        if root.navigation-viewport-active {
+            root.settle-navigation-viewport();
+            return;
+        }
+        list.cancel-scroll-settle();
+        // Model reset precedes retained-repeater layout, and a newly appearing
+        // scrollbar can shrink the viewport later. The SDK can also normalize
+        // a large virtualized jump to a row boundary. Keep the latest explicit
+        // reveal valid through geometry changes until navigation/cursor/input
+        // supersedes it. Ordinary refreshes request no reveal.
+        root.reveal-path = root.path;
+        root.reveal-context = root.search-context;
+        root.reveal-cursor-index = root.cursor-index;
+        root.cursor-reveal-active = true;
+        root.finish-cursor-reveal();
+    }
+    function finish-cursor-reveal() {
+        if root.cursor-index < 0 || root.cursor-index >= root.rows.length
+            || root.reveal-path != root.path || root.reveal-context != root.search-context
+            || root.reveal-cursor-index != root.cursor-index {
+            root.cursor-reveal-active = false;
+            return;
+        }
+        if (root.cursor-index >= 0) {
+            let band = root.view-mode == 1
+                ? floor(root.cursor-index / root.page-size) * root.view-rows + mod(root.cursor-index, root.view-rows)
+                : floor(root.cursor-index / root.view-columns);
+            if list.visible-height <= 0px || list.content-height < (band + 1) * root.row-height {
+                return;
+            }
+            if (band * root.row-height < -list.content-y) { list.content-y = -band * root.row-height; }
+            else if ((band + 1) * root.row-height > -list.content-y + list.visible-height) {
+                list.content-y = min(0px, list.visible-height - (band + 1) * root.row-height);
+            }
+        }
+    }
+    function handle-files-key(event: KeyEvent) -> EventResult {
+        let action = root.files-key(event, search.active, search.preedit != "");
+        if action == 0 { return reject; }
+        root.apply-input-action(action);
+        return accept;
+    }
+    public function apply-input-action(action: int) {
+        if action == 2 { path-input.focus-editor(); }
+        else if action == 3 { search.clear-query(); }
+        else if action == 4 { search.erase-previous(); }
+        else if action == 5 { search.clear-query(); root.key(9); }
+    }
+    VerticalLayout {
+        padding: 1px; spacing: 0px;
+        Rectangle {
+            height: 3px;
+            background: root.active ? Theme.active-frame : Theme.frame;
+        }
+        Rectangle {
+            visible: !root.minimal;
+            height: root.minimal ? 0px : Theme.toolbar-height; background: root.active ? Theme.active-header : Theme.surface;
+            HorizontalLayout {
+                padding-top: 4px; padding-bottom: 4px;
+                padding-left: Theme.touch ? 6px : 4px; padding-right: Theme.touch ? 6px : 4px;
+                spacing: Theme.touch ? 6px : 4px;
+                cross-axis-alignment: center;
+                volume-picker := CompactPicker {
+                    path-labels: true;
+                    group-separators: true;
+                    width: Theme.touch ? 52px : 48px;
+                    icon-only: true;
+                    icon: FallbackIcons.menu;
+                    native-icon: root.action-icons.menu;
+                    popup-width: 540px;
+                    fit-popup-to-content: true;
+                    fill-available-height: true;
+                    model: root.volumes; choices: root.choices;
+                    current-index: root.choices.length > 0 ? root.choice-index : root.volume-index;
+                    icons: root.volume-icons;
+                    model-revision: root.choices.length > 0 ? root.choice-revision : root.volumes-revision;
+                    label: root.choice-index >= 0 && root.choice-index < root.choices.length
+                        ? root.choices[root.choice-index].compact-label
+                        : root.volume-index >= 0 ? root.volume-short-labels[root.volume-index]
+                        : "—";
+                    hint: "Drives, locations and Hot Paths\n" + (root.choice-index >= 0 && root.choice-index < root.choices.length
+                        ? "Current: " + root.choices[root.choice-index].tooltip
+                        : root.volume-index >= 0
+                        ? root.volume-tooltips[root.volume-index] + "\nChoose a drive or volume."
+                        : "Choose a drive or volume.");
+                    accessible-name: "Drive or volume";
+                    network-discovery-available: root.network-discovery-available;
+                    shortcut-event(event) => { return root.volume-key(event); }
+                    shortcut-index: root.choices.length - 1;
+                    selected(index) => { root.activate(); root.volume(index); root.focus-list(); }
+                    selected-key(identity) => { root.activate(); root.navigation-choice(identity); root.focus-list(); }
+                    context-menu(identity, x, y, control, shift) => {
+                        root.drive-context-menu(identity, x, y, control, shift);
+                    }
+                    dismissed => { root.focus-list(); }
+                }
+                OverflowToolbar {
+                    left-hint: root.pane-id == 0 ? "Scroll left panel drives left" : "Scroll right panel drives left";
+                    right-hint: root.pane-id == 0 ? "Scroll left panel drives right" : "Scroll right panel drives right";
+                    activated => { root.activate(); root.focus-list(); }
+                    for location-index[index] in root.locations.length : CompactLocationButton {
+                        private property <LocationRow> item: root.locations[index];
+                        label: self.item.label;
+                        compact-label: self.item.compact-label;
+                        is-drive: self.item.is-drive;
+                        icon: self.item.icon;
+                        kind: self.item.kind; identity: self.item.identity;
+                        model-revision: root.choice-revision;
+                        selected: self.item.selected;
+                        hint: self.item.tooltip;
+                        enabled: self.item.kind != LocationRole.network || root.network-discovery-available;
+                        accessible-name: self.item.kind == LocationRole.network
+                            ? root.pane-id == 0 ? "Left panel Network Neighborhood" : "Right panel Network Neighborhood"
+                            : self.item.tooltip;
+                        clicked => { root.activate(); if self.item.identity != "" { root.navigation-choice(self.item.identity); } else { root.location(index); } root.focus-list(); }
+                        context-menu(x, y, control, shift) => {
+                            root.drive-context-menu(self.item.identity, x, y, control, shift);
+                        }
+                    }
+                }
+                if !root.minimal: PanelViewControls {
+                    pane-id: root.pane-id; filter-label: root.filter-label;
+                    filter => { root.filter(); }
+                    compact: root.width < 700px;
+                    context: root.controls-context;
+                    press-context: root.controls-press-context;
+                    press-cancelled: root.controls-press-cancelled;
+                    action-icons: root.action-icons; view-mode: root.view-mode;
+                    sort-column: root.sort-column; descending: root.descending;
+                    view-label: root.view-mode-label; sort-label: root.sort-label;
+                    activate => { root.activate(); }
+                    view-selected(mode) => { root.view-mode-selected(mode); root.focus-list(); }
+                    sort-selected(column) => { root.sort(column); root.focus-list(); }
+                    dismissed => { root.focus-list(); }
+                }
+            }
+        }
+        if !root.minimal && root.filter-label != "" : Rectangle {
+            height: Theme.hint-font + 8px; background: Theme.secondary-surface;
+            accessible-role: button; accessible-label: root.filter-label;
+            accessible-action-default => { root.activate(); root.filter(); }
+            NativeActionImage {
+                fallback-icon: FallbackIcons.filter;
+                x: 6px; y: (parent.height - self.height) / 2;
+                width: 14px; height: 14px;
+            }
+            Text {
+                x: 26px; width: max(0px, parent.width - 32px - clear-filter.width); height: parent.height;
+                text: root.filter-label; color: Theme.secondary-text; font-size: Theme.hint-font;
+                vertical-alignment: center; overflow: elide;
+            }
+            TouchArea { clicked => { root.activate(); root.filter(); } }
+            Tooltip { TipBody { text: ShortcutHints.hint(root.filter-label, "panel.filter"); } }
+            clear-filter := NavigationButton {
+                x: parent.width - self.width; y: 0px;
+                width: max(24px, Theme.hint-font + 8px); height: parent.height;
+                icon: FallbackIcons.close; accessible-label: "Clear panel filter";
+                context: root.controls-context;
+                press-context: root.controls-press-context;
+                press-cancelled: root.controls-press-cancelled;
+                hint: "Show all files. Keep this filter expression for reuse.";
+                clicked => { root.activate(); root.clear-filter(); root.focus-list(); }
+            }
+        }
+        if !root.minimal && root.tabs.length > 0 : TabStrip {
+            model: root.tabs;
+            action-icons: root.action-icons;
+            new-tab => { root.activate(); root.tab-new(); root.focus-list(); }
+            selected(identity) => { root.activate(); root.tab-select(identity); root.focus-list(); }
+            close-tab(identity) => { root.activate(); root.tab-close(identity); root.focus-list(); }
+        }
+        Rectangle {
+            height: root.minimal ? min(32px, Theme.path-height) : Theme.path-height; background: Theme.secondary-surface;
+            HorizontalLayout {
+                padding-top: root.minimal ? 2px : Theme.touch ? 4px : Theme.control-padding;
+                padding-bottom: root.minimal ? 2px : Theme.touch ? 4px : Theme.control-padding;
+                padding-left: Theme.control-padding; padding-right: Theme.control-padding;
+                spacing: Theme.touch ? 6px : 4px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    min-height: root.minimal ? 0px : Theme.control-height;
+                    path-input := PathNavigation {
+                        pane-id: root.pane-id;
+                        text-size: root.minimal ? min(24px, Theme.font-size) : Theme.font-size;
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
+                        path: root.path; parts: root.path-parts;
+                        hint: "Folder path: " + root.path + "\n" + root.status + (root.loading-feedback ? "\nReading folder…" : "") + "\nEdit and press Enter to open a folder. " + ShortcutHints.hint("Focus path editor", "panel.path");
+                        navigate(path) => { root.activate(); root.navigate(path); root.focus-list(); }
+                        selected-part(identity) => { root.activate(); root.path-part(identity); root.focus-list(); }
+                        copy-part(identity) => { root.activate(); root.path-copy(identity); }
+                        editing-started => { root.activate(); }
+                        cancelled => { root.focus-list(); }
+                    }
+                    search := PanelSearch {
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
+                        z: self.active && !path-input.has-focus ? 1 : -1;
+                        text <=> root.search-query;
+                        pending: root.search-pending; match-count: root.search-count;
+                        close-icon: root.action-icons.close;
+                        edited(text) => { root.search-edited(text); }
+                        handle-key(event) => { return root.handle-files-key(event); }
+                        backspace(text, anchor, cursor) => { return root.search-backspace(text, anchor, cursor); }
+                    }
+                }
+                if root.minimal: PanelViewControls {
+                    pane-id: root.pane-id; filter-label: root.filter-label;
+                    filter => { root.filter(); }
+                    compact: true;
+                    context: root.controls-context;
+                    press-context: root.controls-press-context;
+                    press-cancelled: root.controls-press-cancelled;
+                    action-icons: root.action-icons; view-mode: root.view-mode;
+                    sort-column: root.sort-column; descending: root.descending;
+                    view-label: root.view-mode-label; sort-label: root.sort-label;
+                    activate => { root.activate(); }
+                    view-selected(mode) => { root.view-mode-selected(mode); root.focus-list(); }
+                    sort-selected(column) => { root.sort(column); root.focus-list(); }
+                    dismissed => { root.focus-list(); }
+                }
+            }
+        }
+        if !root.minimal && root.view-mode == 0 : Rectangle {
+            height: Theme.column-height; background: Theme.header;
+            column-headings := HorizontalLayout {
+                // Rows reserve a scrollbar/background gutter. Headers must use
+                // that exact extent and left edge; a narrower unpositioned
+                // layout would otherwise center itself inside the header.
+                x: 0px; width: root.list-grid-width;
+                padding-left: 12px; padding-right: 12px; spacing: 8px;
+                Rectangle {
+                    horizontal-stretch: 1; min-width: 0px;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        FileColumnHeading {
+                            title: "Name"; sort-label: "Name";
+                            width: min(self.natural-width, max(0px, (root.list-grid-width - root.size-column-width - root.date-column-width - root.time-column-width - 48px) * 0.55));
+                            icons: root.action-icons; sorted: root.sort-column == 0;
+                            descending: root.descending;
+                            activate => { root.activate(); root.sort(0); }
+                        }
+                        FileColumnHeading {
+                            title: "Ext"; sort-label: "Extension";
+                            width: min(self.natural-width, max(0px, (root.list-grid-width - root.size-column-width - root.date-column-width - root.time-column-width - 48px) * 0.45 - 8px));
+                            icons: root.action-icons; sorted: root.sort-column == 3;
+                            descending: root.descending;
+                            activate => { root.activate(); root.sort(3); }
+                        }
+                    }
+                }
+                for heading in [
+                    { title: "Size", column: 1 }, { title: "Modified", column: 2 },
+                    { title: "Time", column: 2 }
+                ] : FileColumnHeading {
+                    title: heading.title;
+                    sort-label: heading.title == "Time" ? "Modified time" : heading.title;
+                    width: heading.column == 1 ? root.size-column-width
+                        : heading.title == "Time" ? root.time-column-width : root.date-column-width;
+                    horizontal-stretch: 0;
+                    align-right: heading.column == 1;
+                    show-direction: heading.title != "Time";
+                    icons: root.action-icons; sorted: root.sort-column == heading.column;
+                    descending: root.descending;
+                    activate => { root.activate(); root.sort(heading.column); }
+                }
+
+            }
+        }
+        Rectangle {
+          background-input := TouchArea {
+            width: parent.width; height: parent.height;
+            private property <bool> selecting;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left && !root.touch-contact {
+                    root.activate(); root.focus-list();
+                    self.selecting = SelectionRectangle.input(0, root.pane-id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                        event.modifiers.control, event.modifiers.shift);
+                } else if self.selecting && event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                    self.selecting = false;
+                    SelectionRectangle.input(2, root.pane-id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px, false, false);
+                } else if self.selecting && event.kind == PointerEventKind.cancel {
+                    self.selecting = false;
+                    SelectionRectangle.input(3, root.pane-id, 0, 0, false, false);
+                }
+            }
+            moved => {
+                if self.selecting {
+                    SelectionRectangle.input(1, root.pane-id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px, false, false);
+                }
+            }
+            list := PanelList {
+                row-height: root.row-height;
+                interaction-active: root.scroll-interaction-active || SelectionRectangle.pane == root.pane-id;
+                user-scrolled => {
+                    root.cursor-reveal-active = false;
+                    root.navigation-viewport-valid = false;
+                    root.navigation-viewport-active = false;
+                }
+                for band in root.repeated-bands : Rectangle {
+                    width: root.list-grid-width;
+                    height: root.row-height;
+                    for column in root.repeated-columns : FileEntry {
+                        private property <int> row-index: root.source-row(band, column);
+                        x: column * self.width; y: 0px;
+                        width: parent.width / root.view-columns; height: parent.height;
+                        visible: self.row-index < root.rows.length;
+                        item: root.rows[self.row-index]; source-index: self.row-index;
+                        drop-highlight: root.drop-highlight && root.drop-row == self.row-index;
+                        active: root.active; view-mode: root.minimal ? 1 : root.view-mode;
+                        thumbnail-size: root.thumbnail-size;
+                        date-column-width: root.date-column-width;
+                        time-column-width: root.time-column-width;
+                        touch-contact: root.touch-contact;
+                        tree-press: root.tree-press; tree-context: root.search-context;
+                        size-column-width: root.size-column-width;
+                        previous-click-identity: root.previous-click-identity;
+                        remember-click(identity) => { root.previous-click-identity = identity; }
+                        hover-changed(identity, hovered) => {
+                            if hovered { root.hovered-row = identity; }
+                            else if root.hovered-row == identity { root.hovered-row = ""; }
+                        }
+                        row-click(control, shift) => {
+                            root.activate(); root.focus-list();
+                            root.row-click(self.row-index, control, shift);
+                        }
+                        disclosure(identity) => {
+                            root.activate(); root.focus-list(); root.disclosure(identity);
+                        }
+                        warning-details(identity, tree) => { root.activate(); root.warning-details(identity, tree); }
+                        open => { root.activate(); root.focus-list(); root.open(self.row-index); }
+                        context-menu(x, y, control, shift) => {
+                            root.focus-list();
+                            root.row-context-menu(self.row-index, x, y, control, shift);
+                        }
+                        begin-drag(identity, x, y) => {
+                            root.activate(); root.focus-list();
+                            return root.row-drag(self.row-index, identity, x, y);
+                        }
+                        drag-moved(x, y) => { root.drag-moved(x, y); }
+                        drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }
+                        drag-released(x, y) => { root.drag-released(x, y); }
+                        drag-cancelled => { root.drag-cancelled(); }
+                    }
+                }
+            }
+          }
+            Rectangle {
+                width: list.visible-width; height: list.visible-height;
+                clip: true;
+                if SelectionRectangle.active && SelectionRectangle.pane == root.pane-id : Rectangle {
+                    x: SelectionRectangle.left - list.absolute-position.x;
+                    y: SelectionRectangle.top - list.absolute-position.y;
+                    width: SelectionRectangle.width; height: SelectionRectangle.height;
+                    background: Theme.selection-background.transparentize(0.65);
+                    border-color: Theme.active-frame; border-width: 1px;
+                }
+            }
+            if root.rows.length == 0 && !root.loading : Text {
+                text: root.search-query != "" ? (root.search-pending ? "Searching…" : "No matching names") : "This folder is empty";
+                color: Theme.muted-text; font-size: 13px; horizontal-alignment: center; vertical-alignment: center;
+            }
+            // Overlay the pending notice: refresh must not move rows or reset scrolling.
+            if root.loading && root.loading-feedback : Rectangle {
+                x: 8px; y: max(0px, parent.height - self.height - 8px);
+                width: max(0px, parent.width - 16px);
+                height: max(30px, Theme.font-size + 18px);
+                background: Theme.secondary-surface;
+                border-color: Theme.frame; border-width: 1px; border-radius: 3px;
+                VerticalLayout {
+                    padding: 5px; spacing: 3px;
+                    Text {
+                        text: "Loading " + root.path + "…";
+                        color: Theme.text; font-size: Theme.font-size;
+                        vertical-alignment: center; overflow: elide;
+                    }
+                    ProgressIndicator {
+                        indeterminate: true; height: 3px;
+                        accessible-label: "Loading " + root.path;
+                    }
+                }
+            }
+            if root.drop-highlight : DragFeedback {
+                label: root.drag-label; highlight-panel: root.drop-row < 0;
+            }
+        }
+        details-bar := PanelDetails { visible: !root.minimal; height: root.minimal ? 0px : Theme.status-height; model: root.details; free-space: root.free-space; copy-field(identity) => { root.activate(); root.detail-copy(identity); } }
+        if root.error != "" : ErrorNotice {
+            text: root.error; context-key: root.path + "\n" + root.error-revision; details-enabled: true;
+            details => { root.activate(); root.error-details(root.error); }
+            retry-enabled: root.can-elevate;
+            retry-authorized => { root.activate(); root.retry-directory-elevated(); }
+            compact: root.minimal; copy-enabled: true;
+            minimum-notice-height: root.minimal ? Theme.small-font + 2px : max(60px, Theme.font-size * 2.5);
+            preferred-notice-height: root.minimal ? Theme.small-font + 2px : max(100px, Theme.font-size * 4);
+            maximum-notice-height: root.minimal ? Theme.small-font + 2px : max(160px, Theme.font-size * 6);
+            copy-details(text) => { root.activate(); root.copy-error(text); }
+            dismissed => { root.activate(); root.focus-list(); }
+        }
+    }
+}

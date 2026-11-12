@@ -1,0 +1,179 @@
+import { PanelWarning } from "panel-warning.slint";
+import { Theme } from "theme.slint";
+import { DialogText } from "dialog-text.slint";
+import { CloseButton } from "close-button.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { TipBody } from "controls.slint";
+
+// Drawn locally: errors remain recognizable without an installed icon font or shell theme.
+export component ErrorGlyph inherits Rectangle {
+    width: 24px; height: 24px;
+    background: Theme.error-text; border-radius: self.width / 2;
+    accessible-role: text; accessible-label: "Error";
+    Text {
+        text: "!"; color: Theme.error-background; font-weight: 800;
+        font-size: root.height * 0.75;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+export component ErrorNotice inherits Rectangle {
+    in property <string> text;
+    in property <bool> copy-enabled;
+    in property <bool> compact;
+    in property <bool> details-enabled;
+    callback details();
+    in property <bool> retry-enabled;
+    callback retry-authorized();
+    // Hosts may identify repeated occurrences whose diagnostic text is identical.
+    in property <string> context-key;
+    in property <length> minimum-notice-height: max(60px, Theme.font-size * 2.5);
+    in property <length> preferred-notice-height: max(100px, Theme.font-size * 4);
+    in property <length> maximum-notice-height: max(160px, Theme.font-size * 6);
+    out property <bool> message-dismissed;
+    out property <bool> showing: root.text != "" && !root.message-dismissed;
+    callback dismissed();
+    callback copy-details(string);
+    changed text => { root.message-dismissed = false; }
+    changed context-key => { root.message-dismissed = false; }
+    private property <length> retry-height: root.retry-enabled ? Theme.control-height + 6px : 0px;
+    private property <length> padding-size: root.compact ? 1px : 10px;
+    private property <length> action-gap: root.compact ? 3px : 10px;
+    private property <length> action-size: root.compact ? Theme.small-font : max(24px, Theme.control-height);
+    private property <length> left-gutter: root.compact && root.copy-enabled ? root.action-size * 2 + root.action-gap : root.action-size;
+    min-height: root.showing ? root.retry-height + max(root.minimum-notice-height,
+        !root.compact && root.copy-enabled ? 24px + root.action-size + 4px + 2 * root.padding-size : 0px) : 0px;
+    preferred-height: root.showing ? root.preferred-notice-height + root.retry-height : 0px;
+    max-height: root.showing ? root.maximum-notice-height + root.retry-height : 0px;
+    vertical-stretch: 0;
+    visible: root.showing;
+    clip: true;
+    background: Theme.error-background; border-radius: 4px;
+    if !root.details-enabled : ErrorGlyph {
+        x: root.padding-size + (root.compact && root.copy-enabled ? root.action-size + root.action-gap : 0px);
+        y: root.padding-size;
+        width: root.compact ? Theme.small-font : 24px; height: self.width;
+    }
+    if root.details-enabled : PanelWarning {
+        x: root.padding-size + (root.compact && root.copy-enabled ? root.action-size + root.action-gap : 0px);
+        y: root.padding-size;
+        width: root.compact ? Theme.small-font : 24px; height: self.width;
+        label: "Show error details"; detail: root.text;
+        identity: root.context-key; context: root.text;
+        inspect => { root.details(); }
+    }
+    DialogText {
+        x: root.padding-size + root.left-gutter + root.action-gap;
+        y: root.padding-size;
+        width: max(0px, root.width - self.x - root.padding-size - root.action-size - root.action-gap);
+        height: max(0px, root.height - 2 * root.padding-size - root.retry-height);
+        text: root.text; foreground: Theme.error-text;
+    }
+    // Native text-button padding is wider than this compact square control.
+    if root.copy-enabled: Rectangle {
+        x: root.padding-size; y: max(root.padding-size, root.height - root.padding-size - self.height);
+        width: root.action-size; height: self.width;
+        border-radius: 4px; border-width: 1px;
+        border-color: copy-focus.has-focus ? Theme.active-frame : Theme.frame;
+        background: copy-area.has-hover ? Theme.hover : Theme.secondary-surface;
+        accessible-role: button; accessible-label: "Copy error details";
+        accessible-description: "Copy the complete error, including its path";
+        accessible-enabled: root.showing;
+        accessible-action-default => { if root.showing { root.copy-details(root.text); } }
+        forward-focus: copy-focus;
+        NativeActionImage {
+            fallback-icon: FallbackIcons.copy;
+            width: min(parent.width - (root.compact ? 2px : 8px), Theme.icon-size);
+            height: self.width;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        }
+        copy-focus := FocusScope {
+            enabled: root.showing;
+            key-pressed(event) => {
+                if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                    && (event.text == Key.Return || event.text == Key.Space) {
+                    root.copy-details(root.text); return accept;
+                }
+                reject
+            }
+            copy-area := TouchArea {
+                enabled: root.showing;
+                private property <string> pressed-context;
+                private property <string> pressed-text;
+                private property <bool> armed;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        self.armed = event.button == PointerEventButton.left;
+                        self.pressed-context = root.context-key;
+                        self.pressed-text = root.text;
+                    } else if event.kind == PointerEventKind.cancel {
+                        self.armed = false;
+                    }
+                }
+                clicked => {
+                    if self.armed && self.pressed-context == root.context-key
+                        && self.pressed-text == root.text {
+                        copy-focus.focus(); root.copy-details(self.pressed-text);
+                    }
+                    self.armed = false;
+                }
+            }
+        }
+        Tooltip { TipBody { text: "Copy the complete error, including its path"; } }
+    }
+    if root.retry-enabled : Rectangle {
+        x: root.padding-size + root.left-gutter + root.action-gap;
+        y: max(root.padding-size, root.height - root.padding-size - self.height);
+        width: max(0px, root.width - self.x - root.padding-size);
+        height: Theme.control-height;
+        border-radius: 4px; border-width: 1px;
+        border-color: retry-focus.has-focus ? Theme.active-frame : Theme.frame;
+        background: retry-area.has-hover ? Theme.hover : Theme.secondary-surface;
+        accessible-role: button; accessible-label: "Retry with authorization";
+        accessible-enabled: root.showing && root.retry-enabled;
+        accessible-action-default => { if root.showing && root.retry-enabled { root.retry-authorized(); } }
+        forward-focus: retry-focus;
+        Text {
+            text: parent.width < 240px ? "Authorize retry" : "Retry with authorization";
+            color: Theme.text; font-size: Theme.small-font;
+            horizontal-alignment: center; vertical-alignment: center; overflow: elide;
+        }
+        retry-focus := FocusScope {
+            enabled: root.showing && root.retry-enabled;
+            key-pressed(event) => {
+                if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+                    && (event.text == Key.Return || event.text == Key.Space) {
+                    root.retry-authorized(); return accept;
+                }
+                return reject;
+            }
+            retry-area := TouchArea {
+                private property <string> pressed-context;
+                private property <string> pressed-text;
+                private property <bool> armed;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        self.armed = event.button == PointerEventButton.left;
+                        self.pressed-context = root.context-key;
+                        self.pressed-text = root.text;
+                    } else if event.kind == PointerEventKind.cancel { self.armed = false; }
+                }
+                clicked => {
+                    if self.armed && self.pressed-context == root.context-key
+                        && self.pressed-text == root.text && root.showing && root.retry-enabled {
+                        retry-focus.focus(); root.retry-authorized();
+                    }
+                    self.armed = false;
+                }
+            }
+        }
+        Tooltip { TipBody { text: "Retry reading this folder with an operating-system authorization prompt."; } }
+    }
+    CloseButton {
+        x: max(root.padding-size, root.width - root.padding-size - self.width); y: root.padding-size;
+        label: "Dismiss message"; hint: "Dismiss this message";
+        width: root.action-size; height: self.width;
+        enabled: root.showing;
+        clicked => { root.message-dismissed = true; root.dismissed(); }
+    }
+}

@@ -1,0 +1,92 @@
+import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+
+component FileField inherits VerticalLayout {
+    in property <string> label;
+    in property <color> foreground;
+    in property <bool> busy;
+    in property <bool> picker-available;
+    in-out property <string> path;
+    callback browse();
+    callback submit();
+    public function focus-path() { edit.focus(); }
+    spacing: 4px;
+    Text { text: root.label; color: root.foreground; }
+    HorizontalLayout {
+        spacing: 6px;
+        edit := LineEdit {
+            text <=> root.path; enabled: !root.busy;
+            horizontal-stretch: 1; min-width: 40px;
+            accessible-label: root.label;
+            accepted => { root.submit(); }
+        }
+        Button {
+            text: "Browse…"; enabled: !root.busy && root.picker-available;
+            accessible-label: "Browse for " + root.label;
+            clicked => { root.browse(); }
+        }
+    }
+}
+
+export component FileChoiceForm inherits Rectangle {
+    in property <color> foreground;
+    in property <string> message;
+    in property <bool> is-error;
+    in property <bool> busy;
+    in property <bool> picker-available;
+    in-out property <string> file-a;
+    in-out property <string> file-b;
+    callback browse(int);
+    callback compare();
+    callback cancel();
+    public function focus-missing() {
+        if root.file-a == "" { a.focus-path(); }
+        else { b.focus-path(); }
+    }
+    function submit() {
+        if !root.busy && root.file-a != "" && root.file-b != "" { root.compare(); }
+    }
+    VerticalLayout {
+        padding: 8px; spacing: 8px;
+        ScrollView {
+            horizontal-stretch: 1; vertical-stretch: 1;
+            VerticalLayout {
+                padding: 6px; spacing: 12px;
+                Text { text: "Compare files"; font-weight: 600; color: root.foreground; }
+                a := FileField {
+                    label: "File A"; foreground: root.foreground;
+                    busy: root.busy; picker-available: root.picker-available;
+                    path <=> root.file-a;
+                    browse => { root.browse(0); }
+                    submit => { root.submit(); }
+                }
+                b := FileField {
+                    label: "File B"; foreground: root.foreground;
+                    busy: root.busy; picker-available: root.picker-available;
+                    path <=> root.file-b;
+                    browse => { root.browse(1); }
+                    submit => { root.submit(); }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    if root.is-error && root.message != "": Rectangle {
+                        width: 20px; height: 20px; border-radius: 10px; background: #b32832;
+                        Text { text: "!"; color: white; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    Text { text: root.message; wrap: word-wrap; color: root.foreground; horizontal-stretch: 1; }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.busy ? "Please wait…" : "Compare";
+                primary: true;
+                enabled: !root.busy && root.file-a != "" && root.file-b != "";
+                clicked => { root.submit(); }
+            }
+            Button { text: "Cancel"; clicked => { root.cancel(); } }
+        }
+    }
+}

@@ -1,9 +1,10 @@
 //! Bulk selection shortcuts follow actual file-list focus and preserve editors.
-use midnight_ui::{MainWindow, Theme};
+use i_slint_core::items::AccessibleRole;
+use midnight_ui::MainWindow;
 use slint::{
     ComponentHandle, SharedString,
     platform::{
-        Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
+        Key, Platform, PlatformError, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
@@ -12,7 +13,9 @@ use std::{
     rc::Rc,
 };
 
-use crate::platform_keys;
+#[path = "support/ui.rs"]
+mod ui;
+use ui::platform_keys;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {
@@ -39,24 +42,12 @@ fn chord(window: &MainWindow, modifiers: &[Key], text: impl Into<SharedString>) 
     }
 }
 
-fn click(window: &MainWindow, position: slint::LogicalPosition) {
-    let button = PointerEventButton::Left;
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
-}
-
 #[test]
 fn bulk_selection_keys_target_only_the_focused_file_pane() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
     midnight_ui::install_file_keys(&window);
     window.set_left_path("left 文档".into());
     window.set_right_path("right 🧪".into());
@@ -93,7 +84,7 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
         window.set_active_pane(pane);
         window.invoke_focus_files();
         assert_eq!(window.get_focused_pane(), pane);
-        for (letter, operation) in [("a", 0), ("d", 1), ("i", 2), ("A", 0)] {
+        for (letter, operation) in [("a", 3), ("d", 5), ("i", 2), ("A", 3)] {
             let previous = requested.borrow().len();
             chord(&window, &[Key::Control], letter);
             assert_eq!(
@@ -104,6 +95,18 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
             assert_eq!(requested.borrow().len(), previous + 1);
         }
         let previous = requested.borrow().len();
+        chord(&window, &[Key::Control, Key::Shift], "a");
+        assert_eq!(requested.borrow().get(previous), Some(&(pane, 0)));
+        assert_eq!(requested.borrow().len(), previous + 1);
+        let previous = requested.borrow().len();
+        chord(&window, &[Key::Control, Key::Shift], "d");
+        assert_eq!(requested.borrow().get(previous), Some(&(pane, 1)));
+        assert_eq!(requested.borrow().len(), previous + 1);
+        let previous = requested.borrow().len();
+        chord(&window, &[Key::Control, Key::Shift], "i");
+        assert_eq!(requested.borrow().get(previous), Some(&(pane, 4)));
+        assert_eq!(requested.borrow().len(), previous + 1);
+        let previous = requested.borrow().len();
         for modifiers in [
             vec![],
             vec![Key::Shift],
@@ -113,6 +116,9 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
             vec![Key::Control, Key::Meta],
         ] {
             for letter in ["a", "d", "i"] {
+                if modifiers == [Key::Control, Key::Shift] && matches!(letter, "a" | "d" | "i") {
+                    continue; // Explicit all-entry variants.
+                }
                 chord(&window, &modifiers, letter);
             }
         }
@@ -155,13 +161,7 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
 
     window.invoke_focus_files();
     draw(&mut pixels);
-    let theme = window.global::<Theme>();
-    let command_y = 820.0
-        - theme.get_window_padding()
-        - theme.get_bottom_height()
-        - theme.get_gap()
-        - theme.get_command_height() / 2.0;
-    click(&window, slint::LogicalPosition::new(1240.0, command_y));
+    ui::click_root(&window, "Options", AccessibleRole::Button);
     draw(&mut pixels);
     assert_eq!(window.get_focused_pane(), -1);
     for letter in ["a", "d", "i"] {
@@ -174,16 +174,35 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
     );
     key(&window, Key::Escape);
     window.invoke_focus_files();
+    // Help is hosted in an independent native window; this bare UI fixture
+    // verifies its callback rather than assuming F1 creates an embedded popup.
+    let help_requested = Rc::new(Cell::new(0));
+    let captured = help_requested.clone();
+    window.on_open_help_window(move || captured.set(captured.get() + 1));
     key(&window, Key::F1);
+    assert_eq!(help_requested.get(), 1);
+    assert_eq!(requested.borrow().len(), previous);
+
+    key(&window, Key::F10);
     draw(&mut pixels);
+    assert!(ui::try_popup_item(&window, "Menu category", AccessibleRole::Combobox).is_some());
+    assert_eq!(window.get_focused_pane(), -1);
     for letter in ["a", "d", "i"] {
         chord(&window, &[Key::Control], letter);
     }
     assert_eq!(
         requested.borrow().len(),
         previous,
-        "popups cannot select files"
+        "the open main-menu popup owns selection shortcuts"
     );
+    assert!(ui::try_popup_item(&window, "Menu category", AccessibleRole::Combobox).is_some());
+    key(&window, Key::Escape);
+    draw(&mut pixels);
+    assert!(ui::try_popup_item(&window, "Menu category", AccessibleRole::Combobox).is_none());
+    assert_eq!(window.get_focused_pane(), 1);
+    chord(&window, &[Key::Control], "a");
+    assert_eq!(requested.borrow().len(), previous + 1);
+    assert_eq!(requested.borrow().last(), Some(&(1, 3)));
     assert_eq!(submitted.get(), 0);
     assert_eq!(opened.get(), 0);
     window.hide().unwrap();

@@ -1,0 +1,257 @@
+import { ScrollView } from "std-widgets.slint";
+import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { ErrorNotice, ErrorGlyph } from "error-notice.slint";
+import { Theme } from "theme.slint";
+import { CloseButton } from "close-button.slint";
+import { ToolWindow } from "tool-window.slint";
+import { DialogTabs } from "dialog-tabs.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { FallbackIcons, ActionButton } from "action-icons.slint";
+import { ChecksumOptions, ChecksumOutputPicker, ChecksumDraft } from "checksum-controls.slint";
+import { ChecksumResults, ChecksumDisplayRow } from "checksum-results.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+export { ChecksumDisplayRow, ChecksumDraft }
+
+export component ChecksumWindow inherits ToolWindow {
+    callback close-session();
+    request-close => { root.close-session(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    public function begin() { results.focus(); }
+    title: "Checksums · Midnight Explorer";
+    icon: FallbackIcons.checksums;
+    in property <[ChecksumDisplayRow]> rows;
+    in property <bool> running;
+    in property <bool> stopping;
+    in property <bool> saving;
+    in property <bool> save-stopping;
+    in property <bool> verifying;
+    in property <bool> picker-busy;
+    in property <bool> has-captured-files: true;
+    in property <bool> has-output;
+    in property <bool> partial;
+    in property <bool> attention;
+    in property <string> progress;
+    in property <string> error;
+    in property <string> details;
+    in property <string> export-summary;
+    in property <string> generation-token;
+    changed generation-token => { root.acknowledged = false; root.attention-dismissed = false; }
+    changed error => { root.attention-dismissed = false; }
+    changed attention => { root.attention-dismissed = false; }
+    in property <[bool]> output-available: [false, false, false, false, false];
+    in property <[string]> output-labels: ["SHA-256"];
+    in property <[string]> format-labels: ["SHA-256 (*.sha256)"];
+    in property <[int]> output-values: [0];
+    in-out property <string> destination;
+    in-out property <string> manifest-path;
+    in-out property <ChecksumDraft> draft;
+    in-out property <int> output-algorithm;
+    in-out property <int> selected-row: -1;
+    // Results, Options, Save manifest, Details, Verify file. Drafts survive page switches.
+    in-out property <int> page;
+    changed page => { if root.page == 0 { results.focus(); } else { root.focus-content(); } }
+    private property <bool> acknowledged;
+    private property <bool> attention-dismissed;
+    private property <bool> has-algorithm: root.draft.md5 || root.draft.sha1 || root.draft.sha256 || root.draft.sha512 || root.draft.crc32;
+    private property <bool> can-save: root.has-output && !root.running && !root.saving && !root.picker-busy && root.output-available[root.output-algorithm];
+    private property <bool> can-submit: root.can-save && !root.saving && root.destination != "" && (!root.partial || root.acknowledged);
+    private property <bool> row-calculated: root.selected-row >= 0 && root.selected-row < root.rows.length && root.rows[root.selected-row].calculated;
+    private property <bool> compact: root.height < 360px;
+    private property <bool> narrow: root.width < max(620px, Theme.font-size * 28);
+    callback calculate(ChecksumDraft);
+    callback stop();
+    callback copy-result(string, int, bool);
+    callback copy-details();
+    callback save-manifest(string, int, string, bool);
+    callback stop-save();
+    callback browse-manifest(bool, int);
+    callback verify-manifest(string);
+    callback output-changed(int);
+    changed output-algorithm => { root.output-changed(root.output-algorithm); }
+    public function copy-current() {
+        if root.row-calculated && root.output-available[root.output-algorithm] {
+            root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, false);
+        }
+    }
+    function submit-save() {
+        if root.can-submit { root.save-manifest(root.generation-token, root.output-algorithm, root.destination, root.acknowledged); }
+    }
+    function submit-verify() {
+        if !root.running && !root.saving && !root.picker-busy && root.manifest-path != "" {
+            root.verify-manifest(root.manifest-path);
+        }
+    }
+    VerticalLayout {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        padding: root.compact ? 4px : 12px; spacing: root.compact ? 4px : 8px;
+        HorizontalLayout {
+            spacing: 8px; height: Theme.control-height + 4px;
+            if root.width >= max(620px, Theme.font-size * 48): DialogTabs {
+                labels: ["Results", "Options", "Save manifest", "Details", "Verify file"]; current-index <=> root.page;
+                horizontal-stretch: 1;
+            }
+            if root.width < max(620px, Theme.font-size * 48): HintedComboBox {
+                model: ["Results", "Options", "Save manifest", "Details", "Verify file"]; current-index <=> root.page;
+                min-width: 0px; horizontal-stretch: 1;
+                accessible-label: "Checksum page"; hint: "Results, calculation options, manifest export, diagnostics or verification from a file.";
+            }
+            if root.page == 0: ChecksumOutputPicker {
+                labels: root.output-labels; values: root.output-values; algorithm <=> root.output-algorithm;
+                enabled: !root.picker-busy;
+                width: min(max(100px, Theme.font-size * 8),
+                    max(0px, root.width - (root.compact ? 8px : 24px) - 8px) * 0.48);
+            }
+        }
+        if root.page == 0 && root.attention && !root.attention-dismissed: HorizontalLayout {
+            spacing: 8px; height: max(32px, Theme.control-height); cross-axis-alignment: center;
+            ErrorGlyph { width: 20px; height: 20px; }
+            Text { text: root.error != "" ? "Checksum error" : root.verifying ? "Verification needs attention" : "Some results are incomplete";
+                color: Theme.error-text; overflow: elide; vertical-alignment: center;
+                min-width: 0px; horizontal-stretch: 1; }
+            ActionButton { text: "Details"; clicked => { root.page = 3; } }
+            CloseButton { label: "Dismiss checksum warning";
+                hint: "Dismiss this notice. Diagnostics remain available in Details.";
+                width: Theme.control-height; clicked => { root.attention-dismissed = true; } }
+        }
+        Rectangle {
+            vertical-stretch: 1; min-height: 18px; clip: true;
+            background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+            results := ChecksumResults {
+                visible: root.page == 0;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                surface-width: root.width; surface-height: root.height;
+                rows: root.rows; algorithms: root.output-available;
+                generation-token: root.generation-token;
+                selected-row <=> root.selected-row; output-algorithm: root.output-algorithm;
+                copy-result(token, algorithm, whole) => { root.copy-result(token, algorithm, whole); }
+            }
+            if root.page == 0 && root.rows.length == 0: Text {
+                text: root.running ? (root.verifying ? "Verifying files…" : "Calculating checksums…") : "No results"; color: Theme.muted-text;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            ChecksumOptions {
+                visible: root.page == 1; draft <=> root.draft; busy: root.running || root.saving || root.picker-busy;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+            }
+            ScrollView {
+                visible: root.page == 2; horizontal-scrollbar-policy: always-off;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                VerticalLayout {
+                    padding: root.compact ? 8px : 16px; spacing: 12px; alignment: start;
+                    Text { text: "Manifest destination"; color: Theme.strong-text; font-weight: 600; }
+                    GridLayout {
+                      spacing: 8px;
+                      Text {
+                        row: 0; col: 0;
+                        text: root.destination; color: Theme.text; wrap: word-wrap;
+                        accessible-label: "Manifest output path"; accessible-value: root.destination;
+                        min-width: 0px; horizontal-stretch: 1;
+                      }
+                      HintedActionButton { text: "Choose file…";
+                        row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                        hint: "Choose where to save the selected checksum format.";
+                        enabled: root.can-save;
+                        clicked => { root.browse-manifest(false, root.output-algorithm); } }
+                    }
+                    GridLayout {
+                        spacing: 12px;
+                        Text { row: 0; col: 0; text: "Format"; color: Theme.secondary-text; vertical-alignment: center; }
+                        ChecksumOutputPicker { labels: root.format-labels; values: root.output-values;
+                            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                            accessible-label: "Checksum file format";
+                            algorithm <=> root.output-algorithm; enabled: !root.saving && !root.picker-busy && root.output-values.length > 0;
+                            horizontal-stretch: 1; }
+                    }
+                    Rectangle { height: 1px; background: Theme.frame; }
+                    Text { text: root.export-summary; color: root.partial ? Theme.pending-size : Theme.secondary-text; wrap: word-wrap; }
+                    if root.partial: WrappingCheckBox {
+                        text: "Save partial results"; checked <=> root.acknowledged; enabled: !root.saving;
+                        hint: "Export only completed hashes. The summary lists excluded files and undiscovered work.";
+                    }
+                    if root.error != "": ErrorNotice { text: root.error; }
+                }
+            }
+            if root.page == 4: ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                VerticalLayout {
+                    padding: root.compact ? 8px : 16px; spacing: 12px; alignment: start;
+                    Text { text: "Checksum file"; color: Theme.strong-text; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        HintedLineEdit {
+                            text <=> root.manifest-path; accessible-label: "Checksum file to verify";
+                            enabled: !root.running && !root.saving && !root.picker-busy;
+                            min-width: 0px; horizontal-stretch: 1; height: Theme.control-height;
+                            hint: "SFV, MD5, SHA-1, SHA-256 or SHA-512 manifest. Names are resolved relative to this file.";
+                            accepted => { root.submit-verify(); }
+                        }
+                        HintedActionButton { text: "…"; accessible-label: "Browse checksum file";
+                            hint: "Choose a checksum file to verify."; width: Theme.control-height;
+                            enabled: !root.running && !root.saving && !root.picker-busy;
+                            clicked => { root.browse-manifest(true, root.output-algorithm); } }
+                    }
+                    Text { text: "SFV · MD5 · SHA-1 · SHA-256 · SHA-512";
+                        color: Theme.secondary-text; wrap: word-wrap; font-size: Theme.small-font; }
+                    if root.error != "": ErrorNotice { text: root.error; }
+                }
+            }
+            if root.page == 3: ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                VerticalLayout {
+                    padding: 12px; spacing: 12px; alignment: start;
+                    if root.error != "": ErrorNotice { text: root.error; }
+                    Text { text: root.details; color: Theme.text; wrap: word-wrap; }
+                }
+            }
+        }
+        if !root.compact || root.page != 0 || !root.attention || root.attention-dismissed: Text {
+            text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
+            font-size: Theme.small-font; overflow: elide; min-width: 0px;
+            height: max(18px, Theme.small-font + 4px);
+        }
+        DialogFooter {
+            dismiss-text: "Close"; dismiss-hint: "Close this checksum window (Escape). Running work is cancelled.";
+            compact-height: root.compact; dismiss => { root.close-session(); }
+            if root.running || root.page == 1: HintedActionButton {
+                text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate"; primary: !root.running;
+                fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.checksums;
+                enabled: !root.stopping && !root.saving && !root.picker-busy && (root.running || (root.has-algorithm && root.has-captured-files));
+                hint: root.running ? "Stop calculation and keep completed results." : "Calculate again using the captured selection and these options.";
+                clicked => { if root.running { root.stop(); } else { root.calculate(root.draft); root.page = 0; } }
+            }
+            if root.page == 0: HintedActionButton {
+                text: root.width < 460px ? "Copy" : "Copy " + ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm];
+                fallback-icon: FallbackIcons.copy;
+                enabled: root.row-calculated && root.output-available[root.output-algorithm];
+                hint: "Copy the selected hash (Ctrl+C). Ctrl+Shift+C copies the full row; right-click a result for more choices.";
+                clicked => { root.copy-current(); }
+            }
+            if root.page == 3: HintedActionButton {
+                text: "Copy details"; fallback-icon: FallbackIcons.copy;
+                hint: "Copy the complete diagnostics."; clicked => { root.copy-details(); }
+            }
+            if root.page == 0 && !root.running: HintedActionButton {
+                text: root.width < 460px ? "Export…" : "Save manifest…"; fallback-icon: FallbackIcons.save-again;
+                enabled: root.can-save; hint: "Choose a new checksum manifest file and review the included results.";
+                clicked => { root.browse-manifest(false, root.output-algorithm); }
+            }
+            if root.page == 2 || root.saving: HintedActionButton {
+                text: root.save-stopping ? "Stopping…" : root.saving ? "Stop save" : "Save"; primary: !root.saving;
+                fallback-icon: root.saving ? FallbackIcons.close : FallbackIcons.save-again;
+                enabled: root.saving ? !root.save-stopping : root.can-submit;
+                hint: root.saving ? "Cancel writing the manifest." : "Save completed checksums to the new manifest file.";
+                clicked => { if root.saving { root.stop-save(); } else { root.submit-save(); } }
+            }
+            if root.page == 4 && !root.running: HintedActionButton {
+                text: "Verify"; primary: true; fallback-icon: FallbackIcons.checksums;
+                enabled: !root.saving && !root.picker-busy && root.manifest-path != "";
+                hint: "Read the checksum file and compare every listed file on background workers.";
+                clicked => { root.submit-verify(); }
+            }
+        }
+    }
+}

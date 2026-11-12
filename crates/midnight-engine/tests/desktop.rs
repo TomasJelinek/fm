@@ -25,11 +25,15 @@ async fn assert_network_backpressure(available: bool) {
     } else {
         None
     };
-    let task = tokio::spawn(
-        Engine::new(services, sender)
-            .with_network(network)
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services,
+        sender,
     );
+    if let Some(network) = network {
+        engine.configure_network().unwrap().install(network);
+    }
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ManageNetworkConnections { disconnect: false })
         .await
@@ -103,6 +107,11 @@ impl Drop for ReleaseProperties {
 }
 
 impl OpenService for Services {
+    fn directory_destination(&self, path: &Path) -> Result<PathBuf, FsError> {
+        assert_eq!(path, Path::new("resolved-link"));
+        Ok(std::env::current_dir().unwrap().join("resolved 文档"))
+    }
+
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
         self.opened.lock().unwrap().push(path.into());
         if path == Path::new("blocked-open") {
@@ -122,6 +131,11 @@ impl OpenService for Services {
         }
         if path == Path::new("linked-folder") {
             return Ok(OpenEntryResult::Directory);
+        }
+        if path == Path::new("resolved-link") {
+            return Ok(OpenEntryResult::DirectoryTarget {
+                path: std::env::current_dir().unwrap().join("resolved 文档"),
+            });
         }
         if path == Path::new("helper-error") || path == Path::new("helper-success") {
             // The trusted test harness is an opener stand-in; no desktop app or
@@ -273,11 +287,16 @@ async fn empty_terminal_launch_reaches_adapter_but_whitespace_and_nul_do_not() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services.clone())
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     let directory = std::env::current_dir().unwrap().join("文档 👩🏽‍💻");
     for (index, text) in ["", " \t\n", "\0", "echo before\0after", "echo exact"]
         .iter()
@@ -330,19 +349,30 @@ async fn desktop_context_and_background_icons_never_launch_commands() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services.clone())
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands.send(Command::ListDesktopContext).await.unwrap();
     commands.send(navigation()).await.unwrap();
     let (mut context, mut listed, mut folder_icon) = (false, false, false);
     while !(context && listed && folder_icon) {
         match next(&mut events).await {
-            Event::DesktopContext { shell, locations } => {
+            Event::DesktopContext {
+                shell, locations, ..
+            } => {
                 assert_eq!(shell, ShellFlavor::PowerShell);
-                assert_eq!(locations[0].path, Path::new("文档/🏠"));
+                let home = locations
+                    .iter()
+                    .find(|location| location.kind == LocationKind::Home)
+                    .unwrap();
+                assert_eq!(home.path, Path::new("文档/🏠"));
                 context = true;
             }
             Event::ListingFinished { entries, .. } => {
@@ -370,11 +400,16 @@ async fn desktop_context_publishes_choices_before_loading_each_drive_and_special
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services.clone())
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands.send(Command::ListDesktopContext).await.unwrap();
     let mut context_published = false;
     let mut roots = std::collections::HashSet::new();
@@ -418,11 +453,16 @@ async fn modal_properties_do_not_block_navigation_or_explicit_terminal_errors() 
     let _release = ReleaseProperties(services.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services.clone())
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::ShowProperties {
             request: DesktopRequestId(1),
@@ -489,11 +529,16 @@ async fn blocked_default_open_does_not_block_navigation_and_keeps_the_exact_path
     let _release = ReleaseOpen(services.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services.clone())
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::OpenEntry {
             request: DesktopRequestId(7),
@@ -567,11 +612,13 @@ async fn linked_directory_is_internal_and_missing_file_is_a_contextual_error() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services)
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine.configure_desktop().unwrap().install(services);
+    let task = tokio::spawn(engine.run(receiver));
     for (id, path) in [(3, "linked-folder"), (4, "missing-open")] {
         commands
             .send(Command::OpenEntry {
@@ -618,15 +665,75 @@ async fn linked_directory_is_internal_and_missing_file_is_a_contextual_error() {
 }
 
 #[tokio::test]
+async fn resolved_directory_target_keeps_the_original_activation_identity() {
+    let services = Arc::new(Services::default());
+    let (commands, receiver) = mpsc::channel(8);
+    let (sender, mut events) = mpsc::channel(16);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
+    );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
+    commands
+        .send(Command::ResolveDirectoryLink {
+            request: DesktopRequestId(81),
+            pane: PaneId::Right,
+            navigation: NavigationId(42),
+            path: "resolved-link".into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let Event::DesktopActionFinished {
+            request: DesktopRequestId(81),
+            result,
+        } = next(&mut events).await
+        {
+            let DesktopActionResult::OpenDirectoryTarget {
+                pane,
+                navigation,
+                path,
+                target,
+            } = result.unwrap()
+            else {
+                panic!("missing resolved directory result");
+            };
+            assert_eq!(pane, PaneId::Right);
+            assert_eq!(navigation, NavigationId(42));
+            assert_eq!(path, Path::new("resolved-link"));
+            assert_eq!(
+                target,
+                std::env::current_dir().unwrap().join("resolved 文档")
+            );
+            break;
+        }
+    }
+    assert!(
+        services.opened.lock().unwrap().is_empty(),
+        "directory-only intent cannot launch associations"
+    );
+    commands.send(Command::Shutdown).await.unwrap();
+    drop(events);
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn desktop_helpers_are_reaped_and_nonzero_status_is_reported() {
     let services = Arc::new(Services::default());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services)
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine.configure_desktop().unwrap().install(services);
+    let task = tokio::spawn(engine.run(receiver));
     for (id, path) in [(1, "helper-success"), (2, "helper-error")] {
         commands
             .send(Command::OpenEntry {
@@ -667,11 +774,16 @@ async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
     let _release = ReleaseOpen(services.clone());
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(
-        Engine::new(services.clone(), sender)
-            .with_desktop(services.clone())
-            .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        services.clone(),
+        sender,
     );
+    engine
+        .configure_desktop()
+        .unwrap()
+        .install(services.clone());
+    let task = tokio::spawn(engine.run(receiver));
     for id in 1..=4 {
         commands
             .send(Command::OpenEntry {
@@ -729,6 +841,53 @@ async fn native_open_capacity_is_bounded_and_rejects_excess_without_dispatch() {
     task.await.unwrap();
 }
 
+#[tokio::test]
+async fn plugin_refresh_delivers_all_three_catalog_results_through_a_bounded_channel() {
+    let (commands, receiver) = mpsc::channel(1);
+    let (sender, mut events) = mpsc::channel(1);
+    let filesystem = Arc::new(midnight_platform::LocalFileSystem::new(None));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem,
+            sender,
+        )
+        .run(receiver),
+    );
+    commands.send(Command::ListViewerPlugins).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut slot = 0;
+        while slot < 3 {
+            let event = events
+                .recv()
+                .await
+                .expect("all plugin catalogs must finish");
+            // Unrelated startup icons and availability share this bounded event channel.
+            let catalog = match event {
+                Event::ViewerPluginsListed(_) => 0,
+                Event::FilesystemPluginsListed(_) => 1,
+                Event::ThumbnailerPluginsListed(_) => 2,
+                _ => continue,
+            };
+            assert_eq!(
+                catalog, slot,
+                "unexpected plugin catalog order or duplicate"
+            );
+            slot += 1;
+        }
+    })
+    .await
+    .expect("plugin refresh must deliver all three terminal events");
+    drop(commands);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        // Shutdown drains other actors while their terminal messages arrive.
+        while events.recv().await.is_some() {}
+        task.await.unwrap();
+    })
+    .await
+    .expect("catalog refresh must not prevent shutdown");
+}
+
 #[derive(Clone, Copy, Debug)]
 enum RejectedWork {
     Terminal,
@@ -763,12 +922,13 @@ impl RejectedWork {
             Self::LoadPreferences => Command::LoadPreferences,
             Self::SavePreferences => Command::SavePreferences {
                 revision: PreferencesRevision(id),
-                preferences: UserPreferences::default(),
+                preferences: Box::default(),
             },
             Self::FolderScan => Command::ComputeFolderSizes {
                 pane: PaneId::Left,
                 navigation: NavigationId(1),
                 scan: FolderSizeScanId(id),
+                selection: None,
             },
             Self::EntryScan => Command::ComputeEntrySize {
                 pane: PaneId::Left,
@@ -806,7 +966,14 @@ async fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_co
         let (commands, receiver) = mpsc::channel(2);
         let (sender, events) = mpsc::channel(1);
         sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
-        let engine = tokio::spawn(Engine::new(Arc::new(Services::default()), sender).run(receiver));
+        let engine = tokio::spawn(
+            Engine::new(
+                Engine::lifetime().expect("engine cleanup worker"),
+                Arc::new(Services::default()),
+                sender,
+            )
+            .run(receiver),
+        );
         let mut producer = tokio::spawn(async move {
             for id in 1..=2048 {
                 commands.send(case.command(id)).await.unwrap();
@@ -848,8 +1015,14 @@ async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
             commands.try_send(case.command(id)).unwrap();
         }
         commands.try_send(Command::Shutdown).unwrap();
-        let mut engine =
-            std::pin::pin!(Engine::new(Arc::new(Services::default()), sender).run(receiver));
+        let mut engine = std::pin::pin!(
+            Engine::new(
+                Engine::lifetime().expect("engine cleanup worker"),
+                Arc::new(Services::default()),
+                sender
+            )
+            .run(receiver)
+        );
         // One poll reaches a rejection even for the 16-slot clipboard queue.
         // The full output must block before the queued Shutdown is consumed.
         poll_fn(|context| {

@@ -6,4 +6,4 @@ mod platform;
 #[path = "detail_attributes/linux.rs"]
 mod platform;
 
-pub(crate) use platform::fields;
+pub(crate) use platform::{dim_icon, explanation, fields};

@@ -1,6 +1,8 @@
 //! Modifier gestures are driven through the installed native event bridge.
-use crate::selection;
-use crate::ui;
+#[path = "support/selection.rs"]
+mod selection;
+#[path = "support/ui.rs"]
+mod ui;
 use midnight_core::*;
 use midnight_ui::{Presenter, Theme, install, refresh};
 use slint::{

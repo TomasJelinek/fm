@@ -58,9 +58,50 @@ pub struct LocalizedDateTime {
     pub time: String,
 }
 
+/// Immutable Gregorian edit format captured on a worker. The numeric strftime
+/// subset is `%Y`, `%m`, `%d`, `%H`, `%I`, `%M`, `%S`, `%p` and `%%` plus literals.
+/// Years always have four digits. Editors require a separate explicit UTC offset;
+/// this describes calendar text and must never imply a local timezone conversion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DateTimeInputFormat {
+    pub pattern: String,
+    pub am_pm: [String; 2],
+}
+
 /// Optional native locale discovery. Call only on a startup/backend worker.
 pub trait LocaleService: Send + Sync {
     fn number_locale(&self) -> Result<NumberLocale, FsError>;
+
+    /// Format an existing timestamp using native date, time and timezone preferences.
+    /// Call only on a backend worker. None retains the caller's fallback display;
+    /// formatting never requires reopening the file that supplied the timestamp.
+    fn format_datetime(&self, _value: std::time::SystemTime) -> Option<LocalizedDateTime> {
+        None
+    }
+
+    /// Capture an unambiguous numeric Gregorian edit format matching native field
+    /// order, separators and clock preferences. Unsupported calendars/patterns
+    /// return None so callers retain explicitly labelled ISO input.
+    fn datetime_input_format(&self) -> Option<DateTimeInputFormat> {
+        None
+    }
+
+    /// Format a timezone-unspecified archive calendar without shifting its fields.
+    /// Only `ArchiveTimestamp::Local` is accepted. Run on a backend worker.
+    fn format_archive_local_time(
+        &self,
+        _value: crate::ArchiveTimestamp,
+    ) -> Option<LocalizedDateTime> {
+        None
+    }
+
+    /// Produce an opaque, lexicographically comparable key using one immutable
+    /// session locale. Call only on a backend worker, never in a sort comparator.
+    /// None preserves an unrepresentable native name through deterministic raw
+    /// ordering. A native transformation failure is an error, never truncation.
+    fn collation_key(&self, _value: &std::ffi::OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

@@ -109,6 +109,7 @@ pub enum ActionIcon {
     Help,
     Rename,
     View,
+    Find,
     Edit,
     Copy,
     Move,
@@ -131,7 +132,7 @@ pub enum ActionIcon {
 
 impl ActionIcon {
     /// Bounded prefetch palette. Consumers use named roles rather than numeric indexes.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Back,
         Self::Forward,
         Self::Parent,
@@ -148,6 +149,7 @@ impl ActionIcon {
         Self::Help,
         Self::Rename,
         Self::View,
+        Self::Find,
         Self::Edit,
         Self::Copy,
         Self::Move,
@@ -250,6 +252,9 @@ impl IconKey {
         }
     }
     pub fn for_entry(entry: &Entry) -> Self {
+        if entry.network_node.is_some() {
+            return Self::action(ActionIcon::Network);
+        }
         Self {
             kind: match entry.kind {
                 EntryKind::Directory => IconKind::Folder,
@@ -278,6 +283,8 @@ pub struct IconPixels {
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<[u8]>,
+    /// A generic unassociated document icon, rather than artwork for this type.
+    pub generic: bool,
 }
 
 impl IconPixels {
@@ -293,6 +300,7 @@ impl IconPixels {
             width,
             height,
             rgba: rgba.into(),
+            generic: false,
         })
     }
 }
@@ -304,6 +312,11 @@ pub enum LocationKind {
     Desktop,
     Documents,
     Downloads,
+    Pictures,
+    Videos,
+    Music,
+    Temporary,
+    OneDrive,
 }
 
 #[derive(Clone, Debug)]
@@ -315,6 +328,9 @@ pub struct NavigationLocation {
     /// Native drive letters only; Linux/macOS provide None.
     pub drive_letter: Option<char>,
 }
+
+/// Shared display text for locale ordering of the virtual network entry point.
+pub const NETWORK_NEIGHBORHOOD_LABEL: &str = "Network Neighborhood";
 
 #[derive(Clone, Debug)]
 pub struct TerminalRequest {
@@ -334,6 +350,7 @@ pub enum DesktopActionResult {
         history: crate::CommandHistoryEntry,
     },
     ClipboardCopied,
+    EditorStarted,
     PropertiesOpened,
     PropertiesInfo {
         title: String,
@@ -345,12 +362,25 @@ pub enum DesktopActionResult {
         navigation: NavigationId,
         path: PathBuf,
     },
+    /// Explicit activation resolved a link to another native directory. `path`
+    /// remains the original request identity; `target` is the OS-resolved destination.
+    OpenDirectoryTarget {
+        pane: PaneId,
+        navigation: NavigationId,
+        path: PathBuf,
+        target: PathBuf,
+    },
 }
 
 /// Native activation outcome. Directories stay inside the file manager;
 /// only explicitly activated regular files use desktop associations.
 pub enum OpenEntryResult {
     Directory,
+    /// A native directory link whose explicit activation requires navigating to
+    /// its validated target rather than enumerating the original alias.
+    DirectoryTarget {
+        path: PathBuf,
+    },
     File {
         process: Option<Box<dyn TerminalProcess>>,
     },
@@ -360,6 +390,10 @@ impl std::fmt::Debug for OpenEntryResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Directory => f.write_str("Directory"),
+            Self::DirectoryTarget { path } => f
+                .debug_struct("DirectoryTarget")
+                .field("path", path)
+                .finish(),
             Self::File { process } => f
                 .debug_struct("File")
                 .field("has_process", &process.is_some())
@@ -372,11 +406,36 @@ pub trait OpenService: Send + Sync + 'static {
     /// Inspect the target on a backend worker, following an explicitly activated
     /// link. Reject missing/special files and use literal native arguments only.
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError>;
+
+    /// Resolve an explicitly activated directory link without launching any
+    /// file association. Ordinary platforms keep the raw navigation path and
+    /// let directory enumeration validate it with the caller's permissions.
+    fn directory_destination(&self, path: &Path) -> Result<PathBuf, FsError> {
+        Ok(path.to_owned())
+    }
 }
 
 /// All native icon extraction and file decoding happen on a backend worker.
 pub trait IconService: Send + Sync + 'static {
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError>;
+
+    /// Explicitly configured Program artwork only. The caller captures and revalidates
+    /// the native executable around this backend-only lookup; no program is launched.
+    fn load_executable_icon(
+        &self,
+        _path: &Path,
+        _size: u16,
+        _cancel: &crate::Cancellation,
+    ) -> Result<Option<IconPixels>, FsError> {
+        Ok(None)
+    }
+}
+
+/// Bounded presentation metadata, never a captured native owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandIconTarget {
+    pub identity: String,
+    pub executable: PathBuf,
 }
 
 pub trait TerminalService: Send + Sync + 'static {
@@ -387,6 +446,34 @@ pub trait TerminalService: Send + Sync + 'static {
         &self,
         request: &TerminalRequest,
     ) -> Result<Box<dyn TerminalProcess>, FsError>;
+
+    /// Explicit backend environment data; defaults preserve existing adapters and never
+    /// interpolate file names into user-authored source. Native implementations override.
+    fn launch_terminal_with_environment(
+        &self,
+        request: &TerminalRequest,
+        environment: &[(String, OsString)],
+        cancel: &crate::Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(FsError::from_io(
+                "Custom Command terminal",
+                &request.working_directory,
+                std::io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        if environment.is_empty() {
+            return self.launch_terminal(request);
+        }
+        Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "This terminal cannot accept native environment data.",
+            ),
+        ))
+    }
 }
 
 /// Backend-owned process tracking for either Rust Child or a native process handle.
@@ -419,6 +506,39 @@ pub trait LocationService: Send + Sync + 'static {
 /// A thread-affine native clipboard owner. Create, use and drop it on one backend worker.
 pub trait ClipboardSession {
     fn copy_text(&mut self, text: &str) -> Result<(), FsError>;
+    /// Read strict Unicode text on this session's backend worker. Native adapters
+    /// bound the encoded input before allocation; undecodable text is an error.
+    fn read_text(&mut self) -> Result<String, FsError> {
+        Err(FsError::from_io(
+            "clipboard text",
+            Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Reading clipboard text is unavailable.",
+            ),
+        ))
+    }
+    fn copy_files(&mut self, _files: &crate::FileClipboard) -> Result<(), FsError> {
+        Err(unsupported_file_clipboard())
+    }
+    fn read_files(&mut self) -> Result<crate::FileClipboard, FsError> {
+        Err(unsupported_file_clipboard())
+    }
+    /// Pump bounded native clipboard-owner events on the session's own backend thread.
+    fn service_pending(&mut self) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+
+fn unsupported_file_clipboard() -> FsError {
+    FsError::from_io(
+        "file clipboard",
+        Path::new(""),
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Native file clipboard is unavailable.",
+        ),
+    )
 }
 
 pub trait ClipboardService: Send + Sync + 'static {

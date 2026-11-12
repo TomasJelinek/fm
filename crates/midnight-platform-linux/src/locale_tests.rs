@@ -2,6 +2,42 @@ use super::*;
 use std::ffi::OsStr;
 
 #[test]
+fn archive_calendar_is_formatted_without_normalizing_invalid_dates() {
+    use midnight_core::ArchiveTimestamp;
+    let service = LinuxFileSystem::new(None);
+    let valid = ArchiveTimestamp::Local {
+        year: 2024,
+        month: 2,
+        day: 29,
+        hour: 12,
+        minute: 34,
+        second: 56,
+    };
+    let rendered = service.format_archive_local_time(valid).unwrap();
+    assert!(!rendered.date.is_empty() && !rendered.time.is_empty());
+    assert!(
+        service
+            .format_archive_local_time(ArchiveTimestamp::Local {
+                year: 2023,
+                month: 2,
+                day: 29,
+                hour: 12,
+                minute: 34,
+                second: 56,
+            })
+            .is_none()
+    );
+    assert!(
+        service
+            .format_archive_local_time(ArchiveTimestamp::Utc {
+                seconds: 0,
+                nanoseconds: 0,
+            })
+            .is_none()
+    );
+}
+
+#[test]
 fn locale_category_precedence_respects_empty_variables_and_specific_overrides() {
     let all = OsStr::new("cs_CZ.UTF-8");
     let numeric = OsStr::new("en_IN.UTF-8");
@@ -28,8 +64,9 @@ fn posix_grouping_distinguishes_repeat_from_char_max_termination() {
 
 #[test]
 fn current_native_timestamp_has_separate_complete_date_and_time_fields() {
-    let value =
-        modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)).unwrap();
+    let value = LinuxFileSystem::new(None)
+        .format_datetime(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+        .unwrap();
     assert!(!value.date.is_empty());
     assert!(!value.time.is_empty());
     let seconds: libc::time_t = 1_700_000_000;

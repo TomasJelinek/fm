@@ -308,22 +308,45 @@ fn parent_replacement_does_not_retarget_the_prepared_entry() {
 }
 
 #[test]
-fn read_only_delete_errors_without_changing_attributes_or_contents() {
+fn confirmed_permanent_delete_removes_read_only_files_without_changing_other_links() {
     let temp = fixture();
     let path = temp.path().join("readonly");
-    fs::write(&path, b"keep me").unwrap();
+    let retained = temp.path().join("retained link");
+    fs::write(&path, b"retained through another name").unwrap();
+    fs::hard_link(&path, &retained).unwrap();
     let original = fs::metadata(&path).unwrap().permissions();
     let mut permissions = original.clone();
     permissions.set_readonly(true);
     fs::set_permissions(&path, permissions).unwrap();
-    assert!(
-        prepare(&path)
-            .delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {})
-            .is_err()
+    let result =
+        prepare(&path).delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {});
+    let retained_readonly = fs::metadata(&retained).unwrap().permissions().readonly();
+    fs::set_permissions(&retained, original).unwrap();
+    result.unwrap();
+    assert!(!path.exists());
+    assert!(retained_readonly);
+    assert_eq!(
+        fs::read(retained).unwrap(),
+        b"retained through another name"
     );
-    assert_eq!(fs::read(&path).unwrap(), b"keep me");
-    assert!(fs::metadata(&path).unwrap().permissions().readonly());
-    fs::set_permissions(&path, original).unwrap();
+}
+
+#[test]
+fn confirmed_permanent_delete_removes_read_only_empty_directories() {
+    let temp = fixture();
+    let path = temp.path().join("readonly folder");
+    fs::create_dir(&path).unwrap();
+    let original = fs::metadata(&path).unwrap().permissions();
+    let mut permissions = original.clone();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).unwrap();
+    let result =
+        prepare(&path).delete(DeleteMode::Permanent, &Cancellation::default(), &mut |_| {});
+    if path.exists() {
+        fs::set_permissions(&path, original).unwrap();
+    }
+    result.unwrap();
+    assert!(!path.exists());
 }
 
 #[test]
@@ -353,7 +376,7 @@ fn create_nested_unicode_directories_keeps_existing_intermediates_and_refuses_fi
 }
 
 #[test]
-fn create_rejects_escape_invalid_names_and_cancelled_requests_without_changes() {
+fn create_rejects_invalid_names_and_cancelled_requests_without_changes() {
     let temp = fixture();
     let base = WindowsFileSystem::new(None)
         .prepare_create(temp.path(), &Cancellation::default())
@@ -362,11 +385,10 @@ fn create_rejects_escape_invalid_names_and_cancelled_requests_without_changes() 
         "",
         ".",
         "..",
-        "a/../escape",
-        "one/./two",
-        "C:\\escape",
-        "\\escape",
-        "C:escape",
+        "good/.",
+        "good/..",
+        "\\\\.\\PhysicalDrive0",
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
         "one/NUL.txt",
         "one/stream:ads",
         "one/trailing.",
@@ -392,6 +414,127 @@ fn create_rejects_escape_invalid_names_and_cancelled_requests_without_changes() 
         io::ErrorKind::Interrupted
     );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn create_accepts_absolute_and_parent_relative_paths_outside_the_captured_base() {
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = temp.path().join("absolute/文档 🦀/new");
+    assert_eq!(base.create(&absolute, &cancel).unwrap(), absolute);
+    assert!(absolute.is_dir());
+    let relative = base
+        .create(Path::new("../sibling/文档/new"), &cancel)
+        .unwrap();
+    assert_eq!(
+        fs::canonicalize(relative).unwrap(),
+        fs::canonicalize(temp.path().join("sibling/文档/new")).unwrap()
+    );
+    assert_eq!(fs::read_dir(panel).unwrap().count(), 0);
+}
+
+#[test]
+fn create_walks_parent_components_without_collapsing_missing_directories_or_links() {
+    let temp = fixture();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(temp.path(), &cancel)
+        .unwrap();
+    let created = base
+        .create(Path::new("first/../second/./leaf"), &cancel)
+        .unwrap();
+    assert!(temp.path().join("first").is_dir());
+    assert_eq!(
+        fs::canonicalize(created).unwrap(),
+        fs::canonicalize(temp.path().join("second/leaf")).unwrap()
+    );
+    fs::create_dir(temp.path().join("outside")).unwrap();
+    create_junction(&temp.path().join("link"), &temp.path().join("outside"));
+    assert!(
+        base.create(Path::new("link/../forbidden"), &cancel)
+            .is_err()
+    );
+    assert!(!temp.path().join("forbidden").exists());
+    assert_eq!(
+        fs::read_dir(temp.path().join("outside")).unwrap().count(),
+        0
+    );
+}
+
+#[test]
+fn create_resolves_root_relative_and_same_drive_relative_paths_against_the_panel() {
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = temp.path().join("root-relative/new");
+    let prefix = absolute.components().next().unwrap();
+    let root_relative = absolute
+        .components()
+        .skip(1)
+        .collect::<std::path::PathBuf>();
+    assert_eq!(base.create(&root_relative, &cancel).unwrap(), absolute);
+    let drive_relative = format!("{}same-drive/new", prefix.as_os_str().to_str().unwrap());
+    assert_eq!(
+        base.create(Path::new(&drive_relative), &cancel).unwrap(),
+        panel.join("same-drive/new")
+    );
+    assert!(absolute.is_dir());
+    assert!(panel.join("same-drive/new").is_dir());
+}
+
+#[test]
+fn create_absolute_targets_still_honor_cancellation_and_replaced_base_identity() {
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let absolute = temp.path().join("outside/new");
+    cancel.cancel();
+    assert_eq!(
+        base.create(&absolute, &cancel).unwrap_err().kind,
+        io::ErrorKind::Interrupted
+    );
+    assert!(!temp.path().join("outside").exists());
+    fs::rename(&panel, temp.path().join("moved-panel")).unwrap();
+    fs::create_dir(&panel).unwrap();
+    assert!(base.create(&absolute, &Cancellation::default()).is_err());
+    assert!(!temp.path().join("outside").exists());
+}
+
+#[test]
+fn create_absolute_long_path_preserves_native_unicode_without_replacing_final_entries() {
+    use std::os::windows::ffi::OsStringExt;
+    let temp = fixture();
+    let panel = temp.path().join("panel");
+    fs::create_dir(&panel).unwrap();
+    let cancel = Cancellation::default();
+    let base = WindowsFileSystem::new(None)
+        .prepare_create(&panel, &cancel)
+        .unwrap();
+    let mut target = temp.path().join("outside");
+    for _ in 0..10 {
+        target.push("文档-long-directory-0123456789");
+    }
+    target.push(std::ffi::OsString::from_wide(&[b'r' as u16, 0xd800]));
+    assert_eq!(base.create(&target, &cancel).unwrap(), target);
+    assert!(target.is_dir());
+    assert_eq!(
+        base.create(&target, &cancel).unwrap_err().kind,
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(fs::read_dir(panel).unwrap().count(), 0);
 }
 
 #[test]
@@ -441,4 +584,182 @@ fn create_supports_paths_beyond_max_path_and_leaves_intermediates_on_os_failure(
         .is_err()
     );
     assert!(temp.path().join("partial").is_dir());
+}
+
+#[test]
+fn rename_replacement_requires_consent_and_preserves_the_displaced_file() {
+    let temp = fixture();
+    let source = temp.path().join("source.txt");
+    let destination = temp.path().join("existing.txt");
+    fs::write(&source, b"selected source").unwrap();
+    fs::write(&destination, b"consented original").unwrap();
+    let item = prepare(&source);
+    let cancel = Cancellation::default();
+    assert!(item.rename(OsStr::new("existing.txt"), &cancel).is_err());
+    let replacement = item
+        .prepare_rename_replacement(OsStr::new("existing.txt"), &cancel)
+        .unwrap();
+    assert_eq!(fs::read(&source).unwrap(), b"selected source");
+    assert_eq!(fs::read(&destination).unwrap(), b"consented original");
+    let outcome = replacement
+        .movement
+        .capture
+        .try_native_move(
+            replacement.directory.as_ref(),
+            OsStr::new("existing.txt"),
+            Some((
+                replacement.target.clone(),
+                midnight_core::TransferReplacementPolicy::RecoverableCurrentEntry,
+            )),
+            &cancel,
+        )
+        .unwrap();
+    let midnight_core::TransferNativeMoveOutcome::Moved {
+        destination: renamed,
+        recovery,
+        ..
+    } = outcome
+    else {
+        panic!("replacement did not commit: {outcome:?}");
+    };
+    assert_eq!(renamed, destination);
+    assert!(!source.exists());
+    assert_eq!(fs::read(&destination).unwrap(), b"selected source");
+    assert_eq!(recovery.len(), 1);
+    assert_eq!(fs::read(&recovery[0].path).unwrap(), b"consented original");
+}
+
+#[test]
+fn rename_replacement_cancel_and_stale_destination_preserve_source_bytes() {
+    for change in [false, true] {
+        let temp = fixture();
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("existing.txt");
+        fs::write(&source, b"selected source").unwrap();
+        fs::write(&destination, b"consented original").unwrap();
+        let item = prepare(&source);
+        let cancel = Cancellation::default();
+        let replacement = item
+            .prepare_rename_replacement(OsStr::new("existing.txt"), &cancel)
+            .unwrap();
+        if change {
+            fs::write(&destination, b"changed after consent").unwrap();
+        } else {
+            cancel.cancel();
+        }
+        assert!(
+            replacement
+                .movement
+                .capture
+                .try_native_move(
+                    replacement.directory.as_ref(),
+                    OsStr::new("existing.txt"),
+                    Some((
+                        replacement.target.clone(),
+                        midnight_core::TransferReplacementPolicy::RecoverableCurrentEntry
+                    )),
+                    &cancel,
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"selected source");
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            if change {
+                b"changed after consent".as_slice()
+            } else {
+                b"consented original".as_slice()
+            }
+        );
+    }
+}
+
+#[test]
+fn rename_replacement_rejects_self_hardlinks_directories_and_replaced_sources() {
+    let temp = fixture();
+    let source = temp.path().join("source.txt");
+    fs::write(&source, b"selected source").unwrap();
+    let item = prepare(&source);
+    fs::hard_link(&source, temp.path().join("alias.txt")).unwrap();
+    fs::create_dir(temp.path().join("folder")).unwrap();
+    fs::write(temp.path().join("existing.txt"), b"other").unwrap();
+    for name in ["source.txt", "alias.txt", "folder"] {
+        assert!(
+            item.prepare_rename_replacement(OsStr::new(name), &Cancellation::default())
+                .is_err(),
+            "{name}"
+        );
+    }
+    fs::rename(&source, temp.path().join("original.txt")).unwrap();
+    fs::write(&source, b"new source winner").unwrap();
+    assert!(
+        item.prepare_rename_replacement(OsStr::new("existing.txt"), &Cancellation::default())
+            .is_err()
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"new source winner");
+    assert_eq!(
+        fs::read(temp.path().join("original.txt")).unwrap(),
+        b"selected source"
+    );
+    assert_eq!(
+        fs::read(temp.path().join("existing.txt")).unwrap(),
+        b"other"
+    );
+}
+
+#[test]
+fn rename_rejects_distinct_hardlink_aliases_even_when_target_case_differs() {
+    let temp = fixture();
+    let source = temp.path().join("source.txt");
+    let alias = temp.path().join("alias.txt");
+    fs::write(&source, b"selected source").unwrap();
+    fs::hard_link(&source, &alias).unwrap();
+    let item = prepare(&source);
+    assert_eq!(
+        item.rename(OsStr::new("source.txt"), &Cancellation::default())
+            .unwrap(),
+        source
+    );
+    for name in ["alias.txt", "ALIAS.TXT"] {
+        assert_eq!(
+            item.rename(OsStr::new(name), &Cancellation::default())
+                .unwrap_err()
+                .kind,
+            io::ErrorKind::AlreadyExists,
+            "{name} is another entry, not a case change of the source"
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"selected source");
+        assert_eq!(fs::read(&alias).unwrap(), b"selected source");
+        let mut names: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![OsStr::new("alias.txt"), OsStr::new("source.txt")]
+        );
+    }
+}
+
+#[test]
+fn rename_case_only_with_another_hardlink_keeps_native_unicode_spelling() {
+    let temp = fixture();
+    let source = temp.path().join("Žluťoučký.txt");
+    let alias = temp.path().join("alias.txt");
+    fs::write(&source, b"same object").unwrap();
+    fs::hard_link(&source, &alias).unwrap();
+    let target = prepare(&source)
+        .rename(OsStr::new("ŽLUŤOUČKÝ.TXT"), &Cancellation::default())
+        .unwrap();
+    assert_eq!(target, temp.path().join("ŽLUŤOUČKÝ.TXT"));
+    assert_eq!(fs::read(&target).unwrap(), b"same object");
+    assert_eq!(fs::read(&alias).unwrap(), b"same object");
+    let names: Vec<_> = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert!(names.iter().any(|name| name == OsStr::new("ŽLUŤOUČKÝ.TXT")));
+    assert!(names.iter().any(|name| name == OsStr::new("alias.txt")));
 }

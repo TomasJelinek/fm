@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "midnight-image-decoder"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT"
+description = "Shared bounded image codecs for independent restricted Midnight providers"
+
+[dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "avif-native"] }
+dav1d = "=0.11.0"
+moxcms = "=0.8.1"
+resvg = { version = "=0.48.1", default-features = false, features = ["text"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[patch.crates-io]
+image = { path = "../../vendor/image" }

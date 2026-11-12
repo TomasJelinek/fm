@@ -105,6 +105,7 @@ fn controller(service: Arc<Settings>) -> (Controller, JoinSet<()>, mpsc::Receive
     let (sender, events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
     let controller = Controller::new(
+        crate::task_lifetime::TaskLifetime::testing(service.clone()),
         service,
         Outbox {
             sender,
@@ -341,11 +342,12 @@ async fn shutdown_does_not_wait_for_a_full_output_queue_or_accept_more_requests(
     let service = Arc::new(Settings::default());
     let (sender, mut events) = mpsc::channel(1);
     sender
-        .send(Event::PreferencesLoaded(Ok(UserPreferences::default())))
+        .send(Event::PreferencesLoaded(Ok(Box::default())))
         .await
         .unwrap();
     let mut tasks = JoinSet::new();
     let controller = Controller::new(
+        crate::task_lifetime::TaskLifetime::testing(service.clone()),
         service.clone(),
         Outbox {
             sender,

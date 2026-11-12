@@ -59,10 +59,7 @@ fn stable_tabs_and_history_presentation_performance() {
     {
         let mut state = presenter.borrow_mut();
         state.set_tab_restore_overrides([true; 2]);
-        state.apply_with_sender(
-            Event::PreferencesLoaded(Ok(UserPreferences::default())),
-            &|_| true,
-        );
+        state.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|_| true);
         for pane in [PaneId::Left, PaneId::Right] {
             for _ in 0..7 {
                 assert!(state.new_tab(pane, &|_| true));

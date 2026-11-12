@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "midnight-viewer-pdf"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT"
+description = "Independent restricted paginated PDF viewer for Midnight Explorer"
+
+[dependencies]
+midnight-image-viewer-sdk = { version = "=0.3.0", registry = "midnight" }
+hayro = { version = "=0.9.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+incremental = false
+debug = false
+strip = "symbols"
+debug-assertions = false
+overflow-checks = true
+panic = "unwind"
+
+[lints.rust]
+unsafe_code = "forbid"

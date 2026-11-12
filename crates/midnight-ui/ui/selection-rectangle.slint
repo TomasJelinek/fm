@@ -1,0 +1,12 @@
+// One active background gesture per host. Positions use logical window pixels.
+export global SelectionRectangle {
+    in-out property <int> pane: -1;
+    in-out property <bool> active;
+    in-out property <length> left;
+    in-out property <length> top;
+    in-out property <length> width;
+    in-out property <length> height;
+    // Down/move/up/cancel = 0/1/2/3. Input never performs filesystem work.
+    callback input(int, int, float, float, bool, bool) -> bool;
+    callback cancel() -> bool;
+}

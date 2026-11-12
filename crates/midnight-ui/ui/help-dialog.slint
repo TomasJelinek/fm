@@ -1,0 +1,47 @@
+import { Theme } from "theme.slint";
+import { FilterHelp } from "filter-help.slint";
+import { DialogText } from "dialog-text.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { DialogHeader } from "dialog-frame.slint";
+
+export component HelpBody inherits Rectangle {
+    in property <int> topic;
+    in property <image> close-icon;
+    in property <string> shortcuts: ShortcutHints.help();
+    callback close();
+    callback move-dialog(length, length);
+    background: Theme.surface; border-radius: 8px;
+    border-color: Theme.active-frame; border-width: 1px;
+    init => { close-button.focus(); }
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            reject
+        }
+    VerticalLayout {
+        padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 13px;
+        DialogHeader { title: root.topic == 1 ? "Filtering files" : "Midnight Explorer keyboard help"; compact: root.height < 280px;
+            fallback-icon: FallbackIcons.help;
+            close-label: "Close dialog"; close => { root.close(); }
+            dragged(dx, dy) => { root.move-dialog(dx, dy); } }
+        DialogText {
+            min-height: 0px; vertical-stretch: 1;
+            text: root.topic == 1 ? FilterHelp.text : "Change application shortcuts in Options → Keyboard. The bindings below are your current settings. Native editor and IME keys retain their usual behavior; operating-system shortcuts may take precedence.\n\n"
+                + root.shortcuts
+                + "\n\nMouse: a plain left double-click opens a file or folder. Ctrl+click toggles selection, Shift+click selects a range, and Ctrl+Shift+click adds a range. Middle-click closes a folder tab. Drag the panel divider to resize; double-click it to center. Right-click files or drives for available system/application actions. Right-click a path prefix to copy it."
+                + "\n\nTyping in a file panel searches Unicode filename prefixes, ignoring case. Options can filter the list to matches. Amber folder sizes are still being counted; ≈ means a partial or approximate total. Links and special files are excluded from size scans. A small C on the icon indicates native filesystem compression."
+                + "\n\nCopies run in the background and verify destination bytes with SHA-256 by default. Options also offers size plus samples verification; jobs keep the policy chosen at confirmation. Jobs shows progress, Stop and deferred conflicts. Supported locations offer recoverable replacement and directory merging. F6 moves native files and folders: same-volume moves rename without reading file contents; cross-volume moves verify copied files before removing their sources. Links and archive members cannot be moved. Jobs reports failures and any exceptional temporary location needing attention. Cut publishes native clipboard intent; pasting Cut items asks for Move confirmation. Deletion always asks for confirmation; failed Trash never becomes permanent deletion."
+                + "\n\nThe terminal icon opens an interactive terminal. Its arrow selects the shell; command history fills the draft without executing it. Only Run or the configured Execute command shortcut submits it. Sudo authentication remains inside the external terminal."
+                + "\n\nThe Hot Paths star adds the current folder; its arrow opens saved paths and Manage. Tabs, bookmarks and enabled command history are saved. View and Edit open the selected file; Copy and Move ask for confirmation before starting a background job.";
+        }
+        close-button := HintedActionButton {
+            native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
+            text: "Close"; min-height: Theme.control-height;
+            hint: "Close this dialog and return to the file manager.";
+            clicked => { root.close(); }
+        }
+    }
+    }
+}

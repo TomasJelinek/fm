@@ -18,7 +18,7 @@ fn legacy_options_migrate_with_filter_disabled_and_existing_choices_preserved() 
     let preferences = decode_preferences(&serde_json::to_vec(&version_three()).unwrap()).unwrap();
     let stored: serde_json::Value =
         serde_json::from_slice(&encode_preferences(preferences).unwrap()).unwrap();
-    assert_eq!(stored["version"], 6);
+    assert_eq!(stored["version"], 10);
     assert_eq!(stored["quick_search_filter"], false);
     assert_eq!(stored["theme"], "dark");
     assert_eq!(stored["density"], "touch");

@@ -1,12 +1,17 @@
 import { ScrollView } from "std-widgets.slint";
-import { HintedLineEdit } from "hinted-inputs.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { PathEditor } from "path-editor.slint";
 import { Theme } from "theme.slint";
 import { TipBody } from "controls.slint";
 import { PathPartRow } from "navigation-models.slint";
+import { PathToken } from "path-token.slint";
+import { OmissionText } from "path-text.slint";
 
 // Paths are parsed by the backend. Each token contains a whole component,
 // preserving its Unicode shaping; the UI never reconstructs an operation path.
 export component PathNavigation inherits Rectangle {
+    in property <int> pane-id;
+    in property <length> text-size: Theme.font-size;
     in property <string> path;
     in property <[PathPartRow]> parts;
     in property <string> hint;
@@ -18,6 +23,7 @@ export component PathNavigation inherits Rectangle {
     private property <bool> edit-mode;
     private property <int> hovered-index: -1;
     private property <int> revision;
+    private property <length> end-offset: min(0px, trail.visible-width - trail.content-width);
     callback navigate(string);
     callback selected-part(string);
     callback copy-part(string);
@@ -26,14 +32,22 @@ export component PathNavigation inherits Rectangle {
     border-width: 1px; border-radius: 3px;
     border-color: root.has-focus ? Theme.active-frame : Theme.frame;
     background: Theme.surface;
-    changed path => { editor.text = root.path; root.hovered-index = -1; trail.content-x = 0px; }
-    changed parts => { root.revision += 1; root.hovered-index = -1; }
+    changed path => {
+        editor.invalidate-paste();
+        editor.text = root.path; root.hovered-index = -1; trail.content-x = root.end-offset;
+    }
+    changed parts => {
+        root.revision += 1; root.hovered-index = -1; trail.content-x = root.end-offset;
+    }
+    changed end-offset => { trail.content-x = root.end-offset; }
     init => { editor.text = root.path; }
     public function focus-editor() {
+        editor.invalidate-paste();
         root.editing-started();
         root.edit-mode = true; editor.text = root.path; editor.focus();
     }
     public function finish-edit() {
+        editor.invalidate-paste();
         root.edit-mode = false; editor.text = root.path;
     }
     trail := ScrollView {
@@ -42,56 +56,23 @@ export component PathNavigation inherits Rectangle {
         horizontal-scrollbar-policy: always-off;
         vertical-scrollbar-policy: always-off;
         mouse-drag-pan-enabled: true;
+        content-x: root.end-offset;
         HorizontalLayout {
             spacing: 0px; alignment: start;
             if root.parts.length == 0 : Text {
-                text: root.path; color: Theme.text; font-size: Theme.font-size;
+                text: root.path; color: Theme.text; font-size: root.text-size;
                 vertical-alignment: center;
             }
-            for part[index] in root.parts : Rectangle {
-                width: caption.preferred-width;
+            for part[index] in root.parts : PathToken {
+                part: part; revision: root.revision; text-size: root.text-size;
                 height: trail.visible-height;
-                background: root.hovered-index >= index ? Theme.hover : transparent;
-                border-radius: 2px;
-                accessible-role: button;
-                accessible-label: "Open " + part.prefix;
-                accessible-action-default => { root.selected-part(part.identity); }
-                caption := Text {
-                    x: 0px; width: parent.width; height: parent.height;
-                    text: part.label; color: root.hovered-index >= index ? Theme.accent : Theme.text;
-                    font-size: Theme.font-size; vertical-alignment: center;
+                highlighted: root.hovered-index >= index;
+                selected(identity) => { root.selected-part(identity); }
+                copied(identity) => { root.copy-part(identity); }
+                hovered(over) => {
+                    if over { root.hovered-index = index; }
+                    else if root.hovered-index == index { root.hovered-index = -1; }
                 }
-                TouchArea {
-                    private property <string> pressed-id;
-                    private property <int> pressed-revision;
-                    private property <bool> right-pressed;
-                    changed has-hover => {
-                        if self.has-hover { root.hovered-index = index; }
-                        else if root.hovered-index == index { root.hovered-index = -1; }
-                    }
-                    pointer-event(event) => {
-                        if event.kind == PointerEventKind.down {
-                            self.pressed-id = part.identity;
-                            self.pressed-revision = root.revision;
-                            self.right-pressed = event.button == PointerEventButton.right;
-                        } else if event.kind == PointerEventKind.up
-                            && event.button == PointerEventButton.right && self.right-pressed {
-                            if self.pressed-id == part.identity
-                                && self.pressed-revision == root.revision && self.has-hover {
-                                root.copy-part(self.pressed-id);
-                            }
-                            self.right-pressed = false;
-                        } else if event.kind == PointerEventKind.cancel {
-                            self.pressed-id = ""; self.right-pressed = false;
-                        }
-                    }
-                    clicked => {
-                        if self.pressed-id == part.identity && self.pressed-revision == root.revision {
-                            root.selected-part(self.pressed-id);
-                        }
-                    }
-                }
-                Tooltip { TipBody { text: "Open " + part.prefix + "\nRight-click copies this path."; } }
             }
             Rectangle {
                 min-width: 32px; horizontal-stretch: 1;
@@ -99,8 +80,52 @@ export component PathNavigation inherits Rectangle {
                 accessible-role: button; accessible-label: "Edit folder path";
                 accessible-action-default => { root.focus-editor(); }
                 TouchArea { clicked => { root.focus-editor(); } }
-                Tooltip { TipBody { text: "Enter a folder path (Ctrl+G). Enter opens it; Escape cancels."; } }
+                Tooltip { TipBody { text: ShortcutHints.hint("Enter a folder path", "panel.path") + ". Enter opens it; Escape cancels."; } }
             }
+        }
+    }
+    // Pin the beginning over the clipped trail; the suffix remains right-aligned.
+    // Both displays share backend identities. The ellipsis only opens the editor.
+    if !root.edit-mode && trail.content-x < 0px : Rectangle {
+        x: 3px; y: 1px; height: parent.height - 2px;
+        width: leading.width + dots.width;
+        background: Theme.surface;
+        // Covered text must never receive a click through a gap in this overlay.
+        TouchArea { clicked => { root.focus-editor(); } }
+        leading := Rectangle {
+            x: 0px; y: 0px;
+            width: min(root.width * 0.35, leading-layout.preferred-width);
+            height: parent.height; clip: true;
+            leading-layout := HorizontalLayout {
+                x: 0px; y: 0px;
+                height: leading.height; spacing: 0px; alignment: start;
+                for index in min(2, root.parts.length) : PathToken {
+                    part: root.parts[index]; revision: root.revision; text-size: root.text-size;
+                    height: trail.visible-height; highlighted: root.hovered-index >= index;
+                    selected(identity) => { root.selected-part(identity); }
+                    copied(identity) => { root.copy-part(identity); }
+                    hovered(over) => {
+                        if over { root.hovered-index = index; }
+                        else if root.hovered-index == index { root.hovered-index = -1; }
+                    }
+                }
+                if root.parts.length == 0 : Text {
+                    text: root.path; font-size: root.text-size; color: Theme.text;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        dots := Rectangle {
+            x: leading.width; height: parent.height; width: dots-text.preferred-width + 4px;
+            accessible-role: button; accessible-label: "Edit full folder path";
+            accessible-action-default => { root.focus-editor(); }
+            dots-text := OmissionText {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: "..."; color: Theme.text; font-size: root.text-size;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.focus-editor(); } }
+            Tooltip { TipBody { text: root.path; } }
         }
     }
     FocusScope {
@@ -111,9 +136,10 @@ export component PathNavigation inherits Rectangle {
             if event.text == Key.Escape { root.finish-edit(); root.cancelled(); return accept; }
             reject
         }
-        editor := HintedLineEdit {
+        editor := PathEditor {
+            pane-id: root.pane-id;
+            font-size: root.text-size;
             x: 0px; y: 0px; width: parent.width; height: parent.height;
-            accessible-label: "Folder path";
             hint: root.hint;
             accepted => { root.navigate(self.text); }
         }

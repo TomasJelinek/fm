@@ -1,0 +1,43 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+import { ActionIcons, FallbackIcons, NativeActionImage } from "action-icons.slint";
+
+export component FileColumnHeading inherits Rectangle {
+    in property <string> title;
+    in property <string> sort-label;
+    in property <bool> sorted;
+    in property <bool> descending;
+    in property <bool> show-direction: true;
+    in property <bool> align-right;
+    in property <ActionIcons> icons;
+    callback activate();
+    out property <length> natural-width: measure.preferred-width + Theme.icon-size + 5px;
+    preferred-width: root.natural-width; min-width: 0px; clip: true;
+    measure := Text { visible: false; text: root.title; font-size: Theme.small-font; }
+    Text {
+        x: root.align-right && root.sorted && root.show-direction ? Theme.icon-size + 3px : 0px;
+        width: max(0px, root.width - (root.sorted && root.show-direction ? Theme.icon-size + 3px : 0px));
+        height: root.height; text: root.title;
+        color: root.sorted ? Theme.accent : Theme.secondary-text;
+        font-size: Theme.small-font; vertical-alignment: center;
+        horizontal-alignment: root.align-right ? right : left; overflow: elide;
+    }
+    if root.sorted && root.show-direction : NativeActionImage {
+        x: root.align-right ? 0px : max(0px, min(root.width, root.natural-width) - self.width);
+        y: (root.height - self.height) / 2;
+        native-icon: root.descending ? root.icons.sort-descending : root.icons.sort-ascending;
+        fallback-icon: root.descending ? FallbackIcons.sort-descending : FallbackIcons.sort-ascending;
+        width: Theme.icon-size; height: Theme.icon-size;
+    }
+    accessible-role: button; accessible-label: "Sort by " + root.sort-label;
+    accessible-value: root.sorted ? (root.descending ? "Descending" : "Ascending") : "Not sorted";
+    accessible-action-default => { root.activate(); }
+    TouchArea { clicked => { root.activate(); } }
+    Tooltip {
+        TipBody {
+            text: "Sort by " + root.sort-label + (root.sorted
+                ? (root.descending ? " · descending; click for ascending" : " · ascending; click for descending")
+                : " · click for ascending");
+        }
+    }
+}

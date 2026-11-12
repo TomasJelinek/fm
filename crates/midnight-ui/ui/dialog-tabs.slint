@@ -1,0 +1,48 @@
+import { Theme } from "theme.slint";
+
+// Small reusable topic strip; panels own their data and focusable controls.
+export component DialogTabs inherits HorizontalLayout {
+    in property <[string]> labels;
+    in-out property <int> current-index;
+    callback changing();
+    function select(index: int) {
+        if root.current-index != index {
+            root.changing();
+            root.current-index = index;
+        }
+    }
+    height: Theme.control-height + 4px;
+    spacing: 0px;
+    for label[index] in root.labels : Rectangle {
+        horizontal-stretch: 1;
+        background: root.current-index == index ? Theme.active-header
+            : area.has-hover ? Theme.hover : Theme.secondary-surface;
+        border-width: 1px;
+        border-color: root.current-index == index ? Theme.active-frame : Theme.frame;
+        accessible-role: button; accessible-label: label;
+        accessible-checkable: true; accessible-checked: root.current-index == index;
+        accessible-action-default => { root.select(index); }
+        forward-focus: scope;
+        Text {
+            text: label; color: Theme.text; font-size: Theme.font-size;
+            horizontal-alignment: center; vertical-alignment: center;
+            font-weight: root.current-index == index ? 600 : 400;
+        }
+        scope := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Return || event.text == Key.Space {
+                    root.select(index); return accept;
+                }
+                if event.text == Key.RightArrow {
+                    root.select(min(root.labels.length - 1, root.current-index + 1));
+                    return accept;
+                }
+                if event.text == Key.LeftArrow {
+                    root.select(max(0, root.current-index - 1)); return accept;
+                }
+                reject
+            }
+            area := TouchArea { clicked => { scope.focus(); root.select(index); } }
+        }
+    }
+}

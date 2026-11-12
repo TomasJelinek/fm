@@ -1,0 +1,9 @@
+[package]
+name = "midnight-work-budget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -49,6 +49,14 @@ impl StreamingSelections {
             if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
                 current.index.directory_bits[row / 64] |= 1 << (row % 64);
             }
+            current
+                .index
+                .file_sizes
+                .push(if entry.kind == EntryKind::File {
+                    entry.metadata.size
+                } else {
+                    None
+                });
         }
     }
 
@@ -74,8 +82,10 @@ mod tests {
     #[test]
     fn stream_order_and_raw_identity_are_retained_across_batches_and_stale_writes() {
         let streams = StreamingSelections::default();
-        let first = Entry::new(EntryId(80), "root/z".into(), EntryKind::DirectoryLink);
-        let second = Entry::new(EntryId(3), "root/a".into(), EntryKind::File);
+        let mut first = Entry::new(EntryId(80), "root/z".into(), EntryKind::DirectoryLink);
+        first.metadata.size = Some(900);
+        let mut second = Entry::new(EntryId(3), "root/a".into(), EntryKind::File);
+        second.metadata.size = Some(37);
         streams.append(
             PaneId::Left,
             NavigationId(2),
@@ -92,6 +102,8 @@ mod tests {
             location: "root".into(),
             view: None,
             seed: Arc::default(),
+            seed_revision: SelectionRevision(0),
+            authoritative: None,
             reset: false,
             preserve: None,
             restore: None,
@@ -102,6 +114,35 @@ mod tests {
         assert_eq!(index.by_id[&EntryId(80)], 0);
         assert_eq!(index.by_id[&EntryId(3)], 1);
         assert!(index.is_directory(EntryId(80)));
+        assert_eq!(index.file_sizes, [None, Some(37)]);
+        let file = SelectionSnapshot::from_bits(index.clone(), vec![0b10]).unwrap();
+        assert_eq!(file.file_bytes(), Some(37));
+        let with_link = SelectionSnapshot::from_bits(index.clone(), vec![0b11]).unwrap();
+        assert_eq!(
+            with_link.file_bytes(),
+            Some(37),
+            "folder-link metadata is excluded from the separate regular-file total"
+        );
+        assert_eq!((with_link.file_count(), with_link.folder_count()), (1, 1));
+        let mut file_link = Entry::new(EntryId(9), "root/file-link".into(), EntryKind::Symlink);
+        file_link.metadata.size = Some(900);
+        streams.append(
+            PaneId::Left,
+            NavigationId(2),
+            Path::new("root"),
+            &[file_link],
+        );
+        let extended = streams.snapshot(&request).unwrap();
+        let with_file_link = SelectionSnapshot::from_bits(extended, vec![0b110]).unwrap();
+        assert_eq!(
+            (with_file_link.file_count(), with_file_link.folder_count()),
+            (2, 0)
+        );
+        assert_eq!(
+            with_file_link.file_bytes(),
+            None,
+            "a file symlink must not contribute its native link metadata as regular-file bytes"
+        );
         streams.append(PaneId::Left, NavigationId(3), Path::new("next"), &[]);
         assert!(streams.snapshot(&request).is_err());
         assert_eq!(

@@ -38,6 +38,8 @@ use std::{
 };
 
 mod create;
+pub(crate) mod discovery;
+mod metadata;
 mod trash;
 mod tree;
 
@@ -222,8 +224,119 @@ impl Prepared {
 }
 
 impl PreparedMutation for Prepared {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        discovery::walk(
+            &self.parent,
+            &self._source,
+            &self.name,
+            &self.item.path,
+            cancel,
+            visit,
+        )?;
+        self.revalidate(cancel)
+    }
+    fn prepare_rename_replacement(
+        &self,
+        new_name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedRenameReplacement, FsError> {
+        use midnight_core::{TransferIdentity, TransferService};
+        self.revalidate(cancel)?;
+        validate_name(new_name, &self.item.path)?;
+        if self.item.kind != EntryKind::File {
+            return Err(error(
+                &self.item.path,
+                ErrorKind::Unsupported,
+                "Rename replacement requires two ordinary files",
+            ));
+        }
+        let identity = |value: Identity| {
+            let mut object = [0; 16];
+            object[..8].copy_from_slice(&value.inode.to_le_bytes());
+            TransferIdentity {
+                device: value.device,
+                object,
+            }
+        };
+        let service = crate::LinuxFileSystem::new(None);
+        let directory = service.prepare_move_destination(&self.parent_path, cancel)?;
+        if directory.identity() != identity(self.parent_identity) {
+            return Err(error(
+                &self.parent_path,
+                ErrorKind::InvalidInput,
+                "the parent directory changed",
+            ));
+        }
+        let movement = service.prepare_move_source(&self.item.path, cancel)?;
+        if movement.capture.entry().identity != identity(self.identity) {
+            return Err(error(
+                &self.item.path,
+                ErrorKind::InvalidInput,
+                "the selected entry changed",
+            ));
+        }
+        let target = directory.prepare_target(new_name, cancel)?.ok_or_else(|| {
+            error(
+                &self.item.path,
+                ErrorKind::NotFound,
+                "Rename destination disappeared",
+            )
+        })?;
+        if target.entry().item.kind != EntryKind::File
+            || target.entry().identity == movement.capture.entry().identity
+        {
+            return Err(error(
+                &target.entry().item.path,
+                ErrorKind::InvalidInput,
+                "Cannot replace a directory, link, source itself or hard-link alias",
+            ));
+        }
+        if !directory.supports_native_move_replacement(movement.capture.entry().identity) {
+            return Err(error(
+                &target.entry().item.path,
+                ErrorKind::Unsupported,
+                "Recoverable Rename replacement requires a qualified local filesystem and protected parent.",
+            ));
+        }
+        self.revalidate(cancel)?;
+        Ok(midnight_core::PreparedRenameReplacement {
+            movement,
+            directory,
+            target,
+        })
+    }
+
     fn item(&self) -> &MutationItem {
         &self.item
+    }
+    fn metadata_snapshot(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::MetadataSnapshot, FsError> {
+        metadata::snapshot(self, cancel)
+    }
+    fn metadata_children(
+        &self,
+        cancel: &Cancellation,
+        max_targets: usize,
+    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+        metadata::children(self, cancel, max_targets)
+    }
+    fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
+        metadata::name_available(self, name, cancel)
+    }
+    fn edit_metadata(
+        &self,
+        patch: &midnight_core::MetadataPatch,
+        name: Option<&OsStr>,
+        cancel: &Cancellation,
+    ) -> midnight_core::MetadataOutcome {
+        metadata::edit(self, patch, name, cancel)
     }
 
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
@@ -431,7 +544,7 @@ fn modified_time(seconds: i64, nanos: u64) -> Option<SystemTime> {
 }
 
 fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
-    if cancel.is_cancelled() {
+    if !cancel.wait_if_paused() {
         Err(error(
             path,
             ErrorKind::Interrupted,
@@ -454,3 +567,7 @@ fn error(path: &Path, kind: ErrorKind, message: &str) -> FsError {
 mod create_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "mutation_pause_tests.rs"]
+mod pause_tests;

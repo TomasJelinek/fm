@@ -1,5 +1,6 @@
 //! Real hover, paint and click routing across the shared tooltip compiler adapter.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
@@ -90,6 +91,37 @@ fn click(window: &MainWindow, position: slint::LogicalPosition) {
         .window()
         .dispatch_event(WindowEvent::PointerReleased { position, button });
 }
+fn options_topic(
+    window: &MainWindow,
+    native: &MinimalSoftwareWindow,
+    pixels: &mut [slint::Rgb8Pixel],
+    label: &str,
+    topic: i32,
+) {
+    if let Some(button) = ui::try_popup_item(window, label, AccessibleRole::Button) {
+        click(window, center(&button));
+    } else {
+        // Large-font Options uses the compact picker instead of sidebar buttons.
+        let current = window.get_options_topic_index();
+        let current_index = if current >= 3 { current - 1 } else { current };
+        let target_index = if topic >= 3 { topic - 1 } else { topic };
+        ui::click_popup(window, "Options topic", AccessibleRole::Combobox);
+        for _ in 0..(target_index - current_index).abs() {
+            ui::key(
+                window,
+                if target_index > current_index {
+                    Key::DownArrow
+                } else {
+                    Key::UpArrow
+                },
+            );
+        }
+        ui::key(window, Key::Return);
+    }
+    draw(native, pixels);
+    assert_eq!(window.get_options_topic_index(), topic);
+}
+
 fn axis(cursor: f32, size: f32, surface: f32, gap: f32) -> f32 {
     let after = cursor + gap;
     (if after + size <= surface - 8.0 {
@@ -140,14 +172,14 @@ fn assert_tip(
     quiet: &[slint::Rgb8Pixel],
     position: slint::LogicalPosition,
     expected: &str,
-) {
+) -> slint::LogicalSize {
     let inner = WindowInner::from_pub(window.window());
     let (origin, component) = {
         let popups = inner.active_popups();
         let tooltip = popups
             .iter()
             .find(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
-            .expect("timed hover must show actual tooltip");
+            .unwrap_or_else(|| panic!("timed hover must show tooltip: {expected} at {position:?}"));
         let PopupWindowLocation::ChildWindow(origin) = tooltip.location else {
             panic!("pinned software/Winit tooltip contract is embedded");
         };
@@ -193,6 +225,7 @@ fn assert_tip(
         changed > 100,
         "actual tooltip content must paint in its bounds"
     );
+    size
 }
 fn hover(
     window: &MainWindow,
@@ -201,11 +234,11 @@ fn hover(
     pixels: &mut [slint::Rgb8Pixel],
     position: slint::LogicalPosition,
     expected: &str,
-) {
+) -> slint::LogicalSize {
     let quiet = start_hover(window, native, pixels, position);
     time.set(time.get() + Duration::from_millis(600));
     draw(native, pixels);
-    assert_tip(window, pixels, &quiet, position, expected);
+    assert_tip(window, pixels, &quiet, position, expected)
 }
 fn rect(item: &ItemRc) -> (f32, f32, f32, f32) {
     let geometry = item.geometry();
@@ -223,7 +256,7 @@ fn moving_footer(
     time: &Cell<Duration>,
     pixels: &mut [slint::Rgb8Pixel],
 ) {
-    let hint = "F1 Help · keyboard shortcuts and usage help";
+    let hint = "Help (F1)\nApplication window";
     for visible in [false, true] {
         window.window().dispatch_event(WindowEvent::PointerExited);
         window.set_desktop_feedback_important(false);
@@ -302,6 +335,46 @@ fn navigations(commands: &RefCell<Vec<Command>>) -> usize {
 }
 
 #[test]
+fn panel_warning_tooltip_contains_the_reason_and_keeps_its_click_target_clear() {
+    let natives = Rc::new(RefCell::new(Vec::new()));
+    let time = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(natives.clone(), time.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    let native = natives.borrow().last().unwrap().clone();
+    native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
+    window.show().unwrap();
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),
+    });
+    let mut pixels = vec![slint::Rgb8Pixel::default(); WIDTH * HEIGHT];
+    let reason = "1 unreadable folder: Access denied\nC:\\private\\資料\nClick for full details";
+    window.set_left_rows(slint::ModelRc::new(slint::VecModel::from(vec![
+        midnight_ui::FileRow {
+            identity: "warning:1".into(),
+            name: "Folder".into(),
+            directory: true,
+            size_state: 3,
+            size_hint: reason.into(),
+            ..Default::default()
+        },
+    ])));
+    draw(&native, &mut pixels);
+    let position =
+        center(&find(root(&window), "Folder size warning", AccessibleRole::Button).remove(0));
+    hover(&window, &native, &time, &mut pixels, position, reason);
+    let inspected = Rc::new(Cell::new(false));
+    let capture = inspected.clone();
+    window.on_panel_warning_details(move |_, _, _| capture.set(true));
+    click(&window, position);
+    assert!(
+        inspected.get(),
+        "the tooltip must not cover the warning icon"
+    );
+    window.hide().unwrap();
+}
+
+#[test]
 fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
     let natives = Rc::new(RefCell::new(Vec::new()));
     let time = Rc::new(Cell::new(Duration::ZERO));
@@ -313,20 +386,22 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         (UiDensity::Touch, 32, PreferenceTheme::Blue),
     ] {
         let window = MainWindow::new().unwrap();
+        window.set_preferences_ready(true);
         let native = natives.borrow().last().unwrap().clone();
         let path = std::env::temp_dir().join("midnight-tooltip-ui");
         let home = path.join("文档😀".repeat(40));
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
         presenter
             .borrow_mut()
-            .apply(Event::PreferencesLoaded(Ok(UserPreferences {
+            .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
                 density,
                 desktop_font_size: font,
                 touch_font_size: font,
                 theme: scheme,
                 ..Default::default()
-            })));
+            }))));
         presenter.borrow_mut().apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::Posix,
             locations: vec![NavigationLocation {
                 id: "home".into(),
@@ -354,7 +429,11 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         });
         let mut pixels = vec![slint::Rgb8Pixel::default(); WIDTH * HEIGHT];
         draw(&native, &mut pixels);
-        let choice = window.get_navigation_choices().row_data(0).unwrap();
+        let choice = window
+            .get_navigation_choices()
+            .iter()
+            .find(|row| row.kind == midnight_ui::LocationRole::Home)
+            .expect("the fixture exposes a semantic Home location");
         let buttons = find(
             root(&window),
             choice.tooltip.as_str(),
@@ -384,8 +463,8 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             );
         }
         for (label, hint) in [
-            ("F1 Help", "F1 Help · keyboard shortcuts and usage help"),
-            ("F10 Menu", "F10 Menu · options, refresh, help and exit"),
+            ("F1 Help", "Help (F1)\nApplication window"),
+            ("F10 Menu", "Main menu (F10)\nApplication window"),
         ] {
             let button = find(root(&window), label, AccessibleRole::Button).remove(0);
             hover(&window, &native, &time, &mut pixels, center(&button), hint);
@@ -395,9 +474,9 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         window.invoke_focus_files();
         ui::chord(&window, &[Key::Control], "g");
         draw(&native, &mut pixels);
-        let folder_path = find(root(&window), "Folder path", AccessibleRole::TextInput).remove(0);
+        assert!(!find(root(&window), "Folder path", AccessibleRole::TextInput).is_empty());
         let folder_hint = format!(
-            "Folder path: {}\n{}{}\nEdit and press Enter to open a folder. Ctrl+G focuses this field.",
+            "Folder path: {}\n{}{}\nEdit and press Enter to open a folder. Focus path editor (Ctrl+G)",
             window.get_left_path(),
             window.get_left_status(),
             if window.get_left_loading() {
@@ -411,7 +490,11 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &native,
             &time,
             &mut pixels,
-            center(&folder_path),
+            // TextInput grows to the whole string; hover its clipped viewport.
+            slint::LogicalPosition::new(
+                window.get_left_path_left() + window.get_left_path_width() / 2.0,
+                window.get_left_path_top() + window.get_left_path_control_height() / 2.0,
+            ),
             &folder_hint,
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
@@ -444,21 +527,18 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         let menu = find(root(&window), "F10 Menu", AccessibleRole::Button).remove(0);
         click(&window, center(&menu));
         draw(&native, &mut pixels);
+        ui::click_popup(&window, "Menu category", AccessibleRole::Combobox);
+        for _ in 0..5 {
+            ui::key(&window, Key::DownArrow);
+        }
+        ui::key(&window, Key::Return);
+        draw(&native, &mut pixels);
         let options = find(popup_root(&window), "Options", AccessibleRole::Button).remove(0);
         let position = center(&options);
-        hover(
-            &window,
-            &native,
-            &time,
-            &mut pixels,
-            position,
-            "Choose the theme, font family, font sizes and compact desktop or larger touch controls.",
-        );
+        hover(&window, &native, &time, &mut pixels, position, "Options");
         click(&window, position);
         draw(&native, &mut pixels);
-        let appearance = find(popup_root(&window), "Appearance", AccessibleRole::Button).remove(0);
-        click(&window, center(&appearance));
-        draw(&native, &mut pixels);
+        options_topic(&window, &native, &mut pixels, "Appearance", 1);
         let theme = find(popup_root(&window), "Theme", AccessibleRole::Combobox).remove(0);
         hover(
             &window,
@@ -466,12 +546,10 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             center(&theme),
-            "Choose Blue, Dark or Light. Changes apply immediately.",
+            "Preview a color theme. OK saves it; Cancel restores the previous theme.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
-        let panel = find(popup_root(&window), "Panel", AccessibleRole::Button).remove(0);
-        click(&window, center(&panel));
-        draw(&native, &mut pixels);
+        options_topic(&window, &native, &mut pixels, "General", 0);
         let checkbox = find(
             popup_root(&window),
             "Show only filename search matches",
@@ -495,7 +573,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             "tooltip must pass through native checkbox input"
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
-        let done = find(popup_root(&window), "Done", AccessibleRole::Button).remove(0);
+        let done = find(popup_root(&window), "Cancel", AccessibleRole::Button).remove(0);
         let position = center(&done);
         hover(
             &window,
@@ -503,7 +581,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             position,
-            "Close Options. Changes are applied immediately.",
+            "Discard all changes, restore previewed appearance and close Options.",
         );
         click(&window, position);
         window.window().dispatch_event(WindowEvent::PointerExited);
@@ -512,11 +590,68 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             WindowInner::from_pub(window.window())
                 .active_popups()
                 .is_empty(),
-            "Done must close through the tooltip"
+            "Cancel must close through the tooltip"
         );
         if density == UiDensity::Touch && font == 15 {
             moving_footer(&window, &native, &time, &mut pixels);
         }
         window.hide().unwrap();
     }
+}
+
+#[test]
+fn folder_tab_tooltip_shows_only_the_complete_native_or_archive_path() {
+    let natives = Rc::new(RefCell::new(Vec::new()));
+    let time = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(natives.clone(), time.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    let native = natives.borrow().last().unwrap().clone();
+    native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
+    window.show().unwrap();
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),
+    });
+    let mut pixels = vec![slint::Rgb8Pixel::default(); WIDTH * HEIGHT];
+    let mut single_line_height = None;
+    for (path, wide) in [
+        (r"C:\Temp", false),
+        (r"D:\文档\bundle.zip\inner.7z\folder", false),
+        (
+            concat!(
+                r"C:\Users\tjelinek\OneDrive - NVIDIA Corporation\Documents\",
+                r"Midnight Explorer\Design specifications\Panel navigation and keyboard shortcuts"
+            ),
+            true,
+        ),
+    ] {
+        window.set_left_tabs(slint::ModelRc::new(slint::VecModel::from(vec![
+            midnight_ui::TabRow {
+                identity: "tab-1".into(),
+                label: "Temp".into(),
+                path: path.into(),
+                active: true,
+            },
+        ])));
+        draw(&native, &mut pixels);
+        let tab = find(
+            root(&window),
+            &format!("Temp\n{path}"),
+            AccessibleRole::Button,
+        )
+        .remove(0);
+        let size = hover(&window, &native, &time, &mut pixels, center(&tab), path);
+        let line_height = *single_line_height.get_or_insert(size.height);
+        if wide {
+            assert!(
+                size.width > 560.0,
+                "path should use the available width: {size:?}"
+            );
+            assert!(
+                (size.height - line_height).abs() < 1.0,
+                "a typical long path should remain on one line: {size:?}"
+            );
+        }
+    }
+    window.hide().unwrap();
 }

@@ -1,6 +1,10 @@
 //! Bounded native change hints and polling, owned entirely by backend workers.
 
-use crate::Outbox;
+use crate::{
+    Outbox,
+    retirement::{RetirementLease, WorkerOwned},
+    task_lifetime::TaskLifetime,
+};
 use midnight_core::{
     Cancellation, CompressionStatus, Entry, EntryKind, Event, FileSystem, NavigationId, PaneId,
     VisibleDirectory, WatchService, WatchSubscription,
@@ -17,10 +21,39 @@ use std::{
 };
 use tokio::{sync::mpsc::error::TrySendError, task::JoinSet};
 
+pub(crate) mod signature;
+pub(crate) mod tree;
+pub(crate) use tree::RefreshTicket;
+
+/// One shared control owner per pane; reserve before accepting any captured scope.
+pub(crate) const RETIREMENT_CAPACITY: usize = 2;
+pub(crate) struct Retirement {
+    pub(crate) panes: [RetirementLease; RETIREMENT_CAPACITY],
+}
+#[cfg(test)]
+impl Retirement {
+    fn testing() -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 0).unwrap();
+        Self {
+            panes: std::array::from_fn(|_| domain.try_reserve().unwrap()),
+        }
+    }
+}
+
+// A cancelled outer task or a native panic can bypass run's final drain. The last
+// handle still retires captured mounts off the caller without moving subscriptions.
+type SharedOwner = Arc<WorkerOwned<Shared>>;
+
 /// Two independent blocking workers own native subscriptions and serial probes.
 /// There are no unbounded event/path queues and no worker per filesystem event.
 pub(crate) struct Controller {
-    panes: [Arc<Shared>; 2],
+    panes: [SharedOwner; RETIREMENT_CAPACITY],
+}
+
+#[derive(Clone)]
+pub(crate) struct Handle {
+    panes: [SharedOwner; RETIREMENT_CAPACITY],
 }
 
 #[derive(Clone, Copy)]
@@ -35,11 +68,15 @@ struct Control {
     revision: u64,
     cancel: Cancellation,
     stopped: bool,
+    navigation: NavigationId,
+    tree_navigation: Option<NavigationId>,
+    tree: Option<tree::TreeControl>,
 }
 
 struct Shared {
     state: Mutex<Control>,
     worker: OnceLock<Thread>,
+    timing: Timing,
 }
 
 impl Shared {
@@ -57,13 +94,22 @@ impl Shared {
 }
 
 impl Controller {
+    pub(crate) fn handle(&self) -> Handle {
+        Handle {
+            panes: self.panes.clone(),
+        }
+    }
     pub(crate) fn new(
+        retirement: Retirement,
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
         native: Option<Arc<dyn WatchService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         Self::with_timing(
+            retirement,
+            scope,
             filesystem,
             native,
             outbox,
@@ -77,34 +123,41 @@ impl Controller {
     }
 
     fn with_timing(
+        retirement: Retirement,
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
         native: Option<Arc<dyn WatchService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
         timing: Timing,
     ) -> Self {
-        let panes = std::array::from_fn(|_| {
-            Arc::new(Shared {
+        let panes = retirement.panes.map(|lease| {
+            Arc::new(lease.own(Shared {
                 state: Mutex::new(Control {
                     visible: None,
                     revision: 0,
                     cancel: Cancellation::default(),
                     stopped: false,
+                    navigation: NavigationId(0),
+                    tree_navigation: None,
+                    tree: None,
                 }),
                 worker: OnceLock::new(),
-            })
+                timing,
+            }))
         });
         for shared in &panes {
             let shared = shared.clone();
             let filesystem = filesystem.clone();
             let native = native.clone();
             let outbox = outbox.clone();
-            tasks.spawn(async move {
-                let _ = tokio::task::spawn_blocking(move || {
+            let native_scope = scope.clone();
+            tasks.spawn(scope.future(async move {
+                let _ = tokio::task::spawn_blocking(native_scope.blocking(move || {
                     run(shared, filesystem, native, outbox, timing);
-                })
+                }))
                 .await;
-            });
+            }));
         }
         Self { panes }
     }
@@ -117,6 +170,10 @@ impl Controller {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if state.stopped
+            || visible.navigation < state.navigation
+            || state.tree_navigation == Some(visible.navigation)
+            || tree::current(&state)
+                .is_some_and(|scope| scope.stamp.navigation == visible.navigation)
             || state.visible.as_ref().is_some_and(|old| {
                 old.navigation > visible.navigation
                     || (old.navigation == visible.navigation
@@ -128,12 +185,20 @@ impl Controller {
         }
         state.cancel.cancel();
         state.cancel = Cancellation::default();
+        state.navigation = visible.navigation;
+        state.tree_navigation = None;
         state.revision = state.revision.wrapping_add(1);
         state.visible = Some(visible);
         drop(state);
         shared.wake();
     }
 
+    pub(crate) fn shutdown(&self) {
+        self.handle().shutdown();
+    }
+}
+
+impl Handle {
     pub(crate) fn shutdown(&self) {
         for shared in &self.panes {
             let mut state = shared
@@ -204,7 +269,7 @@ impl Drop for Target {
 }
 
 fn register(
-    shared: &Arc<Shared>,
+    shared: &SharedOwner,
     native: Option<&dyn WatchService>,
     visible: VisibleDirectory,
     revision: u64,
@@ -249,7 +314,7 @@ fn register(
 }
 
 fn run(
-    shared: Arc<Shared>,
+    shared: SharedOwner,
     filesystem: Arc<dyn FileSystem>,
     native: Option<Arc<dyn WatchService>>,
     outbox: Outbox,
@@ -257,7 +322,43 @@ fn run(
 ) {
     let _ = shared.worker.set(thread::current());
     let mut target: Option<Target> = None;
+    let mut tree_target: Option<tree::Runtime> = None;
     loop {
+        let (scope, cancel, retired) = {
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if state.stopped {
+                break;
+            }
+            let scope = tree::current(&state);
+            let retired = if scope.is_none() {
+                state.tree.take()
+            } else {
+                None
+            };
+            (scope, state.cancel.clone(), retired)
+        };
+        drop(retired);
+        if let Some(scope) = scope {
+            drop(target.take());
+            if tree_target
+                .as_ref()
+                .is_none_or(|runtime| !runtime.same(&scope))
+            {
+                drop(tree_target.take());
+                tree_target = Some(tree::Runtime::new(scope.clone(), cancel));
+            }
+            let runtime = tree_target.as_mut().expect("tree watch owner");
+            runtime.update(scope, &shared, native.as_deref());
+            let delay = runtime.step(&shared, filesystem.as_ref(), &outbox, timing);
+            if !delay.is_zero() {
+                thread::park_timeout(delay);
+            }
+            continue;
+        }
+        drop(tree_target.take());
         let update = {
             let state = shared
                 .state
@@ -273,6 +374,9 @@ fn run(
                 state
                     .visible
                     .clone()
+                    .filter(|visible| {
+                        visible.navigation == state.navigation && !state.cancel.is_cancelled()
+                    })
                     .map(|visible| (visible, state.revision, state.cancel.clone()))
             } else {
                 None
@@ -291,13 +395,16 @@ fn run(
             ));
             continue;
         }
+        if target
+            .as_ref()
+            .is_some_and(|target| !shared.is_current(target.revision))
+        {
+            drop(target.take());
+        }
         let Some(target) = target.as_mut() else {
             thread::park();
             continue;
         };
-        if !shared.is_current(target.revision) {
-            continue;
-        }
         let version = target.dirty.load(Ordering::Relaxed);
         if version != target.observed {
             target.observed = version;
@@ -333,6 +440,18 @@ fn run(
             .map_or(target.poll_at, |deadline| deadline.min(target.poll_at));
         thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
     }
+    // Prefer normal scope destruction on this native worker. The startup-owned
+    // Shared guard also covers a cancelled task or a panic before this drain.
+    let retired = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (state.tree.take(), state.visible.take())
+    };
+    drop(tree_target);
+    drop(target);
+    drop(retired);
 }
 
 fn send_hint(shared: &Shared, target: &Target, outbox: &Outbox) -> bool {

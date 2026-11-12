@@ -21,13 +21,21 @@ pub(super) fn folder_size(
                 file_size(value.bytes, display, locale),
                 0,
                 format!(
-                    "Complete logical size; {} files. Links and special files are excluded.",
-                    value.files
+                    "Complete logical size; {} files. {} file links or directory cycles skipped; special files excluded.",
+                    value.files, value.skipped_links
                 ),
             );
         }
-        let state = if running && !value.finished { 1 } else { 2 };
-        let reason = if value.errors > 0 {
+        let state = if value.errors > 0 {
+            3
+        } else if running && !value.finished {
+            1
+        } else {
+            2
+        };
+        let reason = if let Some(report) = &value.warnings {
+            report.summary().tooltip.to_string()
+        } else if value.errors > 0 {
             format!(
                 "partial result: {} errors; the number is not final.",
                 value.errors
@@ -69,6 +77,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn completed_cycle_omissions_are_explained_without_an_error_marker() {
+        let size = FolderSize {
+            bytes: 23,
+            files: 3,
+            skipped_links: 2,
+            finished: true,
+            ..Default::default()
+        };
+        let (text, state, tooltip) = folder_size(
+            Some(&size),
+            false,
+            true,
+            SizeDisplay::Bytes,
+            &NumberLocale::default(),
+        );
+        assert_eq!((text.as_str(), state), ("23", 0));
+        assert!(tooltip.contains("2 file links or directory cycles skipped"));
+    }
+
+    #[test]
+    fn actual_errors_are_distinct_from_unfinished_or_cancelled_estimates() {
+        let locale = NumberLocale::default();
+        for running in [false, true] {
+            let failed = FolderSize {
+                bytes: 4096,
+                errors: 1,
+                finished: !running,
+                ..Default::default()
+            };
+            let (_, state, _) =
+                folder_size(Some(&failed), running, true, SizeDisplay::Bytes, &locale);
+            assert_eq!(
+                state, 3,
+                "an actual filesystem error needs its own indicator"
+            );
+            let unfinished = FolderSize {
+                bytes: 4096,
+                ..Default::default()
+            };
+            let (_, state, _) = folder_size(
+                Some(&unfinished),
+                running,
+                true,
+                SizeDisplay::Bytes,
+                &locale,
+            );
+            assert_ne!(state, 3, "unfinished data alone is not an error");
+        }
+    }
+
+    #[test]
     fn byte_mode_is_exact_even_above_floating_point_integer_precision() {
         assert_eq!(
             file_size(u64::MAX, SizeDisplay::Bytes, &NumberLocale::default()),
@@ -76,7 +135,7 @@ mod tests {
         );
         assert_eq!(
             file_size(1024, SizeDisplay::Readable, &NumberLocale::default()),
-            "1.0 KB"
+            "1.0 KiB"
         );
         assert_eq!(
             file_size(1024, SizeDisplay::Bytes, &NumberLocale::default()),
@@ -126,7 +185,7 @@ mod tests {
             file_size(u64::MAX, SizeDisplay::Bytes, &locale),
             "18\u{a0}446\u{a0}744\u{a0}073\u{a0}709\u{a0}551\u{a0}615"
         );
-        assert_eq!(file_size(1536, SizeDisplay::Readable, &locale), "1,5 KB");
+        assert_eq!(file_size(1536, SizeDisplay::Readable, &locale), "1,5 KiB");
         let partial = FolderSize {
             bytes: 12345,
             ..Default::default()

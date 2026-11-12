@@ -1,7 +1,37 @@
 use std::path::PathBuf;
 
+#[test]
+fn copy_and_move_refuse_ambiguous_edits_below_a_raw_unix_destination() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    super::copy_dialog::assert_ambiguous_destination_is_refused(OsString::from_vec(
+        b"raw-\xff".to_vec(),
+    ));
+}
+
 pub(super) fn test_root() -> PathBuf {
     PathBuf::from("/")
+}
+
+#[test]
+fn unique_bookmarks_compare_native_bytes_without_display_loss() {
+    use crate::Presenter;
+    use midnight_core::{Event, PaneId};
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x80".to_vec()));
+    let second = PathBuf::from(OsString::from_vec(b"/tmp/raw-\x81".to_vec()));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut p = Presenter::new(first.clone(), second.clone());
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
+    assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
+    assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
+    assert!(
+        p.add_bookmark(PaneId::Left, "Duplicate".into(), None, &|_| panic!(
+            "duplicate"
+        ))
+    );
+    assert_eq!(p.bookmarks().len(), 2);
+    assert_eq!(p.bookmarks()[0].path.as_os_str(), first.as_os_str());
+    assert_eq!(p.bookmarks()[1].path.as_os_str(), second.as_os_str());
 }
 
 #[test]
@@ -14,6 +44,7 @@ fn native_choice_tokens_preserve_non_utf8_bytes_and_reject_display_alias_replace
     assert_eq!(first.to_string_lossy(), second.to_string_lossy());
     let mut p = Presenter::new(test_root(), test_root());
     let update = |path| Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![NavigationLocation {
             id: "desktop".into(),
@@ -38,11 +69,11 @@ fn native_choice_tokens_preserve_non_utf8_bytes_and_reject_display_alias_replace
 #[test]
 fn bookmark_and_tab_actions_preserve_non_utf8_native_bytes() {
     use crate::Presenter;
-    use midnight_core::{Command, Event, PaneId, UserPreferences};
+    use midnight_core::{Command, Event, PaneId};
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let path = PathBuf::from(OsString::from_vec(b"/tmp/\xff".to_vec()));
     let mut p = Presenter::new(path.clone(), test_root());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(
         p.add_bookmark(PaneId::Left, "Raw native".into(), Some(1), &|command| {
             let Command::SavePreferences { preferences, .. } = command else {

@@ -1,12 +1,26 @@
 //! Isolate each scan's writes from cancelled workers and unrelated snapshots.
 use super::*;
+use midnight_core::SelectionSnapshot;
 
 pub(super) fn prepare(
     mut selected: CommittedSnapshot,
     snapshots: &Snapshots,
     pane: PaneId,
+    selection: Option<&SelectionSnapshot>,
 ) -> CommittedSnapshot {
-    let sizes = Arc::new(Mutex::new(HashMap::new()));
+    let retained = selection
+        .map(|selection| {
+            selected
+                .sizes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .filter(|(path, _)| !selection.contains_path(path))
+                .map(|(path, size)| (path.clone(), size.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let sizes = Arc::new(Mutex::new(retained));
     let mut snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
     let state = &mut snapshots[pane.index()];
     for cached in [&mut state.visible, &mut state.committed]
@@ -46,15 +60,22 @@ mod tests {
     fn cancelled_worker_cache_cannot_write_into_a_replacement_scan() {
         let original = snapshot(1);
         let old_worker_cache = original.sizes.clone();
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
+                tree_root: None,
+                tree_notify: None,
+                archive: None,
+                network: None,
+                network_navigation: None,
+                archive_navigation: None,
+                archive_sort_sizes: None,
                 visible: Some(original.clone()),
                 committed: Some(original.clone()),
                 pending: None,
             },
             SnapshotState::default(),
-        ]));
-        let next = prepare(original, &snapshots, PaneId::Left);
+        ]);
+        let next = prepare(original, &snapshots, PaneId::Left, None);
         assert!(!Arc::ptr_eq(&old_worker_cache, &next.sizes));
         old_worker_cache.lock().unwrap().insert(
             "active/folder".into(),
@@ -82,15 +103,22 @@ mod tests {
         // Even an identical navigation/path must not retarget a different Arc.
         let unrelated = snapshot(1);
         let unrelated_cache = unrelated.sizes.clone();
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
+                tree_root: None,
+                tree_notify: None,
+                archive: None,
+                network: None,
+                network_navigation: None,
+                archive_navigation: None,
+                archive_sort_sizes: None,
                 visible: Some(original.clone()),
                 committed: Some(unrelated),
                 pending: None,
             },
             SnapshotState::default(),
-        ]));
-        let next = prepare(original, &snapshots, PaneId::Left);
+        ]);
+        let next = prepare(original, &snapshots, PaneId::Left, None);
         let cached = snapshots.lock().unwrap();
         assert!(Arc::ptr_eq(
             &cached[0].visible.as_ref().unwrap().sizes,

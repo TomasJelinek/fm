@@ -6,8 +6,39 @@ use super::*;
 mod command_history_tests;
 
 impl Presenter {
+    /// Rotation fills the draft using the currently selected terminal. The token
+    /// is exact text, so edits and history changes cannot reuse a stale row index.
+    pub(crate) fn rotate_command_history(&mut self, older: bool, draft: &str) -> Option<String> {
+        let history = &self.preferences.values.command_history;
+        if history.is_empty() {
+            self.desktop.command_history_cursor = None;
+            return None;
+        }
+        let position = self
+            .desktop
+            .command_history_cursor
+            .as_deref()
+            .filter(|previous| *previous == draft)
+            .and_then(|previous| history.iter().position(|entry| entry.command == previous));
+        let next = match (position, older) {
+            (Some(index), true) => (index + 1) % history.len(),
+            (Some(index), false) => (index + history.len() - 1) % history.len(),
+            (None, true) => 0,
+            (None, false) => history.len() - 1,
+        };
+        let command = history[next].command.clone();
+        self.track_draft(!command.is_empty());
+        self.desktop.command_history_cursor = Some(command.clone());
+        Some(command)
+    }
+
+    pub(crate) fn reset_command_history_cursor(&mut self) {
+        self.desktop.command_history_cursor = None;
+    }
+
     /// Recall edits the draft only. It cannot launch or revive elevated permissions.
     pub(crate) fn recall_command(&mut self, token: &str) -> Option<String> {
+        self.reset_command_history_cursor();
         let entry = self
             .preferences
             .values
@@ -78,11 +109,6 @@ impl Presenter {
             )
     }
 
-    pub(crate) fn bind_inserted_path(&mut self, shell: ShellFlavor) {
-        self.desktop.draft_nonempty = true;
-        self.desktop.draft_shell = Some(shell);
-    }
-
     pub(crate) fn effective_terminal_mode(&self) -> TerminalMode {
         if self.effective_shell() == Some(ShellFlavor::Posix) {
             self.desktop.terminal_mode
@@ -113,18 +139,14 @@ impl Presenter {
 
     pub(crate) fn terminal_hint(&self) -> &'static str {
         match self.effective_shell() {
-            Some(ShellFlavor::PowerShell) => {
-                "PowerShell · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths"
-            }
-            Some(ShellFlavor::Cmd) => "cmd · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths",
+            Some(ShellFlavor::PowerShell) => "PowerShell · Run in the active panel's folder",
+            Some(ShellFlavor::Cmd) => "cmd · Run in the active panel's folder",
             Some(ShellFlavor::Posix)
                 if self.effective_terminal_mode() == TerminalMode::Elevated =>
             {
-                "sudo · Enter opens a terminal password prompt · Ctrl+[ / Ctrl+] paths"
+                "Terminal (sudo) · Authentication stays in the external terminal"
             }
-            Some(ShellFlavor::Posix) => {
-                "Terminal · Enter runs this text · Ctrl+[ / Ctrl+] inserts paths"
-            }
+            Some(ShellFlavor::Posix) => "Terminal · Run in the active panel's folder",
             None => "Loading terminal choices…",
         }
     }
@@ -221,6 +243,7 @@ mod tests {
             let mut p = Presenter::new("left".into(), right.clone());
             p.active = PaneId::Right;
             p.apply(Event::DesktopContext {
+                network_position: 0,
                 shell: host,
                 locations: vec![],
             });
@@ -288,6 +311,7 @@ mod tests {
         let mut p = Presenter::new("left".into(), "right".into());
         assert!(!p.open_terminal(&|_| panic!("desktop context is not available")));
         p.apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
         });
@@ -338,14 +362,15 @@ mod tests {
     fn bound_draft_defers_loaded_defaults_and_rejects_cross_grammar_selection() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
         });
         p.track_draft(true);
-        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             windows_shell: WindowsShell::Cmd,
             ..Default::default()
-        })));
+        }))));
         assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
         p.change_terminal(1, true, &|_| {
@@ -364,14 +389,15 @@ mod tests {
         p.track_draft(true);
         assert_eq!(p.effective_shell(), None);
         p.apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
         });
         assert_eq!(p.desktop.draft_shell, Some(ShellFlavor::PowerShell));
-        p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             windows_shell: WindowsShell::Cmd,
             ..Default::default()
-        })));
+        }))));
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
     }
 
@@ -379,6 +405,7 @@ mod tests {
     fn posix_elevation_is_session_only_and_waits_for_explicit_submission() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::Posix,
             locations: vec![],
         });
@@ -397,6 +424,7 @@ mod tests {
         );
         let mut restarted = Presenter::new("left".into(), "right".into());
         restarted.apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::Posix,
             locations: vec![],
         });
@@ -407,6 +435,7 @@ mod tests {
     fn windows_choice_persists_and_wins_over_late_preferences_loading() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
+            network_position: 0,
             shell: ShellFlavor::PowerShell,
             locations: vec![],
         });
@@ -417,22 +446,16 @@ mod tests {
         });
         assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
         assert!(sent.borrow().is_empty(), "saves wait for the first load");
-        p.apply_with_sender(
-            Event::PreferencesLoaded(Ok(UserPreferences::default())),
-            &|command| {
-                sent.borrow_mut().push(command);
-                true
-            },
-        );
+        p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|command| {
+            sent.borrow_mut().push(command);
+            true
+        });
         assert!(matches!(
-            sent.borrow()[0],
+            &sent.borrow()[0],
             Command::SavePreferences {
-                preferences: UserPreferences {
-                    windows_shell: WindowsShell::Cmd,
-                    ..
-                },
+                preferences,
                 ..
-            }
+            } if preferences.windows_shell == WindowsShell::Cmd
         ));
         assert_eq!(sent.borrow().len(), 1);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));

@@ -1,0 +1,57 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { NavigationButton } from "navigation-controls.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// Measure the actual controls. Arrows reserve space only while the strip overflows.
+export component OverflowToolbar inherits Rectangle {
+    in property <string> left-hint: "Scroll toolbar left";
+    in property <string> right-hint: "Scroll toolbar right";
+    in property <length> spacing: 2px;
+    callback activated();
+    min-width: 0px;
+    height: Theme.control-height;
+    horizontal-stretch: 1;
+    private property <bool> overflowing: items.preferred-width > root.width + 0.5px;
+    private property <length> arrow-width: root.overflowing
+        ? min(Theme.touch ? 30px : 24px, max(0px, root.width / 3)) : 0px;
+    function clamp-offset() {
+        strip.content-x = clamp(strip.content-x,
+            min(0px, strip.visible-width - strip.content-width), 0px);
+    }
+    function scroll(direction: int) {
+        root.activated();
+        strip.content-x = clamp(strip.content-x - direction * max(Theme.tool-width, strip.visible-width * 0.8),
+            min(0px, strip.visible-width - strip.content-width), 0px);
+    }
+    changed width => { root.clamp-offset(); }
+    NavigationButton {
+        visible: root.overflowing;
+        x: 0px; width: root.arrow-width;
+        icon: FallbackIcons.back; hint: root.left-hint;
+        enabled: strip.content-x < -0.5px;
+        clicked => { root.scroll(-1); }
+    }
+    strip := ScrollView {
+        x: root.arrow-width;
+        width: max(0px, root.width - 2 * root.arrow-width);
+        height: root.height;
+        horizontal-scrollbar-policy: always-off;
+        vertical-scrollbar-policy: always-off;
+        content-width: max(items.preferred-width, self.visible-width);
+        content-height: self.visible-height;
+        changed content-width => { root.clamp-offset(); }
+        items := HorizontalLayout {
+            width: strip.content-width; height: root.height;
+            spacing: root.spacing; alignment: start;
+            @children
+        }
+    }
+    NavigationButton {
+        visible: root.overflowing;
+        x: root.width - root.arrow-width; width: root.arrow-width;
+        icon: FallbackIcons.forward; hint: root.right-hint;
+        enabled: strip.content-x > strip.visible-width - strip.content-width + 0.5px;
+        clicked => { root.scroll(1); }
+    }
+}

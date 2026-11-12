@@ -1,0 +1,250 @@
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { ScrollView, TextEdit } from "std-widgets.slint";
+import { HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { CompactPicker, TipBody } from "controls.slint";
+import { Theme } from "theme.slint";
+import { ToolWindow } from "tool-window.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { CloseButton } from "close-button.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// The host captures entries and performs every preview/export on backend workers.
+// This window owns only editable fields, selection offsets and action callbacks.
+export component FileListWindow inherits ToolWindow {
+    title: "Make File List · Midnight Explorer";
+    icon: FallbackIcons.make-file-list;
+    preferred-width: 720px; preferred-height: 520px;
+
+    in-out property <string> template-text: "$(FileName)$(CRLF)";
+    in property <[string]> template-history;
+    in property <[string]> variable-labels;
+    in-out property <int> destination;
+    in-out property <string> destination-path;
+    in-out property <bool> append-output;
+    in property <bool> busy;
+    in property <string> preview-text;
+    in property <string> error-text;
+    in property <string> summary;
+    in property <bool> conflict-pending;
+    in property <string> conflict-text;
+    in property <string> preview-font-family: "monospace";
+    out property <int> template-anchor: template-input.anchor-position-byte-offset;
+    out property <int> template-cursor: template-input.cursor-position-byte-offset;
+
+    callback template-edited(string);
+    callback insert-variable(int);
+    callback select-history(int);
+    callback select-preset(int);
+    callback browse();
+    callback generate();
+    callback cancel();
+    callback copy-error(string);
+    callback confirm();
+
+    private property <bool> compact: root.height < 360px;
+    private property <bool> can-submit: !root.busy && root.template-text != ""
+        && (root.destination != 2 || root.destination-path != "");
+
+    request-close => { root.cancel(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    public function begin() {
+        if root.busy { root.focus-content(); }
+        else { template-input.focus(); }
+    }
+    public function focus-template-at(offset: int) {
+        if !root.busy {
+            template-input.focus();
+            template-input.set-selection-offsets(offset, offset);
+        }
+    }
+    public function submit() { if root.can-submit { root.generate(); } }
+
+    VerticalLayout {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        padding: root.compact ? 4px : 12px;
+        spacing: root.compact ? 4px : 8px;
+        HorizontalLayout {
+            height: Theme.control-height; spacing: 8px; cross-axis-alignment: center;
+            Image { source: FallbackIcons.make-file-list; width: max(24px, Theme.icon-size); height: self.width; image-fit: contain; }
+            Text {
+                text: root.conflict-pending ? "Confirm existing output" : "Make File List";
+                font-weight: 600;
+                color: Theme.strong-text; overflow: elide; vertical-alignment: center;
+                min-width: 0px; horizontal-stretch: 1;
+                accessible-label: self.text;
+            }
+            CloseButton {
+                label: "Cancel file list"; hint: "Cancel and close Make File List (Escape).";
+                clicked => { root.cancel(); }
+            }
+        }
+        if !root.compact && !root.conflict-pending && root.summary != "": Text {
+            text: root.summary; color: Theme.secondary-text; overflow: elide;
+            min-width: 0px; font-size: Theme.small-font;
+        }
+        Rectangle {
+            min-height: 0px; min-width: 0px; vertical-stretch: 1; clip: true;
+            if root.conflict-pending: ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    spacing: 10px; padding: 8px; alignment: start;
+                    Text {
+                        text: root.append-output ? "Append the generated list to this file?" : "Replace this file with the generated list?";
+                        color: Theme.strong-text; wrap: word-wrap; font-weight: 600;
+                    }
+                    Text { text: root.conflict-text; color: Theme.text; wrap: word-wrap; }
+                    if root.error-text != "": ErrorNotice {
+                        text: root.error-text; copy-enabled: true;
+                        copy-details(text) => { root.copy-error(text); }
+                    }
+                }
+            }
+            form-scroll := ScrollView {
+                visible: !root.conflict-pending;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, form.min-height);
+                form := VerticalLayout {
+                    height: form-scroll.content-height;
+                    padding-right: 8px; spacing: 8px;
+                    Text { text: "Line template"; color: Theme.strong-text; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 4px; height: Theme.control-height;
+                        Rectangle {
+                            min-width: 0px; horizontal-stretch: 1;
+                            background: Theme.surface; border-width: 1px; border-radius: 4px;
+                            border-color: template-input.has-focus ? Theme.active-frame : Theme.frame;
+                            ContextMenuArea {
+                                Menu {
+                                    MenuItem { title: @tr("Undo"); enabled: !root.busy; activated => { template-input.undo(); } }
+                                    MenuItem { title: @tr("Redo"); enabled: !root.busy; activated => { template-input.redo(); } }
+                                    MenuSeparator {}
+                                    MenuItem { title: @tr("Cut"); enabled: !root.busy; activated => { template-input.cut(); } }
+                                    MenuItem { title: @tr("Copy"); activated => { template-input.copy(); } }
+                                    MenuItem { title: @tr("Paste"); enabled: !root.busy; activated => { template-input.paste(); } }
+                                    MenuItem { title: @tr("Select All"); activated => { template-input.select-all(); } }
+                                }
+                                Rectangle {
+                                    x: 8px; width: max(1px, parent.width - 16px); height: parent.height;
+                                    clip: true;
+                                    template-input := TextInput {
+                                        private property <length> horizontal-offset;
+                                        x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.horizontal-offset));
+                                        width: max(1px, parent.width - self.text-cursor-width, self.preferred-width);
+                                        height: parent.height;
+                                        text <=> root.template-text;
+                                        enabled: !root.busy; single-line: true;
+                                        font-family: root.preview-font-family; font-size: Theme.font-size;
+                                        color: root.busy ? Theme.muted-text : Theme.text;
+                                        selection-foreground-color: Theme.selection-text;
+                                        selection-background-color: Theme.selection-background;
+                                        vertical-alignment: center; accessible-label: "File list line template";
+                                        edited => { root.template-edited(self.text); }
+                                        accepted => { root.submit(); }
+                                        cursor-position-changed(position) => {
+                                            if position.x + self.horizontal-offset < 0px { self.horizontal-offset = -position.x; }
+                                            else if position.x + self.horizontal-offset > parent.width - self.text-cursor-width {
+                                                self.horizontal-offset = parent.width - position.x - self.text-cursor-width;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Tooltip { TipBody { text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."; } }
+                        }
+                        CompactPicker {
+                            model: root.template-history; label: ""; width: Theme.control-height;
+                            minimum-control-width: 0px; show-row-icons: false;
+                            enabled: !root.busy && root.template-history.length > 0;
+                            accessible-name: "File list template history";
+                            hint: "Reuse a previously generated file list template.";
+                            selected(index) => { root.select-history(index); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px; vertical-stretch: 0;
+                        CompactPicker {
+                            model: ["Names", "Full paths", "Details"]; label: "Presets";
+                            minimum-control-width: 0px; horizontal-stretch: 1; show-row-icons: false;
+                            enabled: !root.busy; accessible-name: "File list template preset";
+                            hint: "Replace the template with names, full paths or aligned metadata columns.";
+                            selected(index) => { root.select-preset(index); }
+                        }
+                        CompactPicker {
+                            model: root.variable-labels; label: "Insert variable";
+                            minimum-control-width: 0px; horizontal-stretch: 1; show-row-icons: false;
+                            enabled: !root.busy && root.variable-labels.length > 0;
+                            accessible-name: "Insert file list variable";
+                            hint: "Insert a variable at the template caret, replacing selected text.";
+                            selected(index) => { root.insert-variable(index); }
+                        }
+                    }
+                    Text { text: "Output"; color: Theme.strong-text; font-weight: 600; }
+                    HintedComboBox {
+                        model: ["Clipboard", "Internal viewer", "File"];
+                        current-index <=> root.destination;
+                        min-width: 0px; enabled: !root.busy;
+                        accessible-label: "File list output destination";
+                        hint: "Choose where the generated list will be sent when you press Create list.";
+                    }
+                    if root.destination == 2: HorizontalLayout {
+                        spacing: 6px; min-height: Theme.control-height; vertical-stretch: 0;
+                        HintedLineEdit {
+                            text <=> root.destination-path; min-width: 0px; horizontal-stretch: 1;
+                            enabled: !root.busy; accessible-label: "File list destination path";
+                            placeholder-text: "Destination file";
+                            hint: "Choose a text file. Existing output requires replacement confirmation or Append to file.";
+                            accepted => { root.submit(); }
+                        }
+                        HintedActionButton {
+                            text: "Browse…"; fallback-icon: FallbackIcons.open-path;
+                            enabled: !root.busy; accessible-label: "Browse file list destination";
+                            hint: "Choose the output file using the system file dialog.";
+                            clicked => { root.browse(); }
+                        }
+                    }
+                    if root.destination == 2: WrappingCheckBox {
+                        text: "Append to file"; checked <=> root.append-output; enabled: !root.busy;
+                        hint: "Add the new list after the existing file contents.";
+                    }
+                    Text { text: "Preview"; color: Theme.strong-text; font-weight: 600; }
+                    TextEdit {
+                        text: root.preview-text; read-only: true; wrap: no-wrap;
+                        min-width: 0px; min-height: 76px; preferred-height: 76px;
+                        vertical-stretch: 1;
+                        font-family: root.preview-font-family; font-size: Theme.font-size;
+                        accessible-label: "File list preview";
+                    }
+                    if root.error-text != "": ErrorNotice {
+                        text: root.error-text; copy-enabled: true;
+                        minimum-notice-height: 80px; preferred-notice-height: 110px;
+                        copy-details(text) => { root.copy-error(text); }
+                    }
+                }
+            }
+        }
+        footer := DialogFooter {
+            compact-height: root.compact;
+            dismiss => { root.cancel(); }
+            dismiss-hint: "Cancel and close Make File List (Escape).";
+            HintedActionButton {
+                primary: !root.conflict-pending || root.append-output;
+                destructive: root.conflict-pending && !root.append-output;
+                text: root.conflict-pending ? (root.append-output ? "Append" : "Replace")
+                    : root.busy ? "Working…" : "Create list";
+                accessible-label: root.conflict-pending ? "Confirm existing file list output" : "Create file list";
+                fallback-icon: root.destination == 0 ? FallbackIcons.copy
+                    : root.destination == 1 ? FallbackIcons.view : FallbackIcons.save-again;
+                enabled: root.conflict-pending || root.can-submit;
+                hint: root.conflict-pending ? "Confirm this existing file. A changed destination is checked again."
+                    : root.destination == 0 ? "Generate the list and copy it to the clipboard."
+                    : root.destination == 1 ? "Generate the list and open it in the internal text viewer."
+                    : "Generate the list and save it to the selected file.";
+                clicked => { if root.conflict-pending { root.confirm(); } else { root.submit(); } }
+            }
+        }
+    }
+}

@@ -94,6 +94,45 @@ Migrate versions1–3 without changing their existing values. Reject malformed/n
 duplicate and foreign-version fields; preserve local edits when initial loading
 arrives late. Save through the existing asynchronous atomic settings writer.
 
+## Inline directory branches
+
+The same input/search interaction applies after a native or archive panel adopts
+inline branches. Search examines the currently loaded, expanded presentation;
+it does not enumerate unopened folders. Match the original raw filename with the
+shared Unicode matcher. Archive captions are not name authority: invalid UTF-8
+raw member names do not match a nonempty Unicode query, and a differing caption
+does not receive an invented prefix highlight.
+
+Transient query options travel with the existing acknowledged tree reprojection
+request. Persistent filters intersect the prefix predicate. In quick-filter mode,
+matching descendants retain necessary unselectable, unmatched ancestor context.
+Jump mode preserves marks; filter mode removes hidden/context-only marks. Sorting
+preserves the current query and applies within sibling groups. Clearing the query
+restores the persistent-filter projection and the last usable focused occurrence,
+without reopening collapsed branches or reviving hidden selection.
+
+The backend creates ordered matching-row positions and original-name UTF-8
+highlight boundaries together with the immutable projection and selection. The
+UI only reads this index for counts and cursor movement. Keep one latest desired
+query and at most one in-flight options transaction. Rapid input and Escape
+supersede older results; pending or failed queries cannot activate a leftover
+cursor. Options preview and Cancel also supersede the desired filtering mode.
+
+Tree search queries have a 4,096-byte command admission budget and reject NUL;
+this is independent of path and filename lengths. Transient queue/stale-view
+failures carry typed retryability, not a classification inferred from diagnostic
+text. Retry on the ordinary bounded UI pump and do not flash failure notices for
+automatically retried searches. Semantic/resource failures preserve the last
+accepted projection and are reported. Resolved selection requests are tracked
+separately from successfully applied selection revisions, so a refused selection
+cannot leave search waiting indefinitely or grant unaccepted selection authority.
+
+Insert captures the exact matching occurrence before clearing an active query.
+Its single bounded intent waits for the acknowledged empty-query view and settled
+selection, then toggles that occurrence and advances the caret. A new query,
+navigation, disappearing row or terminal clear failure cancels the intent. A
+rejected stale publication cannot change the saved caret or cancel valid input.
+
 ## Tooltips
 
 Use a slightly smaller `Theme.small-font`. Prefer an approximately14px right and

@@ -2,21 +2,52 @@ use super::*;
 use std::{cell::RefCell, io};
 
 mod activation;
+mod archive_sizes;
+mod archives;
 mod bookmarks;
 mod bulk_selection;
 mod choices;
 mod controls;
+mod copy_completion;
+pub(super) mod copy_dialog;
+mod drag_drop;
+mod elevation;
+mod file_actions;
+mod filename_colors;
+mod folder_presence;
 mod font_preferences;
+mod keyboard;
+mod metadata;
 mod navigation;
+mod navigation_fallback;
+mod network_bookmarks;
+mod network_neighborhood;
 mod operations;
 mod panel_navigation;
+mod parent_focus;
 mod preferences_load;
 mod reclamation;
 mod search;
+mod selected_folder_sizes;
+mod selected_navigation;
+mod selected_size_status;
 mod selection;
+mod selection_rectangle;
 mod shortcuts;
 mod size_continuity;
 mod tabs;
+mod tree;
+mod tree_checksums;
+mod tree_clipboard;
+mod tree_comparison;
+mod tree_copy;
+mod tree_delete;
+mod tree_drag;
+mod tree_editor;
+mod tree_refresh;
+mod tree_shell;
+mod tree_user_commands;
+mod user_commands;
 mod volumes;
 mod watch;
 
@@ -96,7 +127,7 @@ fn fixture_toggle(p: &mut Presenter, pane: PaneId, command: Option<Command>) {
         navigation: request.navigation,
         revision: request.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(basis, bits).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
 }
 
@@ -120,3 +151,5 @@ fn move_cursor(p: &mut Presenter, pane: PaneId, key: i32) {
     fixture_toggle(p, pane, sent.into_inner());
 }
 mod selection_feedback;
+
+mod thumbnail_policy;

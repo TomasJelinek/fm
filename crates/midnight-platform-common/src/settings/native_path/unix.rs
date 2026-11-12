@@ -40,6 +40,8 @@ mod tests {
     fn malformed_unicode_tab_paths_roundtrip_through_preferences() {
         let mut preferences = midnight_core::UserPreferences::default();
         preferences.tabs[0] = midnight_core::PaneTabPreferences {
+            networks: Default::default(),
+            archives: Default::default(),
             paths: vec![PathBuf::from(OsString::from_vec(b"/tmp/\xff\xfe".to_vec()))],
             active: 0,
         };
@@ -79,6 +81,8 @@ mod tests {
         let path = PathBuf::from(OsString::from_vec(b"/tmp/\xff\xfe".to_vec()));
         let preferences = midnight_core::UserPreferences {
             bookmarks: vec![midnight_core::Bookmark {
+                network: None,
+                archive: None,
                 id: midnight_core::BookmarkId(1),
                 name: "Raw".into(),
                 path,

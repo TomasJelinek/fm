@@ -1,0 +1,194 @@
+import { ListView } from "std-widgets.slint";
+import { CompactPicker, TipBody } from "controls.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { Theme } from "theme.slint";
+
+export struct ShortcutCommandRow { id: string, label: string, aliases: string, selected: bool }
+
+export global KeyboardEditorView {
+    in-out property <[ShortcutCommandRow]> commands;
+    in-out property <int> selected-row: -1;
+    in-out property <string> selected-id;
+    in-out property <string> selected-label;
+    in-out property <[string]> aliases;
+    in-out property <string> filter;
+    in-out property <string> candidate;
+    in-out property <string> scope;
+    in-out property <string> used-by;
+    in-out property <string> issue;
+    in-out property <bool> can-assign;
+    in-out property <string> revision;
+    in-out property <string> command-revision;
+    in-out property <bool> capturing;
+    callback search(string);
+    callback select(string);
+    callback move-selection(int);
+    callback capture-key(KeyEvent) -> bool;
+    callback capture-chord(string);
+    callback clear();
+    callback assign(string, string);
+    callback remove(string, string);
+    callback restore(string);
+    callback reset-all();
+}
+
+component CommandRow inherits Rectangle {
+    in property <ShortcutCommandRow> command;
+    callback select();
+    height: Theme.control-height;
+    background: root.command.selected ? Theme.selected-background : area.has-hover ? Theme.hover : Theme.pane-background;
+    accessible-role: list-item; accessible-label: root.command.label; accessible-value: root.command.id;
+    accessible-checkable: true; accessible-checked: root.command.selected;
+    accessible-action-default => { root.select(); }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 8px;
+        Text { text: root.command.label; color: root.command.selected ? Theme.selected-text : Theme.text; font-size: Theme.font-size; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+        Text { text: root.command.aliases; color: root.command.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; overflow: elide; max-width: parent.width * 0.45; }
+    }
+    area := TouchArea { clicked => { root.select(); } Tooltip { TipBody { text: root.command.id; } } }
+}
+
+export component KeyboardEditor inherits VerticalLayout {
+    in property <length> available-height;
+    in property <bool> narrow;
+    private property <int> selected-alias: 0;
+    private property <bool> confirming-reset;
+    private property <string> revision: KeyboardEditorView.revision;
+    private property <string> selected-id: KeyboardEditorView.selected-id;
+    private property <int> selected-row: KeyboardEditorView.selected-row;
+    private property <length> row-height: Theme.control-height;
+    spacing: 8px; alignment: start;
+    changed revision => { root.selected-alias = min(root.selected-alias, max(0, KeyboardEditorView.aliases.length - 1)); }
+    changed selected-id => { root.selected-alias = 0; }
+    changed selected-row => { root.reveal-selection(); }
+    changed row-height => { root.reveal-selection(); }
+    function reveal-selection() {
+        if root.selected-row >= 0 {
+            let row-top = root.selected-row * Theme.control-height;
+            if row-top < -commands.content-y { commands.content-y = -row-top; }
+            else if row-top + Theme.control-height > -commands.content-y + commands.visible-height {
+                commands.content-y = min(0px, commands.visible-height - row-top - Theme.control-height);
+            }
+        }
+    }
+    Text { text: "Show commands containing"; color: Theme.text; font-size: Theme.font-size; }
+    HintedLineEdit {
+        text: KeyboardEditorView.filter; accessible-label: "Search commands";
+        hint: "Find commands by name or command ID. Matching ignores letter case.";
+        edited => { KeyboardEditorView.search(self.text); }
+    }
+    command-frame := Rectangle {
+        height: Theme.control-height * max(1, min(KeyboardEditorView.commands.length,
+            clamp(floor((root.available-height - 240px) / Theme.control-height), 2, 6))) + 2px;
+        background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
+        command-focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.DownArrow { KeyboardEditorView.move-selection(1); return accept; }
+                if event.text == Key.UpArrow { KeyboardEditorView.move-selection(-1); return accept; }
+                if event.text == Key.Home { KeyboardEditorView.move-selection(-1000000); return accept; }
+                if event.text == Key.End { KeyboardEditorView.move-selection(1000000); return accept; }
+                reject
+            }
+            commands := ListView {
+                x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                horizontal-scrollbar-policy: always-off;
+                changed visible-height => { root.reveal-selection(); }
+                for command in KeyboardEditorView.commands : CommandRow {
+                    width: commands.visible-width; command: command;
+                    select => { command-focus.focus(); KeyboardEditorView.select(command.id); }
+                }
+            }
+        }
+        if KeyboardEditorView.commands.length == 0 : Text {
+            text: "No matching commands"; color: Theme.secondary-text; font-size: Theme.font-size;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+    Text {
+        text: KeyboardEditorView.selected-label;
+        color: Theme.strong-text; font-weight: 600; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    GridLayout {
+        spacing: 8px;
+        CompactPicker {
+            row: 0; col: 0; minimum-control-width: 0px;
+            model: KeyboardEditorView.aliases; current-index: root.selected-alias;
+            label: root.selected-alias < KeyboardEditorView.aliases.length ? KeyboardEditorView.aliases[root.selected-alias] : "Unassigned";
+            accessible-name: "Shortcuts for selected command"; horizontal-stretch: 1; show-row-icons: false;
+            hint: "Select one assigned shortcut to remove. Other shortcuts remain unchanged.";
+            enabled: KeyboardEditorView.aliases.length > 0;
+            selected(index) => { root.selected-alias = index; }
+        }
+        HintedActionButton {
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            text: "Remove"; enabled: root.selected-alias >= 0 && root.selected-alias < KeyboardEditorView.aliases.length;
+            hint: "Remove only the selected shortcut from this command.";
+            clicked => { KeyboardEditorView.remove(KeyboardEditorView.selected-id, KeyboardEditorView.aliases[root.selected-alias]); }
+        }
+    }
+    Text { text: "Press shortcut keys"; color: Theme.text; font-size: Theme.font-size; }
+    GridLayout {
+        spacing: 8px;
+        capture-box := Rectangle {
+            row: 0; col: 0; colspan: root.narrow ? 2 : 1; min-width: 0px;
+            horizontal-stretch: 1; height: Theme.control-height;
+            background: Theme.pane-background; border-width: capture.has-focus ? 2px : 1px;
+            border-color: capture.has-focus ? Theme.active-frame : Theme.frame; border-radius: 3px;
+            accessible-role: text-input; accessible-label: "Press shortcut keys";
+            accessible-value: KeyboardEditorView.candidate;
+            accessible-action-default => { capture.focus(); }
+            forward-focus: capture;
+            Text {
+                x: 8px; width: parent.width - 16px;
+                text: KeyboardEditorView.candidate == "" ? "Click here, then press a shortcut" : KeyboardEditorView.candidate;
+                color: KeyboardEditorView.candidate == "" ? Theme.secondary-text : Theme.text;
+                font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
+            }
+            capture := FocusScope {
+                changed has-focus => { KeyboardEditorView.capturing = self.has-focus; }
+                key-pressed(event) => {
+                    KeyboardEditorView.capture-key(event);
+                    if event.text == Key.Tab { return reject; }
+                    if event.text == Key.Escape { command-focus.focus(); }
+                    accept
+                }
+                TouchArea {
+                    mouse-cursor: text; clicked => { capture.focus(); }
+                    Tooltip { TipBody { text: "Press the desired combination. Tab or Escape records that key and leaves this field. Captured keys never run application commands."; } }
+                }
+            }
+        }
+        HintedActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            text: "Clear"; hint: "Clear the captured shortcut without changing saved assignments."; clicked => { KeyboardEditorView.clear(); } }
+        HintedActionButton {
+            row: root.narrow ? 1 : 0; col: root.narrow ? 1 : 2;
+            text: "Assign"; enabled: KeyboardEditorView.can-assign;
+            hint: "Add this shortcut to the command, keeping its other shortcuts.";
+            clicked => { KeyboardEditorView.assign(KeyboardEditorView.selected-id, KeyboardEditorView.candidate); }
+        }
+    }
+    Text { text: "Use in: " + KeyboardEditorView.scope; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+    Text { text: "Shortcut currently used by"; color: Theme.text; font-size: Theme.font-size; }
+    Text { text: KeyboardEditorView.used-by == "" ? "—" : KeyboardEditorView.used-by; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+    if KeyboardEditorView.issue != "" : ErrorNotice { text: KeyboardEditorView.issue; maximum-notice-height: max(72px, Theme.font-size * 3); }
+    GridLayout {
+        spacing: 8px;
+        HintedActionButton { row: 0; col: 0; text: "Restore command"; hint: "Restore only this command's default shortcuts."; clicked => { KeyboardEditorView.restore(KeyboardEditorView.selected-id); } }
+        HintedActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            text: root.narrow ? "Restore defaults" : "Restore all defaults"; accessible-label: "Restore all defaults";
+            hint: "Review before removing all custom shortcut assignments."; clicked => { root.confirming-reset = true; } }
+    }
+    if root.confirming-reset : VerticalLayout {
+        spacing: 6px;
+        Text { text: "Replace all custom shortcuts with the defaults?"; color: Theme.error-text; font-size: Theme.font-size; wrap: word-wrap; }
+        GridLayout {
+            spacing: 8px;
+            HintedActionButton { row: 0; col: 0; text: root.narrow ? "Keep shortcuts" : "Keep custom shortcuts";
+                accessible-label: "Keep custom shortcuts"; hint: "Cancel the reset."; clicked => { root.confirming-reset = false; } }
+            HintedActionButton { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                text: root.narrow ? "Reset shortcuts" : "Reset all shortcuts"; accessible-label: "Reset all shortcuts";
+                hint: "Remove every custom assignment and restore the default map."; clicked => { root.confirming-reset = false; KeyboardEditorView.reset-all(); } }
+        }
+    }
+}

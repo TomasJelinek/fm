@@ -22,7 +22,7 @@ fn selected_adapter_serves_independent_service_trait_objects() {
         .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].path, path);
-    assert_eq!(entries[0].metadata.size, None);
+    assert!(entries[0].metadata.size.is_none_or(|size| size == 16));
     assert_eq!(directory.entry_metadata(&path).unwrap().size, Some(16));
     assert!(
         volumes

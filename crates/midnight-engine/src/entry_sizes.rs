@@ -1,5 +1,7 @@
 //! Independent Space-key directory requests share global scan budgets without cancelling peers.
-use crate::{CommittedSnapshot, Outbox, SharedSizes, Snapshots, folder_sizes};
+use crate::{
+    CommittedSnapshot, Outbox, SharedSizes, Snapshots, folder_sizes, task_lifetime::TaskLifetime,
+};
 use midnight_core::{
     Cancellation, EntryId, EntryKind, Event, FileSystem, FolderSizeScanId, NavigationId, PaneId,
 };
@@ -41,30 +43,51 @@ impl Drop for Request {
     }
 }
 
+pub(crate) struct Services {
+    pub(crate) filesystem: Arc<dyn FileSystem>,
+    pub(crate) scope: TaskLifetime,
+    pub(crate) reports: crate::ReportArena,
+}
+
 pub(crate) struct Controller {
     filesystem: Arc<dyn FileSystem>,
     outbox: Outbox,
     snapshots: Snapshots,
     budget: Arc<Semaphore>,
+    delivery_cancel: Cancellation,
     io_budget: Arc<folder_sizes::IoBudget>,
+    size_observer: crate::selection_sizes::Observer,
     pending: [Vec<Request>; 2],
+    scope: TaskLifetime,
+    reports: crate::ReportArena,
 }
 
 impl Controller {
     pub(crate) fn new(
-        filesystem: Arc<dyn FileSystem>,
+        services: Services,
         outbox: Outbox,
         snapshots: Snapshots,
         budget: Arc<Semaphore>,
+        delivery_cancel: Cancellation,
         io_budget: Arc<folder_sizes::IoBudget>,
+        size_observer: crate::selection_sizes::Observer,
     ) -> Self {
+        let Services {
+            filesystem,
+            scope,
+            reports,
+        } = services;
         Self {
             filesystem,
             outbox,
             snapshots,
             budget,
+            delivery_cancel,
             io_budget,
+            size_observer,
             pending: Default::default(),
+            scope,
+            reports,
         }
     }
 
@@ -99,7 +122,7 @@ impl Controller {
                         .as_ref()
                         .filter(|snapshot| snapshot.navigation == navigation)
                 })
-                .filter(|_| state.pending.is_none())
+                .filter(|_| state.pending.is_none() && state.has_native_view())
                 .cloned()
         };
         let duplicate = self.pending[pane.index()]
@@ -116,12 +139,16 @@ impl Controller {
         let finished = Arc::new(AtomicBool::new(false));
         let done = finished.clone();
         let filesystem = self.filesystem.clone();
+        let reports = self.reports.clone();
         let outbox = self.outbox.clone();
         let snapshots = self.snapshots.clone();
         let budget = self.budget.clone();
+        let delivery_cancel = self.delivery_cancel.clone();
         let io_budget = self.io_budget.clone();
+        let size_observer = self.size_observer.clone();
         let path = snapshot.path.clone();
-        let task = tasks.spawn(async move {
+        let scope = self.scope.clone();
+        let task = tasks.spawn(self.scope.future(async move {
             let Ok(permit) = budget.acquire_owned().await else {
                 return;
             };
@@ -130,16 +157,15 @@ impl Controller {
             let _permit = permit;
             let final_cancel = worker_cancel.clone();
             let final_outbox = outbox.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = worker_permit;
                 if worker_cancel.is_cancelled() {
                     return false;
                 }
-                let Some(root) = snapshot
-                    .entries
-                    .iter()
-                    .find(|row| row.id == entry && row.kind == EntryKind::Directory)
-                else {
+                let Some(root) = snapshot.entries.iter().find(|row| {
+                    row.id == entry
+                        && matches!(row.kind, EntryKind::Directory | EntryKind::DirectoryLink)
+                }) else {
                     return false;
                 };
                 folder_sizes::compute_batched(
@@ -147,17 +173,19 @@ impl Controller {
                     std::slice::from_ref(root),
                     &worker_cancel,
                     &mut |entry, size| {
-                        if worker_cancel.is_cancelled() {
-                            return false;
-                        }
                         record_size(
                             &snapshot,
                             &snapshots,
                             pane,
                             &root.path,
-                            size,
+                            &size,
                             &worker_cancel,
                         );
+                        if let Some(event) =
+                            size_observer.updated(pane, &snapshot.sizes, &root.path)
+                        {
+                            size_observer.publish(event);
+                        }
                         outbox.blocking_send(
                             Event::FolderSizeUpdated {
                                 pane,
@@ -166,13 +194,14 @@ impl Controller {
                                 entry,
                                 size,
                             },
-                            &worker_cancel,
+                            &delivery_cancel,
                         )
                     },
                     &io_budget,
+                    &reports,
                 );
                 !worker_cancel.is_cancelled()
-            })
+            }))
             .await;
             final_outbox
                 .send(Event::FolderSizesFinished {
@@ -183,7 +212,7 @@ impl Controller {
                 })
                 .await;
             done.store(true, Ordering::Release);
-        });
+        }));
         self.pending[pane.index()].push(Request {
             navigation,
             scan,
@@ -290,14 +319,14 @@ fn record_size(
     snapshots: &Snapshots,
     pane: PaneId,
     path: &Path,
-    size: midnight_core::FolderSize,
+    size: &midnight_core::FolderSize,
     cancel: &Cancellation,
 ) {
     snapshot
         .sizes
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .insert(path.into(), size);
+        .insert(path.into(), size.clone());
     // Same-location refresh/resort must retain ongoing size estimates for later explicit sorting.
     let caches = {
         let state = snapshots.lock().unwrap_or_else(|error| error.into_inner());
@@ -315,6 +344,6 @@ fn record_size(
         cache
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(path.into(), size);
+            .insert(path.into(), size.clone());
     }
 }

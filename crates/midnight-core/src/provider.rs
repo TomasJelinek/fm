@@ -9,13 +9,26 @@ use std::{
     },
 };
 
+#[path = "job_pause.rs"]
+mod pause;
+
 #[derive(Clone, Debug, Default)]
 pub struct Cancellation {
     local: Arc<AtomicBool>,
     parents: Arc<[Arc<AtomicBool>]>,
+    pauses: Arc<[Arc<pause::State>]>,
 }
 
 impl Cancellation {
+    /// Observe an existing external close flag without granting authority to cancel it.
+    /// Cancelling this token never changes the supplied flag.
+    pub fn observing(flag: Arc<AtomicBool>) -> Self {
+        Self {
+            parents: Arc::from([flag]),
+            ..Self::default()
+        }
+    }
+
     pub fn cancel(&self) {
         self.local.store(true, Ordering::Release);
     }
@@ -33,6 +46,26 @@ impl Cancellation {
         Self {
             local: Arc::default(),
             parents: parents.into(),
+            pauses: self.pauses.clone(),
+        }
+    }
+
+    /// A fresh child cancelled by either lifetime, without cancelling either parent.
+    pub fn linked(&self, other: &Self) -> Self {
+        let mut parents = Vec::with_capacity(self.parents.len() + other.parents.len() + 2);
+        parents.push(self.local.clone());
+        parents.extend(self.parents.iter().cloned());
+        parents.push(other.local.clone());
+        parents.extend(other.parents.iter().cloned());
+        Self {
+            local: Arc::default(),
+            parents: parents.into(),
+            pauses: self
+                .pauses
+                .iter()
+                .chain(other.pauses.iter())
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -99,10 +132,41 @@ pub enum StorageKind {
     Unknown,
 }
 
+/// Native directory identity used only for read-only sizing cycle detection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SizeDirectoryIdentity {
+    pub device: u64,
+    pub object: [u8; 16],
+}
+
+/// Native directory target for read-only sizing, with links resolved by the OS.
+/// This live observation is neither a pinned snapshot nor mutation authority.
+#[derive(Clone, Debug)]
+pub struct SizeDirectoryTarget {
+    pub path: PathBuf,
+    pub identity: SizeDirectoryIdentity,
+}
+
 /// Blocking directory enumeration and metadata access; call on a worker thread.
 /// Paths and names retain their native identity without Unicode normalization.
 pub trait DirectoryService: Send + Sync + 'static {
-    /// Streams names and types with initially unknown metadata, without following links.
+    /// Resolve an ordinary directory or directory-link target for explicit sizing.
+    /// `None` means a successfully inspected non-directory (for example a file link).
+    /// Unsupported providers may still scan ordinary directories, but cannot follow links.
+    /// All resolution/identity calls belong on bounded backend workers.
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<Option<SizeDirectoryTarget>, FsError> {
+        Err(FsError::from_io(
+            "resolve directory size target",
+            path,
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
+    /// Streams names and types, optionally with cached metadata, without following links.
     /// Cancellation or a false callback return stops enumeration cooperatively.
     ///
     /// # Errors
@@ -115,11 +179,28 @@ pub trait DirectoryService: Send + Sync + 'static {
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError>;
 
+    /// True when enumeration supplied this provider's complete display metadata.
+    /// This is a listing snapshot, never authority for later mutation or transfer.
+    fn listing_metadata_complete(&self, _entry: &Entry) -> bool {
+        false
+    }
+
     /// Reads metadata without following the final link or opening special-file contents.
     ///
     /// # Errors
     /// Returns a contextual error when the entry is missing or inaccessible.
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError>;
+}
+
+/// Native navigation recovery policy; query only on a backend worker.
+/// This returns an address, never permission to bypass the installed filesystem provider.
+pub trait NavigationFallbackService: Send + Sync + 'static {
+    /// Returns `/` on Linux or the drive root containing Windows itself.
+    /// The result must be an absolute root, preserving the native path encoding.
+    ///
+    /// # Errors
+    /// Returns a contextual error when the operating system root cannot be determined.
+    fn navigation_fallback_root(&self) -> Result<PathBuf, FsError>;
 }
 
 /// Blocking discovery of navigable roots, independent of capacity queries.
@@ -142,6 +223,20 @@ pub trait VolumeService: Send + Sync + 'static {
 
 /// Blocking storage-capacity queries; call on a worker thread separately from listing.
 pub trait StorageService: Send + Sync + 'static {
+    /// Explicit read-only native volume details. Run on a bounded backend worker.
+    /// Unsupported fields are absent; cancellation is cooperative between OS calls.
+    fn volume_information(
+        &self,
+        path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<crate::VolumeInformation, FsError> {
+        Err(FsError::from_io(
+            "query volume information",
+            path,
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
     /// Only positively identified local solid-state storage permits parallel scans.
     /// Unsupported providers remain conservative without changing their path semantics.
     fn storage_kind(&self, _path: &Path) -> Result<StorageKind, FsError> {

@@ -1,6 +1,6 @@
 //! Immutable prefix-search requests and projections over an accepted directory listing.
 
-use crate::{DirectoryIndex, Entry, NavigationId, PaneId};
+use crate::{DirectoryIndex, Entry, NavigationId, PaneId, PanelFilter};
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -17,6 +17,7 @@ pub struct SearchRequest {
     /// Literal prefix with default Unicode case folding, without normalization.
     /// Non-Unicode native names match only the empty query; raw identities never change.
     pub query: String,
+    pub filter: PanelFilter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,4 +37,7 @@ pub struct SearchResult {
     pub matches: Arc<[SearchMatch]>,
     /// Positions are contiguous match-row positions, not source-row positions.
     pub index: Arc<DirectoryIndex>,
+    /// Persistent-filter projection, independent of transient prefix search.
+    pub filtered: Arc<[SearchMatch]>,
+    pub filtered_index: Arc<DirectoryIndex>,
 }

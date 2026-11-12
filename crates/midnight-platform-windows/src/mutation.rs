@@ -16,10 +16,15 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 
+#[path = "mutation_discovery.rs"]
+pub(crate) mod discovery;
+
 #[path = "mutation_create.rs"]
 mod create;
+#[path = "mutation_metadata.rs"]
+mod metadata;
 #[path = "mutation_native.rs"]
-mod native;
+pub(crate) mod native;
 #[path = "mutation_trash.rs"]
 mod trash;
 
@@ -129,15 +134,130 @@ impl WindowsMutation {
 }
 
 impl PreparedMutation for WindowsMutation {
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.item.path)?;
+        let source = self.revalidate(false)?;
+        discovery::walk(
+            &self.parent,
+            &source,
+            &self.name,
+            &self.item.path,
+            cancel,
+            visit,
+        )?;
+        self.revalidate(false).map(|_| ())
+    }
     fn item(&self) -> &MutationItem {
         &self.item
     }
 
+    fn metadata_snapshot(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::MetadataSnapshot, FsError> {
+        metadata::snapshot(self, cancel)
+    }
+    fn metadata_children(
+        &self,
+        cancel: &Cancellation,
+        max_targets: usize,
+    ) -> Result<Vec<Arc<dyn PreparedMutation>>, FsError> {
+        metadata::children(self, cancel, max_targets)
+    }
+    fn metadata_name_available(&self, name: &OsStr, cancel: &Cancellation) -> Result<(), FsError> {
+        metadata::name_available(self, name, cancel)
+    }
+    fn edit_metadata(
+        &self,
+        patch: &midnight_core::MetadataPatch,
+        name: Option<&OsStr>,
+        cancel: &Cancellation,
+    ) -> midnight_core::MetadataOutcome {
+        metadata::edit(self, patch, name, cancel)
+    }
+
+    fn prepare_rename_replacement(
+        &self,
+        new_name: &OsStr,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedRenameReplacement, FsError> {
+        use midnight_core::{TransferIdentity, TransferService};
+        checked(cancel, &self.item.path)?;
+        validate_name(new_name)
+            .map_err(|e| failure("prepare Rename replacement", &self.item.path, e))?;
+        if self.item.kind != EntryKind::File {
+            return Err(invalid(
+                &self.item.path,
+                "Rename replacement requires two ordinary files",
+            ));
+        }
+        let _source = self.revalidate(false)?;
+        let parent = native::identity(&self.parent)
+            .map_err(|e| failure("read parent identity", &self.item.path, e))?;
+        let service = WindowsFileSystem::new(None);
+        let directory = service
+            .prepare_move_destination(self.item.path.parent().expect("prepared parent"), cancel)?;
+        if directory.identity()
+            != (TransferIdentity {
+                device: parent.volume,
+                object: parent.id,
+            })
+        {
+            return Err(changed(&self.item.path));
+        }
+        let movement = service.prepare_move_source(&self.item.path, cancel)?;
+        if movement.capture.entry().identity
+            != (TransferIdentity {
+                device: self.identity.volume,
+                object: self.identity.id,
+            })
+        {
+            return Err(changed(&self.item.path));
+        }
+        let target = directory.prepare_target(new_name, cancel)?.ok_or_else(|| {
+            failure(
+                "prepare Rename replacement",
+                &self.item.path,
+                io::ErrorKind::NotFound.into(),
+            )
+        })?;
+        if target.entry().item.kind != EntryKind::File
+            || target.entry().identity == movement.capture.entry().identity
+        {
+            return Err(invalid(
+                &target.entry().item.path,
+                "Cannot replace a directory, link, source itself or hard-link alias",
+            ));
+        }
+        if !directory.supports_native_move_replacement(movement.capture.entry().identity) {
+            return Err(failure(
+                "prepare Rename replacement",
+                &target.entry().item.path,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Recoverable Rename replacement requires a supported local fixed NTFS destination.",
+                ),
+            ));
+        }
+        self.revalidate(false)?;
+        Ok(midnight_core::PreparedRenameReplacement {
+            movement,
+            directory,
+            target,
+        })
+    }
     fn rename(&self, new_name: &OsStr, cancel: &Cancellation) -> Result<PathBuf, FsError> {
         let path = &self.item.path;
         checked(cancel, path)?;
         validate_name(new_name).map_err(|e| failure("rename", path, e))?;
         let source = self.revalidate(true)?;
+        // NT can accept a no-replace rename onto a distinct hard-link alias.
+        // Check the entry name while this handle denies concurrent delete/rename.
+        metadata::name_available(self, new_name, cancel)?;
         checked(cancel, path)?;
         native::rename(&source, new_name).map_err(|e| failure("rename", path, e))?;
         Ok(path.with_file_name(new_name))
@@ -164,7 +284,7 @@ impl PreparedMutation for WindowsMutation {
     }
 }
 
-fn validate_path(path: &Path, allow_root: bool) -> Result<(), FsError> {
+pub(crate) fn validate_path(path: &Path, allow_root: bool) -> Result<(), FsError> {
     reject_dot_components(path)?;
     if !path.is_absolute() || (!allow_root && path.file_name().is_none()) {
         return Err(invalid(
@@ -211,7 +331,7 @@ fn reject_dot_components(path: &Path) -> Result<(), FsError> {
     Ok(())
 }
 
-fn validate_name(name: &OsStr) -> io::Result<()> {
+pub(crate) fn validate_name(name: &OsStr) -> io::Result<()> {
     let units: Vec<_> = name.encode_wide().collect();
     let invalid = || {
         io::Error::new(
@@ -255,7 +375,7 @@ fn validate_name(name: &OsStr) -> io::Result<()> {
 }
 
 fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
-    if cancel.is_cancelled() {
+    if !cancel.wait_if_paused() {
         Err(failure(
             "mutate",
             path,
@@ -288,3 +408,7 @@ fn changed(path: &Path) -> FsError {
         ),
     )
 }
+
+#[cfg(test)]
+#[path = "mutation_pause_tests.rs"]
+mod pause_tests;

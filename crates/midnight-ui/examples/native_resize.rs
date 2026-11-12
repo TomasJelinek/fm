@@ -161,8 +161,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut samples = samples.borrow_mut();
     assert!(samples.len() >= 24, "insufficient rendered resize samples");
     samples.sort_by(f64::total_cmp);
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     println!(
-        "native WGPU, debug, 10k rows/pane, resize request to render submission: n={} median={:.3}ms p95={:.3}ms",
+        "native WGPU, {profile}, 10k rows/pane, resize request to render submission: n={} median={:.3}ms p95={:.3}ms",
         samples.len(),
         samples[samples.len() / 2],
         samples[samples.len() * 95 / 100]

@@ -10,9 +10,21 @@ use midnight_platform_common::LocalServices;
 use std::fs;
 use std::path::{Path, PathBuf};
 mod clipboard;
+mod clipboard_text;
 mod desktop;
+mod directory_links;
+mod editor;
+mod file_clipboard;
+mod file_drag_drop;
+mod user_commands;
 pub use clipboard::NativeClipboard;
+pub use file_drag_drop::NativeFileDragDrop;
+#[cfg(test)]
+mod discovery_tests;
+mod find;
 mod fonts;
+mod icon_picker;
+mod icon_storage;
 mod icons;
 #[allow(unsafe_code)]
 mod locale;
@@ -20,8 +32,15 @@ mod metadata;
 mod mounts;
 mod mutation;
 mod open;
+mod path_picker;
 mod settings;
+mod shell_menu;
+mod size_directory;
+#[allow(unsafe_code)]
+mod sort_keys;
 mod storage_kind;
+mod transfer;
+mod volume_information;
 mod watch;
 use mounts::mount_paths;
 
@@ -43,20 +62,43 @@ impl LinuxFileSystem {
 }
 
 impl DirectoryService for LinuxFileSystem {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryTarget>, FsError> {
+        size_directory::resolve(path, cancel)
+    }
     fn read_directory(
         &self,
         path: &Path,
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        self.local.read_directory(path, cancel, emit)
+        self.local.read_directory(path, cancel, &mut |mut entry| {
+            directory_links::classify(&mut entry, cancel);
+            !cancel.is_cancelled() && emit(entry)
+        })
     }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         metadata::read(path)
     }
 }
 
+impl midnight_core::NavigationFallbackService for LinuxFileSystem {
+    fn navigation_fallback_root(&self) -> Result<PathBuf, FsError> {
+        Ok(PathBuf::from("/"))
+    }
+}
+
 impl StorageService for LinuxFileSystem {
+    fn volume_information(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::VolumeInformation, FsError> {
+        volume_information::query(path, cancel)
+    }
     fn storage_kind(&self, path: &Path) -> Result<midnight_core::StorageKind, FsError> {
         Ok(storage_kind::detect(path))
     }

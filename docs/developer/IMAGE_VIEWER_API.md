@@ -1,0 +1,345 @@
+# Restricted image and document viewer API
+
+Image and paginated document viewers are independent executable packages. The public workspace is
+`image-viewer-api/`, containing `midnight-image-viewer-api` and
+`midnight-image-viewer-sdk` version 0.2.0. Plugins consume immutable released
+registry packages; they never depend on or patch application crates. The SDK
+uses the shared public `midnight-worker-sdk` for sandbox startup. The separate
+host crate is `midnight-image-viewer-host`.
+
+Version 0.2.0 preserves every existing MIV1 image message and adds paginated
+document messages. Existing 0.1.0 release archives remain immutable; migrated
+plugins explicitly pin SDK 0.2.0 and its new lockfile checksums.
+Both public member manifests declare their version explicitly. They must not
+inherit `version.workspace`: Cargo also adopts the API as a host path dependency,
+where the root application workspace has an independent version. Release archive
+checksums cover `Cargo.toml.orig` as well as the normalized manifest. A correction
+before publication requires a distinct candidate bundle and verified checksum
+refresh; an already published package requires a new version and must never be
+retargeted to different bytes.
+
+## Installation and discovery
+
+Install a package under `<application directory>/viewers/<package>/` with
+`image-viewer.json`, its executable, `LICENSE`, `THIRD-PARTY.md` and notices:
+
+```json
+{
+  "schema": 1,
+  "protocol": 1,
+  "id": "midnight.viewer.image",
+  "name": "Images",
+  "version": "0.2.0",
+  "target": "x86_64-pc-windows-msvc",
+  "executable": "midnight-viewer-image.exe",
+  "extensions": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "svg", "avif"]
+}
+```
+
+Linux packages use their actual `x86_64-unknown-linux-gnu` or
+`aarch64-unknown-linux-gnu` target and `midnight-viewer-image` executable. The
+manifest is strict: unknown fields, foreign targets, unsupported versions,
+relative executable traversal, duplicate extensions and control characters in
+the display name are rejected. Extensions are lowercase ASCII letters/digits,
+at most 32 bytes each and 64 entries. A package must not contain both this
+manifest and native-viewer `plugin.toml` or web-viewer `web-viewer.json`.
+Duplicate image-provider IDs exclude
+all conflicting providers; application composition also checks native IDs.
+
+`discover(application_executable: &Path)` takes the **full executable path**, not
+its directory, and returns usable providers. `discover_with_diagnostics` returns
+`Discovery { providers, diagnostics }`, preserving usable packages when another
+package is invalid. Each `Provider` exposes ID, name, version, extensions,
+`supports_extension(&str)` and `package_dir()`. Executable identity stays private.
+`Provider::is_document() -> bool` identifies a protocol-2 paginated provider.
+Single-image consumers, including the image comparator, must exclude those
+providers unless they explicitly support selecting a document page.
+
+The PDF package uses the same manifest schema, with `protocol: 2`, ID
+`midnight.viewer.pdf`, extension `pdf`, and executable `midnight-viewer-pdf.exe`
+(or `midnight-viewer-pdf` on Linux). Image packages retain protocol 1. Discovery
+requires document metadata from protocol 2 and single-image metadata from
+protocol 1, so a provider cannot silently change its declared role.
+
+Discovery reads at most 128 package candidates, a 16 KiB manifest, and 512 entries
+per package with depth at most 8. Every package entry and ancestor passes the
+existing native owner/write-permission and redirection checks; the package is
+rechecked immediately before launch. Special files, redirected paths and
+ambiguous package roles fail. No working directory, panel folder, archive, PATH
+or source filename selects executable code. These checks establish installation
+trust, not publisher authentication or protection against the trusted account.
+
+## Shared image formats
+
+The image viewer and image thumbnail workers share the independent
+`plugins/image-decoder` library. PNG, JPEG, GIF, WebP, BMP, ICO and TIFF retain
+image-rs/moxcms decoding and color management. Static SVG uses pinned resvg 0.48.1
+inside the same restricted worker boundary. Thumbnails rasterize directly at the
+requested size; the viewer retains a bounded original-size raster, so magnifying
+SVG uses image sampling rather than rerendering vectors.
+
+SVG supports paths/shapes, gradients, bounded local reuse and text from embedded
+Noto Sans fonts. It does not load system/document-selected fonts, local or remote
+images, scripts or external resources. DTDs, cycles, excessive XML/reference
+expansion, event handlers, foreign objects, and filter/mask/clip/marker/pattern
+effects fail explicitly. Encoded SVG is capped at 4 MiB, 32768 XML nodes, depth 64
+and 65536 expanded local-reference visits; the ordinary image pixel limits remain.
+The bundled Latin, Arabic and Hebrew fonts provide deterministic fallback, not
+exact system-font matching or complete Unicode coverage. See the
+[decoder contract](../../plugins/image-decoder/README.md) and its font notices.
+
+AVIF uses the same independent decoder through the narrowly patched image-rs
+constructor, with pinned static dav1d 1.5.4. It stages at most 32 MiB of encoded
+container data and rejects excess input before the tolerant parser. Both primary
+and alpha receive one-thread native settings and a 16,777,216-pixel frame limit
+before allocation; common output/edge limits still apply. This cap is specific to
+AVIF and does not change host source capture or existing streamed raster formats.
+The exact MPL-2.0 mp4parse source accompanies both packages. No public API or host
+protocol change is needed. HEIC/HEIF remains unsupported pending a qualified
+packaged decoder and distribution terms; suffix-only registration is prohibited.
+
+## Host source and session contract
+
+All host calls, including `close` and destruction, run on backend workers. The
+UI submits requests and cancellation; it does not decode, read files or reap
+processes. `Source: Send + Sync` supplies `length`, `version`, `validate`, bounded
+`read_at(offset, length)` and an optional positive `confirmed_local_ssd` hint.
+`CapturedFile` implements this contract directly. Native and virtual sources
+retain their own raw identities; the child receives only source length and
+opaque reads. Version and length are checked after opening and before/after
+rendering. Live validation detects observed changes; it is not a filesystem
+snapshot.
+
+```rust
+ImageSession::open(&provider, source, &cancel, timeout) -> io::Result<ImageSession>
+session.metadata() -> Metadata
+session.is_document() -> bool
+session.page_count() -> usize
+session.page_metadata(page: usize) -> Option<Metadata>
+session.render(viewport, &cancel, timeout) -> io::Result<Frame>
+session.render_page(page: usize, viewport, &cancel, timeout) -> io::Result<Frame>
+session.validate(&cancel) -> io::Result<()>
+session.close()
+```
+
+The source parameter is `Arc<dyn Source>`, cancellation is `AtomicBool`, and
+timeout is `Duration`. Image Open decodes once and retains original oriented sRGB
+RGBA8 pixels; document Open retains the parsed source in the restricted child.
+Rendering uses that retained content and
+cannot request more source data. `Metadata { width, height }` describes original
+oriented dimensions. `Frame { width, height, rgba }` contains a complete physical
+viewport with straight alpha. Every render error, cancellation or source change
+invalidates the session; subsequent requests cannot revive it.
+
+The application's raster-image presentation may request individual bounded tiles
+through the same positioned viewport operation. Retained host tiles still require
+source revalidation before a new camera frame is published. `validate` performs
+that check on the backend without another decoder render. Tiles lying wholly
+outside the source image are transparent letterboxing: the engine creates them
+locally, with the same bounded pixel ownership and unique tile identities, without
+asking the decoder to render or validate each empty tile. Their immutable
+app-owned pixel object records guaranteed transparency at construction time.
+The presenter keeps their bounded grid/identity metadata for camera coverage,
+but creates neither an image row nor a GPU/software texture for empty pixels.
+It never scans source pixels on the UI thread to infer transparency. This is an
+internal presentation contract, not a plugin wire/ABI change. Tiles intersecting any
+source pixel still use the restricted worker. A scene made only from cached or
+transparent tiles still requires source validation for its current revision before
+publication; optimizing blank space never bypasses that gate.
+
+Raster-image tile sampling is capped at source resolution. Once original pixels
+are cached, magnification changes their display coordinates instead of asking the
+worker for enlarged copies. Tile keys use the sampling scale; camera surface
+identity separately includes the requested zoom, page and viewport so old pan
+requests cannot alter a new view. The raster viewport shrinks by
+`sampling_scale / display_zoom`, preserving the existing viewport pixel budget.
+New camera revisions still validate the source before publishing reused pixels.
+Downsampling keeps its filtered worker path, and PDF/document rasterization is
+uncapped by this image-only rule. Source-resolution image tiles request nearest
+sampling for magnification; reduced-density tiles and documents keep smooth
+presentation.
+The UI requests its initial viewport from the actual native canvas and display
+scale. Each accepted image frame retains explicit physical viewport dimensions;
+its pixels are converted to logical display coordinates without stretching them
+to a different-sized canvas. Native DPI changes and image toolbar/status layout
+changes therefore do not temporarily change the image's declared zoom while a
+replacement frame is prepared. Rejected frames cannot update these dimensions.
+
+The host also rejects
+a reply whose declared payload exceeds the requested raster before allocating its
+body. These are host changes; the independent wire/SDK version is unchanged.
+
+Document providers currently retain one bounded viewport per render. They are
+identified by actual document metadata, not a filename suffix. Reinterpreting a
+whole PDF page for each small tile would amplify CPU work; document tiling is not
+claimed as an optimization. Both paths retain cancellation, captured-source
+validation and the same public viewport bounds.
+
+Page indices are zero-based. `metadata()` and existing `render()` address page
+zero; an ordinary image has one page and `is_document() == false`. Out-of-range
+page metadata returns `None`; an out-of-range render invalidates the session.
+Documents return ordered `DocumentMetadata { pages: Vec<Metadata> }`. PDF sizes
+use logical points rounded upward; the provider preserves exact page crop and
+rotation when rendering. Selection/copy/search of PDF text is not yet exposed.
+
+The host checks cancellation/deadlines at 10 ms polling intervals, kills a failed
+or cancelled worker, and reaps it on the backend. A source OS call already in
+progress can remain blocked until the OS returns; decoder termination does not
+claim to interrupt that call or release its worker early. Source reads share
+the application's weighted I/O budget. Session admission/generation checks and
+discarding obsolete results belong to the viewer engine.
+
+## Source ranges and archive memory
+
+The user resumed generic archive streaming and private disk spooling on
+9 November 2026. ARCH-01 is implementation work in progress; the paragraphs
+below describe the installed runtime until its replacement is qualified.
+The experimental JPEG-only adapter remains reverted; all raster formats use
+the shared image-rs decoder path. The replacement must address the common
+source/cache lifecycle for all viewers, with no fixed archive/member byte-size
+ceiling. Bounded working memory, cancellation, integrity verification and explicit
+out-of-space errors remain required.
+
+Broker `Read { offset, length }` requests allow a decoder to request only part of
+the encoded file; they do not guarantee that the decoder itself streams. In the
+pinned `image 0.25.10`, `JpegDecoder::new` calls `read_to_end` into its own `Vec<u8>`.
+This happens for both native and archive JPEGs. For an archive JPEG, the archive
+cache and image worker can therefore retain separate encoded copies during
+decoding, in addition to decoded pixels and the archive source. The JPEG decoder's
+input is dropped after decode; the archive cache has a separate lifetime.
+A future format-specific decoder could read only an embedded preview. PSD is
+not a currently supported codec. The current raster plugin retains the complete
+decoded still image, within its pixel budget.
+Broker source reads are currently available during Open, not arbitrary later
+render calls; deferred layer/content loading would need a separately qualified
+protocol extension.
+
+An archive source is not automatically a streaming source. The current archive
+worker retains its bounded source in RAM; first ZIP member access decompresses
+and verifies that complete member into RAM, and solid 7z access stages and
+verifies the required block. A small viewer read can therefore cause much more
+decompression and retained memory than the requested range. No extracted image
+TEMP file or disk spool is currently created for internal viewing. Viewer pixels
+are released with the decoder; archive content can outlive the viewer while a
+panel or another reader retains the mount. Thumbnail disk caching is separate.
+
+ARCH-01 tracks replacing these full-memory archive buffers with bounded source
+reads and, when seek/decompression needs it, a private disk spool owned by a
+content lease. This must preserve source identity, aggregate RAM budgets,
+cancellation, cleanup and low-disk errors. It must not expose an unverified member
+as verified: full CRC validation can still require reading the whole member or
+solid block even when only a preview is displayed. The whole decoded payload
+need not occupy RAM. Spooling is a planned backend capability, not an implemented
+property of the current `read_at` interface.
+Replacing the JPEG decoder's own full-input buffer requires separately verified
+streaming decoder behavior; disk spooling alone cannot remove that allocation.
+Use an aggregate small-file RAM budget and spill larger content to disk rather
+than writing every small image unconditionally. Future qualification must measure
+peak memory across both workers, not just broker chunk sizes, and cover preview-only
+reads, source changes, cancellation, CRC failure and exhausted spool storage.
+
+## Wire format and resource limits
+
+Each message starts with `MIV1`, a little-endian u32 payload length and a u8 tag.
+Image protocol 1 uses `Open`, `Metadata`, `Viewport`, `Rgba`, `Read`, `Data`
+and `Failure` (tags 1–7). Document protocol 2 adds `DocumentMetadata` (tag 8:
+u32 count then u32 width/height for each page) and `PageViewport` (tag 9:
+u64 request ID, u32 zero-based page, then the existing viewport fields).
+The `MIV1` envelope and existing tag encoding are unchanged. Protocol 2 uses
+`PageViewport { id: u64, page: u32, viewport: Viewport }` after opening.
+Request IDs bind each returned raster to its viewport. Paths,
+URLs, UI objects, native handles and command strings are absent. Startup first
+performs the worker SDK's sandbox-ready handshake; content is not parsed before
+Windows AppContainer or Linux restriction succeeds.
+
+| Resource | Bound |
+|---|---|
+| Physical viewport | `MAX_EDGE = 4096`, `MAX_PIXELS = 4 * 1024 * 1024` |
+| Decoded image | `MAX_DECODED_EDGE = 32768`, `MAX_DECODED_BYTES = 128 * 1024 * 1024` |
+| Document pages | `MAX_DOCUMENT_PAGES = 4096`; nonempty, each logical page size validates as `Metadata` |
+| PDF encoded source | 128 MiB, checked before allocation or source reads |
+| Broker read/reply | `MAX_READ_BYTES = 256 * 1024` |
+| Total source reads during Open | 256 MiB and at most 8192 response-loop iterations |
+| Embedded ICC profile | 4 MiB |
+| Worker process | 512 MiB memory, 60 cumulative CPU seconds |
+| Per Open/render response | Caller-supplied wall-clock timeout and cancellation |
+| Scale | `MIN_SCALE = 1 / 32768`, `MAX_SCALE = 64` |
+
+`rgba_length` validates output dimensions before allocation. Metadata separately
+checks original dimensions and RGBA storage. Message decoding uses type-specific
+allocation limits and rejects truncation, trailing fields, invalid tags/version,
+nonfinite geometry, read overflow and inconsistent raster lengths. The cumulative
+CPU allowance covers the entire persistent session; exhausting it ends the
+session rather than silently refreshing its budget.
+
+`Viewport { width, height, scale, origin_x, origin_y }` uses physical output pixels,
+source-to-physical scale and source-coordinate top-left. Negative origins permit
+centering; outside-image pixels are transparent. Output pixel centers map to
+`origin + (output + 0.5) / scale`. Scale 1 with integral origins preserves exact
+decoded pixels; zoom never enlarges a thumbnail. The image plugin uses nearest
+original pixels for magnification and alpha-weighted area filtering for reduction,
+without allocating an entire scaled image. Animated formats expose their first
+still frame. image-rs 0.25.10 and moxcms 0.8.1 match thumbnail codec features,
+orientation and sRGB color handling.
+
+The SDK exposes `Document::metadata(&self) -> DocumentMetadata` and
+`Document::render(&self, page: u32, viewport: Viewport) -> io::Result<Frame>`.
+`serve_document(decode)` takes the same `FnOnce(&mut dyn ReadSeek)` parser pattern
+as `serve`, but validates document metadata and each page index before rendering.
+The SDK enters the sandbox before either parser and allows broker reads only
+during Open. Hayro 0.9.0 rasterizes each PDF viewport directly from retained PDF
+content; it never allocates an entire zoomed document. Per-render caches are
+released after each frame, with the same host process/time limits as images.
+Compiled standard fonts/CMaps and embedded document assets are available, while
+filesystem/network font lookup, JavaScript and link activation are absent.
+Password prompts and PDF editing are not implemented. Hayro is experimental;
+unsupported rendering warnings reject the page and full PDF fidelity is not
+claimed. See the plugin README and bundled license notices for exact limits.
+
+## Independent build and verification
+
+`scripts/build-image-viewer.ps1` and `.sh` build/package either raster worker and
+are called by `build-viewers` for image and PDF. Select PDF with `-Viewer pdf` on
+PowerShell or the fourth shell argument `pdf`; existing image invocations remain
+valid. Their worker SDK config is independent of the native viewer
+SDK (`-WorkerSdkConfig` or `MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG`). Without a supplied
+config they cache a source-stamped immutable bundle from `worker-packages`.
+PowerShell wrappers restore both the values and absence of saved environment
+variables, so sequential image/PDF builds also work when `CARGO_TARGET_DIR` was
+initially unset.
+Plugin-owned `scripts/build.*` and `scripts/ci.*` operate only on the exported
+plugin and public registry; all output stays under `_build`. With build root
+`_build/image-viewer-ci`, the independent package is
+`_build/image-viewer-ci/package/midnight-viewer-image`.
+
+The public API tests cover malformed/truncated messages and independent resource
+bounds. SDK tests cover exact broker replies, seek limits and one decode serving
+multiple viewports. Plugin tests generate owned PNG/JPEG/GIF/ICC fixtures for
+exact pixels, alpha, cropping/zoom, fit filtering, EXIF orientation, color
+conversion, malformed content and excessive dimensions. Host native tests require
+`MIDNIGHT_IMAGE_VIEWER_TEST_APPLICATION` pointing into an owned trusted test
+installation; they exercise the actual sandbox, cached renders, changed sources,
+corruption, cancellation and deadlines behind the shared I/O gate.
+The independent PDF project generates multipage, standard-font, cropped/rotated
+and vector zoom/pan fixtures. `MIDNIGHT_PDF_VIEWER_TEST_APPLICATION` enables the
+host's `pdf_native` tests for real sandboxed page rendering, source retention,
+changed revisions and cancellation. CI exports the public SDK and sparse-checks
+each plugin alone on Windows and Linux before host integration.
+
+### Host startup diagnostics
+
+`midnight-image-viewer-host` has a default-off `startup-diagnostics` feature. It
+also enables the same feature on the shared `midnight-worker-platform` crate.
+Build `cargo build -p midnight-image-viewer-host --example image_startup
+--features startup-diagnostics`, using the normal SDK config and `_build` target,
+then run `image_startup <trusted-app-executable> <existing-image>`.
+
+The host records provider/source validation, restricted process startup, Ready,
+Open, first broker request, I/O admission and decoded metadata. Platform-specific
+marks split native startup further. Each operation buffers at most sixteen fixed
+labels and elapsed-millisecond values, then writes one stderr line; paths,
+environment values and content are excluded. No worker wire/API or sandbox
+behavior changes. Without the feature the timing code is compiled out.
+See the [measured startup attribution](../verification/2026-11-11-image-loading.md)
+for interpreting cold native-process delays separately from decoding and UI
+publication.

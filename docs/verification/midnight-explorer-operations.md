@@ -2,8 +2,16 @@
 
 This record covers the working-tree extension after `0961c96835505aa5a948be217607613db722643c`.
 Earlier verification records retain the former FM command/crate names as historical
-evidence. Current executable/package: `midnight-explorer`; internal crates use
+evidence. Cargo package: `midnight-explorer`; executable: `me.exe` (Windows) / `me`
+(Linux), renamed on 2026-11-06. Earlier build measurements retain the old filename.
+Internal crates use
 `midnight-*`. Legacy settings constants and the existing Git remote remain intact.
+
+Executable rename verification on 2026-11-06: the explicit Cargo binary target
+`me` built in release mode. `_build/release/me.exe` is 30,022,144 bytes; `--help`
+and `--smoke-test` both exited 0. The smoke check found 3 volumes and listed both
+requested directories. Linux uses the same portable binary target declaration;
+its application build was not repeated for this filename-only change.
 
 ## Recorded focused verification before the final renamed build
 

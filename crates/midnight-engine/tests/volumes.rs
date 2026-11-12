@@ -155,7 +155,14 @@ async fn metadata_errors_are_independent_and_preserve_unicode_names() {
     let files = Arc::new(Files::new(&["label-error", "space-error", "good"]));
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(files, sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files,
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         assert!(!matches!(event, Event::VolumeDetailsUpdated { .. }));
@@ -205,7 +212,14 @@ async fn blocked_details_do_not_block_discovery_navigation_or_exceed_two_workers
     let files = Arc::new(files);
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         matches!(event, Event::VolumesUpdated(_))
@@ -249,7 +263,14 @@ async fn refresh_flood_coalesces_and_discards_superseded_discovery() {
     let files = Arc::new(files);
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), gate.entered.notified())
         .await
@@ -295,7 +316,14 @@ async fn replaced_raw_root_rejects_old_metadata_for_same_volume_id() {
     let files = Arc::new(files);
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         matches!(event, Event::VolumesUpdated(_))
@@ -330,7 +358,14 @@ async fn duplicate_roots_share_cache_and_periodic_refresh_replaces_expired_detai
     let files = Arc::new(Files::new(&["same", "same"]));
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         matches!(event, Event::VolumeDetailsUpdated { .. })
@@ -354,11 +389,14 @@ async fn duplicate_roots_share_cache_and_periodic_refresh_replaces_expired_detai
         tokio::task::yield_now().await;
     }
     assert_eq!(files.label_calls.load(Ordering::SeqCst), 1);
-    // Tokio rounds timer deadlines up to a millisecond tick. A timer barrier
-    // reaches that tick; advancing exactly 45s can stop just before it when the
-    // real clock was paused between ticks. The barrier cannot jump to the next
-    // discovery interval, so a missed 45s cache refresh still fails below.
-    tokio::time::sleep_until(refresh_due).await;
+    // Tokio rounds deadlines up to a millisecond tick. Advance explicitly:
+    // persistent archive-size blocking lanes inhibit paused-clock auto-advance.
+    // Stop at this refresh tick so a missed 45s cache refresh still fails below.
+    tokio::time::advance(
+        (refresh_due + Duration::from_millis(1))
+            .saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await;
     assert!(tokio::time::Instant::now() <= refresh_due + Duration::from_millis(1));
     // Keep the runtime runnable until real native workers finish. An event
     // receive with a timeout could auto-advance paused time to the next 45s

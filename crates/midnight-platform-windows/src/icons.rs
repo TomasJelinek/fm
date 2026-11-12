@@ -25,18 +25,41 @@ use windows_sys::Win32::{
     UI::{
         Shell::{
             Common::ITEMIDLIST, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
-            FOLDERID_Profile, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
+            FOLDERID_Music, FOLDERID_OneDrive, FOLDERID_Pictures, FOLDERID_Profile,
+            FOLDERID_Videos, ILFree, KF_FLAG_DONT_VERIFY, SHFILEINFOW, SHGFI_ICON, SHGFI_PIDL,
             SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_LINKOVERLAY,
             SHGSI_SMALLICON, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetStockIconInfo,
             SHSTOCKICONINFO, SIID_DELETE, SIID_DOCNOASSOC, SIID_DRIVECD, SIID_DRIVEFIXED,
-            SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FOLDER,
-            SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_RENAME, SIID_SETTINGS,
+            SIID_DRIVENET, SIID_DRIVERAM, SIID_DRIVEREMOVE, SIID_DRIVEUNKNOWN, SIID_FIND,
+            SIID_FOLDER, SIID_FOLDEROPEN, SIID_HELP, SIID_INFO, SIID_MYNETWORK, SIID_RENAME,
+            SIID_SETTINGS,
         },
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
 };
 
+#[path = "icons_executable.rs"]
+mod executable;
+
+pub(crate) fn load_resource(
+    path: &Path,
+    index: i32,
+    size: u16,
+    cancel: &midnight_core::Cancellation,
+) -> Option<midnight_platform_common::icon_snapshot::SnapshotPixels> {
+    executable::load_index(path, index, size, cancel)
+}
+
 impl IconService for WindowsFileSystem {
+    fn load_executable_icon(
+        &self,
+        path: &Path,
+        size: u16,
+        cancel: &midnight_core::Cancellation,
+    ) -> Result<Option<IconPixels>, FsError> {
+        Ok(executable::load(path, size, cancel))
+    }
+
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError> {
         if !(1..=64).contains(&key.size) {
             return Ok(None);
@@ -63,7 +86,24 @@ impl IconService for WindowsFileSystem {
         if !pixels.iter().any(|pixel| pixel[3] != 0) || opaque_black_placeholder(key.kind, pixels) {
             return Ok(None);
         }
-        Ok(IconPixels::new(u32::from(key.size), u32::from(key.size), rgba).ok())
+        let generic = key.kind == IconKind::File
+            && stock_icon(SIID_DOCNOASSOC).is_some_and(|stock| {
+                let Some(black) = surface.draw(stock.0, 0) else {
+                    return false;
+                };
+                let Some(white) = surface.draw(stock.0, 255) else {
+                    return false;
+                };
+                straight_rgba(&black, &white) == rgba
+            });
+        Ok(
+            IconPixels::new(u32::from(key.size), u32::from(key.size), rgba)
+                .ok()
+                .map(|mut pixels| {
+                    pixels.generic = generic;
+                    pixels
+                }),
+        )
     }
 }
 
@@ -160,13 +200,14 @@ fn action_stock_id(role: ActionIcon) -> Option<i32> {
     match role {
         ActionIcon::Options => Some(SIID_SETTINGS),
         ActionIcon::Help => Some(SIID_HELP),
+        ActionIcon::Find => Some(SIID_FIND),
         ActionIcon::Rename => Some(SIID_RENAME),
         ActionIcon::Delete => Some(SIID_DELETE),
         ActionIcon::Properties | ActionIcon::About => Some(SIID_INFO),
         ActionIcon::NewFolder => Some(SIID_FOLDER),
         ActionIcon::NewFile => Some(SIID_DOCNOASSOC),
         ActionIcon::OpenPath => Some(SIID_FOLDEROPEN),
-        ActionIcon::Network => Some(SIID_DRIVENET),
+        ActionIcon::Network => Some(SIID_MYNETWORK),
         // Windows has no appropriate documented stock icon for these roles.
         ActionIcon::Back
         | ActionIcon::Forward
@@ -201,7 +242,11 @@ fn location_folder_id(kind: LocationKind) -> Option<windows_sys::core::GUID> {
         LocationKind::Desktop => FOLDERID_Desktop,
         LocationKind::Documents => FOLDERID_Documents,
         LocationKind::Downloads => FOLDERID_Downloads,
-        LocationKind::Volume => return None,
+        LocationKind::Pictures => FOLDERID_Pictures,
+        LocationKind::Videos => FOLDERID_Videos,
+        LocationKind::Music => FOLDERID_Music,
+        LocationKind::OneDrive => FOLDERID_OneDrive,
+        LocationKind::Volume | LocationKind::Temporary => return None,
     })
 }
 
@@ -469,6 +514,18 @@ fn straight_rgba(black: &[u8], white: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unassociated_document_art_is_identified_for_semantic_fallbacks() {
+        let mut key = IconKey::file();
+        key.extension = Some("midnight-unassociated-icon-fixture-7cb49".into());
+        if let Some(pixels) = WindowsFileSystem::new(None).load_icon(&key).unwrap() {
+            assert!(
+                pixels.generic,
+                "the Shell's default document is not associated artwork"
+            );
+        }
+    }
     use midnight_core::IconKind;
     use std::ffi::OsString;
     use std::path::Path;
@@ -553,7 +610,7 @@ mod tests {
     fn semantic_actions_only_use_appropriate_documented_stock_icons() {
         assert_eq!(
             action_stock_id(midnight_core::ActionIcon::Network),
-            Some(SIID_DRIVENET)
+            Some(windows_sys::Win32::UI::Shell::SIID_MYNETWORK)
         );
         assert_eq!(
             action_stock_id(midnight_core::ActionIcon::Options),

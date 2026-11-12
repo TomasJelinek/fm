@@ -1,0 +1,74 @@
+import { Theme } from "theme.slint";
+import { CompactPicker } from "controls.slint";
+import { ActionIcons, FallbackIcons } from "action-icons.slint";
+import { NavigationButton } from "navigation-controls.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+
+// View choices belong to their panel even while the other panel is active.
+export component PanelViewControls inherits Rectangle {
+    in property <string> context;
+    in property <string> press-context: root.context;
+    in property <bool> press-cancelled;
+    in property <ActionIcons> action-icons;
+    in property <int> view-mode;
+    in property <int> sort-column;
+    in property <bool> descending;
+    in property <string> view-label;
+    in property <string> sort-label;
+    in property <bool> compact;
+    in property <int> pane-id;
+    in property <string> filter-label;
+    callback activate();
+    callback filter();
+    callback view-selected(int);
+    callback sort-selected(int);
+    callback dismissed();
+    private property <length> picker-width: root.compact ? 36px : 104px;
+    width: 2 * root.picker-width + Theme.tool-width + 8px;
+    height: Theme.control-height;
+    HorizontalLayout {
+        spacing: 4px;
+        NavigationButton {
+            width: Theme.tool-width; height: Theme.control-height;
+            context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
+            icon: FallbackIcons.filter;
+            border-color: root.filter-label != "" ? Theme.active-frame : transparent;
+            accessible-label: root.pane-id == 0 ? "Left panel filter" : "Right panel filter";
+            accessible-checkable: true; accessible-checked: root.filter-label != "";
+            hint: ShortcutHints.hint(root.filter-label == "" ? "Filter files"
+                : "Filter active: " + root.filter-label, "panel.filter");
+            clicked => { root.activate(); root.filter(); }
+        }
+        CompactPicker {
+            width: root.picker-width; minimum-control-width: 0px;
+            context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
+            popup-width: 190px; popup-align-right: true; fit-popup-to-content: true;
+            icon-only: root.compact; icon: FallbackIcons.view; native-icon: root.action-icons.view;
+            model: ["Detailed", "Brief", "Thumbnails"]; current-index: root.view-mode;
+            shortcuts: [ShortcutHints.keys("view.detailed"), ShortcutHints.keys("view.brief"), ShortcutHints.keys("view.thumbnails")];
+            label: self.model[root.view-mode]; accessible-name: root.view-label;
+            hint: "View: " + self.model[root.view-mode];
+            opening => { root.activate(); }
+            selected(index) => { root.activate(); root.view-selected(index); }
+            dismissed => { root.dismissed(); }
+        }
+        CompactPicker {
+            width: root.picker-width; minimum-control-width: 0px;
+            context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
+            popup-width: 190px; popup-align-right: true; fit-popup-to-content: true; icon-only: root.compact;
+            native-icon: root.descending ? root.action-icons.sort-descending : root.action-icons.sort-ascending;
+            icon: root.descending ? FallbackIcons.sort-descending : FallbackIcons.sort-ascending;
+            model: ["Name", "Size", "Modified", "Extension", "Reverse order"];
+            shortcuts: [ShortcutHints.keys("sort.name"), ShortcutHints.keys("sort.size"),
+                ShortcutHints.keys("sort.modified"), ShortcutHints.keys("sort.extension"),
+                ShortcutHints.keys(root.sort-column == 1 ? "sort.size" : root.sort-column == 2 ? "sort.modified" : root.sort-column == 3 ? "sort.extension" : "sort.name")];
+            separator-before-index: 4;
+            current-index: root.sort-column; label: self.model[root.sort-column] + (root.descending ? " ↓" : " ↑");
+            accessible-name: root.sort-label;
+            hint: "Sort by " + self.model[root.sort-column] + (root.descending ? " · descending" : " · ascending");
+            opening => { root.activate(); }
+            selected(index) => { root.activate(); root.sort-selected(index == 4 ? root.sort-column : index); }
+            dismissed => { root.dismissed(); }
+        }
+    }
+}

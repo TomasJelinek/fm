@@ -43,7 +43,7 @@ and resource budgets must hold on failure; slow desktop work must not block pane
 
 ### Task 3: Engine desktop orchestration
 
-- [x] Optional `.with_desktop(Arc<dyn DesktopServices>)`; independent budgets for
+- [x] Optional `.configure_desktop()?.install(Arc<dyn DesktopServices>)`; independent budgets for
       properties, terminal launches, locations and icon requests.
 - [x] Bounded icon queue/cache, background pixels and progressive delivery; icon
       requests never delay listing. Bound retained terminal children and reap them.

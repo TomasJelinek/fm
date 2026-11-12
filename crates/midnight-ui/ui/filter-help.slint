@@ -1,0 +1,14 @@
+// Supported syntax is implemented by midnight-platform-common/filter_expression.
+// This is presentation only: filters are parsed and evaluated in the backend.
+export global FilterHelp {
+    out property <string> text:
+        "Choose the matching language in Panel filter. OK applies it to the current panel; Cancel keeps the previous filter. Show all removes an applied filter.\n\n"
+        + "MASKS\n*.txt;*.md     Text or Markdown files\n*.jpg|private*     JPEG files except names starting with private\n*.*     Every filename, including names without an extension\n\n* matches any text; ? matches one character. Separate alternatives with ; and exclusions with |. Use ;; for a literal semicolon. Folders stay visible in Masks and Regex modes.\n\n"
+        + "REGEX\n[.](txt|md)$     Names ending in .txt or .md\n^report     Names starting with report\n\nA match anywhere in the name is enough. Use ^ and $ to anchor the start and end. Case sensitive controls letter case.\n\n"
+        + "EXPRESSION\nCombine filename and metadata conditions with and, or and not. Parentheses group conditions. Write keywords in lowercase and quote text with double quotes.\n\n"
+        + "kind = file and size >= 10MiB\n    Regular files at least 10 MiB.\n\nkind = directory or name like \"*.rs\"\n    Directories and Rust source files.\n\nname =~ \"[.](png|jpg)$\" and not attributes has hidden\n    PNG/JPEG names without the hidden attribute.\n\nmodified >= \"2026-01-01T00:00:00Z\"\n    Items modified since the specified UTC instant.\n\n"
+        + "FIELDS AND OPERATORS\nname: =, !=, like (wildcards), =~ (regex)\nsize and modified: =, !=, <, <=, >, >=\nkind: = or != file, directory, directory-link, symlink, other\nattributes has: readonly, hidden, system, archive, temporary, sparse, compressed, offline, encrypted\npresent(size), missing(modified): test whether metadata is available\n\n"
+        + "Sizes are unsigned whole bytes, optionally followed by B, kB, MB, GB, TB or KiB, MiB, GiB, TiB. MB is 1,000,000 bytes; MiB is 1,048,576 bytes. Timestamps require a timezone: Z or an explicit offset such as +01:00.\n\n"
+        + "Expression mode can filter folders too. Only known metadata is tested; filters never scan file contents or calculate folder sizes. A missing value is not zero. Use present(...) or missing(...) when metadata availability matters. Native attributes may not be supplied by every filesystem. Case sensitive affects name matching, not keywords.\n\n"
+        + "Evaluation order is not, then and, then or. Use parentheses for clarity. Expressions are limited to 4096 UTF-8 bytes, 256 nodes, 32 nested levels and 16 name patterns; they cannot execute commands or scripts.";
+}

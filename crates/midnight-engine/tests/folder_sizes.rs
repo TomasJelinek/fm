@@ -37,6 +37,7 @@ fn scan(pane: PaneId, navigation: u64, generation: u64) -> Command {
         pane,
         navigation: NavigationId(navigation),
         scan: FolderSizeScanId(generation),
+        selection: None,
     }
 }
 
@@ -53,6 +54,7 @@ async fn individual_directory_scans_keep_other_results_and_ignore_file_rows() {
     let (sender, mut events) = mpsc::channel(32);
     let task = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )
@@ -134,6 +136,7 @@ async fn real_unicode_tree_computes_only_visible_directory_rows_with_stable_iden
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(Some(base.into()))),
             sender,
         )
@@ -203,6 +206,7 @@ async fn failed_navigation_preserves_the_committed_snapshot_for_size_scans() {
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(Some(base.into()))),
             sender,
         )
@@ -258,6 +262,7 @@ async fn queued_unaccepted_listing_cannot_replace_the_actual_visible_snapshot() 
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(Some(base.into()))),
             sender,
         )
@@ -326,6 +331,7 @@ async fn size_sort_uses_measured_folders_and_preserves_entry_identities() {
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(Some(base.into()))),
             sender,
         )
@@ -574,7 +580,14 @@ async fn full_scan_supersedes_a_blocked_individual_scan_before_replacing_its_cac
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -590,6 +603,31 @@ async fn full_scan_supersedes_a_blocked_individual_scan_before_replacing_its_cac
         .await
         .unwrap();
     entered(&filesystem).await;
+    // Consume the initial estimate so the old scan's next update below must be
+    // its final cancelled partial, delivered after the blocked read returns.
+    loop {
+        if let Event::FolderSizeUpdated {
+            pane,
+            navigation,
+            scan,
+            entry,
+            size,
+        } = next(&mut events).await
+        {
+            assert_eq!(
+                (pane, navigation, scan, entry),
+                (
+                    PaneId::Left,
+                    NavigationId(1),
+                    FolderSizeScanId(1),
+                    entries[0].id,
+                )
+            );
+            assert!(!size.finished);
+            assert_eq!(size.bytes, 0);
+            break;
+        }
+    }
     let old_token = filesystem.token.lock().unwrap().clone().unwrap();
     commands.send(scan(PaneId::Left, 1, 2)).await.unwrap();
     // The next command confirms full-scan dispatch without waiting for its blocked I/O.
@@ -601,25 +639,81 @@ async fn full_scan_supersedes_a_blocked_individual_scan_before_replacing_its_cac
     assert!(old_token.is_cancelled());
     filesystem.release();
     let mut final_size = None;
-    loop {
+    let mut cancelled_partial = false;
+    let mut replacement_finished = false;
+    while !cancelled_partial || !replacement_finished {
         match next(&mut events).await {
-            Event::FolderSizeUpdated { scan, size, .. } => {
-                assert_eq!(scan, FolderSizeScanId(2));
-                if size.finished {
-                    final_size = Some(size.bytes);
+            Event::FolderSizeUpdated {
+                pane,
+                navigation,
+                scan,
+                entry,
+                size,
+            } => {
+                assert_eq!(
+                    (pane, navigation, entry),
+                    (PaneId::Left, NavigationId(1), entries[0].id)
+                );
+                assert_eq!(size.errors, 0, "cancellation is not a read error");
+                assert!(size.warnings.is_none());
+                match scan {
+                    FolderSizeScanId(1) => {
+                        assert!(!size.finished, "superseded scan cannot claim completion");
+                        assert_eq!(size.bytes, 0, "cancelled blocked read emitted no entries");
+                        cancelled_partial = true;
+                    }
+                    FolderSizeScanId(2) => {
+                        if size.finished {
+                            final_size = Some(size.bytes);
+                        }
+                    }
+                    other => panic!("Unexpected size scan: {other:?}"),
                 }
             }
             Event::FolderSizesFinished {
-                scan, cancelled, ..
+                pane,
+                navigation,
+                scan,
+                cancelled,
             } => {
+                assert_eq!((pane, navigation), (PaneId::Left, NavigationId(1)));
                 assert_eq!(scan, FolderSizeScanId(2));
                 assert!(!cancelled);
-                break;
+                replacement_finished = true;
             }
             _ => {}
         }
     }
     assert_eq!(final_size, Some(42));
+    // Both workers have now published their final values. A later explicit size
+    // sort must use the replacement cache, never the old scan's zero-byte partial.
+    commands
+        .send(Command::Resort {
+            pane: PaneId::Left,
+            navigation: NavigationId(2),
+            path: "active".into(),
+            sort: SortSpec {
+                column: midnight_core::SortColumn::Size,
+                descending: false,
+            },
+            source: Some(midnight_core::VisibleDirectory {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+                path: "active".into(),
+                entries: entries.clone(),
+            }),
+        })
+        .await
+        .unwrap();
+    let sorted = listing(&mut events, PaneId::Left, 2).await;
+    assert_eq!(sorted.len(), 1);
+    assert_eq!(sorted[0].id, entries[0].id);
+    assert_eq!(sorted[0].metadata.size, Some(42));
+    assert_eq!(
+        filesystem.reads.load(Ordering::SeqCst),
+        2,
+        "sorting must reuse the replacement result without rescanning"
+    );
     commands.send(Command::Shutdown).await.unwrap();
     task.await.unwrap();
 }
@@ -632,7 +726,14 @@ async fn individual_scan_finishing_during_refresh_remains_available_to_explicit_
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -699,7 +800,14 @@ async fn refresh_honors_target_continuation_until_the_ui_retires_its_completion(
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -761,7 +869,14 @@ async fn running_scan_survives_repeated_resorts_without_restarting_or_losing_res
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -836,7 +951,14 @@ async fn refresh_continues_live_scan_and_resort_uses_raw_paths_after_id_recyclin
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -945,7 +1067,14 @@ async fn same_path_new_context_navigation_still_cancels_the_old_scan() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -974,7 +1103,14 @@ async fn refresh_applies_live_completed_totals_before_sorting_by_size() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1038,6 +1174,7 @@ async fn resort_uses_exact_displayed_snapshot_before_visible_acknowledgment() {
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(Some(base.into()))),
             sender,
         )
@@ -1130,7 +1267,14 @@ async fn blocked_scan_keeps_other_pane_navigation_responsive_and_can_be_cancelle
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1163,7 +1307,14 @@ async fn cancellation_for_another_scan_id_does_not_cancel_current_scan() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1197,7 +1348,14 @@ async fn replacing_navigation_cancels_old_scan_and_suppresses_its_completion() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1245,7 +1403,14 @@ async fn stale_navigation_generation_is_rejected_without_recursing() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1264,7 +1429,14 @@ async fn a_replacement_scan_waits_for_previous_os_worker_to_release_its_budget()
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1293,7 +1465,14 @@ async fn stale_compute_requests_do_not_cancel_or_replace_a_current_scan() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1320,7 +1499,14 @@ async fn duplicate_compute_command_cannot_falsely_finish_the_active_scan() {
     let _release = ReleaseOnDrop(filesystem.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, Path::new("active")))
         .await
@@ -1362,7 +1548,14 @@ async fn aborting_engine_cancels_full_and_individual_directory_scans() {
         let _release = ReleaseOnDrop(filesystem.clone());
         let (commands, receiver) = mpsc::channel(4);
         let (sender, mut events) = mpsc::channel(32);
-        let engine = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+        let engine = tokio::spawn(
+            Engine::new(
+                Engine::lifetime().expect("engine cleanup worker"),
+                filesystem.clone(),
+                sender,
+            )
+            .run(receiver),
+        );
         commands
             .send(navigate(PaneId::Left, 1, Path::new("active")))
             .await
@@ -1384,7 +1577,15 @@ async fn aborting_engine_cancels_full_and_individual_directory_scans() {
         engine.abort();
         assert!(engine.await.unwrap_err().is_cancelled());
         drop(events);
-        if !cancellation.is_cancelled() {
+        // EngineRun cancellation reaches native workers through its retirement worker.
+        let cancelled = tokio::time::timeout(Duration::from_secs(3), async {
+            while !cancellation.is_cancelled() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        if !cancelled {
             uncancelled.push(if individual { "individual" } else { "full" });
         }
         // The guard releases real worker threads even on the expected red path.

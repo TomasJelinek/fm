@@ -1,7 +1,35 @@
 use super::*;
 
+#[test]
+fn copy_and_move_refuse_ambiguous_edits_below_a_raw_utf16_destination() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    super::copy_dialog::assert_ambiguous_destination_is_refused(OsString::from_wide(&[
+        0x72, 0xd800,
+    ]));
+}
+
 pub(super) fn test_root() -> PathBuf {
     PathBuf::from("C:\\")
+}
+
+#[test]
+fn unique_bookmarks_compare_native_utf16_without_display_loss() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let first = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
+    let second = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd801]));
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let mut p = Presenter::new(first.clone(), second.clone());
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
+    assert!(p.add_bookmark(PaneId::Left, "First".into(), None, &|_| true));
+    assert!(p.add_bookmark(PaneId::Right, "Second".into(), None, &|_| true));
+    assert!(
+        p.add_bookmark(PaneId::Left, "Duplicate".into(), None, &|_| panic!(
+            "duplicate"
+        ))
+    );
+    assert_eq!(p.bookmarks().len(), 2);
+    assert_eq!(p.bookmarks()[0].path.as_os_str(), first.as_os_str());
+    assert_eq!(p.bookmarks()[1].path.as_os_str(), second.as_os_str());
 }
 
 #[test]
@@ -12,6 +40,7 @@ fn native_choice_tokens_preserve_unpaired_utf16_and_reject_display_alias_replace
     assert_eq!(first.to_string_lossy(), second.to_string_lossy());
     let mut p = Presenter::new(test_root(), test_root());
     let update = |path| Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![NavigationLocation {
             id: "desktop".into(),
@@ -38,7 +67,7 @@ fn bookmark_and_tab_actions_preserve_unpaired_native_utf16() {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     let path = PathBuf::from(OsString::from_wide(&[67, 58, 92, 0xd800]));
     let mut p = Presenter::new(path.clone(), test_root());
-    p.apply(Event::PreferencesLoaded(Ok(UserPreferences::default())));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert!(
         p.add_bookmark(PaneId::Left, "Raw native".into(), Some(1), &|command| {
             let Command::SavePreferences { preferences, .. } = command else {
@@ -148,4 +177,28 @@ fn submitting_unchanged_lossy_path_text_reuses_the_original_raw_path() {
             true
         })
     );
+}
+
+#[test]
+fn a_known_unc_share_does_not_depend_on_discovery_plugin_availability() {
+    for available in [false, true] {
+        let mut p = Presenter::new(test_root(), test_root());
+        p.network_available = available;
+        let share = r"\\server\shared\資料";
+        let sent = RefCell::new(Vec::new());
+        assert!(p.navigate_text(PaneId::Left, share, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        }));
+        assert!(sent.borrow().iter().any(|command| matches!(
+            command,
+            Command::Navigate { path, .. } if path == Path::new(share)
+        )));
+        assert!(
+            !sent
+                .borrow()
+                .iter()
+                .any(|command| matches!(command, Command::NetworkNavigate { .. }))
+        );
+    }
 }

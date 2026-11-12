@@ -24,9 +24,10 @@ export component TerminalControl inherits Rectangle {
     background: Theme.surface;
     border-width: 1px; border-radius: 4px; border-color: Theme.frame;
     HorizontalLayout {
-        spacing: 0px; cross-axis-alignment: center;
+        padding: 1px; spacing: 0px; cross-axis-alignment: center;
         NavigationButton {
-            width: Theme.tool-width;
+            width: Theme.tool-width - 1px;
+            height: root.height - 2px;
             icon: root.shell-icons[root.current-index];
             native-icon: root.shell-icons[root.current-index];
             hint: "Open " + root.model[root.current-index] + "\nWorking folder: " + root.working-directory;
@@ -34,7 +35,8 @@ export component TerminalControl inherits Rectangle {
             clicked => { root.launch(); }
         }
         CompactPicker {
-            width: Theme.touch ? 26px : 22px; minimum-control-width: 0px;
+            width: (Theme.touch ? 26px : 22px) - 1px; minimum-control-width: 0px;
+            height: root.height - 2px;
             framed: false; model: root.model; icons: root.shell-icons;
             current-index: root.current-index; show-row-icons: true;
             // Keep the trigger arrow-only; row icons remain visible in the popup.

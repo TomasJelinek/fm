@@ -1,9 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Public APIs/SDKs retain their own workspace versions when used as path dependencies.
+exclude = ["api", "filesystem-api", "image-viewer-api", "thumbnail-api", "web-viewer-api", "worker-api", "vendor/femtovg",
+    "vendor/image"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -33,12 +36,28 @@ debug-assertions = false
 overflow-checks = true
 panic = "unwind"
 
+# Reduce generated control code while retaining level 3 for runtime services and renderers.
+# Same-source Windows size/resize comparison: docs/verification/2026-11-07-release-optimization.md.
+[profile.release.package.midnight-ui-bindings]
+opt-level = "s"
+
 # Keep backend debugging intact while avoiding unoptimized per-frame UI/renderer
 # work. Native resize measurements are documented in docs/verification.
 [profile.dev.package.i-slint-core]
 opt-level = 2
 
 [profile.dev.package.i-slint-renderer-femtovg]
+opt-level = 2
+
+# Native CPU sampling found unoptimized per-pixel blending dominating fallback
+# viewer redraws. Keep software presentation responsive when no GPU is available.
+[profile.dev.package.i-slint-renderer-software]
+opt-level = 2
+
+[profile.dev.package.i-slint-backend-winit]
+opt-level = 2
+
+[profile.dev.package.rgb]
 opt-level = 2
 
 [profile.dev.package.femtovg]
@@ -58,6 +77,21 @@ opt-level = 2
 [profile.dev.package.midnight-ui]
 opt-level = 1
 
+[profile.dev.package.midnight-ui-bindings]
+opt-level = 1
+# Generated line tables are not useful when debugging handwritten presenters.
+debug = 0
+
+# Viewer iteration keeps hot pixel/layout loops useful without release LTO.
+[profile.dev.package.midnight-viewer-render]
+opt-level = 2
+
+[profile.dev.package.midnight-viewer-engine]
+opt-level = 1
+
+[profile.dev.package.midnight-viewer-ui]
+opt-level = 1
+
 # Text shaping and font lookup are part of every resized text layout too.
 [profile.dev.package.parley]
 opt-level = 2
@@ -73,3 +107,18 @@ opt-level = 2
 
 [profile.dev.package.swash]
 opt-level = 2
+
+# Native System32 drag sampling found font decoding and trie lookup in these
+# unoptimized leaves. Keep backend services debuggable while optimizing text work.
+[profile.dev.package.read-fonts]
+opt-level = 2
+
+[profile.dev.package.font-types]
+opt-level = 2
+
+[profile.dev.package.zerotrie]
+opt-level = 2
+
+# Bounded GPU binding reuse; provenance and verification: vendor/README.md.
+[patch.crates-io]
+femtovg = { path = "vendor/femtovg" }

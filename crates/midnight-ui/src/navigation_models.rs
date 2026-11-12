@@ -79,17 +79,84 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
                     LocationKind::Desktop => LocationRole::Desktop,
                     LocationKind::Documents => LocationRole::Documents,
                     LocationKind::Downloads => LocationRole::Downloads,
+                    LocationKind::Pictures
+                    | LocationKind::Videos
+                    | LocationKind::Music
+                    | LocationKind::Temporary
+                    | LocationKind::OneDrive => LocationRole::Folder,
                 },
             }
         })
         .collect()
 }
 
-pub(super) fn locations(choices: &[NavigationChoiceRow], selected: i32) -> Vec<LocationRow> {
+/// One backend-ordered sequence supplies both the menu and compact toolbar.
+pub(super) fn ordered_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
+    let mut rows = choices(presenter);
+    let drives = rows
+        .iter()
+        .take_while(|row| row.kind == LocationRole::Drive)
+        .count();
+    let specials = rows.len() - drives;
+    let position = presenter
+        .desktop
+        .network_position
+        .unwrap_or(0)
+        .min(specials);
+    rows.insert(
+        drives + position,
+        NavigationChoiceRow {
+            identity: presenter.network_choice_token().into(),
+            label: NETWORK_NEIGHBORHOOD_LABEL.into(),
+            compact_label: NETWORK_NEIGHBORHOOD_LABEL.into(),
+            tooltip: if presenter.network_available {
+                "Browse network devices and shared folders"
+            } else {
+                "Network Neighborhood requires an available network filesystem plugin."
+            }
+            .into(),
+            icon: presenter
+                .desktop
+                .image(&IconKey::action(ActionIcon::Network)),
+            kind: LocationRole::Network,
+        },
+    );
+    rows
+}
+
+/// Keep every account in the menu, with only the primary OneDrive shortcut on
+/// the compact toolbar. A second identical cloud icon has no readable identity.
+pub(super) fn toolbar_choices(
+    presenter: &Presenter,
+    choices: &[NavigationChoiceRow],
+) -> Vec<NavigationChoiceRow> {
+    let mut cloud_seen = false;
+    let mut native = presenter.navigation_choices().iter();
     choices
         .iter()
-        .enumerate()
-        .map(|(index, choice)| LocationRow {
+        .filter_map(|row| {
+            if row.kind == LocationRole::Network {
+                return Some(row.clone());
+            }
+            let native = native.next()?;
+            if native.location.kind == LocationKind::OneDrive {
+                if cloud_seen {
+                    return None;
+                }
+                cloud_seen = true;
+            }
+            Some(row.clone())
+        })
+        .collect()
+}
+
+pub(super) fn locations(
+    choices: &[NavigationChoiceRow],
+    selected: Option<&str>,
+) -> Vec<LocationRow> {
+    choices
+        .iter()
+        .map(|choice| LocationRow {
             identity: choice.identity.clone(),
             kind: choice.kind,
             label: choice.label.clone(),
@@ -98,7 +165,7 @@ pub(super) fn locations(choices: &[NavigationChoiceRow], selected: i32) -> Vec<L
             path: "".into(),
             tooltip: choice.tooltip.clone(),
             icon: choice.icon.clone(),
-            selected: index as i32 == selected,
+            selected: selected == Some(choice.identity.as_str()),
         })
         .collect()
 }

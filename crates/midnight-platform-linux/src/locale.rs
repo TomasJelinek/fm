@@ -11,9 +11,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "locale_input.rs"]
+mod input;
+
 struct LocaleNames {
     numeric: CString,
     time: CString,
+    collation: CString,
 }
 static NAMES: OnceLock<Result<LocaleNames, FsError>> = OnceLock::new();
 
@@ -99,13 +103,14 @@ struct Locales {
 }
 thread_local! { static CURRENT: Result<Locales, FsError> = capture(); }
 
-fn capture() -> Result<Locales, FsError> {
-    let names = NAMES
+fn names() -> Result<&'static LocaleNames, FsError> {
+    NAMES
         .get_or_init(|| {
             let all = std::env::var_os("LC_ALL");
             let language = std::env::var_os("LANG");
             let numeric = std::env::var_os("LC_NUMERIC");
             let time = std::env::var_os("LC_TIME");
+            let collation = std::env::var_os("LC_COLLATE");
             let cstring = |value: OsString| {
                 CString::new(value.as_bytes()).map_err(|error| {
                     locale_error(io::Error::new(io::ErrorKind::InvalidInput, error))
@@ -122,10 +127,23 @@ fn capture() -> Result<Locales, FsError> {
                     time.as_deref(),
                     language.as_deref(),
                 ))?,
+                collation: cstring(selected_locale(
+                    all.as_deref(),
+                    collation.as_deref(),
+                    language.as_deref(),
+                ))?,
             })
         })
         .as_ref()
-        .map_err(Clone::clone)?;
+        .map_err(Clone::clone)
+}
+
+pub(super) fn collation_name() -> Result<&'static CStr, FsError> {
+    Ok(names()?.collation.as_c_str())
+}
+
+fn capture() -> Result<Locales, FsError> {
+    let names = names()?;
     Ok(Locales {
         numeric: NativeLocale::new(&names.numeric).map_err(locale_error)?,
         time: NativeLocale::new(&names.time).map_err(locale_error)?,
@@ -133,6 +151,51 @@ fn capture() -> Result<Locales, FsError> {
 }
 
 impl LocaleService for LinuxFileSystem {
+    fn datetime_input_format(&self) -> Option<midnight_core::DateTimeInputFormat> {
+        CURRENT.with(|value| input::capture(&value.as_ref().ok()?.time))
+    }
+
+    fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
+        modified(value)
+    }
+
+    fn format_archive_local_time(
+        &self,
+        value: midnight_core::ArchiveTimestamp,
+    ) -> Option<LocalizedDateTime> {
+        use midnight_core::ArchiveTimestamp;
+        if !value.is_valid() {
+            return None;
+        }
+        let ArchiveTimestamp::Local {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        } = value
+        else {
+            return None;
+        };
+        // SAFETY: zero is valid for every tm field; populate a validated calendar.
+        let mut calendar: libc::tm = unsafe { std::mem::zeroed() };
+        calendar.tm_year = year - 1900;
+        calendar.tm_mon = i32::from(month) - 1;
+        calendar.tm_mday = i32::from(day);
+        calendar.tm_hour = i32::from(hour);
+        calendar.tm_min = i32::from(minute);
+        calendar.tm_sec = i32::from(second);
+        // SAFETY: live writable tm; GNU timegm fills weekday/year-day without
+        // changing the process timezone. Its return value is not a source timestamp.
+        unsafe { libc::timegm(&mut calendar) };
+        format_calendar(&calendar)
+    }
+
+    fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        crate::sort_keys::key(value)
+    }
+
     fn number_locale(&self) -> Result<NumberLocale, FsError> {
         CURRENT.with(|value| {
             value
@@ -161,11 +224,15 @@ pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
     if unsafe { libc::localtime_r(&seconds, &mut calendar) }.is_null() {
         return None;
     }
+    format_calendar(&calendar)
+}
+
+fn format_calendar(calendar: &libc::tm) -> Option<LocalizedDateTime> {
     CURRENT.with(|value| {
         let locale = &value.as_ref().ok()?.time;
         Some(LocalizedDateTime {
-            date: locale.format(&calendar, c"%x")?,
-            time: locale.format(&calendar, c"%X")?,
+            date: locale.format(calendar, c"%x")?,
+            time: locale.format(calendar, c"%X")?,
         })
     })
 }

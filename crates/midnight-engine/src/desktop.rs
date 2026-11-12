@@ -1,6 +1,9 @@
 //! Bounded optional desktop work, independent of navigation and folder scans.
 
-use crate::Outbox;
+use crate::{
+    Outbox, retirement::RetirementWaiter, task_lifetime::TaskLifetime,
+    user_command_runtime::ProcessTracker,
+};
 use midnight_core::*;
 use std::{
     collections::{HashSet, VecDeque},
@@ -14,14 +17,43 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "desktop_captured.rs"]
+mod captured;
+
+#[path = "desktop_command_icons.rs"]
+mod command_icons;
+#[path = "desktop_editor.rs"]
+mod editor;
+#[path = "desktop_find.rs"]
+mod find;
+
 const ICON_CAPACITY: usize = 256;
-const MAX_TERMINALS: usize = 8;
-const MAX_OPEN_HELPERS: usize = 16;
+const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
+const MAX_OPEN_HELPERS: usize = crate::user_command_runtime::MAX_OPEN_PROCESSES;
+const MAX_OPEN_LAUNCHES: usize = 4;
+pub(crate) const EDITOR_RETIREMENT_CAPACITY: usize = MAX_OPEN_LAUNCHES + 2;
+pub(crate) struct Retirement {
+    pub(crate) intake: RetirementWaiter,
+}
+pub(crate) struct Processes {
+    pub(crate) terminals: ProcessTracker,
+    pub(crate) openers: ProcessTracker,
+}
+
+pub(crate) struct Services {
+    pub(crate) desktop: Option<Arc<dyn DesktopServices>>,
+    pub(crate) locale: Option<Arc<dyn LocaleService>>,
+    pub(crate) capture: Option<crate::archives::ArchiveCapture>,
+}
 
 pub(crate) struct Desktop {
     locale: Option<Arc<dyn LocaleService>>,
     services: Option<Arc<dyn DesktopServices>>,
+    scope: TaskLifetime,
+    editor_intake: tokio::sync::Mutex<RetirementWaiter>,
+    processes: Processes,
     icons: mpsc::Sender<IconKey>,
+    command_icons: watch::Sender<command_icons::View>,
     volume_icons: watch::Sender<Vec<IconKey>>,
     children: mpsc::Sender<TrackedChild>,
     property_budget: Arc<Semaphore>,
@@ -33,45 +65,66 @@ pub(crate) struct Desktop {
     outbox: Outbox,
 }
 
-struct TrackedChild {
-    child: Box<dyn TerminalProcess>,
-    _slot: Arc<OwnedSemaphorePermit>,
-    completion: Option<(DesktopRequestId, PathBuf)>,
+pub(crate) struct TrackedChild {
+    pub(crate) child: Box<dyn TerminalProcess>,
+    pub(crate) _slot: Arc<OwnedSemaphorePermit>,
+    pub(crate) completion: Option<(DesktopRequestId, PathBuf)>,
 }
 
 impl Desktop {
     pub(crate) fn new(
-        services: Option<Arc<dyn DesktopServices>>,
-        locale: Option<Arc<dyn LocaleService>>,
+        scope: TaskLifetime,
+        retirement: Retirement,
+        processes: Processes,
+        services: Services,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
+        let Services {
+            desktop: services,
+            locale,
+            capture,
+        } = services;
         let (icons, receiver) = mpsc::channel(64);
-        tasks.spawn(icon_worker(services.clone(), outbox.clone(), receiver));
+        let (command_icons, command_view) = watch::channel(command_icons::View::default());
+        tasks.spawn(scope.future(command_icons::worker(
+            scope.clone(),
+            services.clone(),
+            capture,
+            outbox.clone(),
+            receiver,
+            command_view,
+        )));
         let (volume_icons, roots) = watch::channel(Vec::new());
         tasks.spawn(forward_icons(roots, icons.clone()));
         let (location_icons, locations) = watch::channel(Vec::new());
         tasks.spawn(forward_icons(locations, icons.clone()));
         let (context_requests, context_receiver) = watch::channel(0);
-        tasks.spawn(context_worker(
+        tasks.spawn(scope.future(context_worker(
+            scope.clone(),
             services.clone(),
+            locale.clone(),
             outbox.clone(),
             location_icons,
             context_receiver,
-        ));
+        )));
         let (children, child_receiver) = mpsc::channel(MAX_TERMINALS);
         tasks.spawn(reap_children(child_receiver, outbox.clone()));
         let result = Self {
             locale,
             services,
+            scope,
+            editor_intake: tokio::sync::Mutex::new(retirement.intake),
+            processes,
             icons,
+            command_icons,
             volume_icons,
             children,
             property_budget: Arc::new(Semaphore::new(1)),
             launch_budget: Arc::new(Semaphore::new(1)),
             context_requests,
             terminal_slots: Arc::new(Semaphore::new(MAX_TERMINALS)),
-            open_budget: Arc::new(Semaphore::new(4)),
+            open_budget: Arc::new(Semaphore::new(MAX_OPEN_LAUNCHES)),
             open_slots: Arc::new(Semaphore::new(MAX_OPEN_HELPERS)),
             outbox,
         };
@@ -93,8 +146,36 @@ impl Desktop {
         result
     }
 
+    pub(crate) fn command_icons(&self, generation: u64, targets: Vec<CommandIconTarget>) {
+        if targets.capacity() > MAX_USER_COMMANDS || !command_icons::valid_targets(&targets) {
+            return;
+        }
+        let mut targets = Some(targets);
+        self.command_icons.send_if_modified(|view| {
+            if generation <= view.generation {
+                return false;
+            }
+            view.cancel.cancel();
+            *view = command_icons::View {
+                generation,
+                targets: targets.take().unwrap_or_default(),
+                cancel: Cancellation::default(),
+            };
+            true
+        });
+    }
+
     pub(crate) fn icon_sender(&self) -> mpsc::Sender<IconKey> {
         self.icons.clone()
+    }
+
+    pub(crate) fn command_runtime(&self) -> crate::user_command_runtime::Runtime {
+        crate::user_command_runtime::Runtime::new(
+            self.launch_budget.clone(),
+            self.terminal_slots.clone(),
+            self.children.clone(),
+            self.processes.terminals.clone(),
+        )
     }
 
     pub(crate) fn volume_icon_sender(&self) -> watch::Sender<Vec<IconKey>> {
@@ -143,26 +224,32 @@ impl Desktop {
                 .await;
             return;
         };
+        let Ok(ticket) = self.processes.terminals.try_reserve() else {
+            self.fail(request, "Terminal process cleanup is busy. Try again.")
+                .await;
+            return;
+        };
+        let slot = Arc::new(slot);
         let permit = Arc::new(permit);
         let worker_permit = permit.clone();
-        let slot = Arc::new(slot);
-        let worker_slot = slot.clone();
         let outbox = self.outbox.clone();
         let children = self.children.clone();
-        tasks.spawn(async move {
-            // Both owners retain capacity: abort cannot release a live native call,
-            // and completed work remains bounded while its result awaits the UI.
+        let scope = self.scope.clone();
+        let process_scope = Arc::new(scope.clone());
+        tasks.spawn(self.scope.future(async move {
+            // Capacity covers native work and its terminal delivery, including panic.
             let _permit = permit;
             let path = terminal.working_directory.clone();
             let history = CommandHistoryEntry {
                 command: terminal.command.clone(),
                 shell: terminal.shell,
             };
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = worker_permit;
-                let _slot = worker_slot;
-                services.launch_terminal(&terminal)
-            })
+                services
+                    .launch_terminal(&terminal)
+                    .map(|child| ticket.own(child, slot, process_scope))
+            }))
             .await;
             let result = match result {
                 Ok(Ok(child)) => {
@@ -170,8 +257,8 @@ impl Desktop {
                     // The bounded reaper retains the slot until the process exits.
                     let _ = children
                         .send(TrackedChild {
-                            child,
-                            _slot: slot,
+                            _slot: child.quota(),
+                            child: Box::new(child),
                             completion: None,
                         })
                         .await;
@@ -186,7 +273,7 @@ impl Desktop {
             outbox
                 .send(Event::DesktopActionFinished { request, result })
                 .await;
-        });
+        }));
     }
 
     pub(crate) async fn open_entry(
@@ -195,6 +282,7 @@ impl Desktop {
         pane: PaneId,
         navigation: NavigationId,
         path: PathBuf,
+        directory_only: bool,
         tasks: &mut JoinSet<()>,
     ) {
         let Some(services) = self.services.clone() else {
@@ -211,51 +299,57 @@ impl Desktop {
                 .await;
             return;
         };
+        let Ok(ticket) = self.processes.openers.try_reserve() else {
+            self.fail(request, "Desktop opener cleanup is busy. Try again.")
+                .await;
+            return;
+        };
+        let slot = Arc::new(slot);
         let permit = Arc::new(permit);
         let worker_permit = permit.clone();
-        let slot = Arc::new(slot);
-        let worker_slot = slot.clone();
         let outbox = self.outbox.clone();
         let children = self.children.clone();
-        tasks.spawn(async move {
+        let scope = self.scope.clone();
+        let process_scope = Arc::new(scope.clone());
+        let tracking_slot = slot.clone();
+        tasks.spawn(self.scope.future(async move {
+            // Capacity covers native work and its terminal delivery, including panic.
             let _permit = permit;
             let target = path.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = worker_permit;
-                let _slot = worker_slot;
-                services.open_entry(&target)
-            })
+                let result = if directory_only {
+                    services
+                        .directory_destination(&target)
+                        .map(|path| OpenEntryResult::DirectoryTarget { path })
+                } else {
+                    services.open_entry(&target)
+                };
+                result.map(|result| match result {
+                    OpenEntryResult::File {
+                        process: Some(child),
+                    } => OpenEntryResult::File {
+                        process: Some(Box::new(ticket.own(child, slot, process_scope))),
+                    },
+                    other => other,
+                })
+            }))
             .await;
             let result = match result {
-                Ok(Ok(OpenEntryResult::Directory)) => Ok(DesktopActionResult::OpenDirectory {
-                    pane,
-                    navigation,
-                    path,
-                }),
-                Ok(Ok(OpenEntryResult::File { process: None })) => {
-                    Ok(DesktopActionResult::FileOpened)
-                }
-                Ok(Ok(OpenEntryResult::File {
-                    process: Some(child),
-                })) => {
-                    // Helpers such as xdg-open may report association errors on
-                    // exit. Reap them off the UI thread and report that result.
-                    let _ = children
-                        .send(TrackedChild {
-                            child,
-                            _slot: slot,
-                            completion: Some((request, path)),
-                        })
-                        .await;
-                    return;
-                }
-                Ok(Err(error)) => Err(error),
+                Ok(result) => result.map(|result| (path, result)),
                 Err(error) => Err(worker_error("open entry", &path, error)),
             };
-            outbox
-                .send(Event::DesktopActionFinished { request, result })
-                .await;
-        });
+            OpenCompletion {
+                request,
+                pane,
+                navigation,
+                children,
+                outbox,
+                slot: tracking_slot,
+            }
+            .finish(result)
+            .await;
+        }));
     }
 
     pub(crate) async fn properties(
@@ -273,26 +367,25 @@ impl Desktop {
                 .await;
             return;
         };
-        let permit = Arc::new(permit);
-        let worker_permit = permit.clone();
         let services = self.services.clone();
         let locale = self.locale.clone();
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
         let outbox = self.outbox.clone();
-        tasks.spawn(async move {
+        let scope = self.scope.clone();
+        tasks.spawn(self.scope.future(async move {
+            // Capacity covers native work and its terminal delivery, including panic.
             let _permit = permit;
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = worker_permit;
-                if let Some(services) = services
-                    && services.show_properties(&paths)?
-                {
-                    return Ok(DesktopActionResult::PropertiesOpened);
-                }
-                let locale = locale.map_or_else(
-                    || Ok(NumberLocale::default()),
-                    |service| service.number_locale(),
-                )?;
-                metadata_properties(filesystem.as_ref(), &paths, &locale)
-            })
+                show_properties(
+                    filesystem.as_ref(),
+                    services.as_deref(),
+                    locale.as_deref(),
+                    &paths,
+                    &Cancellation::default(),
+                )
+            }))
             .await;
             let result = match result {
                 Ok(result) => result,
@@ -301,7 +394,56 @@ impl Desktop {
             outbox
                 .send(Event::DesktopActionFinished { request, result })
                 .await;
-        });
+        }));
+    }
+
+    pub(crate) async fn resolve_editor(
+        &self,
+        services: Option<Arc<dyn EditorService>>,
+        tasks: &mut JoinSet<()>,
+    ) {
+        let outbox = self.outbox.clone();
+        let Ok(permit) = self.launch_budget.clone().try_acquire_owned() else {
+            outbox
+                .send(Event::EditorDefaultResolved(Err(editor_error(
+                    "Editor discovery is busy. Reopen Options to retry.",
+                ))))
+                .await;
+            return;
+        };
+        let Some(services) = services else {
+            outbox
+                .send(Event::EditorDefaultResolved(Err(editor_error(
+                    "External editing is unavailable.",
+                ))))
+                .await;
+            return;
+        };
+        let scope = self.scope.clone();
+        let permit = Arc::new(permit);
+        let worker_permit = permit.clone();
+        tasks.spawn(self.scope.future(async move {
+            let _permit = permit;
+            let result = tokio::task::spawn_blocking(scope.blocking(move || {
+                let _permit = worker_permit;
+                services.default_editor()
+            }))
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(cause) => Err(worker_error("find editor", Path::new(""), cause)),
+            };
+            outbox.send(Event::EditorDefaultResolved(result)).await;
+        }));
+    }
+
+    async fn editor_failure(&self, request: DesktopRequestId, message: &str) {
+        self.outbox
+            .send(Event::DesktopActionFinished {
+                request,
+                result: Err(editor_error(message)),
+            })
+            .await;
     }
 
     async fn fail(&self, request: DesktopRequestId, message: &'static str) {
@@ -318,16 +460,131 @@ impl Desktop {
     }
 }
 
+#[cfg(test)]
+impl Desktop {
+    fn testing(
+        services: Option<Arc<dyn DesktopServices>>,
+        locale: Option<Arc<dyn LocaleService>>,
+        outbox: Outbox,
+        tasks: &mut JoinSet<()>,
+    ) -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(EDITOR_RETIREMENT_CAPACITY, 1).unwrap();
+        Self::new(
+            TaskLifetime::testing((services.clone(), locale.clone())),
+            Retirement {
+                intake: domain.new_waiter().unwrap(),
+            },
+            Processes {
+                terminals: ProcessTracker::try_start().unwrap(),
+                openers: ProcessTracker::try_start_openers().unwrap(),
+            },
+            Services {
+                desktop: services,
+                locale,
+                capture: None,
+            },
+            outbox,
+            tasks,
+        )
+    }
+}
+
+fn editor_error(message: &str) -> FsError {
+    FsError::from_io(
+        "external editor",
+        Path::new(""),
+        io::Error::other(message.to_owned()),
+    )
+}
+
+struct OpenCompletion {
+    request: DesktopRequestId,
+    pane: PaneId,
+    navigation: NavigationId,
+    children: mpsc::Sender<TrackedChild>,
+    outbox: Outbox,
+    slot: Arc<OwnedSemaphorePermit>,
+}
+impl OpenCompletion {
+    async fn finish(self, result: Result<(PathBuf, OpenEntryResult), FsError>) {
+        let result = match result {
+            Ok((path, OpenEntryResult::Directory)) => Ok(DesktopActionResult::OpenDirectory {
+                pane: self.pane,
+                navigation: self.navigation,
+                path,
+            }),
+            Ok((path, OpenEntryResult::DirectoryTarget { path: target })) => {
+                Ok(DesktopActionResult::OpenDirectoryTarget {
+                    pane: self.pane,
+                    navigation: self.navigation,
+                    path,
+                    target,
+                })
+            }
+            Ok((_, OpenEntryResult::File { process: None })) => Ok(DesktopActionResult::FileOpened),
+            Ok((
+                path,
+                OpenEntryResult::File {
+                    process: Some(child),
+                },
+            )) => {
+                let _ = self
+                    .children
+                    .send(TrackedChild {
+                        child,
+                        _slot: self.slot,
+                        completion: Some((self.request, path)),
+                    })
+                    .await;
+                return;
+            }
+            Err(error) => Err(error),
+        };
+        self.outbox
+            .send(Event::DesktopActionFinished {
+                request: self.request,
+                result,
+            })
+            .await;
+    }
+}
+
+fn show_properties(
+    filesystem: &dyn FileSystem,
+    services: Option<&dyn DesktopServices>,
+    locale: Option<&dyn LocaleService>,
+    paths: &[PathBuf],
+    cancel: &Cancellation,
+) -> Result<DesktopActionResult, FsError> {
+    crate::captured_native::check_cancel(cancel)?;
+    if let Some(services) = services
+        && services.show_properties(paths)?
+    {
+        return Ok(DesktopActionResult::PropertiesOpened);
+    }
+    crate::captured_native::check_cancel(cancel)?;
+    let locale = locale.map_or_else(
+        || Ok(NumberLocale::default()),
+        |service| service.number_locale(),
+    )?;
+    metadata_properties(filesystem, paths, &locale, cancel)
+}
+
 fn metadata_properties(
     filesystem: &dyn FileSystem,
     paths: &[PathBuf],
     locale: &NumberLocale,
+    cancel: &Cancellation,
 ) -> Result<DesktopActionResult, FsError> {
     let mut bytes = 0u64;
     let mut files = 0u64;
     let mut unknown = 0usize;
     for path in paths {
-        match filesystem.entry_metadata(path) {
+        crate::captured_native::check_cancel(cancel)?;
+        let metadata = filesystem.entry_metadata(path);
+        crate::captured_native::check_cancel(cancel)?;
+        match metadata {
             Ok(metadata) => match metadata.size {
                 Some(size) => {
                     bytes = bytes.checked_add(size).ok_or_else(|| {
@@ -360,7 +617,9 @@ fn metadata_properties(
 
 /// A watch slot coalesces refreshes without overlapping uninterruptible host calls.
 async fn context_worker(
+    scope: TaskLifetime,
     services: Option<Arc<dyn DesktopServices>>,
+    locale: Option<Arc<dyn LocaleService>>,
     outbox: Outbox,
     icons: watch::Sender<Vec<IconKey>>,
     mut requests: watch::Receiver<u64>,
@@ -371,14 +630,18 @@ async fn context_worker(
     while requests.changed().await.is_ok() {
         let version = *requests.borrow_and_update();
         let worker = services.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let locale = locale.clone();
+        let result = tokio::task::spawn_blocking(scope.blocking(move || {
             worker
                 .locations()
+                .and_then(|locations| {
+                    crate::navigation_ordering::locations(locations, locale.as_deref())
+                })
                 .map(|locations| (worker.shell_flavor(), locations))
-        })
+        }))
         .await;
         let (event, keys) = match result {
-            Ok(Ok((shell, locations))) => {
+            Ok(Ok((shell, (locations, network_position)))) => {
                 // Keep the finite semantic aliases ahead of large mount inventories.
                 let keys = locations
                     .iter()
@@ -391,7 +654,14 @@ async fn context_worker(
                     .take(ICON_CAPACITY)
                     .map(IconKey::for_location)
                     .collect();
-                (Event::DesktopContext { shell, locations }, keys)
+                (
+                    Event::DesktopContext {
+                        shell,
+                        locations,
+                        network_position,
+                    },
+                    keys,
+                )
             }
             Ok(Err(error)) => (Event::DesktopContextFailed(error), Vec::new()),
             Err(error) => (
@@ -420,52 +690,16 @@ async fn context_worker(
     }
 }
 
+#[cfg(test)]
 async fn icon_worker(
+    scope: TaskLifetime,
     services: Option<Arc<dyn DesktopServices>>,
     outbox: Outbox,
-    mut receiver: mpsc::Receiver<IconKey>,
+    receiver: mpsc::Receiver<IconKey>,
 ) {
-    let mut cached = HashSet::new();
-    while let Some(key) = receiver.recv().await {
-        if cached.contains(&key) || cached.len() == ICON_CAPACITY {
-            continue;
-        }
-        cached.insert(key.clone());
-        let service = services.clone();
-        let worker_key = key.clone();
-        let kind = key.kind;
-        let result = tokio::task::spawn_blocking(move || {
-            service
-                .and_then(|service| service.load_icon(&worker_key).ok().flatten())
-                .filter(|pixels| {
-                    (1..=64).contains(&pixels.width)
-                        && (1..=64).contains(&pixels.height)
-                        && pixels.rgba.len() == pixels.width as usize * pixels.height as usize * 4
-                        && pixels
-                            .rgba
-                            .as_chunks::<4>()
-                            .0
-                            .iter()
-                            .any(|pixel| pixel[3] != 0)
-                })
-                .or_else(|| fallback_icon(worker_key.kind))
-        })
-        .await;
-        let Some(pixels) = result.unwrap_or_else(|_| fallback_icon(kind)) else {
-            // Missing semantic roles keep the UI's appropriate vector fallback.
-            // The key remains cached so an unsupported role is never queried again.
-            continue;
-        };
-        if !outbox
-            .send(Event::IconLoaded {
-                key,
-                pixels: Arc::new(pixels),
-            })
-            .await
-        {
-            break;
-        }
-    }
+    let (sender, commands) = watch::channel(command_icons::View::default());
+    drop(sender);
+    command_icons::worker(scope, services, None, outbox, receiver, commands).await;
 }
 
 fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
@@ -491,6 +725,7 @@ fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
         width: 24,
         height: 24,
         rgba: rgba.into(),
+        generic: kind == IconKind::File,
     })
 }
 
@@ -526,6 +761,7 @@ fn link_fallback(folder: bool) -> IconPixels {
         width: EDGE as u32,
         height: EDGE as u32,
         rgba: rgba.into(),
+        generic: false,
     }
 }
 
@@ -704,6 +940,7 @@ mod tests {
                     width: 65,
                     height: 1,
                     rgba: vec![255; 260].into(),
+                    generic: false,
                 }),
                 _ => None,
             })
@@ -800,7 +1037,7 @@ mod tests {
         let (sender, events) = mpsc::channel(1);
         sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
         let mut tasks = JoinSet::new();
-        let desktop = Desktop::new(
+        let desktop = Desktop::testing(
             None,
             None,
             Outbox {
@@ -818,6 +1055,7 @@ mod tests {
                 PaneId::Left,
                 NavigationId(1),
                 "captured/file".into(),
+                false,
                 &mut tasks,
             ));
             poll_fn(|context| {
@@ -842,7 +1080,7 @@ mod tests {
         let (sender, events) = mpsc::channel(1);
         sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
         let mut tasks = JoinSet::new();
-        let desktop = Desktop::new(
+        let desktop = Desktop::testing(
             None,
             None,
             Outbox {
@@ -897,7 +1135,12 @@ mod tests {
             wakeup: Arc::new(|| {}),
         };
         let (icons, receiver) = mpsc::channel(16);
-        let worker = tokio::spawn(icon_worker(Some(services.clone()), outbox, receiver));
+        let worker = tokio::spawn(icon_worker(
+            TaskLifetime::testing(services.clone()),
+            Some(services.clone()),
+            outbox,
+            receiver,
+        ));
         let missing = IconKey::action(ActionIcon::Back);
         let native = IconKey::action(ActionIcon::Options);
         let home = IconKey {
@@ -957,7 +1200,12 @@ mod tests {
             wakeup: Arc::new(|| {}),
         };
         let (icons, receiver) = mpsc::channel(2);
-        let worker = tokio::spawn(icon_worker(Some(services.clone()), outbox, receiver));
+        let worker = tokio::spawn(icon_worker(
+            TaskLifetime::testing(services.clone()),
+            Some(services.clone()),
+            outbox,
+            receiver,
+        ));
         icons.send(IconKey::folder_link()).await.unwrap();
         icons.send(IconKey::folder_link()).await.unwrap();
         drop(icons);
@@ -983,11 +1231,16 @@ mod tests {
         });
         let (commands, receiver) = mpsc::channel(8);
         let (sender, mut events) = mpsc::channel(64);
-        let task = tokio::spawn(
-            crate::Engine::new(services.clone(), sender)
-                .with_desktop(services.clone())
-                .run(receiver),
+        let mut engine = crate::Engine::new(
+            crate::Engine::lifetime().expect("engine cleanup worker"),
+            services.clone(),
+            sender,
         );
+        engine
+            .configure_desktop()
+            .unwrap()
+            .install(services.clone());
+        let task = tokio::spawn(engine.run(receiver));
         tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
             .await
             .unwrap();
@@ -1086,11 +1339,16 @@ mod tests {
         });
         let (commands, receiver) = mpsc::channel(8);
         let (sender, mut events) = mpsc::channel(32);
-        let task = tokio::spawn(
-            crate::Engine::new(services.clone(), sender)
-                .with_desktop(services.clone())
-                .run(receiver),
+        let mut engine = crate::Engine::new(
+            crate::Engine::lifetime().expect("engine cleanup worker"),
+            services.clone(),
+            sender,
         );
+        engine
+            .configure_desktop()
+            .unwrap()
+            .install(services.clone());
+        let task = tokio::spawn(engine.run(receiver));
         commands.send(Command::ListDesktopContext).await.unwrap();
         tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
             .await
@@ -1135,7 +1393,12 @@ mod tests {
             wakeup: Arc::new(|| {}),
         };
         let (icons, receiver) = mpsc::channel(512);
-        let worker = tokio::spawn(icon_worker(None, outbox, receiver));
+        let worker = tokio::spawn(icon_worker(
+            TaskLifetime::testing(()),
+            None,
+            outbox,
+            receiver,
+        ));
         for i in 0..300 {
             let key = IconKey {
                 extension: Some(format!("type-{i}").into()),
@@ -1155,5 +1418,15 @@ mod tests {
             );
         }
         assert_eq!(keys.len(), 256);
+    }
+}
+
+#[cfg(test)]
+#[path = "desktop_lifetime_tests.rs"]
+mod lifetime_tests;
+
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        self.command_icons.borrow().cancel.cancel();
     }
 }

@@ -1,19 +1,42 @@
 //! Small shared projections for navigation menus, breadcrumbs and focused-entry details.
 use crate::*;
 
+fn bookmark_tooltip(presenter: &Presenter, bookmark: &midnight_core::Bookmark) -> String {
+    let mut text = format!("Hot Path\n{}", bookmark.display_text());
+    if let Some(slot) = bookmark.slot {
+        let keys = presenter.shortcut_hint(&format!("bookmark.open.{slot}"));
+        if !keys.is_empty() {
+            text.push('\n');
+            text.push_str(keys);
+        }
+    }
+    text
+}
+
 pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
-    presenter
-        .bookmarks()
-        .iter()
+    let mut bookmarks = presenter.bookmarks().iter().collect::<Vec<_>>();
+    bookmarks.sort_by_key(|bookmark| bookmark.slot.unwrap_or(11));
+    bookmarks
+        .into_iter()
         .map(|bookmark| NavigationChoiceRow {
             identity: format!(
                 "bookmark:{}:{}",
                 presenter.preferences.revision.0, bookmark.id.0
             )
             .into(),
-            label: format!("{} — {}", bookmark.name, bookmark.path.display()).into(),
-            compact_label: bookmark.name.as_str().into(),
-            tooltip: format!("{}\n{}", bookmark.name, bookmark.path.display()).into(),
+            label: bookmark
+                .slot
+                .map_or_else(
+                    || bookmark.display_text(),
+                    |slot| format!("{}  {}", slot % 10, bookmark.display_text()),
+                )
+                .into(),
+            compact_label: bookmark
+                .slot
+                .map(|slot| (slot % 10).to_string())
+                .unwrap_or_default()
+                .into(),
+            tooltip: bookmark_tooltip(presenter, bookmark).into(),
             icon: presenter
                 .desktop
                 .image(&IconKey::action(ActionIcon::Bookmarks)),
@@ -23,14 +46,32 @@ pub(super) fn bookmark_choices(presenter: &Presenter) -> Vec<NavigationChoiceRow
 }
 
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
+    crate::metadata_column_presentation::refresh(window, presenter);
+    window.set_left_can_target_cursor(presenter.can_target_cursor(PaneId::Left));
+    window.set_right_can_target_cursor(presenter.can_target_cursor(PaneId::Right));
+    window.set_left_can_target_selection(presenter.can_target_selection(PaneId::Left));
+    window.set_right_can_target_selection(presenter.can_target_selection(PaneId::Right));
+    window.set_left_free_space(volume_presentation::panel_space(presenter, PaneId::Left).into());
+    window.set_right_free_space(volume_presentation::panel_space(presenter, PaneId::Right).into());
     window.set_sizes_in_bytes(presenter.preferences.values.size_display == SizeDisplay::Bytes);
     window.set_remember_command_history(presenter.preferences.values.remember_command_history);
+    window.set_copy_checksum_verification(presenter.preferences.values.copy_checksum_verification);
     let mut hot_paths = bookmark_choices(presenter);
+    hot_paths.push(NavigationChoiceRow {
+        identity: "add-hot-path".into(),
+        label: "Add path".into(),
+        compact_label: "Add path".into(),
+        tooltip: "Save the active panel's current folder".into(),
+        icon: presenter
+            .desktop
+            .image(&IconKey::action(ActionIcon::AddBookmark)),
+        kind: LocationRole::HotPath,
+    });
     hot_paths.push(NavigationChoiceRow {
         identity: "manage-hot-paths".into(),
         label: "Manage Hot Paths…".into(),
         compact_label: "Hot Paths".into(),
-        tooltip: "Add, rename or remove saved locations".into(),
+        tooltip: "Add or remove saved paths and assign numbered shortcuts".into(),
         icon: presenter
             .desktop
             .image(&IconKey::action(ActionIcon::Bookmarks)),
@@ -59,15 +100,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 prefix: part.prefix.into(),
             })
             .collect();
-        let details = presenter
-            .panel_details(pane)
-            .into_iter()
-            .map(|field| DetailRow {
-                identity: field.identity.into(),
-                label: field.label.into(),
-                value: field.value.into(),
-            })
-            .collect();
+        refresh_details(window, details_rows(presenter, pane), pane);
         if pane == PaneId::Left {
             navigation_models::update(
                 window.get_left_path_parts(),
@@ -75,24 +108,12 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 |row| row.identity.clone(),
                 |model| window.set_left_path_parts(model),
             );
-            navigation_models::update(
-                window.get_left_details(),
-                details,
-                |row| row.identity.clone(),
-                |model| window.set_left_details(model),
-            );
         } else {
             navigation_models::update(
                 window.get_right_path_parts(),
                 paths,
                 |row| row.identity.clone(),
                 |model| window.set_right_path_parts(model),
-            );
-            navigation_models::update(
-                window.get_right_details(),
-                details,
-                |row| row.identity.clone(),
-                |model| window.set_right_details(model),
             );
         }
     }
@@ -102,4 +123,37 @@ pub(super) fn bookmark_id(presenter: &Presenter, token: &str) -> Option<Bookmark
     let (revision, id) = token.strip_prefix("bookmark:")?.split_once(':')?;
     (revision.parse::<u64>().ok()? == presenter.preferences.revision.0)
         .then_some(BookmarkId(id.parse::<u64>().ok()?))
+}
+
+/// Capture the bounded status projection before Slint can notify model observers.
+pub(crate) fn details_rows(presenter: &Presenter, pane: PaneId) -> Vec<DetailRow> {
+    presenter
+        .panel_details(pane)
+        .into_iter()
+        .map(|field| DetailRow {
+            identity: field.identity.into(),
+            label: field.label.into(),
+            value: field.value.into(),
+            explanation: field.explanation.into(),
+        })
+        .collect()
+}
+
+/// Publish the status snapshot without retaining a presenter borrow.
+pub(crate) fn refresh_details(window: &MainWindow, details: Vec<DetailRow>, pane: PaneId) {
+    if pane == PaneId::Left {
+        navigation_models::update(
+            window.get_left_details(),
+            details,
+            |row| row.identity.clone(),
+            |model| window.set_left_details(model),
+        );
+    } else {
+        navigation_models::update(
+            window.get_right_details(),
+            details,
+            |row| row.identity.clone(),
+            |model| window.set_right_details(model),
+        );
+    }
 }

@@ -1,0 +1,63 @@
+import { CheckBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+
+// Keep native keyboard/accessibility semantics. The indicator owns a fixed,
+// centered box instead of stretching the stock focus ring over a wrapped row.
+export component WrappingCheckBox inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <string> accessible-name;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    in property <length> font-size: Theme.font-size;
+    callback toggled();
+    min-width: 0px;
+    height: max(Theme.control-height, caption.preferred-height);
+    forward-focus: checkbox;
+    HorizontalLayout {
+        spacing: 6px; cross-axis-alignment: center;
+        Rectangle {
+            width: 24px; height: root.height; horizontal-stretch: 0;
+            indicator := Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 18px; height: 18px; border-radius: 2px;
+                background: root.checked && root.enabled ? Theme.active-header : Theme.secondary-surface;
+                border-width: 1px;
+                border-color: root.enabled && root.checked ? Theme.active-frame : Theme.frame;
+                if root.checked: Path {
+                    x: 3px; y: 3px; width: 12px; height: 12px;
+                    viewbox-width: 12; viewbox-height: 12;
+                    commands: "M 1 6 L 4 9 L 11 2";
+                    stroke: root.enabled ? Theme.text : Theme.muted-text;
+                    stroke-width: 2px;
+                }
+            }
+            if checkbox.has-focus && root.enabled: Rectangle {
+                x: indicator.x - 3px; y: indicator.y - 3px;
+                width: indicator.width + 6px; height: indicator.height + 6px;
+                border-width: 2px; border-radius: 4px; border-color: Theme.active-frame;
+            }
+            checkbox := CheckBox {
+                width: parent.width; height: parent.height; opacity: 0;
+                text: ""; checked <=> root.checked; enabled: root.enabled;
+                accessible-label: root.accessible-name == "" ? root.text : root.accessible-name;
+                font-size: root.font-size;
+                toggled => { checkbox.focus(); root.toggled(); }
+            }
+        }
+        caption := Text {
+            text: root.text; color: root.enabled ? Theme.text : Theme.muted-text;
+            font-family: Theme.effective-font-family; font-size: root.font-size;
+            wrap: word-wrap;
+            height: root.height; vertical-alignment: center;
+            min-width: 0px; horizontal-stretch: 1;
+            TouchArea {
+                enabled: root.enabled;
+                clicked => { root.checked = !root.checked; checkbox.focus(); root.toggled(); }
+            }
+        }
+    }
+    if root.hint != "": Tooltip { TipBody { text: root.hint; } }
+}

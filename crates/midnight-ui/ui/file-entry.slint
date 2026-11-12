@@ -1,135 +1,312 @@
 import { Theme } from "theme.slint";
+import { FilenameColorPresentation } from "filename-colors.slint";
 import { PrefixName } from "panel-search.slint";
-import { FileRow } from "file-models.slint";
+import { FileRow, TreePress } from "file-models.slint";
+import { TreeDisclosure } from "tree-disclosure.slint";
+import { PanelWarning } from "panel-warning.slint";
+import { FileArtwork } from "file-artwork.slint";
 
 // Each cell keeps pointer identity across virtualized rebinding and refreshes.
 export component FileEntry inherits Rectangle {
     in property <FileRow> item;
     in property <int> source-index;
     in property <int> view-mode;
+    in property <int> thumbnail-size: 96;
     in property <bool> active;
+    in property <bool> touch-contact;
+    in property <bool> drop-highlight;
+    in property <TreePress> tree-press;
+    in property <string> tree-context;
     in property <length> size-column-width;
+    in property <length> date-column-width: 86px;
+    in property <length> time-column-width: 80px;
     in property <string> previous-click-identity;
     callback remember-click(string);
     callback row-click(bool, bool);
+    callback disclosure(string);
+    callback warning-details(string, bool);
+    callback context-menu(float, float, bool, bool);
     callback open();
-    private property <color> text-color: item.selected ? Theme.selected-text
+    callback begin-drag(string, float, float) -> bool;
+    callback drag-moved(float, float);
+    callback drag-modifiers(bool, bool, bool);
+    callback drag-released(float, float);
+    callback drag-cancelled();
+    callback hover-changed(string, bool);
+    private property <string> hover-identity: pointer.has-hover && root.visible ? item.identity : "";
+    changed hover-identity => { root.hover-changed(item.identity, root.hover-identity != ""); }
+    private property <color> name-background: FilenameColorPresentation.background(item.color-rule && item.custom-background, item.background, item.cursor, root.active, item.selected, mod(root.source-index, 2) != 0);
+    private property <color> text-color: item.color-rule ? FilenameColorPresentation.foreground(item.custom-foreground, item.foreground, root.name-background, item.selected, item.directory)
+        : item.selected ? Theme.selected-text
         : item.directory ? Theme.directory-text : Theme.text;
+    // The virtualized viewport retains only visible cells. Cache their paint
+    // while scrolling; Slint invalidates it when row data or theme changes.
+    cache-rendering-hint: true;
     clip: true;
-    private property <color> row-color: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
-        : item.selected ? Theme.selected-background
+    private property <color> row-color: item.selected ? Theme.selected-background
+        : item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
         : (mod(root.source-index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
+    // Reserve one shared gutter even for links/files without a disclosure button.
+    private property <length> tree-slot: Theme.touch ? 26px : 20px;
+    private property <length> name-width: max(0px, root.width - 24px
+        - (root.view-mode == 0 ? root.size-column-width + root.date-column-width + root.time-column-width + 24px : 0px));
+    // Lend unused leading size space to a directory name while preserving
+    // the measured size value, warning and shared metadata column positions.
+    private property <length> directory-name-space: root.view-mode == 0 && item.directory
+        ? max(0px, root.size-column-width - size-measure.preferred-width
+            - (item.size-state == 3 ? max(12px, min(20px, Theme.small-font)) + 4px : 0px))
+        : 0px;
+    size-measure := Text {
+        visible: false; text: item.size; font-size: Theme.small-font;
+        font-weight: item.size-state == 1 ? 600 : 400;
+    }
+    // Retain room for the native icon and name even at the deepest backend level.
+    private property <length> tree-indent: min(max(0, item.tree-depth) * 14px,
+        max(0px, (root.view-mode == 2 ? root.width - root.thumbnail-size * 1px - 32px : root.name-width - root.tree-slot - Theme.file-icon-size - 48px)));
+    // A custom background is restricted to the filename cell: size/progress/error
+    // and other metadata keep their established theme colors and contrast.
     background: root.row-color;
     accessible-role: list-item;
     accessible-label: item.name + (item.kind == "Folder link" ? " · Folder link" : "")
-        + (item.compressed ? " · Filesystem compressed" : "");
+        + (item.compressed ? " · Filesystem compressed" : "")
+        + (item.browsable-archive ? " · Archive: open as folder" : "")
+        + (item.size-state == 3 ? " · Folder size warning" : "");
+    pointer := TouchArea {
+        private property <string> pressed-identity;
+        private property <bool> control-pressed;
+        private property <bool> shift-pressed;
+        private property <bool> modified-pressed;
+        private property <bool> same-target-double;
+        private property <bool> right-pressed;
+        private property <bool> left-pressed;
+        private property <bool> click-completed;
+        private property <bool> activation-pending;
+        private property <bool> drag-attempted;
+        pointer-event(event) => {
+            root.drag-modifiers(event.modifiers.control, event.modifiers.shift, event.modifiers.alt || event.modifiers.meta);
+            if event.kind == PointerEventKind.down {
+                self.right-pressed = event.button == PointerEventButton.right;
+                self.left-pressed = event.button == PointerEventButton.left;
+                self.click-completed = false;
+                self.activation-pending = false;
+                self.drag-attempted = false;
+                self.pressed-identity = item.identity;
+                self.control-pressed = event.modifiers.control;
+                self.shift-pressed = event.modifiers.shift;
+                self.modified-pressed = event.modifiers.control
+                    || event.modifiers.shift || event.modifiers.alt || event.modifiers.meta;
+            } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if self.drag-attempted {
+                    root.drag-released((self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+                // Slint emits clicked/double-clicked before pointer-up. Wait for
+                // this event so modifiers at either end of the press are checked.
+                let valid = !self.drag-attempted && self.left-pressed && self.click-completed && !self.modified-pressed
+                    && !event.modifiers.control && !event.modifiers.shift
+                    && !event.modifiers.alt && !event.modifiers.meta
+                    && self.pressed-identity == item.identity;
+                let activate = self.activation-pending && valid;
+                root.remember-click(valid ? self.pressed-identity : "");
+                self.left-pressed = false;
+                self.click-completed = false;
+                self.activation-pending = false;
+                if activate { root.open(); }
+            } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                if self.right-pressed && self.pressed-identity == item.identity
+                    && self.mouse-x >= 0px && self.mouse-x < self.width
+                    && self.mouse-y >= 0px && self.mouse-y < self.height {
+                    root.context-menu((self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                        self.control-pressed, self.shift-pressed);
+                }
+                self.right-pressed = false;
+            } else if event.kind == PointerEventKind.cancel {
+                if self.drag-attempted { root.drag-cancelled(); }
+                self.right-pressed = false;
+                self.left-pressed = false;
+                self.click-completed = false;
+                self.activation-pending = false;
+                self.pressed-identity = "";
+                self.same-target-double = false;
+            } else if event.kind == PointerEventKind.move && self.left-pressed {
+                self.modified-pressed = self.modified-pressed || event.modifiers.control
+                    || event.modifiers.shift || event.modifiers.alt || event.modifiers.meta;
+            }
+        }
+        moved => {
+            if self.left-pressed && !root.touch-contact {
+                if !self.drag-attempted && self.pressed-identity == item.identity
+                    && (abs(self.mouse-x - self.pressed-x) >= 6px
+                        || abs(self.mouse-y - self.pressed-y) >= 6px) {
+                    self.drag-attempted = true;
+                    self.activation-pending = false;
+                    self.same-target-double = false;
+                    root.remember-click("");
+                    root.begin-drag(self.pressed-identity,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+                if self.drag-attempted {
+                    root.drag-moved((self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+        }
+        clicked => {
+            self.click-completed = !self.drag-attempted && self.left-pressed
+                && self.pressed-identity == item.identity;
+            self.same-target-double = self.pressed-identity == item.identity
+                && root.previous-click-identity == self.pressed-identity;
+            if self.click-completed {
+                root.row-click(self.control-pressed, self.shift-pressed);
+            }
+        }
+        double-clicked => {
+            self.activation-pending = self.same-target-double && !self.modified-pressed
+                && self.pressed-identity == item.identity;
+        }
+    }
+    if root.view-mode != 2 : HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 8px;
+        HorizontalLayout {
+            spacing: 4px;
+            horizontal-stretch: 1; min-width: 0px;
+            Rectangle { width: max(0px, root.tree-indent + root.tree-slot - 4px); }
+            Rectangle {
+                width: Theme.file-icon-size;
+                FileArtwork {
+                    native-icon: item.icon; browsable-archive: item.browsable-archive;
+                    parent-entry: item.parent-entry;
+                    compressed: item.compressed; dimmed: item.dim-icon;
+                    width: Theme.file-icon-size; height: Theme.file-icon-size;
+                    y: (parent.height - self.height) / 2;
+                }
+                if root.view-mode == 1 && item.size-state == 3 : PanelWarning {
+                    width: 12px; height: 12px; x: parent.width - self.width;
+                    y: (parent.height - Theme.file-icon-size) / 2;
+                    label: "Folder size warning"; detail: item.size-hint; warning: true; revision: item.warning-revision;
+                    identity: item.identity; context: root.tree-context; press: root.tree-press;
+                    inspect => { root.remember-click(""); root.warning-details(item.identity, false); }
+                }
+            }
+            if item.tree-disclosure == 6 : Rectangle {
+                width: 18px;
+                PanelWarning {
+                    width: parent.width; height: min(parent.height, 18px);
+                    y: (parent.height - self.height) / 2;
+                    label: "Folder listing error"; detail: item.tree-error;
+                    identity: item.identity; context: root.tree-context; press: root.tree-press;
+                    inspect => { root.remember-click(""); root.warning-details(item.identity, true); }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1; min-width: 0px;
+                Rectangle {
+                    x: 0px; y: 0px;
+                    width: parent.width + root.directory-name-space; height: parent.height;
+                    background: root.name-background;
+                    if item.prefix-end > 0 : PrefixName {
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
+                        text: item.name; prefix-end: item.prefix-end;
+                        text-color: root.text-color; row-background: root.name-background;
+                    }
+                    if item.prefix-end <= 0 : Text {
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
+                        text: item.name; color: root.text-color;
+                        font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
+                        overflow: elide; vertical-alignment: center; horizontal-alignment: left;
+                    }
+                }
+            }
+        }
+        if root.view-mode == 0 : HorizontalLayout {
+            width: root.size-column-width; spacing: 4px; cross-axis-alignment: center;
+            // Stretch before the warning/value pair, never between its two parts.
+            Rectangle { horizontal-stretch: 1; min-width: 0px; }
+            if item.size-state == 3 : PanelWarning {
+                width: max(12px, min(20px, Theme.small-font)); height: self.width;
+                label: "Folder size warning"; detail: item.size-hint; warning: true; revision: item.warning-revision;
+                    identity: item.identity; context: root.tree-context; press: root.tree-press;
+                    inspect => { root.remember-click(""); root.warning-details(item.identity, false); }
+            }
+            Text {
+                text: item.size; color: item.size-state == 3 ? Theme.pending-size : item.size-state == 1 ? Theme.pending-size : Theme.secondary-text;
+                font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font;
+                horizontal-stretch: 0; min-width: 0px; overflow: elide;
+                horizontal-alignment: right; vertical-alignment: center;
+            }
+        }
+        if root.view-mode == 0 : Text {
+            text: item.modified-date; color: Theme.secondary-text; font-size: Theme.small-font;
+            width: root.date-column-width; overflow: elide; vertical-alignment: center;
+        }
+        if root.view-mode == 0 : Text {
+            text: item.modified-time; color: Theme.secondary-text; font-size: Theme.small-font;
+            width: root.time-column-width; overflow: elide; vertical-alignment: center;
+        }
+    }
+    if root.view-mode == 2 : Rectangle {
+        x: root.tree-indent; width: max(0px, root.width - root.tree-indent);
+        thumbnail-artwork := FileArtwork {
+            native-icon: item.icon; browsable-archive: item.browsable-archive;
+            parent-entry: item.parent-entry;
+            compressed: item.compressed; dimmed: item.dim-icon; thumbnail: true;
+            width: min(root.thumbnail-size * 1px, max(0px, parent.width - 24px)); height: self.width;
+            x: (parent.width - self.width) / 2; y: 12px;
+        }
+        if item.tree-disclosure == 6 : PanelWarning {
+            x: thumbnail-artwork.x;
+            y: thumbnail-artwork.y + thumbnail-artwork.height - self.height;
+            width: 18px; height: 18px;
+            label: "Folder listing error"; detail: item.tree-error;
+            identity: item.identity; context: root.tree-context; press: root.tree-press;
+            inspect => { root.remember-click(""); root.warning-details(item.identity, true); }
+        }
+        if item.size-state == 3 : PanelWarning {
+            x: thumbnail-artwork.x + thumbnail-artwork.width - 14px;
+            y: thumbnail-artwork.y; width: 16px; height: 16px;
+            label: "Folder size warning"; detail: item.size-hint; warning: true; revision: item.warning-revision;
+                    identity: item.identity; context: root.tree-context; press: root.tree-press;
+                    inspect => { root.remember-click(""); root.warning-details(item.identity, false); }
+        }
+        Rectangle {
+            x: 10px; y: thumbnail-artwork.y + thumbnail-artwork.height + 6px;
+            width: parent.width - 20px; height: max(0px, parent.height - self.y - 8px);
+            background: root.name-background;
+            if item.prefix-end > 0 : PrefixName {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: item.name; prefix-end: item.prefix-end; wrapped: true;
+                text-color: root.text-color; row-background: root.name-background;
+            }
+            if item.prefix-end <= 0 : Text {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: item.name; color: root.text-color; font-size: Theme.font-size;
+                font-weight: item.selected ? 600 : 400; wrap: char-wrap; overflow: elide;
+                horizontal-alignment: center; vertical-alignment: top;
+            }
+        }
+    }
     Rectangle {
         x: 0px; y: 0px; width: item.selected ? 4px : 3px; height: parent.height;
         background: item.selected ? Theme.selected-edge
             : item.cursor && root.active ? Theme.cursor-edge : transparent;
     }
     if item.selected && item.cursor : Rectangle {
-        x: 4px; y: 0px; width: parent.width - 4px; height: 1px;
-        background: Theme.selected-edge;
+        x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
+        background: transparent; border-width: 1px;
+        border-color: root.active ? Theme.cursor-edge : Theme.selected-edge;
     }
-    if root.view-mode != 2 : HorizontalLayout {
-        padding-left: 12px; padding-right: 12px; spacing: 8px;
-        HorizontalLayout {
-            spacing: 6px - (Theme.file-icon-size - Theme.icon-size);
-            horizontal-stretch: 1; min-width: root.view-mode == 0 ? 120px : 0px;
-            Rectangle {
-                width: Theme.file-icon-size;
-                Image {
-                    source: item.icon;
-                    width: Theme.file-icon-size; height: Theme.file-icon-size;
-                    y: (parent.height - self.height) / 2;
-                    image-fit: contain;
-                }
-                if item.compressed : Rectangle {
-                    x: parent.width - 8px;
-                    y: (parent.height + Theme.file-icon-size) / 2 - 8px;
-                    width: 9px; height: 9px;
-                    background: Theme.pane-background; border-radius: 2px;
-                    Text {
-                        text: "C"; font-size: 8px; font-weight: 700;
-                        color: Theme.compression-mark;
-                        horizontal-alignment: center; vertical-alignment: center;
-                        accessible-role: none;
-                    }
-                }
-            }
-            if item.prefix-end > 0 : PrefixName {
-                text: item.name; prefix-end: item.prefix-end;
-                text-color: root.text-color; row-background: root.row-color;
-            }
-            if item.prefix-end <= 0 : Text {
-                text: item.name; color: root.text-color;
-                font-size: Theme.font-size; font-weight: item.selected ? 600 : 400;
-                overflow: elide; vertical-alignment: center; horizontal-stretch: 1;
-            }
-        }
-        if root.view-mode == 0 : Text {
-            text: item.size; color: item.size-state == 1 ? Theme.pending-size : Theme.secondary-text;
-            font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font;
-            width: root.size-column-width; overflow: elide;
-            horizontal-alignment: right; vertical-alignment: center;
-        }
-        if root.view-mode == 0 : Text {
-            text: item.modified; color: Theme.secondary-text; font-size: Theme.small-font;
-            width: 132px; overflow: elide; vertical-alignment: center;
-        }
+    if item.tree-disclosure != 0 && item.tree-disclosure != 5 : TreeDisclosure {
+        x: (root.view-mode == 2 ? 6px : 12px) + root.tree-indent;
+        y: root.view-mode == 2 ? 10px : (root.height - self.height) / 2;
+        width: root.tree-slot; height: min(root.height, Theme.touch ? 30px : 24px);
+        item: root.item; press: root.tree-press; context: root.tree-context; view-mode: root.view-mode;
+        pressed => { root.remember-click(""); }
+        disclose(identity) => { root.disclosure(identity); }
     }
-    if root.view-mode == 2 : Rectangle {
-        Image {
-            source: item.icon; width: 72px; height: 72px;
-            x: (parent.width - self.width) / 2; y: 12px; image-fit: contain;
-        }
-        if item.compressed : Text {
-            x: parent.width / 2 + 25px; y: 65px; width: 15px; height: 19px;
-            text: "C"; color: Theme.compression-mark; font-size: 12px; font-weight: 700;
-            accessible-role: none;
-        }
-        if item.prefix-end > 0 : PrefixName {
-            x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
-            text: item.name; prefix-end: item.prefix-end; wrapped: true;
-            text-color: root.text-color; row-background: root.row-color;
-        }
-        if item.prefix-end <= 0 : Text {
-            x: 10px; y: 90px; width: parent.width - 20px; height: parent.height - 98px;
-            text: item.name; color: root.text-color; font-size: Theme.font-size;
-            font-weight: item.selected ? 600 : 400; wrap: char-wrap; overflow: elide;
-            horizontal-alignment: center; vertical-alignment: top;
-        }
-    }
-    TouchArea {
-        private property <string> pressed-identity;
-        private property <bool> control-pressed;
-        private property <bool> shift-pressed;
-        private property <bool> modified-pressed;
-        private property <bool> same-target-double;
-        pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                self.pressed-identity = item.identity;
-                self.control-pressed = event.modifiers.control;
-                self.shift-pressed = event.modifiers.shift;
-                self.modified-pressed = event.modifiers.control
-                    || event.modifiers.shift || event.modifiers.alt || event.modifiers.meta;
-            } else if event.kind == PointerEventKind.cancel {
-                self.pressed-identity = "";
-                self.same-target-double = false;
-            }
-        }
-        clicked => {
-            self.same-target-double = self.pressed-identity == item.identity
-                && root.previous-click-identity == self.pressed-identity;
-            root.remember-click(self.pressed-identity == item.identity ? self.pressed-identity : "");
-            if self.pressed-identity == item.identity {
-                root.row-click(self.control-pressed, self.shift-pressed);
-            }
-        }
-        double-clicked => {
-            if self.same-target-double && !self.modified-pressed
-                && self.pressed-identity == item.identity { root.open(); }
-        }
+    if root.drop-highlight : Rectangle {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        background: transparent; border-width: 2px; border-color: Theme.active-frame;
     }
 }

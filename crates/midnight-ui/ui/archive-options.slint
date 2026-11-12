@@ -1,0 +1,126 @@
+import { HintedCheckBox, HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { ArchiveExtensionChip, ArchiveExtensionInput } from "archive-extension-controls.slint";
+import { NavigationButton } from "navigation-controls.slint";
+
+export struct ArchiveAssociationRow {
+    extension: string,
+    label: string,
+    enabled: bool,
+}
+
+export global ArchiveOptionsView {
+    in property <[ArchiveAssociationRow]> rows;
+    in property <[string]> formats;
+    in property <[string]> custom-extensions;
+    in-out property <int> format-index;
+    in property <string> filter;
+    in-out property <string> draft;
+    in property <string> error;
+    in property <string> conflict-extension;
+    in property <string> availability;
+    in property <bool> ready;
+    callback search(string);
+    callback choose-format(int);
+    callback toggle(string, bool);
+    callback add();
+    callback remove(string);
+    callback show-builtin();
+}
+
+export component ArchiveOptions inherits VerticalLayout {
+    spacing: 8px; alignment: start;
+    private property <bool> adding;
+    private property <int> selected-format: ArchiveOptionsView.format-index;
+    changed selected-format => { root.adding = false; }
+    Text {
+        text: "Open these file types as folders";
+        color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    HintedComboBox {
+        accessible-label: "Archive format";
+        model: ArchiveOptionsView.formats;
+        current-index: ArchiveOptionsView.format-index;
+        hint: "Choose the decoder family whose built-in and custom extensions you want to change.";
+        selected(value) => { ArchiveOptionsView.choose-format(self.current-index); }
+    }
+    Text {
+        text: ArchiveOptionsView.availability; color: Theme.secondary-text;
+        font-size: Theme.font-size; wrap: word-wrap;
+    }
+    HintedLineEdit {
+        text: ArchiveOptionsView.filter; accessible-label: "Search archive associations";
+        placeholder-text: "Filter built-in extensions";
+        hint: "Filter this format's built-in file types by extension or description. Matching ignores letter case.";
+        edited => { ArchiveOptionsView.search(self.text); }
+    }
+    for association in ArchiveOptionsView.rows : HorizontalLayout {
+        spacing: 10px; cross-axis-alignment: center;
+        // Repeated rows must report the wrapped label's height at its allocated width.
+        height: max(Theme.control-height, checkbox.preferred-height, description.preferred-height);
+        checkbox := HintedCheckBox {
+            text: "." + association.extension;
+            accessible-label: "." + association.extension + " · " + association.label;
+            checked: association.enabled; min-height: Theme.control-height;
+            width: max(90px, Theme.font-size * 6);
+            font-size: Theme.font-size;
+            hint: "Open ." + association.extension + " files as folders. Unchecked files open in their usual application. OK saves this choice; Cancel restores it.";
+            toggled => { ArchiveOptionsView.toggle(association.extension, self.checked); }
+        }
+        description := Text {
+            text: association.label; color: Theme.text; font-size: Theme.font-size;
+            wrap: word-wrap; horizontal-stretch: 1;
+        }
+    }
+    if ArchiveOptionsView.rows.length == 0 : Text {
+        text: "No matching built-in file types"; color: Theme.secondary-text; font-size: Theme.font-size;
+    }
+    Text {
+        text: "Custom extensions";
+        color: Theme.strong-text; font-size: Theme.font-size;
+        min-height: Theme.control-height; vertical-alignment: center;
+    }
+    for extension in ArchiveOptionsView.custom-extensions : Rectangle {
+        horizontal-stretch: 1; min-width: 0px; height: chip.height;
+        chip := ArchiveExtensionChip {
+            x: 0px; y: 0px;
+            extension: extension; available-width: parent.width;
+            enabled: ArchiveOptionsView.ready;
+            remove => { ArchiveOptionsView.remove(extension); }
+        }
+    }
+    Rectangle {
+        height: root.adding ? extension-input.preferred-height : Theme.control-height + 4px;
+        if !root.adding : NavigationButton {
+            x: 0px; y: 0px;
+            icon: @image-url("icons/add.svg"); accessible-label: "Add custom archive extension";
+            width: Theme.control-height + 4px; height: Theme.control-height + 4px;
+            border-color: Theme.frame;
+            enabled: ArchiveOptionsView.ready;
+            hint: "Add an extension for this archive format.";
+            clicked => { root.adding = true; }
+        }
+        extension-input := ArchiveExtensionInput {
+            visible: root.adding; enabled: root.adding && ArchiveOptionsView.ready;
+            width: parent.width;
+            text <=> ArchiveOptionsView.draft;
+            changed visible => { if self.visible { self.focus(); } }
+            accepted => {
+                if ArchiveOptionsView.ready && ArchiveOptionsView.draft != "" {
+                    ArchiveOptionsView.add();
+                    if ArchiveOptionsView.error == "" && ArchiveOptionsView.draft == "" { root.adding = false; }
+                }
+            }
+            cancelled => { ArchiveOptionsView.draft = ""; root.adding = false; }
+        }
+    }
+    if root.adding && ArchiveOptionsView.error != "" : Text {
+        text: ArchiveOptionsView.error; color: Theme.error-text;
+        font-size: Theme.font-size; wrap: word-wrap;
+    }
+    if root.adding && ArchiveOptionsView.conflict-extension != "" : HintedActionButton {
+        text: "Show built-in checkbox";
+        hint: "Select the format and existing checkbox for this built-in extension.";
+        clicked => { ArchiveOptionsView.show-builtin(); }
+    }
+}

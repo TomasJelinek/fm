@@ -1,5 +1,6 @@
 //! Exercise compact controls through actual pointer and keyboard dispatch.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
@@ -366,7 +367,7 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
         );
         ui::click_root(
             &window,
-            "Refresh (Ctrl+F9 / Ctrl+R)",
+            "Refresh (Ctrl+R / Ctrl+F9)",
             AccessibleRole::Button,
         );
         assert_eq!(action.get(), (0, 3), "drives cannot obscure Refresh");

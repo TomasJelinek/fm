@@ -1,0 +1,109 @@
+import { Slider, SpinBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+component Channel inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> value;
+    callback edited(int);
+    spacing: 8px; cross-axis-alignment: center;
+    Text { text: root.label; width: max(18px, Theme.font-size); color: Theme.text; font-size: Theme.font-size; }
+    Slider {
+        accessible-label: root.label + " color channel";
+        minimum: 0; maximum: 255; step: 1; value: root.value;
+        changed(value) => { root.edited(round(value)); }
+    }
+    SpinBox {
+        accessible-label: root.label + " value";
+        minimum: 0; maximum: 255; value: root.value;
+        horizontal-stretch: 0;
+        edited(value) => { root.edited(value); }
+    }
+}
+
+// Presentation-only picker shared by optional foreground/background fields.
+// Acceptance is explicit; changing sliders never saves application preferences.
+export component ColorPickerControls inherits VerticalLayout {
+    private property <float> hue;
+    private property <float> saturation;
+    private property <float> brightness;
+    out property <color> current: Colors.hsv(root.hue, root.saturation, root.brightness);
+    spacing: 8px;
+    alignment: start;
+    public function set-color(value: color) {
+        let hsv = value.to-hsv();
+        if hsv.saturation > 0 { root.hue = hsv.hue; }
+        root.saturation = hsv.saturation; root.brightness = hsv.value;
+    }
+    plane := Rectangle {
+        height: 150px;
+        background: @linear-gradient(90deg, #ffffff 0%, Colors.hsv(root.hue, 1, 1) 100%);
+        Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
+        Rectangle {
+            x: clamp(root.saturation * parent.width - 5px, 0px, parent.width - 10px);
+            y: clamp((1 - root.brightness) * parent.height - 5px, 0px, parent.height - 10px);
+            width: 10px; height: 10px; border-radius: 5px;
+            border-width: 2px; border-color: white; background: transparent;
+            Rectangle {
+                x: 2px; y: 2px; width: 6px; height: 6px;
+                border-radius: 3px; border-width: 1px; border-color: black;
+            }
+        }
+        TouchArea {
+            mouse-cursor: crosshair;
+            function update() {
+                root.saturation = clamp(self.mouse-x / max(1px, self.width), 0, 1);
+                root.brightness = 1 - clamp(self.mouse-y / max(1px, self.height), 0, 1);
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { self.update(); }
+            }
+            moved => { if self.pressed { self.update(); } }
+        }
+    }
+    Rectangle {
+        height: 10px;
+        background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.67%, #00ff00 33.33%, #00ffff 50%, #0000ff 66.67%, #ff00ff 83.33%, #ff0000 100%);
+    }
+    Slider {
+        accessible-label: "Color hue"; minimum: 0; maximum: 359; step: 1; value: root.hue;
+        changed(value) => { root.hue = value; }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "Saturation"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; }
+        Slider {
+            accessible-label: "Color saturation"; minimum: 0; maximum: 100; step: 1; value: root.saturation * 100;
+            changed(value) => { root.saturation = value / 100; }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: "Brightness"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; }
+        Slider {
+            accessible-label: "Color brightness"; minimum: 0; maximum: 100; step: 1; value: root.brightness * 100;
+            changed(value) => { root.brightness = value / 100; }
+        }
+    }
+    Channel { label: "R"; value: root.current.red; edited(value) => { root.set-color(Colors.rgb(value, root.current.green, root.current.blue)); } }
+    Channel { label: "G"; value: root.current.green; edited(value) => { root.set-color(Colors.rgb(root.current.red, value, root.current.blue)); } }
+    Channel { label: "B"; value: root.current.blue; edited(value) => { root.set-color(Colors.rgb(root.current.red, root.current.green, value)); } }
+    HorizontalLayout {
+        spacing: 4px;
+        for swatch in [#000000, #ffffff, #ef4444, #f59e0b, #22c55e, #06b6d4, #3b82f6, #a855f7] : Rectangle {
+            height: Theme.control-height; min-width: 24px; horizontal-stretch: 1;
+            border-width: 1px; border-color: swatch-focus.has-focus ? Theme.active-frame : Theme.frame;
+            background: swatch;
+            accessible-role: button;
+            accessible-label: "RGB " + swatch.red + ", " + swatch.green + ", " + swatch.blue;
+            accessible-action-default => { root.set-color(swatch); }
+            forward-focus: swatch-focus;
+            swatch-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Return || event.text == Key.Space { root.set-color(swatch); return accept; }
+                    reject
+                }
+                TouchArea { clicked => { swatch-focus.focus(); root.set-color(swatch); } }
+            }
+        }
+    }
+}

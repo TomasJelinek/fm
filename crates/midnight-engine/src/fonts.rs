@@ -1,5 +1,5 @@
 //! One independent native font enumeration with coalesced requests and a cache.
-use crate::Outbox;
+use crate::{Outbox, task_lifetime::TaskLifetime};
 use midnight_core::{Event, FsError, SettingsService};
 use std::{
     io,
@@ -25,6 +25,7 @@ struct State {
 
 impl Controller {
     pub(crate) fn new(
+        scope: TaskLifetime,
         service: Option<Arc<dyn SettingsService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
@@ -35,9 +36,7 @@ impl Controller {
             stopping: Notify::new(),
         });
         let worker = shared.clone();
-        tasks.spawn(async move {
-            run(service, outbox, worker).await;
-        });
+        tasks.spawn(scope.future(run(scope.clone(), service, outbox, worker)));
         Self { shared }
     }
     pub(crate) fn list(&self) -> bool {
@@ -69,7 +68,12 @@ impl Drop for Controller {
     }
 }
 
-async fn run(service: Option<Arc<dyn SettingsService>>, outbox: Outbox, shared: Arc<Shared>) {
+async fn run(
+    scope: TaskLifetime,
+    service: Option<Arc<dyn SettingsService>>,
+    outbox: Outbox,
+    shared: Arc<Shared>,
+) {
     loop {
         shared.work.notified().await;
         let cached = {
@@ -83,9 +87,9 @@ async fn run(service: Option<Arc<dyn SettingsService>>, outbox: Outbox, shared: 
             Some(names) => Ok(names),
             None => {
                 let service = service.clone();
-                tokio::task::spawn_blocking(move || {
+                tokio::task::spawn_blocking(scope.blocking(move || {
                     service.map_or_else(|| Ok(Vec::new()), |service| service.font_families())
-                })
+                }))
                 .await
                 .unwrap_or_else(|_| {
                     Err(FsError::from_io(

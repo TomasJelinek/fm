@@ -26,6 +26,7 @@ fn query(pane: PaneId, revision: u64, text: &str) -> SearchRequest {
             .into(),
         location,
         query: text.into(),
+        filter: Default::default(),
     }
 }
 
@@ -39,18 +40,45 @@ fn snapshot(request: &SearchRequest) -> CommittedSnapshot {
 }
 
 fn sources(left: &SearchRequest, right: &SearchRequest) -> Snapshots {
-    Arc::new(Mutex::new([
+    crate::test_snapshots([
         SnapshotState {
+            tree_root: None,
+            tree_notify: None,
+            archive: None,
+            network: None,
+            network_navigation: None,
+            archive_navigation: None,
+            archive_sort_sizes: None,
             committed: Some(snapshot(left)),
             visible: Some(snapshot(left)),
             pending: None,
         },
         SnapshotState {
+            tree_root: None,
+            tree_notify: None,
+            archive: None,
+            network: None,
+            network_navigation: None,
+            archive_navigation: None,
+            archive_sort_sizes: None,
             committed: Some(snapshot(right)),
             visible: Some(snapshot(right)),
             pending: None,
         },
-    ]))
+    ])
+}
+
+#[test]
+fn virtual_search_requires_the_exact_committed_snapshot_and_generation() {
+    let mut request = query(PaneId::Left, 1, "a");
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
+    snapshots.lock().unwrap()[0].archive = Some((request.navigation, request.source.clone()));
+    assert!(source_matches(&snapshots, &request));
+    request.navigation = NavigationId(2);
+    assert!(!source_matches(&snapshots, &request));
+    request.navigation = NavigationId(1);
+    request.source = request.source.to_vec().into();
+    assert!(!source_matches(&snapshots, &request));
 }
 
 fn outbox(capacity: usize) -> (Outbox, tokio::sync::mpsc::Receiver<midnight_core::Event>) {
@@ -177,6 +205,13 @@ async fn refresh_replaces_the_source_without_publishing_older_matches() {
     let mut current = query(PaneId::Left, 2, "beta");
     current.navigation = NavigationId(2);
     snapshots.lock().unwrap()[0] = SnapshotState {
+        tree_root: None,
+        tree_notify: None,
+        archive: None,
+        network: None,
+        network_navigation: None,
+        archive_navigation: None,
+        archive_sort_sizes: None,
         committed: Some(snapshot(&current)),
         visible: None,
         pending: None,

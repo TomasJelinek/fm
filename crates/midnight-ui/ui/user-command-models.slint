@@ -1,0 +1,53 @@
+export struct UserCommandSettingsRow { id: string, name: string, summary: string, enabled: bool, selected: bool, separator: bool }
+export struct UserCommandSettingsForm {
+    id: string, name: string, enabled: bool, toolbar-label: string, icon: string, icon-edited: bool,
+    working-directory: string, kind: int, launch: int, executable: string, executable-edited: bool,
+    arguments: string, script: string, shell: int, active-path: bool, other-path: bool,
+    file-path: bool, file-name: bool, file-stem: bool, file-extension: bool,
+}
+export global UserCommandSettingsView {
+    in property <string> revision;
+    in property <string> draft-revision;
+    in property <string> rows-revision;
+    in property <string> token;
+    in property <string> configuration-revision;
+    in property <string> drag-token;
+    in property <bool> drag-active;
+    in property <[UserCommandSettingsRow]> rows;
+    in property <bool> ready;
+    in property <bool> has-draft;
+    in property <int> selected-index: -1;
+    in-out property <bool> dirty;
+    in property <bool> busy;
+    in-out property <bool> can-apply;
+    in-out property <bool> can-preview;
+    in property <bool> can-up;
+    in property <bool> can-down;
+    in property <bool> can-delete;
+    in property <string> error;
+    in property <string> validation;
+    in property <string> status;
+    in property <string> preview-revision;
+    in property <string> preview-text;
+    in property <bool> preview-failed;
+    in-out property <UserCommandSettingsForm> draft;
+    callback select(string);
+    callback new-command();
+    callback delete(string);
+    callback move(string, int);
+    callback edit-started(string);
+    callback validate(string, UserCommandSettingsForm);
+    callback apply(string, UserCommandSettingsForm);
+    callback cancel();
+    callback save();
+    in property <[string]> argument-rows;
+    callback draft-edited(string, UserCommandSettingsForm);
+    callback argument(int, int, string);
+    callback browse(int);
+    callback picker-context(int);
+    callback preview(string, UserCommandSettingsForm) -> bool;
+    callback insert-variable(string, UserCommandSettingsForm, int, int) -> bool;
+    callback drag-begin(string) -> string;
+    callback drag-end(string, int, bool) -> bool;
+    callback drag-cancel();
+}

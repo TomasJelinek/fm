@@ -1,5 +1,5 @@
 //! Immutable, shareable selection data prepared by backend workers.
-use crate::{DirectoryIndex, NavigationId, PaneId};
+use crate::{DirectoryIndex, EntryKind, NavigationId, PaneId};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -7,23 +7,155 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionOperation {
+    /// Select visible top-level entries, including folders and directory links.
+    /// Inline trees apply their depth policy before this per-kind policy.
     All,
+    /// Replace selection with visible top-level non-directory entries.
+    FilesOnly,
+    /// Clear visible non-directory entries while preserving folder and directory-link marks.
+    ClearFilesOnly,
     Clear,
+    /// Invert non-directory entries; preserve folders and directory links.
     Invert,
+    /// Invert all visible top-level entries, preserving nested tree marks.
+    InvertAll,
+}
+
+impl SelectionOperation {
+    /// Shared row policy for backend providers and immediate visual feedback.
+    pub fn selects(self, directory: bool, selected: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::FilesOnly => !directory,
+            Self::ClearFilesOnly => directory && selected,
+            Self::Clear => false,
+            Self::Invert => selected ^ !directory,
+            Self::InvertAll => !selected,
+        }
+    }
+}
+
+/// Selection of not-yet-enumerated rows after ordered streaming bulk actions.
+/// Explicit bits for paths already present in the snapshot always take precedence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectionDefaults {
+    pub files: bool,
+    pub directories: bool,
+}
+impl SelectionDefaults {
+    pub const NONE: Self = Self {
+        files: false,
+        directories: false,
+    };
+    pub const ALL: Self = Self {
+        files: true,
+        directories: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.files || self.directories
+    }
+
+    pub fn selects(self, kind: EntryKind) -> bool {
+        if matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            self.directories
+        } else {
+            self.files
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SelectionRevision(pub u64);
 
+/// A rectangle's modifier behavior against its captured selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionMode {
+    Replace,
+    Add,
+    Toggle,
+}
+impl SelectionMode {
+    pub fn selected(self, in_rectangle: bool, previously_selected: bool) -> bool {
+        match self {
+            Self::Replace => in_rectangle,
+            Self::Add => in_rectangle || previously_selected,
+            Self::Toggle => in_rectangle ^ previously_selected,
+        }
+    }
+}
+
+/// Inclusive positions in a single immutable directory view, excluding its parent row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionSpan {
+    pub first: usize,
+    pub last: usize,
+}
+
+/// Validated, bounded disjoint positions. Construction performs at most 4096 checks.
+/// The source extent travels with the spans to prevent truncation or reinterpretation.
+#[derive(Clone, Debug)]
+pub struct SelectionRanges {
+    len: usize,
+    spans: Arc<[SelectionSpan]>,
+}
+impl SelectionRanges {
+    pub const MAX_SPANS: usize = 4096;
+
+    pub fn new(len: usize, spans: Vec<SelectionSpan>) -> Result<Self, &'static str> {
+        if spans.len() > Self::MAX_SPANS {
+            return Err("Selection rectangle exceeds the range budget");
+        }
+        let mut previous = None;
+        for span in &spans {
+            if span.first > span.last || span.last >= len {
+                return Err("Selection rectangle is outside its captured view");
+            }
+            if previous.is_some_and(|last| span.first <= last) {
+                return Err("Selection rectangle ranges must be sorted and disjoint");
+            }
+            previous = Some(span.last);
+        }
+        Ok(Self {
+            len,
+            spans: spans.into(),
+        })
+    }
+
+    /// Number of entries in the captured source, not the number selected.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+    pub fn spans(&self) -> &[SelectionSpan] {
+        &self.spans
+    }
+    pub fn contains(&self, position: usize) -> bool {
+        let next = self.spans.partition_point(|span| span.last < position);
+        self.spans
+            .get(next)
+            .is_some_and(|span| span.first <= position)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum SelectionAction {
     Bulk(SelectionOperation),
     Toggle(PathBuf),
+    /// Idempotent completion feedback, applied by the ordered selection worker.
+    Remove(Arc<std::collections::HashSet<PathBuf>>),
     /// Inclusive positions resolved from raw paths in the captured immutable view.
     Range {
         anchor: PathBuf,
         target: PathBuf,
         additive: bool,
+    },
+    /// Disjoint rectangle positions resolved only against `SelectionRequest::view`.
+    Ranges {
+        ranges: SelectionRanges,
+        mode: SelectionMode,
     },
     Rebase,
 }
@@ -32,6 +164,15 @@ pub enum SelectionAction {
 pub struct SelectionOrigin {
     pub navigation: NavigationId,
     pub location: PathBuf,
+}
+
+/// A comparison snapshot whose identity survives per-navigation revision resets.
+/// The worker consumes each monotonic stamp once, before protecting an old source.
+#[derive(Clone, Debug)]
+pub struct AuthoritativeSelection {
+    pub id: u64,
+    pub origin: SelectionOrigin,
+    pub snapshot: Arc<SelectionSnapshot>,
 }
 
 /// Cheap UI-to-backend message; the index and previous selection are shared.
@@ -45,6 +186,10 @@ pub struct SelectionRequest {
     pub location: PathBuf,
     pub view: Option<Arc<DirectoryIndex>>,
     pub seed: Arc<SelectionSnapshot>,
+    /// Revision of an authoritative snapshot, including a two-panel comparison.
+    /// A worker adopts a newer seed once, then preserves subsequent queued edits.
+    pub seed_revision: SelectionRevision,
+    pub authoritative: Option<Arc<AuthoritativeSelection>>,
     pub reset: bool,
     pub preserve: Option<SelectionOrigin>,
     pub restore: Option<SelectionOrigin>,
@@ -61,6 +206,7 @@ pub struct SelectionSnapshot {
     bits: Arc<[u64]>,
     selected_count: usize,
     selected_folders: usize,
+    file_bytes: Option<u64>,
 }
 
 impl SelectionSnapshot {
@@ -72,6 +218,9 @@ impl SelectionSnapshot {
         }
         if basis.directory_bits.len() != count.div_ceil(64) {
             return Err("selection directory kinds do not match index length");
+        }
+        if basis.file_sizes.len() != count {
+            return Err("selection file sizes do not match index length");
         }
         let mut seen = vec![false; count];
         for position in basis.by_id.values() {
@@ -113,11 +262,25 @@ impl SelectionSnapshot {
             .zip(&basis.directory_bits)
             .map(|(selected, folders)| (selected & folders).count_ones() as usize)
             .sum();
+        let mut file_bytes = Some(0_u64);
+        for (word_index, word) in bits.iter().copied().enumerate() {
+            // Folder totals are reported separately. Folder links are skipped
+            // here too; other non-regular entries still make file bytes unknown.
+            let mut remaining = word & !basis.directory_bits[word_index];
+            while remaining != 0 {
+                let index = word_index * 64 + remaining.trailing_zeros() as usize;
+                file_bytes = file_bytes
+                    .zip(basis.file_sizes[index])
+                    .and_then(|(total, size)| total.checked_add(size));
+                remaining &= remaining - 1;
+            }
+        }
         Ok(Self {
             basis,
             bits: bits.into(),
             selected_count,
             selected_folders,
+            file_bytes,
         })
     }
     pub fn contains_path(&self, path: &Path) -> bool {
@@ -143,6 +306,12 @@ impl SelectionSnapshot {
     }
     pub fn folder_count(&self) -> usize {
         self.selected_folders
+    }
+    /// Exact known sum of selected files, computed on the selection worker.
+    /// Folders and folder links are excluded. None includes unknown lengths,
+    /// other selected non-regular entries and totals exceeding u64.
+    pub fn file_bytes(&self) -> Option<u64> {
+        self.file_bytes
     }
     pub fn basis(&self) -> &Arc<DirectoryIndex> {
         &self.basis
@@ -227,6 +396,46 @@ mod tests {
             }
             assert!(SelectionSnapshot::from_bits(Arc::new(index), vec![3]).is_err());
         }
+    }
+
+    #[test]
+    fn selected_bytes_are_exact_only_for_known_regular_files() {
+        let mut entries: Vec<_> = (0..4)
+            .map(|id| Entry::new(EntryId(id), format!("file-{id}").into(), EntryKind::File))
+            .collect();
+        entries[0].metadata.size = Some(12);
+        entries[1].metadata.size = Some(34);
+        entries[2].metadata.size = Some(u64::MAX);
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        let selected = SelectionSnapshot::from_bits(index, vec![0b11]).unwrap();
+        assert_eq!(selected.file_bytes(), Some(46));
+        assert_eq!(selected.with_bits(vec![0]).unwrap().file_bytes(), Some(0));
+        assert_eq!(selected.with_bits(vec![0b1001]).unwrap().file_bytes(), None);
+        assert_eq!(selected.with_bits(vec![0b0101]).unwrap().file_bytes(), None);
+        entries[1].kind = EntryKind::Directory;
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        assert_eq!(
+            SelectionSnapshot::from_bits(index, vec![3])
+                .unwrap()
+                .file_bytes(),
+            Some(12)
+        );
+        entries[1].kind = EntryKind::DirectoryLink;
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        assert_eq!(
+            SelectionSnapshot::from_bits(index, vec![3])
+                .unwrap()
+                .file_bytes(),
+            Some(12)
+        );
+        entries[1].kind = EntryKind::Symlink;
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        assert_eq!(
+            SelectionSnapshot::from_bits(index, vec![3])
+                .unwrap()
+                .file_bytes(),
+            None
+        );
     }
 
     #[test]

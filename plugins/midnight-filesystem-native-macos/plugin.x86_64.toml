@@ -1,0 +1,11 @@
+schema_version = 1
+id = "native.macos"
+kind = "filesystem-native"
+version = "0.1.0"
+entry_library = "libmidnight_filesystem_native_macos.dylib"
+target = "x86_64-apple-darwin"
+abi_major = 1
+minimum_host_minor = 1
+protocol = 1
+capabilities = ["browse", "read", "stat", "volumes", "storage", "native-address", "volume-details"]
+address_encoding = "unix-bytes"

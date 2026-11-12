@@ -1,0 +1,94 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// Application actions are used only when the platform reports no native menu.
+export component FileActionMenu inherits Rectangle {
+    in property <string> token;
+    in property <bool> mutable-target;
+    private property <int> current;
+    private property <bool> committing;
+    private property <[int]> action-codes: [0, 1, 6, 2, 3, 4, 5];
+    callback action(string, int);
+    callback dismissed(string);
+    forward-focus: focus;
+    changed token => {
+        root.committing = false;
+        root.current = 0;
+    }
+    changed current => { root.reveal-current(); }
+    function reveal-current() {
+        let top = root.current * Theme.control-height;
+        if top < -menu-scroll.content-y { menu-scroll.content-y = -top; }
+        else if top + Theme.control-height > -menu-scroll.content-y + menu-scroll.visible-height {
+            menu-scroll.content-y = min(0px, menu-scroll.visible-height - top - Theme.control-height);
+        }
+    }
+    pure function action-enabled(index: int) -> bool {
+        // Dismissal closes next tick; reject input throughout that interval.
+        return !root.committing && (root.mutable-target || (root.action-codes[index] != 3 && root.action-codes[index] != 4));
+    }
+    function choose(index: int) {
+        if !root.action-enabled(index) { return; }
+        root.committing = true;
+        root.action(root.token, root.action-codes[index]);
+    }
+    Rectangle {
+        background: Theme.surface;
+        border-color: Theme.active-frame;
+        border-width: 1px;
+        border-radius: 4px;
+        focus := FocusScope {
+            focus-changed-event => {
+                if !self.has-focus && !root.committing { root.committing = true; root.dismissed(root.token); }
+            }
+            key-pressed(event) => {
+                if root.committing { return accept; }
+                if event.text == Key.Escape {
+                    root.committing = true;
+                    root.dismissed(root.token);
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == Key.Space {
+                    root.choose(root.current); return accept;
+                }
+                if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                    let next = clamp(root.current + (event.text == Key.DownArrow ? 1 : -1), 0, 6);
+                    root.current = root.action-enabled(next) ? next
+                        : (event.text == Key.DownArrow ? 6 : 3);
+                    return accept;
+                }
+                reject
+            }
+            menu-scroll := ScrollView {
+                x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: Theme.control-height * 7;
+                changed visible-height => { root.reveal-current(); }
+                changed content-height => { root.reveal-current(); }
+                VerticalLayout {
+                padding: 0px; spacing: 0px;
+                for title[index] in ["Open", "Copy", "Cut", "Paste", "Rename", "Move to Trash", "Properties"] : Rectangle {
+                    height: Theme.control-height;
+                    background: area.has-hover || root.current == index ? Theme.hover : transparent;
+                    accessible-role: button;
+                    accessible-label: title;
+                    accessible-enabled: root.action-enabled(index);
+                    accessible-action-default => { root.choose(index); }
+                    Text {
+                        x: 10px; width: parent.width - 20px; height: parent.height;
+                        text: title; font-size: Theme.font-size;
+                        overflow: elide;
+                        color: root.action-enabled(index) ? Theme.text : Theme.muted-text;
+                        vertical-alignment: center;
+                    }
+                    area := TouchArea {
+                        enabled: root.action-enabled(index);
+                        clicked => { root.choose(index); }
+                    }
+                }
+                }
+            }
+        }
+    }
+}

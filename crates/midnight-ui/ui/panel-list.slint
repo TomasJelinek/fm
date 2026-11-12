@@ -6,6 +6,7 @@ import { ScrollView } from "std-widgets.slint";
 component ListView inherits ScrollView {
     in property <length> row-height;
     in property <bool> interaction-active;
+    callback user-scrolled();
     private property <bool> scroll-pending;
     private property <bool> settling;
     private property <length> last-scroll-position;
@@ -59,6 +60,7 @@ component ListView inherits ScrollView {
     animate content-y { duration: root.settling ? 100ms : 0ms; easing: ease-out; }
 
     scrolled => {
+        root.user-scrolled();
         // The SDK has already replaced any previous animation with real input.
         // Do not write content-y here, which would cancel native inertia.
         settled.stop();

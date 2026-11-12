@@ -12,6 +12,8 @@ pub(super) struct ChoicesState {
     pub(super) revision: u64,
     pub(super) next_id: u64,
     pub(crate) items: Vec<NavigationChoice>,
+    network_position: Option<usize>,
+    network_available: bool,
     preferred: [Option<u64>; 2],
 }
 
@@ -30,6 +32,21 @@ impl Presenter {
 
     pub(crate) fn navigation_choices_revision(&self) -> u64 {
         self.choices.revision
+    }
+
+    pub(crate) fn network_choice_token(&self) -> String {
+        format!("network:{}", self.choices.revision)
+    }
+
+    pub(crate) fn choose_network_choice(
+        &mut self,
+        pane: PaneId,
+        token: &str,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        self.network_available
+            && token == self.network_choice_token()
+            && self.network_navigate(pane, NetworkAction::OpenRoot, send)
     }
 
     pub(super) fn sync_navigation_choices(&mut self) {
@@ -98,7 +115,9 @@ impl Presenter {
         let mut seen = HashSet::new();
         locations.retain(|location| seen.insert(identity(location)));
         self.retired.push(Box::new(seen));
-        let structural = locations.len() != self.choices.items.len()
+        let structural = self.choices.network_position != self.desktop.network_position
+            || self.choices.network_available != self.network_available
+            || locations.len() != self.choices.items.len()
             || locations
                 .iter()
                 .zip(&self.choices.items)
@@ -150,6 +169,8 @@ impl Presenter {
         }
         self.choices.items = items;
         self.choices.revision = revision;
+        self.choices.network_position = self.desktop.network_position;
+        self.choices.network_available = self.network_available;
         self.retired.push(Box::new(previous));
         self.retired.push(Box::new(by_identity));
     }

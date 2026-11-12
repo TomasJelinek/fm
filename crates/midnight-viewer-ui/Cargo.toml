@@ -1,0 +1,26 @@
+[package]
+name = "midnight-viewer-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-core.workspace = true
+midnight-viewer-engine = { path = "../midnight-viewer-engine" }
+midnight-ui-input = { path = "../midnight-ui-input" }
+slint = { workspace = true, features = ["unstable-winit-030"] }
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+slint = { workspace = true, features = ["unstable-wgpu-30"] }
+midnight-plugin-host = { path = "../midnight-plugin-host" }
+tokio.workspace = true
+png = "0.18"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
+midnight-platform-linux.workspace = true

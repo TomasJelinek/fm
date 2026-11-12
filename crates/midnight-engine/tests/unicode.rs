@@ -33,8 +33,14 @@ async fn real_unicode_directories_navigate_from_returned_paths_with_exact_metada
     }
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
-    let task =
-        tokio::spawn(Engine::new(Arc::new(LocalFileSystem::new(None)), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(LocalFileSystem::new(None)),
+            sender,
+        )
+        .run(receiver),
+    );
     let entries = navigate(&commands, &mut events, PaneId::Left, 1, root.path()).await;
     assert_eq!(entries.len(), DIRECTORIES.len());
     for (offset, name) in DIRECTORIES.iter().enumerate() {
@@ -77,8 +83,14 @@ async fn normalization_equivalent_directory_names_keep_distinct_engine_identitie
     }
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
-    let task =
-        tokio::spawn(Engine::new(Arc::new(LocalFileSystem::new(None)), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(LocalFileSystem::new(None)),
+            sender,
+        )
+        .run(receiver),
+    );
     let entries = navigate(&commands, &mut events, PaneId::Left, 1, root.path()).await;
     assert_eq!(entries.len(), 2);
     assert_ne!(entries[0].id, entries[1].id);

@@ -1,38 +1,64 @@
-# Dependency policy
+# Third-party dependency policy
 
-Dependencies must be usable for development, application use and distribution
-without mandatory fees, subscriptions or royalties. This covers direct and
-transitive libraries, public APIs/SDKs, independent plugins, build tools and tests.
-Prefer maintained open-source projects with compatible permissive licenses.
-Trial-only or paid-only components are not acceptable.
+Confirmed product requirement, 6 November 2026: every third-party library must
+allow the intended development, use and distribution without mandatory license
+fees, subscriptions or royalties. Prefer maintained open-source libraries.
+This covers direct and transitive dependencies in the application, public API/SDK,
+independent plugins, tests and build/release tooling.
 
-Free of charge does not remove attribution, notice, source-distribution or other
-license conditions. Do not change this project's own license or select a paid
-alternative of a multi-licensed dependency without an explicit project decision.
+Prefer compatible MIT, Apache-2.0, BSD, ISC and similarly permissive licenses.
+Open-source copyleft is not automatically excluded: its conditions must fit the
+way the component is built, modified and distributed. A free download, trial,
+source-visible repository or optional paid license alone does not establish this.
+For `OR` expressions choose a compatible free branch; `AND` combines obligations.
+Check license files and notices in the pinned source, not just a crate's label.
 
-For a dependency or feature change:
+## Dependency changes
 
-1. Review the exact locked version, its packaged license/notice files, upstream
-   source revision and enabled features. Inspect bundled native libraries and
-   build downloads too; a Rust wrapper's license is not the whole dependency.
-2. Check its maintenance and RustSec status. Record unresolved advisories and
-   the affected target/features; an informational warning is not automatically
-   a vulnerability, and a clean scan is not proof of safety.
-3. Record the free license alternative being used where alternatives differ.
-   Preserve every obligation of conjunctive (`AND`) expressions.
-4. Update [the inventory](THIRD_PARTY.md), its machine-readable feature table,
-   and the distribution notice requirements. Keep Cargo.lock committed and use
-   locked builds. Do not infer distribution contents from all-target metadata.
-5. Test affected platforms and package the actual required license and notice
-   texts with distributed binaries. Preserve copyright holders' notices; links
-   to crates.io alone do not replace notices required in a distribution.
+1. Establish the needed capability, maintained upstream and smallest useful feature
+   set. Reuse a suitable existing dependency before adding another.
+2. Inspect the exact version's license, bundled code/data, native libraries and
+   enabled optional components, including codec licenses where relevant.
+3. Keep independent plugins' dependency locks and tests in their own projects.
+   Sharing this Git repository does not permit dependency on private host crates.
+4. Regenerate the [direct and complete inventories](THIRD_PARTY.md), and preserve
+   required copyright/license/source notices in each distributable artifact.
+5. Check maintenance and RustSec advisories for the affected target/features.
+   Record unresolved findings; a clean scan is not proof of safety.
+6. Record the selected license branch and any concrete distribution obligations
+   when a permissive default does not describe the actual component.
 
-The current desktop uses Slint's free desktop license alternative, described in
-[the inventory](THIRD_PARTY.md#slint). Its platform, attribution and API
-restrictions must also be checked when designing future plugins or products.
-No new third-party package is introduced by the main-branch audit.
+The inventory reports upstream declarations, not an automated compatibility verdict.
+Missing metadata requires source inspection; the generator refuses an `UNKNOWN`
+license. Do not add paid-only or trial-only dependencies. Do not assign or change
+the license of Midnight Explorer or its public API as a side effect of this policy.
 
-Build and audit output belongs under `_build/`; downloaded toolchains,
-registries and advisory databases belong under `.tools/`. Never add generated
-binaries or caches to Git. A release must include a reviewed notice bundle;
-the inventory is an audit input, not that bundle.
+## Current decisions
+
+**Slint 1.18.1:** the application uses the **Slint Royalty-free License 2.0** for
+desktop applications. It requires no paid Slint subscription. Retain Slint notices
+and the attribution required by the exact license; the application has About Slint
+attribution and public release download pages carry the Slint badge. The license
+also limits standalone redistribution, embedded use and exposing Slint APIs to
+third-party applications. The custom royalty-free license is not described here
+as an OSI open-source license. The upstream GPL-3.0 alternative is open source;
+the paid Software License alternative is not selected. See the
+[pinned license](https://github.com/slint-ui/slint/blob/v1.18.1/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md)
+and [upstream licensing terms](https://slint.dev/terms-and-conditions).
+
+**cbindgen 0.29.4:** MPL-2.0, used by the public API header-generation tool. It is
+not linked into the file manager runtime. Preserve covered-source obligations
+when modifying/distributing this tool; MPL's file-level scope does not automatically
+apply its license to all application files. See the
+[Mozilla MPL FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/).
+
+**Native runtimes:** Windows/system graphics libraries remain governed by their
+vendors; their use does not make the operating system open source. Linux libraries
+retain their distribution's licenses. Rust bindings do not relicense native
+libraries. See the separate native/runtime section of the [inventory](THIRD_PARTY.md).
+
+**Future media:** `image` is MIT OR Apache-2.0. FFmpeg remains a proposed optional
+video dependency, not a shipped feature. A concrete redistributable build and
+codec set must satisfy this policy before inclusion. Do not enable FFmpeg's
+`nonfree` build option. An open-source decoder license alone does not establish
+patent/royalty terms for every encoded format in every distribution territory.

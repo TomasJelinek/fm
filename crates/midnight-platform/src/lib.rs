@@ -3,8 +3,14 @@
 
 #[cfg(windows)]
 pub use midnight_platform_windows::{
-    NativeClipboard, WindowsFileSystem as LocalFileSystem, home_directory,
+    NativeClipboard, WindowsFileSystem as LocalFileSystem, home_directory, monitor_work_area,
 };
+
+#[cfg(target_os = "linux")]
+#[path = "window_geometry_linux.rs"]
+mod window_geometry;
+#[cfg(target_os = "linux")]
+pub use window_geometry::monitor_work_area;
 
 #[cfg(windows)]
 #[path = "network_windows.rs"]

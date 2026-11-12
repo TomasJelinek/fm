@@ -1,0 +1,15 @@
+schema_version = 1
+id = "midnight.viewer.markdown"
+name = "Markdown viewer"
+kind = "viewer"
+version = "0.1.0"
+entry_library = "midnight_viewer_markdown.dll"
+target = "x86_64-pc-windows-msvc"
+abi_major = 1
+minimum_host_minor = 0
+required_host_services = ["content.read.v1", "work.schedule.v1"]
+models = ["document-blocks.v1", "text-page.v1"]
+modes = ["document", "text"]
+extensions = ["md", "markdown", "mdown", "mkd"]
+priority = 100
+description = "Displays Markdown documents. HTML stays inert and links are shown as metadata."

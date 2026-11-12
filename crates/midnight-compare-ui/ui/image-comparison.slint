@@ -1,0 +1,35 @@
+// Sampling and transparency flattening belong to the backend. These retained
+// images are composed by the renderer without new pixel buffers on slider input.
+export component ImageComparison inherits Rectangle {
+    in property <image> left-source;
+    in property <image> right-source;
+    in property <int> mode;
+    in property <float> amount: 0.5;
+    in property <float> split-position: 0.5;
+    clip: true;
+    if root.mode == 0: Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        Image { x: 0px; y: 0px; width: root.width * root.split-position; height: root.height; source: root.left-source; image-fit: fill; }
+        Image { x: root.width * root.split-position; y: 0px; width: root.width * (1 - root.split-position); height: root.height; source: root.right-source; image-fit: fill; }
+    }
+    if root.mode != 0: Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        Image {
+            x: 0px; y: 0px;
+            width: root.width; height: root.height; image-fit: fill;
+            source: root.mode == 1 ? root.right-source : root.left-source;
+        }
+        Rectangle {
+            x: 0px; y: 0px;
+            clip: true;
+            width: root.mode == 1 ? root.width * clamp(root.amount, 0, 1) : root.width;
+            height: root.height;
+            opacity: root.mode == 2 ? clamp(root.amount, 0, 1) : 1;
+            Image {
+                x: 0px; y: 0px;
+                width: root.width; height: root.height; image-fit: fill;
+                source: root.mode == 1 ? root.left-source : root.right-source;
+            }
+        }
+    }
+}

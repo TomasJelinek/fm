@@ -1,0 +1,39 @@
+import { DialogWindow } from "dialog-window.slint";
+import { PanelFilterDialog, PanelFilterView } from "panel-filter-dialog.slint";
+import { Theme } from "theme.slint";
+export component PanelFilterWindow inherits DialogWindow {
+    title: "Panel filter";
+    in property <PanelFilterView> model;
+    in property <bool> dialog-input-blocked;
+    callback apply(bool, int, string, bool);
+    callback clear();
+    callback help();
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function begin() { form.begin(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    preferred-width: max(540px, Theme.font-size * 28);
+    preferred-height: max(320px, Theme.control-height * 6 + 100px);
+    FocusScope {
+        width: root.width; height: root.height;
+        capture-key-pressed(event) => { root.dialog-input-blocked ? accept : reject }
+        capture-key-released(event) => { root.dialog-input-blocked ? accept : reject }
+        form := PanelFilterDialog {
+            width: parent.width; height: parent.height;
+            model: root.model;
+            apply(enabled, mode, expression, names) => {
+                if !root.dialog-input-blocked { root.apply(enabled, mode, expression, names); }
+            }
+            clear => { if !root.dialog-input-blocked { root.clear(); } }
+            help => { if !root.dialog-input-blocked { root.help(); } }
+            cancel => { if !root.dialog-input-blocked { root.request-dismiss(); } }
+        }
+    }
+    // Linux relies on the owner lease's Slint gate instead of native window disabling.
+    if root.dialog-input-blocked: TouchArea {
+        width: root.width; height: root.height;
+        scroll-event(event) => { accept }
+    }
+}

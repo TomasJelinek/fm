@@ -1,0 +1,139 @@
+# Midnight Explorer public plugin API and SDK
+
+This is an independent Cargo workspace with its own dependency lock. It shares
+no application crates. Concrete plugins belong in independent workspaces under
+`plugins/`, each with its own tests/lock/build. A plugin may depend on released
+`midnight-plugin-api` and `midnight-plugin-sdk`, never on application internals,
+another plugin, or a source-tree patch. The SDK's ownership/runtime adapters are
+implemented and tested, including an independently exported DLL/SO conformance
+fixture on Windows and Linux. The application loader, LiveValidated content
+broker, viewer window and independent Basic, Source and Markdown viewers are now
+implemented and integrated. ABI 1.0 and package version 0.1.0 remain a versioned
+draft, not a long-term compatibility promise. Filesystem/provider plugins are
+still design-only; the reserved filesystem kind is not an implemented provider API.
+
+The [developer guide](../docs/developer/README.md) covers architecture and package
+independence, [build/test/install commands](../docs/developer/QUICK_START.md),
+[ABI ownership and lifecycle](../docs/developer/ABI_AND_LIFECYCLE.md), and the
+[viewer protocol](../docs/developer/VIEWER_PROTOCOL.md). It includes a small Rust
+example checked against the released SDK. Review the project's
+[dependency policy](../docs/DEPENDENCY_POLICY.md) before adding third-party libraries.
+The SDK package README's introductory integration status reflects its earlier
+release milestone; preserving that packaged file keeps consumer checksums stable.
+Use this page and the developer guide for current implementation status.
+
+From the repository root with Rust available:
+
+```text
+cargo test --manifest-path api/Cargo.toml --workspace --locked
+cargo clippy --manifest-path api/Cargo.toml --workspace --all-targets --locked -- -D warnings
+cargo run --manifest-path api/Cargo.toml -p midnight-api-headergen --locked
+```
+
+Generated and intermediate files stay under the shared `_build` root. Running
+Cargo from `api/` uses `../_build/api`; running from the repository root uses its
+`_build` configuration. Explicit `CARGO_TARGET_DIR` can select another directory
+under that root. `include/midnight_plugin_v1.h` is an intentional generated public
+source artifact; the maintainer generator derives it from `src/abi.rs` using
+[cbindgen](https://github.com/mozilla/cbindgen). Plugin consumers do not need to
+build the generator or access application sources.
+
+Cross-language layout verification:
+
+```powershell
+./api/scripts/check-abi.ps1
+```
+
+```sh
+bash api/scripts/check-abi.sh
+```
+
+These compile a C11 consumer and compare every ABI struct size, alignment and
+field offset against Rust. Windows uses MSVC Build Tools; Linux uses `cc`.
+All C executables/objects and comparison output remain under `_build/api-abi`.
+
+## ABI 1.0 ownership
+
+- The sole plugin export is `midnight_plugin_entry_v1`, matching `MidnightEntry`.
+  Its output capacity bounds all writes. The 16-byte header is checked before
+  accessing the required function-table prefix; optional future tails are ignored.
+- One process, trusted native libraries. Pointer metadata checks do not validate
+  arbitrary native addresses or sandbox plugin code. No Rust allocator, trait,
+  Tokio object or Slint object crosses this boundary.
+- Entry calls for one instance are serialized on backend dispatch. All callbacks
+  are `extern "C"` and must contain panics/exceptions. Long work uses host permits.
+- Request payload slices are borrowed for the call. A request's optional host
+  content buffer needs a successful retain before use after that call. The host
+  keeps immutable bytes valid until the matching releases.
+- Event payload and optional raw content are separately owned plugin buffers.
+  The host releases each nonzero ID through its producing instance exactly once;
+  it never frees plugin memory using its allocator. ID zero only represents an
+  empty buffer. Raw content is not a CBOR array of individual byte integers.
+- Accepted work owns its context until exactly one plugin drop callback, whether
+  it ran or was cancelled before running. Rejected work retains caller ownership.
+- Shutdown rejects new user requests, cancels outstanding work and drains terminal
+  events. Destruction requires quiescence, including workers, continuations,
+  retained host buffers and outstanding plugin buffers. No hot unload is planned.
+
+## Wire and semantic models
+
+The shared codec uses [minicbor](https://github.com/twittner/minicbor), with a
+non-allocating validation pass before typed decoding. Version 1 uses definite
+CBOR maps with strictly increasing unsigned numeric field tags. Duplicate keys,
+indefinite containers, CBOR tags, floats, malformed UTF-8 and trailing bytes are
+rejected. Optional unknown fields may be skipped only after the same validation.
+The envelope limit is 1 MiB, 65536 total items and nesting depth 16. Encoding has
+the same byte limit and checks model validity before writing.
+
+`text-page.v1` currently defines revision (tag 0), source range (1), decoded UTF-8
+text (2), ordered disjoint style spans (3), exact source anchors (4), before/after
+flags (5/6) and partial-line flag (7). Source offsets/lengths are checked `u64`;
+text ranges are bounded UTF-8 byte offsets, never pixels. Copy uses decoded text;
+only explicitly listed anchors map exactly back to source bytes. Never interpolate
+across UTF-16 or visibly escaped invalid bytes. Limits are 256 KiB decoded text,
+4096 spans and 16384 anchors, also subject to the aggregate wire-item limit.
+
+Styles name semantic roles and flags; the host applies theme colors/fonts. Plugin
+data does not carry executable UI markup or shell commands. Binary/document
+models are also defined: binary pages refer to separate bounded raw buffers;
+document pages contain at most 512 semantic blocks with shared text/style/anchor
+budgets and bounded link metadata. The host never treats a link target as an
+automatic action. Viewer Open/Viewport/Search and ReadAt/ReadReply/CloseReader
+schemas preserve explicit revisions, optional lengths, EOF and errors. The
+[SDK contract](midnight-plugin-sdk/README.md) describes owned requests, content
+leases, host-scheduled continuations, output backpressure and quiescent shutdown.
+The application content broker and concrete viewers exercise these contracts in
+native integration tests. The broker validates live file identity/metadata before
+and after reads; it does not promise an immutable snapshot. See
+[viewer implementation verification](../docs/verification/viewer-implementation.md).
+
+## Offline release bundle
+
+Run `api/scripts/package.ps1` or `bash api/scripts/package.sh` after fetching the
+locked API workspace dependencies. The Rust maintainer tool creates a fresh
+`_build/plugin-sdk-<timestamp>` bundle containing versioned `.crate` archives,
+an offline registry index, third-party dependency sources, the public C header
+and `artifacts.json` with SHA-256 checksums and original Cargo/VCS provenance.
+
+The SDK's local maintenance dependency uses a path to the public API; Cargo's
+release manifest removes that path. Consumers use only a version and the named
+`midnight` registry. Pass the bundle's `.cargo/config.toml` using `--config`; its
+relative paths allow relocating the same bundle between Windows and Linux. The
+`.invalid` registry URL is an offline source identity, never a remote service.
+Crates.io dependencies use a separate, unchanged vendor directory.
+
+The packager canonicalizes only our API/SDK archive headers/order and moves Cargo's
+repository-wide VCS metadata to `artifacts.json`. Source and binary member bytes,
+dependency versions and third-party archives stay unchanged. Therefore unrelated
+commits do not invalidate a plugin's locked SDK checksum. Changes to API/SDK
+contents require a new release version after this draft is frozen. Nothing is
+published to a remote registry by this tool.
+
+`plugins/viewer-conformance` owns its native loader tests and depends only on the
+released SDK. Export verification uses copied plugin/bundle directories, fresh
+Cargo caches, `--locked --offline`, optimized DLL/SO builds and C ABI tests.
+Cargo metadata confirms that all nine packages resolve inside that export and
+that no application source package participates.
+
+Registry format follows the [Cargo registry specification](https://doc.rust-lang.org/cargo/reference/registry-index.html)
+and [source replacement rules](https://doc.rust-lang.org/cargo/reference/source-replacement.html).

@@ -74,6 +74,10 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 if [ "$build_profile" = release ]; then
-    exec cargo build -p midnight-explorer --locked --release
+    cargo build -p midnight-explorer -p midnight-elevation --locked --release
+else
+    cargo build -p midnight-explorer -p midnight-elevation --locked
 fi
-exec cargo build -p midnight-explorer --locked
+bash scripts/build-native-filesystem.sh "$build_profile"
+bash scripts/build-network-filesystem.sh "$build_profile"
+exec bash scripts/build-viewers.sh "$build_profile"

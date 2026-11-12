@@ -32,6 +32,11 @@ fn location_keys_preserve_native_volume_identity_and_same_path_aliases() {
         LocationKind::Desktop,
         LocationKind::Documents,
         LocationKind::Downloads,
+        LocationKind::Pictures,
+        LocationKind::Videos,
+        LocationKind::Music,
+        LocationKind::Temporary,
+        LocationKind::OneDrive,
     ] {
         location.kind = kind;
         let key = IconKey::for_location(&location);

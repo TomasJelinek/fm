@@ -1,0 +1,208 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { NativeActionImage, FallbackIcons } from "action-icons.slint";
+import { ErrorGlyph } from "error-notice.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { SpeedChartData } from "operation-speed-chart.slint";
+
+export struct OperationRow {
+    identity: string, title: string, detail: string, summary: string, state: string,
+    cancellable: bool, attention: bool, failed: bool, active: bool,
+    completed: bool, determinate: bool, progress: float, progress-label: string,
+    pausable: bool, pause-requested: bool, paused: bool, discovering: bool,
+    current-path: string, remaining: string, eta: string,
+    file-determinate: bool, file-progress: float, file-progress-label: string, icon: image, kind: int, speed-chart: SpeedChartData
+}
+
+export global JobsView {
+    pure callback find([OperationRow], string) -> int;
+    pure callback has-finished([OperationRow], bool) -> bool;
+}
+
+component JobRow inherits Rectangle {
+    in property <OperationRow> job;
+    in property <bool> selected;
+    callback select();
+    height: max(Theme.control-height * 1.7, Theme.font-size * 3.5);
+    background: root.selected ? Theme.selected-background : area.has-hover ? Theme.hover : Theme.pane-background;
+    accessible-role: list-item; accessible-label: root.job.title; accessible-value: root.job.identity;
+    accessible-checkable: true; accessible-checked: root.selected;
+    accessible-action-default => { root.select(); }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 10px; cross-axis-alignment: center;
+        if root.job.failed : ErrorGlyph { }
+        if !root.job.failed : NativeActionImage {
+            native-icon: root.job.icon;
+            fallback-icon: root.job.kind == 1 ? FallbackIcons.delete
+                : root.job.kind == 2 ? FallbackIcons.rename
+                : root.job.kind == 3 ? FallbackIcons.new-folder
+                : root.job.kind == 4 ? FallbackIcons.new-file
+                : root.job.kind == 6 ? FallbackIcons.run
+                : root.job.kind == 5 ? FallbackIcons.properties : FallbackIcons.copy;
+            width: Theme.icon-size; height: Theme.icon-size;
+        }
+        VerticalLayout {
+            spacing: 3px; alignment: center;
+            HorizontalLayout {
+                spacing: 10px;
+                Text { text: root.job.title; color: root.selected ? Theme.selected-text : Theme.text; font-size: Theme.font-size; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                Text { text: root.job.state; color: root.selected ? Theme.selected-text : root.job.failed ? Theme.error-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+            }
+            Text { text: root.job.summary; color: root.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+        }
+    }
+    area := TouchArea { clicked => { root.select(); } }
+}
+
+component FinishedJobButton inherits HintedActionButton {
+    in property <[OperationRow]> rows;
+    in property <bool> without-errors;
+    callback clear-finished(bool);
+    text: root.without-errors ? "Clear finished without errors" : "Clear all finished";
+    enabled: JobsView.has-finished(root.rows, root.without-errors);
+    hint: root.without-errors ? "Remove finished jobs without errors and keep jobs that need attention."
+        : "Remove all finished jobs from this session's history.";
+    clicked => { root.clear-finished(root.without-errors); }
+}
+
+component FinishedJobActions inherits ScrollView {
+    in property <[OperationRow]> rows;
+    callback clear-finished(bool);
+    min-width: 0px;
+    height: max(Theme.control-height, clear-all.preferred-height) + 12px;
+    horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+    HorizontalLayout {
+        alignment: start; spacing: 8px;
+        clear-all := FinishedJobButton {
+            rows: root.rows;
+            clear-finished(value) => { root.clear-finished(value); }
+        }
+        FinishedJobButton {
+            rows: root.rows; without-errors: true;
+            clear-finished(value) => { root.clear-finished(value); }
+        }
+    }
+}
+
+export component OperationsBody inherits Rectangle {
+    in property <[OperationRow]> rows;
+    in property <string> requested-identity;
+    private property <string> selected-identity;
+    private property <int> selected-index: JobsView.find(root.rows, root.selected-identity);
+    private property <OperationRow> selected: root.rows[root.selected-index];
+    private property <bool> compact: root.height < 350px;
+    callback cancel(string);
+    callback resolve(string);
+    callback copy-details(string);
+    callback open-progress(string);
+    callback clear-finished(bool);
+    callback close();
+    callback move-dialog(length, length);
+    public function select-job(identity: string) {
+        root.selected-identity = identity;
+        list-focus.focus();
+    }
+    changed requested-identity => { root.select-job(root.requested-identity); }
+    init => {
+        root.selected-identity = root.requested-identity;
+        list-focus.focus();
+    }
+    background: Theme.surface;
+    border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: root.compact ? 6px : 16px; spacing: root.compact ? 4px : 10px;
+            DialogHeader {
+                title: "Jobs"; compact: root.compact;
+                fallback-icon: FallbackIcons.folder-sizes;
+                detail: root.rows.length == 1 ? "1 operation" : root.rows.length + " operations";
+                close-label: "Close dialog"; close => { root.close(); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            list-frame := Rectangle {
+                min-height: 20px; min-width: 0px; vertical-stretch: 1;
+                background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+                clip: true;
+                list-focus := FocusScope {
+                    key-pressed(event) => {
+                        if root.rows.length == 0 { return reject; }
+                        if event.text == Key.Return {
+                            root.open-progress(root.selected.identity); return accept;
+                        }
+                        if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                            let next = clamp(root.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, root.rows.length - 1);
+                            root.selected-identity = root.rows[next].identity;
+                            let row-height = max(Theme.control-height * 1.7, Theme.font-size * 3.5);
+                            let top = next * row-height;
+                            if top < -jobs.content-y { jobs.content-y = -top; }
+                            else if top + row-height > -jobs.content-y + jobs.visible-height {
+                                jobs.content-y = min(0px, jobs.visible-height - top - row-height);
+                            }
+                            return accept;
+                        }
+                        reject
+                    }
+                    jobs := ListView {
+                        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                        horizontal-scrollbar-policy: always-off;
+                        for job in root.rows : JobRow {
+                            job: job; selected: job.identity == root.selected.identity;
+                            width: jobs.visible-width;
+                            select => { list-focus.focus(); root.selected-identity = job.identity; }
+                        }
+                    }
+                }
+                if root.rows.length == 0 : Text {
+                    text: "No background operations"; color: Theme.secondary-text;
+                    font-size: Theme.font-size;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            if !root.compact : FinishedJobActions {
+                rows: root.rows;
+                clear-finished(without-errors) => { root.clear-finished(without-errors); }
+            }
+            footer := DialogFooter {
+                compact-height: root.compact;
+                dismiss-text: "Close";
+                dismiss-hint: "Close Jobs (Escape). Background operations continue.";
+                dismiss => { root.close(); }
+                HintedActionButton {
+                    text: "Open"; enabled: root.selected-index >= 0;
+                    hint: "Open this operation's progress or retained details (Enter).";
+                    clicked => { root.open-progress(root.selected.identity); }
+                }
+                HintedActionButton {
+                    text: "Copy details"; fallback-icon: FallbackIcons.copy;
+                    enabled: root.selected-index >= 0;
+                    hint: "Copy the selected job's full details and retained errors.";
+                    clicked => { root.copy-details(root.selected.identity); }
+                }
+                HintedActionButton {
+                    text: "Cancel job"; fallback-icon: FallbackIcons.close;
+                    enabled: root.selected.cancellable;
+                    hint: "Request cancellation of this job. Completed changes are retained.";
+                    clicked => { root.cancel(root.selected.identity); }
+                }
+                if root.compact : FinishedJobButton {
+                    rows: root.rows;
+                    clear-finished(value) => { root.clear-finished(value); }
+                }
+                if root.compact : FinishedJobButton {
+                    rows: root.rows; without-errors: true;
+                    clear-finished(value) => { root.clear-finished(value); }
+                }
+                if root.selected.attention : HintedActionButton {
+                    text: "Resolve"; hint: "Review the decision needed by this job.";
+                    clicked => { root.resolve(root.selected.identity); }
+                }
+            }
+        }
+    }
+}

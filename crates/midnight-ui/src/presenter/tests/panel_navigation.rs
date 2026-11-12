@@ -26,6 +26,7 @@ fn special_location_keeps_the_containing_volume_selected() {
     let special = root.join("Documents 文档");
     let mut presenter = Presenter::new(special.clone(), root.clone());
     presenter.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             NavigationLocation {
@@ -274,7 +275,7 @@ fn space_sizes_original_directory_and_result_survives_sort_and_recycled_ids() {
 }
 
 #[test]
-fn space_does_not_scan_links_or_restart_an_active_all_folder_scan() {
+fn space_scans_directory_links_without_restarting_an_active_all_folder_scan() {
     let root = test_root();
     let mut p = Presenter::new(root.clone(), root.clone());
     let navigation = begin(&mut p, PaneId::Left, root.to_str().unwrap());
@@ -293,21 +294,44 @@ fn space_does_not_scan_links_or_restart_an_active_all_folder_scan() {
         true
     };
     p.move_cursor(PaneId::Left, 8, &send);
-    assert!(
-        sent.borrow()
-            .iter()
-            .all(|command| matches!(command, Command::Selection(_)))
-    );
+    assert!(sent.borrow().iter().any(|command| matches!(
+        command,
+        Command::ComputeEntrySize {
+            entry: EntryId(1),
+            ..
+        }
+    )));
+    let position = sent
+        .borrow()
+        .iter()
+        .position(|command| matches!(command, Command::Selection(_)))
+        .unwrap();
+    let toggle = Some(sent.borrow_mut().remove(position));
+    fixture_toggle(&mut p, PaneId::Left, toggle);
+    assert!(p.bulk_selection(PaneId::Left, SelectionOperation::Clear, &send));
+    let Command::Selection(clear) = sent.borrow_mut().pop().unwrap() else {
+        panic!("expected selection clear");
+    };
+    p.apply(Event::SelectionChanged {
+        pane: PaneId::Left,
+        navigation: clear.navigation,
+        revision: clear.revision,
+        selection: Arc::new(SelectionSnapshot::default()),
+        deferred: Default::default(),
+    });
     p.folder_sizes(PaneId::Left, &send);
     let active = p.panes[0].size_scan;
+    assert!(
+        active.is_some(),
+        "the empty selection starts the whole-panel scan"
+    );
     sent.borrow_mut().clear();
     p.move_cursor(PaneId::Left, 8, &send);
     assert_eq!(p.panes[0].size_scan, active);
-    assert!(
-        sent.borrow()
-            .iter()
-            .all(|command| matches!(command, Command::Selection(_)))
-    );
+    assert!(sent.borrow().iter().all(|command| matches!(
+        command,
+        Command::Selection(_) | Command::SummarizeSelectedFolders(_)
+    )));
 }
 
 #[test]

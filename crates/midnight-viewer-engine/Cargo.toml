@@ -1,0 +1,18 @@
+[package]
+name = "midnight-viewer-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midnight-core.workspace = true
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
+midnight-web-viewer-host = { path = "../midnight-web-viewer-host" }
+midnight-plugin-host = { path = "../midnight-plugin-host" }
+midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }
+midnight-viewer-render = { path = "../midnight-viewer-render" }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

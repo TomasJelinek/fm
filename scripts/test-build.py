@@ -23,6 +23,9 @@ class BuildSetupTests(unittest.TestCase):
         (self.repo / "scripts").mkdir()
         for name in ("build-docker.sh", "docker-install-deps.sh"):
             shutil.copy2(ROOT / "scripts" / name, self.repo / "scripts" / name)
+        # Package builds are separate from these host bootstrap tests.
+        for name in ("build-native-filesystem.sh", "build-network-filesystem.sh", "build-viewers.sh"):
+            (self.repo / "scripts" / name).write_text("#!/bin/sh\nexit 0\n")
         shutil.copy2(ROOT / "rust-toolchain.toml", self.repo / "rust-toolchain.toml")
         self.log = self.root / "commands"
         self.env = {
@@ -31,7 +34,7 @@ class BuildSetupTests(unittest.TestCase):
             "CARGO_HOME": str(self.root / "custom cargo"),
             "TEST_LOG": str(self.log),
         }
-        for name in ("dirname", "mkdir", "mktemp", "rm", "sh", "cat", "chmod", "sha256sum", "find"):
+        for name in ("dirname", "mkdir", "mktemp", "rm", "sh", "bash", "cat", "chmod", "sha256sum", "find"):
             (self.bin / name).symlink_to(shutil.which(name))
         self.command("cc", "exit 0\n")
         self.command("pkg-config", 'exit "${NATIVE_STATUS:-0}"\n')
@@ -156,7 +159,7 @@ class BuildSetupTests(unittest.TestCase):
         result = self.run_build()
         self.assertEqual(result.returncode, 42)
         self.assertNotIn("apt-get", self.output)
-        self.assertIn("cargo build -p midnight-explorer --locked\n", self.output)
+        self.assertIn("cargo build -p midnight-explorer -p midnight-elevation --locked\n", self.output)
         self.assertIn(f"cwd={self.repo} tmp={self.repo}/_build/tmp", self.output)
 
     def test_finds_cargo_in_custom_home_without_reinstall(self):
@@ -197,7 +200,7 @@ class BuildSetupTests(unittest.TestCase):
         result = self.run_build("release")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rustup -y --profile minimal --default-toolchain none\n", self.output)
-        self.assertIn("cargo build -p midnight-explorer --locked --release\n", self.output)
+        self.assertIn("cargo build -p midnight-explorer -p midnight-elevation --locked --release\n", self.output)
         self.assertEqual(list((self.repo / "_build/tmp").iterdir()), [])
 
     def test_image_failure_stops_before_container_run(self):

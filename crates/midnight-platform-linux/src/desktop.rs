@@ -20,6 +20,10 @@ const TERMINALS: &[&str] = &[
 ];
 const COMMAND_WRAPPER: &str = "eval \"$1\"; exec /bin/sh -i";
 
+#[cfg(test)]
+#[path = "user_command_terminal_tests.rs"]
+mod user_command_tests;
+
 impl TerminalService for LinuxFileSystem {
     fn shell_flavor(&self) -> ShellFlavor {
         ShellFlavor::Posix
@@ -49,6 +53,100 @@ impl TerminalService for LinuxFileSystem {
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|error| FsError::from_io("launch terminal", &request.working_directory, error))
     }
+
+    fn launch_terminal_with_environment(
+        &self,
+        request: &TerminalRequest,
+        environment: &[(String, std::ffi::OsString)],
+        cancel: &midnight_core::Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        let mut command = prepare_user_terminal(request, environment, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(FsError::from_io(
+                "Custom Command terminal",
+                &request.working_directory,
+                io::ErrorKind::Interrupted.into(),
+            ));
+        }
+        command
+            .spawn()
+            .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
+            .map_err(|cause| {
+                FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+            })
+    }
+}
+
+pub(crate) fn prepare_user_terminal(
+    request: &TerminalRequest,
+    environment: &[(String, std::ffi::OsString)],
+    cancel: &midnight_core::Cancellation,
+) -> Result<Command, FsError> {
+    let executable = TERMINALS
+        .iter()
+        .map(Path::new)
+        .find(|path| is_executable(path))
+        .ok_or_else(|| {
+            FsError::from_io(
+                "find system terminal",
+                &request.working_directory,
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "No supported system terminal is installed.",
+                ),
+            )
+        })?;
+    prepare_user_terminal_with(executable, request, environment, cancel)
+}
+fn prepare_user_terminal_with(
+    executable: &Path,
+    request: &TerminalRequest,
+    environment: &[(String, std::ffi::OsString)],
+    cancel: &midnight_core::Cancellation,
+) -> Result<Command, FsError> {
+    midnight_core::UserCommandProcess {
+        working_directory: request.working_directory.clone(),
+        invocation: midnight_core::UserCommandProcessInvocation::Terminal {
+            shell: request.shell,
+            script: request.command.clone(),
+            environment: environment.to_vec(),
+        },
+    }
+    .check(cancel)?;
+    if request.mode != TerminalMode::Standard {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Custom Commands use normal-user terminals only.",
+            ),
+        ));
+    }
+    if !fs::metadata(&request.working_directory)
+        .map_err(|cause| FsError::from_io("Custom Command cwd", &request.working_directory, cause))?
+        .is_dir()
+    {
+        return Err(FsError::from_io(
+            "Custom Command cwd",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Command cwd is not a directory.",
+            ),
+        ));
+    }
+    let mut command = terminal_command(executable, request).map_err(|cause| {
+        FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+    })?;
+    for key in midnight_core::USER_COMMAND_ENVIRONMENT {
+        command.env_remove(key);
+    }
+    command.envs(environment.iter().map(|(key, value)| (key, value)));
+    crate::user_commands::validate_os_arguments(&command).map_err(|cause| {
+        FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+    })?;
+    Ok(command)
 }
 
 fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<Command> {
@@ -133,6 +231,16 @@ impl LocationService for LinuxFileSystem {
                 drive_letter: None,
             })
             .collect();
+        let temporary = std::env::temp_dir();
+        if temporary.is_absolute() && temporary.is_dir() {
+            locations.push(NavigationLocation {
+                id: "temporary".into(),
+                label: "Temporary files".into(),
+                path: temporary,
+                kind: LocationKind::Temporary,
+                drive_letter: None,
+            });
+        }
         let Some(home) = self.home.as_ref().filter(|home| home.is_absolute()) else {
             return Ok(locations);
         };
@@ -153,6 +261,9 @@ impl LocationService for LinuxFileSystem {
             ("DESKTOP", "Desktop", LocationKind::Desktop),
             ("DOCUMENTS", "Documents", LocationKind::Documents),
             ("DOWNLOAD", "Downloads", LocationKind::Downloads),
+            ("PICTURES", "Pictures", LocationKind::Pictures),
+            ("VIDEOS", "Videos", LocationKind::Videos),
+            ("MUSIC", "Music", LocationKind::Music),
         ] {
             // When configured to $HOME, XDG marks a location disabled. Do not fabricate
             // an English directory in that case. Conventional defaults apply only when

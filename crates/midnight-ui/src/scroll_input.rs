@@ -3,81 +3,25 @@
 mod wheel_motion;
 
 use crate::MainWindow;
-use i_slint_core::window::{WindowInner, WindowKind};
+use i_slint_core::{
+    lengths::{LogicalPoint, LogicalRect, LogicalSize},
+    window::{WindowInner, WindowKind},
+};
+use midnight_ui_input::{CommandStrip, NativeScroll, PressState};
+#[cfg(test)]
+use slint::winit_030::winit::event::DeviceId;
 use slint::{
     ComponentHandle, Model,
     winit_030::{
         EventResult, WinitWindowAccessor,
         winit::{
             dpi::PhysicalPosition,
-            event::{
-                DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-            },
+            event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent},
         },
     },
 };
-use std::{cell::RefCell, collections::HashSet, rc::Rc, time::Duration};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 use wheel_motion::{WHEEL_FRAME, WheelMotion};
-
-#[derive(Default)]
-struct PressState {
-    buttons: HashSet<(DeviceId, MouseButton)>,
-    fingers: HashSet<(DeviceId, u64)>,
-    touchpads: HashSet<DeviceId>,
-}
-
-impl PressState {
-    fn observe(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            WindowEvent::MouseInput {
-                device_id,
-                state,
-                button,
-            } => {
-                let key = (*device_id, *button);
-                if *state == ElementState::Pressed {
-                    self.buttons.insert(key);
-                } else {
-                    self.buttons.remove(&key);
-                }
-            }
-            WindowEvent::Touch(touch) => {
-                let key = (touch.device_id, touch.id);
-                match touch.phase {
-                    TouchPhase::Started => {
-                        self.fingers.insert(key);
-                    }
-                    TouchPhase::Ended | TouchPhase::Cancelled => {
-                        self.fingers.remove(&key);
-                    }
-                    TouchPhase::Moved => {}
-                }
-            }
-            WindowEvent::MouseWheel {
-                device_id, phase, ..
-            } => match phase {
-                TouchPhase::Started => {
-                    self.touchpads.insert(*device_id);
-                }
-                TouchPhase::Ended | TouchPhase::Cancelled => {
-                    self.touchpads.remove(device_id);
-                }
-                TouchPhase::Moved => {}
-            },
-            WindowEvent::Focused(false) | WindowEvent::Destroyed => {
-                self.buttons.clear();
-                self.fingers.clear();
-                self.touchpads.clear();
-            }
-            _ => {}
-        }
-        self.active()
-    }
-
-    fn active(&self) -> bool {
-        !self.buttons.is_empty() || !self.fingers.is_empty() || !self.touchpads.is_empty()
-    }
-}
 
 #[derive(Default)]
 struct InputState {
@@ -266,6 +210,38 @@ fn observe(
     timer: &slint::Timer,
     event: &WindowEvent,
 ) -> bool {
+    // Winit's raw touch events have no public WindowEvent representation in the
+    // pinned Slint hook. Capture before its Flickable can defer child down.
+    if let WindowEvent::Touch(touch) = event {
+        // The pinned runtime turns a cancelled tap into Released then Exit.
+        // Invalidate before that synthetic release; clearing the snapshot would
+        // instead permit the child to capture the current live context.
+        if touch.phase == TouchPhase::Cancelled {
+            window.invoke_cancel_function_press();
+        }
+        if touch.phase == TouchPhase::Started && !state.borrow().pressed.has_touches() {
+            let point = touch
+                .location
+                .to_logical::<f32>(f64::from(window.window().scale_factor()));
+            window.invoke_capture_function_press(point.x, point.y);
+        } else if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+            let weak = window.as_weak();
+            let state = state.clone();
+            // Keep the snapshot through the runtime's release/click dispatch.
+            // A newer press prevents an older deferred release from clearing it.
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if !state.borrow().pressed.active()
+                    && let Some(window) = weak.upgrade()
+                {
+                    window.invoke_release_function_press();
+                }
+            });
+        }
+    }
+    if matches!(event, WindowEvent::Focused(false) | WindowEvent::Destroyed) {
+        window.invoke_cancel_function_press();
+        window.invoke_release_function_press();
+    }
     if matches!(event, WindowEvent::RedrawRequested) {
         if !wheel_frame(window, state) {
             timer.stop();
@@ -311,7 +287,27 @@ fn observe(
         timer.stop();
     }
     window.set_scroll_interaction_active(active);
+    window.set_touch_contact(state.borrow().pressed.has_touches());
     if replaced {
+        // Fluent's scrollbar wheel handler omits scrolled. Release an explicit
+        // cursor reveal before the first fractional panel frame changes content-y.
+        // This hit-test runs once per native notch, never on the animation frames.
+        let position = state.borrow().wheel_position;
+        if let (
+            Some(position),
+            WindowEvent::MouseWheel {
+                delta: MouseScrollDelta::LineDelta(x, y),
+                ..
+            },
+        ) = (position, event)
+        {
+            midnight_ui_input::notify_scrollbar_wheel(
+                window.window(),
+                LogicalPoint::new(position.x, position.y),
+                *x,
+                *y,
+            );
+        }
         window.window().request_redraw();
     }
     replaced
@@ -328,20 +324,90 @@ pub(crate) fn install(window: &MainWindow) {
     let weak = window.as_weak();
     let state = Rc::new(RefCell::new(InputState::default()));
     let timer = wheel_timer(window, &state);
+    let auxiliary_scroll = Rc::new(RefCell::new(NativeScroll::new(window)));
+    let release_auxiliary_scroll = auxiliary_scroll.clone();
+    let release_state = state.clone();
+    let release_window = window.as_weak();
+    window.on_release_drag_input(move || {
+        let mut state = release_state.borrow_mut();
+        state.pressed.release_left_button();
+        release_auxiliary_scroll.borrow_mut().release_mouse_drag();
+        state.wheel.cancel();
+        if let Some(window) = release_window.upgrade() {
+            window.set_scroll_interaction_active(state.active());
+        }
+    });
     let mut shortcuts = crate::native_shortcuts::ShortcutState::default();
     window.window().on_winit_window_event(move |_, event| {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        if crate::dialog_host::dialog_input_blocked(window.window()) {
+            timer.stop();
+            auxiliary_scroll.borrow_mut().reset();
+            *state.borrow_mut() = InputState::default();
+            shortcuts = crate::native_shortcuts::ShortcutState::default();
+            if is_dialog_input(event) {
+                return EventResult::PreventDefault;
+            }
+        }
+        crate::drag_bridge::observe_native(&window, event);
         let replaced = observe(&window, &state, &timer, event);
+        // Panel identity/routing gets first refusal. Only the remaining native
+        // scrollbar and command-strip paths need auxiliary interpolation.
+        let auxiliary_replaced = if replaced {
+            auxiliary_scroll.borrow_mut().cancel();
+            false
+        } else {
+            let command = (window.get_command_path_content_width()
+                > window.get_command_path_width())
+            .then(|| CommandStrip {
+                bounds: LogicalRect::new(
+                    LogicalPoint::new(
+                        window.get_command_path_left(),
+                        window.get_command_path_top(),
+                    ),
+                    LogicalSize::new(
+                        window.get_command_path_width(),
+                        window.get_command_path_height(),
+                    ),
+                ),
+                path: window.get_command_directory(),
+            });
+            auxiliary_scroll
+                .borrow_mut()
+                .observe(window.window(), event, command)
+        };
         // This callback runs only for a real Winit adapter. Software-window
         // tests retain the Slint logical-key fallback.
         window.set_native_shortcuts_authoritative(true);
-        if shortcuts.handle(&window, event) || replaced {
+        if shortcuts.handle(&window, event) || replaced || auxiliary_replaced {
             return EventResult::PreventDefault;
         }
         EventResult::Propagate
     });
+}
+
+fn is_dialog_input(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::Ime(_)
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::Touch(_)
+            | WindowEvent::PinchGesture { .. }
+            | WindowEvent::PanGesture { .. }
+            | WindowEvent::RotationGesture { .. }
+            | WindowEvent::DoubleTapGesture { .. }
+            | WindowEvent::TouchpadPressure { .. }
+            | WindowEvent::DroppedFile(_)
+            | WindowEvent::HoveredFile(_)
+            | WindowEvent::CloseRequested
+    )
 }
 
 #[cfg(test)]
@@ -438,7 +504,7 @@ mod tests {
         assert!(state.active());
         let frame = state.wheel.tick(Duration::from_millis(16)).unwrap();
         assert!(frame.1 < 0.0 && frame.1 > -20.0);
-        for millis in [32, 48, 64, 80, 96, 112, 120] {
+        for millis in (2..=16).map(|frame| frame * 16) {
             state.wheel.tick(Duration::from_millis(millis));
         }
         assert!(!state.active());
@@ -506,8 +572,8 @@ mod tests {
         state.observe(&cursor(121.0, 201.0), 1.0, Duration::from_millis(1));
         assert!(state.wheel.active());
         assert_eq!(state.cursor, Some(PhysicalPosition::new(121.0, 201.0)));
-        let total: f32 = [16, 32, 48, 64, 80, 96, 112, 120]
-            .into_iter()
+        let total: f32 = (1..=16)
+            .map(|frame| frame * 16)
             .filter_map(|millis| state.wheel.tick(Duration::from_millis(millis)))
             .map(|(_, y)| y)
             .sum();

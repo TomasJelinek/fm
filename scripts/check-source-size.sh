@@ -7,7 +7,7 @@ checked=0
 oversized=0
 while IFS= read -r -d '' source; do
     case "$source" in
-        *.rs|*.slint|*.ps1|*.sh|*.bat) ;;
+        *.rs|*.slint|*.ps1|*.sh|*.bat|*.py|*.c|*.h) ;;
         *) continue ;;
     esac
     size=$(wc -c < "$source")
@@ -18,7 +18,11 @@ while IFS= read -r -d '' source; do
     fi
 done < <(
     find "$project_root" -maxdepth 1 -type f -print0
-    find "$project_root/crates" "$project_root/scripts" -type f -print0
+    for directory in crates scripts api plugins worker-api thumbnail-api filesystem-api image-viewer-api web-viewer-api; do
+        if [[ -d "$project_root/$directory" ]]; then
+            find "$project_root/$directory" -type f -print0
+        fi
+    done
 )
 if ((oversized > 0)); then
     exit 1

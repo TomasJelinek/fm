@@ -122,23 +122,27 @@ fn focused_name_represents_parent_but_not_an_empty_root() {
 }
 
 #[test]
-fn drive_information_distinguishes_unavailable_space_from_zero_available_bytes() {
+fn drive_information_requests_fresh_backend_details_even_with_cached_capacity() {
     let base = test_root().join("nested");
     let mut p = Presenter::new(base.clone(), test_root());
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| {
+        matches!(command, Command::QueryVolumeInformation(_))
+    });
     let (_, body) = p.desktop.notice.as_ref().unwrap();
     assert!(body.contains(base.to_string_lossy().as_ref()));
-    assert!(body.contains("Unknown"));
+    assert!(body.contains("Reading native"));
     assert!(!body.contains("0 bytes"));
     p.panes[0].space = Some(SpaceInfo {
         available: 0,
         total: 1_234,
     });
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| {
+        matches!(command, Command::QueryVolumeInformation(_))
+    });
     let (_, body) = p.desktop.notice.as_ref().unwrap();
-    assert!(body.contains("0 bytes"));
-    assert!(body.contains("1234 bytes"));
-    assert!(!body.contains("Unknown"));
+    assert!(!body.contains("0 bytes"));
+    assert!(!body.contains("1234 bytes"));
+    assert!(body.contains("Reading native"));
 }
 
 #[test]
@@ -150,10 +154,10 @@ fn drive_information_uses_pending_path_and_space_without_stale_capacity() {
     });
     let pending = test_root().join("loading");
     let navigation = begin(&mut p, PaneId::Left, pending.to_str().unwrap());
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| matches!(command, Command::QueryVolumeInformation(request) if request.path == pending && request.navigation == navigation));
     let (_, body) = p.desktop.notice.as_ref().unwrap();
     assert!(body.contains(pending.to_string_lossy().as_ref()));
-    assert!(body.contains("Unknown"));
+    assert!(body.contains("Reading native"));
     assert!(!body.contains("99 bytes"));
     p.apply(Event::SpaceUpdated {
         pane: PaneId::Left,
@@ -163,9 +167,107 @@ fn drive_information_uses_pending_path_and_space_without_stale_capacity() {
             total: 42,
         },
     });
-    p.drive_info(PaneId::Left);
+    p.drive_info(PaneId::Left, &|command| matches!(command, Command::QueryVolumeInformation(request) if request.path == pending && request.navigation == navigation));
     let (_, body) = p.desktop.notice.as_ref().unwrap();
-    assert!(body.contains("17 bytes"));
-    assert!(body.contains("42 bytes"));
+    assert!(!body.contains("17 bytes"));
+    assert!(!body.contains("42 bytes"));
     assert_eq!(p.panes[0].display_path(), pending);
+}
+
+#[test]
+fn full_path_insertion_uses_captured_identity_and_never_parent_or_loading_rows() {
+    let (mut p, _) = focused(EntryKind::File, "文档 ' $().txt");
+    let expected = p.panes[0].entry_by_id(EntryId(8)).unwrap().path.clone();
+    assert_eq!(p.focused_full_path(PaneId::Left), Some(expected));
+    p.panes[0].loading = true;
+    assert_eq!(p.focused_full_path(PaneId::Left), None);
+    p.panes[0].loading = false;
+    select_row(&mut p, PaneId::Left, 0, false);
+    assert_eq!(p.focused_full_path(PaneId::Left), None);
+}
+
+#[test]
+fn full_path_insertion_rejects_virtual_descendants_even_under_a_native_root() {
+    let (mut p, root) = super::tree::fixture();
+    let publication = super::tree::publication(root, 1, true, false);
+    let mut rows = publication.view.rows.to_vec();
+    let backing = test_root().join("private-provider-backing/member.txt");
+    rows[1].entry = Entry::from_archive(ArchiveNode {
+        id: VirtualEntryId {
+            mount: 1,
+            entry: 11,
+        },
+        parent: 0,
+        raw_name: b"member.txt".to_vec().into(),
+        display_name: backing.display().to_string(),
+        kind: EntryKind::File,
+        size: Some(1),
+        readable: true,
+        modified: None,
+    });
+    rows[1].disclosure = TreeDisclosure::None;
+    rows[1].navigable = false;
+    // Valid virtual rows have no native path, even when provider text resembles one.
+    // A backend publication carrying a backing path is rejected before UI adoption.
+    let mut malformed = rows.clone();
+    malformed[1].entry.path = backing;
+    assert!(
+        TreeProjection::new(
+            publication.view.root.clone(),
+            publication.view.stamp,
+            publication.view.layout_revision,
+            malformed,
+        )
+        .is_err()
+    );
+    let view = Arc::new(
+        TreeProjection::new(
+            publication.view.root.clone(),
+            publication.view.stamp,
+            publication.view.layout_revision,
+            rows,
+        )
+        .unwrap(),
+    );
+    let selection = Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![0]).unwrap());
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(
+            TreePublication::new(view, SelectionRevision(0), selection).unwrap(),
+        ))),
+        &|_| true,
+    );
+    p.panes[0].cursor = Some(EntryId(11));
+    p.panes[0].parent_cursor = false;
+    assert!(p.panes[0].native_capabilities());
+    let entry = p.panes[0].entry_by_id(EntryId(11)).unwrap();
+    assert!(entry.virtual_node.is_some());
+    assert!(entry.native_path().is_none());
+    assert!(Path::new(&entry.display_name).is_absolute());
+    assert_eq!(p.focused_full_path(PaneId::Left), None);
+}
+
+#[test]
+fn full_path_insertion_rejects_relative_native_row_text() {
+    let (mut p, _) = focused(EntryKind::File, "file.txt");
+    let mut entries = p.panes[0].entries.to_vec();
+    entries[0].path = "relative/file.txt".into();
+    p.panes[0].index = Arc::new(DirectoryIndex::from_entries(&entries));
+    p.panes[0].entries = entries.into();
+    assert_eq!(p.focused_full_path(PaneId::Left), None);
+}
+
+#[test]
+fn viewer_and_comparison_resolvers_keep_file_and_difference_navigation_separate() {
+    let presenter = Presenter::new(test_root(), test_root());
+    let previous = ShortcutChord::parse("Alt+Left").unwrap();
+    assert_eq!(
+        presenter.viewer_key(&previous, false).as_deref(),
+        Some("viewer.previous-file")
+    );
+    assert_eq!(
+        presenter.comparison_key(&previous, false).as_deref(),
+        Some("compare.previous-difference")
+    );
+    assert_eq!(presenter.viewer_key(&previous, true), None);
+    assert_eq!(presenter.comparison_key(&previous, true), None);
 }

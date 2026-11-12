@@ -1,0 +1,15 @@
+schema_version = 1
+id = "midnight.viewer.source"
+name = "Source viewer"
+kind = "viewer"
+version = "0.1.0"
+entry_library = "midnight_viewer_source.dll"
+target = "x86_64-pc-windows-msvc"
+abi_major = 1
+minimum_host_minor = 0
+required_host_services = ["content.read.v1", "work.schedule.v1"]
+models = ["text-page.v1"]
+modes = ["source", "text"]
+extensions = ["rs", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "py", "pyw", "sh", "bash", "zsh", "bat", "cmd", "json", "toml", "java", "cs", "go", "swift", "kt", "kts", "rb", "sql", "yaml", "yml", "xml", "xsd", "xsl", "xslt", "xaml", "csproj", "fsproj", "vbproj", "vcxproj", "props", "targets", "resx"]
+priority = 50
+description = "Syntax highlighting for Rust, C, C++, JavaScript, TypeScript, Python, POSIX shell/Bash/Zsh, Windows batch/CMD, JSON, TOML, Java, C#, Go, Swift, Kotlin, Ruby, SQL, YAML and XML (19 lexical profiles)."

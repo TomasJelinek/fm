@@ -33,6 +33,40 @@ fn update(
 }
 
 #[test]
+fn cancelled_scan_accepts_its_final_partial_until_rerun_or_navigation() {
+    let root = test_root().join("panel");
+    let folder = root.join("folder");
+    let mut p = Presenter::new(root.clone(), test_root());
+    let navigation = begin(&mut p, PaneId::Left, root.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![Entry::new(EntryId(7), folder.clone(), EntryKind::Directory)],
+    );
+    let old = start_scan(&mut p, PaneId::Left);
+    p.apply(Event::FolderSizesFinished {
+        pane: PaneId::Left,
+        navigation,
+        scan: old,
+        cancelled: true,
+    });
+    assert!(
+        p.panes[0].size_scan.is_none(),
+        "cancelled scan is no longer shown as running"
+    );
+    update(&mut p, navigation, old, 7, 123);
+    assert_eq!(p.panes[0].folder_sizes[&folder].bytes, 123);
+    let new = start_scan(&mut p, PaneId::Left);
+    update(&mut p, navigation, new, 7, 456);
+    update(&mut p, navigation, old, 7, 999);
+    assert_eq!(p.panes[0].folder_sizes[&folder].bytes, 456);
+    p.navigate(PaneId::Left, test_root().join("elsewhere"), None, &|_| true);
+    update(&mut p, navigation, new, 7, 999);
+    assert!(p.panes[0].folder_sizes.is_empty());
+}
+
+#[test]
 fn active_scan_continues_through_selection_and_repeated_cached_sorts() {
     let root = test_root().join("panel");
     let folder = root.join("folder");

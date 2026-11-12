@@ -4,6 +4,39 @@ use midnight_ui::{DeferredDrop, Presenter};
 use std::cell::RefCell;
 use tokio::{sync::mpsc, time::Instant};
 
+/// Drain event backpressure while reserving room for the newest final geometry
+/// save. The same exit deadline bounds both this flush and the engine shutdown.
+pub(crate) async fn flush_final(
+    presenter: &RefCell<Presenter>,
+    events: &mut mpsc::Receiver<Event>,
+    commands: &mpsc::Sender<Command>,
+    deadline: Instant,
+    retired: &mut Vec<DeferredDrop>,
+) {
+    let Some(command) = presenter.borrow().pending_preferences_save() else {
+        return;
+    };
+    let reserve = commands.reserve();
+    tokio::pin!(reserve);
+    let mut events_open = true;
+    loop {
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => break,
+            result = &mut reserve => {
+                if let Ok(permit) = result { permit.send(command); }
+                else { retired.push(Box::new(command)); }
+                return;
+            }
+            event = events.recv(), if events_open => match event {
+                Some(event) => retired.push(Box::new(event)),
+                None => events_open = false,
+            },
+        }
+    }
+    retired.push(Box::new(command));
+}
+
 pub(crate) async fn reconcile(
     presenter: &RefCell<Presenter>,
     events: &mut mpsc::Receiver<Event>,
@@ -92,6 +125,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_geometry_save_drains_event_backpressure_and_precedes_shutdown() {
+        let mut state = Presenter::new("left".into(), "right".into());
+        state.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|_| true);
+        let geometry = midnight_core::WindowGeometry {
+            normal: midnight_core::WindowRect {
+                x: -1800,
+                y: 121,
+                width: 973,
+                height: 641,
+            },
+            monitor: None,
+            maximized: true,
+            fullscreen: false,
+        };
+        state.save_window_geometry(geometry.clone(), &|_| false);
+        let presenter = RefCell::new(state);
+        let (sender, mut events) = mpsc::channel(1);
+        let (commands, mut received) = mpsc::channel(1);
+        commands.send(Command::ListVolumes).await.unwrap();
+        sender
+            .send(Event::PreferencesSaved {
+                revision: midnight_core::PreferencesRevision(0),
+                result: Ok(()),
+            })
+            .await
+            .unwrap();
+        let worker = tokio::spawn(async move {
+            sender
+                .send(Event::PreferencesLoaded(Ok(Box::default())))
+                .await
+                .unwrap();
+            assert!(matches!(received.recv().await, Some(Command::ListVolumes)));
+            received.recv().await.unwrap()
+        });
+        let mut retired = Vec::new();
+        flush_final(
+            &presenter,
+            &mut events,
+            &commands,
+            Instant::now() + Duration::from_secs(1),
+            &mut retired,
+        )
+        .await;
+        let Command::SavePreferences { preferences, .. } = worker.await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(preferences.window_geometry, Some(geometry));
+        tokio::task::spawn_blocking(move || drop(retired))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn delayed_initial_read_enqueues_merged_save_before_shutdown() {
         let presenter = editing();
         let local = presenter.borrow().bookmarks()[0].clone();
@@ -100,6 +186,8 @@ mod tests {
         let saved = UserPreferences {
             font_family: "Stored 文档 🧪".into(),
             bookmarks: vec![Bookmark {
+                network: None,
+                archive: None,
                 id: BookmarkId(1),
                 name: "Previously saved".into(),
                 path: std::env::current_dir().unwrap().join("saved"),
@@ -110,7 +198,7 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
             sender
-                .send(Event::PreferencesLoaded(Ok(saved)))
+                .send(Event::PreferencesLoaded(Ok(saved.into())))
                 .await
                 .unwrap();
         });
@@ -233,7 +321,7 @@ mod tests {
             // Match an engine blocked delivering an outbox event before its
             // dispatcher can drain the already-full command queue.
             sender
-                .send(Event::PreferencesLoaded(Ok(UserPreferences::default())))
+                .send(Event::PreferencesLoaded(Ok(Box::default())))
                 .await
                 .unwrap();
             assert!(matches!(received.recv().await, Some(Command::ListVolumes)));

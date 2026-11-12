@@ -1,6 +1,7 @@
-use crate::selection;
 use midnight_core::*;
-use midnight_ui::{MainWindow, Presenter, Theme, install, refresh};
+#[path = "support/selection.rs"]
+mod selection;
+use midnight_ui::{MainWindow, Presenter, install, refresh};
 use slint::{
     ComponentHandle, Model,
     platform::{
@@ -43,20 +44,34 @@ impl Harness {
         });
     }
     fn position(&self, pane: PaneId, row: usize) -> slint::LogicalPosition {
-        let theme = self.window.global::<Theme>();
-        let (left, top) = match pane {
+        let (left, top, width, mode, columns, rows, row_height) = match pane {
             PaneId::Left => (
                 self.window.get_left_list_left(),
                 self.window.get_left_list_top(),
+                self.window.get_left_list_width(),
+                self.window.get_left_view_mode(),
+                self.window.get_left_view_columns() as usize,
+                self.window.get_left_view_rows() as usize,
+                self.window.get_left_view_row_height(),
             ),
             PaneId::Right => (
                 self.window.get_right_list_left(),
                 self.window.get_right_list_top(),
+                self.window.get_right_list_width(),
+                self.window.get_right_view_mode(),
+                self.window.get_right_view_columns() as usize,
+                self.window.get_right_view_rows() as usize,
+                self.window.get_right_view_row_height(),
             ),
         };
+        let (column, band) = match mode {
+            1 => (row / rows, row % rows),
+            2 => (row % columns, row / columns),
+            _ => (0, row),
+        };
         slint::LogicalPosition::new(
-            left + 100.0,
-            top + theme.get_row_height() * (row as f32 + 0.5),
+            left + (column as f32 + 0.5) * width / columns as f32,
+            top + row_height * (band as f32 + 0.5),
         )
     }
     fn advance(&self, millis: u64) {
@@ -80,6 +95,7 @@ impl Harness {
     fn double_click(&self, pane: PaneId, row: usize, button: PointerEventButton) {
         self.advance(800);
         self.click(pane, row, button);
+        self.draw();
         self.advance(70);
         self.click(pane, row, button);
     }
@@ -125,7 +141,37 @@ impl Harness {
         self.draw();
     }
     fn clear(&self) {
+        let requests: Vec<_> = self
+            .commands
+            .borrow()
+            .iter()
+            .filter_map(|command| {
+                if let Command::ShowShellMenu { request, .. } = command {
+                    Some(*request)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for request in requests {
+            self.presenter.borrow_mut().apply_with_sender(
+                Event::ShellMenuFinished {
+                    request,
+                    result: Ok(midnight_core::ShellMenuOutcome::Dismissed),
+                },
+                &|_| true,
+            );
+        }
         self.commands.borrow_mut().clear();
+    }
+    fn assert_no_activation(&self, context: &str) {
+        assert!(
+            self.commands.borrow().iter().all(|command| !matches!(
+                command,
+                Command::Navigate { .. } | Command::OpenEntry { .. }
+            )),
+            "{context}"
+        );
     }
     fn selection(&self, pane: PaneId, paths: &[&std::path::Path]) {
         selection::acknowledge(&self.presenter, &self.commands, pane, paths);
@@ -151,10 +197,18 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
     let file = base.join("Café & $(literal).txt");
     let folder = base.join("文件夹");
     let entries = || {
-        vec![
+        let mut entries = vec![
             Entry::new(EntryId(7), file.clone(), EntryKind::File),
             Entry::new(EntryId(9), folder.clone(), EntryKind::Directory),
-        ]
+        ];
+        entries.extend((10..130).map(|id| {
+            Entry::new(
+                EntryId(id),
+                base.join(format!("other-{id:03}.txt")),
+                EntryKind::File,
+            )
+        }));
+        entries
     };
     let presenter = Rc::new(RefCell::new(Presenter::new(base.clone(), base.clone())));
     let commands = Rc::new(RefCell::new(vec![]));
@@ -231,10 +285,8 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
         );
         h.clear();
         h.double_click(pane, 1, PointerEventButton::Right);
-        assert!(
-            h.commands.borrow().is_empty(),
-            "right double click must never launch"
-        );
+        h.assert_no_activation("right double click must never launch");
+        h.clear();
         for modifier in [Key::Control, Key::Shift, Key::Alt, Key::Meta] {
             h.modifier(modifier, true);
             h.double_click(pane, 1, PointerEventButton::Left);
@@ -352,6 +404,157 @@ fn actual_mouse_selection_and_activation_preserve_entry_identity() {
         Command::Navigate { pane: PaneId::Right, path, .. } if path == &folder)));
     h.window.invoke_navigate(1, base.to_str().unwrap().into());
     h.complete(PaneId::Right, entries());
+    h.clear();
+
+    // Render both presses and deliver an earlier worker acknowledgement between
+    // clicks. Native input keeps the same screen coordinates for both clicks.
+    for mode in 0..3 {
+        for pane in [PaneId::Left, PaneId::Right] {
+            h.window.invoke_view_mode(pane.index() as i32, mode);
+            h.draw();
+            h.clear();
+            for hold in [20, 120] {
+                h.advance(800);
+                h.click(pane, 1, PointerEventButton::Left);
+                h.window.invoke_bulk_selection(pane.index() as i32, 1);
+                let position = h.position(pane, 2);
+                h.advance(800);
+                for click in 0..2 {
+                    h.window
+                        .window()
+                        .dispatch_event(WindowEvent::PointerMoved { position });
+                    h.window
+                        .window()
+                        .dispatch_event(WindowEvent::PointerPressed {
+                            position,
+                            button: PointerEventButton::Left,
+                        });
+                    h.draw();
+                    h.advance(hold);
+                    h.window
+                        .window()
+                        .dispatch_event(WindowEvent::PointerMoved { position });
+                    h.draw();
+                    h.window
+                        .window()
+                        .dispatch_event(WindowEvent::PointerReleased {
+                            position,
+                            button: PointerEventButton::Left,
+                        });
+                    if click == 0 {
+                        let cursor = if pane == PaneId::Left {
+                            h.window.get_left_cursor()
+                        } else {
+                            h.window.get_right_cursor()
+                        };
+                        assert_eq!(cursor, 2, "first folder click must focus its actual row");
+                        h.selection(pane, &[]);
+                        h.draw();
+                        assert!(h.commands.borrow().is_empty(), "first click only focuses");
+                        h.advance(70);
+                    }
+                }
+                assert_eq!(
+                    h.commands.borrow().len(),
+                    1,
+                    "mode {mode}, pane {pane:?}, {hold} ms presses must activate once"
+                );
+                assert!(matches!(&h.commands.borrow()[0],
+                    Command::Navigate { pane: actual, path, .. }
+                    if *actual == pane && path == &folder));
+                h.complete(pane, vec![]);
+                h.window
+                    .invoke_navigate(pane.index() as i32, base.to_str().unwrap().into());
+                h.complete(pane, entries());
+                h.clear();
+            }
+            h.double_click(pane, 1, PointerEventButton::Left);
+            assert_eq!(h.commands.borrow().len(), 1, "file activation occurs once");
+            assert!(matches!(&h.commands.borrow()[0],
+                Command::OpenEntry { pane: actual, path, .. }
+                if *actual == pane && path == &file));
+            h.clear();
+            for modifier in [Key::Control, Key::Shift, Key::Alt, Key::Meta] {
+                h.modifier(modifier, true);
+                h.double_click(pane, 2, PointerEventButton::Left);
+                h.modifier(modifier, false);
+                h.assert_no_activation("modified folder double click must never navigate");
+                h.clear();
+                // The SDK tracks button/time/position, not keyboard modifiers.
+                // A modified first click must not arm a later plain activation.
+                h.advance(800);
+                h.modifier(modifier, true);
+                h.click(pane, 2, PointerEventButton::Left);
+                h.modifier(modifier, false);
+                h.draw();
+                h.advance(70);
+                h.click(pane, 2, PointerEventButton::Left);
+                h.assert_no_activation("modified then plain click must never navigate");
+                h.clear();
+                // A modifier pressed after pointer-down still makes the second
+                // click modified; its release must not open the folder.
+                h.advance(800);
+                h.click(pane, 2, PointerEventButton::Left);
+                h.advance(70);
+                h.pointer(pane, 2, PointerEventButton::Left, true);
+                h.modifier(modifier, true);
+                h.pointer(pane, 2, PointerEventButton::Left, false);
+                h.modifier(modifier, false);
+                h.assert_no_activation("modifier during second press must never navigate");
+                h.clear();
+            }
+            h.double_click(pane, 2, PointerEventButton::Right);
+            h.assert_no_activation("right folder double click must never navigate");
+            h.clear();
+
+            h.advance(800);
+            h.click(pane, 2, PointerEventButton::Left);
+            h.window.invoke_action(pane.index() as i32, 3);
+            h.complete(pane, entries());
+            h.clear();
+            h.advance(70);
+            h.click(pane, 2, PointerEventButton::Left);
+            h.assert_no_activation("refresh between folder clicks invalidates activation");
+            h.clear();
+
+            h.advance(800);
+            h.pointer(pane, 2, PointerEventButton::Left, true);
+            h.draw();
+            h.window.invoke_sort(pane.index() as i32, 0);
+            let mut reordered = entries();
+            reordered.swap(0, 1);
+            h.complete(pane, reordered);
+            h.clear();
+            h.pointer(pane, 2, PointerEventButton::Left, false);
+            h.assert_no_activation("resort during folder press cannot open the replacement file");
+            h.advance(70);
+            h.click(pane, 2, PointerEventButton::Left);
+            h.assert_no_activation("a stale folder press cannot arm the replacement file");
+            h.window.invoke_action(pane.index() as i32, 3);
+            h.complete(pane, entries());
+            h.clear();
+        }
+    }
+
+    // Once count snapshots are established, resizing must still rebuild the
+    // layout when the number of columns really changes.
+    let columns = h.window.get_left_view_columns();
+    h.window.set_panel_ratio(0.0);
+    h.draw();
+    h.advance(20);
+    h.draw();
+    assert!(h.window.get_left_view_columns() < columns);
+    h.double_click(PaneId::Left, 1, PointerEventButton::Left);
+    assert_eq!(h.commands.borrow().len(), 1);
+    assert!(matches!(&h.commands.borrow()[0],
+        Command::OpenEntry { pane: PaneId::Left, path, .. } if path == &file));
+    h.clear();
+    h.window.set_panel_ratio(0.5);
+
+    for pane in [PaneId::Left, PaneId::Right] {
+        h.window.invoke_view_mode(pane.index() as i32, 0);
+    }
+    h.draw();
     h.clear();
 
     // Touch density uses the same guarded pointer path with its larger rows.

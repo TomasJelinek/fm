@@ -3,13 +3,15 @@ import { Theme } from "theme.slint";
 import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
 import { LocationImage } from "action-icons.slint";
 import { TooltipPlacement } from "tooltip-placement.slint";
+import { PathText } from "path-text.slint";
 export { TooltipPlacement }
 
 // Dynamic paths and volume labels remain plain text, including Markdown punctuation.
 export component TipBody inherits Rectangle {
     in property <string> text;
+    in property <length> width-limit: 560px;
     x: 0px; y: 0px;
-    width: min(560px, max(120px, content.preferred-width + 20px),
+    width: min(root.width-limit, max(120px, content.preferred-width + 20px),
         TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px));
     height: min(content.preferred-height + 16px,
         TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px));
@@ -30,9 +32,14 @@ export component TipBody inherits Rectangle {
 // Only selected() commits: keyboard browsing never overwrites the host's index.
 export component CompactPicker inherits Rectangle {
     in property <[string]> model;
+    in property <[string]> shortcuts;
     in property <[NavigationChoiceRow]> choices;
     in property <[image]> icons;
     in property <int> model-revision;
+    // An owning panel/session may change while its numeric model revision stays equal.
+    in property <string> context;
+    in property <string> press-context: root.context;
+    in property <bool> press-cancelled;
     in property <int> current-index: -1;
     in property <string> shortcut-key;
     in property <int> shortcut-index: -1;
@@ -42,29 +49,51 @@ export component CompactPicker inherits Rectangle {
     in property <image> icon;
     in property <image> native-icon;
     in property <bool> icon-only;
+    in property <bool> path-labels;
     in property <bool> arrow-trigger-only;
     in property <bool> show-row-icons: true;
     in property <bool> popup-align-right;
+    in property <bool> group-separators;
+    in property <string> separator-before-key;
+    in property <int> separator-before-index: -1;
     in property <bool> enabled: true;
+    in property <bool> network-discovery-available: true;
     in property <bool> framed: true;
     in property <bool> popup-above;
+    in property <bool> fill-available-height;
     in property <length> minimum-control-width: 40px;
     in property <length> popup-width: 360px;
+    in property <bool> fit-popup-to-content;
     out property <length> compact-width: caption-metrics.preferred-width + 29px
         + (root.has-leading-icon ? Theme.picker-location-icon-size + 4px : 0px);
     private property <int> pending-index: -1;
     private property <bool> expanded;
+    out property <bool> popup-open: root.expanded;
     private property <bool> has-leading-icon: root.show-row-icons && !root.icon-only && !root.arrow-trigger-only
         && root.current-index >= 0 && (root.choices.length > 0 || root.current-index < root.icons.length);
     private property <bool> arrow-only: !root.icon-only && root.label == "" && !root.has-leading-icon;
     private property <int> item-count: root.choices.length > 0 ? root.choices.length : root.model.length;
     private property <[NavigationChoiceRow]> opened-choices;
     private property <int> opened-revision;
+    private property <string> opened-context;
     callback selected(int);
     callback selected-key(string);
+    callback shortcut-event(KeyEvent) -> int;
+    callback context-menu(string, float, float, bool, bool);
     callback dismissed();
+    callback opening();
     height: Theme.control-height;
     caption-metrics := Text { visible: false; text: root.label; font-size: Theme.font-size; }
+    popup-metrics := Rectangle {
+        visible: false;
+        preferred-width: measured-labels.preferred-width;
+        measured-labels := VerticalLayout {
+            for index in (root.fit-popup-to-content ? root.item-count : 0): Text {
+                text: root.row-label(index) + (root.row-shortcut(index) == "" ? "" : "    " + root.row-shortcut(index));
+                font-size: Theme.font-size;
+            }
+        }
+    }
     min-width: root.minimum-control-width;
     border-width: 1px;
     border-radius: 4px;
@@ -80,27 +109,67 @@ export component CompactPicker inherits Rectangle {
     accessible-action-expand => { root.open(); }
     changed model => { if root.expanded && root.choices.length == 0 { root.cancel(); } }
     changed model-revision => { if root.expanded { root.cancel(); } }
+    changed context => { if root.expanded { root.cancel(); } }
     changed current-index => { if root.expanded { root.cancel(); } }
     changed enabled => { if !root.enabled && root.expanded { root.cancel(); } }
     pure function row-label(index: int) -> string {
         if index < 0 || index >= root.item-count { return ""; }
         return root.choices.length > 0 ? root.choices[index].label : root.model[index];
     }
+    pure function row-shortcut(index: int) -> string {
+        return index >= 0 && index < root.shortcuts.length ? root.shortcuts[index] : "";
+    }
+    public function activate-shortcut() { root.commit(root.shortcut-index); }
+    // Return only an identity captured when this popup opened, then close it
+    // before the host dispatches the shortcut to either panel.
+    public function take-choice(index: int) -> string {
+        let key = root.row-key(index);
+        if !root.expanded || !root.row-enabled(index) || key == "" || root.opened-revision != root.model-revision
+            || root.opened-context != root.context
+            || index < 0 || index >= root.opened-choices.length
+            || root.opened-choices[index].identity != key {
+            return "";
+        }
+        root.cancel();
+        return key;
+    }
     pure function row-key(index: int) -> string {
         return index >= 0 && index < root.choices.length ? root.choices[index].identity : "";
     }
     pure function row-hint(index: int) -> string {
-        return root.choices.length > 0 ? root.choices[index].tooltip : root.row-label(index);
+        return root.choices.length > 0 ? root.choices[index].tooltip
+            : root.row-label(index) + (root.row-shortcut(index) == "" ? "" : " (" + root.row-shortcut(index) + ")");
     }
     pure function row-icon(index: int) -> image {
         return root.choices.length > 0 ? root.choices[index].icon : root.icons[index];
     }
+    pure function row-enabled(index: int) -> bool {
+        return root.enabled && index >= 0 && index < root.item-count
+            && (root.choices.length == 0 || root.choices[index].kind != LocationRole.network
+                || root.network-discovery-available);
+    }
+    pure function choice-group(index: int) -> int {
+        if root.row-key(index) == "other-panel" { return 3; }
+        let kind = root.choices[index].kind;
+        if kind == LocationRole.drive { return 0; }
+        if kind == LocationRole.hot-path { return 2; }
+        return 1;
+    }
+    pure function has-separator(index: int) -> bool {
+        if index <= 0 || index >= root.item-count { return false; }
+        if index == root.separator-before-index { return true; }
+        if index >= root.choices.length { return false; }
+        return (root.separator-before-key != "" && root.row-key(index) == root.separator-before-key)
+            || (root.group-separators && root.choice-group(index) != root.choice-group(index - 1));
+    }
 
     public function open() {
         if root.enabled && root.item-count > 0 {
+            root.opening();
             root.pending-index = min(root.item-count - 1, max(0, root.current-index));
             root.opened-choices = root.choices;
             root.opened-revision = root.model-revision;
+            root.opened-context = root.context;
             root.expanded = true;
             popup.show();
         }
@@ -112,8 +181,9 @@ export component CompactPicker inherits Rectangle {
         root.dismissed();
     }
     function commit(index: int) {
+        if !root.row-enabled(index) { root.cancel(); return; }
         let key = root.row-key(index);
-        if root.opened-revision != root.model-revision
+        if root.opened-revision != root.model-revision || root.opened-context != root.context
             || (key != "" && (index >= root.opened-choices.length || root.opened-choices[index].identity != key)) {
             root.cancel(); return;
         }
@@ -145,11 +215,16 @@ export component CompactPicker inherits Rectangle {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
             }
-            Text {
+            if !root.path-labels: Text {
                 visible: !root.icon-only; text: root.label;
                 width: parent.width; height: parent.height;
                 color: Theme.text; font-size: Theme.font-size;
                 vertical-alignment: center; overflow: elide;
+            }
+            if root.path-labels: PathText {
+                visible: !root.icon-only; text: root.label;
+                width: parent.width; height: parent.height;
+                foreground: Theme.text; font-size: Theme.font-size;
             }
         }
         Rectangle {
@@ -175,21 +250,64 @@ export component CompactPicker inherits Rectangle {
         }
         area := TouchArea {
             enabled: root.enabled;
-            clicked => { focus.focus(); root.open(); }
+            private property <string> pressed-key;
+            private property <int> pressed-revision;
+            private property <string> pressed-context;
+            private property <bool> right-pressed;
+            private property <bool> control-pressed;
+            private property <bool> shift-pressed;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    self.pressed-key = root.row-key(root.current-index);
+                    self.pressed-revision = root.model-revision;
+                    self.pressed-context = root.press-context;
+                    self.right-pressed = event.button == PointerEventButton.right;
+                    self.control-pressed = event.modifiers.control;
+                    self.shift-pressed = event.modifiers.shift;
+                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                    if !root.press-cancelled && self.right-pressed && self.pressed-key != ""
+                        && self.pressed-key == root.row-key(root.current-index)
+                        && self.pressed-revision == root.model-revision
+                        && self.pressed-context == root.context
+                        && self.mouse-x >= 0px && self.mouse-x < self.width
+                        && self.mouse-y >= 0px && self.mouse-y < self.height {
+                        root.context-menu(self.pressed-key,
+                            (self.absolute-position.x + self.mouse-x) / 1px,
+                            (self.absolute-position.y + self.mouse-y) / 1px,
+                            self.control-pressed, self.shift-pressed);
+                    }
+                    self.right-pressed = false;
+                } else if event.kind == PointerEventKind.cancel {
+                    self.right-pressed = false;
+                }
+            }
+            clicked => { if !root.press-cancelled && self.pressed-context == root.context { focus.focus(); root.open(); } }
         }
     }
     Tooltip { TipBody { text: root.hint; } }
     popup := PopupWindow {
+        private property <length> below: max(1px, TooltipPlacement.surface-height - root.absolute-position.y - root.height - 8px);
+        private property <length> above: max(1px, root.absolute-position.y - 8px);
+        private property <bool> opens-above: root.popup-above
+            || (root.fill-available-height && self.below < root.item-count * Theme.control-height + 10px && self.above > self.below);
         x: clamp(root.absolute-position.x + (root.popup-align-right ? root.width - self.width : 0px),
             8px, max(8px, TooltipPlacement.surface-width - self.width - 8px)) - root.absolute-position.x;
-        y: root.popup-above ? -self.height : root.height;
-        width: min(max(root.popup-width, root.width), max(1px, TooltipPlacement.surface-width - 16px));
-        height: min(360px, root.item-count * Theme.control-height + 10px);
+        y: self.opens-above ? -self.height : root.height;
+        // Include row padding, checkmark, icon gaps, popup inset and scrollbar.
+        width: min(max(root.popup-width, root.width,
+            root.fit-popup-to-content ? popup-metrics.preferred-width + 72px
+                + (root.show-row-icons ? Theme.picker-location-icon-size : 0px) : 0px),
+            max(1px, TooltipPlacement.surface-width - 16px));
+        height: min(root.fill-available-height ? (self.opens-above ? self.above : self.below) : 360px,
+            root.item-count * Theme.control-height + 10px);
         close-policy: close-on-click-outside;
         forward-focus: popup-focus;
         popup-focus := FocusScope {
             focus-changed-event => { root.expanded = self.has-focus; }
             key-pressed(event) => {
+                let shortcut = root.shortcut-event(event);
+                if shortcut == 1 { root.commit(root.shortcut-index); return accept; }
+                if shortcut == 2 { return accept; }
                 if root.shortcut-key != "" && event.text == root.shortcut-key
                     && !event.modifiers.control && !event.modifiers.alt
                     && !event.modifiers.shift && !event.modifiers.meta {
@@ -234,9 +352,15 @@ export component CompactPicker inherits Rectangle {
                             ? Theme.hover : transparent;
                         accessible-role: button;
                         accessible-label: root.row-label(index);
+                        accessible-enabled: root.row-enabled(index);
                         accessible-action-default => { root.commit(index); }
+                        if root.has-separator(index) : Rectangle {
+                            x: 8px; y: 1px; width: parent.width - 16px; height: 1px;
+                            background: Theme.frame;
+                        }
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px; spacing: 8px;
+                            padding-top: root.has-separator(index) ? 4px : 0px;
                             cross-axis-alignment: center;
                             Text {
                                 text: index == root.current-index ? "✓" : "";
@@ -247,12 +371,25 @@ export component CompactPicker inherits Rectangle {
                                 kind: root.choices.length > 0 ? root.choices[index].kind : LocationRole.drive;
                                 width: Theme.picker-location-icon-size; height: self.width;
                             }
-                            Text {
-                                text: root.row-label(index); color: Theme.text; font-size: Theme.font-size;
-                                vertical-alignment: center; overflow: elide;
+                            if !root.path-labels: Text {
+                                text: root.row-label(index); color: root.row-enabled(index) ? Theme.text : Theme.muted-text; font-size: Theme.font-size;
+                                vertical-alignment: center; overflow: elide; min-width: 0px; horizontal-stretch: 1;
+                            }
+                            if root.path-labels: PathText {
+                                text: root.row-label(index); foreground: root.row-enabled(index) ? Theme.text : Theme.muted-text; font-size: Theme.font-size;
+                                horizontal-stretch: 1;
+                            }
+                            if root.row-shortcut(index) != "": Text {
+                                text: root.row-shortcut(index); font-size: Theme.small-font;
+                                color: root.row-enabled(index) ? Theme.secondary-text : Theme.muted-text;
+                                min-width: 0px; max-width: parent.width * 0.55; horizontal-stretch: 0;
+                                vertical-alignment: center; horizontal-alignment: right; overflow: elide;
                             }
                         }
                         row-area := TouchArea {
+                            enabled: root.row-enabled(index);
+                            y: root.has-separator(index) ? 4px : 0px;
+                            height: parent.height - self.y;
                             private property <string> pressed-key;
                             private property <int> pressed-revision;
                             pointer-event(event) => {

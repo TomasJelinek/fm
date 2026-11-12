@@ -1,0 +1,14 @@
+import { Theme } from "theme.slint";
+
+// The exact same palette/state derivation is used by all rows and preview tiles.
+export global FilenameColorPresentation {
+    pure callback readable(color, color) -> color;
+    public pure function background(custom: bool, base: color, cursor: bool, active: bool, selected: bool, alternate: bool) -> color {
+        return selected ? Theme.selected-background
+            : cursor ? (active ? Theme.cursor-background : Theme.inactive-cursor)
+            : custom ? base : alternate ? Theme.alternate-row : Theme.pane-background;
+    }
+    public pure function foreground(custom: bool, base: color, background: color, selected: bool, directory: bool) -> color {
+        return self.readable(custom ? base : selected ? Theme.selected-text : directory ? Theme.directory-text : Theme.text, background);
+    }
+}

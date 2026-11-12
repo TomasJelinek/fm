@@ -1,7 +1,7 @@
 //! Cheap root discovery and bounded background metadata have independent workers.
 
-use crate::Outbox;
-use midnight_core::{Event, FileSystem, FsError, IconKey, Volume, VolumeDetails};
+use crate::{Outbox, task_lifetime::TaskLifetime};
+use midnight_core::{Event, FileSystem, FsError, IconKey, LocaleService, Volume, VolumeDetails};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -24,14 +24,24 @@ pub(crate) struct Controller {
 
 impl Controller {
     pub(crate) fn new(
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
+        locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
         icons: watch::Sender<Vec<IconKey>>,
         context: watch::Sender<u64>,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         let (requests, receiver) = watch::channel(0);
-        tasks.spawn(run(filesystem, outbox, icons, context, receiver));
+        tasks.spawn(scope.future(run(
+            scope.clone(),
+            filesystem,
+            locale,
+            outbox,
+            icons,
+            context,
+            receiver,
+        )));
         Self { requests }
     }
 
@@ -118,6 +128,7 @@ impl Details {
 
     fn schedule(
         &mut self,
+        scope: &TaskLifetime,
         filesystem: &Arc<dyn FileSystem>,
         budget: &Arc<Semaphore>,
         workers: &mut JoinSet<Completed>,
@@ -138,16 +149,17 @@ impl Details {
             let key = key.clone();
             let incarnation = *incarnation;
             self.in_flight.insert(key.clone());
-            workers.spawn(async move {
+            let worker_scope = scope.clone();
+            workers.spawn(scope.future(async move {
                 let path = key.root.clone();
                 let fallback = path.clone();
-                let details = tokio::task::spawn_blocking(move || {
+                let details = tokio::task::spawn_blocking(worker_scope.blocking(move || {
                     // The real blocking call owns the permit, even on shutdown.
                     let _permit = permit;
                     let label = filesystem.volume_label(&path);
                     let space = filesystem.space_info(&path);
                     VolumeDetails { label, space }
-                })
+                }))
                 .await
                 .unwrap_or_else(|_| {
                     let error = worker_error("volume details worker", &fallback);
@@ -161,13 +173,15 @@ impl Details {
                     incarnation,
                     details,
                 }
-            });
+            }));
         }
     }
 }
 
 async fn run(
+    scope: TaskLifetime,
     filesystem: Arc<dyn FileSystem>,
+    locale: Option<Arc<dyn LocaleService>>,
     outbox: Outbox,
     icons: watch::Sender<Vec<IconKey>>,
     context: watch::Sender<u64>,
@@ -186,16 +200,20 @@ async fn run(
             pending = false;
             let version = *requests.borrow_and_update();
             let filesystem = filesystem.clone();
-            discovery.spawn(async move {
-                let result = tokio::task::spawn_blocking(move || filesystem.list_volumes())
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(worker_error("volume discovery worker", Path::new("")))
-                    });
+            let locale = locale.clone();
+            let worker_scope = scope.clone();
+            discovery.spawn(scope.future(async move {
+                let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
+                    filesystem.list_volumes().and_then(|volumes| {
+                        crate::navigation_ordering::volumes(volumes, locale.as_deref())
+                    })
+                }))
+                .await
+                .unwrap_or_else(|_| Err(worker_error("volume discovery worker", Path::new(""))));
                 (version, result)
-            });
+            }));
         }
-        details.schedule(&filesystem, &budget, &mut workers);
+        details.schedule(&scope, &filesystem, &budget, &mut workers);
         let next_refresh = if budget.available_permits() > 0 {
             details.next_refresh()
         } else {

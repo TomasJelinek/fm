@@ -1,6 +1,10 @@
 //! Product rows retain colored Unicode prefixes, compact compression marks and normal input.
-use crate::ui;
-use i_slint_core::items::AccessibleRole;
+#[path = "support/ui.rs"]
+mod ui;
+use i_slint_core::{
+    item_tree::ItemRc,
+    items::{AccessibleRole, ImageItem},
+};
 use midnight_ui::{FileRow, MainWindow, Theme};
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel,
@@ -9,7 +13,7 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, ops::Range, rc::Rc};
 
 const WIDTH: usize = 1340;
 const HEIGHT: usize = 820;
@@ -19,6 +23,37 @@ fn name_end(window: &MainWindow) -> usize {
     let size = ui::root_item(window, "Sort by Size", AccessibleRole::Button);
     let origin = size.map_to_native_window(size.geometry().origin);
     (origin.x - 8.0).max(0.0) as usize
+}
+
+fn visible_image(item: ItemRc) -> Option<ItemRc> {
+    if item.is_visible() && item.downcast::<ImageItem>().is_some() {
+        return Some(item);
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if let Some(image) = visible_image(item) {
+            return Some(image);
+        }
+    }
+    None
+}
+
+fn file_icon_columns(window: &MainWindow, name: &str, compressed: bool) -> Range<usize> {
+    let label = format!(
+        "{name}{}",
+        if compressed {
+            " · Filesystem compressed"
+        } else {
+            ""
+        }
+    );
+    let row = ui::root_item(window, &label, AccessibleRole::ListItem);
+    let icon = visible_image(row).expect("the real file row must contain its native image");
+    let rect = icon.geometry();
+    let origin = icon.map_to_native_window(rect.origin);
+    // Include the corner mark's one-pixel overhang, but exclude the filename.
+    origin.x.max(0.0).floor() as usize..((origin.x + rect.width()).ceil() as usize + 2).min(WIDTH)
 }
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
@@ -123,9 +158,9 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                 renderer.render(&mut pixels, WIDTH);
             });
             let top = window.get_left_list_top();
-            let start = (theme.get_window_padding() + 1.0 + 12.0) as usize;
-            let text_start = (start as f32 + theme.get_icon_size() + 6.0) as usize;
-            for row in 0..4 {
+            for (row, (name, _, compressed)) in names.iter().enumerate() {
+                let icon_columns = file_icon_columns(&window, name, *compressed);
+                let text_start = icon_columns.end + 2;
                 let y1 = (top + row as f32 * theme.get_row_height()) as usize;
                 let y2 = (top + (row + 1) as f32 * theme.get_row_height()) as usize;
                 let background = match row {
@@ -149,15 +184,14 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                     highlighted > 2,
                     "actual prefix glyphs need their own color: scheme={scheme},density={density},font={font},row={row},pixels={highlighted}"
                 );
-                let icon_end = start + theme.get_icon_size() as usize + 2;
                 let marks = (y1..y2)
-                    .flat_map(|y| (start..icon_end).map(move |x| y * WIDTH + x))
+                    .flat_map(|y| icon_columns.clone().map(move |x| y * WIDTH + x))
                     .filter(|index| close(pixels[*index], theme.get_compression_mark()))
                     .count();
                 if row == 0 {
                     assert!(marks > 0, "compressed metadata must have a visible mark");
                     let host = (y1..y2)
-                        .flat_map(|y| (start..icon_end).map(move |x| y * WIDTH + x))
+                        .flat_map(|y| icon_columns.clone().map(move |x| y * WIDTH + x))
                         .filter(|index| {
                             let p = pixels[*index];
                             [p.r, p.g, p.b] == NATIVE
@@ -175,6 +209,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                 }
             }
             let row = 1;
+            let text_start = file_icon_columns(&window, names[row].0, names[row].2).end + 2;
             let position = slint::LogicalPosition::new(
                 text_start as f32 + 10.0,
                 top + (row as f32 + 0.5) * theme.get_row_height(),
@@ -197,7 +232,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
             }
             assert_eq!(
                 clicked.borrow().get(count),
-                Some(&(0, row)),
+                Some(&(0, row as i32)),
                 "colored glyphs must pass file-row clicks through"
             );
             assert_eq!(window.get_focused_pane(), 0);
@@ -227,12 +262,11 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
                     let item = ui::root_item(&window, &label, AccessibleRole::ListItem);
                     let origin = item.map_to_native_window(item.geometry().origin);
                     let rect = item.geometry();
-                    let x1 = (origin.x
-                        + if mode == 2 {
-                            10.0
-                        } else {
-                            18.0 + theme.get_icon_size()
-                        }) as usize;
+                    let x1 = if mode == 2 {
+                        (origin.x + 10.0) as usize
+                    } else {
+                        file_icon_columns(&window, name, *compressed).end + 2
+                    };
                     let x2 = (origin.x + rect.width() - 12.0) as usize;
                     let y1 = (origin.y + if mode == 2 { 90.0 } else { 0.0 }) as usize;
                     let y2 =
@@ -288,7 +322,7 @@ fn product_prefix_color_and_compression_badge_survive_themes_density_fonts_and_r
         renderer.render(&mut pixels, WIDTH);
     });
     let top = window.get_left_list_top();
-    let start = (theme.get_window_padding() + 1.0 + 12.0 + theme.get_icon_size() + 6.0) as usize;
+    let start = file_icon_columns(&window, names[0].0, names[0].2).end + 2;
     let ordinary_prefix = (top as usize..(top + theme.get_row_height()) as usize)
         .flat_map(|y| (start..name_end(&window)).map(move |x| y * WIDTH + x))
         .filter(|index| {

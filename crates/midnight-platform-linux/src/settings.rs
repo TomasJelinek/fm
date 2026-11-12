@@ -14,7 +14,10 @@ const APPLICATION_DIRECTORY: &str = "midnight-explorer";
 // Kept verbatim for migration from releases before the application was renamed.
 const LEGACY_APPLICATION_DIRECTORY: &str = "fm";
 
-fn preferences_path(config: Option<OsString>, home: Option<&Path>) -> io::Result<PathBuf> {
+pub(crate) fn preferences_path(
+    config: Option<OsString>,
+    home: Option<&Path>,
+) -> io::Result<PathBuf> {
     let root = config
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -188,6 +191,8 @@ mod tests {
             theme: PreferenceTheme::Dark,
             tabs: [
                 midnight_core::PaneTabPreferences {
+                    networks: Default::default(),
+                    archives: Default::default(),
                     paths: vec![temporary.path().join("文档 e\u{301} 🧪")],
                     active: 0,
                 },

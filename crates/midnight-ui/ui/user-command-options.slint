@@ -1,0 +1,204 @@
+import { ListHeader } from "list-header.slint";
+import { TipBody } from "controls.slint";
+import { ListView } from "std-widgets.slint";
+import { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow } from "user-command-models.slint";
+import { UserCommandForm } from "user-command-form.slint";
+import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+export { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow }
+export component UserCommandOptions inherits VerticalLayout {
+    in property <bool> narrow;
+    in property <length> viewport-left;
+    in property <length> viewport-top;
+    in property <length> viewport-width;
+    in property <length> viewport-height;
+    private property <bool> checking;
+    private property <string> gesture-token;
+    private property <string> gesture-id;
+    private property <bool> moving;
+    private property <length> press-x;
+    private property <length> press-y;
+    private property <int> drop-boundary: -1;
+    private property <length> command-row-height: Theme.control-height;
+    private property <string> configuration-revision: UserCommandSettingsView.configuration-revision;
+    private property <bool> drag-active: UserCommandSettingsView.drag-active;
+    private property <length> clip-left: max(drag-input.absolute-position.x, root.viewport-left);
+    private property <length> clip-top: max(drag-input.absolute-position.y, root.viewport-top);
+    private property <length> list-usable-width: max(0px, command-list.visible-width - (command-list.content-height > command-list.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+    private property <length> clip-right: min(drag-input.absolute-position.x + root.list-usable-width, root.viewport-left + root.viewport-width);
+    private property <length> clip-bottom: min(drag-input.absolute-position.y + command-list.visible-height, root.viewport-top + root.viewport-height);
+    private property <int> selected-index: UserCommandSettingsView.selected-index;
+    changed selected-index => { root.reveal-selection(); }
+    changed configuration-revision => { root.clear-gesture(); }
+    changed drag-active => { if !root.drag-active { root.clear-gesture(); } }
+    changed command-row-height => {
+        if root.gesture-token != "" { root.abort-gesture(); }
+        root.reveal-selection();
+    }
+    init => { UserCommandSettingsView.drag-cancel(); }
+    function clear-gesture() {
+        root.gesture-token = ""; root.gesture-id = ""; root.moving = false;
+        root.drop-boundary = -1; edge-scroll.stop();
+    }
+    function abort-gesture() { UserCommandSettingsView.drag-cancel(); root.clear-gesture(); }
+    pure function inside-viewport(x: length, y: length) -> bool {
+        let px = drag-input.absolute-position.x + x;
+        let py = drag-input.absolute-position.y + y;
+        return root.clip-left < root.clip-right && root.clip-top < root.clip-bottom
+            && px >= root.clip-left && px < root.clip-right && py >= root.clip-top && py < root.clip-bottom;
+    }
+    function reveal-selection() {
+        if root.selected-index < 0 { return; }
+        let top = root.selected-index * root.command-row-height;
+        if top < -command-list.content-y { command-list.content-y = -top; }
+        else if top + root.command-row-height > -command-list.content-y + command-list.visible-height {
+            command-list.content-y = min(0px, command-list.visible-height - top - root.command-row-height);
+        }
+    }
+    pure function row-at(y: length) -> int { return floor((y - command-list.content-y) / root.command-row-height); }
+    pure function insertion-at(y: length) -> int {
+        return clamp(floor((y - command-list.content-y) / root.command-row-height + 0.5), 0, UserCommandSettingsView.rows.length);
+    }
+    function update-gesture() {
+        if root.gesture-token == "" { return; }
+        if !UserCommandSettingsView.drag-active || UserCommandSettingsView.dirty { root.abort-gesture(); return; }
+        root.moving = root.moving || abs(drag-input.mouse-x - root.press-x) >= 6px || abs(drag-input.mouse-y - root.press-y) >= 6px;
+        if root.moving { root.drop-boundary = root.insertion-at(drag-input.mouse-y); edge-scroll.running = true; }
+    }
+    edge-scroll := Timer {
+        interval: 30ms; running: false;
+        triggered => {
+            if root.gesture-token == "" || !UserCommandSettingsView.drag-active || UserCommandSettingsView.dirty { root.abort-gesture(); return; }
+            if root.clip-bottom <= root.clip-top || root.clip-right <= root.clip-left { root.abort-gesture(); return; }
+            let visible-top = root.clip-top - drag-input.absolute-position.y;
+            let visible-bottom = root.clip-bottom - drag-input.absolute-position.y;
+            let edge = min(24px, (visible-bottom - visible-top) / 3);
+            let step = clamp(root.command-row-height * 0.4, 8px, 64px);
+            let delta = drag-input.mouse-y < visible-top + edge ? step : drag-input.mouse-y > visible-bottom - edge ? -step : 0px;
+            command-list.content-y = clamp(command-list.content-y + delta, min(0px, command-list.visible-height - UserCommandSettingsView.rows.length * root.command-row-height), 0px);
+            root.drop-boundary = root.insertion-at(drag-input.mouse-y);
+        }
+    }
+    private property <string> draft-revision: UserCommandSettingsView.draft-revision;
+    private property <string> validation-revision;
+    changed draft-revision => {
+        // Accessibility actions can edit the new draft before this notification runs.
+        // Retire only validation that was armed for an older draft.
+        if root.validation-revision != root.draft-revision { validate.stop(); root.checking = false; }
+    }
+    spacing: 8px; alignment: start;
+    function edited() {
+        root.validation-revision = UserCommandSettingsView.draft-revision;
+        UserCommandSettingsView.dirty = true;
+        UserCommandSettingsView.can-apply = false; UserCommandSettingsView.can-preview = false;
+        root.checking = true; UserCommandSettingsView.draft-edited(UserCommandSettingsView.token, UserCommandSettingsView.draft);
+        validate.running = true;
+        validate.restart();
+    }
+    validate := Timer {
+        interval: 120ms; running: false;
+        triggered => {
+            self.stop(); root.checking = false;
+            if root.validation-revision == UserCommandSettingsView.draft-revision {
+                UserCommandSettingsView.validate(UserCommandSettingsView.token, UserCommandSettingsView.draft);
+            }
+        }
+    }
+    ListHeader {
+        title: "Menu contents";
+        hint: "Select a command to edit it. Drag items or use the arrows to change their order.";
+        enabled: UserCommandSettingsView.ready && !UserCommandSettingsView.dirty && !UserCommandSettingsView.busy;
+        can-add: UserCommandSettingsView.rows.length < 128;
+        can-remove: UserCommandSettingsView.can-delete;
+        can-move-up: UserCommandSettingsView.can-up;
+        can-move-down: UserCommandSettingsView.can-down;
+        action-labels: ["New Custom Command", "Delete Custom Command", "Move Custom Command up", "Move Custom Command down"];
+        action-hints: ["Add a command or separator (Insert)", "Delete the selected item (Delete)", "Move the selected item up (Alt+Up)", "Move the selected item down (Alt+Down)"];
+        action(index) => {
+            if index == 0 { UserCommandSettingsView.new-command(); }
+            else if index == 1 { UserCommandSettingsView.delete(UserCommandSettingsView.token); }
+            else { UserCommandSettingsView.move(UserCommandSettingsView.token, index == 2 ? -1 : 1); }
+        }
+    }
+    if !UserCommandSettingsView.ready : Text { text: "Loading saved options…"; color: Theme.secondary-text; font-size: Theme.small-font; }
+    list-focus := FocusScope {
+        height: root.command-row-height * clamp(UserCommandSettingsView.rows.length, 1, 6) + 2px;
+        key-pressed(event) => {
+            if UserCommandSettingsView.dirty || !UserCommandSettingsView.ready || UserCommandSettingsView.busy { return reject; }
+            if event.text == Key.Insert { UserCommandSettingsView.new-command(); return accept; }
+            if event.text == Key.Delete && UserCommandSettingsView.can-delete { UserCommandSettingsView.delete(UserCommandSettingsView.token); return accept; }
+            if UserCommandSettingsView.rows.length == 0 { return reject; }
+            if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                UserCommandSettingsView.move(UserCommandSettingsView.token, event.text == Key.UpArrow ? -1 : 1); return accept;
+            }
+            if event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End {
+                let next = event.text == Key.Home ? 0 : event.text == Key.End ? UserCommandSettingsView.rows.length - 1
+                    : clamp(UserCommandSettingsView.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, UserCommandSettingsView.rows.length - 1);
+                UserCommandSettingsView.select(UserCommandSettingsView.rows[next].id); return accept;
+            }
+            reject
+        }
+      Rectangle {
+       width: parent.width; height: parent.height; clip: true;
+       border-width: 1px; border-color: list-focus.has-focus ? Theme.active-frame : Theme.frame;
+       drag-input := TouchArea {
+        width: parent.width; height: parent.height;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down && root.gesture-token != "" {
+                root.abort-gesture();
+            } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                let index = root.row-at(self.mouse-y);
+                if root.inside-viewport(self.mouse-x, self.mouse-y) && index >= 0 && index < UserCommandSettingsView.rows.length {
+                    root.gesture-id = UserCommandSettingsView.rows[index].id;
+                    root.gesture-token = UserCommandSettingsView.drag-begin(root.gesture-id);
+                    root.press-x = self.mouse-x; root.press-y = self.mouse-y;
+                    root.moving = false; root.drop-boundary = -1;
+                    if root.gesture-token != "" { list-focus.focus(); }
+                }
+            } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.gesture-token != "" {
+                let token = root.gesture-token; let id = root.gesture-id; let commit = root.moving;
+                let boundary = root.insertion-at(self.mouse-y);
+                let inside = root.inside-viewport(self.mouse-x, self.mouse-y);
+                root.clear-gesture();
+                if !inside { UserCommandSettingsView.drag-cancel(); }
+                else if UserCommandSettingsView.drag-end(token, boundary, commit) && !commit { UserCommandSettingsView.select(id); }
+            } else if event.kind == PointerEventKind.cancel { root.abort-gesture(); }
+        }
+        moved => { root.update-gesture(); }
+      command-list := ListView {
+        width: parent.width; height: parent.height;
+        horizontal-scrollbar-policy: always-off;
+        changed visible-height => { root.reveal-selection(); }
+        accessible-label: "Configured Custom Commands"; accessible-item-count: UserCommandSettingsView.rows.length;
+        for row[index] in UserCommandSettingsView.rows : Rectangle {
+            width: command-list.visible-width; height: root.command-row-height;
+            background: row.selected ? Theme.selected-background : Theme.pane-background;
+            accessible-role: list-item; accessible-label: row.name + " · " + row.summary + (row.enabled ? "" : " · disabled");
+            accessible-item-index: index; accessible-item-selectable: true; accessible-item-selected: row.selected;
+            accessible-action-default => { if !UserCommandSettingsView.dirty { UserCommandSettingsView.select(row.id); } }
+            Text {
+                x: 8px; width: max(0px, root.list-usable-width - 16px); height: parent.height;
+                text: row.separator ? "────────  " + row.name + "  ────────" : row.name + (row.enabled ? "" : " · disabled");
+                color: row.selected ? Theme.selected-text : row.separator ? Theme.secondary-text : Theme.text;
+                font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
+            }
+            Tooltip { TipBody { text: row.summary; } }
+
+        }
+      }
+       Rectangle {
+        visible: root.moving && root.gesture-token != "" && root.drop-boundary >= 0;
+        width: root.list-usable-width; height: 2px;
+        y: clamp(root.drop-boundary * root.command-row-height + command-list.content-y, 0px, parent.height - self.height);
+        background: Theme.accent;
+       }
+       }
+      }
+    }
+    if UserCommandSettingsView.rows.length == 0 : Text { text: "No Custom Commands configured."; color: Theme.secondary-text; font-size: Theme.small-font; }
+    if UserCommandSettingsView.dirty : Text { text: "Save or discard the draft before reordering commands."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+    if UserCommandSettingsView.has-draft : UserCommandForm { narrow: root.narrow; edited => { root.edited(); } }
+    if UserCommandSettingsView.error != "" : ErrorNotice { text: UserCommandSettingsView.error; }
+    if UserCommandSettingsView.status != "" : Text { text: UserCommandSettingsView.status; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+}

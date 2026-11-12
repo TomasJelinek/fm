@@ -1,0 +1,321 @@
+import { ComboBox, ScrollView } from "std-widgets.slint";
+import { HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+import { PathText } from "path-text.slint";
+import { CompactPicker } from "controls.slint";
+import { FallbackIcons, ActionButton } from "action-icons.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { ToolWindow } from "tool-window.slint";
+import { FindResults, FindRow } from "find-results.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { FindAdvanced } from "find-advanced.slint";
+
+export { FindRow }
+export struct FindDraft {
+    masks: string, mode: int, recursive: bool, name-case: bool,
+    content-enabled: bool, content: string, content-case: bool, whole-words: bool,
+    modified-enabled: bool, modified-seconds: int, duplicates: bool,
+}
+
+export component FindWindow inherits ToolWindow {
+    callback close-session();
+    request-close => { root.close-session(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    title: "Find files · Midnight Explorer";
+    preferred-width: 780px; preferred-height: 560px;
+    icon: FallbackIcons.find;
+    in property <[FindRow]> rows;
+    in property <[string]> roots;
+    private property <int> selected-root;
+    changed roots => { root.selected-root = max(0, min(root.selected-root, root.roots.length - 1)); }
+    in property <bool> running;
+    in property <bool> stopping;
+    in property <bool> duplicate-results;
+    in property <string> progress;
+    in property <string> current-directory;
+    in property <int> sort-column;
+    in property <bool> sort-descending;
+    callback sort(int);
+    in property <string> error;
+    in property <string> details;
+    in property <bool> attention;
+    private property <bool> narrow: root.width < max(620px, Theme.font-size * 30);
+    private property <bool> compact-query: root.height < 360px;
+    private property <int> name-row: root.narrow && !root.compact-query ? 1 : 0;
+    private property <bool> inline-status: root.height >= 360px
+        || (!root.show-details && Theme.font-size <= 20px);
+    in-out property <int> selected-row: -1;
+    in-out property <bool> show-details;
+    private property <bool> show-advanced;
+    // Hiding the query editor must not leave the native window without a key
+    // recipient: Escape remains available while Details replaces that editor.
+    changed show-details => { root.focus-content(); }
+    callback search(FindDraft);
+    callback stop();
+    callback add-root(string);
+    callback remove-root(int);
+    callback reveal(string);
+    callback file-action(string, int);
+    callback action-key(KeyEvent, string) -> bool;
+    in property <string> view-hint;
+    in property <string> edit-hint;
+    private property <bool> selected-file: root.selected-row >= 0
+        && root.selected-row < root.rows.length && !root.rows[root.selected-row].directory;
+    public function act-selected(action: int) {
+        if root.selected-row >= 0 && root.selected-row < root.rows.length {
+            root.file-action(root.rows[root.selected-row].token, action);
+        }
+    }
+    public function reveal-selected() {
+        if root.selected-row >= 0 && root.selected-row < root.rows.length {
+            root.reveal(root.rows[root.selected-row].token);
+        }
+    }
+    callback copy-details();
+    public function begin() { masks.focus(); }
+    public function submit() {
+        if root.running || !advanced.valid { return; }
+        root.search({masks: masks.text, mode: mode.current-index, recursive: recursive.checked, name-case: names.checked,
+            content-enabled: content-enabled.checked, content: content.text, content-case: content-case.checked,
+            whole-words: advanced.whole-words, modified-enabled: advanced.modified-enabled,
+            modified-seconds: advanced.modified-seconds, duplicates: advanced.duplicates});
+    }
+    Rectangle {
+        min-width: 0px; min-height: 0px;
+        preferred-width: 0px; preferred-height: 0px;
+        VerticalLayout {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            padding: root.height < 360px ? 4px : 12px; spacing: root.height < 360px ? 3px : 6px;
+            Rectangle {
+                // Compact running searches give their disabled query area to
+                // results. The instantiated editor/draft remains unchanged.
+                height: root.height < 360px && root.running && !root.show-details ? 0px
+                    : root.height < 360px ? max(max(Theme.control-height, masks.preferred-height) + 8px, root.height * 0.32)
+                    : root.show-details ? root.height * 0.45 : min(root.height * 0.60, query-form.preferred-height + 2px);
+                clip: true;
+              query-scroll := ScrollView {
+                visible: !root.show-details;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                query-form := VerticalLayout {
+                    padding-right: FluentScrollMetrics.overlay-size;
+                    spacing: root.narrow ? 8px : 10px; alignment: start;
+                    GridLayout {
+                        spacing: 6px;
+                        name-label := Text {
+                            row: 0; col: 0; colspan: root.name-row == 1 ? 2 : 1;
+                            text: root.compact-query ? "Query" : mode.current-index == 2 ? "Expression" : "File name";
+                            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
+                            vertical-alignment: center; min-width: 0px; wrap: root.compact-query ? no-wrap : word-wrap;
+                        }
+                        masks := HintedLineEdit {
+                            row: root.name-row; col: root.name-row == 1 ? 0 : 1; colspan: root.name-row == 1 ? 2 : 1;
+                            text: "*.*"; enabled: !root.running; accessible-label: "File name masks";
+                            min-width: root.compact-query ? Theme.font-size * 4 : 0px;
+                            min-height: Theme.control-height; horizontal-stretch: 1;
+                            hint: mode.current-index == 2 ? "Typed metadata predicate, never a script. Example: kind = file and size >= 1MiB. Unknown metadata does not match comparisons."
+                                : mode.current-index == 1 ? "Bounded regular expression over the native filename."
+                                : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
+                            accepted => { root.submit(); }
+                        }
+                        mode := ComboBox {
+                            row: root.narrow ? root.name-row + 1 : 0; col: root.narrow ? 0 : 2;
+                            model: ["Masks", "Regex", "Expression"]; enabled: !root.running;
+                            accessible-label: "Find match mode"; min-width: 0px;
+                            preferred-width: max(120px, Theme.font-size * 9);
+                            horizontal-stretch: 0;
+                        }
+                        names := WrappingCheckBox {
+                            row: root.narrow ? root.name-row + 1 : 1; col: 1; colspan: root.narrow ? 1 : 2;
+                            text: "Match name case"; enabled: !root.running;
+                        }
+                        Text {
+                            row: root.narrow ? root.name-row + 2 : 2; col: 0; colspan: root.narrow ? 2 : 1;
+                            text: "Search folders" + (root.roots.length > 1 ? " (" + root.roots.length + ")" : "");
+                            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
+                            vertical-alignment: center; min-width: 0px; wrap: word-wrap;
+                        }
+                        roots := CompactPicker {
+                            row: root.narrow ? root.name-row + 3 : 2; col: root.narrow ? 0 : 1;
+                            model: root.roots; path-labels: true;
+                            enabled: !root.running; horizontal-stretch: 1; minimum-control-width: 0px;
+                            current-index: root.roots.length > 0 ? root.selected-root : -1;
+                            label: self.current-index >= 0 ? root.roots[self.current-index] : "";
+                            accessible-name: "Search folders";
+                            selected(index) => { root.selected-root = index; }
+                        }
+                        ActionButton {
+                            row: root.narrow ? root.name-row + 3 : 2; col: root.narrow ? 1 : 2;
+                            text: "Remove"; fallback-icon: FallbackIcons.close;
+                            enabled: !root.running && root.roots.length > 0;
+                            clicked => { root.remove-root(roots.current-index); }
+                        }
+                        recursive := WrappingCheckBox {
+                            row: root.narrow ? root.name-row + 4 : 3; col: root.narrow ? 0 : 1; colspan: 2;
+                            text: "Subfolders"; checked: true; enabled: !root.running;
+                            hint: "Recurse into ordinary folders. Links, junctions and mount boundaries are excluded and counted.";
+                        }
+                        content-enabled := WrappingCheckBox {
+                            row: root.narrow ? root.name-row + 5 : 4; col: 0; colspan: root.narrow ? 2 : 1;
+                            text: "Containing text"; enabled: !root.running;
+                            hint: "Search literal text in UTF-8, or BOM-marked UTF-16 files. Unsupported encodings are reported, not silently skipped.";
+                        }
+                        content := HintedLineEdit {
+                            row: root.narrow ? root.name-row + 6 : 4; col: root.narrow ? 0 : 1; colspan: root.narrow ? 2 : 1;
+                            enabled: !root.running && content-enabled.checked;
+                            min-width: 0px; min-height: Theme.control-height; horizontal-stretch: 1;
+                            accessible-label: "Text to find";
+                            hint: "Literal text, read incrementally on a backend worker.";
+                            accepted => { root.submit(); }
+                        }
+                        GridLayout {
+                            row: root.narrow ? root.name-row + 7 : 4; col: root.narrow ? 0 : 2; colspan: root.narrow ? 2 : 1;
+                            spacing: 6px;
+                            content-case := WrappingCheckBox {
+                                row: 0; col: 0;
+                                text: "Match case"; enabled: !root.running && content-enabled.checked;
+                            }
+                            WrappingCheckBox {
+                                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                                text: "Whole words"; checked <=> advanced.whole-words;
+                                enabled: !root.running && content-enabled.checked;
+                                hint: "Match the containing text only at word boundaries.";
+                            }
+                        }
+                    }
+                    GridLayout {
+                        spacing: 8px;
+                        ActionButton {
+                            row: 0; col: 0;
+                            text: root.show-advanced ? "Fewer options" : "More options";
+                            fallback-icon: FallbackIcons.options;
+                            clicked => { root.show-advanced = !root.show-advanced; }
+                        }
+                        Text {
+                            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                            visible: !root.show-advanced && advanced.summary != "";
+                            text: advanced.summary;
+                            color: advanced.valid ? Theme.secondary-text : Theme.error-text;
+                            font-size: Theme.small-font; wrap: word-wrap; min-width: 0px;
+                            horizontal-stretch: 1; vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        visible: root.show-advanced;
+                        height: root.show-advanced ? extra-roots.preferred-height : 0px;
+                        extra-roots := GridLayout {
+                            spacing: 6px;
+                            new-root := HintedLineEdit {
+                                row: 0; col: 0;
+                                enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
+                                accessible-label: "Add absolute search folder";
+                                placeholder-text: "Add another absolute folder path";
+                                hint: "Add another native folder. Existing roots retain their original native path, including names that cannot be typed here.";
+                                accepted => { root.add-root(self.text); }
+                            }
+                            ActionButton {
+                                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                                text: "Add"; fallback-icon: FallbackIcons.tab-add;
+                                enabled: !root.running && new-root.text != "";
+                                clicked => { root.add-root(new-root.text); }
+                            }
+                        }
+                    }
+                    advanced := FindAdvanced {
+                        visible: root.show-advanced;
+                        height: root.show-advanced ? self.preferred-height : 0px;
+                        enabled: !root.running; narrow: root.narrow;
+                        content-enabled: content-enabled.checked;
+                        submit => { root.submit(); }
+                    }
+                    if root.error != "": ErrorNotice { text: root.error; }
+                }
+              }
+              if root.show-details: ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    padding-right: FluentScrollMetrics.overlay-size; spacing: 6px; alignment: start;
+                    if root.error != "": ErrorNotice { text: root.error; }
+                    if root.height < 360px && root.current-directory != "": Text {
+                        text: root.current-directory; color: Theme.secondary-text; wrap: char-wrap;
+                    }
+                    if root.height < 360px && root.progress != "": Text {
+                        text: root.progress; color: Theme.secondary-text; wrap: word-wrap;
+                    }
+                    Text { text: root.details; color: Theme.secondary-text; wrap: word-wrap; }
+                }
+              }
+            }
+            Rectangle {
+                vertical-stretch: 1; min-height: root.rows.length == 0 ? Theme.font-size + 6px : 20px; clip: true;
+                background: Theme.pane-background; border-color: Theme.frame; border-width: 1px;
+                results := FindResults {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    rows: root.rows; selected-row <=> root.selected-row;
+                    duplicates: root.duplicate-results;
+                    show-header: root.rows.length > 0
+                        || self.height >= Theme.column-height + Theme.font-size + 8px;
+                    sort-column: root.sort-column; descending: root.sort-descending;
+                    sort(column) => { root.sort(column); }
+                    reveal(token) => { root.reveal(token); }
+                    action-key(event) => {
+                        if root.selected-row >= 0 && root.selected-row < root.rows.length {
+                            return root.action-key(event, root.rows[root.selected-row].token);
+                        }
+                        false
+                    }
+                }
+                if root.rows.length == 0: Text {
+                    x: 1px; y: results.header-height + 1px;
+                    width: max(0px, parent.width - 2px);
+                    height: max(0px, parent.height - self.y - 1px);
+                    visible: self.height >= Theme.font-size + 4px;
+                    text: root.running ? "Searching…" : "No results"; color: Theme.muted-text;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            if root.current-directory != "" && root.inline-status: PathText {
+                text: root.current-directory; foreground: Theme.secondary-text;
+                font-size: Theme.small-font; height: max(18px, Theme.small-font + 4px);
+            }
+            if root.progress != "" && root.inline-status: HorizontalLayout {
+                spacing: 4px; height: max(18px, Theme.small-font + 4px);
+                if root.attention: Rectangle {
+                    width: 18px; border-radius: 9px; background: Theme.error-text;
+                    Text { text: "!"; color: Theme.error-background; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Text { text: root.progress; color: root.attention ? Theme.error-text : Theme.secondary-text;
+                    font-size: Theme.small-font; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+            }
+            DialogFooter {
+                compact-height: root.height < 350px;
+                dismiss-text: "Close";
+                dismiss-hint: "Close this Find window and cancel its search (Escape).";
+                dismiss => { root.close-session(); }
+                ActionButton { text: root.running ? "Stop" : "Find"; primary: !root.running;
+                    fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.find; enabled: !root.stopping && (root.running || advanced.valid);
+                    clicked => { if root.running { root.stop(); } else { root.submit(); } } }
+                ActionButton { text: root.show-details ? "Copy" : "Go to file";
+                    fallback-icon: root.show-details ? FallbackIcons.copy : FallbackIcons.open-path; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
+                    clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
+                if !root.show-details: HintedActionButton { text: "View"; fallback-icon: FallbackIcons.view;
+                    enabled: root.selected-file; hint: root.view-hint;
+                    clicked => { root.act-selected(0); } }
+                if !root.show-details: HintedActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
+                    enabled: root.selected-file; hint: root.edit-hint;
+                    clicked => { root.act-selected(2); } }
+                if !root.show-details: HintedActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
+                    enabled: root.selected-row >= 0 && root.selected-row < root.rows.length;
+                    hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
+                    clicked => { root.act-selected(3); } }
+                ActionButton { text: root.show-details ? "Query" : "Details"; fallback-icon: FallbackIcons.properties; clicked => { root.show-details = !root.show-details; } }
+                if root.width >= 600px: ActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
+            }
+        }
+    }
+}

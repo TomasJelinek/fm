@@ -5,36 +5,107 @@ pub(crate) struct PanelDetail {
     pub(crate) identity: String,
     pub(crate) label: &'static str,
     pub(crate) value: String,
+    pub(crate) explanation: String,
 }
 
 impl Presenter {
     pub(crate) fn panel_details(&self, pane: PaneId) -> Vec<PanelDetail> {
         let p = &self.panes[pane.index()];
-        if !p.selected.is_empty()
-            || !p.selection_preview.is_empty()
-            || p.selection_deferred
-            || p.selection_pending_bulk
-            || p.selection_rebase_pending
+        if p.network_hides_rows() {
+            return Vec::new();
+        }
+        let rectangle = p.rectangle_summary();
+        if rectangle == Some(None) {
+            return vec![PanelDetail {
+                identity: format!("detail:{}:rectangle-pending", p.generation),
+                label: "Selected",
+                value: "Updating selection…".into(),
+                explanation: String::new(),
+            }];
+        }
+        let archive = rectangle
+            .flatten()
+            .map(|totals| (totals.files(), totals.folders(), totals.file_bytes(), false))
+            .or_else(|| p.archive_selection_summary());
+        if archive.is_some()
+            || (p.tree_view().is_none()
+                && (!p.selected.is_empty()
+                    || !p.selection_preview.is_empty()
+                    || p.selection_deferred.any()
+                    || p.selection_pending_bulk
+                    || p.selection_rebase_pending))
         {
-            let files = p.selected.file_count();
-            let folders = p.selected.folder_count();
-            let pending = !p.selection_preview.is_empty()
-                || p.selection_deferred
-                || p.selection_rebase_pending;
+            let (files, folders, file_bytes, pending) = archive.unwrap_or_else(|| {
+                (
+                    p.selected.file_count(),
+                    p.selected.folder_count(),
+                    p.selected.file_bytes(),
+                    !p.selection_preview.is_empty()
+                        || p.selection_deferred.any()
+                        || p.selection_pending_bulk
+                        || p.selection_rebase_pending
+                        || p.selection_revision != p.selection_applied,
+                )
+            });
             let value = format!(
                 "{files} {}, {folders} {}{}",
                 if files == 1 { "file" } else { "files" },
                 if folders == 1 { "folder" } else { "folders" },
                 if pending { " (updating)" } else { "" }
             );
-            return vec![PanelDetail {
+            let mut details = vec![PanelDetail {
                 identity: format!(
                     "detail:{}:selection:{}:{}:{value}",
                     p.generation, p.selection_applied.0, p.selection_revision.0
                 ),
                 label: "Selected",
                 value,
+                explanation: String::new(),
             }];
+            if files > 0 {
+                let value = if pending {
+                    "Size updating…".into()
+                } else {
+                    file_bytes.map_or_else(
+                        || "Size unknown".into(),
+                        |bytes| {
+                            format!(
+                                "{} bytes{}",
+                                self.number_locale.format_u64(bytes),
+                                if folders > 0 { " in files" } else { "" }
+                            )
+                        },
+                    )
+                };
+                details.push(PanelDetail {
+                    identity: format!(
+                        "detail:{}:selection-bytes:{}:{value}",
+                        p.generation, p.selection_applied.0
+                    ),
+                    label: "Selected file bytes",
+                    value,
+                    explanation: String::new(),
+                });
+            }
+            if folders > 0
+                && rectangle.is_none()
+                && !pending
+                && let Some(value) = p
+                    .selected_folder_sizes()
+                    .filter(|summary| summary.folders == folders)
+                    .and_then(|summary| folder_summary(summary, &self.number_locale))
+            {
+                details.push(PanelDetail {
+                    identity: format!(
+                        "detail:{}:folder-bytes:{}:{value}",
+                        p.generation, p.selection_applied.0
+                    ),
+                    label: "Selected folder bytes",
+                    value,
+                    explanation: String::new(),
+                });
+            }
+            return details;
         }
         if p.parent_cursor {
             return [("Name", ".."), ("Bytes", "—")]
@@ -44,6 +115,7 @@ impl Presenter {
                     identity: format!("detail:{}:parent:{index}:{value}", p.generation),
                     label,
                     value: value.into(),
+                    explanation: String::new(),
                 })
                 .collect();
         }
@@ -59,7 +131,7 @@ impl Presenter {
             .filter(|_| p.showing_stream())
             .unwrap_or(&entry.metadata);
         let size = match entry.kind {
-            EntryKind::Directory => p.folder_sizes.get(&entry.path).map(|size| {
+            EntryKind::Directory | EntryKind::DirectoryLink => p.folder_size(entry).map(|size| {
                 if size.finished && size.errors == 0 {
                     self.number_locale.format_u64(size.bytes)
                 } else {
@@ -105,6 +177,11 @@ impl Presenter {
                 ),
                 label,
                 value,
+                explanation: if label == "Attributes" {
+                    crate::detail_attributes::explanation(metadata)
+                } else {
+                    String::new()
+                },
             })
             .collect()
     }
@@ -115,6 +192,10 @@ impl Presenter {
         token: &str,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if let Some(value) = token.strip_prefix("capacity:") {
+            return value == crate::volume_presentation::panel_space(self, pane)
+                && self.queue_clipboard_text(value.to_owned(), send);
+        }
         let Some(field) = self
             .panel_details(pane)
             .into_iter()
@@ -123,5 +204,73 @@ impl Presenter {
             return false;
         };
         self.queue_clipboard_text(field.value, send)
+    }
+}
+
+fn folder_summary(summary: SelectedFolderSizes, locale: &NumberLocale) -> Option<String> {
+    let mut parts = Vec::with_capacity(2);
+    if summary.complete > 0 {
+        let bytes = summary.complete_bytes.map_or_else(
+            || "Size overflow".into(),
+            |bytes| format!("{} bytes", locale.format_u64(bytes)),
+        );
+        parts.push(format!(
+            "{bytes} in {} of {} folders",
+            summary.complete, summary.folders
+        ));
+    }
+    if summary.partial > 0 {
+        let bytes = summary.partial_bytes.map_or_else(
+            || "Partial size overflow".into(),
+            |bytes| format!("≈ {} bytes", locale.format_u64(bytes)),
+        );
+        parts.push(format!("{bytes} ({} partial)", summary.partial));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_file_bytes_are_exact_and_never_include_folder_estimates() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        let entries: Vec<_> = [1234, 5678]
+            .into_iter()
+            .enumerate()
+            .map(|(i, size)| {
+                let mut entry = Entry::new(
+                    EntryId(i as u64),
+                    PathBuf::from(format!("left/{i}")),
+                    EntryKind::File,
+                );
+                entry.metadata.size = Some(size);
+                entry
+            })
+            .collect();
+        let index = Arc::new(DirectoryIndex::from_entries(&entries));
+        p.panes[0].selected = Arc::new(SelectionSnapshot::from_bits(index, vec![3]).unwrap());
+        let expected = format!("{} bytes", p.number_locale.format_u64(6912));
+        assert_eq!(p.panel_details(PaneId::Left)[1].value, expected);
+        let token = p.panel_details(PaneId::Left)[1].identity.clone();
+        assert!(p.copy_panel_detail(PaneId::Left, &token, &|command| {
+            assert!(matches!(command, Command::CopyText {text, ..} if text == expected));
+            true
+        }));
+        p.panes[0].selection_pending_bulk = true;
+        assert_eq!(p.panel_details(PaneId::Left)[1].value, "Size updating…");
+        assert!(!p.copy_panel_detail(PaneId::Left, &token, &|_| panic!("stale field")));
+        p.panes[0].selection_pending_bulk = false;
+        let mut mixed = entries;
+        mixed[1].kind = EntryKind::Directory;
+        let index = Arc::new(DirectoryIndex::from_entries(&mixed));
+        p.panes[0].selected = Arc::new(SelectionSnapshot::from_bits(index, vec![3]).unwrap());
+        assert_eq!(p.panel_details(PaneId::Left).len(), 2);
+        assert!(
+            p.panel_details(PaneId::Left)[1]
+                .value
+                .ends_with("bytes in files")
+        );
     }
 }

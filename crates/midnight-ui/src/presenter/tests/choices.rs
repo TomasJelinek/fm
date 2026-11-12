@@ -1,5 +1,33 @@
 use super::*;
 
+#[test]
+fn one_drive_accounts_remain_in_menu_without_repeated_toolbar_buttons() {
+    let root = test_root();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    p.apply(Event::DesktopContext {
+        network_position: 0,
+        shell: ShellFlavor::Posix,
+        locations: vec![
+            location("home", LocationKind::Home, root.clone()),
+            location("personal", LocationKind::OneDrive, root.join("Personal")),
+            location("business", LocationKind::OneDrive, root.join("Business")),
+            location("temp", LocationKind::Temporary, root.join("Temp")),
+        ],
+    });
+    let menu = crate::navigation_models::choices(&p);
+    let toolbar = crate::navigation_models::toolbar_choices(&p, &menu);
+    assert_eq!(menu.len(), 4);
+    assert_eq!(toolbar.len(), 3);
+    assert!(toolbar.iter().any(|row| row.identity == menu[1].identity));
+    assert!(!toolbar.iter().any(|row| row.identity == menu[2].identity));
+    assert!(menu[1].label.contains("personal") && menu[2].label.contains("business"));
+    let selected = crate::navigation_models::locations(&toolbar, Some(&menu[3].identity));
+    assert!(
+        selected[2].selected,
+        "filtering toolbar entries must not shift selection"
+    );
+}
+
 fn location(id: &str, kind: LocationKind, path: PathBuf) -> NavigationLocation {
     NavigationLocation {
         id: id.into(),
@@ -28,6 +56,7 @@ fn canonical_choices_cover_every_volume_and_preserve_same_path_semantic_aliases(
         },
     ]));
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             location("disk", LocationKind::Volume, root.clone()),
@@ -55,6 +84,7 @@ fn an_arbitrary_mount_using_home_id_remains_a_drive() {
     let mount = root.join("mounted/home");
     let mut p = Presenter::new(root.clone(), root);
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![location("home", LocationKind::Home, home)],
     });
@@ -79,6 +109,7 @@ fn authoritative_volumes_replace_old_context_roots_and_invalidate_reused_identit
     let new_root = root.join("new");
     let mut p = Presenter::new(root.clone(), root);
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![location("same", LocationKind::Volume, old_root.clone())],
     });
@@ -114,6 +145,7 @@ fn choices_keep_metadata_tokens_and_resolve_raw_targets_with_volume_memory() {
         root: root.clone(),
     }]));
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![location("desktop", LocationKind::Desktop, special.clone())],
     });
@@ -151,6 +183,7 @@ fn reordered_equal_labels_reject_old_tokens_and_rejected_navigation_keeps_alias(
     let shared = root.join("shared");
     let mut p = Presenter::new(shared.clone(), root.clone());
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             location("home", LocationKind::Home, shared.clone()),
@@ -164,6 +197,7 @@ fn reordered_equal_labels_reject_old_tokens_and_rejected_navigation_keeps_alias(
     assert!(!p.choose_navigation_choice(PaneId::Left, &home, &|_| false));
     assert_eq!(p.navigation_choice_index(PaneId::Left), -1);
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![
             location("desktop", LocationKind::Desktop, shared.clone()),
@@ -183,6 +217,7 @@ fn drive_shortcuts_only_use_typed_native_metadata_for_the_current_raw_root() {
     let mut disk = location("disk", LocationKind::Volume, root.clone());
     disk.drive_letter = Some('Q');
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![disk],
     });
@@ -196,6 +231,7 @@ fn drive_shortcuts_only_use_typed_native_metadata_for_the_current_raw_root() {
     let mut disk = location("disk", LocationKind::Volume, new_root.clone());
     disk.drive_letter = Some('Q');
     p.apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![disk],
     });
@@ -206,4 +242,73 @@ fn drive_shortcuts_only_use_typed_native_metadata_for_the_current_raw_root() {
         true
     });
     assert!(*sent.borrow());
+}
+
+#[test]
+fn backend_locale_order_reaches_both_surfaces_without_reordering_hot_path_slots() {
+    let root = test_root();
+    let mut p = Presenter::new(root.join("Zulu"), root.join("Alpha"));
+    p.apply(Event::PreferencesLoaded(Ok(Box::default())));
+    assert!(p.assign_bookmark_slot(PaneId::Left, 1, &|_| true));
+    assert!(p.assign_bookmark_slot(PaneId::Right, 10, &|_| true));
+    let bookmarks = crate::panel_models::bookmark_choices(&p);
+    let ordered = ["h", "ch", "i"];
+    p.apply(Event::VolumesUpdated(
+        ordered
+            .iter()
+            .map(|label| Volume {
+                id: format!("drive-{label}"),
+                label: (*label).into(),
+                root: root.join(label),
+            })
+            .collect(),
+    ));
+    p.apply(Event::DesktopContext {
+        network_position: 0,
+        shell: ShellFlavor::Posix,
+        locations: ordered
+            .iter()
+            .map(|label| NavigationLocation {
+                id: format!("special-{label}"),
+                label: (*label).into(),
+                path: root.join("same alias"),
+                kind: LocationKind::Documents,
+                drive_letter: None,
+            })
+            .collect(),
+    });
+    let labels: Vec<_> = p
+        .navigation_choices()
+        .iter()
+        .map(|choice| choice.location.label.as_str())
+        .collect();
+    assert_eq!(labels, ["h", "ch", "i", "h", "ch", "i"]);
+    let semantic_rows = |rows: &[crate::NavigationChoiceRow]| {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.identity.clone(),
+                    row.label.clone(),
+                    row.compact_label.clone(),
+                    row.tooltip.clone(),
+                    row.kind,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let menu = crate::navigation_models::ordered_choices(&p);
+    let toolbar = crate::navigation_models::toolbar_choices(&p, &menu);
+    assert_eq!(
+        semantic_rows(&toolbar),
+        semantic_rows(&menu),
+        "both surfaces retain backend section order and identities"
+    );
+    let after = crate::panel_models::bookmark_choices(&p);
+    assert_eq!(
+        semantic_rows(&after),
+        semantic_rows(&bookmarks),
+        "native inventory never sorts or renumbers user hot paths"
+    );
+    assert!(after[0].label.starts_with("1  ") && after[0].label.contains("Zulu"));
+    assert!(after[1].label.starts_with("0  ") && after[1].label.contains("Alpha"));
 }

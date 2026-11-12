@@ -58,7 +58,14 @@ async fn engine_search_uses_the_exact_accepted_snapshot_without_filesystem_work(
     let files = Arc::new(Files::default());
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     let location = PathBuf::from("folder");
     commands
         .send(Command::Navigate {
@@ -88,6 +95,7 @@ async fn engine_search_uses_the_exact_accepted_snapshot_without_filesystem_work(
             location,
             source: source.clone(),
             query: "STRASS".into(),
+            filter: Default::default(),
         }))
         .await
         .unwrap();

@@ -1,0 +1,21 @@
+import { DialogWindow } from "dialog-window.slint";
+import { HelpBody } from "help-dialog.slint";
+
+export component HelpWindow inherits DialogWindow {
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    in property <int> topic;
+    title: root.topic == 1 ? "Filter help · Midnight Explorer" : "Keyboard help · Midnight Explorer";
+    preferred-width: 740px; preferred-height: 600px;
+    in property <image> close-icon;
+    in property <string> shortcuts;
+    HelpBody {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        preferred-width: 0px; preferred-height: 0px;
+        topic: root.topic; close-icon: root.close-icon; shortcuts: root.shortcuts;
+        close => { root.request-dismiss(); }
+    }
+}

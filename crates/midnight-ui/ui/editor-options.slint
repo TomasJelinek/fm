@@ -1,0 +1,248 @@
+import { ActionButton } from "action-icons.slint";
+import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { ArgumentEditor } from "argument-editor.slint";
+import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { ListHeader } from "list-header.slint";
+import { ListView } from "std-widgets.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { TipBody } from "controls.slint";
+
+export struct EditorOptionsDraft {
+    executable: string, arguments: string, use-default: bool,
+    enabled: bool, mode: int, expression: string, case-sensitive: bool,
+    working-directory: string,
+}
+export global EditorOptionsView {
+    in-out property <EditorOptionsDraft> draft;
+    in property <[string]> argument-rows;
+    in property <[string]> labels;
+    in property <int> selected: -1;
+    in property <int> rule-count;
+    in property <string> revision;
+    in property <string> default-label;
+    in-out property <bool> dirty;
+    in property <bool> busy;
+    in property <string> error;
+    callback select(int);
+    callback action(int);
+    callback edit(EditorOptionsDraft);
+    callback argument(int, int, string);
+    callback browse();
+    callback browse-directory();
+    callback save();
+    callback discard();
+}
+
+component EditorPriorityList inherits Rectangle {
+    private property <int> selected: EditorOptionsView.selected;
+    private property <int> count: EditorOptionsView.labels.length;
+    private property <length> row-height: Theme.control-height;
+    height: root.row-height * clamp(root.count, 1, 4) + 2px;
+    background: Theme.pane-background; border-width: 1px; clip: true;
+    border-color: list-focus.has-focus ? Theme.active-frame : Theme.frame;
+    changed selected => { root.reveal-selection(); }
+    changed count => { root.reveal-selection(); }
+    changed row-height => { root.reveal-selection(); }
+    function reveal-selection() {
+        if root.selected < 0 { return; }
+        let top = root.selected * root.row-height;
+        if top < -rows.content-y { rows.content-y = -top; }
+        else if top + root.row-height > -rows.content-y + rows.visible-height {
+            rows.content-y = min(0px, rows.visible-height - top - root.row-height);
+        }
+    }
+    function select-row(index: int) {
+        if EditorOptionsView.busy || index < 0 || index >= root.count { return; }
+        list-focus.focus(); EditorOptionsView.select(index);
+    }
+    list-focus := FocusScope {
+        enabled: !EditorOptionsView.busy;
+        key-pressed(event) => {
+            if EditorOptionsView.busy { return reject; }
+            if event.text == Key.Insert { EditorOptionsView.action(0); return accept; }
+            if event.text == Key.Delete { EditorOptionsView.action(1); return accept; }
+            if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                EditorOptionsView.action(event.text == Key.UpArrow ? 2 : 3); return accept;
+            }
+            if event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.Home || event.text == Key.End {
+                root.select-row(event.text == Key.Home ? 0 : event.text == Key.End ? root.count - 1
+                    : clamp(root.selected + (event.text == Key.DownArrow ? 1 : -1), 0, root.count - 1));
+                return accept;
+            }
+            reject
+        }
+        rows := ListView {
+            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+            horizontal-scrollbar-policy: always-off;
+            accessible-label: "Editor rules"; accessible-item-count: root.count;
+            changed visible-height => { root.reveal-selection(); }
+            for label[index] in EditorOptionsView.labels : Rectangle {
+                width: rows.visible-width; height: root.row-height;
+                private property <bool> selected: index == root.selected;
+                background: self.selected ? Theme.selected-background
+                    : area.has-hover ? Theme.hover : Theme.pane-background;
+                accessible-role: list-item; accessible-label: label;
+                accessible-enabled: !EditorOptionsView.busy;
+                accessible-item-index: index; accessible-item-selectable: true;
+                accessible-item-selected: self.selected;
+                accessible-action-default => { root.select-row(index); }
+                Text {
+                    x: 8px;
+                    width: max(0px, parent.width - 16px
+                        - (rows.content-height > rows.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                    text: label; font-size: Theme.font-size; overflow: elide;
+                    color: parent.selected ? Theme.selected-text : Theme.text;
+                    vertical-alignment: center;
+                }
+                area := TouchArea {
+                    enabled: !EditorOptionsView.busy;
+                    clicked => { root.select-row(index); }
+                }
+                Tooltip { TipBody { text: label; } }
+            }
+        }
+    }
+}
+
+export component EditorOptions inherits VerticalLayout {
+    in property <bool> narrow;
+    // Kept as a compatibility surface for the containing Options component.
+    in property <string> default-label;
+    in property <string> executable;
+    in property <string> arguments;
+    in property <string> revision;
+    in property <string> error;
+    callback apply(string, string);
+    callback restore();
+    private property <bool> rule-selected: EditorOptionsView.selected >= 0
+        && EditorOptionsView.selected < EditorOptionsView.rule-count;
+    spacing: 8px; alignment: start;
+    ListHeader {
+        title: "Editor rules";
+        hint: "F4 uses the first enabled rule matching the filename. The fallback handles other files.";
+        enabled: !EditorOptionsView.busy;
+        can-add: EditorOptionsView.rule-count < 64;
+        can-remove: root.rule-selected;
+        can-move-up: root.rule-selected && EditorOptionsView.selected > 0;
+        can-move-down: root.rule-selected && EditorOptionsView.selected + 1 < EditorOptionsView.rule-count;
+        action-labels: ["Add editor rule", "Remove editor rule", "Move editor rule up", "Move editor rule down"];
+        action-hints: ["Add a custom editor rule (Insert)", "Remove the selected rule (Delete)",
+            "Increase priority (Alt+Up)", "Decrease priority (Alt+Down)"];
+        action(index) => { EditorOptionsView.action(index); }
+    }
+    EditorPriorityList { }
+    Text {
+        text: "First enabled match wins. Fallback handles all other files.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+    }
+    if root.rule-selected : VerticalLayout {
+        spacing: 6px; alignment: start;
+        WrappingCheckBox {
+            text: "Enable this rule"; checked <=> EditorOptionsView.draft.enabled;
+            hint: "Disabled rules are kept in the list but skipped when choosing an editor.";
+            toggled => { EditorOptionsView.edit(EditorOptionsView.draft); }
+        }
+        GridLayout {
+            spacing: 6px;
+            HintedComboBox {
+                row: 0; col: 0;
+                model: ["Wildcards", "Regular expression"];
+                current-index <=> EditorOptionsView.draft.mode;
+                accessible-label: "Editor matching mode";
+                hint: "Match the filename using wildcard masks or a regular expression.";
+                selected => { EditorOptionsView.edit(EditorOptionsView.draft); }
+            }
+            HintedLineEdit {
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                text <=> EditorOptionsView.draft.expression;
+                accessible-label: "Editor filename pattern";
+                placeholder-text: EditorOptionsView.draft.mode == 0 ? "*.txt;*.md" : "\\.(txt|md)$";
+                hint: EditorOptionsView.draft.mode == 0
+                    ? "Use * and ?, separate masks with ; and exclusions with |. Matches the filename only."
+                    : "Regular expression searched in the filename. Use ^ and $ to anchor it.";
+                min-width: 0px; horizontal-stretch: 1;
+                edited => { EditorOptionsView.edit(EditorOptionsView.draft); }
+            }
+        }
+        WrappingCheckBox {
+            text: "Case sensitive"; checked <=> EditorOptionsView.draft.case-sensitive;
+            hint: "Distinguish uppercase and lowercase filename characters.";
+            toggled => { EditorOptionsView.edit(EditorOptionsView.draft); }
+        }
+    }
+    WrappingCheckBox {
+        text: "Use the system default editor"; checked <=> EditorOptionsView.draft.use-default;
+        hint: "Use the system editor instead of choosing your own executable.";
+        toggled => { EditorOptionsView.edit(EditorOptionsView.draft); }
+    }
+    if EditorOptionsView.draft.use-default : Text {
+        text: EditorOptionsView.default-label; color: Theme.secondary-text;
+        font-size: Theme.small-font; wrap: word-wrap;
+    }
+    if !EditorOptionsView.draft.use-default : VerticalLayout {
+        spacing: 6px; alignment: start;
+        Text { text: "Editor executable"; color: Theme.text; font-size: Theme.font-size; }
+        if EditorOptionsView.draft.executable == "" : Text {
+            text: "Choose an editor executable to complete this rule, or select the system default editor.";
+            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        GridLayout {
+            spacing: 6px;
+            HintedLineEdit {
+                row: 0; col: 0;
+                text <=> EditorOptionsView.draft.executable; accessible-label: "Editor executable";
+                hint: "Choose a program or enter its complete path.";
+                min-width: 0px; horizontal-stretch: 1;
+                edited => { EditorOptionsView.edit(EditorOptionsView.draft); }
+            }
+            ActionButton {
+                text: "Browse…"; accessible-label: "Browse editor executable";
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                enabled: !EditorOptionsView.busy; clicked => { EditorOptionsView.browse(); }
+            }
+        }
+        ArgumentEditor {
+            narrow: root.narrow;
+            values: EditorOptionsView.argument-rows; label-prefix: "Editor";
+            enabled: !EditorOptionsView.busy;
+            edit(row, text) => { EditorOptionsView.argument(0, row, text); }
+            add(text) => { EditorOptionsView.argument(1, 0, text); }
+            remove(row) => { EditorOptionsView.argument(2, row, ""); }
+            move(row, direction) => { EditorOptionsView.argument(direction < 0 ? -1 : 3, row, ""); }
+        }
+    }
+    if root.rule-selected : VerticalLayout {
+        spacing: 6px; alignment: start;
+        Text { text: "Working directory"; color: Theme.text; font-size: Theme.font-size; }
+        GridLayout {
+            spacing: 6px;
+            HintedLineEdit {
+                row: 0; col: 0;
+                text <=> EditorOptionsView.draft.working-directory;
+                accessible-label: "Editor working directory";
+                placeholder-text: "Executable folder (default)";
+                hint: "Absolute folder path. Leave empty to use the editor executable's folder.";
+                min-width: 0px; horizontal-stretch: 1;
+                edited => { EditorOptionsView.edit(EditorOptionsView.draft); }
+            }
+            ActionButton {
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                text: "Browse…"; accessible-label: "Browse editor working directory";
+                enabled: !EditorOptionsView.busy;
+                clicked => { EditorOptionsView.browse-directory(); }
+            }
+        }
+    }
+    if EditorOptionsView.error != "" : ErrorNotice { text: EditorOptionsView.error; }
+    HorizontalLayout {
+        alignment: start;
+        HintedActionButton {
+            text: "Discard changes"; accessible-label: "Discard editor changes";
+            hint: "Discard the editor draft. Options OK saves changes; Cancel restores them.";
+            enabled: EditorOptionsView.dirty; clicked => { EditorOptionsView.discard(); }
+        }
+    }
+}

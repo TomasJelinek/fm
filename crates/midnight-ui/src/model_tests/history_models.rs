@@ -208,16 +208,17 @@ fn command_history_models_follow_late_load_shell_dedup_clear_and_late_icons() {
     presenter.borrow_mut().apply(Event::DesktopContext {
         shell: ShellFlavor::PowerShell,
         locations: vec![],
+        network_position: 0,
     });
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(UserPreferences {
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             command_history: vec![CommandHistoryEntry {
                 command: "echo 文档".into(),
                 shell: ShellFlavor::Cmd,
             }],
             ..Default::default()
-        })));
+        }))));
     refresh(&window, &presenter.borrow());
     assert_eq!(model.row_count(), 1);
     assert_eq!(model.row_data(0).unwrap().label, "cmd · echo 文档");

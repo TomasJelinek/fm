@@ -1,8 +1,13 @@
 # Vestavěný prohlížeč a rozšiřitelné virtuální filesystémy
 
-Datum: 4. listopadu 2026. Stav: návrh dalšího rozšíření, nikoli tvrzení o hotové
-implementaci. Navazuje na [hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md).
-V této etapě se nemění produkční API ani se nezapíná dosud neimplementované F3.
+Datum návrhu: 4. listopadu 2026. Navazuje na
+[hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md).
+Aktualizace 7. listopadu: F3 a samostatné textové, zdrojové, Markdown, obrazové
+a PDF pluginy již fungují; stejně tak čtení archivů a ověřené vykopírování.
+Obecná VFS migrace, nativní filesystem pluginy, strom a network discovery ještě
+nejsou dokončené. Tento dokument určuje zamýšlené obsahové kontrakty; skutečný
+stav jednotlivých částí je v [implementačním přehledu](../../IMPLEMENTATION_BACKLOG.md)
+a [vývojářské dokumentaci](../../developer/README.md).
 
 Aktualizace 5. listopadu: [dynamické viewer/filesystem pluginy](2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
 finalizují balení, discovery, verzované C ABI, vlastnictví a nové pořadí etap.
@@ -339,6 +344,18 @@ souboru nebo ztráty pozice. Checkpoint před viewportem řeší otevřený víc
 komentář/string; nezačíná se vždy na prvním viditelném řádku bez kontextu.
 
 ### Vykreslený Markdown
+
+Upřesnění 9. listopadu: výběr režimu GitHub nastaví jeho základní písmo
+`system-ui` a velikost 16 logických pixelů (na Windows Segoe UI); následná ruční
+změna písma zůstává možná a ukládá se. Tabulky mají sdílené rozměry sloupců podle
+obsahu, nerozdělují čísla, střídají pozadí od druhého řádku těla a používají
+jednopixelové rámečky. Posun nesmí měnit zalomení již zobrazeného odstavce ani
+rozměry stejné tabulky. Okna proto uchovávají celé okolní sémantické celky v rámci
+paměťového rozpočtu; příliš velké celky mají omezený fragmentový fallback se
+zaručeným postupem. Již načtený parsovaný kontext se znovu používá. Ověření musí
+projít celý dokument dolů a zpět překrývajícími se posuny, porovnat překryv pixelů
+a zachovat stejný horní okraj při prvním otevření i po návratu na začátek.
+Podrobnosti a aktuální limity: [ověření kontinuity](../../verification/2026-11-09-markdown-continuity.md).
 
 Doporučený první renderer je native Slint nad bezpečným block/span modelem, ne
 browser s přístupem k host filesystemu. Kandidát pulldown-cmark dává event stream

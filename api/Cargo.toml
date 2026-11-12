@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["midnight-plugin-api", "midnight-plugin-sdk", "tools/headergen", "tools/package"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+incremental = false
+overflow-checks = true
+panic = "unwind"

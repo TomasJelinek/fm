@@ -30,7 +30,11 @@ fn ack(
         navigation: request.navigation,
         revision: request.revision,
         selection: Arc::new(SelectionSnapshot::from_bits(basis, bits).unwrap()),
-        deferred,
+        deferred: if deferred {
+            SelectionDefaults::ALL
+        } else {
+            SelectionDefaults::NONE
+        },
     }
 }
 
@@ -105,7 +109,7 @@ fn properties_capture_exact_pending_all_even_if_clear_is_already_requested() {
     }
     p.apply_with_sender(ack(&clear, p.panes[0].index.clone(), vec![0], false), &send);
     assert!(p.panes[0].selected.is_empty());
-    assert!(p.selection_properties[0].is_none());
+    assert!(p.selection_actions[0].is_none());
 }
 
 #[test]
@@ -195,7 +199,7 @@ fn navigation_cancels_waiting_properties_and_same_path_new_tab_has_new_context()
     assert_eq!(p.desktop.requests.len(), 1);
     assert!(p.new_tab(PaneId::Left, &send));
     assert_ne!(p.panes[0].selection_context, original_context);
-    assert!(p.selection_properties[0].is_none());
+    assert!(p.selection_actions[0].is_none());
     assert!(p.desktop.requests.is_empty());
     commands.borrow_mut().clear();
     p.apply_with_sender(ack(&all, all.view.clone().unwrap(), vec![7], false), &send);
@@ -252,7 +256,7 @@ fn failed_destination_cancels_its_properties_and_drops_its_late_selection_ack() 
     p.select_row(PaneId::Left, 0, true, &send);
     let toggle = sent_selection(&commands);
     p.properties(PaneId::Left, &send);
-    assert!(p.selection_properties[0].is_some());
+    assert!(p.selection_actions[0].is_some());
     let failed_basis = Arc::new(DirectoryIndex::from_entries(p.panes[0].rows()));
     p.apply_with_sender(
         Event::ListingFailed {
@@ -266,7 +270,7 @@ fn failed_destination_cancels_its_properties_and_drops_its_late_selection_ack() 
         },
         &send,
     );
-    assert!(p.selection_properties[0].is_none());
+    assert!(p.selection_actions[0].is_none());
     assert!(p.desktop.requests.is_empty());
     let rebase = sent_selection(&commands);
     assert!(matches!(rebase.action, SelectionAction::Rebase));

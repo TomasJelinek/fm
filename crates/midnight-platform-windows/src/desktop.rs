@@ -1,9 +1,11 @@
 use crate::WindowsFileSystem;
+#[path = "user_command_cwd.rs"]
+mod user_command_cwd;
 use crate::terminal_process::{self, LaunchSpec};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use midnight_core::{
-    FsError, LocationKind, LocationService, NavigationLocation, PropertyService, ShellFlavor,
-    TerminalMode, TerminalProcess, TerminalRequest, TerminalService,
+    FsError, PropertyService, ShellFlavor, TerminalMode, TerminalProcess, TerminalRequest,
+    TerminalService,
 };
 use std::{
     ffi::OsString,
@@ -22,7 +24,6 @@ use windows_sys::{
             SystemInformation::GetSystemDirectoryW,
         },
         UI::Shell::{
-            FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Profile,
             FOLDERID_ProgramFiles, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath, SHOP_FILEPATH,
             SHObjectProperties,
         },
@@ -73,9 +74,109 @@ impl TerminalService for WindowsFileSystem {
             .and_then(|spec| terminal_process::spawn(&spec))
             .map_err(|error| FsError::from_io("launch terminal", &request.working_directory, error))
     }
+
+    fn launch_terminal_with_environment(
+        &self,
+        request: &TerminalRequest,
+        environment: &[(String, OsString)],
+        cancel: &midnight_core::Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        let spec = prepare_user_terminal(request, environment, cancel)?;
+        terminal_process::spawn_with_environment(&spec, environment, cancel).map_err(|cause| {
+            FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+        })
+    }
+}
+
+pub(crate) fn prepare_user_terminal(
+    request: &TerminalRequest,
+    environment: &[(String, OsString)],
+    cancel: &midnight_core::Cancellation,
+) -> Result<LaunchSpec, FsError> {
+    midnight_core::UserCommandProcess {
+        working_directory: request.working_directory.clone(),
+        invocation: midnight_core::UserCommandProcessInvocation::Terminal {
+            shell: request.shell,
+            script: request.command.clone(),
+            environment: environment.to_vec(),
+        },
+    }
+    .check(cancel)?;
+    if request.mode != TerminalMode::Standard {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Custom Commands use normal-user terminals only.",
+            ),
+        ));
+    }
+    if !matches!(request.shell, ShellFlavor::PowerShell | ShellFlavor::Cmd) {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This adapter supports PowerShell and Command Prompt Custom Commands.",
+            ),
+        ));
+    }
+    if request.shell == ShellFlavor::Cmd && request.command.contains(['\r', '\n']) {
+        return Err(FsError::from_io(
+            "Custom Command terminal",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cmd accepts one command line. Use explicit command operators or choose PowerShell for multiline scripts.",
+            ),
+        ));
+    }
+    let directory = if request.shell == ShellFlavor::Cmd {
+        user_command_cwd::for_cmd(&request.working_directory).map_err(|cause| {
+            FsError::from_io("Custom Command cwd", &request.working_directory, cause)
+        })?
+    } else {
+        request.working_directory.clone()
+    };
+    if !std::fs::metadata(&request.working_directory)
+        .map_err(|cause| FsError::from_io("Custom Command cwd", &request.working_directory, cause))?
+        .is_dir()
+    {
+        return Err(FsError::from_io(
+            "Custom Command cwd",
+            &request.working_directory,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Command cwd is not a directory.",
+            ),
+        ));
+    }
+    let executable = match request.shell {
+        ShellFlavor::Cmd => command_prompt_path(),
+        _ => powershell_path(),
+    }
+    .map_err(|cause| FsError::from_io("find system shell", &request.working_directory, cause))?;
+    let mut spec =
+        terminal_command_profile(&executable, request, request.shell == ShellFlavor::Cmd).map_err(
+            |cause| FsError::from_io("Custom Command terminal", &request.working_directory, cause),
+        )?;
+    spec.working_directory = directory;
+    terminal_process::validate_with_environment(&spec, environment).map_err(|cause| {
+        FsError::from_io("Custom Command terminal", &request.working_directory, cause)
+    })?;
+    Ok(spec)
 }
 
 fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<LaunchSpec> {
+    terminal_command_profile(executable, request, false)
+}
+
+fn terminal_command_profile(
+    executable: &Path,
+    request: &TerminalRequest,
+    cmd_environment: bool,
+) -> io::Result<LaunchSpec> {
     validate_terminal_request(request)?;
     if !executable.is_absolute()
         || !request.working_directory.is_absolute()
@@ -111,7 +212,11 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
             }
         }
         ShellFlavor::Cmd => {
-            arguments.extend(["/D", "/U", "/V:OFF"].into_iter().map(OsString::from));
+            arguments.extend(["/D", "/U"].into_iter().map(OsString::from));
+            if cmd_environment {
+                arguments.push("/E:ON".into());
+            }
+            arguments.push(if cmd_environment { "/V:ON" } else { "/V:OFF" }.into());
             if !request.command.is_empty() {
                 // cmd /S removes exactly these outer quotes. raw_arg preserves the explicit
                 // source inside them; C-runtime argument escaping would alter cmd syntax.
@@ -130,6 +235,7 @@ fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<
         application: executable.into(),
         arguments,
         raw_tail,
+        cmd_environment,
         working_directory: request.working_directory.clone(),
     })
 }
@@ -191,7 +297,7 @@ fn installed_shell(executable: PathBuf, name: &str) -> io::Result<PathBuf> {
     }
 }
 
-fn system_directory() -> io::Result<PathBuf> {
+pub(crate) fn system_directory() -> io::Result<PathBuf> {
     // Query the OS rather than mutable PATH/SystemRoot/COMSPEC environment variables.
     let mut buffer = vec![0u16; 256];
     loop {
@@ -269,74 +375,6 @@ pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: SHGetKnownFolderPath allocated this string with COM's allocator.
     unsafe { CoTaskMemFree(raw.cast()) };
     path.filter(|path| path.is_absolute())
-}
-
-impl LocationService for WindowsFileSystem {
-    fn locations(&self) -> Result<Vec<NavigationLocation>, FsError> {
-        let mut locations: Vec<_> = crate::platform_volumes()?
-            .into_iter()
-            .map(|volume| {
-                let drive_letter = volume
-                    .root
-                    .as_os_str()
-                    .encode_wide()
-                    .next()
-                    .and_then(|ch| char::from_u32(u32::from(ch)))
-                    .filter(char::is_ascii_alphabetic);
-                NavigationLocation {
-                    id: volume.id,
-                    label: volume.label,
-                    path: volume.root,
-                    kind: LocationKind::Volume,
-                    drive_letter,
-                }
-            })
-            .collect();
-        let _com =
-            ComGuard::initialize(windows_sys::Win32::System::Com::COINIT_MULTITHREADED as u32);
-        for (id, label, kind, folder) in [
-            ("home", "Home", LocationKind::Home, FOLDERID_Profile),
-            (
-                "desktop",
-                "Desktop",
-                LocationKind::Desktop,
-                FOLDERID_Desktop,
-            ),
-            (
-                "documents",
-                "Documents",
-                LocationKind::Documents,
-                FOLDERID_Documents,
-            ),
-            (
-                "downloads",
-                "Downloads",
-                LocationKind::Downloads,
-                FOLDERID_Downloads,
-            ),
-        ] {
-            let path = _com
-                .as_ref()
-                .and_then(|_| known_folder(&folder))
-                .or_else(|| {
-                    if kind == LocationKind::Home {
-                        self.home.clone()
-                    } else {
-                        None
-                    }
-                });
-            if let Some(path) = path {
-                locations.push(NavigationLocation {
-                    id: id.into(),
-                    label: label.into(),
-                    path,
-                    kind,
-                    drive_letter: None,
-                });
-            }
-        }
-        Ok(locations)
-    }
 }
 
 #[cfg(test)]

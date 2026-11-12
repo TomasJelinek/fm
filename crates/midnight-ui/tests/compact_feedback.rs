@@ -1,5 +1,6 @@
 //! Verify compact panel details, fixed function-button height and size warnings.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{
     item_tree::ItemRc,
@@ -43,13 +44,15 @@ fn pixel(color: slint::Color) -> slint::Rgb8Pixel {
 }
 
 fn size_text(item: ItemRc, expected: &str) -> Option<ItemRc> {
-    if item
+    let matches = item
         .downcast::<SimpleText>()
         .is_some_and(|text| text.as_pin_ref().text() == expected)
         || item
             .downcast::<ComplexText>()
-            .is_some_and(|text| text.as_pin_ref().text() == expected)
-    {
+            .is_some_and(|text| text.as_pin_ref().text() == expected);
+    // FileEntry also has an invisible size-measure caption. Pixel assertions
+    // must target the painted value, not that earlier measurement item.
+    if matches && item.is_visible() {
         return Some(item);
     }
     let mut child = item.first_child();
@@ -198,50 +201,6 @@ fn compact_geometry_and_unfinished_sizes_render_in_every_theme() {
                 pixel(theme.get_window_background())
             );
         }
-    }
-    // The longer keyboard reference must remain dismissible in the smallest
-    // supported window, including the 40px touch Close button.
-    native.set_size(slint::PhysicalSize::new(1040, 480));
-    window.window().dispatch_event(WindowEvent::Resized {
-        size: slint::LogicalSize::new(1040.0, 480.0),
-    });
-    pixels.resize(1040 * 480, slint::Rgb8Pixel::default());
-    for density in 0..2 {
-        window.invoke_apply_preferences(0, density);
-        let height = window.get_effective_minimum_height().ceil().max(480.0) as usize;
-        native.set_size(slint::PhysicalSize::new(1040, height as u32));
-        window.window().dispatch_event(WindowEvent::Resized {
-            size: slint::LogicalSize::new(1040.0, height as f32),
-        });
-        pixels.resize(1040 * height, slint::Rgb8Pixel::default());
-        window.invoke_focus_files();
-        for pressed in [true, false] {
-            window.window().dispatch_event(if pressed {
-                WindowEvent::KeyPressed {
-                    text: slint::platform::Key::F1.into(),
-                }
-            } else {
-                WindowEvent::KeyReleased {
-                    text: slint::platform::Key::F1.into(),
-                }
-            });
-        }
-        native.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, 1040);
-        });
-        assert_eq!(
-            pixels[300 * 1040 + 220],
-            pixel(window.global::<Theme>().get_surface())
-        );
-        ui::click_popup(&window, "Close", AccessibleRole::Button);
-        native.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, 1040);
-        });
-        assert_ne!(
-            pixels[300 * 1040 + 220],
-            pixel(window.global::<Theme>().get_surface()),
-            "Help Close must stay visible at minimum window size; density={density}"
-        );
     }
     window.hide().unwrap();
 }

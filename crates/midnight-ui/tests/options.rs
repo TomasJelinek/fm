@@ -1,5 +1,8 @@
 //! The topic tabs and nested pickers remain usable through actual pointer input.
-use crate::ui;
+#[path = "support/popup_scroll.rs"]
+mod popup_scroll;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::items::AccessibleRole;
 use midnight_ui::{NavigationChoiceRow, Theme};
@@ -10,6 +13,7 @@ use ui::{TestUi, click, click_popup, key};
 #[test]
 fn options_topics_keep_panel_preferences_and_appearance_readable() {
     let mut ui = TestUi::new();
+    ui.window.set_preferences_ready(true);
     let accepted = Rc::new(Cell::new((-1, -1)));
     let changed = accepted.clone();
     let weak = ui.window.as_weak();
@@ -72,7 +76,10 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     );
     ui.options_topic(1);
     click_popup(&ui.window, "Theme", AccessibleRole::Combobox);
-    key(&ui.window, Key::DownArrow);
+    // Alphabetic display order, independent of the persisted Dark theme ID.
+    for _ in 0..4 {
+        key(&ui.window, Key::DownArrow);
+    }
     key(&ui.window, Key::Return);
     ui.draw();
     assert_eq!(
@@ -92,29 +99,30 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     ui.options_topic(0);
     assert!(ui.window.get_quick_search_filter());
     assert!(ui.window.get_sizes_in_bytes());
-    key(&ui.window, Key::RightArrow);
-    key(&ui.window, Key::RightArrow);
-    assert_eq!(
-        ui.window.get_options_topic_index(),
-        2,
-        "repeated arrows reach Command"
-    );
-    ui.draw();
-    click_popup(
-        &ui.window,
+    // Command history belongs to General; reveal its controls in the touch layout.
+    popup_scroll::click(
+        &mut ui,
         "Remember command history after restart",
         AccessibleRole::Checkbox,
     );
     assert!(!ui.window.get_remember_command_history());
-    click_popup(&ui.window, "Clear command history", AccessibleRole::Button);
+    popup_scroll::click(&mut ui, "Clear command history", AccessibleRole::Button);
     assert_eq!(cleared.get(), 1);
-    ui.options_topic(2);
+    ui.options_topic(0);
+    key(&ui.window, Key::RightArrow);
+    key(&ui.window, Key::RightArrow);
+    assert_eq!(
+        ui.window.get_options_topic_index(),
+        3,
+        "repeated arrows reach Keyboard without a Command page"
+    );
+    ui.draw();
     key(&ui.window, Key::LeftArrow);
     key(&ui.window, Key::LeftArrow);
     assert_eq!(
         ui.window.get_options_topic_index(),
         0,
-        "repeated arrows return to Panel"
+        "repeated arrows return to General"
     );
     ui.draw();
     ui.options_topic(1);
@@ -130,12 +138,11 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
         b: surface.blue(),
     };
     assert_eq!(ui.pixel(interior.0, interior.1), expected);
-    click_popup(&ui.window, "Done", AccessibleRole::Button);
+    click_popup(&ui.window, "Cancel", AccessibleRole::Button);
     ui.draw();
-    assert_ne!(
-        ui.pixel(interior.0, interior.1),
-        expected,
-        "Done closes Options after changing topics and density"
+    assert!(
+        !ui::has_popup(&ui.window),
+        "Cancel closes Options after changing topics and density"
     );
     ui.window.hide().unwrap();
 }

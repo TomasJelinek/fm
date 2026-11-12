@@ -8,7 +8,7 @@ fn known_directory_links_enter_native_raw_paths_without_shell_launch() {
     assert!(
         presenter.open_folder(PaneId::Left, &|command| {
             assert!(
-                matches!(command, Command::Navigate { path: ref target, .. } if target == &path)
+                matches!(command, Command::ResolveDirectoryLink { path: ref target, .. } if target == &path)
             );
             true
         }),
@@ -17,7 +17,7 @@ fn known_directory_links_enter_native_raw_paths_without_shell_launch() {
     let (mut presenter, path) = populated(EntryKind::DirectoryLink);
     let row = presenter.panes[0].parent_offset();
     assert!(presenter.open(PaneId::Left, row, &|command| {
-        assert!(matches!(command, Command::Navigate { path: ref target, .. } if target == &path));
+        assert!(matches!(command, Command::ResolveDirectoryLink { path: ref target, .. } if target == &path));
         true
     }));
 }
@@ -91,6 +91,12 @@ fn activate(presenter: &mut Presenter) -> (DesktopRequestId, NavigationId, PathB
             navigation,
             path,
             ..
+        }
+        | Command::ResolveDirectoryLink {
+            request,
+            navigation,
+            path,
+            ..
         } => (request, navigation, path),
         _ => panic!("expected a backend open request"),
     }
@@ -141,6 +147,13 @@ fn file_success_and_failure_are_reported_once_without_navigation() {
             .1
             .contains("association failed")
     );
+    let body = &presenter.desktop.notice.as_ref().unwrap().1;
+    assert!(body.starts_with("association failed\n"), "{body}");
+    assert!(
+        body.contains(&format!("\nPath\n{}\n", test_root().display())),
+        "{body}"
+    );
+    assert!(body.ends_with("Operation: open"), "{body}");
 }
 
 #[test]
@@ -169,6 +182,96 @@ fn linked_directory_result_navigates_origin_without_stealing_active_pane() {
         matches!(&sent.borrow()[0], Command::Navigate { pane: PaneId::Left, path: actual, .. }
         if actual == &path)
     );
+}
+
+#[test]
+fn directory_target_preserves_original_activation_and_does_not_steal_focus() {
+    let (mut presenter, _) = populated(EntryKind::DirectoryLink);
+    let (request, navigation, path) = activate(&mut presenter);
+    let target = test_root().join("resolved 文档 & 🦀");
+    presenter.active = PaneId::Right;
+    let sent = RefCell::new(vec![]);
+    presenter.apply_with_sender(
+        Event::DesktopActionFinished {
+            request,
+            result: Ok(DesktopActionResult::OpenDirectoryTarget {
+                pane: PaneId::Left,
+                navigation,
+                path,
+                target: target.clone(),
+            }),
+        },
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    assert_eq!(presenter.active, PaneId::Right);
+    assert_eq!(sent.borrow().len(), 1);
+    assert!(matches!(&sent.borrow()[0], Command::Navigate {
+        pane: PaneId::Left, path, ..
+    } if path == &target));
+}
+
+#[test]
+fn directory_target_rejects_stale_or_mismatched_original_activation_and_invalid_destination() {
+    for mismatch in 0..7 {
+        let (mut presenter, _) = populated(EntryKind::DirectoryLink);
+        let (request, navigation, path) = activate(&mut presenter);
+        if mismatch == 4 {
+            begin(&mut presenter, PaneId::Left, test_root().to_str().unwrap());
+        }
+        let target = match mismatch {
+            5 => PathBuf::from("relative"),
+            6 => test_root().join("contains\0nul"),
+            _ => test_root().join("resolved"),
+        };
+        presenter.apply_with_sender(
+            Event::DesktopActionFinished {
+                request: if mismatch == 0 {
+                    DesktopRequestId(u64::MAX)
+                } else {
+                    request
+                },
+                result: Ok(DesktopActionResult::OpenDirectoryTarget {
+                    pane: if mismatch == 1 {
+                        PaneId::Right
+                    } else {
+                        PaneId::Left
+                    },
+                    navigation: if mismatch == 2 {
+                        NavigationId(u64::MAX)
+                    } else {
+                        navigation
+                    },
+                    path: if mismatch == 3 { test_root() } else { path },
+                    target,
+                }),
+            },
+            &|_| panic!("unmatched or invalid directory target must not navigate: {mismatch}"),
+        );
+    }
+}
+
+#[test]
+fn directory_target_queue_failure_preserves_current_location() {
+    let (mut presenter, _) = populated(EntryKind::DirectoryLink);
+    let original = presenter.panes[0].display_path().to_owned();
+    let (request, navigation, path) = activate(&mut presenter);
+    presenter.apply_with_sender(
+        Event::DesktopActionFinished {
+            request,
+            result: Ok(DesktopActionResult::OpenDirectoryTarget {
+                pane: PaneId::Left,
+                navigation,
+                path,
+                target: test_root().join("resolved"),
+            }),
+        },
+        &|_| false,
+    );
+    assert_eq!(presenter.panes[0].display_path(), original);
+    assert!(!presenter.panes[0].loading);
 }
 
 #[test]

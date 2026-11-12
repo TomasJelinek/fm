@@ -1,6 +1,6 @@
 //! Bounded, serialized persistence of user preferences on backend workers.
 
-use crate::Outbox;
+use crate::{Outbox, task_lifetime::TaskLifetime};
 use midnight_core::{Event, FsError, PreferencesRevision, SettingsService, UserPreferences};
 use std::{
     io,
@@ -42,13 +42,14 @@ struct Save {
 
 enum Work {
     Load,
-    Save(Save),
+    Save(Box<Save>),
     Wait,
     Stop,
 }
 
 impl Controller {
     pub(crate) fn new(
+        scope: TaskLifetime,
         service: Arc<dyn SettingsService>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
@@ -61,9 +62,7 @@ impl Controller {
             complete,
         });
         let worker_shared = shared.clone();
-        tasks.spawn(async move {
-            run(service, outbox, worker_shared).await;
-        });
+        tasks.spawn(scope.future(run(scope.clone(), service, outbox, worker_shared)));
         Self { shared, completion }
     }
 
@@ -164,7 +163,7 @@ impl Shared {
     fn take_work(&self) -> Work {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(save) = state.save_pending.take() {
-            return Work::Save(save);
+            return Work::Save(Box::new(save));
         }
         if state.stopping {
             return Work::Stop;
@@ -177,28 +176,36 @@ impl Shared {
     }
 }
 
-async fn run(service: Arc<dyn SettingsService>, outbox: Outbox, shared: Arc<Shared>) {
+async fn run(
+    scope: TaskLifetime,
+    service: Arc<dyn SettingsService>,
+    outbox: Outbox,
+    shared: Arc<Shared>,
+) {
     let mut output_open = true;
     loop {
         let event = match shared.take_work() {
             Work::Load => {
                 let service = service.clone();
-                let result = tokio::task::spawn_blocking(move || service.load_preferences())
-                    .await
-                    .unwrap_or_else(|_| Err(worker_error("load preferences")));
+                let result =
+                    tokio::task::spawn_blocking(scope.blocking(move || service.load_preferences()))
+                        .await
+                        .unwrap_or_else(|_| Err(worker_error("load preferences")));
                 shared
                     .state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .loading = false;
-                Event::PreferencesLoaded(result)
+                Event::PreferencesLoaded(result.map(Box::new))
             }
             Work::Save(save) => {
+                let save = *save;
                 let service = service.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || service.save_preferences(save.preferences))
-                        .await
-                        .unwrap_or_else(|_| Err(worker_error("save preferences")));
+                let result = tokio::task::spawn_blocking(
+                    scope.blocking(move || service.save_preferences(save.preferences)),
+                )
+                .await
+                .unwrap_or_else(|_| Err(worker_error("save preferences")));
                 Event::PreferencesSaved {
                     revision: save.revision,
                     result,

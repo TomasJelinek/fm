@@ -12,7 +12,12 @@ use std::{
     rc::Rc,
 };
 
-use crate::platform_keys;
+#[cfg(windows)]
+#[path = "support/windows_keys.rs"]
+mod platform_keys;
+#[cfg(not(windows))]
+#[path = "support/default_keys.rs"]
+mod platform_keys;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for TestPlatform {
@@ -59,6 +64,15 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
         size: slint::LogicalSize::new(1340.0, 820.0),
     });
     window.invoke_focus_files();
+    let compared = Rc::new(RefCell::new(Vec::new()));
+    let captured = compared.clone();
+    window.on_compare_files(move |pane| captured.borrow_mut().push(pane));
+    chord(&window, &[Key::Control, Key::Shift], "C");
+    assert_eq!(
+        *compared.borrow(),
+        vec![0],
+        "Ctrl+Shift+C opens file comparison"
+    );
     let sorts = Rc::new(RefCell::new(vec![]));
     let captured = sorts.clone();
     window.on_sort(move |pane, column| captured.borrow_mut().push((pane, column)));
@@ -95,6 +109,13 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     window.on_key(move |pane, key| captured.borrow_mut().push((pane, key)));
     chord(&window, &[Key::Control], Key::PageDown);
     assert_eq!(*pane_keys.borrow(), vec![(1, 10)]);
+    chord(&window, &[Key::Alt], Key::UpArrow);
+    chord(&window, &[Key::Alt], Key::DownArrow);
+    assert_eq!(
+        *pane_keys.borrow(),
+        vec![(1, 10), (1, 13), (1, 14)],
+        "Alt+Up/Down navigate to the previous/next selected panel item"
+    );
     let sizes = Rc::new(Cell::new(0));
     let captured = sizes.clone();
     window.on_folder_sizes(move |pane| {
@@ -123,6 +144,19 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     window.on_insert_name(move || captured.set(captured.get() + 1));
     chord(&window, &[Key::Control], Key::Return);
     assert_eq!(names.get(), 1);
+    let full_paths = Rc::new(Cell::new(0));
+    let captured = full_paths.clone();
+    window.on_insert_full_path(move || captured.set(captured.get() + 1));
+    chord(&window, &[Key::Control, Key::Shift], "P");
+    assert_eq!(
+        full_paths.get(),
+        1,
+        "Ctrl+Shift+P inserts the focused full path"
+    );
+    assert!(
+        paths.borrow().is_empty(),
+        "Full path must not insert the directory twice"
+    );
     chord(&window, &[Key::Control], "p");
     assert_eq!(*paths.borrow(), vec![1]);
     window.set_active_pane(0);
@@ -149,7 +183,8 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
         (vec![Key::Alt], Key::Space),
         (vec![Key::Alt], Key::F10),
         (vec![Key::Control, Key::Shift], Key::PageDown),
-        (vec![Key::Alt], Key::DownArrow),
+        (vec![Key::Alt, Key::Shift], Key::UpArrow),
+        (vec![Key::Alt, Key::Shift], Key::DownArrow),
         (vec![Key::Meta], Key::End),
     ] {
         chord(&window, &modifiers, shortcut);
@@ -159,7 +194,7 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     assert_eq!(actions.borrow().len(), action_count);
     assert_eq!(
         *pane_keys.borrow(),
-        vec![(1, 10)],
+        vec![(1, 10), (1, 13), (1, 14)],
         "unsupported modifiers must not fall through to navigation, open or selection"
     );
     assert_eq!(sizes.get(), 2, "selected-size shortcuts are reserved");
@@ -174,6 +209,12 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     );
     chord(&window, &[Key::Control], "p");
     assert_eq!(*paths.borrow(), vec![1, 0, 1]);
+    chord(&window, &[Key::Control, Key::Shift], "P");
+    assert_eq!(
+        full_paths.get(),
+        2,
+        "Full path also works from the command edit"
+    );
     chord(&window, &[Key::Control], Key::Return);
     assert_eq!(
         names.get(),

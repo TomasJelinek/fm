@@ -1,0 +1,30 @@
+import { DialogWindow } from "dialog-window.slint";
+import { HotPathsDialog } from "hot-paths-dialog.slint";
+import { BookmarkRow } from "navigation-models.slint";
+import { ActionIcons } from "action-icons.slint";
+import { Theme } from "theme.slint";
+export component HotPathsWindow inherits DialogWindow {
+    title: "Manage Hot Paths";
+    in property <[BookmarkRow]> model;
+    in property <ActionIcons> action-icons;
+    in property <string> path;
+    callback assign-bookmark(string, int);
+    callback remove-bookmark(string);
+    callback add-bookmark();
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function begin() { form.begin(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    preferred-width: max(520px, Theme.font-size * 23);
+    preferred-height: max(320px, Theme.control-height * 5 + 110px + min(5, root.model.length) * max(44px, Theme.font-size + Theme.small-font + 12px));
+    form := HotPathsDialog {
+        width: root.width; height: root.height;
+        model: root.model; action-icons: root.action-icons; path: root.path;
+        assign-bookmark(identity, slot) => { root.assign-bookmark(identity, slot); }
+        remove-bookmark(identity) => { root.remove-bookmark(identity); }
+        add-bookmark => { root.add-bookmark(); }
+        dismiss => { root.request-dismiss(); }
+    }
+}

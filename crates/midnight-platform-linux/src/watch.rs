@@ -3,25 +3,27 @@ use midnight_core::{FsError, WatchService, WatchSubscription};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
-type ChangeCallback = Arc<dyn Fn() + Send + Sync>;
+type ChangeCallback = Arc<dyn Fn(u32) + Send + Sync>;
 
 /// Serialize cancellation with the short callback, including an event already in flight.
 struct CallbackGate(Mutex<Option<ChangeCallback>>);
 
 impl CallbackGate {
-    fn signal(&self) {
-        if let Ok(callback) = self.0.lock()
+    fn signal(&self, mask: u32) {
+        if mask != 0
+            && let Ok(callback) = self.0.lock()
             && let Some(callback) = callback.as_ref()
         {
-            callback();
+            callback(mask);
         }
     }
 
     fn cancel(&self) {
+        // Poisoning cannot prevent cleanup if a consumer callback panicked.
         let callback = self
             .0
             .lock()
@@ -40,8 +42,8 @@ impl WatchSubscription for NativeWatch {}
 
 impl Drop for NativeWatch {
     fn drop(&mut self) {
-        // Engine drops subscriptions on a backend worker. Release the callback before
-        // native shutdown, including when inotify is still draining queued events.
+        // Backend ownership waits for an in-flight short callback, then releases its
+        // captures before native shutdown. Never drop under a consumer control lock.
         self.gate.cancel();
         drop(self.watcher.take());
     }
@@ -51,9 +53,82 @@ impl WatchService for LinuxFileSystem {
     fn watch_directory(
         &self,
         path: &Path,
+        changed: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        self.watch_directories(&[path.to_path_buf()], Arc::new(move |_| changed()))
+    }
+
+    fn watch_directories(
+        &self,
+        paths: &[PathBuf],
         changed: ChangeCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
-        let metadata = std::fs::metadata(path)
+        let native_paths = registration_paths(paths)?;
+        let error_path = &paths[0];
+        let gate = Arc::new(CallbackGate(Mutex::new(Some(changed))));
+        let callback_gate = gate.clone();
+        let callback_paths = native_paths.clone();
+        let mut watcher = match notify::recommended_watcher(move |event| {
+            // Bounded path comparison only: no filesystem calls, path cloning or queues.
+            callback_gate.signal(batch_change_mask(&callback_paths, &event));
+        }) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                gate.cancel();
+                return Err(FsError::from_io(
+                    "start native watcher",
+                    error_path,
+                    io::Error::other(error),
+                ));
+            }
+        };
+        for path in native_paths.iter() {
+            if let Err(error) = watcher.watch(path, RecursiveMode::NonRecursive) {
+                gate.cancel();
+                // Drop the whole owner, including any paths registered successfully.
+                drop(watcher);
+                return Err(FsError::from_io(
+                    "watch directory",
+                    path,
+                    io::Error::other(error),
+                ));
+            }
+        }
+        Ok(Box::new(NativeWatch {
+            watcher: Some(watcher),
+            gate,
+        }))
+    }
+}
+
+fn registration_paths(paths: &[PathBuf]) -> Result<Arc<[PathBuf]>, FsError> {
+    let error_path = paths.first().map_or(Path::new(""), PathBuf::as_path);
+    let invalid = || {
+        FsError::from_io(
+            "watch directories",
+            error_path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected 1..=32 unique nonempty directories",
+            ),
+        )
+    };
+    if paths.is_empty() || paths.len() > 32 {
+        return Err(invalid());
+    }
+    // Reject malformed inputs before performing any native registration.
+    for (index, path) in paths.iter().enumerate() {
+        if path.as_os_str().is_empty() || paths[..index].contains(path) {
+            return Err(invalid());
+        }
+    }
+    let mut native_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        // Canonical registration and event identities agree. On Windows std preserves
+        // dynamically sized extended Unicode paths without MAX_PATH restrictions.
+        let native_path = std::fs::canonicalize(path)
+            .map_err(|error| FsError::from_io("resolve watch directory", path, error))?;
+        let metadata = std::fs::metadata(&native_path)
             .map_err(|error| FsError::from_io("inspect watch directory", path, error))?;
         if !metadata.is_dir() {
             return Err(FsError::from_io(
@@ -65,28 +140,41 @@ impl WatchService for LinuxFileSystem {
                 ),
             ));
         }
-        let gate = Arc::new(CallbackGate(Mutex::new(Some(changed))));
-        let callback_gate = gate.clone();
-        let mut watcher = notify::recommended_watcher(move |event| {
-            // Do not copy event paths or read listed files; signal only a bounded hint.
-            if should_refresh(&event) {
-                callback_gate.signal();
-            }
-        })
-        .map_err(|error| FsError::from_io("start native watcher", path, io::Error::other(error)))?;
-        if let Err(error) = watcher.watch(path, RecursiveMode::NonRecursive) {
-            gate.cancel();
-            return Err(FsError::from_io(
-                "watch directory",
-                path,
-                io::Error::other(error),
-            ));
+        if native_paths.contains(&native_path) {
+            return Err(invalid());
         }
-        Ok(Box::new(NativeWatch {
-            watcher: Some(watcher),
-            gate,
-        }))
+        native_paths.push(native_path);
     }
+    Ok(native_paths.into())
+}
+
+fn batch_change_mask(targets: &[PathBuf], event: &notify::Result<notify::Event>) -> u32 {
+    if !should_refresh(event) {
+        return 0;
+    }
+    let all = u32::MAX >> (32 - targets.len());
+    let event = match event {
+        Err(_) => return all,
+        Ok(event) if event.need_rescan() => return all,
+        Ok(event) => event,
+    };
+    if event.paths.is_empty() || event.paths.len() > 64 {
+        return all;
+    }
+    let mut mask = 0;
+    for path in &event.paths {
+        let mut matched = false;
+        for (index, target) in targets.iter().enumerate() {
+            if path == target || path.parent() == Some(target.as_path()) {
+                mask |= 1 << index;
+                matched = true;
+            }
+        }
+        if !matched {
+            return all;
+        }
+    }
+    mask
 }
 
 fn should_refresh(event: &notify::Result<notify::Event>) -> bool {
@@ -216,3 +304,7 @@ mod tests {
         assert!(receiver.recv_timeout(Duration::from_millis(150)).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "watch/batch_tests.rs"]
+mod batch_tests;

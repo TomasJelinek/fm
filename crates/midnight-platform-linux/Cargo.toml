@@ -11,10 +11,17 @@ midnight-platform-common.workspace = true
 libc = "0.2"
 fontdb = { version = "=0.24.0", default-features = false, features = ["std", "fs"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-rustix = { version = "1.1.6", features = ["fs", "process"] }
+resvg = { version = "=0.48.1", default-features = false }
+rustix = { version = "1.1.6", features = ["fs", "process", "event"] }
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 notify = { version = "=8.2.1", default-features = false }
 arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
+x11rb = "=0.13.2"
+wl-clipboard-rs = "=0.9.5"
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
+futures-lite = { version = "=2.6.1", default-features = false, features = ["std"] }
+tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tempfile.workspace = true
+x11rb = { version = "=0.13.2", features = ["xtest"] }

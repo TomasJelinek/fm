@@ -2,6 +2,7 @@
 use crate::WindowsFileSystem;
 use midnight_core::{FsError, LocaleService, LocalizedDateTime, NumberLocale};
 use std::{
+    ffi::OsStr,
     io,
     path::Path,
     ptr,
@@ -27,14 +28,75 @@ struct WindowsLocale {
     date_pattern: Vec<u16>,
     time_pattern: Vec<u16>,
     timezone: DYNAMIC_TIME_ZONE_INFORMATION,
+    input_format: Option<midnight_core::DateTimeInputFormat>,
 }
 
+#[path = "locale_input.rs"]
+mod input;
+
 static SNAPSHOT: OnceLock<Result<WindowsLocale, FsError>> = OnceLock::new();
+static NAME: OnceLock<Result<Vec<u16>, FsError>> = OnceLock::new();
 
 impl LocaleService for WindowsFileSystem {
     fn number_locale(&self) -> Result<NumberLocale, FsError> {
         Ok(snapshot()?.numbers.clone())
     }
+
+    fn datetime_input_format(&self) -> Option<midnight_core::DateTimeInputFormat> {
+        snapshot().ok()?.input_format.clone()
+    }
+
+    fn format_datetime(&self, value: SystemTime) -> Option<LocalizedDateTime> {
+        modified(value)
+    }
+
+    fn format_archive_local_time(
+        &self,
+        value: midnight_core::ArchiveTimestamp,
+    ) -> Option<LocalizedDateTime> {
+        use midnight_core::ArchiveTimestamp;
+        if !value.is_valid() {
+            return None;
+        }
+        let ArchiveTimestamp::Local {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        } = value
+        else {
+            return None;
+        };
+        let calendar = SYSTEMTIME {
+            wYear: u16::try_from(year).ok()?,
+            wMonth: u16::from(month),
+            wDay: u16::from(day),
+            wHour: u16::from(hour),
+            wMinute: u16::from(minute),
+            wSecond: u16::from(second),
+            ..Default::default()
+        };
+        snapshot().ok()?.format(&calendar).ok()
+    }
+
+    fn collation_key(&self, value: &OsStr) -> Result<Option<Vec<u8>>, FsError> {
+        crate::sort_keys::key(collation_name()?, value).map_err(|error| {
+            FsError::from_io("prepare Windows collation key", Path::new(""), error)
+        })
+    }
+}
+
+fn collation_name() -> Result<&'static [u16], FsError> {
+    NAME.get_or_init(|| {
+        locale_value(LOCALE_SNAME).map_err(|error| {
+            FsError::from_io("read Windows collation locale", Path::new(""), error)
+        })
+    })
+    .as_ref()
+    .map(Vec::as_slice)
+    .map_err(Clone::clone)
 }
 
 fn snapshot() -> Result<&'static WindowsLocale, FsError> {
@@ -107,13 +169,18 @@ impl WindowsLocale {
         if unsafe { GetDynamicTimeZoneInformation(&mut timezone) } == TIME_ZONE_ID_INVALID {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self {
+        let mut locale = Self {
             numbers,
-            name: locale_value(LOCALE_SNAME)?,
+            name: collation_name()
+                .map_err(|error| io::Error::new(error.kind, error.message))?
+                .to_vec(),
             date_pattern: locale_value(LOCALE_SSHORTDATE)?,
             time_pattern: locale_value(LOCALE_STIMEFORMAT)?,
             timezone,
-        })
+            input_format: None,
+        };
+        locale.input_format = input::capture(&locale);
+        Ok(locale)
     }
 
     fn format(&self, local: &SYSTEMTIME) -> io::Result<LocalizedDateTime> {

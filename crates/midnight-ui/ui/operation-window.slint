@@ -1,0 +1,57 @@
+import { DialogWindow } from "dialog-window.slint";
+import { OperationDialog } from "operation-controls.slint";
+import { Theme } from "theme.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// One unchanged form instance owns its edit/caret for this native occurrence.
+export component OperationWindow inherits DialogWindow {
+    in property <string> title-text;
+    title: root.title-text;
+    in property <int> kind: -1;
+    in property <string> body;
+    in property <string> initial-name;
+    in property <string> input-label;
+    in property <int> selection-end;
+    in property <bool> has-name;
+    in property <bool> dangerous;
+    in property <string> confirm-text;
+    in property <bool> confirm-enabled: true;
+    in property <image> native-icon;
+    in property <image> fallback-icon: root.kind < 0 ? FallbackIcons.copy
+        : root.kind == 0 ? FallbackIcons.rename
+        : root.kind == 3 ? FallbackIcons.new-folder
+        : root.kind == 4 ? FallbackIcons.new-file : FallbackIcons.delete;
+    in property <string> warning;
+    in property <bool> option-visible;
+    in property <bool> option-enabled: true;
+    in-out property <bool> option-checked;
+    in property <string> option-label;
+    in property <string> option-hint;
+    in-out property <string> value <=> form.value;
+    callback confirm(string);
+    callback request-dismiss();
+    request-close => { root.request-dismiss(); }
+    public function begin() { form.begin(); }
+    public function focus-input() { form.focus-input(); }
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    out property <length> initial-width: max(540px, Theme.font-size * 28);
+    out property <length> initial-height: form.preferred-dialog-height;
+    preferred-width: root.initial-width;
+    preferred-height: form.preferred-dialog-height;
+    form := OperationDialog {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        preferred-width: 0px; preferred-height: 0px;
+        title: root.title; body: root.body; initial-name: root.initial-name;
+        input-label: root.input-label; selection-end: root.selection-end;
+        has-name: root.has-name; dangerous: root.dangerous;
+        confirm-text: root.confirm-text; confirm-enabled: root.confirm-enabled;
+        native-icon: root.native-icon; fallback-icon: root.fallback-icon;
+        warning: root.warning; option-visible: root.option-visible;
+        option-enabled: root.option-enabled; option-checked <=> root.option-checked;
+        option-label: root.option-label; option-hint: root.option-hint;
+        confirm(name) => { root.confirm(name); }
+        cancel => { root.request-dismiss(); }
+    }
+}

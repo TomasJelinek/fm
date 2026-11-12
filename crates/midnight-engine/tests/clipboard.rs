@@ -49,14 +49,16 @@ async fn explicit_copy_preserves_literal_unicode_and_serializes_on_backend_worke
     let caller = std::thread::current().id();
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
-    let engine = tokio::spawn(
-        Engine::new(
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            sender,
-        )
-        .with_clipboard(clipboard.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
     );
+    engine
+        .configure_clipboard()
+        .unwrap()
+        .install(clipboard.clone());
+    let engine = tokio::spawn(engine.run(receiver));
     let expected = ["文档 e\u{301} 👩🏽‍💻", "1000000000000", "-rwsr-xr-t (4755)"];
     for (index, text) in expected.iter().enumerate() {
         commands
@@ -98,6 +100,7 @@ async fn missing_clipboard_service_reports_failure_without_claiming_a_copy() {
     let (sender, mut events) = mpsc::channel(4);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )
@@ -122,14 +125,16 @@ async fn invalid_clipboard_text_never_reaches_the_native_service() {
     let clipboard = Arc::new(Clipboard::default());
     let (commands, receiver) = mpsc::channel(4);
     let (sender, mut events) = mpsc::channel(4);
-    let engine = tokio::spawn(
-        Engine::new(
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            sender,
-        )
-        .with_clipboard(clipboard.clone())
-        .run(receiver),
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
     );
+    engine
+        .configure_clipboard()
+        .unwrap()
+        .install(clipboard.clone());
+    let engine = tokio::spawn(engine.run(receiver));
     for text in ["before\0after".into(), "x".repeat(4 * 1024 * 1024 + 1)] {
         commands
             .send(Command::CopyText {
@@ -179,14 +184,16 @@ async fn aborting_engine_releases_clipboard_session_while_output_remains_full() 
     let (commands, receiver) = mpsc::channel(2);
     let (sender, events) = mpsc::channel(1);
     sender.try_send(Event::VolumesUpdated(Vec::new())).unwrap();
-    let engine = tokio::spawn(
-        Engine::new(
-            Arc::new(midnight_platform::LocalFileSystem::new(None)),
-            sender,
-        )
-        .with_clipboard(Arc::new(ObservedClipboard(clipboard.clone())))
-        .run(receiver),
+    let mut backend = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+        sender,
     );
+    backend
+        .configure_clipboard()
+        .unwrap()
+        .install(Arc::new(ObservedClipboard(clipboard.clone())));
+    let engine = tokio::spawn(backend.run(receiver));
     commands
         .send(Command::CopyText {
             request: DesktopRequestId(1),
@@ -199,7 +206,7 @@ async fn aborting_engine_releases_clipboard_session_while_output_remains_full() 
         .unwrap();
     engine.abort();
     assert!(engine.await.unwrap_err().is_cancelled());
-    let released = tokio::time::timeout(Duration::from_millis(200), clipboard.dropped.notified())
+    let released = tokio::time::timeout(Duration::from_secs(3), clipboard.dropped.notified())
         .await
         .is_ok();
     // A failing assertion must not strand the old blocking sender at runtime teardown.

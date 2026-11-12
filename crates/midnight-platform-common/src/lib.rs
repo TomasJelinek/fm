@@ -1,7 +1,15 @@
 #![forbid(unsafe_code)]
 //! Portable, blocking local directory and capacity services shared by native adapters.
+pub mod editor_rules;
+pub mod filename_colors;
+pub mod filter;
+pub mod filter_expression;
 pub mod fonts;
+pub mod icon_snapshot;
+pub mod metadata;
 pub mod settings;
+pub mod transfer;
+pub mod transfer_modified_time;
 
 use midnight_core::{
     Cancellation, DirectoryService, Entry, EntryId, EntryKind, EntryMetadata, FsError, SpaceInfo,
@@ -36,6 +44,19 @@ impl LocalServices {
         classify: impl Fn(fs::FileType) -> EntryKind,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
+        self.read_directory_with_metadata(path, cancel, classify, |_| None, emit)
+    }
+
+    /// Let a platform reuse metadata already returned by native enumeration.
+    /// The callback must not follow links or open file contents.
+    pub fn read_directory_with_metadata(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+        classify: impl Fn(fs::FileType) -> EntryKind,
+        metadata: impl Fn(&fs::DirEntry) -> Option<EntryMetadata>,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
         if cancel.is_cancelled() {
             return Ok(());
         }
@@ -65,7 +86,11 @@ impl LocalServices {
                 break;
             }
             let id = EntryId(self.next_entry_id.fetch_add(1, Ordering::Relaxed));
-            if !emit(Entry::new(id, item.path(), kind)) {
+            let mut entry = Entry::new(id, item.path(), kind);
+            if let Some(value) = metadata(&item) {
+                entry.metadata = value;
+            }
+            if !emit(entry) {
                 break;
             }
         }

@@ -1,5 +1,6 @@
 //! Reproducible debug-only interaction timings; no machine-specific pass thresholds.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 use midnight_core::*;
 use midnight_ui::{Presenter, install, refresh};
 use slint::{ComponentHandle, Model, platform::WindowEvent};
@@ -118,7 +119,7 @@ fn interaction_performance() {
             navigation: req.navigation,
             revision: req.revision,
             selection: Arc::new(SelectionSnapshot::from_bits(basis, bits).unwrap()),
-            deferred: false,
+            deferred: Default::default(),
         });
         refresh(&ui.window, &presenter.borrow());
         ui.draw();

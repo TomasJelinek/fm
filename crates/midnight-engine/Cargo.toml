@@ -7,10 +7,23 @@ publish.workspace = true
 
 [dependencies]
 midnight-core.workspace = true
+midnight-platform-common.workspace = true
+midnight-work-budget = { path = "../midnight-work-budget" }
+midnight-worker-platform = { path = "../midnight-worker-platform" }
+midnight-plugin-host = { path = "../midnight-plugin-host" }
+midnight-image-viewer-host = { path = "../midnight-image-viewer-host" }
+midnight-web-viewer-host = { path = "../midnight-web-viewer-host" }
+midnight-filesystem-host = { path = "../midnight-filesystem-host" }
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
+midnight-thumbnail-host = { path = "../midnight-thumbnail-host" }
 tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 unicase = "=2.10.0"
 unicode-segmentation = "=1.13.3"
+md-5 = { version = "=0.10.6", default-features = false, features = ["std"] }
+sha1 = { version = "=0.10.6", default-features = false, features = ["std"] }
+sha2 = { version = "=0.10.9", default-features = false, features = ["std"] }
+crc32fast = { version = "=1.5.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 midnight-platform.workspace = true

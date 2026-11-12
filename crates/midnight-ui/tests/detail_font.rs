@@ -1,5 +1,6 @@
 //! Detail text must fit its rendered viewport at every supported font size.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{
     item_tree::ItemRc,
@@ -38,9 +39,10 @@ fn detail_strip_contains_actual_text_metrics_at_maximum_desktop_font() {
             identity: "detail-font-fixture".into(),
             label: "Name".into(),
             value: value.into(),
+            explanation: Default::default(),
         }])));
     let adapter: Rc<dyn WindowAdapter> = ui.native.clone();
-    for (density, font) in [(0, 11), (1, 15), (0, 32), (1, 32)] {
+    for (density, font) in [(0, 12), (1, 15), (0, 32), (1, 32)] {
         ui.window.invoke_apply_preferences(0, density);
         ui.window.invoke_apply_fonts("".into(), font, font);
         ui.draw();

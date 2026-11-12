@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "midnight-fs-archive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[dependencies]
+midnight-filesystem-api = { version = "=0.4.0", registry = "midnight" }
+midnight-worker-sdk = { version = "=0.2.0", registry = "midnight" }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+tar = { version = "=0.4.46", default-features = false }
+sevenz-rust2 = { version = "=0.23.0", default-features = false }
+lzma-rust2 = { version = "=0.21.0", default-features = false, features = ["std", "xz"] }
+bzip2 = "=0.6.1"
+ruzstd = { version = "=0.9.1", default-features = false, features = ["std", "hash"] }
+
+[dev-dependencies]
+lzma-rust2 = { version = "=0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
+sevenz-rust2 = { version = "=0.23.0", default-features = false, features = ["compress"] }
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -6,7 +6,7 @@ mod fixtures;
 
 #[test]
 fn conservative_io_reserves_all_four_slots_and_cancelled_waiter_exits() {
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let held = budget
         .acquire_io(4, &Cancellation::default())
         .expect("Initial I/O permit");
@@ -27,7 +27,7 @@ fn conservative_io_reserves_all_four_slots_and_cancelled_waiter_exits() {
 
 #[test]
 fn a_local_classification_query_does_not_wait_for_an_existing_ssd_read() {
-    let budget = Arc::new(IoBudget::new());
+    let budget = Arc::new(IoBudget::isolated());
     let _read = budget
         .acquire_io(1, &Cancellation::default())
         .expect("SSD read permit");

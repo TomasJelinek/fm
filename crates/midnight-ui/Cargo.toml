@@ -4,24 +4,25 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-build = "build.rs"
-autotests = false
-
-[[test]]
-name = "integration"
-path = "tests/integration.rs"
 
 [dependencies]
 midnight-core.workspace = true
+midnight-ui-bindings = { path = "../midnight-ui-bindings" }
+midnight-ui-input = { path = "../midnight-ui-input" }
 slint = { workspace = true, features = ["unstable-winit-030"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 unicode-segmentation = "=1.13.3"
+serde_json = "1.0"
 # Exact pinned internal event observation for embedded tooltip host coordinates.
 i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"] }
 
-[build-dependencies]
-slint-build.workspace = true
-i-slint-compiler = { version = "=1.18.1", default-features = false, features = ["rust"] }
-spin_on = "=0.1.1"
-prettyplease = "=0.2.37"
-syn = { version = "=2.0.119", features = ["full"] }
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11-dl = "=2.21.0"
+
+[dev-dependencies]
+midnight-engine.workspace = true
+midnight-platform.workspace = true
+tokio.workspace = true

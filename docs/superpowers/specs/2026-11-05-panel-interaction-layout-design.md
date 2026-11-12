@@ -29,7 +29,17 @@ remains a design for the plugin milestone.
 - A draggable central splitter sets independent panel widths. Keep usable minimum
   widths and preserve the ratio during window resize. Double-click centers it.
   Narrow panels adapt the size column; complete byte values remain in status details.
-  The ratio and visual swap are session UI state, with no filesystem navigation.
+  Save the normal width ratio across sessions, restoring it with the saved theme
+  and geometry before the initial frame. Store an integer in basis points
+  (1..9999, default 5000), independent of pixels, DPI and window size. Window
+  resizing and the temporary Ctrl+F11 panel zoom do not overwrite it. Complete
+  drags, keyboard adjustments and double-click centering save through the existing
+  asynchronous settings worker; pointer movement only updates presentation.
+  Ordinary backend refreshes must not reset an in-progress drag. Failed initial
+  settings reads keep the existing write protection, and Options cancellation
+  does not undo independently changed panel widths. Legacy settings default to
+  equal widths; customized widths use preferences schema 23. Visual panel swaps
+  remain session UI state. None of these actions navigate the filesystem.
 - Tabs share one width: the existing preferred width until available space is
   exhausted, then all shrink uniformly to a readable minimum. At that minimum,
   show left/right scroll buttons beside the new-tab button. Reveal the active tab

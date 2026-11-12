@@ -5,12 +5,31 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "me"
+path = "src/main.rs"
+
 [dependencies]
 midnight-core.workspace = true
 midnight-engine.workspace = true
+midnight-elevation = { path = "../midnight-elevation" }
 midnight-platform.workspace = true
+midnight-native-filesystem-host = { path = "../midnight-native-filesystem-host" }
 midnight-ui.workspace = true
+midnight-viewer-engine = { path = "../midnight-viewer-engine" }
+midnight-viewer-ui = { path = "../midnight-viewer-ui" }
+midnight-compare-engine = { path = "../midnight-compare-engine" }
+midnight-compare-ui = { path = "../midnight-compare-ui" }
+midnight-thumbnail-host = { path = "../midnight-thumbnail-host" }
 tokio.workspace = true
-slint.workspace = true
+slint = { workspace = true, features = ["unstable-winit-030", "unstable-wgpu-30"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+midnight-thumbnail-api = { path = "../../thumbnail-api/midnight-thumbnail-api" }
+midnight-plugin-host = { path = "../midnight-plugin-host" }
+midnight-filesystem-host = { path = "../midnight-filesystem-host" }
+
+[target.'cfg(windows)'.build-dependencies]
+find-msvc-tools = "0.1.15"

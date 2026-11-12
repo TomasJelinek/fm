@@ -2,6 +2,8 @@ use super::*;
 
 fn saved_tabs(paths: &[&str], active: usize) -> PaneTabPreferences {
     PaneTabPreferences {
+        networks: Default::default(),
+        archives: Default::default(),
         paths: paths.iter().map(|path| test_root().join(path)).collect(),
         active,
     }
@@ -20,10 +22,10 @@ fn saved_tabs_restore_order_active_positions_and_requery_only_active_locations()
     ];
     let sent = RefCell::new(Vec::new());
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             tabs: saved.clone(),
             ..Default::default()
-        })),
+        }))),
         &|command| {
             sent.borrow_mut().push(command);
             true
@@ -60,14 +62,14 @@ fn local_tab_edits_win_over_late_load_while_untouched_panel_restores() {
     assert!(p.new_tab(PaneId::Left, &|_| true));
     let local = p.tabs(PaneId::Left);
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             tabs: [
                 saved_tabs(&["saved-left"], 0),
                 saved_tabs(&["right-a", "right-b"], 1),
             ],
             theme: PreferenceTheme::Dark,
             ..Default::default()
-        })),
+        }))),
         &|_| true,
     );
     assert_eq!(p.tabs(PaneId::Left), local);
@@ -82,13 +84,13 @@ fn startup_path_override_affects_only_its_panel_and_early_navigation_wins() {
     let mut p = Presenter::new(test_root().join("explicit"), test_root());
     p.set_tab_restore_overrides([true, false]);
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             tabs: [
                 saved_tabs(&["saved-left"], 0),
                 saved_tabs(&["saved-right"], 0),
             ],
             ..Default::default()
-        })),
+        }))),
         &|_| true,
     );
     assert_eq!(p.tabs(PaneId::Left)[0].path, test_root().join("explicit"));
@@ -104,13 +106,13 @@ fn startup_path_override_affects_only_its_panel_and_early_navigation_wins() {
         &|_| true
     ));
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             tabs: [
                 saved_tabs(&["saved-left"], 0),
                 saved_tabs(&["saved-right"], 0),
             ],
             ..Default::default()
-        })),
+        }))),
         &|_| true,
     );
     assert_eq!(
@@ -122,10 +124,7 @@ fn startup_path_override_affects_only_its_panel_and_early_navigation_wins() {
 #[test]
 fn closed_tabs_and_the_active_index_are_saved_and_survive_restart() {
     let mut p = Presenter::new(test_root().join("one"), test_root());
-    p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences::default())),
-        &|_| true,
-    );
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|_| true);
     let saved = RefCell::new(None);
     let send = |command| {
         if let Command::SavePreferences { preferences, .. } = command {
@@ -159,10 +158,10 @@ fn rejected_restore_retries_without_discarding_saved_tabs_or_current_view() {
     let mut p = Presenter::new(test_root().join("initial"), test_root());
     let original = p.tabs(PaneId::Left);
     p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences {
+        Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
             tabs: [saved_tabs(&["restored"], 0), PaneTabPreferences::default()],
             ..Default::default()
-        })),
+        }))),
         &|_| false,
     );
     assert_eq!(p.tabs(PaneId::Left), original);
@@ -180,15 +179,12 @@ fn initial_panel_paths_are_saved_after_load_even_without_a_tab_edit() {
     p.set_tab_restore_overrides([false, false]);
     assert!(p.needs_initial_preferences());
     let saved = RefCell::new(None);
-    p.apply_with_sender(
-        Event::PreferencesLoaded(Ok(UserPreferences::default())),
-        &|command| {
-            if let Command::SavePreferences { preferences, .. } = command {
-                *saved.borrow_mut() = Some(preferences);
-            }
-            true
-        },
-    );
+    p.apply_with_sender(Event::PreferencesLoaded(Ok(Box::default())), &|command| {
+        if let Command::SavePreferences { preferences, .. } = command {
+            *saved.borrow_mut() = Some(preferences);
+        }
+        true
+    });
     assert_eq!(
         saved.into_inner().unwrap().tabs,
         [
@@ -429,4 +425,35 @@ fn default_titles_follow_each_tabs_folder_while_callback_identities_remain_stabl
     assert_eq!(tabs[0].title, "文档 e\u{301} 🧪");
     assert!(tabs[0].active);
     assert_eq!(tabs[1].title, "Charlie");
+}
+
+#[test]
+fn tooltip_paths_include_archive_members_in_active_and_parked_tabs() {
+    let mut p = super::archives::archive_pane();
+    let archive = p.panes[0].archive.as_mut().unwrap();
+    archive.location.trail.push((8, "nested.7z".into()));
+    archive.location.trail.push((9, "文档".into()));
+    let expected = test_root()
+        .join("sample.zip")
+        .join("nested.7z")
+        .join("文档");
+    let original = p.tabs(PaneId::Left)[0].id;
+    assert_eq!(
+        p.tabs(PaneId::Left)[0].display_path,
+        expected.to_string_lossy()
+    );
+    assert_eq!(p.tabs(PaneId::Left)[0].title, "文档");
+    assert!(p.new_tab(PaneId::Left, &|_| true));
+    let parked = p
+        .tabs(PaneId::Left)
+        .into_iter()
+        .find(|tab| tab.id == original)
+        .unwrap();
+    assert!(!parked.active);
+    assert_eq!(parked.display_path, expected.to_string_lossy());
+    assert_eq!(
+        parked.path,
+        test_root(),
+        "native navigation authority is unchanged"
+    );
 }

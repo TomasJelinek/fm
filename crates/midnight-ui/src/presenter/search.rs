@@ -8,41 +8,76 @@ pub(crate) struct SearchState {
     pub(crate) input_context: SearchRevision,
     pub(crate) pending: bool,
     pub(crate) filter: bool,
+    pub(crate) panel_filter: PanelFilter,
     pub(crate) view_revision: u64,
-    needs_request: bool,
-    choose_first: bool,
-    applied: SearchRevision,
-    failed: bool,
+    pub(super) needs_request: bool,
+    pub(super) choose_first: bool,
+    pub(super) applied: SearchRevision,
+    pub(super) failed: bool,
     pub(super) result: Option<Arc<SearchResult>>,
 }
 
 impl Pane {
     /// The underlying native listing is retained independently of the visible projection.
     pub(crate) fn display_len(&self) -> usize {
+        if self.network_hides_rows() {
+            return 0;
+        }
+        if let Some(view) = self.tree_view() {
+            return view.rows.len();
+        }
         if self.search.filter && !self.search.query.is_empty() {
             return self
                 .search_projection()
                 .map_or(0, |result| result.matches.len());
         }
+        if self.search.panel_filter.enabled {
+            return self
+                .search_projection()
+                .map_or(0, |result| result.filtered.len());
+        }
         self.rows().len()
     }
 
     pub(crate) fn display_entry(&self, row: usize) -> Option<&Entry> {
+        if self.network_hides_rows() {
+            return None;
+        }
+        if let Some(view) = self.tree_view() {
+            return view.rows.get(row).map(|row| &row.entry);
+        }
         if self.search.filter && !self.search.query.is_empty() {
             let result = self.search_projection()?;
             return result.source.get(result.matches.get(row)?.source_row);
+        }
+        if self.search.panel_filter.enabled {
+            let result = self.search_projection()?;
+            return result.source.get(result.filtered.get(row)?.source_row);
         }
         self.rows().get(row)
     }
 
     pub(crate) fn display_index(&self) -> &Arc<DirectoryIndex> {
-        self.search_projection()
-            .filter(|_| self.search.filter && !self.search.query.is_empty())
-            .map_or(&self.index, |result| &result.index)
+        if let Some(view) = self.tree_view() {
+            return &view.index.directory;
+        }
+        if let Some(result) = self.search_projection() {
+            if self.search.filter && !self.search.query.is_empty() {
+                return &result.index;
+            }
+            if self.search.panel_filter.enabled {
+                return &result.filtered_index;
+            }
+        }
+        &self.index
     }
 
     pub(crate) fn search_view_waiting(&self) -> bool {
-        self.search.filter && !self.search.query.is_empty() && self.search_projection().is_none()
+        if self.tree_view().is_some() {
+            return self.search.pending;
+        }
+        ((self.search.filter && !self.search.query.is_empty()) || self.search.panel_filter.enabled)
+            && (self.search.pending || self.search_projection().is_none())
     }
 
     fn search_projection(&self) -> Option<&SearchResult> {
@@ -59,20 +94,42 @@ impl Pane {
     }
 
     pub(crate) fn search_match_count(&self) -> usize {
+        if let Some(view) = self.tree_view() {
+            return if self.tree_search_current() {
+                view.index.search_rows.len()
+            } else {
+                0
+            };
+        }
         self.current_search_result()
             .map_or(0, |result| result.matches.len())
     }
 
     pub(crate) fn search_prefix_end(&self, row: usize) -> usize {
+        if let Some(view) = self.tree_view() {
+            return if self.tree_search_current() {
+                view.rows.get(row).map_or(0, |row| row.prefix_end)
+            } else {
+                0
+            };
+        }
         let Some(result) = self.current_search_result() else {
             return 0;
         };
-        if self.search.filter {
+        if self.search.filter && !self.search.query.is_empty() {
             return result
                 .matches
                 .get(row)
                 .map_or(0, |item| item.display_prefix_end);
         }
+        let row = if self.search.panel_filter.enabled {
+            let Some(item) = result.filtered.get(row) else {
+                return 0;
+            };
+            item.source_row
+        } else {
+            row
+        };
         result
             .matches
             .binary_search_by_key(&row, |item| item.source_row)
@@ -81,25 +138,49 @@ impl Pane {
     }
 
     pub(crate) fn search_allows_activation(&self) -> bool {
-        self.search.query.is_empty()
-            || self.current_search_result().is_some_and(|result| {
-                !self.parent_cursor
-                    && self
-                        .cursor
-                        .is_some_and(|id| result.index.by_id.contains_key(&id))
-            })
+        if self.tree_view().is_some() {
+            return self.tree_input_ready()
+                && self.tree_search_current()
+                && if self.search.query.is_empty() {
+                    self.parent_cursor
+                        || self
+                            .tree_cursor_row()
+                            .is_some_and(|row| row.selectable && !row.context_only)
+                } else {
+                    self.tree_search_cursor_matches()
+                };
+        }
+        if self.search.panel_filter.enabled
+            && !self.parent_cursor
+            && !self
+                .cursor
+                .is_some_and(|id| self.display_index().by_id.contains_key(&id))
+        {
+            return false;
+        }
+        !self.search_view_waiting()
+            && (self.search.query.is_empty()
+                || self.current_search_result().is_some_and(|result| {
+                    !self.parent_cursor
+                        && self
+                            .cursor
+                            .is_some_and(|id| result.index.by_id.contains_key(&id))
+                }))
     }
 }
 
 impl Presenter {
-    fn next_search_revision(&mut self, pane: PaneId) -> Option<SearchRevision> {
+    pub(super) fn next_search_revision(&mut self, pane: PaneId) -> Option<SearchRevision> {
         let slot = pane.index();
         let Some(next) = self.search_revisions[slot]
             .0
             .checked_add(1)
             .map(SearchRevision)
         else {
-            self.panes[slot].error = "Search request identities are exhausted.".into();
+            self.panes[slot].set_error(
+                "Search request identities are exhausted.",
+                &mut self.retired,
+            );
             return None;
         };
         self.search_revisions[slot] = next;
@@ -115,13 +196,18 @@ impl Presenter {
         if self.panes[pane.index()].search.query == query {
             return;
         }
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.change_tree_search_query(pane, query, send);
+            return;
+        }
+        self.clear_tree(pane, None);
         let Some(revision) = self.next_search_revision(pane) else {
             return;
         };
-        self.cancel_selection_properties(pane);
+        self.cancel_selection_actions(pane);
         let p = &mut self.panes[pane.index()];
         if p.search.failed {
-            p.error.clear();
+            p.set_error("", &mut self.retired);
             p.search.failed = false;
         }
         self.retired.push(Box::new(mem::replace(
@@ -129,11 +215,11 @@ impl Presenter {
             query.to_owned(),
         )));
         p.search.revision = revision;
-        p.search.pending = !query.is_empty();
-        p.search.needs_request = !query.is_empty();
+        p.search.pending = !query.is_empty() || p.search.panel_filter.enabled;
+        p.search.needs_request = p.search.pending;
         p.search.choose_first = !query.is_empty();
         p.search.filter = self.preferences.values.quick_search_filter;
-        if query.is_empty() {
+        if query.is_empty() && !p.search.panel_filter.enabled {
             self.retired.push(Box::new(p.search.result.take()));
             if p.search.filter {
                 p.search.view_revision = p.search.view_revision.saturating_add(1);
@@ -161,13 +247,14 @@ impl Presenter {
         p.search.revision = revision;
         p.search.failed = false;
         p.search.filter = self.preferences.values.quick_search_filter;
+        p.search.panel_filter = self.preferences.values.panel_filters[pane.index()].clone();
         if new_location {
             self.retired.push(Box::new(mem::take(&mut p.search.query)));
             self.retired.push(Box::new(p.search.result.take()));
             p.search.input_context = revision;
             p.search.choose_first = false;
         }
-        p.search.pending = !p.search.query.is_empty();
+        p.search.pending = !p.search.query.is_empty() || p.search.panel_filter.enabled;
         p.search.needs_request = p.search.pending;
         if had_query || self.search_cancellations[pane.index()].is_some() {
             self.search_cancellations[pane.index()] = Some(revision);
@@ -186,7 +273,11 @@ impl Presenter {
 
     /// Retry bounded, nonblocking request delivery from the normal UI/event pump.
     pub fn flush_search(&mut self, send: &dyn Fn(Command) -> bool) {
+        self.flush_tree_preferences(send);
         for pane in [PaneId::Left, PaneId::Right] {
+            if self.panes[pane.index()].tree_view().is_some() {
+                continue;
+            }
             self.flush_search_cancellation(pane, send);
             let slot = pane.index();
             let p = &self.panes[slot];
@@ -198,7 +289,10 @@ impl Presenter {
                 .checked_add(1)
                 .map(SearchRevision)
             else {
-                self.panes[slot].error = "Search request identities are exhausted.".into();
+                self.panes[slot].set_error(
+                    "Search request identities are exhausted.",
+                    &mut self.retired,
+                );
                 continue;
             };
             let request = SearchRequest {
@@ -208,6 +302,7 @@ impl Presenter {
                 location: p.path.clone(),
                 source: p.entries.clone(),
                 query: p.search.query.clone(),
+                filter: p.search.panel_filter.clone(),
             };
             if send(Command::Search(request)) {
                 // The accepted newer request supersedes a cancellation even if
@@ -231,19 +326,28 @@ impl Presenter {
             } => {
                 let p = &mut self.panes[pane.index()];
                 if navigation != p.displayed_generation()
+                    || p.tree_view().is_some()
                     || revision != p.search.revision
                     || !p.search.pending
-                    || p.search.query.is_empty()
+                    || (p.search.query.is_empty() && !p.search.panel_filter.enabled)
                     || p.loading
                     || !Arc::ptr_eq(&result.source, &p.entries)
                 {
                     self.retired.push(Box::new(result));
                     return None;
                 }
+                let displayed_index = if p.search.filter && !p.search.query.is_empty() {
+                    &result.index
+                } else if p.search.panel_filter.enabled {
+                    &result.filtered_index
+                } else {
+                    &p.index
+                };
                 let preserve_cursor = !p.search.choose_first
                     && !p.parent_cursor
                     && p.cursor
-                        .is_some_and(|id| result.index.by_id.contains_key(&id));
+                        .is_some_and(|id| displayed_index.by_id.contains_key(&id));
+                let empty_display = displayed_index.by_id.is_empty();
                 if !preserve_cursor
                     && let Some(first) = result
                         .matches
@@ -252,6 +356,9 @@ impl Presenter {
                 {
                     p.cursor = Some(first.id);
                     p.parent_cursor = false;
+                } else if !preserve_cursor && empty_display {
+                    p.cursor = None;
+                    p.parent_cursor = false;
                 }
                 self.retired.push(Box::new(p.search.result.replace(result)));
                 p.search.applied = revision;
@@ -259,15 +366,15 @@ impl Presenter {
                 p.search.needs_request = false;
                 p.search.choose_first = false;
                 if p.search.failed {
-                    p.error.clear();
+                    p.set_error("", &mut self.retired);
                 }
                 p.search.failed = false;
                 if !preserve_cursor {
                     p.preserve_viewport = false;
                 }
-                if p.search.filter {
+                if p.search.filter || p.search.panel_filter.enabled {
                     p.search.view_revision = p.search.view_revision.saturating_add(1);
-                    p.selection_rebase_pending = true;
+                    p.selection_rebase_pending = p.archive.is_none();
                 }
                 None
             }
@@ -279,14 +386,18 @@ impl Presenter {
             } => {
                 let p = &mut self.panes[pane.index()];
                 if navigation == p.displayed_generation()
+                    && p.tree_view().is_none()
                     && revision == p.search.revision
                     && p.search.pending
-                    && !p.search.query.is_empty()
+                    && (!p.search.query.is_empty() || p.search.panel_filter.enabled)
                 {
                     p.search.pending = false;
                     p.search.needs_request = false;
                     p.search.failed = true;
-                    p.error = error.to_string();
+                    p.set_error(
+                        crate::error_presentation::describe(&error),
+                        &mut self.retired,
+                    );
                 }
                 None
             }
@@ -298,9 +409,42 @@ impl Presenter {
     pub(super) fn search_filter_changed(&mut self) {
         for pane in [PaneId::Left, PaneId::Right] {
             let enabled = self.preferences.values.quick_search_filter;
+            let persistent = self.preferences.values.panel_filters[pane.index()].clone();
+            if self.panes[pane.index()].tree_view().is_some() {
+                if self.panes[pane.index()].search.panel_filter != persistent {
+                    self.stage_tree_preference(pane, persistent);
+                }
+                let p = &mut self.panes[pane.index()];
+                if p.search.filter != enabled {
+                    p.search.filter = enabled;
+                    if !p.search.query.is_empty() {
+                        p.search.pending = true;
+                        p.search.needs_request = true;
+                    }
+                }
+                continue;
+            }
+            if self.panes[pane.index()].search.panel_filter != persistent {
+                let Some(revision) = self.next_search_revision(pane) else {
+                    continue;
+                };
+                self.cancel_selection_actions(pane);
+                let p = &mut self.panes[pane.index()];
+                p.search.panel_filter = persistent;
+                p.search.revision = revision;
+                p.search.pending = p.search.panel_filter.enabled || !p.search.query.is_empty();
+                p.search.needs_request = p.search.pending;
+                p.search.choose_first = false;
+                p.search.view_revision = p.search.view_revision.saturating_add(1);
+                self.search_cancellations[pane.index()] = Some(revision);
+                if !p.search.pending {
+                    self.retired.push(Box::new(p.search.result.take()));
+                    p.selection_rebase_pending = true;
+                }
+            }
             if self.panes[pane.index()].search.filter != enabled {
                 if !self.panes[pane.index()].search.query.is_empty() {
-                    self.cancel_selection_properties(pane);
+                    self.cancel_selection_actions(pane);
                 }
                 let p = &mut self.panes[pane.index()];
                 p.search.filter = enabled;
@@ -327,6 +471,10 @@ impl Presenter {
     }
 
     pub(crate) fn move_search_cursor(&mut self, pane: PaneId, key: i32) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.move_tree_search_cursor(pane, key);
+            return;
+        }
         let p = &mut self.panes[pane.index()];
         let Some(result) = p.current_search_result() else {
             return;

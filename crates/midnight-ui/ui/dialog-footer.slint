@@ -1,0 +1,48 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// Actions use spare width and scroll when necessary. Dismiss remains reachable;
+// a narrow, tall dialog puts it on a second row instead of squeezing controls.
+export component DialogFooter inherits Rectangle {
+    in property <string> dismiss-text: "Cancel";
+    in property <string> dismiss-hint: "Close this dialog (Escape).";
+    in property <image> dismiss-native-icon;
+    in property <image> dismiss-fallback-icon: FallbackIcons.close;
+    in property <bool> dismiss-enabled: true;
+    in property <bool> compact-height;
+    in property <bool> fill-actions;
+    callback dismiss();
+    public function focus-dismiss() { dismiss-button.focus(); }
+    private property <bool> stacked: root.width < 440px && !root.compact-height;
+    private property <length> control-height: max(Theme.control-height,
+        dismiss-button.preferred-height, actions.preferred-height);
+    private property <bool> overflowing: actions.min-width > action-scroll.width;
+    private property <length> action-height: root.control-height + (root.overflowing ? FluentScrollMetrics.overlay-size : 0px);
+    min-width: 0px; preferred-width: 0px; horizontal-stretch: 1;
+    height: root.stacked ? root.action-height + 8px + root.control-height : root.action-height;
+    action-scroll := ScrollView {
+        x: 0px; y: 0px;
+        width: root.stacked ? root.width : max(0px, root.width - dismiss-button.width - 8px);
+        height: root.action-height;
+        content-width: max(self.visible-width, actions.min-width);
+        horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
+        actions := HorizontalLayout {
+            y: 0px;
+            height: root.control-height;
+            spacing: 8px; alignment: root.fill-actions ? stretch : end;
+            @children
+        }
+    }
+    dismiss-button := HintedActionButton {
+        x: root.width - self.width; y: root.stacked ? root.action-height + 8px : 0px;
+        width: min(root.width, max(80px, self.preferred-width));
+        height: root.control-height;
+        text: root.dismiss-text; hint: root.dismiss-hint;
+        native-icon: root.dismiss-native-icon; fallback-icon: root.dismiss-fallback-icon;
+        enabled: root.dismiss-enabled;
+        clicked => { root.dismiss(); }
+    }
+}

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "midnight-viewer-source"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+midnight-plugin-sdk = { version = "=0.1.0", registry = "midnight" }
+regex = { version = "=1.13.1", default-features = false, features = ["std", "perf"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+overflow-checks = true
+panic = "unwind"
+
+[lints.rust]
+unsafe_code = "deny"

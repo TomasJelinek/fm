@@ -1,0 +1,159 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ActionIcons, FallbackIcons } from "action-icons.slint";
+import { HintedComboBox } from "hinted-inputs.slint";
+import { MenuActionButton } from "menu-action-button.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
+import { ActionAvailability } from "action-availability.slint";
+
+struct MainMenuEntry {
+    action: string,
+    label: string,
+    category: int,
+    native-icon: image,
+    fallback-icon: image,
+}
+
+export component MainMenuBody inherits Rectangle {
+    in property <ActionIcons> icons;
+    in property <bool> native-filesystem;
+    in property <bool> can-measure-folders: root.native-filesystem;
+    in property <bool> can-target-cursor;
+    in property <bool> can-target-selection;
+    in property <bool> network-available;
+    in property <int> generation;
+    private property <int> category;
+    private property <[string]> categories: ["All actions", "Files", "Selection", "Panels and navigation", "Tools", "Application"];
+    callback action(string);
+    callback dismissed();
+    callback moved(length, length);
+    function reset() { root.category = 0; choices.content-y = 0px; category-picker.focus(); }
+    init => { root.reset(); }
+    changed generation => { root.reset(); }
+    pure function enabled-action(action: string) -> bool {
+        return ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
+            root.can-target-selection, root.network-available, root.can-measure-folders);
+    }
+    // Fixed positions preserve a held pointer when host icons or key hints arrive.
+    private property <[MainMenuEntry]> entries: [
+        { action: "panel.open", label: "Open", category: 1, native-icon: root.icons.run, fallback-icon: FallbackIcons.run },
+        { action: "files.view", label: "View", category: 1, native-icon: root.icons.view, fallback-icon: FallbackIcons.view },
+        { action: "files.view-basic", label: "View as plain text", category: 1, native-icon: root.icons.view, fallback-icon: FallbackIcons.view },
+        { action: "files.edit", label: "Edit", category: 1, native-icon: root.icons.edit, fallback-icon: FallbackIcons.edit },
+        { action: "files.copy-to", label: "Copy to…", category: 1, native-icon: root.icons.copy, fallback-icon: FallbackIcons.copy },
+        { action: "files.move-to", label: "Move to…", category: 1, native-icon: root.icons.move-item, fallback-icon: FallbackIcons.move-item },
+        { action: "files.rename", label: "Rename…", category: 1, native-icon: root.icons.rename, fallback-icon: FallbackIcons.rename },
+        { action: "files.create-directory", label: "Create folder…", category: 1, native-icon: root.icons.new-folder, fallback-icon: FallbackIcons.new-folder },
+        { action: "files.create-file", label: "Create empty file…", category: 1, native-icon: root.icons.new-file, fallback-icon: FallbackIcons.new-file },
+        { action: "files.trash", label: "Move to Trash…", category: 1, native-icon: root.icons.delete, fallback-icon: FallbackIcons.delete },
+        { action: "files.delete", label: "Delete permanently…", category: 1, native-icon: root.icons.delete, fallback-icon: FallbackIcons.delete },
+        { action: "files.copy", label: "Copy to clipboard", category: 1, native-icon: root.icons.copy, fallback-icon: FallbackIcons.copy },
+        { action: "files.cut", label: "Cut to clipboard", category: 1, native-icon: root.icons.move-item, fallback-icon: FallbackIcons.move-item },
+        { action: "files.paste", label: "Paste files", category: 1, native-icon: root.icons.copy, fallback-icon: FallbackIcons.copy },
+        { action: "files.attributes", label: "Attributes, time and case…", category: 1, fallback-icon: FallbackIcons.attributes },
+        { action: "files.case", label: "Change name case…", category: 1, native-icon: root.icons.rename, fallback-icon: FallbackIcons.rename },
+        { action: "files.properties", label: "System properties", category: 1, native-icon: root.icons.properties, fallback-icon: FallbackIcons.properties },
+        { action: "selection.all", label: "Select files and folders", category: 2, fallback-icon: FallbackIcons.done },
+        { action: "selection.files", label: "Select files only", category: 2, fallback-icon: FallbackIcons.done },
+        { action: "selection.clear", label: "Deselect files and folders", category: 2, fallback-icon: FallbackIcons.close },
+        { action: "selection.invert", label: "Invert files only", category: 2, fallback-icon: FallbackIcons.refresh },
+        { action: "selection.invert-all", label: "Invert files and folders", category: 2, fallback-icon: FallbackIcons.refresh },
+        { action: "panel.refresh", label: "Refresh active folder", category: 3, native-icon: root.icons.refresh, fallback-icon: FallbackIcons.refresh },
+        { action: "panel.parent", label: "Parent folder", category: 3, native-icon: root.icons.parent, fallback-icon: FallbackIcons.parent },
+        { action: "panel.root", label: "Filesystem root", category: 3, fallback-icon: FallbackIcons.drive },
+        { action: "panel.back", label: "Back", category: 3, native-icon: root.icons.back, fallback-icon: FallbackIcons.back },
+        { action: "panel.forward", label: "Forward", category: 3, native-icon: root.icons.forward, fallback-icon: FallbackIcons.forward },
+        { action: "panel.path", label: "Enter path…", category: 3, native-icon: root.icons.open-path, fallback-icon: FallbackIcons.open-path },
+        { action: "panel.as-other", label: "As other panel", category: 3, fallback-icon: FallbackIcons.copy },
+        { action: "panel.swap", label: "Swap panels", category: 3, fallback-icon: FallbackIcons.refresh },
+        { action: "panel.zoom", label: "Enlarge / restore active panel", category: 3, fallback-icon: FallbackIcons.view },
+        { action: "panel.filter", label: "Filter panel…", category: 3, fallback-icon: FallbackIcons.filter },
+        { action: "view.brief", label: "Brief view", category: 3, fallback-icon: FallbackIcons.menu },
+        { action: "view.detailed", label: "Detailed view", category: 3, fallback-icon: FallbackIcons.menu },
+        { action: "view.thumbnails", label: "Thumbnail view", category: 3, fallback-icon: FallbackIcons.view },
+        { action: "sort.name", label: "Sort by name", category: 3, fallback-icon: FallbackIcons.sort-ascending },
+        { action: "sort.extension", label: "Sort by extension", category: 3, fallback-icon: FallbackIcons.sort-ascending },
+        { action: "sort.size", label: "Sort by size", category: 3, fallback-icon: FallbackIcons.sort-ascending },
+        { action: "sort.modified", label: "Sort by modified time", category: 3, fallback-icon: FallbackIcons.sort-ascending },
+        { action: "tab.new", label: "New tab", category: 3, native-icon: root.icons.tab-add, fallback-icon: FallbackIcons.tab-add },
+        { action: "tab.close", label: "Close tab", category: 3, native-icon: root.icons.close-tab, fallback-icon: FallbackIcons.close-tab },
+        { action: "bookmark.add", label: "Add Hot Path", category: 3, native-icon: root.icons.add-bookmark, fallback-icon: FallbackIcons.add-bookmark },
+        { action: "bookmark.manage", label: "Manage Hot Paths…", category: 3, native-icon: root.icons.bookmarks, fallback-icon: FallbackIcons.bookmarks },
+        { action: "drive.left", label: "Left panel drives and locations", category: 3, fallback-icon: FallbackIcons.drive },
+        { action: "drive.right", label: "Right panel drives and locations", category: 3, fallback-icon: FallbackIcons.drive },
+        { action: "files.find", label: "Find files…", category: 4, native-icon: root.icons.find, fallback-icon: FallbackIcons.find },
+        { action: "files.checksums", label: "Checksums…", category: 4, fallback-icon: FallbackIcons.checksums },
+        { action: "files.make-list", label: "Make File List…", category: 4, fallback-icon: FallbackIcons.make-file-list },
+        { action: "files.compare", label: "Compare files…", category: 4, fallback-icon: FallbackIcons.compare-files },
+        { action: "panel.compare", label: "Compare directories…", category: 4, fallback-icon: FallbackIcons.compare-directories },
+        { action: "panel.folder-sizes", label: "Calculate / cancel folder sizes", category: 4, native-icon: root.icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes },
+        { action: "panel.drive-info", label: "Drive information", category: 4, fallback-icon: FallbackIcons.drive },
+        { action: "command.focus", label: "Command line", category: 4, native-icon: root.icons.terminal, fallback-icon: FallbackIcons.terminal },
+        { action: "app.custom-commands", label: "Configure Custom Commands…", category: 4, native-icon: root.icons.user-menu, fallback-icon: FallbackIcons.user-menu },
+        { action: "network.connect", label: "Connect network drive…", category: 4, native-icon: root.icons.network, fallback-icon: FallbackIcons.network },
+        { action: "network.disconnect", label: "Disconnect network drive…", category: 4, native-icon: root.icons.network, fallback-icon: FallbackIcons.network },
+        { action: "app.options", label: "Options", category: 5, native-icon: root.icons.options, fallback-icon: FallbackIcons.options },
+        { action: "app.jobs", label: "Jobs", category: 5, native-icon: root.icons.menu, fallback-icon: FallbackIcons.menu },
+        { action: "app.help", label: "Keyboard help", category: 5, native-icon: root.icons.help, fallback-icon: FallbackIcons.help },
+        { action: "app.about", label: "About Midnight Explorer", category: 5, native-icon: root.icons.about, fallback-icon: FallbackIcons.about },
+        { action: "app.exit", label: "Exit", category: 5, native-icon: root.icons.exit, fallback-icon: FallbackIcons.exit },
+    ];
+    background: Theme.surface; border-radius: 6px;
+    border-color: Theme.active-frame; border-width: 1px;
+    forward-focus: scope;
+    scope := FocusScope {
+        forward-focus: category-picker;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.dismissed(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: root.height < 240px ? 6px : 12px; spacing: 6px;
+            DialogHeader {
+                title: "Menu"; compact: root.height < 240px; fallback-icon: FallbackIcons.menu;
+                close-label: "Close menu"; close => { root.dismissed(); }
+                dragged(dx, dy) => { root.moved(dx, dy); }
+            }
+            category-picker := HintedComboBox {
+                model: root.categories; current-index: root.category;
+                min-width: 0px; min-height: Theme.control-height;
+                accessible-label: "Menu category";
+                hint: "Show all actions or choose a category.";
+                selected(value) => { root.category = self.current-index; choices.content-y = 0px; }
+            }
+            choices := ScrollView {
+                min-width: 0px; min-height: 0px; vertical-stretch: 1;
+                horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    spacing: 0px; alignment: start;
+                    for index in root.entries.length : Rectangle {
+                        private property <MainMenuEntry> entry: root.entries[index];
+                        private property <bool> included: root.category == 0 || root.category == self.entry.category;
+                        private property <bool> heading: root.category == 0 && (index == 0 || root.entries[index - 1].category != self.entry.category);
+                        private property <length> heading-height: self.heading ? Theme.font-size + 16px : 0px;
+                        visible: self.included;
+                        height: self.included ? self.heading-height + Theme.control-height + 4px : 0px;
+                        min-width: 0px;
+                        if self.heading : Text {
+                            x: 4px; y: 0px; width: max(0px, parent.width - 8px);
+                            text: root.categories[parent.entry.category]; color: Theme.strong-text;
+                            font-size: Theme.font-size; font-weight: 600;
+                            height: parent.heading-height; vertical-alignment: center;
+                        }
+                        MenuActionButton {
+                            y: parent.heading-height; width: parent.width; height: Theme.control-height;
+                            min-width: 0px;
+                            row-native-icon: parent.entry.native-icon; row-fallback-icon: parent.entry.fallback-icon;
+                            label: parent.entry.label; shortcut: ShortcutHints.key(parent.entry.action);
+                            enabled: root.enabled-action(parent.entry.action);
+                            hint: ShortcutHints.hint(parent.entry.label, parent.entry.action)
+                                + (self.enabled ? "" : "\nUnavailable for the current location or selection.");
+                            clicked => { if root.enabled-action(parent.entry.action) { root.action(parent.entry.action); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

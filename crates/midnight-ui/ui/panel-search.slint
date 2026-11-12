@@ -1,6 +1,8 @@
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
+import { FilenameColorPresentation } from "filename-colors.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { ShortcutHints } from "shortcut-hints.slint";
 
 
 export struct SearchTextEdit { text: string, cursor: int }
@@ -41,7 +43,7 @@ export component PrefixName inherits Rectangle {
         changed font-size => { root.update-highlight(); }
         changed width => { root.update-highlight(); }
         color: root.text-color;
-        selection-foreground-color: Theme.search-match;
+        selection-foreground-color: FilenameColorPresentation.readable(Theme.search-match, root.row-background);
         selection-background-color: transparent;
         single-line: !root.wrapped;
         wrap: root.wrapped ? char-wrap : no-wrap;
@@ -103,10 +105,11 @@ export component PanelSearch inherits Rectangle {
         receiver.clear-focus();
         if restore { receiver.focus(); }
     }
-    if root.active : Text {
-        x: 7px; y: 0px; width: 18px; height: parent.height;
-        text: "⌕"; color: Theme.accent; font-size: Theme.font-size;
-        vertical-alignment: center;
+    if root.active : Image {
+        x: 7px; y: (parent.height - self.height) / 2;
+        width: 16px; height: 16px;
+        source: FallbackIcons.find; colorize: Theme.accent;
+        image-fit: contain;
         accessible-role: none;
     }
     input-viewport := Rectangle {
@@ -162,6 +165,6 @@ export component PanelSearch inherits Rectangle {
         native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
         accessible-label: "Clear filename search";
         clicked => { root.clear-query(); root.focus-input(); }
-        hint: "Clear filename search · Escape";
+        hint: ShortcutHints.hint("Clear filename search", "search.clear");
     }
 }

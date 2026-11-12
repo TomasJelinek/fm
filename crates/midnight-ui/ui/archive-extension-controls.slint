@@ -1,0 +1,42 @@
+import { FallbackIcons } from "action-icons.slint";
+import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { Theme } from "theme.slint";
+
+// Custom assignments have one action: remove. The complete extension stays visible.
+export component ArchiveExtensionChip inherits Rectangle {
+    in property <string> extension;
+    in property <bool> enabled;
+    in property <length> available-width;
+    callback remove();
+    width: min(root.available-width, remove-button.width + caption.preferred-width + 16px);
+    height: max(36px, Theme.control-height + 4px, caption.preferred-height + 8px);
+    background: Theme.secondary-surface;
+    border-width: 1px; border-color: Theme.frame; border-radius: 6px;
+    accessible-role: list-item;
+    accessible-label: "." + root.extension;
+    remove-button := HintedActionButton {
+        x: 2px; y: 2px; width: max(32px, Theme.control-height); height: max(32px, Theme.control-height);
+        fallback-icon: FallbackIcons.close; removal-icon: true; compact: true; enabled: root.enabled;
+        background: transparent; border-color: transparent;
+        accessible-label: "Remove ." + root.extension;
+        hint: "Remove ." + root.extension + " from this archive format. OK saves the change.";
+        clicked => { root.remove(); }
+    }
+    caption := Text {
+        x: remove-button.x + remove-button.width + 4px; y: 4px;
+        width: max(0px, root.width - self.x - 8px); height: root.height - 8px;
+        text: "." + root.extension; color: Theme.text; font-size: Theme.font-size;
+        vertical-alignment: center; wrap: char-wrap;
+    }
+}
+
+export component ArchiveExtensionInput inherits HintedLineEdit {
+    callback cancelled();
+    accessible-label: "Custom archive extension";
+    placeholder-text: "Extension, then Enter";
+    hint: "Enter a literal extension, such as backup or backup.tar. Press Enter to add it, or Escape to cancel.";
+    key-pressed(event) => {
+        if event.text == Key.Escape { root.cancelled(); return accept; }
+        reject
+    }
+}

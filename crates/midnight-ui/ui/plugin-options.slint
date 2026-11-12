@@ -1,0 +1,269 @@
+import { FallbackIcons } from "action-icons.slint";
+import { HintedCheckBox, HintedActionButton } from "hinted-inputs.slint";
+import { ListView, LineEdit, ScrollView } from "std-widgets.slint";
+import { TipBody } from "controls.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { DialogTabs } from "dialog-tabs.slint";
+import { ListHeader } from "list-header.slint";
+
+// Shared presentation metadata. Filesystem/thumbnailer rows have no viewer controls.
+export struct ViewerPluginRow {
+    id: string,
+    name: string,
+    description: string,
+    kind: string,
+    version: string,
+    status: string,
+    location: string,
+    enabled: bool,
+    configurable: bool,
+    fallback: bool,
+}
+
+export global ViewerPluginsView {
+    in property <string> revision;
+    in property <[ViewerPluginRow]> rows;
+    in property <[ViewerPluginRow]> filesystem-rows;
+    in property <int> filesystem-selected: -1;
+    in property <string> filesystem-error;
+    in property <[ViewerPluginRow]> thumbnailer-rows;
+    in property <int> thumbnailer-selected: -1;
+    in property <string> thumbnailer-error;
+    in property <bool> pending;
+    in property <bool> settings-ready;
+    in property <bool> restart-needed;
+    in property <string> error;
+    in property <int> selected: -1;
+    in property <string> extensions;
+    in property <bool> extension-override;
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    callback refresh();
+    callback toggle(string, bool);
+    callback select(int);
+    callback select-filesystem(int);
+    callback select-thumbnailer(int);
+    callback edit-extensions(string);
+    callback reset-extensions();
+    callback move(int);
+}
+
+component PluginCatalogList inherits Rectangle {
+    in property <[ViewerPluginRow]> rows;
+    in property <int> selected: -1;
+    in property <int> visible-rows: 8;
+    in property <bool> viewer-controls;
+    in property <string> label;
+    callback selected-row(int);
+    callback toggled(string, bool);
+    private property <length> row-height: Theme.control-height + 2px;
+    private property <int> count: root.rows.length;
+    height: root.row-height * max(1, min(root.visible-rows, root.rows.length)) + 2px;
+    background: Theme.pane-background; border-width: 1px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
+    clip: true; forward-focus: focus;
+    accessible-role: AccessibleRole.list; accessible-label: root.label; accessible-item-count: root.count;
+    changed selected => { root.reveal(); }
+    changed count => { root.reveal(); }
+    function reveal() {
+        if root.selected < 0 { return; }
+        let top = root.selected * root.row-height;
+        if top < -list.content-y { list.content-y = -top; }
+        else if top + root.row-height > -list.content-y + list.visible-height {
+            list.content-y = min(0px, list.visible-height - top - root.row-height);
+        }
+    }
+    function choose(index: int) { focus.focus(); root.selected-row(index); }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if root.count == 0 { return reject; }
+            if event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.Home || event.text == Key.End {
+                let next = event.text == Key.Home ? 0 : event.text == Key.End ? root.count - 1
+                    : clamp(root.selected + (event.text == Key.DownArrow ? 1 : -1), 0, root.count - 1);
+                root.choose(next); return accept;
+            }
+            reject
+        }
+        list := ListView {
+            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+            horizontal-scrollbar-policy: always-off;
+            changed visible-height => { root.reveal(); }
+            for plugin[index] in root.rows : Rectangle {
+                width: list.visible-width; height: root.row-height;
+                private property <bool> selected: index == root.selected;
+                private property <string> label: plugin.name + (plugin.version == "" ? "" : " · " + plugin.version);
+                background: self.selected ? Theme.selected-background
+                    : area.has-hover ? Theme.hover : Theme.pane-background;
+                accessible-role: list-item; accessible-label: self.label;
+                accessible-item-index: index; accessible-item-selectable: true;
+                accessible-item-selected: self.selected;
+                accessible-action-default => { root.choose(index); }
+                if root.viewer-controls : HintedCheckBox {
+                    x: 4px; width: Theme.control-height; height: parent.height;
+                    text: ""; accessible-label: parent.label;
+                    checked: plugin.enabled;
+                    enabled: plugin.configurable && ViewerPluginsView.settings-ready;
+                    hint: plugin.id == "" ? "Select this unavailable package for details."
+                        : "Enable " + plugin.name + " after restart.";
+                    toggled => { root.toggled(plugin.id, self.checked); }
+                }
+                Text {
+                    x: root.viewer-controls ? Theme.control-height + 10px : 8px;
+                    width: max(0px, parent.width - self.x - 8px
+                        - (list.content-height > list.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                    height: parent.height; vertical-alignment: center;
+                    text: parent.label; font-size: Theme.font-size; overflow: elide;
+                    color: parent.selected ? Theme.selected-text : Theme.text;
+                }
+                area := TouchArea {
+                    x: root.viewer-controls ? Theme.control-height + 4px : 0px;
+                    width: parent.width - self.x;
+                    clicked => { root.choose(index); }
+                }
+            }
+        }
+    }
+}
+
+component ReadOnlyPluginCatalog inherits VerticalLayout {
+    in property <[ViewerPluginRow]> rows;
+    in property <int> selected: -1;
+    in property <int> visible-rows: 8;
+    in property <string> label;
+    in property <string> error;
+    in property <string> empty-text;
+    private property <ViewerPluginRow> current: root.rows[root.selected];
+    callback selected-row(int);
+    spacing: 8px; alignment: start;
+    Text { text: root.label; color: Theme.strong-text; font-size: Theme.font-size; }
+    PluginCatalogList {
+        rows: root.rows; selected: root.selected; visible-rows: root.visible-rows;
+        label: root.label;
+        selected-row(index) => { root.selected-row(index); }
+    }
+    if root.selected >= 0 : VerticalLayout {
+        spacing: 6px; alignment: start;
+        Text { text: root.current.kind; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+        if root.current.description != "" : Text {
+            text: root.current.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        Text { text: root.current.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+        if root.current.location != "" : Text {
+            text: root.current.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+    }
+    if root.error != "" : ErrorNotice { text: root.error; }
+    if !ViewerPluginsView.pending && root.error == "" && root.rows.length == 0 : Text {
+        text: root.empty-text; color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
+    }
+}
+
+export component PluginOptions inherits Rectangle {
+    in property <length> available-height: 580px;
+    private property <int> section;
+    // Give the installed catalog the space it needs first. Details share the
+    // page's scrolling area; they must not reserve hundreds of empty pixels.
+    private property <int> visible-rows: max(2, floor(
+        (root.available-height - 3 * Theme.control-height - 24px) / (Theme.control-height + 2px)));
+    private property <ViewerPluginRow> selected: ViewerPluginsView.rows[ViewerPluginsView.selected];
+    height: max(0px, root.available-height);
+    VerticalLayout {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        spacing: 8px;
+    ScrollView {
+        min-height: 0px; vertical-stretch: 1;
+        horizontal-scrollbar-policy: always-off;
+        content-width: self.visible-width;
+        VerticalLayout {
+            spacing: 8px; alignment: start;
+            padding-right: FluentScrollMetrics.overlay-size;
+    DialogTabs { labels: ["Viewers", "Filesystems", "Thumbnailers"]; current-index <=> root.section; }
+    if root.section == 0 : VerticalLayout {
+        spacing: 8px; alignment: start;
+        ListHeader {
+            title: "Viewer priority";
+            hint: "Higher viewers take precedence when their extensions overlap.";
+            enabled: ViewerPluginsView.settings-ready;
+            show-add: false; show-remove: false;
+            can-move-up: ViewerPluginsView.can-move-up;
+            can-move-down: ViewerPluginsView.can-move-down;
+            action-labels: ["", "", "Move viewer up", "Move viewer down"];
+            action-hints: ["", "", "Prefer this viewer for shared extensions.", "Give this viewer lower priority for shared extensions."];
+            action(index) => { if index == 2 { ViewerPluginsView.move(-1); } else if index == 3 { ViewerPluginsView.move(1); } }
+        }
+        PluginCatalogList {
+            rows: ViewerPluginsView.rows; selected: ViewerPluginsView.selected;
+            visible-rows: root.visible-rows; viewer-controls: true; label: "Viewer priority";
+            selected-row(index) => { ViewerPluginsView.select(index); }
+            toggled(id, enabled) => { ViewerPluginsView.toggle(id, enabled); }
+        }
+        if ViewerPluginsView.selected >= 0 : VerticalLayout {
+            spacing: 6px; alignment: start;
+            HorizontalLayout {
+                spacing: 6px;
+                Text { text: "Extensions"; color: Theme.strong-text; font-size: Theme.font-size; vertical-alignment: center; horizontal-stretch: 1; }
+                HintedActionButton {
+                    text: "Reset"; accessible-label: "Reset viewer extensions";
+                    enabled: ViewerPluginsView.extension-override && ViewerPluginsView.settings-ready && root.selected.configurable;
+                    hint: "Restore this viewer's extensions from its installed manifest.";
+                    clicked => { ViewerPluginsView.reset-extensions(); }
+                }
+            }
+            LineEdit {
+                text: ViewerPluginsView.extensions; min-width: 0px;
+                accessible-label: "Viewer extensions";
+                enabled: root.selected.configurable && ViewerPluginsView.settings-ready;
+                edited => { ViewerPluginsView.edit-extensions(self.text); }
+                Tooltip { TipBody { text: "Extensions separated by spaces, commas or semicolons: rs, .rs or *.rs. Use Home/End or the arrow keys to move through long lists. Empty removes specific matches. Changes are saved with OK."; } }
+            }
+            if root.selected.fallback : Text {
+                text: "This viewer remains the fallback for unassociated files.";
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+            }
+            if root.selected.description != "" : Text {
+                text: root.selected.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+            }
+            Text { text: root.selected.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
+            Text { text: root.selected.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+        }
+        if ViewerPluginsView.restart-needed : Text {
+            text: "Restart required to apply your viewer choices.";
+            color: Theme.accent; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        if !ViewerPluginsView.pending && ViewerPluginsView.error == "" && ViewerPluginsView.rows.length == 0 : Text {
+            text: "No viewer plugins are installed beside this application.";
+            color: Theme.secondary-text; font-size: Theme.font-size; wrap: word-wrap;
+        }
+    }
+    if root.section == 1 : ReadOnlyPluginCatalog {
+        rows: ViewerPluginsView.filesystem-rows; selected: ViewerPluginsView.filesystem-selected;
+        visible-rows: root.visible-rows; label: "Filesystem plugins";
+        error: ViewerPluginsView.filesystem-error;
+        empty-text: "No filesystem plugins are installed beside this application.";
+        selected-row(index) => { ViewerPluginsView.select-filesystem(index); }
+    }
+    if root.section == 2 : ReadOnlyPluginCatalog {
+        rows: ViewerPluginsView.thumbnailer-rows; selected: ViewerPluginsView.thumbnailer-selected;
+        visible-rows: root.visible-rows; label: "Thumbnailer plugins";
+        error: ViewerPluginsView.thumbnailer-error;
+        empty-text: "No thumbnailer plugins are installed beside this application.";
+        selected-row(index) => { ViewerPluginsView.select-thumbnailer(index); }
+    }
+    if ViewerPluginsView.error != "" : ErrorNotice { text: ViewerPluginsView.error; }
+        }
+    }
+    HorizontalLayout {
+        Rectangle { horizontal-stretch: 1; }
+        HintedActionButton {
+            text: ViewerPluginsView.pending ? "Rescanning…" : "Rescan all plugins";
+            enabled: !ViewerPluginsView.pending;
+            fallback-icon: FallbackIcons.refresh;
+            hint: "Rescan all installed viewer, filesystem and thumbnailer packages.";
+            clicked => { ViewerPluginsView.refresh(); }
+        }
+    }
+    }
+}

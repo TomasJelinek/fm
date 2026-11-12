@@ -1,0 +1,12 @@
+// Associated host artwork and decoded thumbnails win over the archive fallback.
+import { Theme } from "theme.slint";
+
+export component FileIcon inherits Image {
+    in property <image> native-icon;
+    in property <bool> parent-entry;
+    in property <bool> browsable-archive;
+    source: root.parent-entry && root.native-icon.width == 0 ? @image-url("icons/parent.svg")
+        : root.native-icon.width > 0 || !root.browsable-archive
+        ? root.native-icon : @image-url("icons/archive.svg");
+    colorize: root.parent-entry && root.native-icon.width == 0 ? Theme.text : transparent;
+}

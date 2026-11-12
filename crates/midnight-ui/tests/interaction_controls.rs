@@ -1,5 +1,6 @@
 //! Commander gestures and geometry use the real Slint component tree.
-use crate::ui;
+#[path = "support/ui.rs"]
+mod ui;
 
 use i_slint_core::{
     accessibility::{AccessibilityAction, AccessibleStringProperty},
@@ -16,7 +17,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
-use ui::{TestUi, chord, click, key};
+use ui::{TestUi, chord, click, key, pointer_button};
 
 #[test]
 fn drive_menu_copies_the_other_folder_with_period_or_mouse_after_panel_swap() {
@@ -136,22 +137,6 @@ fn path_parts(folder_prefix: &str) -> ModelRc<PathPartRow> {
             prefix: folder_prefix.into(),
         },
     ]))
-}
-
-fn pointer_button(
-    window: &MainWindow,
-    position: slint::LogicalPosition,
-    button: PointerEventButton,
-    pressed: bool,
-) {
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window.window().dispatch_event(if pressed {
-        WindowEvent::PointerPressed { position, button }
-    } else {
-        WindowEvent::PointerReleased { position, button }
-    });
 }
 
 #[test]
@@ -543,7 +528,7 @@ fn terminal_split_control_selects_shell_separately_and_launch_keeps_draft() {
 }
 
 #[test]
-fn drive_picker_fits_caption_under_action_tools_and_type_header_is_absent() {
+fn location_menu_keeps_stable_compact_width_and_does_not_repeat_the_drive_caption() {
     let mut ui = TestUi::new();
     for density in [0, 1] {
         ui.window.invoke_apply_preferences(0, density);
@@ -588,8 +573,21 @@ fn drive_picker_fits_caption_under_action_tools_and_type_header_is_absent() {
             "Drive or volume",
             AccessibleRole::Combobox,
         ));
-        assert!(long.2 > short.2 + 20.0);
-        assert!(long.2 <= 190.0 + 0.5, "long labels must stay bounded");
+        assert_eq!(
+            long.2, short.2,
+            "location labels must not move toolbar targets"
+        );
+        assert!(long.2 <= 56.0, "the menu trigger uses an icon and an arrow");
+        let captions = ui::visible_text_values(ui::root_item(
+            &ui.window,
+            "Drive or volume",
+            AccessibleRole::Combobox,
+        ));
+        assert!(
+            captions
+                .iter()
+                .all(|text| text != "C:" && !text.contains("mounted directory"))
+        );
         assert!(named_items(&ui.window, "Sort by Type", AccessibleRole::Button).is_empty());
         for label in ["Sort by Name", "Sort by Size", "Sort by Modified"] {
             assert_eq!(
@@ -597,5 +595,47 @@ fn drive_picker_fits_caption_under_action_tools_and_type_header_is_absent() {
                 2
             );
         }
+    }
+}
+
+#[test]
+fn drive_menu_uses_available_height_and_scrolls_only_for_overflow() {
+    let mut ui = TestUi::new();
+    for count in [20, 100] {
+        ui.window
+            .set_navigation_choices(ModelRc::new(VecModel::from(
+                (0..count)
+                    .map(|index| NavigationChoiceRow {
+                        identity: format!("place-{index}").into(),
+                        label: format!("Location {index}").into(),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            )));
+        ui.window.set_left_navigation_index(0);
+        ui.window.invoke_focus_files();
+        chord(&ui.window, &[Key::Alt], Key::F1);
+        ui.draw();
+        let inner = WindowInner::from_pub(ui.window.window());
+        let popups = inner.active_popups();
+        let popup = popups.iter().last().expect("location menu opens");
+        let geometry = ItemRc::new_root(popup.component.clone()).geometry();
+        assert!(
+            geometry.size.height > 360.0,
+            "the menu is no longer capped at360pixels"
+        );
+        assert!(
+            geometry.size.height < ui.height as f32,
+            "overflow stays within the window"
+        );
+        drop(popups);
+        let picked = Rc::new(RefCell::new(String::new()));
+        let result = picked.clone();
+        ui.window
+            .on_navigation_choice(move |_, identity| *result.borrow_mut() = identity.to_string());
+        key(&ui.window, Key::End);
+        key(&ui.window, Key::Return);
+        assert_eq!(*picked.borrow(), format!("place-{}", count - 1));
+        ui.draw();
     }
 }

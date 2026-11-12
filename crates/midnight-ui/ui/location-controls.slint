@@ -14,11 +14,15 @@ export component CompactLocationButton inherits Rectangle {
     in property <string> identity;
     in property <int> model-revision;
     in property <string> hint;
+    in property <string> accessible-name: root.hint;
+    in property <bool> enabled: true;
     in property <bool> selected;
     in property <bool> is-drive;
+    private property <bool> numbered-hot-path: root.kind == LocationRole.hot-path && root.compact-label != "";
     callback clicked();
+    callback context-menu(float, float, bool, bool);
     width: root.is-drive
-        ? max(Theme.touch ? 56px : 46px, caption.preferred-width + (Theme.touch ? 40px : 26px))
+        ? max(Theme.tool-width, caption.x + caption.preferred-width + (Theme.touch ? 8px : 4px))
         : Theme.tool-width;
     height: Theme.control-height;
     horizontal-stretch: 0;
@@ -30,14 +34,17 @@ export component CompactLocationButton inherits Rectangle {
         : area.has-hover ? Theme.hover : transparent;
     forward-focus: focus;
     accessible-role: button;
-    accessible-label: root.hint;
+    accessible-label: root.accessible-name;
+    accessible-enabled: root.enabled;
     accessible-checkable: true;
     accessible-checked: root.selected;
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { if root.enabled { root.clicked(); } }
 
     LocationImage {
+        visible: !root.numbered-hot-path;
         native-icon: root.icon; kind: root.kind;
-        width: root.is-drive ? Theme.file-icon-size : Theme.icon-size;
+        opacity: root.enabled ? 1 : 0.4;
+        width: Theme.location-icon-size;
         height: self.width;
         x: root.is-drive ? (Theme.touch ? 8px : 4px) - (self.width - Theme.icon-size) / 2
             : (root.width - self.width) / 2;
@@ -45,17 +52,19 @@ export component CompactLocationButton inherits Rectangle {
         image-fit: contain;
     }
     caption := Text {
-        visible: root.is-drive;
+        visible: root.is-drive || root.numbered-hot-path;
         text: root.compact-label;
-        x: Theme.touch ? 32px : 22px;
-        width: max(0px, root.width - self.x - (Theme.touch ? 8px : 4px));
+        x: root.numbered-hot-path ? 0px : Theme.touch ? 32px : 22px;
+        width: root.numbered-hot-path ? root.width : max(0px, root.width - self.x - (Theme.touch ? 8px : 4px));
         height: root.height;
-        color: Theme.text;
+        color: root.enabled ? Theme.text : Theme.muted-text;
         font-size: Theme.font-size;
         vertical-alignment: center;
+        horizontal-alignment: root.numbered-hot-path ? center : left;
         overflow: elide;
     }
     focus := FocusScope {
+        enabled: root.enabled;
         key-pressed(event) => {
             if event.text == Key.Return || event.text == " " {
                 root.clicked();
@@ -64,12 +73,32 @@ export component CompactLocationButton inherits Rectangle {
             reject
         }
         area := TouchArea {
+            enabled: root.enabled;
             private property <string> pressed-identity;
             private property <int> pressed-revision;
+            private property <bool> right-pressed;
+            private property <bool> control-pressed;
+            private property <bool> shift-pressed;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     self.pressed-identity = root.identity;
                     self.pressed-revision = root.model-revision;
+                    self.right-pressed = event.button == PointerEventButton.right;
+                    self.control-pressed = event.modifiers.control;
+                    self.shift-pressed = event.modifiers.shift;
+                } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                    if root.is-drive && self.right-pressed && self.pressed-identity == root.identity
+                        && self.pressed-revision == root.model-revision
+                        && self.mouse-x >= 0px && self.mouse-x < self.width
+                        && self.mouse-y >= 0px && self.mouse-y < self.height {
+                        root.context-menu((self.absolute-position.x + self.mouse-x) / 1px,
+                            (self.absolute-position.y + self.mouse-y) / 1px,
+                            self.control-pressed, self.shift-pressed);
+                    }
+                    self.right-pressed = false;
+                } else if event.kind == PointerEventKind.cancel {
+                    self.right-pressed = false;
+                    self.pressed-identity = "";
                 }
             }
             clicked => {

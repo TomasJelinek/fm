@@ -1,4 +1,4 @@
-//! Persist bounded native locations; restoring a session never revives rows,
+//! Persist native paths and typed provider addresses; restoring never revives rows,
 //! selections, history, scans, or callback identities from an earlier process.
 use super::*;
 
@@ -30,6 +30,34 @@ impl Presenter {
         let slot = pane.index();
         let tabs = &self.tabs.panes[slot];
         PaneTabPreferences {
+            networks: tabs
+                .tabs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tab)| {
+                    let network = if index == tabs.active {
+                        // A native handoff is provisional until its listing
+                        // commits. Restore the displayed typed location meanwhile.
+                        self.panes[slot].network.as_ref()
+                    } else {
+                        tab.parked.as_ref().and_then(|p| p.network.as_ref())
+                    }?;
+                    Some((index, network.address.clone()))
+                })
+                .collect(),
+            archives: tabs
+                .tabs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tab)| {
+                    let archive = if index == tabs.active {
+                        self.panes[slot].archive.as_ref()
+                    } else {
+                        tab.parked.as_ref().and_then(|p| p.archive.as_ref())
+                    }?;
+                    Some((index, archive.location.address.clone()))
+                })
+                .collect(),
             active: tabs.active,
             paths: tabs
                 .tabs
@@ -37,20 +65,28 @@ impl Presenter {
                 .enumerate()
                 .map(|(index, tab)| {
                     if index == tabs.active {
-                        self.panes[slot].display_path().to_owned()
+                        let pane = &self.panes[slot];
+                        pane.network.as_ref().map_or_else(
+                            || pane.display_path().to_owned(),
+                            |network| network.origin.clone(),
+                        )
                     } else {
-                        tab.parked
+                        let parked = tab.parked.as_ref().expect("inactive tab owns its location");
+                        parked
+                            .network
                             .as_ref()
-                            .expect("inactive tab owns its location")
-                            .path
-                            .clone()
+                            .map_or_else(|| parked.path.clone(), |network| network.origin.clone())
                     }
                 })
                 .collect(),
         }
     }
 
-    pub(super) fn tab_session_changed(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+    pub(in crate::presenter) fn tab_session_changed(
+        &mut self,
+        pane: PaneId,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         self.tabs.edited[pane.index()] = true;
         self.tabs.restore[pane.index()] = None;
         let mut values = self.preferences.values.clone();
@@ -159,22 +195,31 @@ impl Presenter {
             return;
         };
         let sort = self.panes[slot].sort;
-        if !send(Command::Navigate {
-            pane,
-            navigation,
-            path: path.clone(),
+        let location = TabLocation::from_saved(
+            path.clone(),
+            saved.archives.get(&saved.active).cloned(),
+            saved.networks.get(&saved.active).cloned(),
             sort,
-        }) {
+        );
+        if !send(location.command(pane, navigation)) {
             return;
         }
-        let location = TabLocation::new(path.clone(), sort);
+        let mut archives = saved.archives;
+        let mut networks = saved.networks;
         let tabs = saved
             .paths
             .into_iter()
             .enumerate()
             .map(|(index, path)| Tab {
                 id: TabId(self.tabs.next_id + index as u64),
-                parked: (index != saved.active).then(|| TabLocation::new(path, sort)),
+                parked: (index != saved.active).then(|| {
+                    TabLocation::from_saved(
+                        path,
+                        archives.remove(&index),
+                        networks.remove(&index),
+                        sort,
+                    )
+                }),
             })
             .collect();
         let previous_active = self.tabs.panes[slot].active;

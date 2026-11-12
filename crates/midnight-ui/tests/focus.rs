@@ -1,5 +1,6 @@
-use crate::selection;
 use midnight_core::*;
+#[path = "support/selection.rs"]
+mod selection;
 use midnight_ui::{MainWindow, Presenter, Theme, install};
 use slint::{
     ComponentHandle, Model,
@@ -16,11 +17,26 @@ use std::{
     time::Duration,
 };
 
-struct TestPlatform(Rc<MinimalSoftwareWindow>, Rc<Cell<Duration>>);
-use crate::platform_keys;
+struct TestPlatform(
+    Rc<MinimalSoftwareWindow>,
+    Rc<Cell<Duration>>,
+    Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+);
+#[cfg(windows)]
+#[path = "support/windows_keys.rs"]
+mod platform_keys;
+#[cfg(not(windows))]
+#[path = "support/default_keys.rs"]
+mod platform_keys;
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
+        let child = if self.2.borrow().is_empty() {
+            self.0.clone()
+        } else {
+            MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer)
+        };
+        self.2.borrow_mut().push(child.clone());
+        Ok(child)
     }
     fn duration_since_start(&self) -> Duration {
         self.1.get()
@@ -79,7 +95,13 @@ fn complete(
 fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
-    slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(TestPlatform(
+        native.clone(),
+        time.clone(),
+        windows.clone(),
+    )))
+    .unwrap();
     let window = MainWindow::new().unwrap();
     window.show().unwrap();
     window
@@ -87,6 +109,9 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
     let left = PathBuf::from("left 文档'Cafe\u{301} 👩🏽‍💻");
     let right = PathBuf::from("right 文件");
+    let separator = std::path::MAIN_SEPARATOR;
+    let left_directory = format!("left 文档'Cafe\u{301} 👩🏽‍💻{separator}");
+    let right_directory = format!("right 文件{separator}");
     let presenter = Rc::new(RefCell::new(Presenter::new(left.clone(), right.clone())));
     let commands = Rc::new(RefCell::new(vec![]));
     let sent = commands.clone();
@@ -138,8 +163,10 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         -1,
         "path insertion must focus command editing"
     );
+    assert_eq!(window.get_command_text().as_str(), left_directory);
 
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::Posix,
         locations: vec![NavigationLocation {
             id: "d".into(),
@@ -237,7 +264,8 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, false);
     assert_eq!(
         window.get_command_text().as_str(),
-        "\"left 文档'Cafe\u{301} 👩🏽‍💻\""
+        format!("{left_directory}{left_directory}"),
+        "another insertion appends the directory at the caret with its native ending and no quotes or added spaces"
     );
     assert!(window.get_command_focused());
     assert!(
@@ -253,11 +281,13 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, true);
     key(&window, "]");
     hold(&window, Key::Control, false);
+    let right_command_prefix = format!("echo {right_directory}");
+    let replacement_cursor = right_command_prefix.len() as i32;
     assert_eq!(
         window.get_command_text().as_str(),
-        "echo \"right 文件\" tail"
+        format!("{right_command_prefix} tail")
     );
-    assert_eq!(window.get_command_cursor(), 19);
+    assert_eq!(window.get_command_cursor(), replacement_cursor);
     let before = window.get_command_text();
     presenter.borrow_mut().apply(Event::IconLoaded {
         key: IconKey::folder(),
@@ -265,7 +295,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     });
     midnight_ui::refresh(&window, &presenter.borrow());
     assert_eq!(window.get_command_text(), before);
-    assert_eq!(window.get_command_cursor(), 19);
+    assert_eq!(window.get_command_cursor(), replacement_cursor);
     assert!(window.get_command_focused());
 
     window.invoke_set_command("printf \"%s\" \"\"".into(), 13);
@@ -274,11 +304,11 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, false);
     assert_eq!(
         window.get_command_text().as_str(),
-        "printf \"%s\" \"\"",
-        "path insertion inside quotes must be rejected"
+        format!("printf \"%s\" \"{left_directory}\""),
+        "directory insertion preserves surrounding shell syntax and the raw name with its native ending"
     );
     key(&window, Key::Escape);
-    window.invoke_set_command(before, 19);
+    window.invoke_set_command(before, replacement_cursor);
 
     window.invoke_activate(1);
     assert_eq!(window.get_active_pane(), 1);
@@ -290,17 +320,15 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         commands.borrow().is_empty(),
         "drive shortcuts must not steal editor text"
     );
-    assert_eq!(
-        window.get_command_text().as_str(),
-        "echo \"right 文件\"D tail"
-    );
+    let appended_draft = format!("{right_command_prefix}D tail");
+    assert_eq!(window.get_command_text().as_str(), appended_draft);
     key(&window, Key::Return);
     key(&window, Key::Return);
     assert_eq!(commands.borrow().len(), 1);
     let request = match &commands.borrow()[0] {
         Command::LaunchTerminal { request, terminal } => {
             assert_eq!(terminal.working_directory, right);
-            assert_eq!(terminal.command, "echo \"right 文件\"D tail");
+            assert_eq!(terminal.command, appended_draft);
             assert_eq!(terminal.shell, ShellFlavor::Posix);
             assert_eq!(terminal.mode, TerminalMode::Standard);
             *request
@@ -313,7 +341,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         result: Ok(DesktopActionResult::TerminalStarted {
             process_id: 1,
             history: CommandHistoryEntry {
-                command: "echo \"right 文件\"D tail".into(),
+                command: appended_draft,
                 shell: ShellFlavor::Posix,
             },
         }),
@@ -384,15 +412,61 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         Command::ShowSelectionProperties { .. }
     ));
     commands.borrow_mut().clear();
-    // Rename, create and delete are covered by mutation_controls. Only the
-    // pending viewer/editor/transfer stage still has unavailable commands.
-    for shortcut in [Key::F3, Key::F4, Key::F5, Key::F6] {
-        key(&window, shortcut);
-    }
+    // F5 now captures a copy draft and deliberately contains file shortcuts.
+    key(&window, Key::F5);
+    assert!(!window.get_copy_draft_token().is_empty());
+    assert!(window.get_dialog_input_blocked());
     assert!(
         commands.borrow().is_empty(),
-        "disabled file operations must not dispatch"
+        "opening a copy draft does not queue a copy"
     );
+    let child = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .find(|child| child.window().is_visible())
+        .unwrap()
+        .clone();
+    child
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    child.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    child.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert!(!window.get_dialog_input_blocked());
+    assert!(window.get_copy_draft_token().is_empty());
+    assert_eq!(window.get_focused_pane(), 0);
+    // F6 similarly waits for explicit recovery confirmation and releases focus on Escape.
+    key(&window, Key::F6);
+    assert!(!window.get_copy_draft_token().is_empty());
+    assert!(window.get_copy_draft_move());
+    assert!(window.get_dialog_input_blocked());
+    assert!(
+        commands.borrow().is_empty(),
+        "opening a Move draft does not queue a transfer"
+    );
+    let child = windows
+        .borrow()
+        .iter()
+        .skip(1)
+        .find(|child| child.window().is_visible())
+        .unwrap()
+        .clone();
+    child
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    child.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    child.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert!(!window.get_dialog_input_blocked());
+    assert!(window.get_copy_draft_token().is_empty());
+    assert_eq!(window.get_focused_pane(), 0);
     hold(&window, Key::Control, true);
     hold(&window, Key::Shift, true);
     key(&window, "S");
@@ -581,6 +655,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         "Blue must restore the default blue surface"
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
+        network_position: 0,
         shell: ShellFlavor::PowerShell,
         locations: vec![],
     });
@@ -636,7 +711,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     hold(&window, Key::Control, true);
     key(&window, "]");
     hold(&window, Key::Control, false);
-    assert_eq!(window.get_command_text().as_str(), "echo \"right 文件\"");
+    assert_eq!(window.get_command_text().as_str(), right_command_prefix);
     window.invoke_terminal_changed(0);
     assert_eq!(
         window.get_terminal_index(),
@@ -645,7 +720,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     );
     assert_eq!(
         window.get_command_text().as_str(),
-        "echo \"right 文件\"",
+        right_command_prefix,
         "switching shell must keep existing inserted tokens unchanged"
     );
     assert!(

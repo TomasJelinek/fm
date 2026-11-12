@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Midnight Explorer
+Comment=Dual-pane file manager
+Exec=me
+TryExec=me
+Icon=io.github.TomasJelinek.MidnightExplorer
+Terminal=false
+Categories=System;FileTools;FileManager;
+StartupWMClass=io.github.TomasJelinek.MidnightExplorer

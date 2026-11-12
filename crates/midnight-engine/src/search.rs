@@ -2,8 +2,8 @@
 
 use crate::{Outbox, Snapshots};
 use midnight_core::{
-    DirectoryIndex, EntryKind, Event, FsError, PaneId, SearchMatch, SearchRequest, SearchResult,
-    SearchRevision,
+    DirectoryIndex, Entry, EntryKind, Event, FsError, PaneId, SearchMatch, SearchRequest,
+    SearchResult, SearchRevision,
 };
 use std::{io, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
@@ -75,7 +75,20 @@ impl Controller {
 fn source_matches(snapshots: &Snapshots, request: &SearchRequest) -> bool {
     let snapshots = snapshots.lock().unwrap_or_else(|error| error.into_inner());
     let state = &snapshots[request.pane.index()];
+    if state.network_navigation == Some(request.navigation)
+        && state.network.as_ref().is_some_and(|(navigation, entries)| {
+            *navigation == request.navigation && Arc::ptr_eq(entries, &request.source)
+        })
+    {
+        return true;
+    }
+    if state.archive.as_ref().is_some_and(|(navigation, entries)| {
+        *navigation == request.navigation && Arc::ptr_eq(entries, &request.source)
+    }) {
+        return true;
+    }
     state.pending.is_none()
+        && state.has_native_view()
         && [&state.visible, &state.committed]
             .into_iter()
             .flatten()
@@ -171,38 +184,45 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
         return Computation::Cancelled;
     }
     let query = UniCase::unicode(&request.query).to_folded_case();
+    let filter = match midnight_platform_common::filter::CompiledPanelFilter::new(&request.filter) {
+        Ok(filter) => filter,
+        Err(error) => {
+            return Computation::Failed(FsError::from_io(
+                "filter filenames",
+                &request.location,
+                io::Error::new(io::ErrorKind::InvalidInput, error.message),
+            ));
+        }
+    };
     let mut matches = Vec::new();
     let mut index = DirectoryIndex::default();
+    let mut filtered = Vec::new();
+    let mut filtered_index = DirectoryIndex::default();
     for (source_row, entry) in request.source.iter().enumerate() {
         if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
             return Computation::Cancelled;
         }
+        if !filter.matches_entry(entry) {
+            continue;
+        }
+        if !append_entry(&mut filtered_index, entry, filtered.len()) {
+            return ambiguous_projection(request);
+        }
+        filtered.push(SearchMatch {
+            source_row,
+            display_prefix_end: 0,
+        });
         let display_prefix_end = if query.is_empty() {
             0
         } else {
-            // A replacement character in the label must never identify a different
-            // native name. Unrepresentable names remain in the unfiltered snapshot.
-            let Some(name) = entry.name.to_str() else {
-                continue;
-            };
-            let end = match prefix_end(name, &query, cancelled) {
+            match entry_prefix_end(entry, &query, cancelled) {
                 Ok(Some(end)) => end,
                 Ok(None) => continue,
                 Err(()) => return Computation::Cancelled,
-            };
-            if entry.display_name == name { end } else { 0 }
+            }
         };
-        let row = matches.len();
-        if index.by_id.insert(entry.id, row).is_some()
-            || index.by_path.insert(entry.path.clone(), entry.id).is_some()
-        {
+        if !append_entry(&mut index, entry, matches.len()) {
             return ambiguous_projection(request);
-        }
-        if row.is_multiple_of(64) {
-            index.directory_bits.push(0);
-        }
-        if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
-            index.directory_bits[row / 64] |= 1 << (row % 64);
         }
         matches.push(SearchMatch {
             source_row,
@@ -215,14 +235,15 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
         if source_row.is_multiple_of(CANCEL_INTERVAL) && cancelled() {
             return Computation::Cancelled;
         }
-        if let Some(row) = index.by_id.get(&entry.id)
-            && matches[*row].source_row != source_row
+        if let Some(row) = filtered_index.by_id.get(&entry.id)
+            && filtered[*row].source_row != source_row
         {
             return ambiguous_projection(request);
         }
-        if let Some(id) = index.by_path.get(&entry.path)
-            && let Some(row) = index.by_id.get(id)
-            && matches[*row].source_row != source_row
+        if entry.virtual_node.is_none()
+            && let Some(id) = filtered_index.by_path.get(&entry.path)
+            && let Some(row) = filtered_index.by_id.get(id)
+            && filtered[*row].source_row != source_row
         {
             return ambiguous_projection(request);
         }
@@ -232,9 +253,32 @@ fn compute(request: &SearchRequest, cancelled: &dyn Fn() -> bool) -> Computation
     }
     Computation::Ready(SearchResult {
         source: request.source.clone(),
+        filtered: filtered.into(),
+        filtered_index: Arc::new(filtered_index),
         matches: matches.into(),
         index: Arc::new(index),
     })
+}
+
+fn append_entry(index: &mut DirectoryIndex, entry: &Entry, row: usize) -> bool {
+    if index.by_id.insert(entry.id, row).is_some()
+        || (entry.virtual_node.is_none()
+            && index.by_path.insert(entry.path.clone(), entry.id).is_some())
+    {
+        return false;
+    }
+    if row.is_multiple_of(64) {
+        index.directory_bits.push(0);
+    }
+    if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+        index.directory_bits[row / 64] |= 1 << (row % 64);
+    }
+    index.file_sizes.push(if entry.kind == EntryKind::File {
+        entry.metadata.size
+    } else {
+        None
+    });
+    true
 }
 
 fn ambiguous_projection(request: &SearchRequest) -> Computation {
@@ -246,6 +290,23 @@ fn ambiguous_projection(request: &SearchRequest) -> Computation {
             "Directory identities are ambiguous.",
         ),
     ))
+}
+
+/// Match original Unicode names against an already folded prefix. A decorated caption
+/// may report a match but cannot borrow an original-name byte range for highlighting.
+pub(crate) fn entry_prefix_end(
+    entry: &Entry,
+    query: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<usize>, ()> {
+    let name = if let Some(node) = &entry.virtual_node {
+        std::str::from_utf8(&node.raw_name).ok()
+    } else {
+        entry.name.to_str()
+    };
+    let Some(name) = name else { return Ok(None) };
+    prefix_end(name, query, cancelled)
+        .map(|matched| matched.map(|end| if entry.display_name == name { end } else { 0 }))
 }
 
 fn prefix_end(name: &str, query: &str, cancelled: &dyn Fn() -> bool) -> Result<Option<usize>, ()> {

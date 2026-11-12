@@ -10,21 +10,46 @@ use midnight_platform_common::LocalServices;
 use std::io;
 use std::path::{Path, PathBuf};
 mod clipboard;
+mod clipboard_text;
 mod desktop;
+mod editor;
+mod file_clipboard;
+mod file_drag_drop;
+mod user_command_environment;
+#[cfg(test)]
+mod user_command_terminal_tests;
+mod user_commands;
 pub use clipboard::NativeClipboard;
+#[cfg(test)]
+mod discovery_tests;
+mod find;
 mod fonts;
+mod icon_picker;
+mod icon_storage;
 mod icons;
 mod listing;
 mod locale;
+mod locations;
 mod metadata;
 mod mutation;
+mod navigation_fallback;
 mod network;
+mod onedrive_locations;
 mod open;
+mod path_picker;
 mod settings;
+mod shell_menu;
+mod size_directory;
+mod sort_keys;
 mod storage_kind;
 mod terminal_process;
+mod transfer;
 mod volume_details;
+mod volume_information;
 mod watch;
+mod window_geometry;
+mod windows_argv;
+pub use window_geometry::monitor_work_area;
 
 /// Native windows volume discovery combined with safe portable directory operations.
 pub struct WindowsFileSystem {
@@ -44,14 +69,34 @@ impl WindowsFileSystem {
 }
 
 impl DirectoryService for WindowsFileSystem {
+    fn resolve_size_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::SizeDirectoryTarget>, FsError> {
+        size_directory::resolve(path, cancel)
+    }
     fn read_directory(
         &self,
         path: &Path,
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        self.local
-            .read_directory_with(path, cancel, listing::classify, emit)
+        // Windows DirEntry metadata is cached enumeration data, without another OS call.
+        self.local.read_directory_with_metadata(
+            path,
+            cancel,
+            listing::classify,
+            |item| {
+                item.metadata()
+                    .ok()
+                    .map(|value| metadata::from_native(&value))
+            },
+            emit,
+        )
+    }
+    fn listing_metadata_complete(&self, entry: &Entry) -> bool {
+        entry.metadata.native_attributes.is_some()
     }
     fn entry_metadata(&self, path: &Path) -> Result<EntryMetadata, FsError> {
         metadata::read(path)
@@ -59,6 +104,13 @@ impl DirectoryService for WindowsFileSystem {
 }
 
 impl StorageService for WindowsFileSystem {
+    fn volume_information(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::VolumeInformation, FsError> {
+        volume_information::query(path, cancel)
+    }
     fn storage_kind(&self, path: &Path) -> Result<midnight_core::StorageKind, FsError> {
         Ok(storage_kind::detect(path))
     }

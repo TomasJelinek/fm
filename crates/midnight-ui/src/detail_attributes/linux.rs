@@ -1,5 +1,14 @@
 use midnight_core::EntryMetadata;
 
+// POSIX mode bits carry no Hidden/System attributes. Do not infer them from names.
+pub(crate) fn dim_icon(_metadata: &EntryMetadata) -> bool {
+    false
+}
+
+pub(crate) fn explanation(_metadata: &EntryMetadata) -> String {
+    String::new()
+}
+
 pub(crate) fn fields(metadata: &EntryMetadata) -> Vec<(&'static str, String)> {
     let Some(mode) = metadata.unix_mode else {
         return Vec::new();

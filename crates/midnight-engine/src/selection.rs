@@ -221,6 +221,7 @@ struct State {
     current: Arc<SelectionSnapshot>,
     deferred: Option<Deferred>,
     protected: Option<(SelectionOrigin, Arc<SelectionSnapshot>)>,
+    authoritative: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -232,9 +233,30 @@ enum Transform {
     Invert,
 }
 
+impl Transform {
+    fn apply(self, selected: bool) -> bool {
+        match self {
+            Self::Identity => selected,
+            Self::All => true,
+            Self::None => false,
+            Self::Invert => !selected,
+        }
+    }
+
+    fn inverted(self) -> Self {
+        match self {
+            Self::Identity => Self::Invert,
+            Self::Invert => Self::Identity,
+            Self::All => Self::None,
+            Self::None => Self::All,
+        }
+    }
+}
+
 struct Deferred {
     base: Arc<SelectionSnapshot>,
-    transform: Transform,
+    files: Transform,
+    folders: Transform,
     toggles: HashSet<PathBuf>,
     directories: HashSet<PathBuf>,
 }
@@ -243,7 +265,7 @@ impl State {
     fn apply(
         &mut self,
         request: &SelectionRequest,
-    ) -> Result<Option<(Arc<SelectionSnapshot>, bool)>, &'static str> {
+    ) -> Result<Option<(Arc<SelectionSnapshot>, SelectionDefaults)>, &'static str> {
         self.apply_with_stream(request, None)
     }
 
@@ -251,11 +273,27 @@ impl State {
         &mut self,
         request: &SelectionRequest,
         stream: Option<Arc<DirectoryIndex>>,
-    ) -> Result<Option<(Arc<SelectionSnapshot>, bool)>, &'static str> {
+    ) -> Result<Option<(Arc<SelectionSnapshot>, SelectionDefaults)>, &'static str> {
         if request.navigation < self.navigation
             || (request.navigation == self.navigation && request.revision <= self.revision)
         {
             return Ok(None);
+        }
+        let authority = request
+            .authoritative
+            .as_ref()
+            .filter(|seed| seed.id > self.authoritative);
+        if let Some(seed) = authority {
+            if seed.origin.navigation == self.context && seed.origin.location == self.location {
+                self.current = seed.snapshot.clone();
+                self.deferred = None;
+            }
+            // The worker may never have received a selection command in the old
+            // source. Preserve the exact captured comparison for a failed move away.
+            if request.preserve.as_ref() == Some(&seed.origin) {
+                self.protected = Some((seed.origin.clone(), seed.snapshot.clone()));
+            }
+            self.authoritative = seed.id;
         }
         if let Some(origin) = &request.preserve {
             // A same-path refresh may already use a newer navigation token;
@@ -268,13 +306,23 @@ impl State {
             navigation: request.context,
             location: request.location.clone(),
         };
-        let restored = self
-            .protected
-            .as_ref()
-            .filter(|(saved, _)| *saved == desired)
-            .map(|(_, value)| value.clone());
+        let restored = authority
+            .filter(|seed| seed.origin == desired)
+            .map(|seed| seed.snapshot.clone())
+            .or_else(|| {
+                self.protected
+                    .as_ref()
+                    .filter(|(saved, _)| *saved == desired)
+                    .map(|(_, value)| value.clone())
+            });
         if request.context != self.context || request.location != self.location {
             self.current = restored.unwrap_or_else(|| request.seed.clone());
+            self.deferred = None;
+        } else if request.seed_revision > self.revision {
+            if request.seed_revision >= request.revision {
+                return Err("An authoritative seed must precede its selection action");
+            }
+            self.current = request.seed.clone();
             self.deferred = None;
         }
         if request.preserve.is_none() {
@@ -293,25 +341,26 @@ impl State {
             let mut bits = self.current.bits().to_vec();
             match &request.action {
                 SelectionAction::Bulk(operation) => match operation {
-                    SelectionOperation::All => {
-                        bits.fill(u64::MAX);
-                        let count = self.current.basis().by_id.len();
-                        if !count.is_multiple_of(64)
-                            && let Some(last) = bits.last_mut()
-                        {
-                            *last &= (1u64 << (count % 64)) - 1;
+                    SelectionOperation::All => bits.fill(u64::MAX),
+                    SelectionOperation::FilesOnly => {
+                        for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
+                            *word = !directories;
+                        }
+                    }
+                    SelectionOperation::ClearFilesOnly => {
+                        for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
+                            *word &= directories;
                         }
                     }
                     SelectionOperation::Clear => bits.fill(0),
                     SelectionOperation::Invert => {
+                        for (word, directories) in bits.iter_mut().zip(&view.directory_bits) {
+                            *word ^= !directories;
+                        }
+                    }
+                    SelectionOperation::InvertAll => {
                         for word in &mut bits {
                             *word = !*word;
-                        }
-                        let count = self.current.basis().by_id.len();
-                        if !count.is_multiple_of(64)
-                            && let Some(last) = bits.last_mut()
-                        {
-                            *last &= (1u64 << (count % 64)) - 1;
                         }
                     }
                 },
@@ -319,6 +368,15 @@ impl State {
                     if let Some(position) = view.by_path.get(path).and_then(|id| view.by_id.get(id))
                     {
                         bits[position / 64] ^= 1u64 << (position % 64);
+                    }
+                }
+                SelectionAction::Remove(paths) => {
+                    for path in paths.iter() {
+                        if let Some(position) =
+                            view.by_path.get(path).and_then(|id| view.by_id.get(id))
+                        {
+                            bits[position / 64] &= !(1u64 << (position % 64));
+                        }
                     }
                 }
                 SelectionAction::Range {
@@ -342,34 +400,80 @@ impl State {
                         bits[position / 64] |= 1 << (position % 64);
                     }
                 }
+                SelectionAction::Ranges { ranges, mode } => {
+                    if ranges.len() != view.by_id.len() {
+                        return Err("Selection rectangle no longer matches its captured view");
+                    }
+                    if *mode == SelectionMode::Replace {
+                        bits.fill(0);
+                    }
+                    for span in ranges.spans() {
+                        for position in span.first..=span.last {
+                            let bit = 1 << (position % 64);
+                            let word = &mut bits[position / 64];
+                            if *mode == SelectionMode::Toggle {
+                                *word ^= bit;
+                            } else {
+                                *word |= bit;
+                            }
+                        }
+                    }
+                }
                 SelectionAction::Rebase => {}
             }
+            let count = self.current.basis().by_id.len();
+            if !count.is_multiple_of(64)
+                && let Some(last) = bits.last_mut()
+            {
+                *last &= (1u64 << (count % 64)) - 1;
+            }
             self.current = Arc::new(self.current.with_bits(bits)?);
-            Ok(Some((self.current.clone(), false)))
+            Ok(Some((self.current.clone(), SelectionDefaults::NONE)))
         } else {
             let deferred = self.deferred.get_or_insert_with(|| Deferred {
                 base: self.current.clone(),
-                transform: Transform::Identity,
+                files: Transform::Identity,
+                folders: Transform::Identity,
                 toggles: HashSet::new(),
                 directories: HashSet::new(),
             });
             match &request.action {
                 SelectionAction::Bulk(operation) => match operation {
                     SelectionOperation::All => {
-                        deferred.transform = Transform::All;
+                        deferred.files = Transform::All;
+                        deferred.folders = Transform::All;
                         deferred.toggles.clear();
                     }
+                    SelectionOperation::FilesOnly => {
+                        deferred.files = Transform::All;
+                        deferred.folders = Transform::None;
+                        deferred.toggles.clear();
+                    }
+                    SelectionOperation::ClearFilesOnly => {
+                        deferred.files = Transform::None;
+                        // Directory exceptions and their inherited defaults must survive;
+                        // file toggles must not resurrect marks after the final rebase.
+                        let directories = &deferred.directories;
+                        let basis = deferred.base.basis();
+                        deferred.toggles.retain(|path| {
+                            directories.contains(path)
+                                || basis
+                                    .by_path
+                                    .get(path)
+                                    .is_some_and(|id| basis.is_directory(*id))
+                        });
+                    }
                     SelectionOperation::Clear => {
-                        deferred.transform = Transform::None;
+                        deferred.files = Transform::None;
+                        deferred.folders = Transform::None;
                         deferred.toggles.clear();
                     }
                     SelectionOperation::Invert => {
-                        deferred.transform = match deferred.transform {
-                            Transform::Identity => Transform::Invert,
-                            Transform::Invert => Transform::Identity,
-                            Transform::All => Transform::None,
-                            Transform::None => Transform::All,
-                        };
+                        deferred.files = deferred.files.inverted();
+                    }
+                    SelectionOperation::InvertAll => {
+                        deferred.files = deferred.files.inverted();
+                        deferred.folders = deferred.folders.inverted();
                     }
                 },
                 SelectionAction::Toggle(path) => {
@@ -400,37 +504,61 @@ impl State {
                         return Err("Range endpoints no longer belong to the streamed view");
                     };
                     if !additive {
-                        deferred.transform = Transform::None;
+                        deferred.files = Transform::None;
+                        deferred.folders = Transform::None;
                         deferred.toggles.clear();
                     }
                     for (path, id) in &view.by_path {
                         if (anchor.min(target)..=anchor.max(target)).contains(&view.by_id[id]) {
-                            if !deferred.contains(path) && !deferred.toggles.remove(path) {
-                                deferred.toggles.insert(path.clone());
-                            }
                             if view.is_directory(*id) {
                                 deferred.directories.insert(path.clone());
                             }
+                            if !deferred.contains(path) && !deferred.toggles.remove(path) {
+                                deferred.toggles.insert(path.clone());
+                            }
+                        }
+                    }
+                }
+                SelectionAction::Ranges { .. } => {
+                    return Err("Selection rectangles require a complete immutable view");
+                }
+                SelectionAction::Remove(paths) => {
+                    for path in paths.iter() {
+                        if deferred.contains(path) && !deferred.toggles.remove(path) {
+                            deferred.toggles.insert(path.clone());
                         }
                     }
                 }
                 SelectionAction::Rebase => {}
             }
             self.current = deferred.rebase(stream.unwrap_or_else(|| deferred.subset()))?;
-            let pending = matches!(deferred.transform, Transform::All | Transform::Invert);
+            let pending = SelectionDefaults {
+                files: deferred.files.apply(false),
+                directories: deferred.folders.apply(false),
+            };
             Ok(Some((self.current.clone(), pending)))
         }
     }
 }
 
 impl Deferred {
+    fn is_directory(&self, path: &std::path::Path) -> bool {
+        self.directories.contains(path)
+            || self
+                .base
+                .basis()
+                .by_path
+                .get(path)
+                .is_some_and(|id| self.base.basis().is_directory(*id))
+    }
+
+    fn selected(&self, path: &std::path::Path, directory: bool) -> bool {
+        let transform = if directory { self.folders } else { self.files };
+        transform.apply(self.base.contains_path(path)) ^ self.toggles.contains(path)
+    }
+
     fn contains(&self, path: &std::path::Path) -> bool {
-        (match self.transform {
-            Transform::Identity => self.base.contains_path(path),
-            Transform::Invert => !self.base.contains_path(path),
-            Transform::All => true,
-            Transform::None => false,
-        }) ^ self.toggles.contains(path)
+        self.selected(path, self.is_directory(path))
     }
     fn subset(&self) -> Arc<DirectoryIndex> {
         let mut paths: HashSet<_> = self.base.basis().by_path.keys().cloned().collect();
@@ -440,20 +568,15 @@ impl Deferred {
         let mut directory_bits = vec![0; paths.len().div_ceil(64)];
         for (position, path) in paths.into_iter().enumerate() {
             let id = EntryId(position as u64);
-            if self.directories.contains(&path)
-                || self
-                    .base
-                    .basis()
-                    .by_path
-                    .get(&path)
-                    .is_some_and(|id| self.base.basis().is_directory(*id))
-            {
+            if self.is_directory(&path) {
                 directory_bits[position / 64] |= 1 << (position % 64);
             }
             by_id.insert(id, position);
             by_path.insert(path, id);
         }
         Arc::new(DirectoryIndex {
+            column_samples: Default::default(),
+            file_sizes: vec![None; by_id.len()],
             by_id,
             by_path,
             directory_bits,
@@ -465,12 +588,7 @@ impl Deferred {
             SelectionSnapshot::from_bits(view.clone(), vec![0; view.by_id.len().div_ceil(64)])?;
         let mut bits = blank.bits().to_vec();
         for (path, id) in &view.by_path {
-            let selected = match self.transform {
-                Transform::Identity => self.base.contains_path(path),
-                Transform::Invert => !self.base.contains_path(path),
-                Transform::All => true,
-                Transform::None => false,
-            } ^ self.toggles.contains(path);
+            let selected = self.selected(path, view.is_directory(*id));
             if selected {
                 let position = view.by_id[id];
                 bits[position / 64] |= 1u64 << (position % 64);
@@ -489,7 +607,8 @@ fn rebase(
     }
     Deferred {
         base: snapshot.clone(),
-        transform: Transform::Identity,
+        files: Transform::Identity,
+        folders: Transform::Identity,
         toggles: HashSet::new(),
         directories: HashSet::new(),
     }
@@ -541,8 +660,7 @@ pub(crate) async fn prepare_properties(
     let permit = Arc::new(permit);
     let delivery_permit = permit.clone();
     tasks.spawn(async move {
-        // Failed preparation also owns capacity until its terminal event is sent.
-        let _permit = delivery_permit;
+        let _delivery_permit = delivery_permit;
         let result = tokio::task::spawn_blocking(move || {
             let paths: Vec<PathBuf> = if selection.is_empty() {
                 fallback.into_iter().collect()
@@ -602,7 +720,7 @@ pub(crate) async fn prepare_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{path::Path, time::Duration};
 
     fn view(names: &[&str]) -> Arc<DirectoryIndex> {
         Arc::new(DirectoryIndex::from_entries(
@@ -620,7 +738,7 @@ mod tests {
         ))
     }
 
-    fn request(
+    pub(super) fn request(
         revision: u64,
         view: Option<Arc<DirectoryIndex>>,
         action: SelectionAction,
@@ -633,6 +751,8 @@ mod tests {
             location: "root".into(),
             view,
             seed: Arc::default(),
+            seed_revision: SelectionRevision(0),
+            authoritative: None,
             reset: false,
             preserve: None,
             restore: None,
@@ -643,6 +763,219 @@ mod tests {
 
     fn apply(state: &mut State, request: SelectionRequest) -> Arc<SelectionSnapshot> {
         state.apply(&request).unwrap().unwrap().0
+    }
+
+    #[test]
+    fn completion_removal_is_idempotent_and_survives_stream_rebase() {
+        for streaming in [false, true] {
+            let index = view(&["a", "文档", "c"]);
+            let mut state = State::default();
+            let initial = (!streaming).then(|| index.clone());
+            apply(
+                &mut state,
+                request(
+                    1,
+                    initial.clone(),
+                    SelectionAction::Bulk(SelectionOperation::All),
+                ),
+            );
+            let removed: Arc<HashSet<PathBuf>> =
+                Arc::new([PathBuf::from("文档")].into_iter().collect());
+            for revision in [2, 3] {
+                apply(
+                    &mut state,
+                    request(
+                        revision,
+                        initial.clone(),
+                        SelectionAction::Remove(removed.clone()),
+                    ),
+                );
+            }
+            let result = apply(&mut state, request(4, Some(index), SelectionAction::Rebase));
+            assert!(result.contains_path(Path::new("a")));
+            assert!(!result.contains_path(Path::new("文档")));
+            assert!(result.contains_path(Path::new("c")));
+            assert_eq!(result.len(), 2);
+        }
+    }
+
+    #[test]
+    fn rectangle_disjoint_ranges_keep_raw_identities_and_modifier_semantics() {
+        let index = view(&["é", "b", "文档", "d", "e", "f"]);
+        let mut state = State::default();
+        apply(
+            &mut state,
+            request(1, Some(index.clone()), SelectionAction::Toggle("e".into())),
+        );
+        let ranges = SelectionRanges::new(
+            6,
+            vec![
+                SelectionSpan { first: 0, last: 0 },
+                SelectionSpan { first: 2, last: 3 },
+            ],
+        )
+        .unwrap();
+        for (revision, mode, expected) in [
+            (2, SelectionMode::Add, 0b011101),
+            (3, SelectionMode::Toggle, 0b010000),
+            (4, SelectionMode::Replace, 0b001101),
+        ] {
+            let result = apply(
+                &mut state,
+                request(
+                    revision,
+                    Some(index.clone()),
+                    SelectionAction::Ranges {
+                        ranges: ranges.clone(),
+                        mode,
+                    },
+                ),
+            );
+            assert_eq!(result.bits(), &[expected]);
+            assert!(Arc::ptr_eq(result.basis(), &index));
+        }
+        let stale = request(
+            3,
+            Some(index),
+            SelectionAction::Bulk(SelectionOperation::Clear),
+        );
+        assert!(state.apply(&stale).unwrap().is_none());
+    }
+
+    #[test]
+    fn rectangle_requires_complete_view_and_exact_source_extent() {
+        let ranges = SelectionRanges::new(1, vec![SelectionSpan { first: 0, last: 0 }]).unwrap();
+        let action = SelectionAction::Ranges {
+            ranges,
+            mode: SelectionMode::Replace,
+        };
+        assert!(
+            State::default()
+                .apply(&request(1, None, action.clone()))
+                .is_err()
+        );
+        assert!(
+            State::default()
+                .apply(&request(1, Some(view(&["a", "b"])), action))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn authoritative_comparison_seed_is_adopted_once_before_queued_toggles() {
+        let mut state = State::default();
+        let index = view(&["a", "b", "c"]);
+        apply(
+            &mut state,
+            request(
+                1,
+                Some(index.clone()),
+                SelectionAction::Bulk(SelectionOperation::Clear),
+            ),
+        );
+        let seed = Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![1]).unwrap());
+        for (revision, name, expected) in [(3, "b", 0b011), (4, "c", 0b111)] {
+            let mut next = request(
+                revision,
+                Some(index.clone()),
+                SelectionAction::Toggle(name.into()),
+            );
+            next.seed = seed.clone();
+            next.seed_revision = SelectionRevision(2);
+            assert_eq!(apply(&mut state, next).bits(), &[expected]);
+        }
+    }
+
+    #[test]
+    fn comparison_selection_survives_a_refresh_that_resets_request_revisions() {
+        let mut state = State::default();
+        let index = view(&["a", "b", "c"]);
+        apply(
+            &mut state,
+            request(
+                1,
+                Some(index.clone()),
+                SelectionAction::Bulk(SelectionOperation::Clear),
+            ),
+        );
+        let snapshot = Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![1]).unwrap());
+        let mut refresh = request(1, Some(index), SelectionAction::Rebase);
+        refresh.navigation = NavigationId(2);
+        refresh.seed = snapshot.clone();
+        refresh.authoritative = Some(Arc::new(AuthoritativeSelection {
+            id: 1,
+            origin: SelectionOrigin {
+                navigation: NavigationId(1),
+                location: "root".into(),
+            },
+            snapshot,
+        }));
+        // The presenter starts request revisions over on each navigation.
+        refresh.seed_revision = SelectionRevision(0);
+        assert_eq!(apply(&mut state, refresh).bits(), &[1]);
+    }
+
+    #[test]
+    fn comparison_authority_survives_failed_navigation_and_cannot_replay_over_edits() {
+        for initialized in [false, true] {
+            let mut state = State::default();
+            let index = view(&["a", "b", "c"]);
+            if initialized {
+                apply(
+                    &mut state,
+                    request(
+                        1,
+                        Some(index.clone()),
+                        SelectionAction::Bulk(SelectionOperation::Clear),
+                    ),
+                );
+            }
+            let origin = SelectionOrigin {
+                navigation: NavigationId(1),
+                location: "root".into(),
+            };
+            let authority = Arc::new(AuthoritativeSelection {
+                id: 1,
+                origin: origin.clone(),
+                snapshot: Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![1]).unwrap()),
+            });
+            let mut away = request(1, None, SelectionAction::Toggle("other/x".into()));
+            away.navigation = NavigationId(2);
+            away.context = NavigationId(2);
+            away.location = "other".into();
+            away.preserve = Some(origin.clone());
+            away.authoritative = Some(authority.clone());
+            apply(&mut state, away);
+            let mut restore = request(2, Some(index.clone()), SelectionAction::Rebase);
+            restore.navigation = NavigationId(2);
+            restore.restore = Some(origin.clone());
+            restore.authoritative = Some(authority.clone());
+            assert_eq!(apply(&mut state, restore).bits(), &[1]);
+            for (revision, path, expected) in [(3, "b", 0b011), (4, "a", 0b010)] {
+                let mut edit = request(
+                    revision,
+                    Some(index.clone()),
+                    SelectionAction::Toggle(path.into()),
+                );
+                edit.navigation = NavigationId(2);
+                edit.authoritative = Some(authority.clone());
+                assert_eq!(apply(&mut state, edit).bits(), &[expected]);
+            }
+            let mut next = request(5, Some(index.clone()), SelectionAction::Toggle("b".into()));
+            next.navigation = NavigationId(2);
+            next.authoritative = Some(Arc::new(AuthoritativeSelection {
+                id: 2,
+                origin,
+                snapshot: Arc::new(
+                    SelectionSnapshot::from_bits(index.clone(), vec![0b100]).unwrap(),
+                ),
+            }));
+            assert_eq!(apply(&mut state, next).bits(), &[0b110]);
+            let mut stale = request(6, Some(index), SelectionAction::Toggle("a".into()));
+            stale.navigation = NavigationId(2);
+            stale.authoritative = Some(authority);
+            assert_eq!(apply(&mut state, stale).bits(), &[0b111]);
+        }
     }
 
     #[test]
@@ -1225,7 +1558,7 @@ mod tests {
         else {
             panic!("streamed selection result")
         };
-        assert!(!deferred);
+        assert!(!deferred.any());
         assert_eq!((selection.file_count(), selection.folder_count()), (1, 1));
         assert!(!selection.contains_path(std::path::Path::new("root/m")));
         let sorted = vec![entries[1].clone(), entries[2].clone(), entries[0].clone()];
@@ -1269,7 +1602,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(partial.len(), 2);
-        assert!(pending);
+        assert!(pending.any());
         let complete = apply(
             &mut state,
             request(3, Some(view(&["b", "later", "a"])), SelectionAction::Rebase),
@@ -1277,3 +1610,7 @@ mod tests {
         assert_eq!(complete.len(), 3);
     }
 }
+
+#[cfg(test)]
+#[path = "selection_invert_tests.rs"]
+mod invert_tests;

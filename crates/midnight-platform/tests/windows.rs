@@ -16,6 +16,19 @@ fn list(provider: &LocalFileSystem, path: &Path) -> Vec<Entry> {
 }
 
 #[test]
+fn cached_listing_metadata_matches_the_native_query() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cached_文档.txt");
+    fs::write(&path, b"cached metadata").unwrap();
+    let provider = LocalFileSystem::new(None);
+    let entries = list(&provider, directory.path());
+    assert_eq!(entries.len(), 1);
+    assert!(provider.listing_metadata_complete(&entries[0]));
+    assert_eq!(entries[0].metadata.size, Some(15));
+    assert_eq!(entries[0].metadata, provider.entry_metadata(&path).unwrap());
+}
+
+#[test]
 fn directory_junction_is_classified_as_directory_link_and_dangling_metadata_is_safe() {
     // A legal path containing shell syntax must remain literal fixture data.
     let dir = tempfile::Builder::new()

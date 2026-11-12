@@ -40,6 +40,17 @@ fn result(request: &SearchRequest, rows: &[usize], end: usize) -> Arc<SearchResu
         .collect();
     Arc::new(SearchResult {
         source: request.source.clone(),
+        filtered: request
+            .source
+            .iter()
+            .enumerate()
+            .map(|(source_row, _)| SearchMatch {
+                source_row,
+                display_prefix_end: 0,
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        filtered_index: Arc::new(DirectoryIndex::from_entries(&request.source)),
         matches: rows
             .iter()
             .map(|row| SearchMatch {
@@ -106,7 +117,7 @@ fn filter_projects_display_and_selection_without_replacing_native_snapshot_or_sc
         navigation: NavigationId(p.panes[0].generation),
         revision: p.panes[0].selection_revision,
         selection: Arc::new(SelectionSnapshot::from_bits(found.index.clone(), vec![3]).unwrap()),
-        deferred: false,
+        deferred: Default::default(),
     });
     assert!(!p.panes[0].selected.contains_path(&source[1].path));
     p.change_search_query(PaneId::Left, "", &|_| true);
@@ -267,10 +278,10 @@ fn checkbox_and_late_saved_filter_apply_to_already_matched_queries() {
         let request = query(&mut p, "al");
         accept(&mut p, &request, result(&request, &[0, 2], 2));
         if load_saved {
-            p.apply(Event::PreferencesLoaded(Ok(UserPreferences {
+            p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
                 quick_search_filter: true,
                 ..Default::default()
-            })));
+            }))));
         } else {
             p.change_search_filter(true, &|_| true);
         }

@@ -32,7 +32,7 @@ fn preferences_path(base: &Path) -> io::Result<PathBuf> {
     Ok(base.join(APPLICATION_DIRECTORY).join("preferences.json"))
 }
 
-fn native_preferences_path() -> io::Result<PathBuf> {
+pub(crate) fn native_preferences_path() -> io::Result<PathBuf> {
     let _com = crate::desktop::ComGuard::initialize(COINIT_MULTITHREADED as u32)
         .ok_or_else(|| io::Error::other("Cannot initialize native configuration lookup"))?;
     let base = crate::desktop::known_folder(&FOLDERID_LocalAppData)
@@ -193,6 +193,8 @@ mod tests {
             theme: PreferenceTheme::Dark,
             tabs: [
                 midnight_core::PaneTabPreferences {
+                    networks: Default::default(),
+                    archives: Default::default(),
                     paths: vec![temporary.path().join("文档 e\u{301} 🧪")],
                     active: 0,
                 },

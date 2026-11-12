@@ -1,0 +1,10 @@
+[package]
+name = "midnight-filesystem-api"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Versioned bounded protocol for read-only Midnight filesystem workers"
+readme = "../PROTOCOL.md"
+
+[lints.rust]
+unsafe_code = "forbid"

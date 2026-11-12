@@ -1,0 +1,45 @@
+import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+import { TipBody } from "controls.slint";
+
+export struct MetadataFileRow {
+    current-name: string, proposed-name: string,
+    attributes: string, times: string, detail: string, issue: bool,
+}
+
+component MetadataColumns inherits HorizontalLayout {
+    in property <MetadataFileRow> entry;
+    in property <bool> header;
+    padding-left: 8px; padding-right: 8px; spacing: 12px;
+    Text { text: root.entry.current-name; width: Theme.font-size * 15; color: Theme.text; font-size: Theme.small-font; font-weight: root.header ? 600 : 400; vertical-alignment: center; overflow: elide; }
+    Text { text: root.entry.proposed-name; width: Theme.font-size * 15; color: Theme.text; font-size: Theme.small-font; font-weight: root.header ? 600 : 400; vertical-alignment: center; overflow: elide; }
+    Text { text: root.entry.attributes; width: Theme.font-size * 23; color: Theme.text; font-size: Theme.small-font; font-weight: root.header ? 600 : 400; vertical-alignment: center; overflow: elide; }
+    Text { text: root.entry.times; horizontal-stretch: 1; color: Theme.text; font-size: Theme.small-font; font-weight: root.header ? 600 : 400; vertical-alignment: center; overflow: elide; }
+}
+
+export component MetadataFileList inherits Rectangle {
+    in property <[MetadataFileRow]> rows;
+    in property <bool> stale;
+    background: Theme.pane-background; border-color: Theme.frame; border-width: 1px;
+    clip: true;
+    Rectangle {
+        x: 0px; y: 0px;
+        height: Theme.column-height; width: parent.width; background: Theme.header;
+        MetadataColumns {
+            x: list.content-x; width: list.content-width; height: parent.height;
+            header: true;
+            entry: { current-name: "Current name", proposed-name: root.stale ? "Proposed name (stale)" : "Proposed name", attributes: "Attributes / permissions: current → proposed", times: "Times: current → proposed (UTC)", detail: "", issue: false };
+        }
+    }
+    list := ListView {
+        y: Theme.column-height; height: max(0px, parent.height - self.y); width: parent.width;
+        content-width: max(self.width, Theme.font-size * 100);
+        for row[index] in root.rows : Rectangle {
+            width: list.content-width; height: max(64px, Theme.small-font * 4 + 12px);
+            background: row.issue ? Theme.error-background : Math.mod(index, 2) == 0 ? Theme.pane-background : Theme.alternate-row;
+            accessible-role: text; accessible-label: row.detail;
+            MetadataColumns { entry: row; }
+            TouchArea { Tooltip { TipBody { text: row.detail; } } }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+[package]
+name = "midnight-image-viewer-api"
+description = "Bounded persistent image-viewer process protocol for Midnight Explorer"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

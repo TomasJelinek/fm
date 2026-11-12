@@ -9,6 +9,7 @@ enum Source {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Revision {
+    kind: u8,
     generation: u64,
     pointer: usize,
     length: usize,
@@ -37,13 +38,15 @@ impl HistoryRows {
     fn refresh(&self, presenter: &Presenter) {
         let (revision, icon) = match self.source {
             Source::Navigation(pane, _) => {
+                let (kind, pointer, length, current) = presenter.history_model_state(pane);
                 let pane = &presenter.panes[pane.index()];
                 (
                     Revision {
+                        kind,
                         generation: pane.generation,
-                        pointer: pane.history.as_ptr() as usize,
-                        length: pane.history.len(),
-                        current: pane.history_index,
+                        pointer,
+                        length,
+                        current,
                     },
                     presenter.desktop.image(&IconKey::folder()),
                 )
@@ -52,6 +55,7 @@ impl HistoryRows {
                 let preferences = &presenter.preferences;
                 (
                     Revision {
+                        kind: 3,
                         generation: preferences.revision.0,
                         pointer: preferences.values.command_history.as_ptr() as usize,
                         length: preferences.values.command_history.len(),
@@ -107,12 +111,15 @@ impl Model for HistoryRows {
             return None;
         }
         let presenter = self.presenter.borrow();
-        let (identity, label) = match self.source {
+        let (identity, label): (SharedString, SharedString) = match self.source {
             Source::Navigation(pane, forward) => {
                 let choice = presenter.history_entry(pane, forward, row)?;
                 (
                     choice.identity.into(),
-                    SharedString::from(choice.path.to_string_lossy().as_ref()),
+                    choice
+                        .display
+                        .unwrap_or_else(|| choice.path.to_string_lossy().into_owned())
+                        .into(),
                 )
             }
             Source::Commands => {
