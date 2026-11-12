@@ -155,10 +155,8 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
         key_current(&ui, &windows, Key::Return);
         assert!(commands.borrow().iter().any(|command| matches!(command,
         Command::ConfirmOperation { id, new_name: None } if *id == deletion.id)));
-        assert!(
-            !ui.window.get_dialog_input_blocked(),
-            "progress is modeless"
-        );
+        assert!(!ui.window.get_embedded_modal_open(), "progress is modeless");
+        assert!(!ui.window.get_dialog_input_blocked());
         assert!(
             windows
                 .borrow()
@@ -174,10 +172,23 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                 .any(|command| matches!(command, Command::CancelOperation(_)))
         );
     }
+    // Finish deferred popup retirement and its invoking-focus restoration before
+    // the next explicit editor-focus action, as the native frame loop does.
+    ui.draw();
+    assert!(
+        i_slint_core::window::WindowInner::from_pub(ui.window.window())
+            .active_popups()
+            .is_empty()
+    );
     ui.window.invoke_focus_command();
+    assert!(ui.window.get_command_focused());
     commands.borrow_mut().clear();
     key_current(&ui, &windows, Key::Delete);
     chord_current(&ui, &windows, &[Key::Shift], Key::F4);
+    assert!(
+        ui.window.get_command_focused(),
+        "editor shortcuts must retain actual input focus"
+    );
     assert!(
         !commands
             .borrow()
@@ -225,9 +236,10 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
             key_current(&ui, &windows, Key::Return);
             assert_eq!(ui.window.get_operation_token(), creation.id.0.to_string());
             assert!(
-                ui.window.get_dialog_input_blocked(),
-                "failed submission retains owner modality"
+                ui.window.get_embedded_modal_open(),
+                "failed submission retains the embedded modal input gate"
             );
+            assert!(!ui.window.get_dialog_input_blocked());
             key_current(&ui, &windows, "1");
             reject_confirmation.set(false);
             format!("{expected_name}1")

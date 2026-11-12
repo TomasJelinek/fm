@@ -10,22 +10,25 @@ export component HelpBody inherits Rectangle {
     in property <int> topic;
     in property <image> close-icon;
     in property <string> shortcuts: ShortcutHints.help();
+    in property <bool> input-blocked;
     callback close();
     callback move-dialog(length, length);
-    public function begin() { close-button.focus(); }
+    public function begin() { if !root.input-blocked { close-button.focus(); } }
     background: Theme.surface; border-radius: 8px;
     border-color: Theme.active-frame; border-width: 1px;
-    init => { close-button.focus(); }
+    init => { root.begin(); }
     FocusScope {
         key-pressed(event) => {
+            if root.input-blocked { return reject; }
             if event.text == Key.Escape { root.close(); return accept; }
             reject
         }
     VerticalLayout {
         padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 13px;
         DialogHeader { title: root.topic == 1 ? "Filtering files" : "Midnight Explorer keyboard help"; compact: root.height < 280px;
+            enabled: !root.input-blocked;
             fallback-icon: FallbackIcons.help;
-            close-label: "Close dialog"; close => { root.close(); }
+            close-label: "Close dialog"; close => { if !root.input-blocked { root.close(); } }
             dragged(dx, dy) => { root.move-dialog(dx, dy); } }
         DialogText {
             min-height: 0px; vertical-stretch: 1;
@@ -40,6 +43,7 @@ export component HelpBody inherits Rectangle {
         close-button := HintedActionButton {
             native-icon: root.close-icon; fallback-icon: FallbackIcons.close;
             text: "Close"; min-height: Theme.control-height;
+            enabled: !root.input-blocked;
             hint: "Close this dialog and return to the file manager.";
             clicked => { root.close(); }
         }

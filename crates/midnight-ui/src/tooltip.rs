@@ -4,9 +4,8 @@
 //! shares its host coordinates. Recheck this contract when upgrading Slint or
 //! adding a backend with native popup windows. This observer never consumes input.
 use crate::{
-    AboutWindow, ChecksumWindow, DecisionWindow, FileListWindow, FindWindow, HelpWindow,
-    HotPathsWindow, JobProgressWindow, JobsWindow, MainWindow, NoticeWindow, OperationWindow,
-    PanelFilterWindow, TooltipPlacement,
+    AboutWindow, ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow,
+    JobsWindow, MainWindow, TooltipPlacement,
 };
 use i_slint_core::{
     items::TooltipArea,
@@ -35,31 +34,21 @@ enum Target {
     Main(slint::Weak<MainWindow>),
     Find(slint::Weak<FindWindow>),
     Checksum(slint::Weak<ChecksumWindow>),
-    FileList(slint::Weak<FileListWindow>),
     Help(slint::Weak<HelpWindow>),
     About(slint::Weak<AboutWindow>),
-    Notice(slint::Weak<NoticeWindow>),
-    Operation(slint::Weak<OperationWindow>),
     Jobs(slint::Weak<JobsWindow>),
     JobProgress(slint::Weak<JobProgressWindow>),
     Decision(slint::Weak<DecisionWindow>),
-    PanelFilter(slint::Weak<PanelFilterWindow>),
-    HotPaths(slint::Weak<HotPathsWindow>),
 }
 enum Host {
     Main(MainWindow),
     Find(FindWindow),
     Checksum(ChecksumWindow),
-    FileList(FileListWindow),
     Help(HelpWindow),
     About(AboutWindow),
-    Notice(NoticeWindow),
-    Operation(OperationWindow),
     Jobs(JobsWindow),
     JobProgress(JobProgressWindow),
     Decision(DecisionWindow),
-    PanelFilter(PanelFilterWindow),
-    HotPaths(HotPathsWindow),
 }
 impl Target {
     fn upgrade(&self) -> Option<Host> {
@@ -67,16 +56,11 @@ impl Target {
             Self::Main(window) => window.upgrade().map(Host::Main),
             Self::Find(window) => window.upgrade().map(Host::Find),
             Self::Checksum(window) => window.upgrade().map(Host::Checksum),
-            Self::FileList(window) => window.upgrade().map(Host::FileList),
             Self::Help(window) => window.upgrade().map(Host::Help),
             Self::About(window) => window.upgrade().map(Host::About),
-            Self::Notice(window) => window.upgrade().map(Host::Notice),
-            Self::Operation(window) => window.upgrade().map(Host::Operation),
             Self::Jobs(window) => window.upgrade().map(Host::Jobs),
             Self::JobProgress(window) => window.upgrade().map(Host::JobProgress),
             Self::Decision(window) => window.upgrade().map(Host::Decision),
-            Self::PanelFilter(window) => window.upgrade().map(Host::PanelFilter),
-            Self::HotPaths(window) => window.upgrade().map(Host::HotPaths),
         }
     }
 }
@@ -86,16 +70,11 @@ impl Host {
             Self::Main(window) => window.window(),
             Self::Find(window) => window.window(),
             Self::Checksum(window) => window.window(),
-            Self::FileList(window) => window.window(),
             Self::Help(window) => window.window(),
             Self::About(window) => window.window(),
-            Self::Notice(window) => window.window(),
-            Self::Operation(window) => window.window(),
             Self::Jobs(window) => window.window(),
             Self::JobProgress(window) => window.window(),
             Self::Decision(window) => window.window(),
-            Self::PanelFilter(window) => window.window(),
-            Self::HotPaths(window) => window.window(),
         }
     }
     fn placement(&self) -> TooltipPlacement<'_> {
@@ -103,16 +82,11 @@ impl Host {
             Self::Main(window) => window.global::<TooltipPlacement>(),
             Self::Find(window) => window.global::<TooltipPlacement>(),
             Self::Checksum(window) => window.global::<TooltipPlacement>(),
-            Self::FileList(window) => window.global::<TooltipPlacement>(),
             Self::Help(window) => window.global::<TooltipPlacement>(),
             Self::About(window) => window.global::<TooltipPlacement>(),
-            Self::Notice(window) => window.global::<TooltipPlacement>(),
-            Self::Operation(window) => window.global::<TooltipPlacement>(),
             Self::Jobs(window) => window.global::<TooltipPlacement>(),
             Self::JobProgress(window) => window.global::<TooltipPlacement>(),
             Self::Decision(window) => window.global::<TooltipPlacement>(),
-            Self::PanelFilter(window) => window.global::<TooltipPlacement>(),
-            Self::HotPaths(window) => window.global::<TooltipPlacement>(),
         }
     }
     fn synchronize(&self) -> bool {
@@ -129,17 +103,11 @@ pub(crate) fn install_find(window: &FindWindow) -> Result<(), PlatformError> {
 pub(crate) fn install_checksum(window: &ChecksumWindow) -> Result<(), PlatformError> {
     register(Target::Checksum(window.as_weak()))
 }
-pub(crate) fn install_file_list(window: &FileListWindow) -> Result<(), PlatformError> {
-    register(Target::FileList(window.as_weak()))
-}
 pub(crate) fn install_help(window: &HelpWindow) -> Result<(), PlatformError> {
     register(Target::Help(window.as_weak()))
 }
 pub(crate) fn install_about(window: &AboutWindow) -> Result<(), PlatformError> {
     register(Target::About(window.as_weak()))
-}
-pub(crate) fn install_operation(window: &OperationWindow) -> Result<(), PlatformError> {
-    register(Target::Operation(window.as_weak()))
 }
 pub(crate) fn install_job_progress(window: &JobProgressWindow) -> Result<(), PlatformError> {
     register(Target::JobProgress(window.as_weak()))
@@ -149,12 +117,6 @@ pub(crate) fn install_jobs(window: &JobsWindow) -> Result<(), PlatformError> {
 }
 pub(crate) fn install_decision(window: &DecisionWindow) -> Result<(), PlatformError> {
     register(Target::Decision(window.as_weak()))
-}
-pub(crate) fn install_notice(window: &NoticeWindow) -> Result<(), PlatformError> {
-    register(Target::Notice(window.as_weak()))
-}
-pub(crate) fn synchronize_file_list(window: &FileListWindow) {
-    synchronize_host(window.window(), window.global::<TooltipPlacement>());
 }
 
 pub(crate) fn synchronize_checksum(window: &ChecksumWindow) {
@@ -321,11 +283,4 @@ fn synchronize_host(window: &slint::Window, global: TooltipPlacement<'_>) -> boo
             .set(LogicalLength::new(cursor.1 - origin.y));
     }
     changed
-}
-
-pub(crate) fn install_panel_filter(window: &PanelFilterWindow) -> Result<(), PlatformError> {
-    register(Target::PanelFilter(window.as_weak()))
-}
-pub(crate) fn install_hot_paths(window: &HotPathsWindow) -> Result<(), PlatformError> {
-    register(Target::HotPaths(window.as_weak()))
 }

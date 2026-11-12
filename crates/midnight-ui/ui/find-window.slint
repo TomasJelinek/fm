@@ -22,6 +22,8 @@ export struct FindDraft {
 // Match the query controls while preserving touch and intrinsic content sizing.
 component FindActionButton inherits HintedActionButton {
     minimum-control-height: 0px;
+    vertical-padding: Theme.touch ? 5px : 4px;
+    height: self.min-height;
 }
 
 export component FindWindow inherits ToolWindow {

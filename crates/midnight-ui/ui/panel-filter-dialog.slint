@@ -18,18 +18,21 @@ export struct PanelFilterView {
 
 export component PanelFilterDialog inherits Rectangle {
     in property <PanelFilterView> model;
+    // Conditional children must default to disabled when their weak parent retires.
+    in property <bool> input-enabled: true;
     callback apply(bool, int, string, bool);
     callback cancel();
     callback clear();
     callback help();
     callback move-dialog(length, length);
-    changed width => { if root.width < 400px { footer.focus-dismiss(); } }
-    changed height => { if root.height < 280px { footer.focus-dismiss(); } }
+    changed width => { if root.input-enabled && root.width < 400px { footer.focus-dismiss(); } }
+    changed height => { if root.input-enabled && root.height < 280px { footer.focus-dismiss(); } }
     public function begin() {
         mode.current-index = root.model.mode;
         expression.text = root.model.expression;
         names.checked = root.model.case-sensitive;
         history.current-index = 0;
+        if !root.input-enabled { return; }
         if root.width < 400px || root.height < 280px { footer.focus-dismiss(); }
         else { expression.focus(); }
     }
@@ -37,6 +40,7 @@ export component PanelFilterDialog inherits Rectangle {
     border-width: 1px; border-color: Theme.active-frame;
     FocusScope {
         key-pressed(event) => {
+            if !root.input-enabled { return reject; }
             if event.text == Key.F1 { root.help(); return accept; }
             if event.text == Key.Escape { root.cancel(); return accept; }
             return reject;
@@ -44,6 +48,7 @@ export component PanelFilterDialog inherits Rectangle {
         VerticalLayout {
             padding: root.height < 280px ? 8px : 16px; spacing: root.height < 280px ? 4px : 8px;
             DialogHeader { title: "Panel filter"; fallback-icon: FallbackIcons.filter; compact: root.height < 280px;
+                enabled: root.input-enabled;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             ScrollView {
@@ -53,7 +58,7 @@ export component PanelFilterDialog inherits Rectangle {
                     spacing: 8px; alignment: start;
                     history := HintedComboBox {
                         model: root.model.history-labels;
-                        enabled: !root.model.busy && root.model.history.length > 0;
+                        enabled: root.input-enabled && !root.model.busy && root.model.history.length > 0;
                         accessible-label: "Filter history";
                         hint: "Choose a previously applied filter to edit. OK applies it to this panel.";
                         min-height: Theme.control-height; min-width: 0px;
@@ -69,14 +74,14 @@ export component PanelFilterDialog inherits Rectangle {
                         }
                     }
                     mode := HintedComboBox {
-                        model: ["Masks", "Regex", "Expression"]; enabled: !root.model.busy; min-height: Theme.control-height;
+                        model: ["Masks", "Regex", "Expression"]; enabled: root.input-enabled && !root.model.busy; min-height: Theme.control-height;
                         accessible-label: "Filter mode";
                         hint: "Masks and Regex match names and keep folders visible. Expression tests captured metadata and can also filter folders.";
                     }
                     HorizontalLayout {
                         spacing: 6px;
                         expression := HintedLineEdit {
-                            enabled: !root.model.busy; accessible-label: "File filter expression";
+                            enabled: root.input-enabled && !root.model.busy; accessible-label: "File filter expression";
                             min-height: Theme.control-height; min-width: 0px; horizontal-stretch: 1;
                             preferred-height: Theme.control-height; vertical-stretch: 0;
                             placeholder-text: mode.current-index == 2 ? "kind = file and size >= 10MiB"
@@ -89,13 +94,13 @@ export component PanelFilterDialog inherits Rectangle {
                         HintedActionButton {
                             text: "Clear"; accessible-label: "Clear filter expression";
                             compact: true; horizontal-stretch: 0;
-                            enabled: !root.model.busy && expression.text != "";
+                            enabled: root.input-enabled && !root.model.busy && expression.text != "";
                             hint: "Clear the draft text. The applied panel filter is unchanged until OK.";
                             clicked => { expression.text = ""; history.current-index = 0; expression.focus(); }
                         }
                     }
                     names := WrappingCheckBox {
-                        text: "Case sensitive"; enabled: !root.model.busy; min-height: Theme.control-height;
+                        text: "Case sensitive"; enabled: root.input-enabled && !root.model.busy; min-height: Theme.control-height;
                         hint: "Compare Unicode letters with exact case. Native filenames are never changed.";
                     }
                     if root.model.busy: Text { text: "Validating filter…"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
@@ -104,20 +109,23 @@ export component PanelFilterDialog inherits Rectangle {
             }
             footer := DialogFooter {
                 compact-height: root.height < 280px;
+                dismiss-enabled: root.input-enabled;
                 dismiss => { root.cancel(); }
                 HintedActionButton {
                     text: "Help"; fallback-icon: FallbackIcons.help;
+                    enabled: root.input-enabled;
                     hint: "Examples and supported filter syntax (F1).";
                     min-height: Theme.control-height; horizontal-stretch: 0;
                     clicked => { root.help(); }
                 }
                 if root.model.enabled : HintedActionButton {
                     text: "Show all"; min-height: Theme.control-height;
+                    enabled: root.input-enabled;
                     hint: "Remove this panel's applied filter.";
                     clicked => { root.clear(); }
                 }
                 HintedActionButton {
-                    text: "OK"; primary: true; enabled: !root.model.busy;
+                    text: "OK"; primary: true; enabled: root.input-enabled && !root.model.busy;
                     min-width: 72px; min-height: Theme.control-height;
                     hint: "Apply the filter to this panel.";
                     clicked => { root.apply(true, mode.current-index, expression.text, names.checked); }

@@ -195,6 +195,7 @@ fn all_themes_are_selectable_and_keep_text_readable() {
                 directory: true,
                 size: "12.4 GB".into(),
                 size_state: 1,
+                size_running: true,
                 ..Default::default()
             },
             FileRow {

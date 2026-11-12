@@ -448,7 +448,11 @@ fn destination_editor(shortcut: Key, moving: bool, preserve: bool) {
         before_retry,
         "admission error stays in the same editable embedded draft"
     );
-    assert!(ui.window.get_dialog_input_blocked());
+    assert!(ui.window.get_embedded_modal_open());
+    assert!(
+        !ui.window.get_dialog_input_blocked(),
+        "a rejected draft must keep main input enabled"
+    );
     assert!(!ui.window.get_copy_draft_token().is_empty());
     assert!(commands.borrow().is_empty());
     assert!(child.window().is_visible());

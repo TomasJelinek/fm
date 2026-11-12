@@ -41,6 +41,8 @@ export component EmbeddedPanelFilter inherits Rectangle {
                     topic: 1; close-icon: PanelFilterPresentation.close-icon;
                     private property <string> filter-occurrence;
                     private property <string> occurrence;
+                    input-blocked: self.filter-occurrence != PanelFilterPresentation.token
+                        || self.occurrence != PanelFilterPresentation.help-token;
                     init => {
                         self.filter-occurrence = PanelFilterPresentation.token;
                         self.occurrence = PanelFilterPresentation.help-token;
@@ -67,13 +69,18 @@ export component EmbeddedPanelFilter inherits Rectangle {
                 PopupFocus.update();
             }
             FocusScope {
-                width: parent.width; height: parent.height;
+                // @children keeps DialogFrame as its syntactic parent; its
+                // viewport is larger than the injected, clipped body.
+                x: 0px; y: 0px;
+                width: filter-frame.body-width; height: filter-frame.body-height;
                 capture-key-pressed(event) => { PanelFilterPresentation.help-token != "" ? accept : reject }
                 capture-key-released(event) => { PanelFilterPresentation.help-token != "" ? accept : reject }
                 form := PanelFilterDialog {
                     width: parent.width; height: parent.height;
                     model: PanelFilterPresentation.model;
                     private property <string> occurrence;
+                    input-enabled: self.occurrence == PanelFilterPresentation.token
+                        && PanelFilterPresentation.help-token == "";
                     init => { self.occurrence = PanelFilterPresentation.token; self.begin(); }
                     move-dialog(dx, dy) => { filter-frame.move-by(dx, dy); }
                     apply(enabled, mode, expression, names) => {
@@ -87,7 +94,8 @@ export component EmbeddedPanelFilter inherits Rectangle {
                 }
             }
             if PanelFilterPresentation.help-token != "": TouchArea {
-                width: parent.width; height: parent.height;
+                x: 0px; y: 0px;
+                width: filter-frame.body-width; height: filter-frame.body-height;
                 scroll-event(event) => { accept }
             }
         }

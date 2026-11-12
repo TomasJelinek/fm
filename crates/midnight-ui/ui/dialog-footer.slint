@@ -39,6 +39,7 @@ export component DialogFooter inherits Rectangle {
     }
     dismiss-button := HintedActionButton {
         minimum-control-height: root.compact-controls ? 0px : 32px;
+        vertical-padding: root.compact-controls && !Theme.touch ? 4px : 5px;
         x: root.width - self.width; y: root.stacked ? root.action-height + 8px : 0px;
         width: min(root.width, max(80px, self.preferred-width));
         height: root.control-height;

@@ -54,6 +54,7 @@ fn wait_size(h: &mut Harness, name: &str, bytes: u64) {
         displayed.size_state, 0,
         "completed values must lose their progress style"
     );
+    assert!(!displayed.size_running, "this occurrence has finished");
     let digits: String = displayed
         .size
         .chars()

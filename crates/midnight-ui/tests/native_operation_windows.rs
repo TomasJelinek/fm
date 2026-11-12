@@ -133,8 +133,12 @@ impl Harness {
             "blocking operation forms must stay inside the main window adapter"
         );
         assert!(
-            self.main.get_dialog_input_blocked(),
-            "the owner must be modal while the form is open"
+            self.main.get_embedded_modal_open(),
+            "the embedded form must gate background application input"
+        );
+        assert!(
+            !self.main.get_dialog_input_blocked(),
+            "the main input host must stay enabled"
         );
         assert!(
             WindowInner::from_pub(self.main.window())
@@ -207,6 +211,7 @@ impl Harness {
                 .is_empty()
         );
         assert!(self.main.window().is_visible());
+        assert!(!self.main.get_embedded_modal_open());
         assert!(!self.main.get_dialog_input_blocked());
     }
 }
@@ -520,7 +525,8 @@ fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_conf
     h.accepting.set(false);
     child.window().dispatch_event(WindowEvent::CloseRequested);
     assert!(child.window().is_visible());
-    assert!(h.main.get_dialog_input_blocked());
+    assert!(h.main.get_embedded_modal_open());
+    assert!(!h.main.get_dialog_input_blocked());
     assert_eq!(h.windows.borrow().len(), 1);
     assert!(h.commands.borrow().is_empty());
     assert_eq!(
@@ -703,6 +709,7 @@ fn trash_and_permanent_delete_share_modeless_progress_and_close_means_cancel() {
             "each confirmed delete gets its own progress window"
         );
         let progress = &children[0];
+        assert!(!h.main.get_embedded_modal_open());
         assert!(!h.main.get_dialog_input_blocked());
         assert!(
             !h.main.get_operations_visible(),

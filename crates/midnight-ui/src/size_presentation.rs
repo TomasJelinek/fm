@@ -14,33 +14,41 @@ pub(super) fn folder_size(
     attempted: bool,
     display: SizeDisplay,
     locale: &NumberLocale,
-) -> (String, i32, String) {
+) -> (String, i32, bool, String) {
     if let Some(value) = value {
         if value.finished && value.errors == 0 {
             return (
                 file_size(value.bytes, display, locale),
                 0,
+                false,
                 format!(
                     "Complete logical size; {} files. {} file links or directory cycles skipped; special files excluded.",
                     value.files, value.skipped_links
                 ),
             );
         }
+        let active = running && !value.finished;
         let state = if value.errors > 0 {
             3
-        } else if running && !value.finished {
+        } else if active {
             1
         } else {
             2
         };
-        let reason = if let Some(report) = &value.warnings {
-            report.summary().tooltip.to_string()
-        } else if value.errors > 0 {
-            format!(
-                "partial result: {} errors; the number is not final.",
-                value.errors
-            )
-        } else if running {
+        let reason = if value.errors > 0 {
+            let status = if value.finished {
+                "Completed with warnings; this is a partial total."
+            } else if active {
+                "Calculating: some entries could not be counted."
+            } else {
+                "Unfinished or cancelled: partial total with warnings."
+            };
+            let details = value.warnings.as_ref().map_or_else(
+                || format!("{} errors.", value.errors),
+                |report| report.summary().tooltip.to_string(),
+            );
+            format!("{status}\n{details}")
+        } else if active {
             "Calculating: the number is not final.".into()
         } else {
             "Unfinished or cancelled: this is a partial result.".into()
@@ -48,6 +56,7 @@ pub(super) fn folder_size(
         return (
             format!("≈ {}", file_size(value.bytes, display, locale)),
             state,
+            active,
             reason,
         );
     }
@@ -55,18 +64,21 @@ pub(super) fn folder_size(
         (
             "…".into(),
             1,
+            true,
             "Queued for calculation; no final size is available.".into(),
         )
     } else if attempted {
         (
             "—".into(),
             2,
+            false,
             "Calculation did not finish for this folder.".into(),
         )
     } else {
         (
             "<DIR>".into(),
             0,
+            false,
             "Folder size has not been calculated.".into(),
         )
     }
@@ -85,7 +97,7 @@ mod tests {
             finished: true,
             ..Default::default()
         };
-        let (text, state, tooltip) = folder_size(
+        let (text, state, running, tooltip) = folder_size(
             Some(&size),
             false,
             true,
@@ -93,6 +105,7 @@ mod tests {
             &NumberLocale::default(),
         );
         assert_eq!((text.as_str(), state), ("23", 0));
+        assert!(!running);
         assert!(tooltip.contains("2 file links or directory cycles skipped"));
     }
 
@@ -106,17 +119,18 @@ mod tests {
                 finished: !running,
                 ..Default::default()
             };
-            let (_, state, _) =
+            let (_, state, active, _) =
                 folder_size(Some(&failed), running, true, SizeDisplay::Bytes, &locale);
             assert_eq!(
                 state, 3,
                 "an actual filesystem error needs its own indicator"
             );
+            assert_eq!(active, running);
             let unfinished = FolderSize {
                 bytes: 4096,
                 ..Default::default()
             };
-            let (_, state, _) = folder_size(
+            let (_, state, active, _) = folder_size(
                 Some(&unfinished),
                 running,
                 true,
@@ -124,7 +138,78 @@ mod tests {
                 &locale,
             );
             assert_ne!(state, 3, "unfinished data alone is not an error");
+            assert_eq!(active, running);
         }
+    }
+
+    #[test]
+    fn finished_warning_keeps_severity_without_progress_even_while_other_folders_run() {
+        let locale = NumberLocale::default();
+        for finished in [false, true] {
+            for scan_running in [false, true] {
+                let size = FolderSize {
+                    bytes: 4096,
+                    errors: 2,
+                    finished,
+                    ..Default::default()
+                };
+                let (text, state, active, tooltip) =
+                    folder_size(Some(&size), scan_running, true, SizeDisplay::Bytes, &locale);
+                assert_eq!(text, "≈ 4096");
+                assert_eq!(state, 3);
+                assert_eq!(active, scan_running && !finished);
+                assert!(tooltip.contains("2 errors"));
+                if finished {
+                    assert!(tooltip.contains("Completed with warnings"));
+                    assert!(!tooltip.contains("not final"));
+                } else if scan_running {
+                    assert!(tooltip.contains("Calculating"));
+                } else {
+                    assert!(tooltip.contains("Unfinished or cancelled"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn completed_warning_keeps_cached_diagnostics_without_reading_the_report() {
+        #[derive(Debug)]
+        struct Report;
+        impl SizeWarningSource for Report {
+            fn snapshot(
+                &self,
+                _: &Cancellation,
+            ) -> Result<std::sync::Arc<dyn GeneratedTextSource>, FsError> {
+                panic!("presentation must not read the retained diagnostic report")
+            }
+        }
+        let reason = "Access denied in child 資料; click for full details.";
+        let size = FolderSize {
+            bytes: 4096,
+            errors: 1,
+            finished: true,
+            warnings: Some(SizeWarningReport::new(
+                std::sync::Arc::new(Report),
+                SizeWarningSummary {
+                    observed: 1,
+                    stored: 1,
+                    tooltip: reason.into(),
+                },
+            )),
+            ..Default::default()
+        };
+        let (text, state, active, tooltip) = folder_size(
+            Some(&size),
+            true,
+            true,
+            SizeDisplay::Bytes,
+            &NumberLocale::default(),
+        );
+        assert_eq!(text, "≈ 4096");
+        assert_eq!(state, 3);
+        assert!(!active);
+        assert!(tooltip.starts_with("Completed with warnings"));
+        assert!(tooltip.ends_with(reason));
     }
 
     #[test]
@@ -149,7 +234,7 @@ mod tests {
             bytes: 123456789,
             ..Default::default()
         };
-        let (text, state, _) = folder_size(
+        let (text, state, running, _) = folder_size(
             Some(&partial),
             true,
             true,
@@ -158,11 +243,12 @@ mod tests {
         );
         assert_eq!(text, "≈ 123456789");
         assert_eq!(state, 1);
+        assert!(running);
         let complete = FolderSize {
             finished: true,
             ..partial
         };
-        let (text, state, _) = folder_size(
+        let (text, state, running, _) = folder_size(
             Some(&complete),
             false,
             true,
@@ -171,6 +257,7 @@ mod tests {
         );
         assert_eq!(text, "123456789");
         assert_eq!(state, 0);
+        assert!(!running);
     }
 
     #[test]

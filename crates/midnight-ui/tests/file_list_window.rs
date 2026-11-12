@@ -221,8 +221,18 @@ fn embedded_file_list_cancel_waits_for_exact_request_release_without_another_ada
         ));
         assert!(native.window().is_visible());
         assert!(
-            main.get_dialog_input_blocked(),
-            "Make File List is modal to its owner"
+            main.get_embedded_modal_open(),
+            "Make File List must gate background application input"
+        );
+        assert!(
+            !main.get_dialog_input_blocked(),
+            "Make File List keeps main input enabled"
+        );
+        assert_eq!(
+            i_slint_core::window::WindowInner::from_pub(main.window())
+                .active_popups()
+                .len(),
+            1
         );
         let (id, generation) = commands
             .borrow()
@@ -243,15 +253,28 @@ fn embedded_file_list_cancel_waits_for_exact_request_release_without_another_ada
         );
         assert!(main.window().is_visible());
         assert!(
-            main.get_dialog_input_blocked(),
-            "rejected cancellation retains the modal lease"
+            main.get_embedded_modal_open(),
+            "rejected cancellation retains the embedded modal input gate"
+        );
+        assert_eq!(
+            i_slint_core::window::WindowInner::from_pub(main.window())
+                .active_popups()
+                .len(),
+            1
         );
         accepting.set(true);
         form.invoke_cancel(form.get_token());
+        slint::platform::update_timers_and_animations();
         assert!(native.window().is_visible());
         assert!(
-            !main.get_dialog_input_blocked(),
-            "accepted close releases the owner"
+            !main.get_embedded_modal_open(),
+            "accepted close releases the embedded modal input gate"
+        );
+        assert!(!main.get_dialog_input_blocked());
+        assert!(
+            i_slint_core::window::WindowInner::from_pub(main.window())
+                .active_popups()
+                .is_empty()
         );
         assert!(commands.borrow().iter().any(|command| {
             matches!(command, Command::CancelFileList { id: closed, generation: closed_generation }

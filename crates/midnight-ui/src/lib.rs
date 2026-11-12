@@ -202,7 +202,7 @@ impl Model for Rows {
             &entry.metadata
         };
         let directory = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
-        let (size, size_state, size_hint) = if directory {
+        let (size, size_state, size_running, size_hint) = if directory {
             size_presentation::folder_size(
                 pane.folder_size(entry),
                 pane.folder_size_running(entry),
@@ -223,6 +223,7 @@ impl Model for Rows {
                     })
                     .unwrap_or_else(|| "—".into()),
                 0,
+                false,
                 "File length from backend metadata.".into(),
             )
         };
@@ -274,6 +275,7 @@ impl Model for Rows {
             dim_icon: detail_attributes::dim_icon(metadata),
             size: size.into(),
             size_state,
+            size_running,
             size_hint: size_hint.into(),
             warning_revision: if size_state == 3 {
                 pane.folder_warning_revision(entry).into()

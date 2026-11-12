@@ -58,7 +58,7 @@ export component FileEntry inherits Rectangle {
         : 0px;
     size-measure := Text {
         visible: false; text: item.size; font-size: Theme.small-font;
-        font-weight: item.size-state == 1 ? 600 : 400;
+        font-weight: item.size-running ? 600 : 400;
     }
     // Retain room for the native icon and name even at the deepest backend level.
     private property <length> tree-indent: min(max(0, item.tree-depth) * 14px,
@@ -231,8 +231,8 @@ export component FileEntry inherits Rectangle {
                     inspect => { root.remember-click(""); root.warning-details(item.identity, false); }
             }
             Text {
-                text: item.size; color: item.size-state == 3 ? Theme.pending-size : item.size-state == 1 ? Theme.pending-size : Theme.secondary-text;
-                font-weight: item.size-state == 1 ? 600 : 400; font-size: Theme.small-font;
+                text: item.size; color: item.size-running ? Theme.pending-size : Theme.secondary-text;
+                font-weight: item.size-running ? 600 : 400; font-size: Theme.small-font;
                 horizontal-stretch: 0; min-width: 0px; overflow: elide;
                 horizontal-alignment: right; vertical-alignment: center;
             }

@@ -1,3 +1,4 @@
+mod folder_sizes;
 mod history_models;
 mod performance;
 use super::*;
@@ -203,11 +204,18 @@ fn completed_partial_size_is_distinct_from_other_folders_still_queued() {
         "one inaccessible folder does not leave the scan running"
     );
     assert_eq!(finished.size.as_str(), "≈ 167.3 MiB");
+    assert!(
+        !finished.size_running,
+        "this folder has finished with issues"
+    );
+    assert!(finished.size_hint.contains("Completed with warnings"));
+    assert!(!finished.size_hint.contains("not final"));
     assert_eq!(
         model.row_data(1).unwrap().size_state,
         1,
         "other roots can still be queued"
     );
+    assert!(model.row_data(1).unwrap().size_running);
 }
 
 #[test]
@@ -248,15 +256,19 @@ fn unfinished_directory_sizes_are_marked_until_their_own_clean_completion() {
     }
     assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KiB");
     assert_eq!(model.row_data(0).unwrap().size_state, 1);
+    assert!(model.row_data(0).unwrap().size_running);
     assert!(model.row_data(0).unwrap().size_hint.contains("Calculating"));
     assert_eq!(model.row_data(1).unwrap().size.as_str(), "2.0 KiB");
     assert_eq!(model.row_data(1).unwrap().size_state, 0);
+    assert!(!model.row_data(1).unwrap().size_running);
     assert_eq!(model.row_data(2).unwrap().size.as_str(), "…");
     assert_eq!(model.row_data(2).unwrap().size_state, 1);
+    assert!(model.row_data(2).unwrap().size_running);
     assert!(model.row_data(2).unwrap().size_hint.contains("Queued"));
     presenter.borrow_mut().panes[0].size_scan = None;
     assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KiB");
     assert_eq!(model.row_data(0).unwrap().size_state, 2);
+    assert!(!model.row_data(0).unwrap().size_running);
     assert!(model.row_data(0).unwrap().size_hint.contains("cancelled"));
     assert_eq!(model.row_data(2).unwrap().size.as_str(), "—");
     assert_eq!(model.row_data(2).unwrap().size_state, 2);
@@ -273,6 +285,7 @@ fn unfinished_directory_sizes_are_marked_until_their_own_clean_completion() {
         .unwrap()
         .errors = 1;
     assert_eq!(model.row_data(0).unwrap().size_state, 3);
+    assert!(!model.row_data(0).unwrap().size_running);
     assert_eq!(model.row_data(0).unwrap().size.as_str(), "≈ 1.0 KiB");
     assert!(model.row_data(0).unwrap().size_hint.contains("partial"));
     assert!(model.row_data(0).unwrap().size_hint.contains("1 errors"));
