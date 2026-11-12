@@ -11,6 +11,14 @@ struct Source {
     changed: AtomicBool,
     change_on_list: AtomicBool,
     reads: AtomicUsize,
+    retired: Option<tokio::sync::oneshot::Sender<std::thread::ThreadId>>,
+}
+impl Drop for Source {
+    fn drop(&mut self) {
+        if let Some(retired) = self.retired.take() {
+            let _ = retired.send(std::thread::current().id());
+        }
+    }
 }
 impl ArchiveMount for Source {
     fn id(&self) -> u64 {
@@ -68,7 +76,10 @@ fn source() -> Arc<Source> {
             (3, vec![node(30, 3, EntryKind::File, Some(7))]),
             (4, vec![node(40, 4, EntryKind::File, None)]),
         ]),
-        ..Source::default()
+        changed: AtomicBool::new(false),
+        change_on_list: AtomicBool::new(false),
+        reads: AtomicUsize::new(0),
+        retired: None,
     })
 }
 fn location(source: Arc<Source>) -> ArchiveLocation {
@@ -308,7 +319,9 @@ async fn source_changes_before_or_during_listing_reject_measured_sort() {
 #[tokio::test]
 async fn published_sort_lookup_does_not_retain_retired_map_or_mount() {
     let mut harness = Harness::new();
-    let source = source();
+    let (retired, completed) = tokio::sync::oneshot::channel();
+    let mut source = source();
+    Arc::get_mut(&mut source).unwrap().retired = Some(retired);
     let weak_source = Arc::downgrade(&source);
     let snapshot = harness.compute(source.clone()).await;
     let weak_snapshot = Arc::downgrade(&snapshot);
@@ -327,5 +340,13 @@ async fn published_sort_lookup_does_not_retain_retired_map_or_mount() {
     let snapshots = Arc::try_unwrap(harness.snapshots)
         .unwrap_or_else(|_| panic!("snapshot still has live actor owners"));
     snapshots.retire().await.unwrap();
+    // The snapshot and guarded mount have different retirement workers. The
+    // snapshot acknowledgement only enqueues the final mount release; wait for
+    // that resource's own destruction instead of racing its worker scheduling.
+    let retired_on = tokio::time::timeout(Duration::from_secs(5), completed)
+        .await
+        .expect("archive mount must retire after its final owner is released")
+        .unwrap();
+    assert_ne!(retired_on, std::thread::current().id());
     assert!(weak_source.upgrade().is_none());
 }

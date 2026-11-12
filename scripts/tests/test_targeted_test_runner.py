@@ -137,6 +137,58 @@ class TargetedRunnerTests(unittest.TestCase):
                                      environment=env, spawn=kwargs.pop('spawn', self.spawn), **kwargs)
         return result, json.loads((log_dir / 'summary.json').read_text())
 
+    def test_nested_workspace_runs_from_plugin_cwd_but_keeps_logs_under_repo_build(self):
+        selected = self.add('alpha')
+        self.metadata['workspace_root'] = str(self.package)
+        code, summary = self.run_cases([selected], workspace=self.package)
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(summary['workspace'], str(self.package))
+        case = summary['cases'][0]
+        self.assertEqual(case['cwd'], str(self.package))
+        self.assertTrue(Path(case['test_log']).is_relative_to(self.root / '_build'))
+        record = json.loads(Path(case['test_log']).read_text().splitlines()[0])
+        self.assertEqual(record['cwd'], str(self.package))
+        self.assertTrue(Path(record['tmp']).is_relative_to(self.root / '_build'))
+
+    def test_nested_metadata_requires_explicit_matching_workspace(self):
+        selected = self.add('alpha')
+        self.metadata['workspace_root'] = str(self.package)
+        for workspace in (None, self.root):
+            with self.subTest(workspace=workspace):
+                with self.assertRaisesRegex(ValueError, 'different workspace'):
+                    self.run_cases([selected], workspace=workspace)
+        self.assertEqual(self.launched, [])
+
+    def test_manifest_outside_selected_plugin_workspace_is_rejected(self):
+        selected = self.add('alpha')
+        workspace = self.root / 'plugins/other'
+        workspace.mkdir(parents=True)
+        self.metadata['workspace_root'] = str(workspace)
+        with self.assertRaisesRegex(ValueError, 'manifest'):
+            self.run_cases([selected], workspace=workspace)
+        self.assertEqual(self.launched, [])
+
+    def test_workspace_escape_and_lexical_alias_are_rejected_before_launch(self):
+        selected = self.add('alpha')
+        for workspace in (self.root.parent, self.package / '..' / 'demo'):
+            with self.subTest(workspace=workspace):
+                self.metadata['workspace_root'] = str(workspace)
+                with self.assertRaisesRegex(ValueError, 'ordinary.*workspace|workspace.*ordinary'):
+                    self.run_cases([selected], workspace=workspace)
+        self.assertEqual(self.launched, [])
+
+    def test_linked_workspace_is_rejected_before_launch(self):
+        selected = self.add('alpha')
+        link = self.root / 'plugin-link'
+        try:
+            link.symlink_to(self.package, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f'Directory symlinks unavailable: {error}')
+        self.metadata['workspace_root'] = str(self.package)
+        with self.assertRaisesRegex(ValueError, 'ordinary.*workspace|workspace.*ordinary'):
+            self.run_cases([selected], workspace=link)
+        self.assertEqual(self.launched, [])
+
     def test_two_real_children_rendezvous_and_each_has_private_output_and_package_cwd(self):
         barrier = Rendezvous(2)
         self.addCleanup(barrier.close)

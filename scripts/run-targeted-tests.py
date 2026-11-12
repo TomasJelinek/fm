@@ -75,9 +75,18 @@ def read_receipts(paths):
     return events
 
 
-def prepare(root, metadata, receipts, selections):
+def selected_workspace(root, workspace):
+    workspace = root if workspace is None else Path(workspace).absolute()
+    if (not workspace.is_dir() or workspace.resolve(strict=True) != workspace
+            or not beneath(workspace, root)):
+        raise ValueError('Selected workspace must be an ordinary directory within the repository')
+    return workspace
+
+
+def prepare(root, metadata, receipts, selections, workspace=None):
     root = root.resolve(strict=True)
-    if Path(metadata['workspace_root']).resolve(strict=True) != root:
+    workspace = selected_workspace(root, workspace)
+    if Path(metadata['workspace_root']) != workspace:
         raise ValueError('Metadata belongs to a different workspace')
     build = root / '_build'
     target = Path(metadata['target_directory'])
@@ -114,7 +123,7 @@ def prepare(root, metadata, receipts, selections):
             raise ValueError(f'Unknown or ambiguous test target: {selected}')
         manifest = Path(package['manifest_path'])
         if (not manifest.is_absolute() or not manifest.is_file()
-                or manifest.resolve(strict=True) != manifest or not beneath(manifest, root)):
+                or manifest.resolve(strict=True) != manifest or not beneath(manifest, workspace)):
             raise ValueError('Package manifest must be an ordinary workspace file')
         identity = (package['id'], selected.kind, selected.target)
         group = groups.setdefault(identity, {'package': selected.package, 'kind': selected.kind,
@@ -245,8 +254,11 @@ def child_environment(base, directory, executable, runtime_paths, threads):
 
 
 def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_budget=None,
-            environment=None, spawn=subprocess.Popen, runtime_paths=(), exact=False, timeout=300):
-    plans, target = prepare(Path(root), metadata, receipts, selections)
+            environment=None, spawn=subprocess.Popen, runtime_paths=(), exact=False, timeout=300,
+            workspace=None):
+    root = Path(root).resolve(strict=True)
+    workspace = selected_workspace(root, workspace)
+    plans, target = prepare(root, metadata, receipts, selections, workspace)
     cpus = available_cpus()
     jobs = min(4, cpus) if jobs is None else jobs
     thread_budget = cpus if thread_budget is None else thread_budget
@@ -360,7 +372,8 @@ def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_
         # Retry that retained ownership even on an ordinary test failure.
         cleanup_errors.extend(children.terminate_owned())
     code = 130 if interrupted else (0 if not cleanup_errors and all(item['status'] == 'passed' for item in results) else 1)
-    summary = {'exit_code': code, 'jobs': jobs, 'thread_budget': thread_budget,
+    summary = {'workspace': str(workspace), 'exit_code': code, 'jobs': jobs,
+               'thread_budget': thread_budget,
                'threads_per_process': threads, 'peak_processes': children.peak,
                'interrupted': interrupted, 'timeout_seconds': timeout,
                'cleanup_errors': cleanup_errors, 'cases': results}
@@ -374,6 +387,8 @@ def execute(root, metadata, receipts, selections, log_dir, *, jobs=None, thread_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--workspace', type=Path,
+                        help='Independent Cargo workspace inside this repository (default: repository root)')
     parser.add_argument('--metadata', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, action='append', required=True)
     parser.add_argument('--target', nargs=2, action='append', default=[], metavar=('PACKAGE', 'KIND:TARGET'))
@@ -385,6 +400,7 @@ def main():
     parser.add_argument('--timeout', type=float, default=300, help='Per child deadline in seconds (default: 300)')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
+    workspace = selected_workspace(root, args.workspace)
     selections = []
     for row in [*args.target, *args.test]:
         kind, separator, target = row[1].partition(':')
@@ -393,13 +409,14 @@ def main():
         selections.append(Selection(row[0], kind, target, row[2] if len(row) == 3 else None))
     metadata = json.loads(args.metadata.read_text(encoding='utf-8-sig'))
     receipts = read_receipts(args.receipt)
-    runtime = Path(subprocess.check_output(['rustc', '--print', 'target-libdir'], cwd=root,
+    runtime = Path(subprocess.check_output(['rustc', '--print', 'target-libdir'], cwd=workspace,
                                           text=True, encoding='utf-8', timeout=15).strip())
     if not runtime.is_absolute() or not runtime.is_dir():
         raise ValueError('The native rustc runtime library directory is unavailable')
     log_dir = args.log_dir or root / '_build/qa/targeted-tests' / (time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:8])
     return execute(root, metadata, receipts, selections, log_dir, jobs=args.jobs,
-                   thread_budget=args.thread_budget, runtime_paths=[runtime], exact=args.exact, timeout=args.timeout)
+                   thread_budget=args.thread_budget, runtime_paths=[runtime], exact=args.exact,
+                   timeout=args.timeout, workspace=workspace)
 
 
 if __name__ == '__main__':
