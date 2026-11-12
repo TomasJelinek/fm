@@ -5,6 +5,7 @@ pub(super) fn bind(
     open: &Rc<OpenWindow>,
     service: Service,
     copy: Rc<dyn Fn(String)>,
+    trace: pixel_preparation::OpeningTrace,
 ) -> Result<(), String> {
     let weak = Rc::downgrade(open);
     open.window.on_deliver_output(move || {
@@ -22,6 +23,7 @@ pub(super) fn bind(
                 .upgrade_in_event_loop(|window| window.invoke_deliver_output())
                 .is_ok()
         }),
+        trace,
     )?;
     *open.preparation.borrow_mut() = Some(preparation);
     Ok(())
@@ -39,6 +41,9 @@ pub(super) fn receive(open: &OpenWindow, service: &Service, copy: &dyn Fn(String
     if open.closed.get() {
         service.retire(batch);
         return;
+    }
+    if let Some(preparation) = open.preparation.borrow().as_ref() {
+        preparation.trace.outputs(30, &batch.outputs);
     }
     let mut outputs = batch.outputs;
     let revision = outputs.iter().find_map(|output| match output {
@@ -98,4 +103,22 @@ pub(super) fn pixels(
     }
     #[cfg(not(test))]
     Err("Prepared viewer pixels do not match the current frame.".into())
+}
+
+pub(super) fn trace_frame(open: &OpenWindow, phase: u8, frame: &ViewerFrame) {
+    if let Some(preparation) = open.preparation.borrow().as_ref() {
+        preparation
+            .trace
+            .mark(phase, frame.generation, frame.revision, 0);
+    }
+}
+
+pub(super) fn trace_published(
+    open: &OpenWindow,
+    frame: &ViewerFrame,
+) -> Option<pixel_preparation::OpeningReport> {
+    open.preparation
+        .borrow()
+        .as_ref()
+        .and_then(|preparation| preparation.trace.finish(frame.generation, frame.revision))
 }

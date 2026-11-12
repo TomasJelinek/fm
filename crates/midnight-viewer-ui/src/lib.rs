@@ -232,6 +232,7 @@ impl ViewerWindows {
         }
         // Installation discovery can overlap native/GPU construction. Content still opens only
         // after show() below supplies the exact physical canvas and monitor scale.
+        let opening_trace = pixel_preparation::OpeningTrace::new();
         self.service.prepare_catalogs();
         let window = match ViewerWindow::new() {
             Ok(window) => window,
@@ -317,7 +318,9 @@ impl ViewerWindows {
         preferences::present(&open);
         image_motion::install(&open);
         raster_motion::install(&open);
-        if let Err(error) = pixel_delivery::bind(&open, self.service.clone(), copy.clone()) {
+        if let Err(error) =
+            pixel_delivery::bind(&open, self.service.clone(), copy.clone(), opening_trace)
+        {
             open.ready.borrow_mut().take();
             close(&open);
             return Err(error);
@@ -607,10 +610,12 @@ fn present_outputs(
                         service.retire(output);
                         continue;
                     };
+                    pixel_delivery::trace_frame(open, 40, frame);
                     let model = open
                         .image_textures
                         .borrow_mut()
                         .receive(tiles, info, displayed, replace);
+                    pixel_delivery::trace_frame(open, 41, frame);
                     let Ok(model) = model else {
                         if let Err(message) = model {
                             window.set_status(message.into());
@@ -747,7 +752,11 @@ fn present_outputs(
                     }
                 }
                 raster_rebase::presented(open, frame);
+                let opening_report = pixel_delivery::trace_published(open, frame);
                 window.invoke_frame_presented();
+                if let Some(report) = opening_report {
+                    service.retire(report);
+                }
             }
             ViewerOutput::RasterRebase {
                 surface,

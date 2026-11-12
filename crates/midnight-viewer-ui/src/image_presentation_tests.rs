@@ -306,7 +306,7 @@ fn early_image_open_failure_is_visible_and_cannot_replace_a_later_files_status()
     manager.close_all();
 }
 
-fn match_fixture_viewport(open: &OpenWindow) {
+fn match_fixture_viewport(open: &OpenWindow) -> slint::LogicalSize {
     let scale = open.window.window().scale_factor();
     let size = open.window.window().size().to_logical(scale);
     let size = slint::LogicalSize::new(
@@ -326,6 +326,7 @@ fn match_fixture_viewport(open: &OpenWindow) {
     open.session
         .restore_preferences(Arc::new(preferences))
         .unwrap();
+    size
 }
 
 #[test]
@@ -529,6 +530,350 @@ fn zoom_after_pending_fit_enlarges_pdf_pages_but_keeps_raster_no_upscale_policy(
                 preferences.document_zoom
             },
             ViewerZoomPreference::ScaleBasisPoints(expected)
+        );
+    }
+    manager.close_all();
+}
+
+fn fit_toolbar_frame(
+    generation: u64,
+    revision: u64,
+    viewport: [u32; 2],
+    mut image: ViewerImageInfo,
+) -> ViewerFrame {
+    image.surface = ViewerSurfaceId(10_000 + revision);
+    image.visible_source = viewport.map(|extent| f64::from(extent) / image.zoom);
+    image.raster_scale = image.zoom.min(1.0);
+    image.pan_sequence = 0;
+    let dimensions = [image.width, image.height].map(f64::from);
+    let extent = std::array::from_fn::<_, 2, _>(|axis| {
+        (image.visible_source[axis] / dimensions[axis]).min(1.0)
+    });
+    let position = std::array::from_fn::<_, 2, _>(|axis| {
+        if extent[axis] < 1.0 {
+            image.origin[axis] / (dimensions[axis] - image.visible_source[axis])
+        } else {
+            0.0
+        }
+    });
+    let low = image
+        .origin
+        .map(|origin| (origin * image.raster_scale / 256.0).floor() as i32 - 1);
+    let high = std::array::from_fn::<_, 2, _>(|axis| {
+        ((image.origin[axis] + image.visible_source[axis]) * image.raster_scale / 256.0).ceil()
+            as i32
+            + 1
+    });
+    let pixels = Arc::new(ViewerPixels::new(vec![255; 256 * 256 * 4], Arc::new(Pixels)).unwrap());
+    let mut tiles = Vec::new();
+    for y in low[1]..high[1] {
+        for x in low[0]..high[0] {
+            tiles.push(ViewerTile {
+                id: ViewerTileId(100_000 + revision * 128 + tiles.len() as u64),
+                position: std::array::from_fn(|axis| {
+                    (f64::from([x, y][axis]) * 256.0 - image.origin[axis] * image.raster_scale)
+                        as f32
+                }),
+                width: 256,
+                height: 256,
+                pixels: pixels.clone(),
+            });
+        }
+    }
+    assert!(tiles.len() <= 128);
+    let mut frame = frame();
+    frame.generation = generation;
+    frame.revision = revision;
+    frame.width = (image.visible_source[0] * image.raster_scale) as u32;
+    frame.height = (image.visible_source[1] * image.raster_scale) as u32;
+    frame.horizontal_extent = extent[0];
+    frame.vertical_extent = extent[1];
+    frame.horizontal_position = position[0];
+    frame.position = position[1];
+    frame.image = Some(image);
+    frame.tiles = Some(tiles.into());
+    frame
+}
+
+#[test]
+fn toolbar_fit_restores_panned_rasters_at_native_dpi_through_late_frames_and_resize() {
+    let (_runtime, manager, open, service) = open();
+    open.timer.stop();
+    open.image_redraw.stop();
+    let submitted = Rc::new(RefCell::new(Vec::new()));
+    let received = submitted.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        received.borrow_mut().push(input);
+        true
+    });
+    // Supplied backend frames isolate toolbar dispatch and retained presentation.
+    // These literal Fit results do not invoke the engine's geometry calculation.
+    for (
+        index,
+        (
+            dpi,
+            source,
+            viewport,
+            fit_zoom,
+            fit_origin,
+            resized_viewport,
+            resized_zoom,
+            resized_origin,
+            zoom_in,
+        ),
+    ) in [
+        (
+            2.0,
+            [4000, 1000],
+            [800, 480],
+            0.2,
+            [0.0, -700.0],
+            [1200, 600],
+            0.3,
+            [0.0, -500.0],
+            2500,
+        ),
+        (
+            2.25,
+            [1000, 4000],
+            [900, 540],
+            0.135,
+            [-2833.3333333333335, 0.0],
+            [1350, 675],
+            0.16875,
+            [-3500.0, 0.0],
+            1688,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let generation = 2 + index as u64;
+        let revision = 10 + index as u64 * 10;
+        open.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: dpi });
+        // The minimal adapter changes DPI without resizing its stored physical size.
+        // Reseed a logical size that has exact physical dimensions at both native scales.
+        open.window
+            .window()
+            .set_size(slint::LogicalSize::new(900.0, 600.0));
+        let fixture_size = match_fixture_viewport(&open);
+        let manual = ViewerImageInfo {
+            width: source[0],
+            height: source[1],
+            zoom: 2.0,
+            origin: [128.0, 256.0],
+            fitted: false,
+            ..info()
+        };
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(fit_toolbar_frame(
+                generation,
+                revision,
+                viewport,
+                manual.clone(),
+            )))],
+        );
+        assert_eq!(open.frame.get(), revision);
+        for axis in 0..2 {
+            assert!((image_viewport(&open)[axis] - viewport[axis] as f32).abs() < 0.01);
+        }
+        open.window.invoke_image_drag(12.0, -8.0);
+        let panned = open.image_camera.borrow().origin;
+        assert_eq!(
+            panned,
+            [128.0 - 6.0 * f64::from(dpi), 256.0 + 4.0 * f64::from(dpi)]
+        );
+        assert_ne!(panned, manual.origin);
+        submitted.borrow_mut().clear();
+        open.window.invoke_image_command(0);
+        {
+            let inputs = submitted.borrow();
+            let [
+                ViewerInput::Image {
+                    frame: command_frame,
+                    input:
+                        ViewerImageInput::ViewZoom {
+                            zoom,
+                            source_anchor,
+                            viewport_anchor,
+                        },
+                },
+            ] = inputs.as_slice()
+            else {
+                panic!("Fit must enqueue one atomic image command: {inputs:?}");
+            };
+            assert_eq!(*command_frame, revision);
+            assert_eq!(*zoom, ViewerZoomPreference::Fit);
+            for axis in 0..2 {
+                let center = f64::from(viewport[axis]) / 2.0;
+                assert!((f64::from(viewport_anchor[axis]) - center).abs() < 0.01);
+                assert!((source_anchor[axis] - (panned[axis] + center / 2.0)).abs() < 0.01);
+            }
+        }
+        assert_eq!(
+            open.session.preferences().image_zoom,
+            ViewerZoomPreference::Fit
+        );
+        assert!(!open.image_camera.borrow().active());
+        assert!(!open.image_redraw.running());
+        let pending_scale = || {
+            open.image_zoom.borrow().scale(
+                generation,
+                open.image_info.borrow().as_ref().unwrap(),
+                image_viewport(&open),
+            )
+        };
+        assert!((pending_scale() - fit_zoom).abs() < 1e-8);
+
+        open.window.invoke_image_command(2);
+        open.window.invoke_image_command(0);
+        let zooms: Vec<_> = submitted
+            .borrow()
+            .iter()
+            .map(|input| match input {
+                ViewerInput::Image {
+                    input: ViewerImageInput::ViewZoom { zoom, .. },
+                    ..
+                } => *zoom,
+                other => panic!("unexpected input during toolbar burst: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            zooms,
+            [
+                ViewerZoomPreference::Fit,
+                ViewerZoomPreference::ScaleBasisPoints(zoom_in),
+                ViewerZoomPreference::Fit,
+            ]
+        );
+        assert_eq!(
+            open.session.preferences().image_zoom,
+            ViewerZoomPreference::Fit
+        );
+        assert!((pending_scale() - fit_zoom).abs() < 1e-8);
+
+        let mut intermediate = manual.clone();
+        intermediate.zoom = f64::from(zoom_in) / 10_000.0;
+        intermediate.origin = std::array::from_fn(|axis| {
+            ((f64::from(source[axis]) - f64::from(viewport[axis]) / intermediate.zoom) / 2.0)
+                .min(0.0)
+        });
+        let intermediate = fit_toolbar_frame(generation, revision + 1, viewport, intermediate);
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(intermediate.clone()))],
+        );
+        assert_eq!(
+            open.frame.get(),
+            revision + 1,
+            "the intermediate reply was admitted"
+        );
+        assert_eq!(
+            open.session.preferences().image_zoom,
+            ViewerZoomPreference::Fit
+        );
+        assert!((pending_scale() - fit_zoom).abs() < 1e-8);
+        let fitted = ViewerImageInfo {
+            zoom: fit_zoom,
+            origin: fit_origin,
+            fitted: true,
+            ..manual.clone()
+        };
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(fit_toolbar_frame(
+                generation,
+                revision + 2,
+                viewport,
+                fitted.clone(),
+            )))],
+        );
+        let fitted_context = open.window.get_position_context();
+        for late in [false, true] {
+            if late {
+                present_outputs(
+                    &open,
+                    &service,
+                    &|_| {},
+                    vec![ViewerOutput::Frame(Box::new(intermediate.clone()))],
+                );
+            }
+            assert_eq!(open.frame.get(), revision + 2);
+            assert_eq!(open.image_camera.borrow().origin, fit_origin);
+            assert!(!open.image_camera.borrow().active());
+            assert_eq!(open.window.get_horizontal_extent(), 1.0);
+            assert_eq!(open.window.get_vertical_extent(), 1.0);
+            assert_eq!(open.window.get_horizontal_position(), 0.0);
+            assert_eq!(open.window.get_position(), 0.0);
+            assert_eq!(open.window.get_image_viewport_width(), viewport[0] as f32);
+            assert_eq!(open.window.get_image_viewport_height(), viewport[1] as f32);
+            assert!((f64::from(open.window.get_zoom_percent()) - fit_zoom * 100.0).abs() < 0.001);
+            assert_eq!(open.window.get_position_context(), fitted_context);
+            assert_eq!(
+                open.session.preferences().image_zoom,
+                ViewerZoomPreference::Fit
+            );
+        }
+
+        // Preserve the requested logical size: reading back physical pixels loses
+        // fractions at 2.25x and would change the intended 600x300 logical canvas.
+        let size = slint::LogicalSize::new(fixture_size.width + 200.0, fixture_size.height + 60.0);
+        open.window.window().set_size(size);
+        open.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::Resized { size });
+        for axis in 0..2 {
+            assert!((image_viewport(&open)[axis] - resized_viewport[axis] as f32).abs() < 0.01);
+        }
+        // The retained frame keeps its physical extent until the resized reply arrives.
+        assert_eq!(open.window.get_image_viewport_width(), viewport[0] as f32);
+        assert_eq!(open.window.get_image_viewport_height(), viewport[1] as f32);
+        let resized = ViewerImageInfo {
+            zoom: resized_zoom,
+            origin: resized_origin,
+            ..fitted
+        };
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::Frame(Box::new(fit_toolbar_frame(
+                generation,
+                revision + 3,
+                resized_viewport,
+                resized,
+            )))],
+        );
+        assert_eq!(open.frame.get(), revision + 3);
+        assert_eq!(open.image_camera.borrow().origin, resized_origin);
+        assert!(!open.image_camera.borrow().active());
+        assert_eq!(open.window.get_horizontal_extent(), 1.0);
+        assert_eq!(open.window.get_vertical_extent(), 1.0);
+        assert_eq!(open.window.get_horizontal_position(), 0.0);
+        assert_eq!(open.window.get_position(), 0.0);
+        assert_eq!(
+            open.window.get_image_viewport_width(),
+            resized_viewport[0] as f32
+        );
+        assert_eq!(
+            open.window.get_image_viewport_height(),
+            resized_viewport[1] as f32
+        );
+        assert_ne!(open.window.get_position_context(), fitted_context);
+        assert!((pending_scale() - resized_zoom).abs() < 1e-8);
+        assert!((f64::from(open.window.get_zoom_percent()) - resized_zoom * 100.0).abs() < 0.001);
+        assert_eq!(
+            open.session.preferences().image_zoom,
+            ViewerZoomPreference::Fit
         );
     }
     manager.close_all();
