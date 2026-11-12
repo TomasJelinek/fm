@@ -107,13 +107,17 @@ installation is needed. The first build takes longer than subsequent builds.
 
 The commands below assume the current directory is the repository root. The
 optional root build helpers locate the repository themselves, so they also work
-when invoked by a quoted path from another directory. They accept no argument
-(debug), `debug`, or `release`, run a locked build of `midnight-explorer`, and return Cargo's
-exit status. They also build the platform's independent native and Network Neighborhood
+when invoked by a quoted path from another directory. For builds they accept no
+argument (debug), `debug`, or `release`, run a locked build of `midnight-explorer`,
+and return failures to the caller. Linux `build.sh` also supports `clean`,
+`--dry-run` and explicit `--install-deps`, described below. Build profiles also
+build the platform's independent native and Network Neighborhood
 filesystem packages under `filesystems/native.{windows,linux}/` and
 `filesystems/network.{windows,linux}/`, then the five
 independent viewer packages using the public SDK under `viewers/`. They do
-not install system packages or launch the application. Direct `cargo build` builds
+not launch the application. Native Linux packages are installed only when
+`--install-deps` is explicitly supplied; the default build does not install them.
+Direct `cargo build` builds
 the host only. Run `scripts/build-native-filesystem.ps1` or
 `scripts/build-native-filesystem.sh` before launching it, add Network Neighborhood with
 `scripts/build-network-filesystem.ps1` or `.sh`, and use `scripts/build-viewers.ps1`
@@ -221,7 +225,17 @@ that PowerShell helper. Regular `cargo` commands use the ordinary `--` separator
 
 Install the native compiler/linker and development libraries used by the current
 Linux build. Viewer package helpers also require Python 3.11 or newer for the
-released SDK configuration. For Ubuntu/Mint:
+released SDK configuration. The [Linux dependency helper](scripts/setup-linux.sh)
+detects Ubuntu/Mint, Fedora or openSUSE and prints a package plan by default:
+
+```sh
+sh scripts/setup-linux.sh
+sh scripts/setup-linux.sh --install --dry-run
+```
+
+Only explicit `--install` runs the package manager, using `sudo` when needed.
+`--dry-run` keeps it plan-only even with `--install`. Rust must be installed
+separately. Alternatively, install the packages manually. For Ubuntu/Mint:
 
 ```sh
 sudo apt update
@@ -260,15 +274,43 @@ automatically supported by the current launcher.
 
 Install Rust using the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
-Build using the POSIX helper, or build only the host with Cargo:
+The Linux helper accepts
+`./build.sh [debug|release|clean] [--install-deps] [--dry-run]`:
 
 ```sh
 ./build.sh
+./build.sh debug
 ./build.sh release
+./build.sh --dry-run
+./build.sh debug --install-deps --dry-run
+./build.sh debug --install-deps
+```
 
+`--install-deps` explicitly opts into the dependency helper's package installation
+before building. `--dry-run` prints the selected package/build commands without
+installing or compiling. With no profile, debug is selected. The helper requires
+Linux and rejects macOS; application and build support for macOS remain pending.
+
+Build only the host with Cargo (install the native provider/viewers separately as
+described above):
+
+```sh
 cargo build -p midnight-explorer -p midnight-elevation --locked
 cargo build -p midnight-explorer -p midnight-elevation --locked --release
 ```
+
+Preview or remove repository build output with:
+
+```sh
+./build.sh clean --dry-run
+./build.sh clean
+```
+
+Clean is limited to the repository's `_build/`, regardless of `CARGO_TARGET_DIR`.
+It preserves `.tools/` and the legacy `_build/docker/` cache. It rejects a symlinked
+`_build` and validates Linux mount metadata before removal, refusing mounts/bind
+mounts in the deletion scope outside the preserved Docker cache. Missing or invalid
+mount metadata fails closed. Clean cannot be combined with `--install-deps`.
 
 Run in a graphical desktop session with X11 or Wayland and working graphics
 drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/)
@@ -348,7 +390,8 @@ See the [complete current keyboard map](docs/KEYBOARD_SHORTCUTS.md), including
 editor scope and shortcuts reserved for later stages.
 
 - Ctrl+A selects top-level files only; Ctrl+Shift+A includes top-level folders.
-  Ctrl+D deselects files while preserving selected folders; Ctrl+Shift+D clears all.
+  Both replace selection and clear nested marks. Ctrl+D clears all selected files
+  and folders, including marked inline descendants; Ctrl+Shift+D has no default binding.
   Ctrl+I inverts files only; Ctrl+Shift+I inverts top-level files and folders.
   This works inside archives too. The parent `..` is excluded; text editors retain
   normal editing. These shortcuts can be reassigned in Options.
