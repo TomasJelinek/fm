@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 
 #[path = "delete_pause_tests.rs"]
 mod pause;
+#[path = "operation_retirement_tests.rs"]
+mod retirement;
 #[path = "operation_summary_tests.rs"]
 mod summary;
 #[path = "delete_throughput_tests.rs"]
@@ -176,7 +178,7 @@ impl Harness {
             entries: entries.clone(),
         };
         let view = Arc::new(DirectoryIndex::from_entries(&entries));
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 archive: None,
                 network: None,
@@ -191,13 +193,16 @@ impl Harness {
                 ..Default::default()
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let (sender, events) = mpsc::channel(64);
         let calls = Arc::new(Calls::default());
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
-            Some(service.unwrap_or_else(|| Arc::new(FakeService(calls.clone())))),
-            None,
+            crate::worker_retirement::ActorRetirement::testing(),
+            Services {
+                mutation: Some(service.unwrap_or_else(|| Arc::new(FakeService(calls.clone())))),
+                locale: None,
+            },
             snapshots,
             Outbox {
                 sender,

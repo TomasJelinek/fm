@@ -15,6 +15,7 @@ pub use fonts::{installed_families, is_generic_family, monospace_families};
 mod glyphs;
 mod options;
 mod raster;
+mod scroll_anchors;
 mod selection;
 mod source_map;
 mod tables;

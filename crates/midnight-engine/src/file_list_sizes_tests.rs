@@ -36,7 +36,7 @@ fn fixture() -> (FileListCapture, Snapshots, SharedSizes) {
             })
             .collect(),
     ));
-    let snapshots: Snapshots = Arc::default();
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     snapshots.lock().unwrap()[0].visible = Some(crate::CommittedSnapshot {
         navigation: NavigationId(7),
         path: root,

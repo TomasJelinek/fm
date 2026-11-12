@@ -303,9 +303,8 @@ async fn captured_send_failure_finishes_source_retirement_before_capacity_and_te
     };
     let capacity = h.controller.capacity();
     let events = &mut h.events;
-    let enqueue = h
-        .controller
-        .enqueue_input_reserved(request.into(), reservation);
+    let (request, sender) = reservation.attach(request.into());
+    let enqueue = h.controller.enqueue_input_reserved(request, sender);
     let verify = async {
         tokio::time::timeout(Duration::from_secs(2), started.notified())
             .await

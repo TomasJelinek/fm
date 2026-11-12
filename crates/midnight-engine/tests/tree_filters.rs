@@ -168,7 +168,14 @@ impl Harness {
         let (commands, receive) = mpsc::channel(32);
         let (send, events) = mpsc::channel(64);
         let files = Arc::new(Files::default());
-        let engine = tokio::spawn(Engine::new(files.clone(), send).run(receive));
+        let engine = tokio::spawn(
+            Engine::new(
+                Engine::lifetime().expect("engine cleanup worker"),
+                files.clone(),
+                send,
+            )
+            .run(receive),
+        );
         Self {
             commands,
             events,

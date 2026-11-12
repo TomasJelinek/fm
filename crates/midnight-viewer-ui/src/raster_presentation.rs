@@ -121,11 +121,19 @@ pub(super) fn present(open: &OpenWindow) {
         open.window.set_raster_offset_y(
             ((info.raster_origin[1] - origin[1]) / f64::from(info.viewport[1])) as f32,
         );
-        let positions: [f64; 2] = std::array::from_fn(|axis| {
+        let mut positions: [f64; 2] = std::array::from_fn(|axis| {
             (state.positions[axis]
                 + (origin[axis] - info.origin[axis]) * info.scroll_per_pixel[axis])
                 .clamp(0.0, 1.0)
         });
+        if let Some((position, extent)) = info
+            .scroll_map
+            .as_ref()
+            .and_then(|map| map.metrics(origin[1], f64::from(info.viewport[1])))
+        {
+            positions[1] = position;
+            open.window.set_vertical_extent(extent as f32);
+        }
         if !open.text_position.borrow().has_pending() {
             open.window.set_position(positions[1] as f32);
             open.window.set_horizontal_position(positions[0] as f32);

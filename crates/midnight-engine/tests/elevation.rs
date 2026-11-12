@@ -75,7 +75,12 @@ async fn only_explicit_receipt_retries_captured_path_once_and_preserves_complete
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(32);
     let service = Arc::new(Authorized::default());
-    let engine = Engine::new(Arc::new(Denied), sender).with_elevated_directories(service.clone());
+    let engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Denied),
+        sender,
+    )
+    .with_elevated_directories(service.clone());
     let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::Navigate {
@@ -142,7 +147,12 @@ async fn background_refresh_denial_never_offers_authorization() {
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(32);
     let service = Arc::new(Authorized::default());
-    let engine = Engine::new(Arc::new(Denied), sender).with_elevated_directories(service.clone());
+    let engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Denied),
+        sender,
+    )
+    .with_elevated_directories(service.clone());
     let task = tokio::spawn(engine.run(receiver));
     commands
         .send(Command::Refresh {

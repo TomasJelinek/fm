@@ -7,6 +7,9 @@ pub use tiles::*;
 #[path = "viewer_raster.rs"]
 mod raster;
 pub use raster::*;
+#[path = "viewer_scroll_map.rs"]
+mod scroll_map;
+pub use scroll_map::*;
 #[path = "viewer_associations.rs"]
 mod associations;
 pub use associations::ViewerAssociations;

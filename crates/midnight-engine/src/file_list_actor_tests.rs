@@ -29,7 +29,12 @@ fn controller() -> (Controller, mpsc::Receiver<Event>, JoinSet<()>) {
         wakeup: Arc::new(|| {}),
     };
     (
-        Controller::new(None, Arc::new(Semaphore::new(1)), outbox, Arc::default()),
+        Controller::new(
+            None,
+            Arc::new(Semaphore::new(1)),
+            outbox,
+            crate::test_snapshots(Default::default()),
+        ),
         events,
         JoinSet::new(),
     )

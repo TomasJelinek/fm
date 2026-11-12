@@ -601,6 +601,10 @@ impl Worker {
                     limit_max: limits_max,
                     pan_sequence: self.raster.sequence,
                     scroll_per_pixel: [0.0; 2],
+                    scroll_map: self
+                        .scroll_map
+                        .as_ref()
+                        .map(|map| map.translated(self.raster.base[1])),
                     settled: true,
                     gutter,
                 },

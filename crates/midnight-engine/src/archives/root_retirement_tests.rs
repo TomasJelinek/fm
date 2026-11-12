@@ -3,7 +3,7 @@ use std::sync::{Mutex, Weak};
 use tokio::sync::oneshot;
 
 struct RetiringArchive {
-    snapshots: Weak<Mutex<[crate::SnapshotState; 2]>>,
+    snapshots: Weak<crate::retirement::WorkerOwned<Mutex<[crate::SnapshotState; 2]>>>,
     report: Option<oneshot::Sender<(std::thread::ThreadId, bool)>>,
 }
 
@@ -16,7 +16,10 @@ impl std::fmt::Debug for RetiringArchive {
 impl Drop for RetiringArchive {
     fn drop(&mut self) {
         if let Some(report) = self.report.take() {
-            let unlocked = self.snapshots.upgrade().unwrap().try_lock().is_ok();
+            let unlocked = self
+                .snapshots
+                .upgrade()
+                .is_none_or(|states| states.try_lock().is_ok());
             let _ = report.send((std::thread::current().id(), unlocked));
         }
     }
@@ -55,7 +58,7 @@ fn location(mount: RetiringArchive) -> ArchiveLocation {
 #[tokio::test]
 async fn replacing_archive_root_retires_mount_on_blocking_worker_outside_snapshot_lock() {
     let caller = std::thread::current().id();
-    let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     let retirement = remember_old_root(&snapshots);
     let (sender, mut events) = tokio::sync::mpsc::channel(1);
     let catalog = OnceLock::new();
@@ -139,7 +142,7 @@ fn remember_old_root(snapshots: &Snapshots) -> oneshot::Receiver<(std::thread::T
 #[tokio::test]
 async fn shutdown_drains_cached_roots_off_executor_and_outside_state_lock() {
     let caller = std::thread::current().id();
-    let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     let retirement = remember_old_root(&snapshots);
     crate::tree_roots::shutdown(snapshots.clone()).await;
     let (thread, unlocked) = retirement.await.unwrap();
@@ -156,7 +159,7 @@ async fn shutdown_drains_cached_roots_off_executor_and_outside_state_lock() {
 
 #[tokio::test]
 async fn native_publication_retires_previous_archive_outside_state_lock() {
-    let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     let retirement = remember_old_root(&snapshots);
     let (sender, mut events) = tokio::sync::mpsc::channel(1);
     tokio::task::spawn_blocking(move || {
@@ -192,7 +195,7 @@ async fn native_publication_retires_previous_archive_outside_state_lock() {
 #[test]
 fn cancelled_or_superseded_archive_completion_never_refills_root_cache() {
     for cancelled in [false, true] {
-        let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let snapshots: Snapshots = crate::test_snapshots(Default::default());
         snapshots.lock().unwrap()[0].archive_navigation =
             Some(NavigationId(if cancelled { 2 } else { 3 }));
         let cancel = Cancellation::default();
@@ -212,4 +215,26 @@ fn cancelled_or_superseded_archive_completion_never_refills_root_cache() {
         assert!(states[0].tree_root.is_none());
         assert!(states[0].archive.is_none());
     }
+}
+
+#[test]
+fn last_snapshot_owner_retires_cached_archive_without_a_runtime() {
+    let caller = std::thread::current().id();
+    let snapshots = crate::test_snapshots(Default::default());
+    let mut report = remember_old_root(&snapshots);
+    let last_owner = snapshots.clone();
+    drop(snapshots);
+    drop(last_owner);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let (thread, unlocked) = loop {
+        match report.try_recv() {
+            Ok(value) => break value,
+            Err(oneshot::error::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                std::thread::yield_now();
+            }
+            error => panic!("archive retirement did not finish: {error:?}"),
+        }
+    };
+    assert_ne!(thread, caller);
+    assert!(unlocked);
 }

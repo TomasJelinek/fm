@@ -57,6 +57,8 @@ pub struct ViewerRasterInfo {
     pub pan_sequence: u64,
     /// Normalized horizontal/vertical scroll fraction per effective raster pixel at `origin`.
     pub scroll_per_pixel: [f64; 2],
+    /// Exact bounded visual/source map for vertical presentation and its local inverse.
+    pub scroll_map: Option<super::ViewerScrollMap>,
     /// Pixels are exact at `origin`, including fractional glyph phase.
     pub settled: bool,
     /// Pinned horizontally; the body starts at this gutter's width in the viewport.

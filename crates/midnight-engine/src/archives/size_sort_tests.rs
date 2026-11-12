@@ -1,10 +1,7 @@
 use super::*;
 use std::{
     collections::HashMap,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -98,7 +95,7 @@ struct Harness {
 }
 impl Harness {
     fn new() -> Self {
-        let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let snapshots: Snapshots = crate::test_snapshots(Default::default());
         let (sender, events) = tokio::sync::mpsc::channel(32);
         let outbox = Outbox {
             sender,
@@ -320,6 +317,8 @@ async fn published_sort_lookup_does_not_retain_retired_map_or_mount() {
     drop(source);
     harness.sizes.shutdown().await;
     drop(harness.navigation);
-    drop(harness.snapshots);
+    let snapshots = Arc::try_unwrap(harness.snapshots)
+        .unwrap_or_else(|_| panic!("snapshot still has live actor owners"));
+    snapshots.retire().await.unwrap();
     assert!(weak_source.upgrade().is_none());
 }

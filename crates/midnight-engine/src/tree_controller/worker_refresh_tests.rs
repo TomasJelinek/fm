@@ -129,7 +129,7 @@ fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePerm
     lane.publish(&view);
     let mut worker = Worker::new(
         lane.clone(),
-        Arc::default(),
+        crate::test_snapshots(Default::default()),
         native,
         None,
         budget,

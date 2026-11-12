@@ -82,10 +82,14 @@ async fn preview_is_read_only_and_execution_failure_reports_an_honest_summary_wi
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
     let engine = tokio::spawn(
-        Engine::new(service.clone(), events)
-            .with_transfers(service)
-            .with_user_commands(Arc::new(Native(attempts.clone())))
-            .run(commands),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            events,
+        )
+        .with_transfers(service)
+        .with_user_commands(Arc::new(Native(attempts.clone())))
+        .run(commands),
     );
     send.send(Command::PreviewUserCommand(Box::new(request(
         1,
@@ -142,7 +146,14 @@ async fn unavailable_service_and_reused_request_ids_are_rejected_visibly() {
     let service = Arc::new(LocalFileSystem::new(None));
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(Engine::new(service, events).run(commands));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service,
+            events,
+        )
+        .run(commands),
+    );
     for id in [3, 3, 2] {
         send.send(Command::PreviewUserCommand(Box::new(request(
             id,

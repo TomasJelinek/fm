@@ -22,6 +22,7 @@ fn frame(revision: u64) -> ViewerOutput {
         limit_max: [None; 2],
         pan_sequence: 0,
         scroll_per_pixel: [0.001, 0.0001],
+        scroll_map: None,
         settled: true,
         gutter: Some(ViewerRasterGutter {
             width: 20,
@@ -531,5 +532,52 @@ fn retained_scrollbar_moves_real_body_and_gutter_pixels_before_any_worker_reply(
     );
     assert!(((gutter_before[1] - gutter_after[1]) as f32 - dy).abs() < 1.1);
     assert_eq!(open.window.get_raster_upload_count(), uploads);
+    manager.close_all();
+}
+
+#[test]
+fn source_map_refill_keeps_thumb_geometry_and_allows_immediate_reverse_motion() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    let ViewerOutput::Frame(mut first) = frame(10) else {
+        unreachable!()
+    };
+    first.raster.as_mut().unwrap().scroll_map = Some(
+        ViewerScrollMap::new(
+            [(0.0, 0.0), (200.0, 0.1), (440.0, 0.35), (800.0, 1.0)]
+                .into_iter()
+                .map(|(y, fraction)| ViewerScrollAnchor { y, fraction })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(first.clone())],
+    );
+    let old = (
+        open.window.get_position(),
+        open.window.get_vertical_extent(),
+    );
+    first.revision += 1;
+    first.position = 0.9;
+    first.vertical_extent = 0.01;
+    first.raster.as_mut().unwrap().pixel_id += 1;
+    first.raster.as_mut().unwrap().scroll_per_pixel[1] *= 5.0;
+    present_outputs(&open, &service, &|_| {}, vec![ViewerOutput::Frame(first)]);
+    assert_eq!(
+        (
+            open.window.get_position(),
+            open.window.get_vertical_extent()
+        ),
+        old
+    );
+    assert!(raster_presentation::push(&open, 0.0, 5.0, true));
+    assert!(open.window.get_position() > old.0);
+    assert!(raster_presentation::push(&open, 0.0, -5.0, true));
+    assert!((open.window.get_position() - old.0).abs() < 1e-7);
     manager.close_all();
 }

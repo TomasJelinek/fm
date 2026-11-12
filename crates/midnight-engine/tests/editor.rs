@@ -65,9 +65,13 @@ async fn editor_dispatch_preserves_request_and_reports_worker_launch_error() {
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
     let task = tokio::spawn(
-        Engine::new(service.clone(), sender)
-            .with_editor(service.clone())
-            .run(receiver),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            sender,
+        )
+        .with_editor(service.clone())
+        .run(receiver),
     );
     let path = std::env::current_dir()
         .unwrap()
@@ -132,7 +136,14 @@ async fn editor_rejections_keep_backpressure_when_event_consumer_stops() {
     let service = Arc::new(Service::default());
     let (commands, receiver) = mpsc::channel(2);
     let (sender, mut events) = mpsc::channel(1);
-    let task = tokio::spawn(Engine::new(service, sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service,
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(Command::EditFile {
             request: DesktopRequestId(1),
@@ -232,7 +243,11 @@ async fn captured_tree_editor_resolves_and_retires_only_on_workers_including_rej
         let service = Arc::new(Service::default());
         let (commands, receiver) = mpsc::channel(8);
         let (sender, mut events) = mpsc::channel(64);
-        let mut engine = Engine::new(service.clone(), sender);
+        let mut engine = Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            sender,
+        );
         if available {
             engine = engine.with_editor(service.clone());
         }

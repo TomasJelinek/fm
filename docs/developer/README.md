@@ -40,7 +40,8 @@ Application contributors working on copy and archive extraction should also read
 the internal [native transfer contract](TRANSFERS.md). Its Rust capabilities are
 not part of the external plugin ABI. The shared [operation progress contract](OPERATION_PROGRESS.md)
 covers Copy/Move/Delete discovery, pause, cancellation, truthful progress and the
-separate Jobs session ledger.
+separate Jobs session ledger. The internal [engine ownership contract](ENGINE_LIFETIME.md)
+describes runtime-independent retirement, bounded reservations and remaining actor boundaries.
 
 The [filesystem migration map](FILESYSTEM_MIGRATION.md) and
 [internal provider registry](PROVIDER_REGISTRY.md) describe the transitional

@@ -60,7 +60,7 @@ mod tests {
     fn cancelled_worker_cache_cannot_write_into_a_replacement_scan() {
         let original = snapshot(1);
         let old_worker_cache = original.sizes.clone();
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 tree_root: None,
                 tree_notify: None,
@@ -74,7 +74,7 @@ mod tests {
                 pending: None,
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let next = prepare(original, &snapshots, PaneId::Left, None);
         assert!(!Arc::ptr_eq(&old_worker_cache, &next.sizes));
         old_worker_cache.lock().unwrap().insert(
@@ -103,7 +103,7 @@ mod tests {
         // Even an identical navigation/path must not retarget a different Arc.
         let unrelated = snapshot(1);
         let unrelated_cache = unrelated.sizes.clone();
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 tree_root: None,
                 tree_notify: None,
@@ -117,7 +117,7 @@ mod tests {
                 pending: None,
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let next = prepare(original, &snapshots, PaneId::Left, None);
         let cached = snapshots.lock().unwrap();
         assert!(Arc::ptr_eq(

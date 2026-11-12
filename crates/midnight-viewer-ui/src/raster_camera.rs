@@ -103,12 +103,27 @@ impl Camera {
         let Some(info) = self.info() else {
             return false;
         };
-        let slope = info.scroll_per_pixel[axis];
-        if slope <= 0.0 {
-            return false;
-        }
         let mut target = self.origin;
-        target[axis] = info.origin[axis] + (position - frame_position) / slope;
+        target[axis] = if axis == 1
+            && let Some(map) = &info.scroll_map
+        {
+            let Some(origin) = map.inverse_near(
+                position,
+                f64::from(info.viewport[1]),
+                info.coverage_min[1].max(info.limit_min[1].unwrap_or(f64::NEG_INFINITY)),
+                info.coverage_max[1].min(info.limit_max[1].unwrap_or(f64::INFINITY)),
+                self.origin[1],
+            ) else {
+                return false;
+            };
+            origin
+        } else {
+            let slope = info.scroll_per_pixel[axis];
+            if slope <= 0.0 {
+                return false;
+            }
+            info.origin[axis] + (position - frame_position) / slope
+        };
         if !target[axis].is_finite() || !covered(info, target) || clamp(info, target) != target {
             return false;
         }

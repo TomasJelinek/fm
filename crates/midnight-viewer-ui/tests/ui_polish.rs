@@ -102,10 +102,6 @@ fn compact_pdf_keeps_large_page_counter_and_zoom_actions_clickable() {
     slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
     let window = ViewerWindow::new().unwrap();
     window.set_image_mode(true);
-    window.set_document_page(9999);
-    window.set_document_pages(10000);
-    window.set_zoom_percent(1600.0);
-    window.set_status("Page 9999 / 10000 · 1600%".into());
     let turns = Rc::new(RefCell::new(Vec::new()));
     let capture = turns.clone();
     window.on_document_turn(move |delta| capture.borrow_mut().push(delta));
@@ -113,64 +109,88 @@ fn compact_pdf_keeps_large_page_counter_and_zoom_actions_clickable() {
     let capture = commands.clone();
     window.on_image_command(move |command| capture.borrow_mut().push(command));
     window.show().unwrap();
-    for light in [false, true] {
-        window.invoke_apply_palette(light);
-        window.set_background_color(if light {
-            slint::Color::from_rgb_u8(248, 248, 248)
-        } else {
-            slint::Color::from_rgb_u8(24, 28, 36)
-        });
-        window.set_foreground(if light {
-            slint::Color::from_rgb_u8(24, 28, 36)
-        } else {
-            slint::Color::from_rgb_u8(240, 240, 240)
-        });
-        for (width, height) in [(320, 200), (1000, 720)] {
-            window.set_compact(width < 500);
-            draw(
-                &native,
-                &window,
-                width,
-                height,
-                if light { "pdf-light" } else { "pdf-dark" },
-            );
-            for label in [
-                "Previous document page (Ctrl+PageUp)",
-                "Next document page (Ctrl+PageDown)",
-                "Fit image to window",
-                "Actual image pixels",
-                "Zoom image out",
-                "Zoom image in",
-            ] {
-                let item = control(&window, label, width as f32, height as f32);
-                let rect = item.geometry();
-                let origin = item.map_to_native_window(rect.origin);
-                let position = slint::LogicalPosition::new(
-                    origin.x + rect.size.width / 2.0,
-                    origin.y + rect.size.height / 2.0,
+    // Native font metrics differ across platforms. Exercise the entire supported
+    // page-counter range without sacrificing control bounds or actual clicks.
+    for (page, pages, zoom) in [(9999, 10000, 1600.0), (i32::MAX - 1, i32::MAX, 1599.9)] {
+        window.set_document_page(page);
+        window.set_document_pages(pages);
+        window.set_zoom_percent(zoom);
+        window.set_status(format!("Page {page} / {pages} · {zoom}%").into());
+        for light in [false, true] {
+            window.invoke_apply_palette(light);
+            window.set_background_color(if light {
+                slint::Color::from_rgb_u8(248, 248, 248)
+            } else {
+                slint::Color::from_rgb_u8(24, 28, 36)
+            });
+            window.set_foreground(if light {
+                slint::Color::from_rgb_u8(24, 28, 36)
+            } else {
+                slint::Color::from_rgb_u8(240, 240, 240)
+            });
+            for (width, height) in [(320, 200), (1000, 720)] {
+                window.set_compact(width < 500);
+                draw(
+                    &native,
+                    &window,
+                    width,
+                    height,
+                    if light { "pdf-light" } else { "pdf-dark" },
                 );
-                for event in [
-                    WindowEvent::PointerMoved { position },
-                    WindowEvent::PointerPressed {
-                        position,
-                        button: PointerEventButton::Left,
-                    },
-                    WindowEvent::PointerReleased {
-                        position,
-                        button: PointerEventButton::Left,
-                    },
+                let counter = control(
+                    &window,
+                    "Document page counter",
+                    width as f32,
+                    height as f32,
+                );
+                assert_eq!(
+                    counter.accessible_string_property(AccessibleStringProperty::Value),
+                    Some(format!("{page} / {pages}").into())
+                );
+                control(
+                    &window,
+                    "Image zoom percentage",
+                    width as f32,
+                    height as f32,
+                );
+                for label in [
+                    "Previous document page (Ctrl+PageUp)",
+                    "Next document page (Ctrl+PageDown)",
+                    "Fit image to window",
+                    "Actual image pixels",
+                    "Zoom image out",
+                    "Zoom image in",
                 ] {
-                    window.window().dispatch_event(event);
+                    let item = control(&window, label, width as f32, height as f32);
+                    let rect = item.geometry();
+                    let origin = item.map_to_native_window(rect.origin);
+                    let position = slint::LogicalPosition::new(
+                        origin.x + rect.size.width / 2.0,
+                        origin.y + rect.size.height / 2.0,
+                    );
+                    for event in [
+                        WindowEvent::PointerMoved { position },
+                        WindowEvent::PointerPressed {
+                            position,
+                            button: PointerEventButton::Left,
+                        },
+                        WindowEvent::PointerReleased {
+                            position,
+                            button: PointerEventButton::Left,
+                        },
+                    ] {
+                        window.window().dispatch_event(event);
+                    }
                 }
+                assert!(
+                    window.get_content_height() > 40.0,
+                    "PDF must retain a useful viewport"
+                );
             }
-            assert!(
-                window.get_content_height() > 40.0,
-                "PDF must retain a useful viewport"
-            );
         }
     }
-    assert_eq!(*turns.borrow(), [-1, 1, -1, 1, -1, 1, -1, 1]);
-    assert_eq!(*commands.borrow(), [0, 1, 3, 2].repeat(4));
+    assert_eq!(*turns.borrow(), [-1, 1].repeat(8));
+    assert_eq!(*commands.borrow(), [0, 1, 3, 2].repeat(8));
     window.hide().unwrap();
 }
 

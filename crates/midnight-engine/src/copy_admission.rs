@@ -22,6 +22,7 @@ struct Shared {
     ready: Notify,
     capacity: Arc<Semaphore>,
     fence: CopyFence,
+    retirement: crate::retirement::RetirementDomain,
 }
 
 #[derive(Clone)]
@@ -43,38 +44,40 @@ impl Drop for Consumer {
         for slot in &mut retired {
             slot.payload.close();
         }
-        // Close sends synchronously; defer only payload destruction.
-        // One bounded shutdown batch, including oneshot payloads that arrived
-        // after cancellation. Their receiver must also die on a blocking worker.
-        tokio::task::spawn_blocking(move || {
-            for mut slot in retired {
-                if let Ok(request) = slot.payload.try_recv() {
-                    drop(request.input.into_inner());
-                }
-            }
-        });
+        // Every sent payload already carries its own reserved cleanup slot and
+        // capacity. Closing/dropping receivers only drops those guard envelopes.
+        drop(retired);
     }
 }
 
 pub(crate) struct Reservation {
+    slot: SlotReservation,
+    lease: crate::retirement::RetirementLease,
+}
+
+pub(super) struct SlotReservation {
     receipt: Receipt,
     payload: oneshot::Sender<Request>,
-    // Resolve abandonment and close the slot before another reservation can enter.
     capacity: OwnedSemaphorePermit,
 }
 
+#[cfg(test)]
 impl Default for Admission {
     fn default() -> Self {
+        Self::new(crate::retirement::RetirementDomain::try_start(MAX_JOBS, 0).unwrap())
+    }
+}
+
+impl Admission {
+    pub(super) fn new(retirement: crate::retirement::RetirementDomain) -> Self {
         Self(Arc::new(Shared {
             slots: Mutex::default(),
             ready: Notify::new(),
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
             fence: CopyFence::default(),
+            retirement,
         }))
     }
-}
-
-impl Admission {
     pub(crate) fn capacity(&self) -> Arc<Semaphore> {
         self.0.capacity.clone()
     }
@@ -86,6 +89,18 @@ impl Admission {
     }
 
     pub(crate) fn reserve(&self) -> Result<Reservation, FsError> {
+        let slot = self.reserve_slot()?;
+        let lease = self.0.retirement.try_reserve().map_err(|_| {
+            error(
+                Path::new(""),
+                io::ErrorKind::WouldBlock,
+                "Copy retirement capacity is occupied.",
+            )
+        })?;
+        Ok(Reservation { slot, lease })
+    }
+
+    pub(super) fn reserve_slot(&self) -> Result<SlotReservation, FsError> {
         let mut slots = self.0.slots.lock().unwrap_or_else(|e| e.into_inner());
         let capacity = self.0.capacity.clone().try_acquire_owned().map_err(|_| {
             error(
@@ -107,7 +122,7 @@ impl Admission {
             pending: Some(receipt.observer()),
         });
         self.0.ready.notify_one();
-        Ok(Reservation {
+        Ok(SlotReservation {
             capacity,
             receipt,
             payload,
@@ -155,18 +170,32 @@ impl Admission {
 }
 
 impl Reservation {
-    pub(super) fn send(self, input: Input) -> Result<(), Box<Request>> {
+    pub(super) fn attach<T: Send + 'static>(
+        self,
+        input: T,
+    ) -> (Owned<T>, oneshot::Sender<Request>) {
+        self.slot.attach(self.lease.own(input))
+    }
+}
+impl SlotReservation {
+    pub(super) fn attach<T: Send + 'static>(
+        self,
+        input: WorkerOwned<T>,
+    ) -> (Owned<T>, oneshot::Sender<Request>) {
         let Self {
             capacity,
             receipt,
             payload,
         } = self;
-        payload
-            .send(Request {
-                _capacity: capacity,
+        let (input, lease) = input.into_parts();
+        let owned = lease.own(Scope {
+            payload: input,
+            resources: ownership::Resources {
                 receipt,
-                input: WorkerOwned::new(input),
-            })
-            .map_err(Box::new)
+                mutation: None,
+                _capacity: capacity,
+            },
+        });
+        (owned, payload)
     }
 }

@@ -45,6 +45,7 @@ fn retained(revision: u64) -> ViewerFrame {
         limit_max: [Some(0.0); 2],
         pan_sequence: 0,
         scroll_per_pixel: [0.0; 2],
+        scroll_map: None,
         settled: true,
         gutter: Some(ViewerRasterGutter {
             width: 1,

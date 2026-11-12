@@ -165,7 +165,7 @@ fn cancelled_open_does_not_call_native_services() {
 #[test]
 fn completed_listing_records_the_exact_index_before_waking_the_ui() {
     let (root, path) = native_snapshot();
-    let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     let (sender, mut events) = tokio::sync::mpsc::channel(1);
     let observed = snapshots.clone();
     let outbox = Outbox {

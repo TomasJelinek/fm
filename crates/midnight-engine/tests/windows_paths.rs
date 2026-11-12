@@ -33,8 +33,14 @@ async fn engine_navigates_windows_unicode_paths_beyond_260_utf16_units() {
     fs::write(directory.join("ověření_中文_🧪.txt"), b"long Unicode path").unwrap();
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
-    let task =
-        tokio::spawn(Engine::new(Arc::new(LocalFileSystem::new(None)), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(LocalFileSystem::new(None)),
+            sender,
+        )
+        .run(receiver),
+    );
     let parents = navigate(
         &commands,
         &mut events,

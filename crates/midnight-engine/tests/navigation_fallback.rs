@@ -41,9 +41,13 @@ async fn missing_unicode_descendants_recover_each_parent_and_list_the_first_exis
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
-        Engine::new(filesystem.clone(), sender)
-            .with_navigation_fallback(filesystem)
-            .run(receiver),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .with_navigation_fallback(filesystem)
+        .run(receiver),
     );
     commands.send(navigate(1, missing)).await.unwrap();
     let mut fallbacks = Vec::new();
@@ -163,9 +167,13 @@ async fn cancelled_uncancellable_failure_emits_no_fallback_and_failed_root_stops
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
     let task = tokio::spawn(
-        Engine::new(filesystem.clone(), sender)
-            .with_navigation_fallback(filesystem.clone())
-            .run(receiver),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .with_navigation_fallback(filesystem.clone())
+        .run(receiver),
     );
     commands.send(navigate(1, blocked)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), filesystem.entered.notified())

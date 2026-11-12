@@ -130,6 +130,7 @@ fn run() -> Result<(), String> {
     let Some(options) = options()? else {
         return Ok(());
     };
+    let engine_lifetime = Engine::lifetime().map_err(|error| error.to_string())?;
     let local = Arc::new(LocalFileSystem::new(home_directory()));
     let filesystem = midnight_native_filesystem_host::InstalledProvider::shared(home_directory());
     filesystem.set_size_directory_service(local.clone());
@@ -140,13 +141,13 @@ fn run() -> Result<(), String> {
         .build()
         .map_err(|error| error.to_string())?;
     if options.smoke {
-        let result = runtime.block_on(smoke_test(filesystem, &options));
+        let result = runtime.block_on(smoke_test(engine_lifetime, filesystem, &options));
         runtime.shutdown_timeout(Duration::from_secs(1));
         return result;
     }
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let result = run_window(&runtime, local, filesystem, &options);
+    let result = run_window(engine_lifetime, &runtime, local, filesystem, &options);
     // Normal close drains mutation cancellation before hiding the window.
     // A failed startup also stops its runtime before another process is started.
     startup_recovery::finish(
@@ -168,13 +169,14 @@ fn run() -> Result<(), String> {
 }
 
 async fn smoke_test(
+    engine_lifetime: midnight_engine::EngineLifetime,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
     options: &Options,
 ) -> Result<(), String> {
     let (commands, receiver) = mpsc::channel(16);
     let (sender, mut events) = mpsc::channel(16);
     let engine = tokio::spawn(
-        Engine::new(filesystem.clone(), sender)
+        Engine::new(engine_lifetime, filesystem.clone(), sender)
             .with_archive_capture(native_content::archive(filesystem))
             .with_locale(midnight_platform::locale_service())
             .run(receiver),
@@ -238,6 +240,7 @@ async fn smoke_test(
 }
 
 fn run_window(
+    engine_lifetime: midnight_engine::EngineLifetime,
     runtime: &tokio::runtime::Runtime,
     local: Arc<LocalFileSystem>,
     filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
@@ -307,25 +310,30 @@ fn run_window(
     let retire_queue = reclaim::start(runtime.handle(), notify.clone());
     let retire_pending = Rc::new(RefCell::new(None::<reclaim::Retired>));
     let engine = runtime.spawn(
-        Engine::with_wakeup(filesystem.clone(), event_sender, notify.clone())
-            .with_archive_capture(native_content::archive(filesystem.clone()))
-            .with_elevated_directories(Arc::new(midnight_elevation::ElevatedDirectories))
-            .with_navigation_fallback(local.clone())
-            .with_shell_menu(local.clone())
-            .with_path_picker(local.clone())
-            .with_transfers(local.clone())
-            .with_find(local.clone())
-            .with_user_commands(local.clone())
-            .with_editor(local.clone())
-            .with_drag_drop(local.clone())
-            .with_locale(midnight_platform::locale_service())
-            .with_mutations(mutations)
-            .with_network(network)
-            .with_desktop(desktop)
-            .with_clipboard(Arc::new(midnight_platform::NativeClipboard))
-            .with_watch(watch)
-            .with_settings(settings)
-            .run(command_receiver),
+        Engine::with_wakeup(
+            engine_lifetime,
+            filesystem.clone(),
+            event_sender,
+            notify.clone(),
+        )
+        .with_archive_capture(native_content::archive(filesystem.clone()))
+        .with_elevated_directories(Arc::new(midnight_elevation::ElevatedDirectories))
+        .with_navigation_fallback(local.clone())
+        .with_shell_menu(local.clone())
+        .with_path_picker(local.clone())
+        .with_transfers(local.clone())
+        .with_find(local.clone())
+        .with_user_commands(local.clone())
+        .with_editor(local.clone())
+        .with_drag_drop(local.clone())
+        .with_locale(midnight_platform::locale_service())
+        .with_mutations(mutations)
+        .with_network(network)
+        .with_desktop(desktop)
+        .with_clipboard(Arc::new(midnight_platform::NativeClipboard))
+        .with_watch(watch)
+        .with_settings(settings)
+        .run(command_receiver),
     );
 
     let completed = Rc::new(Cell::new([false; 2]));

@@ -22,6 +22,7 @@ async fn rejected_capture(failed_preparation: bool) {
     let (sender, mut events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         None,
         None,
         fixture.sink.snapshots.clone(),

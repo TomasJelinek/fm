@@ -44,32 +44,53 @@ sequence, not whether accepted work can be omitted.
 
 ## Lifecycle follow-up found on 12 November
 
-**LIFE-01 — P1, investigate:** normal Engine shutdown closes and retires the whole
-queued command receiver on a blocking worker. Forced cancellation before its
-first poll or during awaited dispatch/shutdown can instead destroy queued captures
-on the caller/executor. Application shutdown has a bounded engine grace period.
-This is an existing cross-command lifetime gap, not specific to Delete. A complete
-fix must establish ownership before first poll and retire without depending on an
-active Tokio runtime; merely wrapping a local receiver after polling is insufficient.
-Add deterministic unpolled/drop, mid-await abort and runtime-shutdown tests while
-preserving bounded retirement and normal shutdown. No data-integrity failure was
-reproduced. The potential executor-side destruction was identified by inspection;
-a forced-shutdown runtime reproduction is still required.
+**LIFE-01 — P1, partial:** the original unpolled-engine and actor-abort destruction
+bugs were reproduced. Startup now reserves a plain cleanup worker and bounded slots
+before taking provider ownership. The synchronous Engine run wrapper owns suspended
+execution and the complete command inbox; Copy/Move/Delete handoffs, shared snapshots
+and drag state retain their cleanup reservations through actual destruction.
+The [engine contract](developer/ENGINE_LIFETIME.md) describes the 74-slot ledger and
+late reserved-send handling. [Integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
+records Windows affected suites and Linux targeted results. Targeted tests cover first-poll/drop, blocked dispatch,
+runtime shutdown, native-before-provider order and completed/unconsumed preparation.
+No data-integrity failure was reproduced. A single blocked native destructor or held
+send permit can stall the bounded cleanup domain; UI/executor Drop does not wait.
+
+This is not full LIFE-01 closure. Independently spawned service clones and raw requests
+in Find, checksum and custom-command actors need the additional ownership protection
+recorded in [the review](verification/2026-11-12-engine-lifetime-review.md).
 The [runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
-records the proposed ownership boundaries and tests; it is design only, not implemented.
+tracks implementation and outstanding cross-actor qualification.
 
 ## Viewer position follow-up found on 12 November
 
-**SCROLL-01 — P2, investigate:** on the actual `ovclash/build.bat` file in Text
-mode, bounded-page replacement recalculates normalized byte-position density.
-Native D3D/software traces show estimate changes opposite the requested direction
-of about 0.31-0.60% of the usable scroll range while independently sampled glyph
-pixels continue in the correct direction. The same estimate also feeds the visible thumb outside an absolute seek,
-so thumb continuity is not fully qualified. Preserve bounded reading, exact source
-anchors, final seek correctness and both scroll directions when correcting this.
-The old normalized-position smoothness gate retains its two failures; the pixel
-proof does not establish physical GPU frame pacing. See the
-[glyph qualification](verification/2026-11-12-glyph-compositing.md).
+**SCROLL-01 — implemented:** bounded page replacement now uses the existing rendered
+visual/source anchors instead of replacing an average byte-density estimate. Position
+and extent share one monotone map, with covered absolute inversion, real endpoints,
+wrapped/table spans, and immediate reversal. No whole-file scan or history index was
+added. Actual BAT Text software and D3D traces show no opposite thumb steps through
+refills; the original failed traces remain preserved. See the
+[coordinate verification](verification/2026-11-12-scroll-thumb-continuity.md).
+
+**SCROLL-02 — P1, investigate D3D pacing:** the final valid 12-case matrix has 10 original
+wheel/drag guard passes and two D3D sparse-frame failures. A preserved pre-change probe
+reproduces 230–652 ms D3D gaps on the same Markdown/runtime/geometry, so the observed
+large delay is not unique to the coordinate change. The cause remains unassigned.
+Qualify native input-to-presentation pacing without source scans, weakening the existing
+guards, or claiming CPU-source crop correspondence as GPU readback. Software at BAT0.1
+preserves approximately +135,+135,-135 pixel motion and returns to the same thumb
+position on reversal; that does not establish uniform D3D or universal 60 Hz scrolling.
+The [original glyph evidence](verification/2026-11-12-glyph-compositing.md) and
+[corrected native gate](verification/2026-11-12-scroll-thumb-continuity.md) retain the
+invalid first-batch seek cases and final performance limitations separately.
+
+## CI execution follow-up
+
+The completed Windows Test step took 50m32s across 281 serial Cargo gates; it did
+not hang. [Recorded timings and the optimization proposal](verification/2026-11-12-ci-windows-test-runtime.md)
+track a build-once or bounded-batch experiment while preserving feature selection,
+per-test environments, runner behavior, examples and doctest coverage. No workflow
+change or estimated speedup is treated as measured evidence.
 
 ## Scope and completed baseline
 

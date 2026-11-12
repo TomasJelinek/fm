@@ -28,6 +28,7 @@ fn frame(open: &OpenWindow, revision: u64, surface: u64, ack: Option<u64>) -> Vi
             limit_max: [None; 2],
             pan_sequence: 0,
             scroll_per_pixel: [0.001; 2],
+            scroll_map: None,
             settled: true,
             gutter: None,
         });

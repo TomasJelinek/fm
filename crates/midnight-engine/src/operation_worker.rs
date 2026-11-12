@@ -22,6 +22,8 @@ pub(super) struct Job {
     metadata_permits: Vec<tokio::sync::OwnedSemaphorePermit>,
     // Native target pins must close before the retained provider capture/permit.
     _captured_sources: Option<Arc<dyn CapturedDeleteSources>>,
+    // Release serialization only after all native pins and provider owners close.
+    mutation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 pub(super) fn initial(request: &PrepareOperation) -> OperationProgress {
@@ -201,6 +203,7 @@ fn new_job(
         predecessors: Default::default(),
         metadata_permits: vec![],
         _captured_sources: None,
+        mutation_permit: None,
         preview: OperationPreview {
             id,
             kind,
@@ -297,21 +300,8 @@ impl Job {
     pub(super) fn preview(&self) -> OperationPreview {
         self.preview.clone()
     }
-    pub(super) async fn failure(self, error: FsError) -> OperationProgress {
-        let result = failed_status(&self.status, error);
-        self.dispose(result).await
-    }
-    pub(super) async fn cancelled(self) -> OperationProgress {
-        self.set_state(OperationState::Cancelled);
-        let result = self.progress();
-        self.dispose(result).await
-    }
-    async fn dispose(self, mut result: OperationProgress) -> OperationProgress {
-        if let Err(error) = tokio::task::spawn_blocking(move || drop(self)).await {
-            result.state = OperationState::Failed;
-            result.message = format!("Native resource cleanup failed: {error}");
-        }
-        result
+    pub(super) fn hold_mutation_permit(&mut self, permit: tokio::sync::OwnedSemaphorePermit) {
+        self.mutation_permit = Some(permit);
     }
     pub(super) fn confirm(&mut self, name: Option<String>) -> Result<(), FsError> {
         let progress = self.progress();
@@ -470,5 +460,25 @@ impl Job {
             progress.state = OperationState::CancelRequested;
         }
         *status = progress.clone();
+    }
+}
+
+// These futures own a guard before their first poll, including disposal-task abort.
+impl WorkerOwned<Job> {
+    pub(super) async fn failure(self, error: FsError) -> OperationProgress {
+        let result = failed_status(&self.status, error);
+        self.dispose(result).await
+    }
+    pub(super) async fn cancelled(self) -> OperationProgress {
+        self.set_state(OperationState::Cancelled);
+        let result = self.progress();
+        self.dispose(result).await
+    }
+    async fn dispose(self, mut result: OperationProgress) -> OperationProgress {
+        if let Err(error) = self.retire().await {
+            result.state = OperationState::Failed;
+            result.message = format!("Native resource cleanup failed: {error:?}");
+        }
+        result
     }
 }

@@ -94,7 +94,7 @@ impl NetworkNeighborhood for Fake {
 }
 fn controller(provider: Fake) -> (Controller, mpsc::Receiver<Event>, Snapshots) {
     let (sender, events) = mpsc::channel(16);
-    let snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots = crate::test_snapshots(Default::default());
     let loaded: OnceLock<Result<Arc<dyn NetworkNeighborhood>, NetworkFailure>> = OnceLock::new();
     loaded.set(Ok(Arc::new(provider))).unwrap();
     (

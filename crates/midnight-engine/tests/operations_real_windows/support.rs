@@ -145,9 +145,13 @@ impl Harness {
         let provider = Arc::new(LocalFileSystem::new(None));
         let (commands, receiver) = mpsc::channel(128);
         let (sender, events) = mpsc::channel(512);
-        let engine = Engine::new(provider.clone(), sender)
-            .with_transfers(provider.clone())
-            .with_mutations(provider);
+        let engine = Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            provider.clone(),
+            sender,
+        )
+        .with_transfers(provider.clone())
+        .with_mutations(provider);
         Self {
             commands,
             terminal_order: Vec::new(),

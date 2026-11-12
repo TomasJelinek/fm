@@ -21,6 +21,8 @@ mod image;
 mod position;
 #[path = "worker_raster.rs"]
 mod raster;
+#[path = "worker_scroll_map.rs"]
+mod scroll_map;
 #[path = "scroll_trace.rs"]
 mod scroll_trace;
 #[cfg(test)]
@@ -65,6 +67,7 @@ struct Worker {
     renderer: TextRenderer,
     page: Option<Page>,
     shaped: Option<TextPage>,
+    scroll_map: Option<ViewerScrollMap>,
     text: text::Presentation,
     raster: raster::Retained,
     raster_budget: Arc<crate::raster_budget::Budget>,
@@ -171,6 +174,7 @@ pub(crate) fn run(
         renderer: TextRenderer::default(),
         page: None,
         shaped: None,
+        scroll_map: None,
         text: Default::default(),
         raster: Default::default(),
         raster_owner: raster_budget.owner(),
@@ -373,6 +377,7 @@ impl Worker {
         // replacement file's new scrollbar generation.
         self.page = None;
         self.shaped = None;
+        self.scroll_map = None;
         self.text = Default::default();
         self.selection = None;
         self.continuation = None;
@@ -430,6 +435,7 @@ impl Worker {
         self.page = None;
         self.frames.invalidate();
         self.shaped = None;
+        self.scroll_map = None;
         self.selection = None;
         self.origin = [0.0; 2];
         self.anchor = 0;
@@ -1083,6 +1089,8 @@ impl Worker {
                 if (self.wrap && self.wrap_available()) || self.mode == viewer::MODE_DOCUMENT {
                     self.origin[0] = 0.0;
                 }
+                self.scroll_map =
+                    scroll_map::build(&page, &shaped, self.length, true, self.geometry.height);
                 self.shaped = Some(shaped);
                 self.frames.invalidate();
                 self.clamp_origin();
@@ -1094,6 +1102,7 @@ impl Worker {
     }
 
     fn set_page(&mut self, page: Page, output: &Mailbox) -> bool {
+        let continuing_layout = self.continuation.is_some();
         let raster_continuing = self.raster.continuing.take();
         let same_raster_context = !matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
             || self
@@ -1143,6 +1152,13 @@ impl Worker {
                         .find(|a| a.source_offset == found.offset + found.length)?;
                     Some((first.text_offset as usize, last.text_offset as usize))
                 });
+                self.scroll_map = scroll_map::build(
+                    &page,
+                    &shaped,
+                    self.length,
+                    !continuing_layout,
+                    self.geometry.height,
+                );
                 self.shaped = Some(shaped);
                 self.apply_horizontal_position();
                 self.clamp_origin();
@@ -1251,14 +1267,16 @@ impl Worker {
         } else {
             (page.start, page.end)
         };
-        let (position, vertical_extent) = navigation::scroll_metrics(
-            start,
-            end,
-            self.length,
-            shaped.height(),
-            self.geometry.height as f32,
-            self.origin[1],
-        );
+        let (position, vertical_extent) = self.position_metrics().unwrap_or_else(|| {
+            navigation::scroll_metrics(
+                start,
+                end,
+                self.length,
+                shaped.height(),
+                self.geometry.height as f32,
+                self.origin[1],
+            )
+        });
         output.put(ViewerOutput::Frame(Box::new(ViewerFrame {
             generation: self.positions.generation,
             position_sequence: self.positions.acknowledged,

@@ -494,7 +494,7 @@ mod tests {
         let wake_cancel = cancel.clone();
         let (sender, mut events) = tokio::sync::mpsc::channel(4);
         let lane = Arc::new(Lane::default());
-        let snapshots = Arc::new(std::sync::Mutex::new(Default::default()));
+        let snapshots = crate::test_snapshots(Default::default());
         let wake_snapshots = snapshots.clone();
         let mount: Arc<dyn ArchiveMount> = Arc::new(Source);
         let wake_mount = mount.clone();
@@ -541,7 +541,7 @@ mod tests {
     fn failed_publication_keeps_previous_sort_snapshot_and_invalidation_clears_it() {
         let (sender, mut events) = tokio::sync::mpsc::channel(1);
         let lane = Arc::new(Lane::default());
-        let snapshots = Arc::new(std::sync::Mutex::new(Default::default()));
+        let snapshots = crate::test_snapshots(Default::default());
         let mut worker = Worker::new(
             lane.clone(),
             Outbox {

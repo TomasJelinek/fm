@@ -51,6 +51,7 @@ async fn explicit_copy_preserves_literal_unicode_and_serializes_on_backend_worke
     let (sender, mut events) = mpsc::channel(8);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )
@@ -98,6 +99,7 @@ async fn missing_clipboard_service_reports_failure_without_claiming_a_copy() {
     let (sender, mut events) = mpsc::channel(4);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )
@@ -124,6 +126,7 @@ async fn invalid_clipboard_text_never_reaches_the_native_service() {
     let (sender, mut events) = mpsc::channel(4);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )

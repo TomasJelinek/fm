@@ -122,6 +122,7 @@ fn worker() -> (Worker, Mailbox) {
         renderer: TextRenderer::default(),
         page: None,
         shaped: None,
+        scroll_map: None,
         text: Default::default(),
         raster: Default::default(),
         raster_owner: raster_budget.owner(),

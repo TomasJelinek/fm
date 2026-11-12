@@ -17,7 +17,7 @@ use tokio::{
 
 #[path = "operation_input.rs"]
 mod input;
-use crate::worker_retirement::{WorkerOwned, retire};
+use crate::worker_retirement::{ActorRetirement, WorkerOwned};
 use input::{DeleteScope, Input};
 
 #[path = "operation_metadata.rs"]
@@ -50,7 +50,7 @@ type Running = (
     Result<OperationProgress, tokio::task::JoinError>,
     Option<Arc<MetadataResult>>,
 );
-const MAX_JOBS: usize = 32;
+pub(crate) const MAX_JOBS: usize = 32;
 
 enum Message {
     Prepare(WorkerOwned<Input>, Cancellation, Status),
@@ -70,25 +70,31 @@ pub(crate) struct Controller {
     snapshots: Snapshots,
     outbox: Outbox,
     copies: CopyFence,
+    retirement: tokio::sync::Mutex<crate::retirement::RetirementWaiter>,
 }
 
 impl Controller {
     pub(crate) fn new(
-        service: Option<Arc<dyn MutationService>>,
-        locale: Option<Arc<dyn LocaleService>>,
+        retirement: ActorRetirement,
+        services: Services,
         snapshots: Snapshots,
         outbox: Outbox,
         mutation_gate: Arc<Semaphore>,
         copies: CopyFence,
         tasks: &mut JoinSet<()>,
     ) -> Self {
+        let ActorRetirement {
+            intake,
+            service: service_lease,
+            ..
+        } = retirement;
+        let services = service_lease.own(services);
         let (sender, receiver) = mpsc::channel(64);
         let registry = Registry::default();
         let cancel = Cancellation::default();
         tasks.spawn(run(
             receiver,
-            service,
-            locale,
+            services,
             registry.clone(),
             cancel.clone(),
             outbox.clone(),
@@ -102,6 +108,7 @@ impl Controller {
             snapshots,
             outbox,
             copies,
+            retirement: tokio::sync::Mutex::new(intake),
         }
     }
 
@@ -134,12 +141,15 @@ impl Controller {
     }
 
     async fn admit(&self, input: Input, rejection: Option<&str>) {
-        // Guard provider ownership before the first await, including admission rejection.
-        let input = WorkerOwned::new(input);
+        // EngineRun owns incoming state while this single intake waits for its slot.
+        // Keep intake serialized until admission/rejection finishes.
+        let mut intake = self.retirement.lock().await;
+        let lease = intake.reserve().await;
+        let input = lease.own(input);
         let mut progress = input.initial();
         // A shared high-water mark makes flat/captured replay idempotent without an ID set.
         if progress.id.0 <= self.highest.fetch_max(progress.id.0, Ordering::Relaxed) {
-            retire(input.into_inner()).await;
+            let _ = input.retire().await;
             return;
         }
         let rejection = rejection.or_else(|| {
@@ -158,7 +168,7 @@ impl Controller {
             }
         });
         if let Some(message) = rejection {
-            retire(input.into_inner()).await;
+            let _ = input.retire().await;
             progress.state = OperationState::Failed;
             progress.message = message.into();
             publish(&self.outbox, &progress).await;
@@ -190,7 +200,7 @@ impl Controller {
             let Message::Prepare(input, _, _) = rejected.into_inner() else {
                 unreachable!()
             };
-            retire(input.into_inner()).await;
+            let _ = input.retire().await;
             self.registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -340,10 +350,14 @@ async fn finish(registry: &Registry, outbox: &Outbox, progress: OperationProgres
     publish(outbox, &progress).await;
 }
 
+pub(crate) struct Services {
+    pub(crate) mutation: Option<Arc<dyn MutationService>>,
+    pub(crate) locale: Option<Arc<dyn LocaleService>>,
+}
+
 async fn run(
     mut receiver: mpsc::Receiver<Message>,
-    service: Option<Arc<dyn MutationService>>,
-    locale: Option<Arc<dyn LocaleService>>,
+    services: WorkerOwned<Services>,
     registry: Registry,
     cancel: Cancellation,
     outbox: Outbox,
@@ -354,10 +368,10 @@ async fn run(
     let mut preparing = JoinSet::new();
     let mut running = JoinSet::<Running>::new();
     let mut disposing = JoinSet::new();
-    let mut prepared = HashMap::<OperationId, worker::Job>::new();
+    let mut prepared = HashMap::<OperationId, WorkerOwned<worker::Job>>::new();
     let mut drafts = HashMap::<OperationId, (u64, MetadataPatch)>::new();
     let mut conflict_states = HashMap::<OperationId, Arc<metadata::ConflictState>>::new();
-    let mut queued = VecDeque::<worker::Job>::new();
+    let mut queued = VecDeque::<WorkerOwned<worker::Job>>::new();
     let mut timer = tokio::time::interval(Duration::from_millis(50));
     let mut rename_states: HashMap<OperationId, Arc<rename::ConflictState>> = HashMap::new();
     let mut accepting = true;
@@ -366,18 +380,15 @@ async fn run(
             message = receiver.recv(), if accepting => match message {
                 Some(Message::Prepare(request, job_cancel, status)) => {
                     let budget = budget.clone();
-                    let service = service.clone();
-                    let locale = locale.clone();
+                    let (input, lease) = request.into_parts();
+                    let request = lease.own((input, services.mutation.clone(), services.locale.clone()));
                     let metadata_budget = metadata_budget.clone();
                     preparing.spawn(async move {
                         let original = status.clone();
                         let permit = budget.acquire_owned().await.expect("operation semaphore stays open");
                         let result = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            request.into_inner().prepare(service, job_cancel, status, metadata_budget).map(|mut job| {
-                                if let Some(edit) = &mut job.metadata { edit.localize(locale.as_deref()); }
-                                job
-                            })
+                            prepare_on_worker(request, job_cancel, status, metadata_budget)
                         }).await;
                         (original, result)
                     });
@@ -405,7 +416,7 @@ async fn run(
                     if awaiting && revision > 0 && drafts.get(&id).is_none_or(|(latest, _)| revision > *latest) {
                         if let Some(job) = prepared.remove(&id) {
                             if job.metadata.as_ref().is_some_and(|edit| revision > edit.preview.revision) {
-                                spawn_preview(&mut preparing, job, revision, patch, budget.clone(), locale.clone());
+                                spawn_preview(&mut preparing, job, revision, patch, budget.clone(), services.locale.clone());
                             } else { prepared.insert(id, job); }
                         } else { drafts.insert(id, (revision, patch)); }
                     }
@@ -442,7 +453,7 @@ async fn run(
                         let id = job.progress().id;
                         if let Some((revision, patch)) = drafts.remove(&id)
                             && job.metadata.as_ref().is_some_and(|edit| revision > edit.preview.revision) {
-                            spawn_preview(&mut preparing, job, revision, patch, budget.clone(), locale.clone());
+                            spawn_preview(&mut preparing, job, revision, patch, budget.clone(), services.locale.clone());
                             continue;
                         }
                         job.set_state(OperationState::AwaitingConfirmation);
@@ -556,24 +567,9 @@ async fn run(
             let output = outbox.clone();
             let gate = mutation_gate.clone();
             running.spawn(async move {
-                if let Err(error) = job
-                    .predecessors
-                    .wait(&job.cancel, &job.progress().source_directory)
-                    .await
-                {
-                    return (status, Ok(job.failure(error).await), None);
-                }
-                let acquire = gate.acquire_owned();
-                tokio::pin!(acquire);
-                let permit = loop {
-                    tokio::select! {
-                        permit = &mut acquire => break permit.expect("mutation gate stays open"),
-                        _ = tokio::time::sleep(Duration::from_millis(25)) => {
-                            if job.cancel.is_cancelled() {
-                                return (status, Ok(job.cancelled().await), None);
-                            }
-                        }
-                    }
+                let job = match acquire_mutation(job, gate).await {
+                    Ok(job) => job,
+                    Err(progress) => return (status, Ok(*progress), None),
                 };
                 job.set_state(OperationState::Running);
                 publish(&output, &job.progress()).await;
@@ -583,8 +579,10 @@ async fn run(
                 let worker_output = output.clone();
                 let worker_cancel = job.cancel.clone();
                 let pending = tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    job.execute(worker_output)
+                    let (job, lease) = job.into_parts();
+                    let result = job.execute(worker_output);
+                    drop(lease);
+                    result
                 });
                 tokio::pin!(pending);
                 let mut timer = tokio::time::interval(crate::operation_throughput::CADENCE);
@@ -637,33 +635,87 @@ async fn run(
     }
 }
 
+type PrepareContext = (
+    Input,
+    Option<Arc<dyn MutationService>>,
+    Option<Arc<dyn LocaleService>>,
+);
+
+fn prepare_on_worker(
+    request: WorkerOwned<PrepareContext>,
+    cancel: Cancellation,
+    status: Status,
+    metadata_budget: Arc<Semaphore>,
+) -> Result<WorkerOwned<worker::Job>, FsError> {
+    let (context, lease) = request.into_parts();
+    // Later bindings unwind before the lease, even if preparation/localization panics.
+    let (input, service, locale) = context;
+    let job = input.prepare(service, cancel, status, metadata_budget)?;
+    let mut job = lease.own(job);
+    if let Some(edit) = &mut job.metadata {
+        edit.localize(locale.as_deref());
+    }
+    Ok(job)
+}
+
+async fn acquire_mutation(
+    mut job: WorkerOwned<worker::Job>,
+    gate: Arc<Semaphore>,
+) -> Result<WorkerOwned<worker::Job>, Box<OperationProgress>> {
+    if let Err(error) = job
+        .predecessors
+        .wait(&job.cancel, &job.progress().source_directory)
+        .await
+    {
+        return Err(Box::new(job.failure(error).await));
+    }
+    let acquire = gate.acquire_owned();
+    tokio::pin!(acquire);
+    let permit = loop {
+        tokio::select! {
+            permit = &mut acquire => break permit.expect("mutation gate stays open"),
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                if job.cancel.is_cancelled() {
+                    return Err(Box::new(job.cancelled().await));
+                }
+            }
+        }
+    };
+    job.hold_mutation_permit(permit);
+    Ok(job)
+}
+
 type Preparation = (
     Status,
-    Result<Result<worker::Job, FsError>, tokio::task::JoinError>,
+    Result<Result<WorkerOwned<worker::Job>, FsError>, tokio::task::JoinError>,
 );
 
 fn spawn_preview(
     tasks: &mut JoinSet<Preparation>,
-    mut job: worker::Job,
+    job: WorkerOwned<worker::Job>,
     revision: u64,
     patch: MetadataPatch,
     budget: Arc<Semaphore>,
     locale: Option<Arc<dyn LocaleService>>,
 ) {
     job.set_state(OperationState::Preparing);
+    let status = job.status.clone();
+    let (job, lease) = job.into_parts();
+    let context = lease.own((job, locale));
     tasks.spawn(async move {
-        let status = job.status.clone();
         let permit = budget
             .acquire_owned()
             .await
             .expect("operation semaphore stays open");
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let (context, lease) = context.into_parts();
+            let (mut job, locale) = context;
             if let Some(edit) = &mut job.metadata {
                 edit.update(revision, patch, &job.targets, &job.cancel);
                 edit.localize(locale.as_deref());
             }
-            Ok(job)
+            Ok(lease.own(job))
         })
         .await;
         (status, result)

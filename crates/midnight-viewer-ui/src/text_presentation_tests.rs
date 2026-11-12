@@ -644,6 +644,7 @@ fn source_opening_frame(revision: u64, geometry: ViewerGeometry, retained: bool)
         limit_max: [Some(0.0); 2],
         pan_sequence: 0,
         scroll_per_pixel: [0.0; 2],
+        scroll_map: None,
         settled: true,
         gutter: Some(ViewerRasterGutter {
             width: gutter_width,

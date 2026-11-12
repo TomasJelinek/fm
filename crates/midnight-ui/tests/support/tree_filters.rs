@@ -421,8 +421,12 @@ impl Harness {
         let (commands, receive) = mpsc::channel(64);
         let (events_send, events) = mpsc::channel(64);
         let copying = transfer.is_some();
-        let mut engine =
-            Engine::new(directory, events_send).with_settings(Arc::new(Settings(calls.clone())));
+        let mut engine = Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            directory,
+            events_send,
+        )
+        .with_settings(Arc::new(Settings(calls.clone())));
         if let Some(transfer) = transfer {
             engine = engine.with_transfers(transfer);
         }

@@ -39,6 +39,7 @@ pub(super) struct Probe {
     actual_context: Option<String>,
     tail_sent: Option<Instant>,
     mode_requested: bool,
+    requested_mode: Option<i32>,
     gestures: Vec<Gesture>,
     timeline: super::timeline::Trace,
     options: Options,
@@ -52,6 +53,9 @@ struct Frame {
     retained: bool,
     presentation: &'static str,
     offset_y: f32,
+    extent: f32,
+    thumb_top: f32,
+    thumb_height: f32,
     raster_uploads: i32,
     tile_uploads: i32,
 }
@@ -85,7 +89,7 @@ fn cpu_stripe(window: &ViewerWindow, spatial_proof: bool) -> Option<pixels::Stri
 impl Frame {
     fn row(self, stage: usize, notch: usize) -> String {
         format!(
-            "wheel_frame stage={stage} notch={notch} after_input_ms={:.3} displayed_position={:.9} redraw_ms={:.3} retained={} offset_y_logical={:.4} raster_uploads={} tile_uploads={} presentation={}",
+            "wheel_frame stage={stage} notch={notch} after_input_ms={:.3} displayed_position={:.9} redraw_ms={:.3} retained={} offset_y_logical={:.4} raster_uploads={} tile_uploads={} presentation={} vertical_extent={:.9} thumb_top_logical={:.5} thumb_height_logical={:.5}",
             self.time,
             self.position,
             self.redraw,
@@ -93,7 +97,10 @@ impl Frame {
             self.offset_y,
             self.raster_uploads,
             self.tile_uploads,
-            self.presentation
+            self.presentation,
+            self.extent,
+            self.thumb_top,
+            self.thumb_height
         )
     }
 }
@@ -103,6 +110,10 @@ impl Probe {
             timeline,
             options,
             spatial_proof: std::env::var_os("MIDNIGHT_VIEWER_PROBE_SPATIAL_PROOF").is_some(),
+            requested_mode: std::env::var("MIDNIGHT_VIEWER_PROBE_MODE_INDEX")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|index| *index >= 0),
             ..Default::default()
         }
     }
@@ -120,6 +131,11 @@ impl Probe {
             if !self.options.sustained && gesture.pixels.len() < 64 {
                 gesture.pixels.push(cpu_stripe(window, self.spatial_proof));
             }
+            // Sample PositionBar's published track and position. These layout
+            // coordinates use its exact thumb formula, not compositor readback.
+            let track = window.get_vertical_bar_height();
+            let extent = window.get_vertical_extent().clamp(0.0, 1.0);
+            let thumb_height = (track * extent).max(28.0).min(track);
             gesture.frames.push(Frame {
                 time: gesture.sent.elapsed().as_secs_f64() * 1000.0,
                 position,
@@ -127,6 +143,9 @@ impl Probe {
                 retained: window.get_retained_raster(),
                 presentation: super::presentation(window),
                 offset_y: window.get_raster_offset_y() * window.get_content_height(),
+                extent,
+                thumb_top: window.get_vertical_thumb_position() * (track - thumb_height),
+                thumb_height,
                 raster_uploads: window.get_raster_upload_count(),
                 tile_uploads: window.get_tile_upload_count(),
             });
@@ -302,14 +321,19 @@ impl Probe {
         }
         if !self.mode_requested {
             self.mode_requested = true;
-            if let Some(index) = std::env::var("MIDNIGHT_VIEWER_PROBE_MODE_INDEX")
-                .ok()
-                .and_then(|value| value.parse::<i32>().ok())
-                .filter(|index| *index >= 0)
-            {
+            if let Some(index) = self.requested_mode {
                 window.invoke_change_mode(index);
                 return Ok(None);
             }
+        }
+        // Mode callbacks revoke old position authority immediately. A stable
+        // provisional "mode:N" context is not an acknowledged content frame.
+        if !mode_ready(
+            self.requested_mode,
+            window.get_mode_index(),
+            window.get_position_context().as_str(),
+        ) {
+            return Ok(None);
         }
         let count = if self.options.sustained { 96 } else { 3 };
         if self.gestures.is_empty() {
@@ -348,6 +372,19 @@ impl Probe {
                 };
                 if sent.elapsed() < Duration::from_millis(700) || window.get_position_pending() {
                     return Ok(None);
+                }
+                let wanted = start.unwrap_or(1.0);
+                if !seek_ready(
+                    wanted,
+                    window.get_displayed_position(),
+                    window.get_position_pending(),
+                ) {
+                    return Err(format!(
+                        "initial seek was not acknowledged: requested={wanted}, displayed={}, context={}, status={}",
+                        window.get_displayed_position(),
+                        window.get_position_context(),
+                        window.get_status()
+                    ));
                 }
             }
         } else {
@@ -395,5 +432,39 @@ impl Probe {
         self.timeline.record("initial_stripe_captured", 0.0);
         send(window, direction, &self.timeline)?;
         Ok(None)
+    }
+}
+
+fn mode_ready(requested: Option<i32>, actual: i32, context: &str) -> bool {
+    requested.is_none_or(|mode| mode == actual) && !context.starts_with("mode:")
+}
+
+fn seek_ready(requested: f32, displayed: f32, pending: bool) -> bool {
+    !pending
+        && requested.is_finite()
+        && displayed.is_finite()
+        && (requested - displayed).abs() <= 0.0001
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[test]
+    fn mode_delivery_must_replace_the_revoked_position_context_before_seeking() {
+        assert!(!mode_ready(Some(1), 0, "text:7"));
+        assert!(!mode_ready(Some(1), 1, "mode:1"));
+        assert!(mode_ready(Some(1), 1, "text:8"));
+        assert!(mode_ready(Some(0), 0, "text:7"));
+    }
+
+    #[test]
+    fn rejected_or_unacknowledged_initial_seek_cannot_become_a_successful_wheel_case() {
+        assert!(!seek_ready(0.1, 0.0, false));
+        assert!(!seek_ready(0.1, 0.1, true));
+        assert!(!seek_ready(0.7, 0.0, false));
+        assert!(seek_ready(0.1, 0.1, false));
+        assert!(seek_ready(1.0, 1.0, false));
+        assert!(!seek_ready(0.1, f32::NAN, false));
     }
 }

@@ -82,17 +82,8 @@ fn scrollbar_position_complete_text_and_source_use_visual_range_without_another_
 #[test]
 fn scrollbar_position_inside_a_partial_decoded_page_preserves_fractional_position() {
     let (mut worker, output) = prepared(viewer::MODE_SOURCE, true, true);
-    let page = worker.page.as_ref().unwrap();
     let target_y = 73.25;
-    let position = navigation::scroll_metrics(
-        page.start,
-        page.end,
-        worker.length,
-        worker.shaped.as_ref().unwrap().height(),
-        worker.geometry.height as f32,
-        target_y,
-    )
-    .0;
+    let position = position_at(&worker, target_y);
     let generation = worker.positions.generation;
     worker.input(
         ViewerInput::Position {
@@ -224,16 +215,13 @@ fn read_target(worker: &mut Worker, request: u64, sequence: u64, position: f64) 
 }
 
 fn position_at(worker: &Worker, y: f32) -> f64 {
-    let page = worker.page.as_ref().unwrap();
-    navigation::scroll_metrics(
-        page.start,
-        page.end,
-        worker.length,
-        worker.shaped.as_ref().unwrap().height(),
-        worker.geometry.height as f32,
-        y,
-    )
-    .0
+    worker
+        .scroll_map
+        .as_ref()
+        .expect("prepared source anchors")
+        .metrics(f64::from(y), f64::from(worker.geometry.height))
+        .unwrap()
+        .0
 }
 
 #[test]
@@ -387,4 +375,33 @@ fn scrollbar_correction_prefix_fits_a_fragment_with_only_twenty_pixels_to_scroll
         assert_eq!(frame.position_sequence[0], 1, "retained={retained}");
         assert!((frame.position - target).abs() < 0.0001);
     }
+}
+
+#[test]
+fn scrollbar_short_byte_limited_fragment_keeps_its_current_position_without_a_read() {
+    let (mut worker, output) = worker();
+    let mut decoded = decoded_page("bounded line");
+    decoded.source.offset = 4000;
+    decoded.has_before = true;
+    decoded.has_after = true;
+    for anchor in &mut decoded.anchors {
+        anchor.source_offset += 4000;
+    }
+    worker.length = 40_000;
+    assert!(worker.set_page(Page::text(decoded, &worker.appearance), &output));
+    assert!(worker.shaped.as_ref().unwrap().height() < worker.geometry.height as f32);
+    let first = rendered(&mut worker, &output);
+    worker.input(
+        ViewerInput::Position {
+            generation: first.generation,
+            sequence: 1,
+            horizontal: false,
+            position: first.position,
+        },
+        &output,
+    );
+    let next = rendered(&mut worker, &output);
+    assert_eq!(next.position_sequence[0], 1);
+    assert_eq!(next.position, first.position);
+    assert!(worker.viewport_request.is_none());
 }

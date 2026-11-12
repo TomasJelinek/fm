@@ -14,6 +14,7 @@ fn info() -> ViewerRasterInfo {
         pan_sequence: 0,
         settled: true,
         scroll_per_pixel: [0.0005, 0.00001],
+        scroll_map: None,
         gutter: None,
     }
 }
@@ -338,4 +339,61 @@ fn retained_scrollbar_drag_finishes_exactly_even_when_release_position_is_unchan
         !camera.end_seek(),
         "late release after cancellation cannot revive the old drag"
     );
+}
+
+#[test]
+fn source_map_seek_reverses_and_survives_a_changed_page_density() {
+    use midnight_core::{ViewerScrollAnchor, ViewerScrollMap};
+    let mut camera = Camera::default();
+    let mut frame = info();
+    frame.scroll_map = Some(
+        ViewerScrollMap::new(
+            [(0.0, 0.0), (400.0, 0.1), (650.0, 0.3), (1300.0, 1.0)]
+                .into_iter()
+                .map(|(y, fraction)| ViewerScrollAnchor { y, fraction })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    assert!(camera.receive(&frame, [2.25; 2]));
+    for y in [525.25, 350.5, 475.75] {
+        let target = frame
+            .scroll_map
+            .as_ref()
+            .unwrap()
+            .metrics(y, 600.0)
+            .unwrap()
+            .0;
+        assert!(camera.seek(1, target, 0.99, true));
+        assert!((camera.origin[1] - y).abs() < 1e-8);
+        assert_eq!(camera.origin[0], 100.0);
+        // A stale/changed affine page estimate cannot change the shared inverse.
+        frame.scroll_per_pixel[1] *= 2.0;
+        frame.pixel_id += 1;
+        assert!(camera.receive(&frame, [2.25; 2]));
+        assert!((camera.origin[1] - y).abs() < 1e-8);
+    }
+    assert!(
+        !camera.seek(1, 1.0, 0.99, false),
+        "uncovered endpoint needs the worker"
+    );
+}
+
+#[test]
+fn unchanged_thumb_seek_on_generated_visual_space_preserves_the_camera() {
+    use midnight_core::{ViewerScrollAnchor, ViewerScrollMap};
+    let mut camera = Camera::default();
+    let mut frame = info();
+    frame.scroll_map = Some(
+        ViewerScrollMap::new(
+            [(0.0, 0.2), (1200.0, 0.2), (1400.0, 0.4)]
+                .into_iter()
+                .map(|(y, fraction)| ViewerScrollAnchor { y, fraction })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    assert!(camera.receive(&frame, [1.0; 2]));
+    assert!(camera.seek(1, f64::from(0.2_f32), 0.2, true));
+    assert_eq!(camera.origin, frame.origin);
 }

@@ -46,10 +46,14 @@ async fn sorted_views_keep_discovery_validation_authority_and_latest_revision() 
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
     let engine = tokio::spawn(
-        Engine::new(service.clone(), events)
-            .with_find(service)
-            .with_locale(Arc::new(ReverseLocale))
-            .run(commands),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            events,
+        )
+        .with_find(service)
+        .with_locale(Arc::new(ReverseLocale))
+        .run(commands),
     );
     send.send(Command::StartFind(Box::new(request(
         temporary.path(),
@@ -153,9 +157,13 @@ async fn native_find_streams_and_revalidates_retained_results_without_panel_navi
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
     let engine = tokio::spawn(
-        Engine::new(service.clone(), events)
-            .with_find(service)
-            .run(commands),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            events,
+        )
+        .with_find(service)
+        .run(commands),
     );
     send.send(Command::StartFind(Box::new(request(
         temporary.path(),
@@ -247,9 +255,13 @@ async fn cancellation_under_backpressure_finishes_and_superseding_queries_reject
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(1);
     let engine = tokio::spawn(
-        Engine::new(service.clone(), events)
-            .with_find(service)
-            .run(commands),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            events,
+        )
+        .with_find(service)
+        .run(commands),
     );
     send.send(Command::StartFind(Box::new(request(
         temporary.path(),
@@ -315,7 +327,14 @@ async fn unavailable_find_and_reused_closed_session_ids_fail_explicitly() {
     let service = Arc::new(LocalFileSystem::new(None));
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(Engine::new(service, events).run(commands));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service,
+            events,
+        )
+        .run(commands),
+    );
     send.send(Command::StartFind(Box::new(request(
         temporary.path(),
         1,
@@ -335,9 +354,13 @@ async fn unavailable_find_and_reused_closed_session_ids_fail_explicitly() {
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
     let engine = tokio::spawn(
-        Engine::new(service.clone(), events)
-            .with_find(service)
-            .run(commands),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            service.clone(),
+            events,
+        )
+        .with_find(service)
+        .run(commands),
     );
     send.send(Command::StartFind(Box::new(request(
         temporary.path(),
@@ -426,7 +449,15 @@ async fn pending_find_can_cancel_while_two_native_calls_are_blocked_and_session_
     });
     let (send, commands) = mpsc::channel(16);
     let (events, mut receive) = mpsc::channel(16);
-    let engine = tokio::spawn(Engine::new(native, events).with_find(service).run(commands));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            native,
+            events,
+        )
+        .with_find(service)
+        .run(commands),
+    );
     for session in 1..=2 {
         send.send(Command::StartFind(Box::new(request(&blocked, session, 1))))
             .await

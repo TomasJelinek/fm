@@ -86,6 +86,7 @@ async fn file_clipboard_preserves_captured_order_pumps_owner_and_reads_captured_
     let (sender, mut events) = mpsc::channel(8);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )
@@ -168,6 +169,7 @@ async fn native_menu_is_bounded_and_does_not_block_other_engine_requests() {
     let (sender, mut events) = mpsc::channel(8);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             sender,
         )

@@ -103,6 +103,7 @@ impl Harness {
         let mutation = Arc::new(Semaphore::new(1));
         let io = Arc::new(Semaphore::new(1));
         let controller = Controller::new(
+            crate::worker_retirement::ActorRetirement::testing(),
             service,
             Outbox {
                 sender,

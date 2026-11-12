@@ -155,7 +155,14 @@ async fn metadata_errors_are_independent_and_preserve_unicode_names() {
     let files = Arc::new(Files::new(&["label-error", "space-error", "good"]));
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(files, sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files,
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         assert!(!matches!(event, Event::VolumeDetailsUpdated { .. }));
@@ -205,7 +212,14 @@ async fn blocked_details_do_not_block_discovery_navigation_or_exceed_two_workers
     let files = Arc::new(files);
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         matches!(event, Event::VolumesUpdated(_))
@@ -249,7 +263,14 @@ async fn refresh_flood_coalesces_and_discards_superseded_discovery() {
     let files = Arc::new(files);
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), gate.entered.notified())
         .await
@@ -295,7 +316,14 @@ async fn replaced_raw_root_rejects_old_metadata_for_same_volume_id() {
     let files = Arc::new(files);
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         matches!(event, Event::VolumesUpdated(_))
@@ -330,7 +358,14 @@ async fn duplicate_roots_share_cache_and_periodic_refresh_replaces_expired_detai
     let files = Arc::new(Files::new(&["same", "same"]));
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(64);
-    let engine = tokio::spawn(Engine::new(files.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands.send(Command::ListVolumes).await.unwrap();
     until(&mut events, |event| {
         matches!(event, Event::VolumeDetailsUpdated { .. })

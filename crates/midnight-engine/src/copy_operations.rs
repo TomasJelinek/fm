@@ -30,8 +30,11 @@ mod decisions;
 mod input;
 #[path = "copy_preparation.rs"]
 mod preparation;
-use crate::worker_retirement::{WorkerOwned, retire};
+use crate::worker_retirement::{ActorRetirement, WorkerOwned};
+#[path = "copy_ownership.rs"]
+mod ownership;
 use decisions::{DecisionWaiter, prepare_job, retryable_error};
+use ownership::{Owned, Scope};
 #[path = "copy_worker.rs"]
 mod worker;
 pub(crate) use admission::{Admission, Reservation};
@@ -44,7 +47,7 @@ pub(crate) fn check_move_bounds<'a>(
 }
 type Status = Arc<Mutex<CopyProgress>>;
 type Registry = Arc<Mutex<HashMap<OperationId, Registered>>>;
-const MAX_JOBS: usize = 32;
+pub(crate) const MAX_JOBS: usize = 32;
 const MAX_ERROR_DETAILS: usize = 16;
 struct Registered {
     cancel: Cancellation,
@@ -52,12 +55,7 @@ struct Registered {
     decisions: mpsc::Sender<CopyDecision>,
     waiting: Arc<AtomicU64>,
 }
-struct Request {
-    receipt: crate::copy_fence::Receipt,
-    input: WorkerOwned<Input>,
-    // Rejected/aborted requests resolve and release payloads before returning capacity.
-    _capacity: OwnedSemaphorePermit,
-}
+type Request = Owned<Input>;
 struct Input {
     command: CopyInput,
     cancel: Cancellation,
@@ -72,16 +70,24 @@ pub(crate) struct Controller {
     registry: Registry,
     cancel: Cancellation,
     highest: AtomicU64,
+    retirement: tokio::sync::Mutex<crate::retirement::RetirementWaiter>,
 }
 impl Controller {
     pub(crate) fn new(
+        retirement: ActorRetirement,
         service: Option<Arc<dyn TransferService>>,
         outbox: Outbox,
         mutation_gate: Arc<Semaphore>,
         io_budget: Arc<Semaphore>,
         tasks: &mut JoinSet<()>,
     ) -> Self {
-        let admission = Admission::default();
+        let ActorRetirement {
+            domain,
+            intake,
+            service: service_lease,
+        } = retirement;
+        let service = service_lease.own(service);
+        let admission = Admission::new(domain);
         let registry = Registry::default();
         let cancel = Cancellation::default();
         tasks.spawn(run(
@@ -99,6 +105,7 @@ impl Controller {
             registry,
             cancel,
             highest: AtomicU64::new(0),
+            retirement: tokio::sync::Mutex::new(intake),
         }
     }
     #[cfg(test)]
@@ -108,6 +115,7 @@ impl Controller {
     pub(crate) fn admission(&self) -> Admission {
         self.admission.clone()
     }
+    #[cfg(test)]
     pub(crate) fn reserve(&self) -> Result<Reservation, FsError> {
         self.admission.reserve()
     }
@@ -136,26 +144,29 @@ impl Controller {
         self.enqueue_input(request.into()).await;
     }
     async fn enqueue_input(&self, request: CopyInput) {
-        let request = WorkerOwned::new(request);
-        let permit = match self.reserve() {
-            Ok(permit) => permit,
+        let mut intake = self.retirement.lock().await;
+        let lease = intake.reserve().await;
+        let request = lease.own(request);
+        let slot = match self.admission.reserve_slot() {
+            Ok(slot) => slot,
             Err(error) => {
                 if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
-                    retire(request.into_inner()).await;
+                    let _ = request.retire().await;
                     return;
                 }
                 let progress = rejected_progress(initial(&request), error);
-                retire(request.into_inner()).await;
+                let _ = request.retire().await;
                 publish(&self.outbox, progress).await;
                 return;
             }
         };
-        self.enqueue_input_reserved(request.into_inner(), permit)
-            .await;
+        let (request, sender) = slot.attach(request);
+        self.enqueue_input_reserved(request, sender).await;
     }
     #[cfg(test)]
     pub(crate) async fn enqueue_reserved(&self, request: CopyRequest, capacity: Reservation) {
-        self.enqueue_input_reserved(request.into(), capacity).await;
+        let (request, sender) = capacity.attach(request.into());
+        self.enqueue_input_reserved(request, sender).await;
     }
     pub(crate) async fn enqueue_drop_reserved(
         &self,
@@ -167,12 +178,16 @@ impl Controller {
         let mut input = CopyInput::from(request);
         input.intent = intent;
         input._retention = retention;
-        self.enqueue_input_reserved(input, capacity).await;
+        let (input, sender) = capacity.attach(input);
+        self.enqueue_input_reserved(input, sender).await;
     }
-    async fn enqueue_input_reserved(&self, request: CopyInput, capacity: Reservation) {
-        let request = WorkerOwned::new(request);
+    async fn enqueue_input_reserved(
+        &self,
+        request: Owned<CopyInput>,
+        sender: tokio::sync::oneshot::Sender<Request>,
+    ) {
         if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
-            retire(request.into_inner()).await;
+            let _ = request.retire().await;
             return;
         }
         let progress = initial(&request);
@@ -200,7 +215,7 @@ impl Controller {
             }
         });
         if let Some(error) = rejected {
-            retire(request.into_inner()).await;
+            let _ = request.retire().await;
             publish(&self.outbox, rejected_progress(progress, error)).await;
             return;
         }
@@ -231,26 +246,20 @@ impl Controller {
                 io::ErrorKind::WouldBlock,
                 "The copy queue is full (32 jobs).",
             );
-            retire(request.into_inner()).await;
+            let _ = request.retire().await;
             publish(&self.outbox, rejected_progress(progress, failure)).await;
             return;
         }
         publish(&self.outbox, progress.clone()).await;
-        if let Err(rejected) = capacity.send(Input {
-            command: request.into_inner(),
+        let request = ownership::map(request, |command| Input {
+            command,
             cancel,
             status,
             decisions: decision_receiver,
             waiting,
-        }) {
-            let Request {
-                input,
-                receipt,
-                _capacity,
-            } = *rejected;
-            // Source destruction must finish before returning capacity or emitting
-            // a terminal result; unwrap the abort guard on this awaited path.
-            retire((input.into_inner(), receipt, _capacity)).await;
+        });
+        if let Err(rejected) = sender.send(request) {
+            let _ = rejected.retire().await;
             self.registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -325,7 +334,7 @@ impl Drop for Controller {
 
 async fn run(
     consumer: admission::Consumer,
-    service: Option<Arc<dyn TransferService>>,
+    service: WorkerOwned<Option<Arc<dyn TransferService>>>,
     outbox: Outbox,
     registry: Registry,
     cancel: Cancellation,
@@ -334,15 +343,8 @@ async fn run(
 ) {
     let requests = consumer.admission();
     while let Some(request) = requests.next(&cancel).await {
-        let id = request.input.command.id;
-        let progress = run_job(
-            request,
-            service.clone(),
-            &outbox,
-            &mutation_gate,
-            &io_budget,
-        )
-        .await;
+        let id = request.command.id;
+        let progress = run_job(request, &service, &outbox, &mutation_gate, &io_budget).await;
         registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -369,30 +371,24 @@ async fn acquire(budget: &Arc<Semaphore>, cancel: &Cancellation) -> Option<Owned
 
 async fn run_job(
     request: Request,
-    service: Option<Arc<dyn TransferService>>,
+    service: &Option<Arc<dyn TransferService>>,
     outbox: &Outbox,
     mutation_gate: &Arc<Semaphore>,
     io_budget: &Arc<Semaphore>,
 ) -> CopyProgress {
-    let Request {
-        _capacity,
-        receipt,
-        input,
-    } = request;
-    let Some(_mutation) = acquire(mutation_gate, &input.cancel).await else {
+    let mut input = request;
+    let Some(mutation) = acquire(mutation_gate, &input.cancel).await else {
         let progress = cancelled(&input.status);
-        retire(input.into_inner()).await;
-        receipt.finish(&progress);
+        let _ = input.retire().await;
         return progress;
     };
-    let progress = run_input(input.into_inner(), service, outbox, io_budget).await;
-    receipt.finish(&progress);
-    progress
+    input.resources.mutation = Some(mutation);
+    run_input(input, service, outbox, io_budget).await
 }
 
 async fn run_input(
-    request: Input,
-    service: Option<Arc<dyn TransferService>>,
+    request: Owned<Input>,
+    service: &Option<Arc<dyn TransferService>>,
     outbox: &Outbox,
     io_budget: &Arc<Semaphore>,
 ) -> CopyProgress {
@@ -437,20 +433,25 @@ fn sample_throughput(status: &Status, throughput: &Mutex<Tracker>) -> Option<Cop
 }
 
 async fn execute_input(
-    request: Input,
-    service: Option<Arc<dyn TransferService>>,
+    request: Owned<Input>,
+    service: &Option<Arc<dyn TransferService>>,
     outbox: &Outbox,
     io_budget: &Arc<Semaphore>,
     throughput: &Mutex<Tracker>,
 ) -> CopyProgress {
+    let (scope, lease) = request.into_parts();
+    let Scope { payload, resources } = scope;
     let Input {
         command,
         cancel,
         status,
         mut decisions,
         waiting,
-    } = request;
-    let command = WorkerOwned::new(command);
+    } = payload;
+    let command = lease.own(Scope {
+        payload: command,
+        resources,
+    });
     let Some(service) = service else {
         let failure = error(
             &command.destination,
@@ -458,7 +459,7 @@ async fn execute_input(
             "Verified copying is unavailable for this filesystem.",
         );
         let progress = failed(&status, failure, &cancel);
-        retire(command.into_inner()).await;
+        let _ = command.retire().await;
         return progress;
     };
     let mut waiter = DecisionWaiter {
@@ -470,10 +471,11 @@ async fn execute_input(
         throughput,
     };
     if !wait_for_pause(&cancel, &status, outbox, throughput).await {
-        retire(command.into_inner()).await;
+        let _ = command.retire().await;
         return cancelled(&status);
     }
-    let mut job = match prepare_job(command.into_inner(), service, io_budget, &mut waiter).await {
+    let command = ownership::map(command, |command| (command, service.clone()));
+    let mut job = match prepare_job(command, io_budget, &mut waiter).await {
         Ok(job) => job,
         Err(progress) => return *progress,
     };
@@ -543,7 +545,7 @@ async fn execute_input(
     let permit = io_budget.clone().acquire_owned().await.ok();
     match tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        job.into_inner().finish()
+        ownership::finish(job)
     })
     .await
     {

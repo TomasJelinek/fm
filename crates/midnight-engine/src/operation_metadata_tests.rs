@@ -46,7 +46,7 @@ impl Harness {
             path: directory.path().to_owned(),
             entries: entries.clone(),
         };
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 archive: None,
                 network: None,
@@ -61,12 +61,15 @@ impl Harness {
                 ..Default::default()
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let (sender, events) = mpsc::channel(64);
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
-            Some(Arc::new(LocalFileSystem::new(None))),
-            locale,
+            crate::worker_retirement::ActorRetirement::testing(),
+            Services {
+                mutation: Some(Arc::new(LocalFileSystem::new(None))),
+                locale,
+            },
             snapshots,
             Outbox {
                 sender,

@@ -135,7 +135,7 @@ fn directory_option_is_unmatched_only_and_missing_requested_times_are_selected()
 fn sources(request: &CompareRequest) -> Snapshots {
     use crate::{CommittedSnapshot, SnapshotState};
     use std::sync::Mutex;
-    Arc::new(Mutex::new(request.sides.each_ref().map(|side| {
+    crate::test_snapshots(request.sides.each_ref().map(|side| {
         let snapshot = CommittedSnapshot {
             navigation: side.source.navigation,
             path: side.source.path.clone(),
@@ -154,7 +154,7 @@ fn sources(request: &CompareRequest) -> Snapshots {
             visible: Some(snapshot),
             pending: None,
         }
-    })))
+    }))
 }
 
 #[tokio::test(start_paused = true)]

@@ -1,5 +1,10 @@
 //! One native actor, one coalescing source resolver, and reserved copy admission.
-use crate::{Outbox, Snapshots, copy_operations, file_targets};
+use crate::{
+    Outbox, Snapshots, copy_operations,
+    engine_lifetime::DragRetirement,
+    file_targets,
+    retirement::{RetirementWaiter, WorkerOwned},
+};
 use midnight_core::*;
 use std::{
     collections::HashMap,
@@ -13,7 +18,7 @@ use std::{
 };
 use tokio::{sync::mpsc, task::JoinSet};
 
-type Pending = Arc<Mutex<HashMap<DropToken, Accepted>>>;
+type Pending = Arc<WorkerOwned<Mutex<HashMap<DropToken, Accepted>>>>;
 type Hover = Arc<Mutex<Option<(u64, Option<PaneId>)>>>;
 struct Accepted {
     files: FileClipboard,
@@ -271,7 +276,7 @@ struct State {
     highest_drag: u64,
     highest_host: u64,
 }
-type SharedState = Arc<Mutex<State>>;
+type SharedState = Arc<WorkerOwned<Mutex<State>>>;
 struct Start {
     id: DragId,
     host: u64,
@@ -311,6 +316,7 @@ impl State {
 
 pub(crate) struct Controller {
     state: SharedState,
+    backlog: tokio::sync::Mutex<RetirementWaiter>,
     snapshots: Snapshots,
     pending: Pending,
     capacity: copy_operations::Admission,
@@ -336,6 +342,7 @@ impl Controller {
             .await;
     }
     pub(crate) fn new(
+        retirement: DragRetirement,
         service: Option<Arc<dyn FileDragDropService>>,
         transfers: Option<Arc<dyn TransferService>>,
         snapshots: Snapshots,
@@ -348,9 +355,10 @@ impl Controller {
         let hover = Hover::default();
         tasks.spawn(forward(receiver, outbox, hover.clone(), cancel.clone()));
         Self {
-            state: SharedState::default(),
+            state: Arc::new(retirement.state.own(Mutex::new(State::default()))),
+            backlog: tokio::sync::Mutex::new(retirement.backlog),
             snapshots,
-            pending: Pending::default(),
+            pending: Arc::new(retirement.pending.own(Mutex::new(HashMap::new()))),
             capacity,
             next: Arc::new(AtomicU64::new(0)),
             hover,
@@ -440,6 +448,9 @@ impl Controller {
             .await;
     }
     async fn retire_backlog(&self) {
+        // Reserve before taking provider owners out of guarded shared state.
+        let mut waiter = self.backlog.lock().await;
+        let lease = waiter.reserve().await;
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             (state.retired.len() >= 8).then(|| std::mem::take(&mut state.retired))
@@ -447,7 +458,7 @@ impl Controller {
         if let Some(retired) = retired {
             // One awaited fallback bounds retirement even if the coalescing resolver
             // is inside a non-cancellable provider call. Never drop providers here.
-            let _ = tokio::task::spawn_blocking(move || drop(retired)).await;
+            let _ = lease.retire(retired).await;
         }
     }
     fn wake_prepare(&self) {
@@ -659,10 +670,8 @@ impl Controller {
         }
         self.cancel.cancel();
         self.wake_prepare();
-        if self.prepare.is_none() && !state.retired.is_empty() {
-            let retired = std::mem::take(&mut state.retired);
-            tokio::task::spawn_blocking(move || drop(retired));
-        }
+        // Without a resolver, the guarded state retires the backlog on final release.
+        // A stopping Tokio blocking pool must never become a destructor fallback.
     }
 }
 impl Drop for Controller {

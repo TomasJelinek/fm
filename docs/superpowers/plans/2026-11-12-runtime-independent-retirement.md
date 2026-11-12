@@ -1,10 +1,11 @@
 # Runtime-independent retirement implementation plan
 
 > For agentic workers: use superpowers:subagent-driven-development or
-> superpowers:executing-plans task by task. All implementation tasks below remain unchecked.
+> superpowers:executing-plans task by task. Checkmarks record completed source/targeted evidence only; final qualification is separate.
 
-**Status:** Investigation/design only. No implementation, forced-shutdown reproduction or new
-qualification has been performed. This is the next goal batch, not part of native tree Delete.
+**Status:** Partially implemented. Root/Copy/Delete/drag retirement and the fixed-slot primitive
+have targeted tests. Independent service/checksum/custom-command ownership remains open; see
+[the review](../../verification/2026-11-12-engine-lifetime-review.md). This is not full LIFE-01 closure.
 
 **Goal:** Retire engine-owned captures and native resources away from callers/executors when the run
 future is never polled, aborted during dispatch/shutdown, or destroyed as Tokio stops.
@@ -65,17 +66,17 @@ module export in `lib.rs`. Keep future-specific code in task 2's separate module
 `try_reserve_run(&self) -> Result<RunLease, RetirementBusy>`; typed `WorkerOwned<T>` carrying a
 reserved slot. Reserve first, then pass owned payloads; reservation APIs take no provider values.
 
-- [ ] Derive and document a finite slot ledger from existing engine/controller admission limits,
+- [x] Derive and document a finite slot ledger from existing engine/controller admission limits,
   including the 32-operation bound, live actors and bounded dispatch/rejection ownership. Reserve a
   run's required capacity before engine construction; do not introduce an arbitrary cleanup backlog.
-- [ ] Add failing tests for no-runtime retirement, injected thread-creation failure before ownership,
+- [x] Add failing tests for no-runtime retirement, injected thread-creation failure before ownership,
   exhausted reservations, nested retirement and a blocked destructor retaining its slot.
-- [ ] Implement one fixed named cleanup worker with reserved slots, no fallible/full-queue ownership
+- [x] Implement one fixed named cleanup worker with reserved slots, no fallible/full-queue ownership
   handoff in `Drop`, and payload destruction outside synchronization locks. Live reservations keep
   the domain alive. Do not join its worker from executor/UI destructors.
-- [ ] Contain a single unwinding payload destructor so it cannot strand unrelated queued owners;
+- [x] Contain a single unwinding payload destructor so it cannot strand unrelated queued owners;
   preserve Rust's process-abort behavior for double panic. Verify later payloads still retire.
-- [ ] Implement acknowledged normal retirement; dropping an acknowledgement waiter must not cancel
+- [x] Implement acknowledged normal retirement; dropping an acknowledgement waiter must not cancel
   cleanup. Run the focused primitive tests and record both failure and passing evidence.
 
 ## Task 2: Protect the entire Engine run lifetime
@@ -88,16 +89,16 @@ modify `lib.rs`, `copy_retirement.rs`, `drag_drop.rs`, and app startup in
 `Engine::run(self, Receiver<Command>) -> EngineRun` becomes synchronous. `EngineRun` implements
 `Future<Output = ()>` and owns the pinned async implementation before returning to its caller.
 
-- [ ] Write a RED test that queues tracked captures and drops an unpolled run without any Tokio runtime.
+- [x] Write a RED test that queues tracked captures and drops an unpolled run without any Tokio runtime.
 - [ ] Write a RED mid-await test: prefill the event channel, poll through captured Delete admission
   until progress delivery is pending, and retain a second capture in the command queue. Observe
   dequeue through a fake source notification; do not infer the boundary from sleeps.
-- [ ] Start/reserve retirement before constructing provider-bearing engine state. Worker-creation or
+- [x] Start/reserve retirement before constructing provider-bearing engine state. Worker-creation or
   reservation failure returns an ordinary startup error before ownership moves; never return an
   unguarded provider-bearing future inside an error or panic because Tokio is absent.
-- [ ] Implement synchronous `EngineRun` construction and transfer its suspended pinned future to the
+- [x] Implement synchronous `EngineRun` construction and transfer its suspended pinned future to the
   reserved cleanup slot on abort/drop. Also guard engine state dropped before `run` is invoked.
-- [ ] Replace Tokio-dependent `WorkerOwned` and drag-drop destructor fallbacks. Nested cleanup already
+- [x] Replace Tokio-dependent `WorkerOwned` and drag-drop destructor fallbacks. Nested cleanup already
   executing on the domain worker may destroy directly there; other owners require reserved slots.
 - [ ] Preserve normal explicit shutdown and retire remaining engine service state before successful
   completion. Returning `Ready` is not enough: locals may be destroyed during the final inner poll.
@@ -115,11 +116,11 @@ trace identifies a concrete final-owner gap, not as an unrelated actor rewrite.
   completed-but-unconsumed task results. Record each protected last-owner boundary and its slot.
 - [ ] Add RED operation tests at Preview delivery, awaiting confirmation, predecessor/mutation-gate
   waits, and unconsumed preparation output. Record native-pin-before-provider destruction order.
-- [ ] Guard operation Jobs inside the blocking preparation closure before returning them, retaining
+- [x] Guard operation Jobs inside the blocking preparation closure before returning them, retaining
   the same ownership/reservation through prepared/queued collections, execution and disposal.
   `operations.rs:342` currently stores raw Jobs; `operation_worker.rs:300` has async disposal entry
   points whose unpolled futures also own raw Jobs.
-- [ ] Retain Copy's existing guarded preparation/job handoffs (`copy_decisions.rs:62`) while replacing
+- [x] Retain Copy's existing guarded preparation/job handoffs (`copy_decisions.rs:62`) while replacing
   their Tokio-dependent retirement implementation. Audit result paths without changing Copy behavior.
 - [ ] Protect independently spawned snapshot/controller owners where the trace proves that dropping
   the root future can leave a final owner on an executor. Preserve existing provider/worker permits.

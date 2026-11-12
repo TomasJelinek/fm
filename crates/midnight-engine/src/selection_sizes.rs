@@ -244,13 +244,13 @@ mod tests {
             entries,
             sizes: cache.clone(),
         };
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 visible: Some(snapshot),
                 ..Default::default()
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let request = Arc::new(SelectionSizeRequest {
             id: SelectionSizeId(1),
             pane: PaneId::Left,

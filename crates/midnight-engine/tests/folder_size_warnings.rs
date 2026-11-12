@@ -123,7 +123,14 @@ async fn cancellation_report(single: bool) {
     let _release = Release(files.clone());
     let (commands, input) = mpsc::channel(16);
     let (output, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(files.clone(), output).run(input));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            files.clone(),
+            output,
+        )
+        .run(input),
+    );
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

@@ -40,7 +40,7 @@ fn snapshot(request: &SearchRequest) -> CommittedSnapshot {
 }
 
 fn sources(left: &SearchRequest, right: &SearchRequest) -> Snapshots {
-    Arc::new(Mutex::new([
+    crate::test_snapshots([
         SnapshotState {
             tree_root: None,
             tree_notify: None,
@@ -65,13 +65,13 @@ fn sources(left: &SearchRequest, right: &SearchRequest) -> Snapshots {
             visible: Some(snapshot(right)),
             pending: None,
         },
-    ]))
+    ])
 }
 
 #[test]
 fn virtual_search_requires_the_exact_committed_snapshot_and_generation() {
     let mut request = query(PaneId::Left, 1, "a");
-    let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     snapshots.lock().unwrap()[0].archive = Some((request.navigation, request.source.clone()));
     assert!(source_matches(&snapshots, &request));
     request.navigation = NavigationId(2);

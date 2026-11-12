@@ -156,7 +156,12 @@ async fn ordered_publications(locale: Option<Arc<Locale>>, expected: &[&str]) {
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let fixture = Arc::new(Fixture);
-    let mut engine = Engine::new(fixture.clone(), sender).with_desktop(fixture);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        fixture.clone(),
+        sender,
+    )
+    .with_desktop(fixture);
     if let Some(locale) = &locale {
         engine = engine.with_locale(locale.clone());
     }
@@ -269,10 +274,14 @@ async fn rejects_invalid_collation(locale: Locale) {
     let (sender, mut events) = mpsc::channel(32);
     let fixture = Arc::new(Fixture);
     let task = tokio::spawn(
-        Engine::new(fixture.clone(), sender)
-            .with_desktop(fixture)
-            .with_locale(Arc::new(locale))
-            .run(receiver),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            fixture.clone(),
+            sender,
+        )
+        .with_desktop(fixture)
+        .with_locale(Arc::new(locale))
+        .run(receiver),
     );
     commands.send(Command::ListVolumes).await.unwrap();
     loop {

@@ -60,12 +60,13 @@ pub(super) fn retryable_error(error: &FsError) -> bool {
 }
 
 pub(super) async fn prepare_job(
-    input: CopyInput,
-    service: Arc<dyn TransferService>,
+    input: Owned<(CopyInput, Arc<dyn TransferService>)>,
     io_budget: &Arc<Semaphore>,
     waiter: &mut DecisionWaiter<'_>,
-) -> Result<WorkerOwned<worker::Job>, Box<CopyProgress>> {
-    let mut preparation = WorkerOwned::new(preparation::Preparation::new(input, service));
+) -> Result<Owned<worker::Job>, Box<CopyProgress>> {
+    let mut preparation = ownership::map(input, |(input, service)| {
+        preparation::Preparation::new(input, service)
+    });
     let mut version = 0u64;
     loop {
         set_state(waiter.status, CopyOperationState::Preparing);
@@ -93,8 +94,17 @@ pub(super) async fn prepare_job(
                 Ok(mut job) => {
                     job.set_decision_version(version);
                     // Close retained preparation owners on the worker, before Move can remove sources.
-                    drop(preparation.into_inner());
-                    Ok(WorkerOwned::new(job))
+                    let (scope, lease) = preparation.into_parts();
+                    let Scope {
+                        payload: preparation,
+                        resources,
+                    } = scope;
+                    let job = lease.own(Scope {
+                        payload: job,
+                        resources,
+                    });
+                    drop(preparation);
+                    Ok(job)
                 }
                 Err(error) => Err(Box::new((preparation, error))),
             }
@@ -161,6 +171,6 @@ pub(super) async fn prepare_job(
     }
 }
 
-async fn drop_preparation(preparation: WorkerOwned<preparation::Preparation>) {
-    let _ = tokio::task::spawn_blocking(move || drop(preparation.into_inner())).await;
+async fn drop_preparation(preparation: Owned<preparation::Preparation>) {
+    let _ = preparation.retire().await;
 }

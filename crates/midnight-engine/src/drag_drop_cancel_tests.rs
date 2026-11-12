@@ -61,6 +61,7 @@ async fn cancelled_blocked_internal_drop_does_not_publish_a_late_failure() {
     let (sender, mut events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         None,
         Some(service.clone()),
         fixture.sink.snapshots.clone(),

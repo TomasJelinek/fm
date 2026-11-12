@@ -15,6 +15,14 @@ mod desktop;
 mod diagnostic_text;
 mod drag_drop;
 mod elevation;
+mod engine_commands;
+mod engine_lifetime;
+mod engine_run;
+mod retirement;
+pub use engine_lifetime::EngineLifetime;
+pub use engine_run::EngineRun;
+#[cfg(test)]
+mod engine_lifecycle_tests;
 mod entry_sizes;
 mod file_list_actor;
 mod file_list_output;
@@ -152,6 +160,13 @@ impl Request {
 }
 
 pub struct Engine {
+    services: retirement::WorkerOwned<EngineServices>,
+    commands: retirement::RetirementLease,
+    resources: engine_lifetime::Resources,
+}
+
+#[derive(Clone)]
+struct EngineServices {
     elevation: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
     archive_capture: Option<ArchiveCapture>,
     navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
@@ -204,7 +219,13 @@ struct CommittedSnapshot {
     sizes: SharedSizes,
 }
 
-type Snapshots = Arc<Mutex<[SnapshotState; 2]>>;
+type Snapshots = Arc<retirement::WorkerOwned<Mutex<[SnapshotState; 2]>>>;
+
+#[cfg(test)]
+fn test_snapshots(states: [SnapshotState; 2]) -> Snapshots {
+    let domain = retirement::RetirementDomain::try_start(1, 0).unwrap();
+    Arc::new(domain.try_reserve().unwrap().own(Mutex::new(states)))
+}
 type SharedSizes = Arc<Mutex<HashMap<PathBuf, FolderSize>>>;
 
 fn listing_failed(snapshots: &Snapshots, pane: PaneId, navigation: NavigationId) {
@@ -234,17 +255,32 @@ impl SizeRequest {
 }
 
 impl Engine {
-    pub fn new(filesystem: Arc<dyn FileSystem>, events: mpsc::Sender<Event>) -> Self {
-        Self::with_wakeup(filesystem, events, Arc::new(|| {}))
+    /// Start and reserve runtime-independent cleanup before constructing providers.
+    ///
+    /// Returns an I/O error if the cleanup worker cannot start. No provider state
+    /// has been accepted, and no Tokio runtime is required.
+    pub fn lifetime() -> std::io::Result<EngineLifetime> {
+        EngineLifetime::new()
+    }
+
+    /// Attach services to an already reserved lifetime; ownership is now protected
+    /// even if the engine is discarded before `run` is called.
+    pub fn new(
+        lifetime: EngineLifetime,
+        filesystem: Arc<dyn FileSystem>,
+        events: mpsc::Sender<Event>,
+    ) -> Self {
+        Self::with_wakeup(lifetime, filesystem, events, Arc::new(|| {}))
     }
 
     /// The wakeup only schedules UI work; it must not touch UI objects directly.
     pub fn with_wakeup(
+        lifetime: EngineLifetime,
         filesystem: Arc<dyn FileSystem>,
         events: mpsc::Sender<Event>,
         wakeup: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
-        Self {
+        let services = EngineServices {
             elevation: None,
             archive_capture: None,
             navigation_fallback: None,
@@ -267,6 +303,11 @@ impl Engine {
                 sender: events,
                 wakeup,
             },
+        };
+        Self {
+            services: lifetime.run.own(services),
+            commands: lifetime.commands,
+            resources: lifetime.resources,
         }
     }
 
@@ -275,13 +316,13 @@ impl Engine {
         mut self,
         service: Arc<dyn midnight_core::ElevatedDirectoryService>,
     ) -> Self {
-        self.elevation = Some(service);
+        self.services.elevation = Some(service);
         self
     }
 
     /// Native archive container reads require this explicit backend provider authority.
     pub fn with_archive_capture(mut self, capture: ArchiveCapture) -> Self {
-        self.archive_capture = Some(capture);
+        self.services.archive_capture = Some(capture);
         self
     }
 
@@ -290,50 +331,50 @@ impl Engine {
         mut self,
         service: Arc<dyn midnight_core::NavigationFallbackService>,
     ) -> Self {
-        self.navigation_fallback = Some(service);
+        self.services.navigation_fallback = Some(service);
         self
     }
 
     /// Optional native services stay independent of the filesystem provider.
     pub fn with_desktop(mut self, desktop: Arc<dyn DesktopServices>) -> Self {
-        self.desktop = Some(desktop);
+        self.services.desktop = Some(desktop);
         self
     }
 
     /// Native change hints and polling run independently of navigation.
     pub fn with_watch(mut self, watch: Arc<dyn WatchService>) -> Self {
-        self.watch = Some(watch);
+        self.services.watch = Some(watch);
         self
     }
 
     /// Configuration I/O is serialized independently of browsing and native dialogs.
     pub fn with_settings(mut self, settings: Arc<dyn SettingsService>) -> Self {
-        self.settings = Some(settings);
+        self.services.settings = Some(settings);
         self
     }
 
     pub fn with_editor(mut self, editor: Arc<dyn midnight_core::EditorService>) -> Self {
-        self.editor = Some(editor);
+        self.services.editor = Some(editor);
         self
     }
 
     pub fn with_clipboard(mut self, clipboard: Arc<dyn midnight_core::ClipboardService>) -> Self {
-        self.clipboard = Some(clipboard);
+        self.services.clipboard = Some(clipboard);
         self
     }
 
     pub fn with_shell_menu(mut self, service: Arc<dyn midnight_core::ShellMenuService>) -> Self {
-        self.shell_menu = Some(service);
+        self.services.shell_menu = Some(service);
         self
     }
 
     pub fn with_path_picker(mut self, service: Arc<dyn midnight_core::PathPickerService>) -> Self {
-        self.path_picker = Some(service);
+        self.services.path_picker = Some(service);
         self
     }
 
     pub fn with_transfers(mut self, service: Arc<dyn midnight_core::TransferService>) -> Self {
-        self.transfers = Some(service);
+        self.services.transfers = Some(service);
         self
     }
 
@@ -341,35 +382,49 @@ impl Engine {
         mut self,
         service: Arc<dyn midnight_core::UserCommandService>,
     ) -> Self {
-        self.user_commands = Some(service);
+        self.services.user_commands = Some(service);
         self
     }
 
     pub fn with_drag_drop(mut self, service: Arc<dyn midnight_core::FileDragDropService>) -> Self {
-        self.drag_drop = Some(service);
+        self.services.drag_drop = Some(service);
         self
     }
 
     pub fn with_mutations(mut self, mutations: Arc<dyn midnight_core::MutationService>) -> Self {
-        self.mutations = Some(mutations);
+        self.services.mutations = Some(mutations);
         self
     }
     pub fn with_network(mut self, network: Option<Arc<dyn midnight_core::NetworkService>>) -> Self {
-        self.network = network;
+        self.services.network = network;
         self
     }
     pub fn with_locale(mut self, locale: Arc<dyn midnight_core::LocaleService>) -> Self {
-        self.locale = Some(locale);
+        self.services.locale = Some(locale);
         self
     }
 
     /// Optional identity-pinned native recursive search. The Find frontend is independent.
     pub fn with_find(mut self, service: Arc<dyn midnight_core::FindService>) -> Self {
-        self.find = Some(service);
+        self.services.find = Some(service);
         self
     }
 
-    pub async fn run(self, mut commands: mpsc::Receiver<Command>) {
+    /// Take command ownership synchronously, including before the first future poll.
+    pub fn run(self, commands: mpsc::Receiver<Command>) -> EngineRun {
+        let (services, lease) = self.services.into_parts();
+        let active = services.clone();
+        let commands = self.commands.own(engine_commands::CommandInbox(commands));
+        EngineRun::new(lease, active.run_inner(commands, self.resources), services)
+    }
+}
+
+impl EngineServices {
+    async fn run_inner(
+        self,
+        mut commands: retirement::WorkerOwned<engine_commands::CommandInbox>,
+        resources: engine_lifetime::Resources,
+    ) {
         // Reserve capacity for each pane even when the other pane accumulates
         // uncancellable OS reads on unavailable media.
         let listing_budgets = [Arc::new(Semaphore::new(2)), Arc::new(Semaphore::new(2))];
@@ -414,7 +469,8 @@ impl Engine {
         let mut size_warning_requests = size_warning_requests::Controller::new(self.outbox.clone());
         let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
         let mut path_picker = path_picker::Controller::new(self.path_picker, self.outbox.clone());
-        let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+        let snapshots: Snapshots =
+            Arc::new(resources.snapshots.own(Mutex::new(Default::default())));
         let mutation_gate = Arc::new(Semaphore::new(1));
         let trees = tree_controller::Controller::new(
             self.filesystem.clone(),
@@ -467,6 +523,7 @@ impl Engine {
             mutation_gate.clone(),
         );
         let copies = copy_operations::Controller::new(
+            resources.copies,
             self.transfers.clone(),
             self.outbox.clone(),
             mutation_gate.clone(),
@@ -474,8 +531,11 @@ impl Engine {
             &mut tasks,
         );
         let operations = operations::Controller::new(
-            self.mutations,
-            self.locale.clone(),
+            resources.operations,
+            operations::Services {
+                mutation: self.mutations,
+                locale: self.locale.clone(),
+            },
             snapshots.clone(),
             self.outbox.clone(),
             mutation_gate,
@@ -483,6 +543,7 @@ impl Engine {
             &mut tasks,
         );
         let mut drag_drop = drag_drop::Controller::new(
+            resources.drag,
             self.drag_drop,
             self.transfers,
             snapshots.clone(),
@@ -1032,7 +1093,7 @@ impl Engine {
         drop(archives);
         trees.shutdown().await;
         // Queued commands may retain provider captures. Final release belongs to a
-        // backend blocking worker even when Shutdown precedes them in the queue.
+        // reserved cleanup worker even when Shutdown precedes them in the queue.
         retire_commands(commands).await;
         archive_sizes.shutdown().await;
         size_delivery_cancel.cancel();
@@ -1069,8 +1130,8 @@ impl Engine {
     }
 }
 
-async fn retire_commands(commands: mpsc::Receiver<Command>) {
-    let _ = tokio::task::spawn_blocking(move || drop(commands)).await;
+async fn retire_commands(commands: retirement::WorkerOwned<engine_commands::CommandInbox>) {
+    let _ = commands.retire().await;
 }
 
 struct ListingTask {

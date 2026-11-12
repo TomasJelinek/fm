@@ -145,7 +145,14 @@ async fn captured_directories_only_are_read_and_unselected_cached_totals_survive
     });
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(tree.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            tree.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -311,7 +318,14 @@ async fn selected_status_reads_cached_totals_and_tracks_global_and_individual_sc
     });
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(tree.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            tree.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -407,7 +421,14 @@ async fn reject_native_scan_in_archive(single: bool) {
     });
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(tree.clone(), sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            tree.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,
@@ -499,7 +520,14 @@ async fn selected_summary_coalesces_root_completions_and_publishes_the_final_val
     });
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(tree, sender).run(receiver));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            tree,
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(Command::Navigate {
             pane: PaneId::Left,

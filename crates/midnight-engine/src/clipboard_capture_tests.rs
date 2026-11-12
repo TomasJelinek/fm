@@ -236,7 +236,14 @@ async fn engine_shutdown_retires_unprocessed_clipboard_sources_off_dispatcher() 
         })
         .unwrap();
     receiver.close();
-    crate::retire_commands(receiver).await;
+    let domain = crate::retirement::RetirementDomain::try_start(1, 0).unwrap();
+    crate::retire_commands(
+        domain
+            .try_reserve()
+            .unwrap()
+            .own(crate::engine_commands::CommandInbox(receiver)),
+    )
+    .await;
     assert!(sender.is_closed());
     assert_ne!(
         observed.lock().unwrap().expect("queued source retired"),

@@ -65,7 +65,7 @@ impl Harness {
         fs::write(source.join("payload"), b"abc").unwrap();
         let entries: Arc<[Entry]> =
             vec![Entry::new(EntryId(1), source.clone(), EntryKind::Directory)].into();
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 committed: Some(CommittedSnapshot {
                     navigation: NavigationId(1),
@@ -84,7 +84,7 @@ impl Harness {
                 }),
                 ..Default::default()
             },
-        ]));
+        ]);
         let service = Arc::new(Service {
             native: LocalFileSystem::new(None),
             destination,
@@ -95,6 +95,7 @@ impl Harness {
         let (sender, events) = mpsc::channel(128);
         let mut tasks = JoinSet::new();
         let mut controller = Controller::new(
+            crate::engine_lifetime::DragRetirement::testing(),
             None,
             Some(service.clone()),
             snapshots,

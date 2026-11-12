@@ -57,6 +57,7 @@ fn frame(revision: u64) -> Box<ViewerFrame> {
         limit_max: [None; 2],
         pan_sequence: 0,
         scroll_per_pixel: [0.001; 2],
+        scroll_map: None,
         settled: true,
         gutter: Some(ViewerRasterGutter {
             width: GUTTER,

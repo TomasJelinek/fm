@@ -24,7 +24,7 @@ impl Harness {
                 height: 100,
             },
         };
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState::default(),
             SnapshotState {
                 archive: None,
@@ -39,7 +39,7 @@ impl Harness {
                 }),
                 ..Default::default()
             },
-        ]));
+        ]);
         let (events, receiver) = mpsc::channel(64);
         Self {
             sink: Sink {
@@ -54,7 +54,11 @@ impl Harness {
                     targets: vec![target.clone()],
                 })),
                 snapshots,
-                pending: Arc::default(),
+                pending: Arc::new(
+                    crate::engine_lifetime::DragRetirement::testing()
+                        .pending
+                        .own(Mutex::new(HashMap::new())),
+                ),
                 capacity: copy_operations::Admission::default(),
                 events,
                 next: Arc::new(AtomicU64::new(0)),
@@ -238,6 +242,7 @@ async fn native_runtime_failure_revokes_ready_before_another_gesture() {
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         Some(Arc::new(FailsWhilePumping)),
         None,
         fixture.sink.snapshots.clone(),
@@ -411,7 +416,7 @@ async fn accepted_drop(
         ));
     }
     let entries: Arc<[Entry]> = entries.into();
-    let snapshots = Arc::new(Mutex::new([
+    let snapshots = crate::test_snapshots([
         SnapshotState {
             archive: None,
             network: None,
@@ -438,7 +443,7 @@ async fn accepted_drop(
             }),
             ..Default::default()
         },
-    ]));
+    ]);
     let target = FileDropTarget {
         pane: PaneId::Right,
         navigation: NavigationId(2),
@@ -463,6 +468,7 @@ async fn accepted_drop(
     let mut tasks = JoinSet::new();
     let service = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let copies = copy_operations::Controller::new(
+        crate::worker_retirement::ActorRetirement::testing(),
         Some(service.clone()),
         outbox.clone(),
         Arc::new(Semaphore::new(1)),
@@ -470,6 +476,7 @@ async fn accepted_drop(
         &mut tasks,
     );
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         None,
         Some(service),
         snapshots.clone(),
@@ -669,6 +676,7 @@ async fn shutdown_releases_unclaimed_native_drop_reservations() {
     let (sender, _events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         None,
         None,
         fixture.sink.snapshots.clone(),
@@ -771,6 +779,7 @@ async fn native_drag_keeps_one_actor_thread_and_cancellation_remains_responsive(
     let (sender, mut events) = mpsc::channel(32);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         Some(service.clone()),
         None,
         fixture.sink.snapshots.clone(),

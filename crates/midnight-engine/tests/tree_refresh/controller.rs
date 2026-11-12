@@ -11,6 +11,7 @@ async fn native_sweep_publishes_actual_additions_and_removals_before_correlated_
     let (send, mut events) = mpsc::channel(32);
     let engine = tokio::spawn(
         Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
             Arc::new(midnight_platform::LocalFileSystem::new(None)),
             send,
         )
@@ -129,7 +130,14 @@ async fn native_sweep_publishes_actual_additions_and_removals_before_correlated_
 async fn archive_refresh_is_correlated_unsupported_and_preserves_initial_action_snapshot() {
     let (commands, receive) = mpsc::channel(16);
     let (send, mut events) = mpsc::channel(32);
-    let engine = tokio::spawn(Engine::new(Arc::new(Files), send).run(receive));
+    let engine = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(Files),
+            send,
+        )
+        .run(receive),
+    );
     let root = archive_root(&commands, &mut events, Arc::new(Archive)).await;
     let publication = enable(&commands, &mut events, root).await;
     assert!(

@@ -108,9 +108,13 @@ async fn listing_uses_locale_on_a_worker_and_resort_reuses_keys_without_native_c
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let engine = tokio::spawn(
-        Engine::new(provider.clone(), sender)
-            .with_locale(locale.clone())
-            .run(receiver),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            provider.clone(),
+            sender,
+        )
+        .with_locale(locale.clone())
+        .run(receiver),
     );
     commands
         .send(Command::Navigate {
@@ -168,12 +172,16 @@ async fn real_collation_errors_report_listing_failure_without_publishing_wrong_o
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
     let engine = tokio::spawn(
-        Engine::new(Arc::new(Fixture::default()), sender)
-            .with_locale(Arc::new(Locale {
-                fail: true,
-                ..Default::default()
-            }))
-            .run(receiver),
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            Arc::new(Fixture::default()),
+            sender,
+        )
+        .with_locale(Arc::new(Locale {
+            fail: true,
+            ..Default::default()
+        }))
+        .run(receiver),
     );
     commands
         .send(Command::Navigate {

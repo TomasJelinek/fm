@@ -46,7 +46,7 @@ fn archive_capture_cancellation_is_checked_before_and_after_callback() {
 }
 
 async fn failed_navigation(action: ArchiveAction) -> crate::SnapshotState {
-    let snapshots: Snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots: Snapshots = crate::test_snapshots(Default::default());
     snapshots.lock().unwrap()[0].committed = Some(crate::CommittedSnapshot {
         navigation: NavigationId(1),
         path: std::env::temp_dir(),

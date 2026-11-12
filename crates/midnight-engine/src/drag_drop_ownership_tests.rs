@@ -42,6 +42,7 @@ async fn accepted_tree_drag_retains_provider_until_rejection_and_retires_on_work
     let (sender, mut events) = mpsc::channel(128);
     let mut tasks = JoinSet::new();
     let mut controller = Controller::new(
+        crate::engine_lifetime::DragRetirement::testing(),
         None,
         None,
         fixture.sink.snapshots.clone(),
@@ -126,4 +127,48 @@ async fn accepted_tree_drag_retains_provider_until_rejection_and_retires_on_work
     assert_eq!(fixture.sink.capacity.capacity().available_permits(), 32);
     controller.shutdown();
     while tasks.join_next().await.is_some() {}
+}
+
+#[test]
+fn unattached_drag_backlog_retires_after_runtime_shutdown() {
+    struct Notice(std::sync::mpsc::Sender<std::thread::ThreadId>);
+    impl Drop for Notice {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::current().id());
+        }
+    }
+    let (notice, retired) = std::sync::mpsc::channel();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let mut tasks = JoinSet::new();
+    let controller = {
+        let _entered = runtime.enter();
+        let (sender, _events) = mpsc::channel(1);
+        Controller::new(
+            crate::engine_lifetime::DragRetirement::testing(),
+            None,
+            None,
+            crate::test_snapshots(Default::default()),
+            copy_operations::Admission::default(),
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            &mut tasks,
+        )
+    };
+    controller
+        .state
+        .lock()
+        .unwrap()
+        .retired
+        .push(Box::new(Notice(notice)));
+    drop(runtime);
+    drop(tasks);
+    drop(controller);
+    assert_ne!(
+        retired.recv_timeout(Duration::from_secs(2)).unwrap(),
+        std::thread::current().id()
+    );
 }

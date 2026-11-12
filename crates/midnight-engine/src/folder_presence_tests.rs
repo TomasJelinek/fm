@@ -76,7 +76,7 @@ fn fixture() -> (FolderPresenceRequest, Snapshots, Arc<Files>) {
     };
     let mut state = SnapshotState::default();
     state.remember_native_tree_root(root.clone(), path.clone());
-    let snapshots = Arc::new(Mutex::new([state, SnapshotState::default()]));
+    let snapshots = crate::test_snapshots([state, SnapshotState::default()]);
     let mut rows = HashMap::new();
     rows.insert(path.join("empty"), vec![]);
     rows.insert(

@@ -1192,6 +1192,7 @@ fn retained_wrapped_tab_refill_preserves_logical_context_and_exact_visible_pixel
             )
             .unwrap();
         pan(&mut worker, &output, info, 1, target, false);
+        let scroll = worker.position_metrics().unwrap();
         let anchor = worker.continuation.as_ref().expect("guard refill").anchor as usize;
         assert!(
             anchor > 0 && source.as_bytes()[anchor - 1] == b'\n',
@@ -1207,6 +1208,8 @@ fn retained_wrapped_tab_refill_preserves_logical_context_and_exact_visible_pixel
         worker.resume_raster_target(&output);
         let next = paint(&mut worker, &output);
         assert_eq!(next.raster.as_ref().unwrap().surface, info.surface);
+        assert!((next.position - scroll.0).abs() < 1e-6);
+        assert!((next.vertical_extent - scroll.1).abs() < 1e-6);
         assert_pixels_equal(
             &visible(&next),
             &expected.rgba,
@@ -1684,3 +1687,6 @@ fn retained_scrollbar_during_uncompleted_rebase_cannot_acknowledge_the_speculati
         "obsolete completion must not acknowledge the new seek"
     );
 }
+
+#[path = "worker_raster_scroll_tests.rs"]
+mod scroll_mapping;

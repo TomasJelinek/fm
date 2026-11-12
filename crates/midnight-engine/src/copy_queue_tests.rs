@@ -18,7 +18,7 @@ impl Mutations {
             path: directory.clone(),
             entries: entries.clone(),
         };
-        let snapshots = Arc::new(Mutex::new([
+        let snapshots = crate::test_snapshots([
             SnapshotState {
                 visible: Some(CommittedSnapshot {
                     navigation: visible.navigation,
@@ -29,11 +29,14 @@ impl Mutations {
                 ..Default::default()
             },
             SnapshotState::default(),
-        ]));
+        ]);
         let (sender, events) = mpsc::channel(64);
         let controller = operations::Controller::new(
-            Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
-            None,
+            crate::worker_retirement::ActorRetirement::testing(),
+            operations::Services {
+                mutation: Some(Arc::new(midnight_platform::LocalFileSystem::new(None))),
+                locale: None,
+            },
             snapshots,
             Outbox {
                 sender,

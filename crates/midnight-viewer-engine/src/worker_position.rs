@@ -13,7 +13,10 @@ pub(super) enum LoadedPosition {
 }
 
 impl Worker {
-    fn position_metrics(&self) -> Option<(f64, f64)> {
+    pub(super) fn position_metrics(&self) -> Option<(f64, f64)> {
+        if let Some(map) = &self.scroll_map {
+            return map.metrics(f64::from(self.origin[1]), f64::from(self.geometry.height));
+        }
         let page = self.page.as_ref()?;
         let shaped = self.shaped.as_ref()?;
         let (start, end) = if !page.before && !page.after {
@@ -41,6 +44,21 @@ impl Worker {
     fn loaded_position(&self, position: f64) -> Option<f32> {
         let page = self.page.as_ref()?;
         let shaped = self.shaped.as_ref()?;
+        let maximum =
+            (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
+                - self.geometry.height as f32)
+                .max(0.0);
+        if let Some(map) = &self.scroll_map {
+            return map
+                .inverse_near(
+                    position,
+                    f64::from(self.geometry.height),
+                    0.0,
+                    f64::from(maximum),
+                    f64::from(self.origin[1]),
+                )
+                .map(|origin| origin as f32);
+        }
         let height = f64::from(shaped.height().max(1.0));
         let (start, end) = if !page.before && !page.after {
             (0, self.length)

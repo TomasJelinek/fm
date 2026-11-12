@@ -79,7 +79,14 @@ impl DirectoryService for ControlledFileSystem {
 async fn complete_enumeration_metadata_is_published_without_another_read() {
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            provider(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, "cached"))
         .await
@@ -134,7 +141,14 @@ impl StorageService for ControlledFileSystem {
 async fn path_storage_kind_is_reported_with_navigation_identity_and_unknown_on_failure() {
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(16);
-    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            provider(),
+            sender,
+        )
+        .run(receiver),
+    );
     for (generation, path, expected) in [
         (1, "network", midnight_core::StorageKind::Network),
         (2, "unknown", midnight_core::StorageKind::Unknown),
@@ -190,7 +204,14 @@ async fn blocked_left_listing_does_not_prevent_right_completion() {
     let filesystem = provider();
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(8);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
@@ -223,7 +244,14 @@ async fn replacing_navigation_cancels_old_completion() {
     let filesystem = provider();
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, "slow"))
         .await
@@ -260,7 +288,14 @@ async fn replacing_navigation_cancels_old_completion() {
 async fn saturated_result_queue_preserves_batches_and_terminal_state() {
     let (commands, receiver) = mpsc::channel(4);
     let (sender, mut events) = mpsc::channel(1);
-    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            provider(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, "fast"))
         .await
@@ -289,7 +324,14 @@ async fn saturated_result_queue_preserves_batches_and_terminal_state() {
 async fn unavailable_path_reports_failure_and_other_pane_still_works() {
     let (commands, receiver) = mpsc::channel(4);
     let (sender, mut events) = mpsc::channel(8);
-    let task = tokio::spawn(Engine::new(provider(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            provider(),
+            sender,
+        )
+        .run(receiver),
+    );
     commands
         .send(navigate(PaneId::Left, 1, "missing"))
         .await
@@ -339,7 +381,14 @@ async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
     let _release = ReleaseOnDrop(filesystem.released.clone());
     let (commands, receiver) = mpsc::channel(8);
     let (sender, mut events) = mpsc::channel(32);
-    let task = tokio::spawn(Engine::new(filesystem.clone(), sender).run(receiver));
+    let task = tokio::spawn(
+        Engine::new(
+            Engine::lifetime().expect("engine cleanup worker"),
+            filesystem.clone(),
+            sender,
+        )
+        .run(receiver),
+    );
     for generation in [1, 2] {
         commands
             .send(navigate(PaneId::Left, generation, "slow"))

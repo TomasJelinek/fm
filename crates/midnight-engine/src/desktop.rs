@@ -950,9 +950,13 @@ mod tests {
         let (commands, receiver) = mpsc::channel(8);
         let (sender, mut events) = mpsc::channel(64);
         let task = tokio::spawn(
-            crate::Engine::new(services.clone(), sender)
-                .with_desktop(services.clone())
-                .run(receiver),
+            crate::Engine::new(
+                crate::Engine::lifetime().expect("engine cleanup worker"),
+                services.clone(),
+                sender,
+            )
+            .with_desktop(services.clone())
+            .run(receiver),
         );
         tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
             .await
@@ -1053,9 +1057,13 @@ mod tests {
         let (commands, receiver) = mpsc::channel(8);
         let (sender, mut events) = mpsc::channel(32);
         let task = tokio::spawn(
-            crate::Engine::new(services.clone(), sender)
-                .with_desktop(services.clone())
-                .run(receiver),
+            crate::Engine::new(
+                crate::Engine::lifetime().expect("engine cleanup worker"),
+                services.clone(),
+                sender,
+            )
+            .with_desktop(services.clone())
+            .run(receiver),
         );
         commands.send(Command::ListDesktopContext).await.unwrap();
         tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())

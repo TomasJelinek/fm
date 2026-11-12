@@ -130,7 +130,7 @@ fn setup() -> (
     Snapshots,
     tokio::sync::mpsc::Receiver<midnight_core::Event>,
 ) {
-    let snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots = crate::test_snapshots(Default::default());
     let (sender, events) = tokio::sync::mpsc::channel(64);
     let controller = Controller::new(
         snapshots.clone(),
@@ -450,7 +450,7 @@ async fn bounded_queue_rejects_overflow_and_full_scan_supersedes_pending_request
 
 #[test]
 fn selected_summary_overflow_is_unknown_and_equal_ids_do_not_reuse_other_mount_objects() {
-    let snapshots = Arc::new(Mutex::new(Default::default()));
+    let snapshots = crate::test_snapshots(Default::default());
     let mount = fixture();
     let ready = root(&snapshots, mount.clone(), 1, false);
     let captured = snapshots.lock().unwrap()[0]
