@@ -98,8 +98,9 @@ Ubuntu, Linux Mint, Fedora and openSUSE. Fedora/openSUSE are newly added targets
 their native qualification runs are pending. macOS is planned; it has no platform adapter and does not
 currently build. Slint's own macOS support does not change Midnight Explorer's platform support.
 
-Install [Rust with rustup](https://rust-lang.org/tools/install/), then reopen your
-terminal so `cargo` and `rustup` are on `PATH`. The repository pins **Rust 1.99.1**
+For Windows or direct native Cargo commands, install [Rust with rustup](https://rust-lang.org/tools/install/),
+then reopen your terminal so `cargo` and `rustup` are on `PATH`. The Linux helper
+can bootstrap Rust as described below. The repository pins **Rust 1.99.1**
 with rustfmt and Clippy in [rust-toolchain.toml](rust-toolchain.toml). From the
 repository root, `rustup show` selects/downloads that toolchain. Cargo downloads
 Slint and the other locked dependencies on the first build; no separate Slint SDK
@@ -110,15 +111,19 @@ optional root build helpers locate the repository themselves, so they also work
 when invoked by a quoted path from another directory. For builds they accept no
 argument (debug), `debug`, or `release`, run a locked build of `midnight-explorer`,
 and return failures to the caller. Linux `build.sh` also supports `clean`,
-`--dry-run` and explicit `--install-deps`, described below. Build profiles also
-build the platform's independent native and Network Neighborhood
+`--dry-run` and explicit `--install-deps`. It selects native or Docker builds and
+can bootstrap Rust; see the Linux instructions below. `build.bat` expects its
+prerequisites to be installed already. Application builds through the helpers also build the
+platform's independent native and Network Neighborhood
 filesystem packages under `filesystems/native.{windows,linux}/` and
 `filesystems/network.{windows,linux}/`, then the five
 independent viewer packages using the public SDK under `viewers/`. They do
-not launch the application. Native Linux packages are installed only when
-`--install-deps` is explicitly supplied; the default build does not install them.
-Direct `cargo build` builds
-the host only. Run `scripts/build-native-filesystem.ps1` or
+not launch the application. Host Linux packages are installed only with explicit
+`--install-deps`; Docker setup installs packages inside its image. The Linux
+Docker path runs the full app/elevation/native-filesystem/network/viewer build
+chain. Direct `cargo build -p midnight-explorer` builds the host only; its elevation
+helper and provider/viewer packages need separate build/staging. Run
+`scripts/build-native-filesystem.ps1` or
 `scripts/build-native-filesystem.sh` before launching it, add Network Neighborhood with
 `scripts/build-network-filesystem.ps1` or `.sh`, and use `scripts/build-viewers.ps1`
 or `scripts/build-viewers.sh` to add viewers. Native browsing and F3 source reads have
@@ -223,8 +228,44 @@ that PowerShell helper. Regular `cargo` commands use the ordinary `--` separator
 
 ### Linux / Ubuntu / Mint
 
-Install the native compiler/linker and development libraries used by the current
-Linux build. Viewer package helpers also require Python 3.11 or newer for the
+Run `./build.sh` or `./build.sh release`. When the native compiler or required
+libraries are missing, the helper builds an Ubuntu 24.04 Docker image containing
+the dependencies and pinned Rust toolchain. Docker must already be running and
+accessible to your user without sudo. The first build needs internet access;
+subsequent builds reuse the image and Cargo cache.
+
+The container mounts source read-only and runs the same application, elevation
+helper, native/network filesystem and viewer chain as a native build. It writes
+output as your user under `_build/`; Cargo downloads and the container home are
+cached under `.tools/docker/`.
+The Docker build always writes to `_build/`, regardless of host `CARGO_TARGET_DIR`.
+The resulting binary targets Ubuntu 24.04 or a compatible system and needs the
+usual desktop runtime libraries to run outside the container.
+
+To choose the build environment explicitly:
+
+```sh
+FM_BUILD_BACKEND=docker ./build.sh release
+FM_BUILD_BACKEND=docker ./build.sh release --dry-run
+FM_BUILD_BACKEND=native ./build.sh release
+```
+
+The default is `FM_BUILD_BACKEND=auto`: missing native compiler/pkg-config
+libraries select Docker. Native mode uses host libraries and can install Rust
+in your user account without sudo; explicit native package installation is
+described below.
+If Docker's default DNS cannot resolve package servers, set an accessible DNS
+server for both image setup and the build, for example
+`FM_DOCKER_DNS=1.1.1.1 ./build.sh release`. This does not change host DNS settings.
+
+For native builds, `build.sh` reuses Cargo on `PATH`, under
+`${CARGO_HOME:-$HOME/.cargo}/bin`, or in `.tools/cargo/bin`. If none exists, it
+bootstraps rustup using curl and CA certificates. New toolchain caches default to
+`.tools/cargo/` and `.tools/rustup/`, respecting explicit `CARGO_HOME` and
+`RUSTUP_HOME` overrides; no host sudo is needed for this Rust setup.
+
+For native builds, install the compiler/linker and development libraries used by
+the current Linux build. Viewer package helpers also require Python 3.11 or newer for the
 released SDK configuration. The [Linux dependency helper](scripts/setup-linux.sh)
 detects Ubuntu/Mint, Fedora or openSUSE and prints a package plan by default:
 
@@ -234,8 +275,9 @@ sh scripts/setup-linux.sh --install --dry-run
 ```
 
 Only explicit `--install` runs the package manager, using `sudo` when needed.
-`--dry-run` keeps it plan-only even with `--install`. Rust must be installed
-separately. Alternatively, install the packages manually. For Ubuntu/Mint:
+`--dry-run` keeps it plan-only even with `--install`. This package helper does not
+install Rust; native `build.sh` can bootstrap it when needed. Alternatively,
+install the packages manually. For Ubuntu/Mint:
 
 ```sh
 sudo apt update
@@ -272,7 +314,7 @@ Konsole, GNOME Terminal or Xfce Terminal. For example, `sudo dnf install xterm`
 or `sudo zypper install xterm`. An arbitrary desktop's default terminal is not
 automatically supported by the current launcher.
 
-Install Rust using the [official rustup instructions](https://rust-lang.org/tools/install/),
+To install Rust manually, use the [official rustup instructions](https://rust-lang.org/tools/install/),
 then open a new terminal or load rustup's environment with `. "$HOME/.cargo/env"`.
 The Linux helper accepts
 `./build.sh [debug|release|clean] [--install-deps] [--dry-run]`:
@@ -282,14 +324,16 @@ The Linux helper accepts
 ./build.sh debug
 ./build.sh release
 ./build.sh --dry-run
-./build.sh debug --install-deps --dry-run
-./build.sh debug --install-deps
+FM_BUILD_BACKEND=native ./build.sh debug --install-deps --dry-run
+FM_BUILD_BACKEND=native ./build.sh debug --install-deps
 ```
 
-`--install-deps` explicitly opts into the dependency helper's package installation
-before building. `--dry-run` prints the selected package/build commands without
-installing or compiling. With no profile, debug is selected. The helper requires
-Linux and rejects macOS; application and build support for macOS remain pending.
+`--install-deps` selects native setup and explicitly opts into the dependency
+helper's host package installation. It is rejected with
+`FM_BUILD_BACKEND=docker`. `--dry-run` prints the selected setup/build plan without
+package installation, Rust bootstrap or compilation. With no profile, debug is
+selected. The helper requires Linux and rejects macOS; application and build
+support for macOS remain pending.
 
 Build only the host with Cargo (install the native provider/viewers separately as
 described above):
@@ -311,6 +355,9 @@ It preserves `.tools/` and the legacy `_build/docker/` cache. It rejects a symli
 `_build` and validates Linux mount metadata before removal, refusing mounts/bind
 mounts in the deletion scope outside the preserved Docker cache. Missing or invalid
 mount metadata fails closed. Clean cannot be combined with `--install-deps`.
+It needs no Cargo, Docker, network or sudo and leaves `.tools/docker/` caches and
+the Docker dependency image intact. Native output in a custom `CARGO_TARGET_DIR`
+is outside this cleanup scope; clean that separately if needed.
 
 Run in a graphical desktop session with X11 or Wayland and working graphics
 drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/)

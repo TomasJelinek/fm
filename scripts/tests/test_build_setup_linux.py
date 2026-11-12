@@ -29,6 +29,7 @@ class LinuxBuildSetupTests(unittest.TestCase):
         self.log = self.root / "commands.log"
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + "/usr/bin:/bin",
                                 HOME=str(self.root / "home"),
+                                FM_BUILD_BACKEND="native",
                                 BUILD_SETUP_LOG=str(self.log), BUILD_SETUP_EXIT="0")
         for name in ("CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR"):
             self.environment.pop(name, None)
@@ -89,6 +90,31 @@ class LinuxBuildSetupTests(unittest.TestCase):
         result = self.run_script("build.sh", "release", "--install-deps", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("[scripts/setup-linux.sh] [--install] [--dry-run]", result.stdout)
+        self.assertEqual(self.calls(), "")
+        self.assertFalse((self.root / "_build").exists())
+
+    def test_native_install_option_overrides_auto_docker_fallback(self):
+        self.environment["FM_BUILD_BACKEND"] = "auto"
+        self.command("pkg-config", "exit 1\n")
+        (self.root / "scripts/setup-linux.sh").write_text(
+            '#!/bin/sh\nprintf "native setup\\n" >> "$BUILD_SETUP_LOG"\n', encoding="utf-8")
+        result = self.run_script("build.sh", "--install-deps")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.calls().startswith("native setup\n"))
+        self.assertIn("cargo [build]", self.calls())
+        self.assertNotIn("UNEXPECTED", self.calls())
+
+    def test_explicit_docker_rejects_host_install_option_before_actions(self):
+        self.environment["FM_BUILD_BACKEND"] = "docker"
+        result = self.run_script("build.sh", "--install-deps", "--dry-run")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.calls(), "")
+        self.assertFalse((self.root / "_build").exists())
+
+    def test_invalid_backend_is_rejected_even_during_dry_run(self):
+        self.environment["FM_BUILD_BACKEND"] = "unsupported"
+        result = self.run_script("build.sh", "--dry-run")
+        self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(self.calls(), "")
         self.assertFalse((self.root / "_build").exists())
 

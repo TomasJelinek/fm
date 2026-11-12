@@ -42,6 +42,7 @@ class BuildHookTests(unittest.TestCase):
             self.command = ["cmd.exe", "/d", "/c", str(self.root / entry)]
         else:
             entry = "build.sh"
+            self.environment["FM_BUILD_BACKEND"] = "native"
             cargo = fake_bin / "cargo"
             cargo.write_text('#!/bin/sh\nprintf "cargo %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
                              'exit "$BUILD_TEST_APP_EXIT"\n')

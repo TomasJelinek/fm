@@ -150,6 +150,24 @@ class LinuxBuildCleanTests(unittest.TestCase):
         self.assertIn("Cannot clean mounted output:", result.stderr)
         self.assertFalse(self.log.exists())
 
+    def test_fixed_kernel_escapes_do_not_consume_following_filename_digits(self):
+        for component in ("space 6digits", "tab\t6digits", "line\n6digits",
+                          "slash\\6digits", "literal\\0406digits"):
+            with self.subTest(component=component):
+                output = self.root / component / "_build"
+                mounted = output / "mounted"
+                encoded = (str(mounted).replace("\\", r"\134").replace(" ", r"\040")
+                           .replace("\t", r"\011").replace("\n", r"\012"))
+                table = self.root / "mount info"
+                table.write_text(f"36 25 8:1 /other {encoded} rw - ext4 /dev/example rw\n",
+                                 encoding="utf-8")
+                result = subprocess.run([
+                    "sh", str(self.root / "scripts/check-clean-mounts-linux.sh"), str(output), str(table),
+                ], env=self.environment, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0, result.stderr + repr(table.read_bytes()))
+                self.assertIn(str(mounted), result.stderr)
+                self.assertFalse(self.log.exists())
+
     def test_unsupported_host_stops_before_clean_or_build_commands(self):
         (self.root / "_build").mkdir()
         (self.root / "_build/output").write_bytes(b"keep")

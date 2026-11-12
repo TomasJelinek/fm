@@ -22,9 +22,13 @@ while IFS=' ' read -r mount_id parent_id device mount_root encoded_mount remaind
         exit 1
     fi
     seen=1
-    # Kernel mountinfo escapes space, tab, newline and backslash as octal.
+    # Kernel escapes have exactly three octal digits. printf's \0NNN form
+    # needs an extra zero so it cannot consume a following filename digit.
+    printf_mount=$(printf '%s' "$encoded_mount" | sed \
+        -e 's/\\040/\\0040/g' -e 's/\\011/\\0011/g' \
+        -e 's/\\012/\\0012/g' -e 's/\\134/\\0134/g')
     # A sentinel prevents command substitution from stripping path newlines.
-    mount_path=$(printf '%bX' "$encoded_mount")
+    mount_path=$(printf '%bX' "$printf_mount")
     mount_path=${mount_path%X}
     case "$mount_path" in
         "$output/docker"|"$output/docker/"*) ;; # Preserved cache is outside deletion scope.
