@@ -359,3 +359,98 @@ fn tree_delete_confirmation_cancel_leaves_no_job_and_ignores_duplicate_capture()
     assert!(p.operations.pending.is_none());
     assert!(p.operations.progress.is_empty());
 }
+
+#[test]
+fn completed_menu_capture_forks_only_while_view_and_settled_selection_are_unchanged() {
+    for changed in 0..6 {
+        let mut p = loaded();
+        let mut original = tree_capture::Capture::new(&p.panes[0]).unwrap();
+        original.request = Some(TreeRequestId(99));
+        assert!(original.matches_current(&p.panes[0]));
+        let forked = original.fork_if_current(&p.panes[0]).unwrap();
+        assert!(forked.request.is_none());
+        assert!(Arc::ptr_eq(&forked.view, &original.view));
+        assert_eq!(forked.fallback, original.fallback);
+        match changed {
+            0 => p.panes[0].loading = true,
+            1 => p.panes[0].tree.commit_pending = true,
+            2 => p.panes[0].tree.applied = SelectionRevision(1),
+            3 => p.panes[0].tree.preview.push((
+                SelectionRevision(1),
+                TreeSelectionAction::Toggle(TreeRowId(7)),
+            )),
+            4 => {
+                let root = original.view.root.clone();
+                p.apply_with_sender(
+                    Event::Tree(Box::new(TreeEvent::Published(super::tree::publication(
+                        root, 2, true, false,
+                    )))),
+                    &|_| true,
+                );
+            }
+            _ => original.cancel.cancel(),
+        }
+        assert!(!original.matches_current(&p.panes[0]));
+        assert!(original.fork_if_current(&p.panes[0]).is_none());
+        if changed == 5 {
+            assert!(
+                !forked.cancel.is_cancelled(),
+                "the menu and new action own independent cancellation"
+            );
+        }
+    }
+}
+
+#[test]
+fn scoped_menu_delete_keeps_clicked_row_separate_from_marks_and_caret() {
+    let mut p = loaded();
+    p.focus_display_row(PaneId::Left, 2);
+    let caret = p.panes[0].cursor;
+    let selected = p.panes[0]
+        .tree
+        .publication
+        .as_ref()
+        .unwrap()
+        .selection
+        .clone();
+    let capture = tree_capture::Capture::new(&p.panes[0]).unwrap();
+    let sent = RefCell::new(Vec::new());
+    p.start_tree_delete_capture(
+        DeleteMode::Trash,
+        capture,
+        TreeClipboardScope::Dragged(TreeRowId(7)),
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    let commands = sent.into_inner();
+    let request = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::Tree(command) => match command.as_ref() {
+                TreeCommand::Delete(request) => Some(request),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("scoped menu delete");
+    assert_eq!(request.scope, TreeClipboardScope::Dragged(TreeRowId(7)));
+    assert!(Arc::ptr_eq(&request.selection, &selected));
+    assert_eq!(p.panes[0].cursor, caret);
+    assert!(selected.contains_row(TreeRowId(11)));
+    assert!(!selected.contains_row(TreeRowId(7)));
+}
+
+#[test]
+fn invalid_tree_rename_does_not_cancel_an_existing_delete_capture() {
+    let mut p = loaded();
+    let existing = request(&mut p, DeleteMode::Trash);
+    p.panes[0].parent_cursor = true;
+    p.panes[0].cursor = None;
+    p.start_operation(PaneId::Left, MutationKind::Rename, &|_| {
+        panic!("the parent row has no rename target")
+    });
+    assert!(!existing.cancel.is_cancelled());
+    assert!(p.operations.tree_delete.is_some());
+}

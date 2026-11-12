@@ -23,6 +23,7 @@ enum Action {
     Files(SelectedFiles, FileClipboardIntent),
     Captured(Arc<dyn midnight_core::CapturedClipboardFiles>, Cancellation),
     Read(PathBuf),
+    ReadCaptured(Arc<dyn midnight_core::CapturedClipboardFiles>, Cancellation),
 }
 struct Request {
     id: DesktopRequestId,
@@ -33,6 +34,11 @@ impl Request {
         match &self.action {
             Action::ReadText => Event::PathClipboardTextRead {
                 request: self.id,
+                result: Err(error),
+            },
+            Action::ReadCaptured(_, _) => Event::ClipboardFilesRead {
+                request: self.id,
+                destination: PathBuf::new(),
                 result: Err(error),
             },
             Action::Read(destination) => Event::ClipboardFilesRead {
@@ -83,6 +89,22 @@ impl Controller {
             Request {
                 id,
                 action: Action::Captured(source, cancel),
+            },
+            tasks,
+        )
+        .await;
+    }
+    pub(crate) async fn read_captured_files(
+        &mut self,
+        id: DesktopRequestId,
+        source: Arc<dyn midnight_core::CapturedClipboardFiles>,
+        cancel: Cancellation,
+        tasks: &mut JoinSet<()>,
+    ) {
+        self.submit(
+            Request {
+                id,
+                action: Action::ReadCaptured(source, cancel),
             },
             tasks,
         )
@@ -352,6 +374,11 @@ enum Prepared {
         Cancellation,
     ),
     Read(PathBuf),
+    ReadCaptured(
+        Arc<dyn midnight_core::CapturedClipboardFiles>,
+        Cancellation,
+        Cancellation,
+    ),
 }
 fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> {
     check_cancellation(action, cancel)?;
@@ -426,6 +453,11 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
             files.validate()?;
             Ok(Prepared::Files(files))
         }
+        Action::ReadCaptured(source, request) => Ok(Prepared::ReadCaptured(
+            source.clone(),
+            request.clone(),
+            cancel.clone(),
+        )),
         Action::Read(destination) => {
             if !destination.is_absolute() || destination.as_os_str().as_encoded_bytes().contains(&0)
             {
@@ -440,7 +472,7 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
 }
 fn check_cancellation(action: &Action, global: &Cancellation) -> Result<(), FsError> {
     if global.is_cancelled()
-        || matches!(action, Action::Generated(_, request) | Action::Captured(_, request) if request.is_cancelled())
+        || matches!(action, Action::Generated(_, request) | Action::Captured(_, request) | Action::ReadCaptured(_, request) if request.is_cancelled())
     {
         Err(error(
             io::ErrorKind::Interrupted,
@@ -466,6 +498,18 @@ fn execute(id: DesktopRequestId, action: Prepared, session: &mut dyn ClipboardSe
         Prepared::Captured(source, request, global) => {
             publish_captured(source.as_ref(), &request, &global, session)
         }
+        Prepared::ReadCaptured(source, request, global) => {
+            let result = read_captured(source.as_ref(), &request, &global, session);
+            let (destination, result) = match result {
+                Ok((destination, clipboard)) => (destination, Ok(clipboard)),
+                Err(error) => (PathBuf::new(), Err(error)),
+            };
+            return Event::ClipboardFilesRead {
+                request: id,
+                destination,
+                result,
+            };
+        }
         Prepared::Read(destination) => {
             return Event::ClipboardFilesRead {
                 request: id,
@@ -481,6 +525,55 @@ fn execute(id: DesktopRequestId, action: Prepared, session: &mut dyn ClipboardSe
         request: id,
         result: result.map(|()| DesktopActionResult::ClipboardCopied),
     }
+}
+
+fn read_captured(
+    source: &dyn midnight_core::CapturedClipboardFiles,
+    request: &Cancellation,
+    global: &Cancellation,
+    session: &mut dyn ClipboardSession,
+) -> Result<(PathBuf, FileClipboard), FsError> {
+    let check = || {
+        if request.is_cancelled() || global.is_cancelled() {
+            Err(error(
+                io::ErrorKind::Interrupted,
+                "Clipboard paste was cancelled.",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    // Resolve after native clipboard opening, which can block long enough for
+    // navigation or provider revocation to invalidate the destination.
+    let target = source.resolve(global)?;
+    target.validate()?;
+    if target.intent != source.intent() || target.paths.len() != 1 {
+        return Err(error(
+            io::ErrorKind::InvalidData,
+            "Paste requires one captured native folder.",
+        ));
+    }
+    check()?;
+    let files = session.read_files()?;
+    files.validate()?;
+    check()?;
+    let current = source.resolve(global)?;
+    current.validate()?;
+    if current.intent != target.intent || current.paths != target.paths {
+        return Err(error(
+            io::ErrorKind::InvalidData,
+            "The captured paste destination changed.",
+        ));
+    }
+    check()?;
+    let Some(destination) = target.paths.into_iter().next() else {
+        return Err(error(
+            io::ErrorKind::InvalidData,
+            "The captured paste destination is missing.",
+        ));
+    };
+    Ok((destination, files))
 }
 
 fn publish_captured(
@@ -526,6 +619,9 @@ mod capture_tests;
 #[cfg(test)]
 #[path = "clipboard_generated_tests.rs"]
 mod generated_tests;
+#[cfg(test)]
+#[path = "clipboard_paste_capture_tests.rs"]
+mod paste_capture_tests;
 
 #[cfg(test)]
 mod tests {

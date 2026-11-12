@@ -105,10 +105,11 @@ export component PanelSearch inherits Rectangle {
         receiver.clear-focus();
         if restore { receiver.focus(); }
     }
-    if root.active : Text {
-        x: 7px; y: 0px; width: 18px; height: parent.height;
-        text: "⌕"; color: Theme.accent; font-size: Theme.font-size;
-        vertical-alignment: center;
+    if root.active : Image {
+        x: 7px; y: (parent.height - self.height) / 2;
+        width: 16px; height: 16px;
+        source: FallbackIcons.find; colorize: Theme.accent;
+        image-fit: contain;
         accessible-role: none;
     }
     input-viewport := Rectangle {

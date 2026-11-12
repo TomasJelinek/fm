@@ -128,10 +128,10 @@ fn high_contrast_selection_marks(test: &ui::TestUi) {
             (stripe.r, stripe.g, stripe.b),
             (edge.red(), edge.green(), edge.blue())
         );
-        // A selected cursor adds a horizontal line to the selected row's side
-        // stripe. Focus and selection remain distinct without recognizing hue.
+        // A selected cursor adds an outline to the selected row's side stripe.
+        // Focus and selection remain distinct without recognizing hue.
         let expected = if focused {
-            edge
+            theme.get_cursor_edge()
         } else {
             theme.get_selected_background()
         };

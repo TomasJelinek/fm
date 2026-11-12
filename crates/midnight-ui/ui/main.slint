@@ -516,6 +516,10 @@ export component MainWindow inherits Window {
     in property <bool> desktop-feedback-important;
     in property <string> message-title;
     in property <string> message-body;
+    in property <string> message-path;
+    in property <string> message-details;
+    in property <bool> message-can-authorize;
+    callback authorize-message(int);
     in property <bool> message-error;
     callback copy-message();
     callback diagnostic-notice-closed(int);

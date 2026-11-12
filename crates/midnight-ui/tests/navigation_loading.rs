@@ -228,6 +228,11 @@ fn denied_folder_open_restores_cursor_and_exact_viewport_after_layout_settles() 
             true
         }),
     );
+    // This viewport harness has one adapter. Separate notice-window tests render the modal.
+    let notice_opens = Rc::new(Cell::new(0));
+    let observed = notice_opens.clone();
+    test.window
+        .on_open_notice_window(move || observed.set(observed.get() + 1));
     let latest_navigation = || {
         calls
             .borrow()
@@ -311,7 +316,20 @@ fn denied_folder_open_restores_cursor_and_exact_viewport_after_layout_settles() 
                 test.window.get_left_list_content_y(),
             );
         }
-        assert!(test.window.get_left_error().contains("Access denied"));
+        assert!(test.window.get_left_error().is_empty());
+        assert_eq!(
+            notice_opens.get(),
+            route + 1,
+            "each explicit failed open requests a message box"
+        );
+        assert_eq!(
+            test.window.get_message_body(),
+            "Access to this folder was denied."
+        );
+        assert_eq!(
+            test.window.get_message_path().as_str(),
+            root.join("folder-080").to_string_lossy()
+        );
         assert_eq!(test.window.get_left_path().as_str(), root.to_string_lossy());
     }
     render::snapshot(&test, "navigation-denied-preserved-viewport");

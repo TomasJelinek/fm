@@ -1,5 +1,5 @@
 //! Captured native inputs for the read-only file comparator.
-use crate::{DirectoryIndex, Entry, SelectionSnapshot};
+use crate::{DirectoryIndex, Entry, EntryId, SelectionSnapshot};
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug)]
@@ -15,6 +15,14 @@ pub enum FileCompareSource {
     },
     /// Resolve the other side's single file name against this captured visible
     /// native listing on a worker. Never substitute the opposite cursor.
+    /// Native root actions with a backend-cached visibility set. This retains no
+    /// tree projection, provider source or diagnostic owner.
+    RootSameName {
+        directory: PathBuf,
+        entries: Arc<[Entry]>,
+        view: Arc<DirectoryIndex>,
+        visible: Arc<[EntryId]>,
+    },
     SameName {
         directory: PathBuf,
         entries: Arc<[Entry]>,

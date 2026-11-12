@@ -587,3 +587,107 @@ fn file_only_bulk_policy_never_selects_expanded_descendants_and_clear_preserves_
         }
     }
 }
+
+#[test]
+fn replacement_action_does_not_retain_its_source_projection() {
+    let view = projection(vec![row(1, "source.txt", EntryKind::File)]);
+    let retained = Arc::downgrade(&view);
+    let selection = Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap());
+    let action = TreeSelectionAction::Replace(Arc::new(
+        TreeSelectionReplacement::from_snapshot(&selection).unwrap(),
+    ));
+    drop(selection);
+    drop(view);
+    assert!(
+        retained.upgrade().is_none(),
+        "a queued selection replacement must retain no source projection"
+    );
+    drop(action);
+}
+
+#[test]
+fn replacement_payload_caps_shape_and_fences_preview_positions() {
+    let view = projection(vec![
+        row(1, "one.txt", EntryKind::File),
+        row(2, "two.txt", EntryKind::File),
+    ]);
+    let selection = TreeSelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap();
+    let replacement = TreeSelectionReplacement::from_snapshot(&selection).unwrap();
+    assert!(replacement.within_payload_budget());
+    assert!(replacement.matches_origin(&view));
+    assert!(replacement.contains_position(0, TreeRowId(1)));
+    assert!(!replacement.contains_position(0, TreeRowId(2)));
+    assert!(!replacement.contains_position(1, TreeRowId(2)));
+    assert!(!replacement.contains_position(usize::MAX, TreeRowId(1)));
+    let mut oversized = (*view).clone();
+    oversized.rows = vec![view.rows[0].clone(); TreeProjection::MAX_ROWS + 1].into();
+    let oversized = Arc::new(oversized);
+    let snapshot = TreeSelectionSnapshot::from_bits(
+        oversized.clone(),
+        vec![0; oversized.rows.len().div_ceil(64)],
+    )
+    .unwrap();
+    assert!(TreeSelectionReplacement::from_snapshot(&snapshot).is_err());
+}
+
+#[test]
+fn replacement_payload_accepts_metadata_but_rejects_scope_and_occurrence_changes() {
+    let view = projection(vec![
+        row(1, "one.txt", EntryKind::File),
+        row(2, "two.txt", EntryKind::File),
+    ]);
+    let selection = TreeSelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap();
+    let replacement = TreeSelectionReplacement::from_snapshot(&selection).unwrap();
+    for change in 0..9 {
+        let mut next = (*view).clone();
+        next.stamp.revision = TreeRevision(2);
+        let mut rows = view.rows.to_vec();
+        rows[0].entry.metadata.size = Some(123);
+        match change {
+            0 => {}
+            1 => next.stamp.pane = PaneId::Right,
+            2 => next.stamp.session = TreeSessionId(77),
+            3 => next.stamp.navigation = NavigationId(77),
+            4 => next.layout_revision = TreeLayoutRevision(77),
+            5 => rows.swap(0, 1),
+            6 => rows[0].id = TreeRowId(77),
+            7 => rows[0].selectable = false,
+            8 => rows[0].original_root_entry = Some(EntryId(77)),
+            _ => unreachable!(),
+        }
+        next.rows = rows.into();
+        assert_eq!(
+            replacement.matches_view(&next),
+            change == 0,
+            "change {change}"
+        );
+        assert!(!replacement.matches_origin(&next));
+    }
+}
+
+#[test]
+fn small_selection_and_visible_native_root_file_cache_are_exact_and_bounded() {
+    let mut rows = vec![
+        row(1, "one", EntryKind::File),
+        row(2, "two", EntryKind::File),
+        row(3, "three", EntryKind::File),
+    ];
+    for row in &mut rows {
+        row.original_root_entry = Some(row.entry.id);
+    }
+    rows[1].error = Some("unavailable".into());
+    let view = projection(rows);
+    assert_eq!(
+        view.index.native_root_files.as_ref(),
+        &[EntryId(101), EntryId(103)]
+    );
+    for (bits, expected) in [
+        (0, Some(vec![])),
+        (4, Some(vec![TreeRowId(3)])),
+        (5, Some(vec![TreeRowId(1), TreeRowId(3)])),
+        (7, None),
+    ] {
+        let selection = TreeSelectionSnapshot::from_bits(view.clone(), vec![bits]).unwrap();
+        assert_eq!(selection.small_selection(), expected.as_deref());
+    }
+}

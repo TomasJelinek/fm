@@ -31,6 +31,7 @@ mod find_tests;
 mod find_unix_tests;
 #[cfg(all(test, windows))]
 mod find_windows_tests;
+mod folder_error_notice;
 mod folder_presence;
 mod fonts;
 mod job_controls;
@@ -76,6 +77,7 @@ mod tree_refresh;
 mod tree_rename;
 mod tree_search;
 mod tree_selection;
+mod tree_shell;
 mod tree_sizes;
 mod tree_user_commands;
 pub(crate) mod user_command_settings;
@@ -435,12 +437,11 @@ impl Presenter {
 
     pub(crate) fn can_retry_directory_elevated(&self, pane: PaneId) -> bool {
         let p = &self.panes[pane.index()];
-        !p.loading
+        !self.operations.closing
+            && !p.loading
             && !p.error.is_empty()
             && p.pending.is_none()
-            && p.elevation_retry
-                .as_ref()
-                .is_some_and(|(navigation, _)| navigation.0 == p.generation)
+            && self.notice_matches_elevation(pane)
     }
 
     pub(crate) fn retry_directory_elevated(
@@ -663,6 +664,7 @@ impl Presenter {
     pub fn apply_with_sender(&mut self, event: Event, send: &dyn Fn(Command) -> bool) {
         if let Event::Tree(event) = event {
             self.apply_tree_event(*event, send);
+            self.flush_comparison(send);
             return;
         }
         let network_session_changed = match &event {
@@ -1183,6 +1185,8 @@ impl Presenter {
             }
             Event::ListingFailed { error, .. } => {
                 let mut request = p.pending.take().expect("validated pending generation");
+                let show_modal = !request.keep_rows;
+                let requested_path = request.path.clone();
                 if !request.keep_rows {
                     p.selection_reset = true;
                     // The failed destination still shares this navigation ID
@@ -1212,6 +1216,9 @@ impl Presenter {
                     crate::error_presentation::describe(&error),
                     &mut self.retired,
                 );
+                if show_modal {
+                    self.show_navigation_error(pane, navigation, &requested_path, &error);
+                }
             }
             Event::SpaceUpdated { space, .. } => {
                 if let Some(request) = &mut p.pending {

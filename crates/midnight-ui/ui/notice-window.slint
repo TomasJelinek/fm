@@ -8,15 +8,28 @@ export component NoticeWindow inherits DialogWindow {
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
     }
-    preferred-width: max(520px, Theme.font-size * 24);
-    preferred-height: clamp(body-measure.preferred-height
-        + max(Theme.control-height, Theme.font-size * 2) + 100px, 200px, 440px);
+    preferred-width: max(560px, Theme.font-size * 30);
+    private property <length> compact-height: clamp(body-measure.preferred-height
+        + max(Theme.control-height, Theme.font-size * 2) + 100px
+        + (root.folder-path == "" ? 0px : min(88px, Theme.font-size * 3 + 18px) + 12px)
+        + (root.can-authorize ? Theme.font-size * 2 + 12px : 0px)
+        + (root.can-authorize && root.width < 500px ? Theme.control-height + 12px : 0px), 220px, 440px);
+    preferred-height: root.compact-height + (root.details-expanded ? 200px : 0px);
     in property <string> message-title;
     title: root.message-title;
     in property <string> body;
+    in property <string> folder-path;
+    in property <string> details;
+    in property <bool> can-authorize;
+    changed can-authorize => {
+        if root.can-authorize { root.height = max(root.height, root.preferred-height); }
+    }
+    in-out property <bool> details-expanded;
+    changed details-expanded => { root.height = root.preferred-height; }
     in property <bool> error;
     in property <int> generation;
     callback copy-details();
+    callback authorize-retry();
     body-measure := Text {
         visible: false; accessible-role: none; width: root.preferred-width - 56px;
         text: root.body; font-size: Theme.font-size; wrap: word-wrap;
@@ -25,7 +38,10 @@ export component NoticeWindow inherits DialogWindow {
         x: 0px; y: 0px; width: root.width; height: root.height;
         preferred-width: 0px; preferred-height: 0px;
         title: root.title; body: root.body; error: root.error; generation: root.generation;
+        folder-path: root.folder-path; details: root.details; can-authorize: root.can-authorize;
+        details-expanded <=> root.details-expanded;
         copy-details => { root.copy-details(); }
+        authorize-retry => { root.authorize-retry(); }
         close => { root.request-dismiss(); }
     }
 }

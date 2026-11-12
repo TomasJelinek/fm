@@ -433,6 +433,62 @@ impl Session {
         true
     }
 
+    /// The controller proves this Arc was emitted and has not yet been acknowledged.
+    /// A provider completion may have advanced the private projection meanwhile.
+    pub(crate) fn acknowledge_emitted(&mut self, view: &Arc<TreeProjection>) -> bool {
+        let stamp = self.projection.stamp;
+        if view.stamp.pane != stamp.pane
+            || view.stamp.navigation != stamp.navigation
+            || view.stamp.session != stamp.session
+            || view.stamp.revision.0 > stamp.revision.0
+            || self
+                .accepted
+                .as_ref()
+                .is_some_and(|accepted| accepted.stamp.revision.0 > view.stamp.revision.0)
+        {
+            return false;
+        }
+        self.accepted = Some(view.clone());
+        true
+    }
+
+    /// Single-row gestures retain exact acknowledged occurrence authority across
+    /// unrelated background publications. Replaced/removed/hidden rows never rebind.
+    fn check_row_view(
+        &self,
+        view: &Arc<TreeProjection>,
+        row: TreeRowId,
+    ) -> Result<(), ProviderError> {
+        if self
+            .accepted
+            .as_ref()
+            .is_none_or(|accepted| !Arc::ptr_eq(accepted, view))
+        {
+            return Err(ProviderError::StaleReference);
+        }
+        let before = view
+            .index
+            .row_positions
+            .get(&row)
+            .and_then(|position| view.rows.get(*position))
+            .ok_or(ProviderError::StaleReference)?;
+        let current = self
+            .projection
+            .index
+            .row_positions
+            .get(&row)
+            .and_then(|position| self.projection.rows.get(*position))
+            .ok_or(ProviderError::StaleReference)?;
+        if before.parent != current.parent
+            || before.entry.kind != current.entry.kind
+            || before.context_only != current.context_only
+        {
+            return Err(ProviderError::StaleReference);
+        }
+        self.visible_branch(row)?;
+        Ok(())
+    }
+
     fn check_stamp(&self, stamp: TreeViewStamp) -> Result<(), ProviderError> {
         if stamp != self.projection.stamp
             || self
@@ -469,12 +525,12 @@ impl Session {
         row: TreeRowId,
         action: BranchAction,
     ) -> Result<(), ProviderError> {
-        self.check_view(view)?;
+        self.check_row_view(view, row)?;
         if request.0 == 0 || request.0 <= self.last_request.0 {
             return Err(ProviderError::StaleReference);
         }
         let branch = self.visible_branch(row)?;
-        let display = &view.rows[view.index.row_positions[&row]];
+        let display = &self.projection.rows[self.projection.index.row_positions[&row]];
         if display.disclosure == midnight_core::TreeDisclosure::None
             || (action == BranchAction::Probe && display.expanded)
         {

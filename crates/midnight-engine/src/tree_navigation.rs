@@ -17,17 +17,17 @@ impl Session {
         cancel: &Cancellation,
     ) -> Result<TreeNavigationTarget, ProviderError> {
         check_cancel(cancel)?;
-        self.check_view(view)?;
+        self.check_row_view(view, row)?;
         if request.0 == 0 || request.0 <= self.last_request.0 || navigation <= view.stamp.navigation
         {
             return Err(ProviderError::StaleReference);
         }
         let branch = self.visible_branch(row)?;
-        let position = view.index.row_positions[&row];
+        let position = self.projection.index.row_positions[&row];
         // Context-only directories may be entered; source files and unopened
         // containers require a separate explicit container-attachment contract.
         if !matches!(
-            view.rows[position].entry.kind,
+            self.projection.rows[position].entry.kind,
             EntryKind::Directory | EntryKind::DirectoryLink
         ) {
             return Err(ProviderError::Unsupported);

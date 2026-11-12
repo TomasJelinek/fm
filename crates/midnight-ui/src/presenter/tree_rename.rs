@@ -28,9 +28,41 @@ impl Presenter {
         else {
             return;
         };
+        self.request_tree_rename_target(pane, view.clone(), row.id, send);
+    }
+
+    pub(super) fn request_tree_rename_target(
+        &mut self,
+        pane: PaneId,
+        view: Arc<TreeProjection>,
+        row: TreeRowId,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let valid = !self.operations.closing
+            && self.native_action_allowed(pane)
+            && view.stamp.pane == pane
+            && !self.panes[pane.index()].loading
+            && self.panes[pane.index()].tree_input_ready()
+            && self.panes[pane.index()].search_allows_activation()
+            && self.panes[pane.index()]
+                .tree_view()
+                .is_some_and(|current| Arc::ptr_eq(current, &view))
+            && view
+                .index
+                .row_positions
+                .get(&row)
+                .and_then(|position| view.rows.get(*position))
+                .is_some_and(|row| row.selectable && !row.context_only);
+        if !valid {
+            self.retired.push(Box::new(view));
+            return;
+        }
+        self.cancel_tree_metadata(None);
+        self.cancel_tree_delete(None);
+        self.cancel_tree_rename(None);
         self.operations.tree_rename = Some(Pending {
-            view: view.clone(),
-            row: row.id,
+            view,
+            row,
             request: None,
             cancel: Cancellation::default(),
             source: None,

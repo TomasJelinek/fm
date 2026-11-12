@@ -1,11 +1,74 @@
-//! Native clipboard capture; neither display paths nor UI code resolve providers.
+//! Native tree actions retain exact occurrences; only backend workers resolve providers.
 use super::*;
 
+pub(super) enum Purpose {
+    Clipboard,
+    Properties,
+    Menu(tree_shell::Menu),
+    Open(TreeRowId),
+    Paste,
+}
+impl Purpose {
+    fn failure_title(&self) -> &'static str {
+        match self {
+            Self::Clipboard => "Clipboard unavailable",
+            Self::Properties => "Properties unavailable",
+            Self::Menu(_) => "Context menu unavailable",
+            Self::Open(_) => "Cannot open item",
+            Self::Paste => "Cannot paste files",
+        }
+    }
+}
+
 pub(super) struct Pending {
-    capture: tree_capture::Capture,
-    intent: FileClipboardIntent,
-    source: Option<Arc<dyn CapturedClipboardFiles>>,
-    desktop_request: Option<DesktopRequestId>,
+    pub capture: tree_capture::Capture,
+    pub intent: FileClipboardIntent,
+    pub scope: TreeClipboardScope,
+    pub purpose: Purpose,
+    pub source: Option<Arc<dyn CapturedClipboardFiles>>,
+    pub desktop_request: Option<DesktopRequestId>,
+}
+impl Pending {
+    fn command(
+        &self,
+        request: DesktopRequestId,
+        source: Arc<dyn CapturedClipboardFiles>,
+    ) -> Command {
+        let cancel = self.capture.cancel.clone();
+        match &self.purpose {
+            Purpose::Clipboard => Command::CopyCapturedFiles {
+                request,
+                source,
+                cancel,
+            },
+            Purpose::Properties => Command::ShowCapturedProperties {
+                request,
+                source,
+                cancel,
+            },
+            Purpose::Menu(menu) => Command::ShowCapturedShellMenu {
+                request,
+                source,
+                cancel,
+                owner: menu.anchor.owner,
+                position: menu.anchor.position,
+                modifiers: menu.anchor.modifiers,
+            },
+            Purpose::Open(row) => Command::OpenCapturedEntry {
+                request,
+                pane: self.capture.view.stamp.pane,
+                navigation: self.capture.view.stamp.navigation,
+                row: *row,
+                source,
+                cancel,
+            },
+            Purpose::Paste => Command::ReadCapturedFileClipboard {
+                request,
+                source,
+                cancel,
+            },
+        }
+    }
 }
 
 impl Presenter {
@@ -15,13 +78,30 @@ impl Presenter {
         intent: FileClipboardIntent,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.request_tree_action(
+            pane,
+            intent,
+            TreeClipboardScope::SelectionOrFallback,
+            Purpose::Clipboard,
+            send,
+        );
+    }
+
+    pub(super) fn request_tree_action(
+        &mut self,
+        pane: PaneId,
+        intent: FileClipboardIntent,
+        scope: TreeClipboardScope,
+        purpose: Purpose,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         if self.operations.closing || !self.native_action_allowed(pane) {
             return;
         }
         if self.file_actions.tree_clipboard.is_some() {
             self.desktop.report(
-                "Clipboard busy",
-                "A clipboard action is still pending.".into(),
+                "File action pending",
+                "Wait for the current file action to finish.".into(),
             );
             return;
         }
@@ -32,9 +112,27 @@ impl Presenter {
         let Some(capture) = tree_capture::Capture::new(p) else {
             return;
         };
+        self.start_tree_action(capture, intent, scope, purpose, send);
+    }
+
+    pub(super) fn start_tree_action(
+        &mut self,
+        capture: tree_capture::Capture,
+        intent: FileClipboardIntent,
+        scope: TreeClipboardScope,
+        purpose: Purpose,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        if self.operations.closing || self.file_actions.tree_clipboard.is_some() {
+            capture.cancel.cancel();
+            self.retired.push(Box::new(capture));
+            return;
+        }
         self.file_actions.tree_clipboard = Some(Pending {
             capture,
             intent,
+            scope,
+            purpose,
             source: None,
             desktop_request: None,
         });
@@ -52,7 +150,7 @@ impl Presenter {
                 .file_actions
                 .tree_clipboard
                 .take()
-                .expect("matched clipboard");
+                .expect("matched tree action");
             pending.capture.cancel.cancel();
             if let Some(request) = pending.desktop_request {
                 self.desktop.requests.remove(&request);
@@ -76,10 +174,21 @@ impl Presenter {
                 return;
             }
             tree_capture::Status::Ready(request, publication) => {
+                if let Purpose::Menu(menu) = &mut pending.purpose {
+                    menu.single = publication
+                        .view
+                        .index
+                        .row_positions
+                        .get(&menu.row)
+                        .is_some_and(|position| {
+                            !publication.selection.contains_position(*position)
+                                || publication.selection.len() == 1
+                        });
+                }
                 if send(Command::Tree(Box::new(TreeCommand::Clipboard(
                     TreeClipboardRequest {
                         intent: pending.intent,
-                        scope: TreeClipboardScope::SelectionOrFallback,
+                        scope: pending.scope,
                         view: pending.capture.view.clone(),
                         request,
                         selection_revision: publication.selection_revision,
@@ -98,13 +207,11 @@ impl Presenter {
             && let Some(source) = &pending.source
         {
             let request = self.desktop.request();
-            if send(Command::CopyCapturedFiles {
-                request,
-                source: source.clone(),
-                cancel: pending.capture.cancel.clone(),
-            }) {
+            if send(pending.command(request, source.clone())) {
                 pending.desktop_request = Some(request);
-                self.desktop.requests.insert(request);
+                if !matches!(pending.purpose, Purpose::Menu(_)) {
+                    self.desktop.requests.insert(request);
+                }
             }
         }
         self.file_actions.tree_clipboard = Some(pending);
@@ -125,18 +232,18 @@ impl Presenter {
             self.retired.push(Box::new(result));
             return;
         };
+        let title = pending.purpose.failure_title();
         match result {
             Ok(source) if source.intent() == pending.intent => pending.source = Some(source),
             Ok(source) => {
                 self.retired.push(Box::new(source));
                 self.cancel_tree_clipboard(None);
                 self.desktop
-                    .report("Clipboard unavailable", "Clipboard intent changed.".into());
+                    .report(title, "Captured file action changed.".into());
             }
             Err(error) => {
                 self.cancel_tree_clipboard(None);
-                self.desktop
-                    .report("Clipboard unavailable", error.as_str().into());
+                self.desktop.report(title, error.as_str().into());
             }
         }
         self.flush_tree_clipboard(send);
@@ -147,7 +254,10 @@ impl Presenter {
             .file_actions
             .tree_clipboard
             .as_ref()
-            .is_some_and(|pending| pending.desktop_request == Some(request))
+            .is_some_and(|pending| {
+                pending.desktop_request == Some(request)
+                    && !matches!(pending.purpose, Purpose::Menu(_))
+            })
         {
             self.retired
                 .push(Box::new(self.file_actions.tree_clipboard.take()));

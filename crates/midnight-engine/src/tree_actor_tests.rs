@@ -232,10 +232,16 @@ fn acknowledgments_and_expand_require_the_exact_current_published_basis() {
         .reproject(ProjectionOptions::default(), &Cancellation::default())
         .unwrap();
     assert!(!fixture.session.commit(&view));
+    fixture
+        .session
+        .branch(&view, TreeRequestId(2), row, BranchAction::Expand)
+        .unwrap();
+    let newer = fixture.session.projection().clone();
+    assert!(fixture.session.commit(&newer));
     assert!(
         fixture
             .session
-            .branch(&view, TreeRequestId(2), row, BranchAction::Expand)
+            .branch(&view, TreeRequestId(3), row, BranchAction::Expand)
             .is_err()
     );
 }
@@ -685,3 +691,85 @@ fn filtering_retains_unselectable_ancestor_context_and_rebases_selection_by_occu
 
 #[path = "tree_metadata_capture_tests.rs"]
 mod metadata_capture_tests;
+
+#[test]
+fn acknowledged_row_gesture_never_rebinds_a_replaced_or_hidden_occurrence() {
+    for replace in [false, true] {
+        let mut fixture = fixture();
+        let initial = fixture.session.projection().clone();
+        let parent = initial
+            .rows
+            .iter()
+            .find(|row| row.entry.name == "z-parent")
+            .unwrap()
+            .id;
+        fixture.session.commit(&initial);
+        fixture
+            .session
+            .branch(&initial, TreeRequestId(1), parent, BranchAction::Expand)
+            .unwrap();
+        let job = fixture.session.take_work().unwrap().unwrap();
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap();
+        let visible = fixture.session.projection().clone();
+        fixture.session.commit(&visible);
+        let child = visible
+            .rows
+            .iter()
+            .find(|row| row.parent == Some(parent))
+            .unwrap()
+            .id;
+        if replace {
+            fixture
+                .graph
+                .rows
+                .lock()
+                .unwrap()
+                .insert(1, vec![directory(7, "child")]);
+            fixture
+                .session
+                .branch(&visible, TreeRequestId(2), parent, BranchAction::Refresh)
+                .unwrap();
+            let job = fixture.session.take_work().unwrap().unwrap();
+            fixture
+                .session
+                .apply(job.run(), &Cancellation::default())
+                .unwrap();
+        } else {
+            fixture
+                .session
+                .branch(&visible, TreeRequestId(2), parent, BranchAction::Collapse)
+                .unwrap();
+            fixture
+                .session
+                .update_projection(&Cancellation::default())
+                .unwrap();
+        }
+        let calls = fixture.graph.target_calls.load(Ordering::SeqCst);
+        assert!(
+            fixture
+                .session
+                .navigate(
+                    &visible,
+                    TreeRequestId(3),
+                    child,
+                    NavigationId(8),
+                    &Cancellation::default()
+                )
+                .is_err()
+        );
+        assert!(
+            fixture
+                .session
+                .branch(&visible, TreeRequestId(3), child, BranchAction::Expand)
+                .is_err()
+        );
+        assert_eq!(
+            fixture.graph.target_calls.load(Ordering::SeqCst),
+            calls,
+            "stale row must not reach the provider"
+        );
+    }
+}

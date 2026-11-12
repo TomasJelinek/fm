@@ -62,6 +62,13 @@ fn source_matches(snapshots: &Snapshots, request: &CompareRequest) -> bool {
         side.source.pane.index() == slot
             && state.pending.is_none()
             && state.has_native_view()
+            && side.tree.as_ref().is_none_or(|tree| {
+                tree.stamp.pane.index() == slot
+                    && tree.stamp.navigation == side.source.navigation
+                    && Arc::ptr_eq(&tree.root.entries, &side.source.entries)
+                    && Arc::ptr_eq(&tree.index.directory, &side.view)
+                    && state.capture_tree_root(&tree.root).is_ok()
+            })
             && [&state.visible, &state.committed]
                 .into_iter()
                 .flatten()
@@ -146,3 +153,6 @@ fn compute(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tree_tests;

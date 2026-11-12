@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub enum TreeClipboardScope {
     #[default]
     SelectionOrFallback,
-    /// Preserve marks, but drag only this occurrence if it is not selected.
+    /// Preserve marks, but target only this occurrence if it is not selected.
     Dragged(TreeRowId),
 }
 

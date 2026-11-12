@@ -160,7 +160,7 @@ fn flat_presence_navigation_cancels_work_and_failed_probe_keeps_its_reason() {
     let (title, body) = p.desktop.notice.as_ref().expect("warning detail notice");
     assert_eq!(title, "Folder listing error");
     assert!(body.contains("Access denied"));
-    assert!(body.contains("empty"));
+    assert!(p.desktop.notice_path.contains("empty"));
     p.clear_folder_presence(PaneId::Left);
     let pending = request(&mut p);
     begin(
@@ -230,28 +230,25 @@ fn red_folder_error_icon_uses_modal_details_instead_of_a_viewer() {
     p.apply(Event::FolderPresence(snapshot));
     let identity = p.panes[0].row_identity(&p.panes[0].entries[0]);
     let full_path = p.panes[0].entries[0].path.to_string_lossy().into_owned();
-    let sent = RefCell::new(None);
-    p.inspect_panel_warning(PaneId::Left, &identity, true, &|command| {
-        *sent.borrow_mut() = Some(command);
-        true
+    p.inspect_panel_warning(PaneId::Left, &identity, true, &|_| {
+        panic!("a folder message uses original diagnostic lines without reading the encoded report")
     });
-    let Command::ReadDiagnosticText { request, .. } = sent.into_inner().unwrap() else {
-        panic!("red error icon must request the application's modal details");
-    };
     assert!(p.take_warning_viewer().is_none());
     let (title, body) = p.desktop.notice.as_ref().unwrap();
     assert_eq!(title, "Folder listing error");
-    assert!(body.contains("Access denied") && body.contains(&full_path));
-    let full = "Provider details without a repeated path".to_owned();
-    p.apply(Event::DiagnosticTextReady {
-        request,
-        result: Ok(DiagnosticTextPreview {
-            text: full.clone(),
-            total_bytes: full.len() as u64,
-            truncated: false,
-        }),
+    assert_eq!(body, "Access denied");
+    assert_eq!(p.desktop.notice_path, full_path);
+    assert!(
+        p.desktop.notice_details.is_empty(),
+        "do not repeat the reason under Details"
+    );
+    let sent = RefCell::new(None);
+    p.copy_notice_details(&|command| {
+        *sent.borrow_mut() = Some(command);
+        true
     });
-    let body = &p.desktop.notice.as_ref().unwrap().1;
-    assert!(body.contains(&full) && body.contains(&full_path) && body.contains("Access denied"));
-    assert!(p.take_warning_viewer().is_none());
+    assert!(matches!(
+        sent.into_inner(),
+        Some(Command::CopyGeneratedText { .. })
+    ));
 }

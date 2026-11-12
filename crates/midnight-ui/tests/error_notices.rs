@@ -64,6 +64,26 @@ fn panel_error_copy_preserves_the_complete_diagnostic_and_uses_the_backend() {
             _ => None,
         })
         .unwrap();
+    presenter.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        entries: Arc::from([]),
+        index: Arc::new(DirectoryIndex::default()),
+    });
+    refresh(&ui.window, &presenter.borrow());
+    ui.window.invoke_action(0, 3);
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Refresh {
+                pane: PaneId::Left,
+                navigation,
+                ..
+            } => Some(*navigation),
+            _ => None,
+        })
+        .expect("explicit same-directory refresh");
     presenter.borrow_mut().apply(Event::ListingFailed {
         pane: PaneId::Left,
         navigation,

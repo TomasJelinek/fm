@@ -96,3 +96,41 @@ fn any_customization_preserves_the_entire_ordered_palette() {
         assert_eq!(reload(custom.clone()), custom, "customization {variation}");
     }
 }
+
+fn slate_document_defaults() -> Vec<FilenameColorRule> {
+    let mut rules = midnight_core::default_filename_colors();
+    for index in [2, 9] {
+        rules[index].style.foreground = Some(RgbColor(100, 116, 139));
+    }
+    rules
+}
+
+#[test]
+fn untouched_slate_document_presets_migrate_without_replacing_custom_colors() {
+    let old = slate_document_defaults();
+    let current = midnight_core::default_filename_colors();
+    assert_ne!(
+        old, current,
+        "documents must have a brighter starting color"
+    );
+    assert_eq!(reload(old.clone()), current);
+    let mut amber = old.clone();
+    amber[7].style.foreground = Some(RgbColor(217, 119, 6));
+    assert_eq!(
+        reload(amber),
+        current,
+        "retain the earlier archive migration"
+    );
+    for variation in 0..5 {
+        let mut custom = old.clone();
+        match variation {
+            0 => custom[2].style.foreground = Some(RgbColor(101, 116, 139)),
+            1 => custom[9].style.background = Some(RgbColor(1, 2, 3)),
+            2 => custom[9].enabled = false,
+            3 => custom.swap(2, 9),
+            4 => custom[0].expression.push_str(";*.personal"),
+            _ => unreachable!(),
+        }
+        assert_eq!(reload(custom.clone()), custom, "customization {variation}");
+    }
+}

@@ -1185,7 +1185,7 @@ upřesňuje [podrobný návrh](2026-11-04-navigation-and-appearance-design.md), 
 testů, ukládání nastavení a omezení této etapy.
 
 Zkratky výběru: Ctrl+A vybere soubory hlavní úrovně, Ctrl+Shift+A také složky.
-Ctrl+D odznačí pouze soubory a zachová složky; Ctrl+Shift+D zruší celý výběr.
+Ctrl+D zruší celý výběr včetně složek a rozbalených potomků; Ctrl+Shift+D je volné.
 Ctrl+I invertuje pouze soubory aktivního panelu (také uvnitř archivu), se zachováním
 výběru složek a odkazů na složky. Hromadné výpočty běží v backendu; UI čte sdílený neměnný
 bitový snapshot a potvrzuje odpovídající kontext a revizi výběru. Editory si
@@ -1997,8 +1997,9 @@ Ctrl+Shift+A označí zobrazené soubory i složky hlavní úrovně aktivního p
 včetně directory links/junctions. Samostatná akce `selection.files` / Select files
 only má výchozí zkratku Ctrl+A na běžné klávesnici a nahradí výběr pouze soubory
 hlavní úrovně; dříve označené složky a vnořené řádky odznačí.
-Ctrl+D (`selection.clear-files`) odznačí soubory a zachová označené složky;
-Ctrl+Shift+D (`selection.clear`) zruší celý výběr. Položka `..`
+Ctrl+D (`selection.clear`) zruší celý výběr včetně složek a vnořených řádků.
+Ctrl+Shift+D nemá výchozí přiřazení; `selection.clear-files` zůstává volitelnou
+akcí bez výchozí zkratky pro zachování vlastních mapování. Položka `..`
 a pomocné neoznačitelné řádky stromu nejsou nikdy součástí výběru. Platí to také
 pro filtrované seznamy, archivy a rozbalené větve. Ctrl+I nadále invertuje pouze
 soubory a označení složek zachová.
@@ -2133,9 +2134,9 @@ a čas (Time) mají samostatné sloupce s pevnými společnými hranami; UI pou�
 oddělená lokalizovaná pole z backendu, nikdy nerozděluje formátovaný text podle
 mezer. Oba časové sloupce řadí podle původního úplného času změny.
 
-Aktualizované zkratky výběru (11. listopadu): Ctrl+A označí pouze soubory hlavní
-úrovně, Ctrl+Shift+A také složky. Ctrl+D odznačí soubory včetně výslovně označených
-vnořených souborů a zachová složky, Ctrl+Shift+D zruší celý výběr. Ctrl+I invertuje
+Aktualizované zkratky výběru (12. listopadu): Ctrl+A označí pouze soubory hlavní
+úrovně, Ctrl+Shift+A také složky. Ctrl+D zruší celý výběr včetně složek
+a výslovně označených vnořených řádků; Ctrl+Shift+D nemá výchozí přiřazení. Ctrl+I invertuje
 jen soubory, Ctrl+Shift+I soubory i složky hlavní úrovně. Řádek `..` nikdy není
 cílem výběru. Všechny akce lze přemapovat a F10 zobrazuje jejich aktuální účinné
 zkratky včetně změn za běhu. Výslovná uživatelská přemapování mají nad novými

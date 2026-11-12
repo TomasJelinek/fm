@@ -14,13 +14,29 @@ uses the backend root-alias map to preserve the caret. Every publication is
 adopted with its matching selection and acknowledged with its exact projection
 Arc before branch, navigation, selection, or viewport requests.
 
-A fast branch completion may publish a newer view before the UI's automatic
-Commit/Viewport observations arrive. Older observations in the same pane,
-navigation and session are silently retired at both mailbox admission and worker
-dispatch. The latest publication triggers fresh observations, avoiding false queue
-errors and retry loops. Retirement remains off the UI/dispatch thread and bounded.
-Current/future/foreign projections and explicit user actions retain exact-identity
-validation; this does not relax navigation or filesystem-operation authorization.
+Each emitted projection waits for the UI to acknowledge its exact Arc before a
+new unsolicited publication replaces it. At most one newer publication is retained
+and coalesced on the model worker. A completed provider task releases its mutation
+permit even while publication delivery waits. The mailbox retains a weak receipt
+for the acknowledged view: Branch and Navigate gestures may still name that view
+while a newer publication is travelling to the UI. The actor revalidates that the
+same occurrence remains visible and unchanged; removed, replaced, hidden or
+foreign occurrences are refused. Selection and filesystem-operation captures
+still require the current exact projection.
+
+Older automatic Commit/Viewport observations in the same pane, navigation and
+session are silently retired at mailbox admission and worker dispatch. New
+publications trigger fresh observations. Replaced publications and their owners
+are retired on the model worker, never by a UI callback. These rules prevent an
+unrelated probe completion from being reported as command-queue saturation.
+
+The eight-slot command mailbox coalesces viewport observations to the latest one
+in the same pane/navigation/session. An explicit user intent may evict that
+speculative observation when the mailbox is full; it never evicts another user
+intent. Optional viewport pressure is silent, while genuinely full explicit-intent
+queues and stale-view refusals have different diagnostics. Retired observations
+are released on the awaited backend cleanup worker. Neither capacity nor the
+filesystem authorization checks are relaxed.
 
 `Rows` reads the immutable projection directly. It does not construct a second
 complete UI model. Occurrence/session/revision tokens bind disclosure callbacks;
@@ -46,8 +62,8 @@ selection releases its preview without reusing the request revision.
 
 Ctrl+A replaces selection with selectable top-level files (`depth == 0`);
 Ctrl+Shift+A also includes top-level folders. Both clear nested marks. Ctrl+D
-deselects files at any displayed depth while preserving folder and directory-link
-marks; Ctrl+Shift+D clears every mark. The shared row policy drives both
+clears every mark, including folders, directory links and expanded descendants.
+Ctrl+Shift+D has no default assignment. The shared row policy drives both
 backend results and immediate preview, so child rows never flash selected while
 waiting for acknowledgement. Filters still exclude hidden/context-only rows;
 explicit click/range selection of descendants remains available.
@@ -534,13 +550,76 @@ shutdown cancel pending captures. Accepted launches survive later panel navigati
 Marks and expanded branches remain unchanged. See
 [verification](../verification/2026-11-12-tree-custom-commands.md) for test scope.
 
+## Directory comparison with expanded branches
+
+Ctrl+F10 remains available after native tree adoption. Comparison uses selectable
+root-level rows from the exact captured display projection; expanded descendant
+folders are not an implicit recursive comparison. Names, size, modified time,
+unmatched-folder handling and time tolerance use the same backend comparison as
+flat panels. Both roots must be native; any virtual/provider entry is rejected,
+including virtual descendants of a native root. Display paths cannot authorize
+native access. No files are opened or modified by this metadata comparison.
+
+The result is correlated with both original panel paths, navigation IDs, displayed
+projections and settled selection revisions before either preview changes. A flat
+panel keeps its existing immutable selection snapshot. A tree panel queues a
+`TreeSelectionReplacement` through its normal selection worker and displays the
+bounded preview immediately. The replacement contains only numeric occurrence
+identities and selection bits, at most 512 KiB; it retains no projection, provider,
+path or report owners. The model worker validates every occurrence, allowing
+metadata-only updates but rejecting changed row identity, hierarchy or selection
+eligibility. UI lookup and mailbox admission do not walk the whole tree.
+
+The dialog waits for selection acknowledgements and reports rejection instead of
+claiming that selection succeeded. A failed intent can be retried immediately.
+The two workers are independent: this is not a transactional filesystem operation
+or an atomic commit across both backend actors.
+
+## File comparison while branches are expanded
+
+Ctrl+Shift+C can compare native root-level files while directory branches remain
+expanded. Inline descendant rows are folders only. Focused files and up to two
+marked files resolve through their exact original root aliases, not labels or the
+old flat selection. The backend selection snapshot caches at most two occurrence
+IDs, so choosing a pair does not enumerate the panel on the UI thread.
+
+When the opposite panel has no marks, same-name lookup runs on the comparator
+worker against its captured native root listing and a bounded cached visibility
+set. Hidden, errored and virtual rows do not supply automatic counterparts.
+Marked folders, more than two marks, pending selection changes or otherwise
+unresolved inputs open the ordinary File A / File B choice. File comparison keeps
+its existing native validation and does not export archive members implicitly.
+
+## Properties and native menus in expanded branches
+
+Alt+Enter and item context menus capture exact native occurrences through the
+backend tree controller. Right-clicking a marked item captures the marked set;
+right-clicking an unmarked item captures that item without changing the marks.
+The synthetic parent and context-only ancestors are not action targets.
+Properties, file opening and system menus resolve native paths on admitted backend
+workers and retain the source through the native call. UI labels are never paths
+with authority. Captured desktop work uses the existing bounded process and
+cleanup ownership.
+
+Managed Copy/Cut/Delete/Rename verbs re-enter the existing typed action flows.
+Paste into one captured folder resolves that destination on the backend; ordinary
+panel paste keeps its panel-location authority. Rename and Delete retain their
+confirmation/overwrite/progress behavior. Providers without native authority are
+not converted into temporary native paths for these actions.
+
+A managed menu choice requires the original projection and settled selection.
+Navigation, changed marks or a new projection require reopening the menu; this
+includes conservative refusal after metadata or disclosure publications. The
+command cannot silently act on a different row. Unsupported system menus use the
+existing fallback menu. Virtual clipboard export remains separate work.
+
 ## Remaining integration
 
 TREE-01 remains partially integrated. Native Delete, Rename and metadata editing join the typed capture
 consumers described above: viewers, external editor, checksums, Custom Commands,
-Copy/Move and native clipboard/drag operations. This is not generic provider write support. Directory
-comparison, context menus and virtual clipboard
-export still require their own typed consumer integration and remain guarded.
+Copy/Move and native clipboard/drag operations. This is not generic provider write support. Native Properties and context menus
+use the typed consumers above; virtual clipboard export remains guarded. Native
+directory comparison is described above.
 Original flat panels remain available; opening a folder returns to the ordinary
 operation path. Pane-directory actions such as terminal, bookmarks, creation and
 paste destinations keep their existing location authority. Native immediate-parent

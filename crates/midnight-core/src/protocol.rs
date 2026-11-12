@@ -300,6 +300,36 @@ pub enum Command {
         modifiers: crate::ShellMenuModifiers,
         target: crate::ShellMenuTarget,
     },
+    /// Resolve retained native tree targets on a backend worker before opening their menu.
+    ShowCapturedShellMenu {
+        request: DesktopRequestId,
+        source: Arc<dyn crate::CapturedClipboardFiles>,
+        cancel: crate::Cancellation,
+        owner: usize,
+        position: crate::ShellMenuPosition,
+        modifiers: crate::ShellMenuModifiers,
+    },
+    /// Retain provider ownership through the native Properties operation.
+    ShowCapturedProperties {
+        request: DesktopRequestId,
+        source: Arc<dyn crate::CapturedClipboardFiles>,
+        cancel: crate::Cancellation,
+    },
+    /// Resolve the exact captured occurrence before invoking its native association.
+    OpenCapturedEntry {
+        request: DesktopRequestId,
+        pane: PaneId,
+        navigation: NavigationId,
+        row: crate::TreeRowId,
+        source: Arc<dyn crate::CapturedClipboardFiles>,
+        cancel: crate::Cancellation,
+    },
+    /// Read the clipboard for one retained native folder, never a display path.
+    ReadCapturedFileClipboard {
+        request: DesktopRequestId,
+        source: Arc<dyn crate::CapturedClipboardFiles>,
+        cancel: crate::Cancellation,
+    },
     ShowProperties {
         request: DesktopRequestId,
         paths: Vec<PathBuf>,

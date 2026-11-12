@@ -1203,3 +1203,75 @@ mod rename;
 
 #[path = "tree_metadata.rs"]
 mod metadata;
+
+#[test]
+fn tree_navigation_receipt_survives_an_unrelated_new_publication() {
+    for rejected in [false, true] {
+        let (mut p, root) = fixture();
+        let original = publication(root.clone(), 1, true, false);
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(original.clone()))),
+            &|_| true,
+        );
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            true
+        };
+        assert!(p.open_tree_row(PaneId::Left, p.panes[0].parent_offset(), &send));
+        let (stamp, request, row, navigation) = sent
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::Tree(command) => match command.as_ref() {
+                    TreeCommand::Navigate {
+                        view,
+                        request,
+                        row,
+                        navigation,
+                    } => Some((view.stamp, *request, *row, *navigation)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        p.apply_with_sender(
+            Event::Tree(Box::new(TreeEvent::Published(publication(
+                root.clone(),
+                2,
+                true,
+                false,
+            )))),
+            &send,
+        );
+        sent.borrow_mut().clear();
+        if rejected {
+            p.apply_with_sender(
+                Event::Tree(Box::new(TreeEvent::Rejected {
+                    stamp,
+                    request,
+                    row,
+                    error: TreeDiagnostic::new("navigation refused"),
+                })),
+                &send,
+            );
+            assert_eq!(p.panes[0].error, "navigation refused");
+            assert!(p.panes[0].tree_input_ready());
+        } else {
+            let target = root.entries[0].path.clone();
+            p.apply_with_sender(
+                Event::Tree(Box::new(TreeEvent::Navigated {
+                    stamp,
+                    request,
+                    row,
+                    navigation,
+                    target: TreeNavigationTarget::Native(target.clone()),
+                })),
+                &send,
+            );
+            assert!(sent.borrow().iter().any(
+                |command| matches!(command, Command::Navigate { path, .. } if path == &target)
+            ));
+        }
+    }
+}

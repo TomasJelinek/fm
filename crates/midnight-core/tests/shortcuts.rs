@@ -7,8 +7,7 @@ fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert
         for (key, expected) in [
             ("Ctrl+A", "selection.files"),
             ("Ctrl+Shift+A", "selection.all"),
-            ("Ctrl+D", "selection.clear-files"),
-            ("Ctrl+Shift+D", "selection.clear"),
+            ("Ctrl+D", "selection.clear"),
             ("Ctrl+I", "selection.invert"),
             ("Ctrl+Shift+I", "selection.invert-all"),
         ] {
@@ -19,6 +18,9 @@ fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert
             );
         }
     }
+    assert_eq!(action(&map, "Ctrl+Shift+D", ShortcutContext::Files), None);
+    assert_eq!(action(&map, "Ctrl+Shift+D", ShortcutContext::Search), None);
+    assert!(map.bindings("selection.clear-files").unwrap().is_empty());
     assert_eq!(
         map.bindings("selection.files").unwrap()[0].display(),
         "Ctrl+A"
@@ -841,8 +843,7 @@ fn make_file_list_uses_configurable_control_m_without_stealing_editor_input() {
 fn changed_selection_defaults_preserve_explicit_legacy_assignments() {
     for (key, saved_action, default_action) in [
         ("Ctrl+A", "selection.all", "selection.files"),
-        ("Ctrl+D", "selection.clear", "selection.clear-files"),
-        ("Ctrl+Shift+D", "files.rename", "selection.clear"),
+        ("Ctrl+D", "files.rename", "selection.clear"),
     ] {
         let saved = ShortcutBinding {
             action: saved_action.into(),
@@ -873,9 +874,9 @@ fn changed_selection_defaults_preserve_explicit_legacy_assignments() {
         keys: vec![],
     }])
     .unwrap();
-    assert_eq!(action(&map, "Ctrl+D", ShortcutContext::Files), None);
+    assert_eq!(action(&map, "Ctrl+Shift+D", ShortcutContext::Files), None);
     assert_eq!(
-        action(&map, "Ctrl+Shift+D", ShortcutContext::Files).as_deref(),
+        action(&map, "Ctrl+D", ShortcutContext::Files).as_deref(),
         Some("selection.clear")
     );
 }

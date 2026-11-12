@@ -123,6 +123,7 @@ fn cancelled_actor_retires_service(actor: Actor) {
             )),
             Actor::ShellMenu => Box::new(crate::shell_menu::Controller::new(
                 scope.clone(),
+                crate::shell_menu::Retirement::testing(),
                 Some(service.clone()),
                 outbox,
             )),

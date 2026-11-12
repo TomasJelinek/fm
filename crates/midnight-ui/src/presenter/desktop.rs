@@ -14,6 +14,10 @@ pub(crate) struct DesktopState {
     pub(crate) status: String,
     pub(crate) notice: Option<(String, String)>,
     pub(crate) notice_error: bool,
+    pub(crate) notice_path: String,
+    pub(crate) notice_details: String,
+    pub(super) notice_copy: Option<String>,
+    pub(super) notice_navigation: Option<(PaneId, NavigationId, u64, PathBuf)>,
     pub(crate) notice_generation: i32,
     pub(crate) terminal_pending: Option<DesktopRequestId>,
     pub(crate) terminal_mode: TerminalMode,
@@ -35,6 +39,10 @@ impl DesktopState {
         DesktopRequestId(self.generation)
     }
     pub(crate) fn report(&mut self, title: &str, body: String) {
+        self.notice_path.clear();
+        self.notice_details.clear();
+        self.notice_copy = None;
+        self.notice_navigation = None;
         self.notice_error = true;
         self.notice_generation = self.notice_generation.wrapping_add(1);
         self.notice = Some((title.into(), body));
@@ -146,6 +154,7 @@ impl Presenter {
                 self.retired.push(Box::new(pixels));
             }
             Event::DesktopActionFinished { request, result } => {
+                let captured_open = self.tree_open_request(request);
                 self.tree_clipboard_finished(request);
                 self.tree_editor_finished(request);
                 if !self.desktop.requests.remove(&request) {
@@ -178,7 +187,7 @@ impl Presenter {
                         self.desktop.inform(&title, body)
                     }
                     Ok(DesktopActionResult::FileOpened) => {
-                        if opened.is_some() {
+                        if opened.is_some() || captured_open.is_some() {
                             self.desktop.status = "File opened".into();
                         }
                     }
@@ -187,8 +196,11 @@ impl Presenter {
                         navigation,
                         path,
                     }) => {
-                        if opened == Some((pane, navigation, path.clone()))
+                        if (opened == Some((pane, navigation, path.clone()))
+                            || captured_open == Some((pane, navigation)))
                             && self.panes[pane.index()].generation == navigation.0
+                            && path.is_absolute()
+                            && !path.as_os_str().as_encoded_bytes().contains(&0)
                         {
                             self.desktop.open_directories[pane.index()] = Some((navigation, path));
                         }
@@ -199,7 +211,8 @@ impl Presenter {
                         path,
                         target,
                     }) => {
-                        if opened == Some((pane, navigation, path))
+                        if (opened == Some((pane, navigation, path))
+                            || captured_open == Some((pane, navigation)))
                             && self.panes[pane.index()].generation == navigation.0
                             && target.is_absolute()
                             && !target.as_os_str().as_encoded_bytes().contains(&0)

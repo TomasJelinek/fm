@@ -1,4 +1,8 @@
 //! Immutable inline-tree presentation and selection. No provider handles cross this boundary.
+#[path = "tree_selection_replacement.rs"]
+mod replacement;
+pub use replacement::TreeSelectionReplacement;
+
 use crate::{
     ArchiveSelectionTotals, DirectoryIndex, Entry, EntryId, EntryKind, NavigationId, PaneId,
     SelectionMode, SelectionOperation, SelectionRanges, SelectionRevision,
@@ -178,6 +182,9 @@ pub struct TreeDisplayIndex {
     /// Visible root aliases for constant-time focus and initial disclosure adoption.
     /// These map original listing identities, never descendant operation authority.
     pub root_rows: HashMap<EntryId, TreeRowId>,
+    /// Sorted visible native root-file aliases, excluding unavailable or errored rows.
+    /// Numeric metadata only; consumers still resolve paths from `root_actions`.
+    pub native_root_files: Arc<[EntryId]>,
     /// Rendering/search compatibility only. Never a native operation selection scope.
     pub directory: Arc<DirectoryIndex>,
 }
@@ -330,6 +337,21 @@ impl TreeProjection {
             .enumerate()
             .filter_map(|(position, row)| row.search_match.then_some(position))
             .collect();
+        let mut native_root_files: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row.depth == 0
+                    && row.parent.is_none()
+                    && row.selectable
+                    && !row.context_only
+                    && row.error.is_none()
+                    && row.entry.kind == EntryKind::File
+                    && row.entry.native_path().is_some()
+            })
+            .filter_map(|row| row.original_root_entry)
+            .collect();
+        native_root_files.sort_unstable_by_key(|id| id.0);
+        let native_root_files: Arc<[EntryId]> = native_root_files.into();
         let directory = Arc::new(DirectoryIndex::from_entry_refs(
             rows.iter().map(|row| &row.entry),
         ));
@@ -337,6 +359,8 @@ impl TreeProjection {
             .saturating_add(map_bytes(&row_positions))
             .saturating_add(map_bytes(&root_rows))
             .saturating_add(size_of_val(search_rows.as_ref()))
+            .saturating_add(size_of_val(native_root_files.as_ref()))
+            .saturating_add(ARC_HEADER)
             .saturating_add(ARC_HEADER)
             .saturating_add(directory_bytes(&directory));
         if bytes > Self::MAX_BYTES {
@@ -352,6 +376,7 @@ impl TreeProjection {
                 row_positions,
                 search_rows,
                 root_rows,
+                native_root_files,
                 directory,
             }),
         })
@@ -536,6 +561,7 @@ pub struct TreeSelectionSnapshot {
     basis: Arc<TreeProjection>,
     bits: Arc<[u64]>,
     totals: ArchiveSelectionTotals,
+    small_rows: [TreeRowId; 2],
 }
 
 impl TreeSelectionSnapshot {
@@ -549,10 +575,14 @@ impl TreeSelectionSnapshot {
             return Err("tree selection does not match its display basis");
         }
         let mut totals = ArchiveSelectionTotals::default();
+        let mut small_rows = [TreeRowId(0); 2];
         for (position, row) in basis.rows.iter().enumerate() {
             if bits[position / 64] & (1 << (position % 64)) != 0 {
                 if !row.selectable || row.context_only {
                     return Err("tree context or unavailable row cannot be selected");
+                }
+                if let Some(slot) = small_rows.get_mut(totals.files() + totals.folders()) {
+                    *slot = row.id;
                 }
                 totals.change(row.entry.kind, row.entry.metadata.size, true);
             }
@@ -561,6 +591,7 @@ impl TreeSelectionSnapshot {
             basis,
             bits: bits.into(),
             totals,
+            small_rows,
         })
     }
 
@@ -584,6 +615,11 @@ impl TreeSelectionSnapshot {
             }
         }
         Self::from_bits(basis, bits)
+    }
+    /// Cached display-order occurrences for a selection of at most two items.
+    /// Larger selections return None; UI callers never enumerate the bitset.
+    pub fn small_selection(&self) -> Option<&[TreeRowId]> {
+        (self.len() <= 2).then(|| &self.small_rows[..self.len()])
     }
     pub fn bits(&self) -> &[u64] {
         &self.bits
@@ -621,6 +657,8 @@ impl TreeSelectionSnapshot {
 
 #[derive(Clone, Debug)]
 pub enum TreeSelectionAction {
+    /// Replace marks with a backend-computed result for the same occurrence layout.
+    Replace(Arc<TreeSelectionReplacement>),
     /// Remove at most 64 exact visible occurrences, idempotently.
     Remove(Arc<[TreeRowId]>),
     Toggle(TreeRowId),

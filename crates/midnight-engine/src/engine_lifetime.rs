@@ -31,6 +31,7 @@ pub(crate) struct Resources {
     pub(crate) user_command_processes: crate::user_command_runtime::ProcessTracker,
     pub(crate) desktop_openers: crate::user_command_runtime::ProcessTracker,
     pub(crate) desktop: crate::desktop::Retirement,
+    pub(crate) shell_menu: crate::shell_menu::Retirement,
 }
 pub(crate) struct DragRetirement {
     pub(crate) state: RetirementLease,
@@ -58,6 +59,7 @@ impl EngineLifetime {
             + 1
             + crate::clipboard::RETIREMENT_CAPACITY
             + crate::desktop::EDITOR_RETIREMENT_CAPACITY
+            + crate::shell_menu::RETIREMENT_CAPACITY
             + crate::watch::RETIREMENT_CAPACITY
             + crate::network_neighborhood::RETIREMENT_CAPACITY
             + crate::file_list_actor::RETIREMENT_CAPACITY
@@ -66,7 +68,7 @@ impl EngineLifetime {
             + crate::report_arena::RETIREMENT_CAPACITY
             + crate::tree_rename::RETIREMENT_CAPACITY
             + crate::find::RETIREMENT_CAPACITY;
-        let domain = RetirementDomain::try_start(capacity, 7)?;
+        let domain = RetirementDomain::try_start(capacity, 8)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
         let desktop_openers = crate::user_command_runtime::ProcessTracker::try_start_openers()?;
@@ -136,6 +138,9 @@ impl EngineLifetime {
                 },
                 user_command_processes,
                 desktop_openers,
+                shell_menu: crate::shell_menu::Retirement {
+                    intake: domain.new_waiter().map_err(io::Error::other)?,
+                },
                 desktop: crate::desktop::Retirement {
                     intake: domain.new_waiter().map_err(io::Error::other)?,
                 },

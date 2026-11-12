@@ -40,13 +40,22 @@ impl Session {
             .clone()
             .try_acquire_owned()
             .map_err(|_| ProviderError::ResourceLimited)?;
-        let mut capture = self.capture_selection(
-            &request.view,
-            request.selection_revision,
-            &request.selection,
-            request.fallback,
-            &request.cancel,
-        )?;
+        let mut capture = match request.scope {
+            TreeClipboardScope::SelectionOrFallback => self.capture_selection(
+                &request.view,
+                request.selection_revision,
+                &request.selection,
+                request.fallback,
+                &request.cancel,
+            ),
+            TreeClipboardScope::Dragged(row) => self.capture_dragged(
+                &request.view,
+                request.selection_revision,
+                &request.selection,
+                row,
+                &request.cancel,
+            ),
+        }?;
         // Validate the whole original selection before suppressing descendants:
         // a native parent must never hide a selected unsupported provider target.
         for target in &capture.targets {

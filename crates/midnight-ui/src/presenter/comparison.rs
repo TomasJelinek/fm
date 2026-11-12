@@ -3,6 +3,7 @@ use super::*;
 #[cfg(test)]
 #[path = "comparison_tests.rs"]
 mod tests;
+mod tree;
 
 #[derive(Default)]
 pub(crate) struct ComparisonState {
@@ -16,13 +17,11 @@ pub(crate) struct ComparisonState {
     waiting: bool,
     pending: Option<Arc<CompareRequest>>,
     cancellation: Option<CompareId>,
+    tree_pending: [Option<(TreeViewStamp, SelectionRevision)>; 2],
 }
 
 impl Presenter {
     pub(crate) fn open_comparison(&mut self) {
-        if !self.tree_action_allowed(PaneId::Left) || !self.tree_action_allowed(PaneId::Right) {
-            return;
-        }
         if self.panes.iter().any(|p| !p.native_capabilities()) {
             self.desktop.report(
                 "Archive comparison unavailable",
@@ -39,10 +38,7 @@ impl Presenter {
         options: CompareOptions,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if !self.tree_action_allowed(PaneId::Left) || !self.tree_action_allowed(PaneId::Right) {
-            return;
-        }
-        if self.comparison.busy {
+        if self.comparison.busy || self.panes.iter().any(|pane| !pane.native_capabilities()) {
             return;
         }
         if options.time_tolerance_seconds > 86_400 {
@@ -84,10 +80,13 @@ impl Presenter {
             !pane.loading
                 && !pane.search.pending
                 && !pane.search_view_waiting()
-                && pane.selection_revision == side.selection_revision
-                && pane.selection_applied == pane.selection_revision
-                && !pane.selection_rebase_pending
-                && !pane.selection_deferred.any()
+                && tree::selection_ready(pane)
+                && tree::selection_revision(pane) == side.selection_revision
+                && match (&side.tree, pane.tree_view()) {
+                    (Some(captured), Some(current)) => Arc::ptr_eq(captured, current),
+                    (None, None) => true,
+                    _ => false,
+                }
                 && pane.search.view_revision == side.view_revision
                 && pane.successful_generation == Some(side.source.navigation)
                 && pane.path == side.source.path
@@ -97,11 +96,7 @@ impl Presenter {
     }
 
     pub fn flush_comparison(&mut self, send: &dyn Fn(Command) -> bool) {
-        if let Some(id) = self.comparison.cancellation
-            && send(Command::CancelComparison(id))
-        {
-            self.comparison.cancellation = None;
-        }
+        self.observe_tree_comparison();
         if self
             .comparison
             .pending
@@ -115,6 +110,11 @@ impl Presenter {
             self.comparison.error =
                 "Comparison cancelled because a panel or selection changed.".into();
         }
+        if let Some(id) = self.comparison.cancellation
+            && send(Command::CancelComparison(id))
+        {
+            self.comparison.cancellation = None;
+        }
         if !self.comparison.waiting {
             return;
         }
@@ -127,19 +127,15 @@ impl Presenter {
                 return;
             };
             let p = &self.panes[pane.index()];
-            if p.search.pending
-                || p.search_view_waiting()
-                || p.selection_rebase_pending
-                || p.selection_applied != p.selection_revision
-                || p.selection_deferred.any()
-            {
+            if p.search.pending || p.search_view_waiting() || !tree::selection_ready(p) {
                 return;
             }
             sides.push(CompareSide {
                 source,
+                tree: p.tree_view().cloned(),
                 view: p.display_index().clone(),
                 view_revision: p.search.view_revision,
-                selection_revision: p.selection_revision,
+                selection_revision: tree::selection_revision(p),
             });
         }
         let Some(next) = self.comparison.next.checked_add(1) else {
@@ -189,7 +185,8 @@ impl Presenter {
                     || self
                         .panes
                         .iter()
-                        .any(|pane| pane.selection_revision.0 == u64::MAX)
+                        .any(|pane| tree::selection_revision(pane).0 == u64::MAX)
+                    || !tree::result_matches(&result)
                 {
                     self.comparison.error =
                         "Comparison no longer matches the displayed panels.".into();
@@ -199,6 +196,15 @@ impl Presenter {
                 for (slot, (pane, selected)) in
                     self.panes.iter_mut().zip(&result.selections).enumerate()
                 {
+                    if let Some(selection) = &result.tree_replacements[slot] {
+                        let revision = SelectionRevision(pane.tree.revision.0 + 1);
+                        let action = TreeSelectionAction::Replace(selection.clone());
+                        pane.tree.revision = revision;
+                        pane.tree.preview.push((revision, action.clone()));
+                        pane.tree.replay.push_back((revision, action));
+                        self.comparison.tree_pending[slot] = Some((selection.stamp(), revision));
+                        continue;
+                    }
                     let seed = Arc::new(AuthoritativeSelection {
                         id: result.request.id.0,
                         origin: SelectionOrigin {
@@ -227,13 +233,14 @@ impl Presenter {
                     "Displayed metadata matches for the chosen criteria.".into()
                 } else {
                     format!(
-                        "Selected {} in the first directory and {} in the second directory. Unknown metadata: {}. Ambiguous name groups: {}.",
+                        "Found {} differences in the first directory and {} in the second directory. Unknown metadata: {}. Ambiguous name groups: {}.",
                         result.selections[0].len(),
                         result.selections[1].len(),
                         result.unknown,
                         result.ambiguous
                     )
                 };
+                self.comparison.busy = self.comparison.tree_pending.iter().any(Option::is_some);
                 self.retired.push(Box::new(result));
             }
         }

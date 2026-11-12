@@ -383,8 +383,9 @@ fn full_error_opens_notice_and_copy_retains_full_source_without_ui_reads() {
     });
     assert_eq!(
         p.desktop.notice.as_ref().unwrap(),
-        &("Panel error".into(), format!("Access denied\n\n{full}"))
+        &("Panel error".into(), "Access denied".into())
     );
+    assert_eq!(p.desktop.notice_details, full);
     assert_eq!(
         p.desktop.notice_generation, generation,
         "update the same modal"
@@ -433,20 +434,10 @@ fn modal_preview_is_honestly_truncated_and_late_closed_reply_cannot_replace_a_no
     });
     assert!(
         p.desktop
-            .notice
-            .as_ref()
-            .unwrap()
-            .1
+            .notice_details
             .contains("Showing 15 of 100000 bytes")
     );
-    assert!(
-        p.desktop
-            .notice
-            .as_ref()
-            .unwrap()
-            .1
-            .contains("complete report")
-    );
+    assert!(p.desktop.notice_details.contains("complete report"));
     assert!(p.take_warning_viewer().is_none());
     let (request, _, _) = modal_request(&mut p);
     p.desktop.report("New notice", "Keep this message".into());

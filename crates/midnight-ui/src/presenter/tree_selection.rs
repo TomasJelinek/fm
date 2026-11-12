@@ -13,6 +13,9 @@ impl Pane {
         let mut selected = publication.selection.contains_position(position);
         for (_, action) in &self.tree.preview {
             match action {
+                TreeSelectionAction::Replace(replacement) => {
+                    selected = replacement.contains_position(position, row.id)
+                }
                 TreeSelectionAction::Remove(rows) if rows.contains(&row.id) => selected = false,
                 TreeSelectionAction::Toggle(id) if *id == row.id => selected = !selected,
                 TreeSelectionAction::Range {

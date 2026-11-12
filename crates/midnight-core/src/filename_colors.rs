@@ -22,7 +22,7 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
         ),
         (
             "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub",
-            RgbColor(100, 116, 139),
+            RgbColor(196, 207, 224),
         ),
         (
             "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
@@ -50,7 +50,7 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
         ),
         (
             "*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*",
-            RgbColor(100, 116, 139),
+            RgbColor(196, 207, 224),
         ),
         (
             "*.ttf;*.otf;*.ttc;*.woff;*.woff2;*.eot;*.fon",

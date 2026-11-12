@@ -18,6 +18,7 @@ struct Inbox {
     ready: Option<NavigationId>,
     completion: Option<BranchCompletion>,
     published: Weak<TreeProjection>,
+    acknowledged: Weak<TreeProjection>,
     published_stamp: Option<midnight_core::TreeViewStamp>,
     closed: bool,
 }
@@ -35,6 +36,7 @@ pub(super) enum Input {
 }
 #[derive(Debug)]
 pub(super) enum PushError {
+    Full(TreeCommand),
     Rejected(TreeCommand),
     Superseded(TreeCommand),
 }
@@ -44,7 +46,8 @@ impl Mailbox {
         let inbox = self.clone();
         tokio::task::spawn_blocking(move || inbox.complete(job.run()))
     }
-    pub fn push(&self, command: TreeCommand) -> Result<(), PushError> {
+    /// Returns at most one replaced observation for awaited worker-side retirement.
+    pub fn push(&self, command: TreeCommand) -> Result<Option<TreeCommand>, PushError> {
         let mut inbox = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let TreeCommand::Sizes(midnight_core::TreeSizeCommand::Acknowledge { stamp, version }) =
             &command
@@ -64,7 +67,7 @@ impl Mailbox {
                 }
                 self.wake.notify_one();
             }
-            return Ok(());
+            return Ok(None);
         }
         if inbox.closed
             || inbox
@@ -82,12 +85,50 @@ impl Mailbox {
             // worker; the latest publication will trigger fresh UI observations.
             return Err(PushError::Superseded(command));
         }
-        if inbox.commands.len() >= 8 || !known_view(&command, &inbox.published) {
+        if !known_view(&command, &inbox.published, &inbox.acknowledged) {
             return Err(PushError::Rejected(command));
+        }
+        let viewport = matches!(command, TreeCommand::Viewport { .. });
+        let scope = match &command {
+            TreeCommand::Enable { .. } => None,
+            TreeCommand::Sizes(command) => Some(size_command_stamp(command)),
+            TreeCommand::Commit(view)
+            | TreeCommand::Viewport { view, .. }
+            | TreeCommand::Branch { view, .. }
+            | TreeCommand::Navigate { view, .. } => Some(view.stamp),
+            // Every other view-bearing command passed the exact latest Arc check above.
+            _ => inbox.published_stamp,
+        };
+        let replaced = if viewport || inbox.commands.len() >= 8 {
+            scope.and_then(|scope| {
+                inbox.commands.iter().position(|pending| {
+                    matches!(pending, TreeCommand::Viewport { view, .. }
+                    if view.stamp.pane == scope.pane
+                        && view.stamp.navigation == scope.navigation
+                        && view.stamp.session == scope.session)
+                })
+            })
+        } else {
+            None
+        };
+        let retired = replaced.and_then(|position| inbox.commands.remove(position));
+        if inbox.commands.len() >= 8 {
+            // Optional read-ahead must neither displace an explicit intent nor
+            // turn its own backpressure into a visible action failure.
+            return Err(if viewport {
+                PushError::Superseded(command)
+            } else {
+                PushError::Full(command)
+            });
+        }
+        if let TreeCommand::Commit(view) = &command {
+            // Admission proved this is the exact emitted Arc. Keep a weak receipt
+            // for row gestures queued while the next publication travels to the UI.
+            inbox.acknowledged = Arc::downgrade(view);
         }
         inbox.commands.push_back(command);
         self.wake.notify_one();
-        Ok(())
+        Ok(retired)
     }
     pub fn publish(&self, view: &Arc<TreeProjection>) -> bool {
         let mut inbox = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -112,6 +153,7 @@ impl Mailbox {
         }
         inbox.generation = Some(generation);
         inbox.published = Weak::new();
+        inbox.acknowledged = Weak::new();
         inbox.published_stamp = None;
         inbox.reset = true;
         self.wake.notify_one();
@@ -187,7 +229,11 @@ impl Mailbox {
     }
 }
 
-fn known_view(command: &TreeCommand, published: &Weak<TreeProjection>) -> bool {
+fn known_view(
+    command: &TreeCommand,
+    published: &Weak<TreeProjection>,
+    acknowledged: &Weak<TreeProjection>,
+) -> bool {
     let view = match command {
         TreeCommand::Sizes(midnight_core::TreeSizeCommand::Compute(request)) => &request.view,
         TreeCommand::Sizes(_) => return true,
@@ -207,6 +253,11 @@ fn known_view(command: &TreeCommand, published: &Weak<TreeProjection>) -> bool {
         | TreeCommand::Navigate { view, .. } => view,
         TreeCommand::Select(request) => {
             if matches!(&request.action, midnight_core::TreeSelectionAction::Remove(rows) if rows.len() > 64)
+            {
+                return false;
+            }
+            if matches!(&request.action, midnight_core::TreeSelectionAction::Replace(replacement)
+                if !replacement.admits_view(&request.view))
             {
                 return false;
             }
@@ -265,7 +316,12 @@ fn known_view(command: &TreeCommand, published: &Weak<TreeProjection>) -> bool {
             &request.view
         }
     };
-    Weak::ptr_eq(published, &Arc::downgrade(view))
+    let view = Arc::downgrade(view);
+    Weak::ptr_eq(published, &view)
+        || (matches!(
+            command,
+            TreeCommand::Branch { .. } | TreeCommand::Navigate { .. }
+        ) && Weak::ptr_eq(acknowledged, &view))
 }
 
 #[cfg(test)]
@@ -315,6 +371,139 @@ mod tests {
         ));
         for _ in 0..8 {
             assert!(matches!(lane.pop(), Some(Input::Command(_))));
+        }
+    }
+    #[test]
+    fn replacement_selection_rejects_foreign_scope_before_mailbox_admission() {
+        use midnight_core::{
+            DirectoryIndex, SelectionRevision, TreeLayoutRevision, TreeRootSnapshot,
+            TreeSelectionAction, TreeSelectionReplacement, TreeSelectionRequest,
+            TreeSelectionSnapshot,
+        };
+        let stamp = TreeViewStamp {
+            pane: PaneId::Left,
+            navigation: NavigationId(4),
+            session: TreeSessionId(2),
+            revision: TreeRevision(3),
+        };
+        let root = TreeRootSnapshot {
+            pane: stamp.pane,
+            navigation: stamp.navigation,
+            entries: Arc::from([]),
+            index: Arc::new(DirectoryIndex::default()),
+        };
+        let view =
+            Arc::new(TreeProjection::new(root, stamp, TreeLayoutRevision(1), vec![]).unwrap());
+        let lane = Mailbox::default();
+        lane.reset(Generation {
+            navigation: stamp.navigation,
+            sort: SortSpec::default(),
+            cancel: Cancellation::default(),
+        });
+        lane.pop();
+        assert!(lane.publish(&view));
+        for changed in [true, false] {
+            let mut basis = (*view).clone();
+            if changed {
+                basis.stamp.session = TreeSessionId(999);
+            }
+            let snapshot = TreeSelectionSnapshot::from_bits(Arc::new(basis), vec![]).unwrap();
+            let replacement = Arc::new(TreeSelectionReplacement::from_snapshot(&snapshot).unwrap());
+            let accepted = lane.push(TreeCommand::Select(TreeSelectionRequest {
+                view: view.clone(),
+                revision: SelectionRevision(1),
+                seed: None,
+                seed_revision: SelectionRevision(0),
+                action: TreeSelectionAction::Replace(replacement),
+            }));
+            assert_eq!(accepted.is_ok(), !changed);
+            assert_eq!(
+                lane.pop().is_some(),
+                !changed,
+                "foreign replacement never occupies a queue slot"
+            );
+        }
+    }
+    #[test]
+    fn viewport_observations_coalesce_and_yield_capacity_to_visible_row_actions() {
+        use midnight_core::{
+            DirectoryIndex, TreeBranchAction, TreeLayoutRevision, TreeRootSnapshot, TreeViewport,
+        };
+        for navigate in [false, true] {
+            let stamp = TreeViewStamp {
+                pane: PaneId::Left,
+                navigation: NavigationId(4),
+                session: TreeSessionId(2),
+                revision: TreeRevision(3),
+            };
+            let root = TreeRootSnapshot {
+                pane: stamp.pane,
+                navigation: stamp.navigation,
+                entries: Arc::from([]),
+                index: Arc::new(DirectoryIndex::default()),
+            };
+            let view =
+                Arc::new(TreeProjection::new(root, stamp, TreeLayoutRevision(1), vec![]).unwrap());
+            let lane = Mailbox::default();
+            lane.reset(Generation {
+                navigation: stamp.navigation,
+                sort: SortSpec::default(),
+                cancel: Cancellation::default(),
+            });
+            lane.pop();
+            assert!(lane.publish(&view));
+            lane.push(TreeCommand::Commit(view.clone())).unwrap();
+            lane.pop();
+            for _ in 0..64 {
+                assert!(
+                    lane.push(TreeCommand::Viewport {
+                        view: view.clone(),
+                        rows: TreeViewport::new(&view, vec![]).unwrap()
+                    })
+                    .is_ok(),
+                    "latest viewport must replace earlier speculative observations"
+                );
+            }
+            for request in 1..=7 {
+                lane.push(TreeCommand::Sizes(TreeSizeCommand::Cancel {
+                    stamp,
+                    request: TreeRequestId(request),
+                }))
+                .unwrap();
+            }
+            let action = if navigate {
+                TreeCommand::Navigate {
+                    view: view.clone(),
+                    request: TreeRequestId(8),
+                    row: TreeRowId(1),
+                    navigation: NavigationId(5),
+                }
+            } else {
+                TreeCommand::Branch {
+                    view: view.clone(),
+                    request: TreeRequestId(8),
+                    row: TreeRowId(1),
+                    action: TreeBranchAction::Expand,
+                }
+            };
+            assert!(
+                lane.push(action).is_ok(),
+                "a speculative viewport cannot reject a visible row action"
+            );
+            assert!(
+                lane.push(TreeCommand::Sizes(TreeSizeCommand::Cancel {
+                    stamp,
+                    request: TreeRequestId(9)
+                }))
+                .is_err(),
+                "eight explicit intents remain the hard bound"
+            );
+            let mut commands = 0;
+            while let Some(Input::Command(command)) = lane.pop() {
+                assert!(!matches!(command, TreeCommand::Viewport { .. }));
+                commands += 1;
+            }
+            assert_eq!(commands, 8);
         }
     }
 }

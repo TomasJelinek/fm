@@ -11,6 +11,19 @@ impl Worker {
         else {
             return;
         };
+        if let TreeEvent::Published(publication) = &event
+            && self
+                .awaiting_commit
+                .as_ref()
+                .is_some_and(|emitted| !Arc::ptr_eq(emitted, &publication.view))
+        {
+            // Only the latest unsent publication matters. Replaced projections
+            // and their selection/report owners are retired on this model worker.
+            if let TreeEvent::Published(publication) = event {
+                self.pending_publication = Some(publication);
+            }
+            return;
+        }
         let summary = match &event {
             TreeEvent::Published(publication) | TreeEvent::Reprojected { publication, .. } => self
                 .sizes
@@ -23,6 +36,11 @@ impl Worker {
             && !self.inbox.publish(&publication.view)
         {
             return;
+        }
+        if let TreeEvent::Published(publication) | TreeEvent::Reprojected { publication, .. } =
+            &event
+        {
+            self.awaiting_commit = Some(publication.view.clone());
         }
         // Exactly one branch can complete while this response waits. No commands
         // or new provider jobs run here, so this local publication cannot accumulate.

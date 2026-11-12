@@ -13,10 +13,10 @@ pub(super) struct State {
     ready: Option<ViewerLaunch>,
     diagnostic: Option<PendingDiagnostic>,
     notice_source: Option<NoticeSource>,
+    pub(super) modal_errors: [Option<(u64, u64)>; 2],
 }
 
 struct PendingDiagnostic {
-    context: String,
     request: DesktopRequestId,
     cancel: Cancellation,
     generation: i32,
@@ -162,50 +162,32 @@ impl Presenter {
             return;
         };
         if tree_error {
-            if p.tree_view().is_none() {
-                let Some(error) = p.root_presence_diagnostic(entry.id) else {
-                    return;
-                };
-                if let Some(content) = error.details().cloned() {
-                    let mut body = format!("{}\n\nFolder\n", error.as_str());
-                    crate::error_presentation::append_path(&mut body, &entry.path);
-                    self.show_diagnostic_notice("Folder listing error", body, content, send);
-                } else {
-                    let mut body = error.as_str().to_owned();
-                    body.push_str("\n\nFolder\n");
-                    if let Some(path) = entry.native_path() {
-                        crate::error_presentation::append_path(&mut body, path);
-                    } else {
-                        body.push_str(&entry.display_name);
-                    }
-                    self.retire_warning_viewer();
-                    self.desktop.report("Folder listing error", body);
-                }
-                return;
-            }
-            let Some(row) = p.tree_view().and_then(|view| {
-                view.index
+            let (message, content) = if let Some(view) = p.tree_view() {
+                let Some(row) = view
+                    .index
                     .row_positions
                     .get(&TreeRowId(id))
                     .and_then(|index| view.rows.get(*index))
-            }) else {
-                return;
+                else {
+                    return;
+                };
+                if row.error.is_none() && row.error_details.is_none() {
+                    return;
+                }
+                (
+                    row.error
+                        .clone()
+                        .unwrap_or_else(|| "Folder listing failed".into()),
+                    row.error_details.clone(),
+                )
+            } else {
+                let Some(error) = p.root_presence_diagnostic(entry.id) else {
+                    return;
+                };
+                (error.as_str().to_owned(), error.details().cloned())
             };
-            if let Some(content) = row.error_details.clone() {
-                let mut body = format!(
-                    "{}\n\nPath\n",
-                    row.error.as_deref().unwrap_or("Folder listing failed")
-                );
-                crate::error_presentation::append_path(&mut body, &row.entry.path);
-                self.show_diagnostic_notice("Folder listing error", body, content, send);
-                return;
-            }
-            if let Some(error) = &row.error {
-                let mut body = format!("{error}\n\nPath\n");
-                crate::error_presentation::append_path(&mut body, &row.entry.path);
-                self.retire_warning_viewer();
-                self.desktop.report("Folder listing error", body);
-            }
+            let path = entry.path.clone();
+            self.show_folder_error(&message, &path, content);
             return;
         }
         let Some(size) = p.folder_size(entry).filter(|size| size.errors > 0) else {
@@ -314,7 +296,7 @@ impl Presenter {
 }
 
 impl Presenter {
-    fn show_diagnostic_notice(
+    pub(super) fn show_diagnostic_notice(
         &mut self,
         title: &str,
         body: String,
@@ -322,8 +304,8 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         self.retire_warning_viewer();
-        self.desktop
-            .report(title, format!("{body}\n\nLoading full details…"));
+        self.desktop.report(title, body);
+        self.desktop.notice_details = "Loading full details…".into();
         let generation = self.desktop.notice_generation;
         let request = self.desktop.request();
         let cancel = Cancellation::default();
@@ -333,7 +315,6 @@ impl Presenter {
             cancel: cancel.clone(),
         }) {
             self.panel_warnings.diagnostic = Some(PendingDiagnostic {
-                context: body,
                 request,
                 cancel,
                 generation,
@@ -344,10 +325,7 @@ impl Presenter {
             });
         } else {
             self.retired.push(Box::new(content));
-            self.desktop.report(
-                title,
-                format!("{body}\n\nThe details queue is busy. Try again."),
-            );
+            self.desktop.notice_details = "The details queue is busy. Try again.".into();
         }
     }
 
@@ -407,8 +385,14 @@ impl Presenter {
             ),
         };
         // Refresh the existing modal; do not create a new notice generation or viewer.
-        self.desktop.notice.as_mut().expect("current notice").1 =
-            format!("{}\n\n{body}", pending.context);
+        self.desktop.notice_details = body;
+    }
+
+    pub(super) fn retain_notice_report(&mut self, content: Arc<dyn GeneratedTextSource>) {
+        self.panel_warnings.notice_source = Some(NoticeSource {
+            generation: self.desktop.notice_generation,
+            content,
+        });
     }
 
     pub(crate) fn copy_notice_details(&mut self, send: &dyn Fn(Command) -> bool) {
@@ -433,11 +417,30 @@ impl Presenter {
                     .report("Clipboard queue busy", "Try copying again.".into());
             }
         } else if let Some((title, body)) = &self.desktop.notice {
-            self.copy_viewer_text(format!("{title}\n\n{body}"), send);
+            if let Some(full) = &self.desktop.notice_copy {
+                self.copy_viewer_text(
+                    format!("{title}\n\nFolder\n{}\n\n{full}", self.desktop.notice_path),
+                    send,
+                );
+                return;
+            }
+            let mut text = format!("{title}\n\n{body}");
+            if !self.desktop.notice_path.is_empty() {
+                text.push_str("\n\nFolder\n");
+                text.push_str(&self.desktop.notice_path);
+            }
+            if !self.desktop.notice_details.is_empty() && self.desktop.notice_details != *body {
+                text.push_str("\n\nDetails\n");
+                text.push_str(&self.desktop.notice_details);
+            }
+            self.copy_viewer_text(text, send);
         }
     }
 
     pub(crate) fn dismiss_diagnostic_notice(&mut self, generation: i32) {
+        if generation == self.desktop.notice_generation {
+            self.desktop.notice_navigation = None;
+        }
         if self
             .panel_warnings
             .diagnostic

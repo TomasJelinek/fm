@@ -468,6 +468,7 @@ fn tree_delete_rejects_selected_archive_descendants_before_native_preparation() 
     let selected = select(&mut session, TreeSelectionAction::Toggle(descendant));
     assert!(session.commit(&selected.view));
     let request = midnight_core::TreeDeleteRequest {
+        scope: midnight_core::TreeClipboardScope::SelectionOrFallback,
         mode: midnight_core::DeleteMode::Permanent,
         view: selected.view,
         request: TreeRequestId(session.last_request.0 + 1),

@@ -8,6 +8,8 @@ pub const MAX_CAPTURED_DELETE_ROOTS: usize = 4096;
 #[derive(Clone, Debug)]
 pub struct TreeDeleteRequest {
     pub mode: DeleteMode,
+    /// A context-menu click on an unmarked row targets only that occurrence.
+    pub scope: TreeClipboardScope,
     pub view: Arc<TreeProjection>,
     pub request: TreeRequestId,
     pub selection_revision: SelectionRevision,

@@ -123,8 +123,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Insert | Toggle selection and move to the next row |
 | Ctrl+A | Select displayed top-level files only; deselect folders and nested rows |
 | Ctrl+Shift+A | Select displayed top-level files and folders; exclude `..` and nested rows |
-| Ctrl+D | Deselect files; preserve selected folders and directory links |
-| Ctrl+Shift+D | Clear all selection in the focused pane |
+| Ctrl+D | Clear all selection, including folders and expanded descendants, in the focused pane |
 | Ctrl+I | Invert file selection in the focused pane; preserve selected and unselected folders, including directory links |
 | Ctrl+Shift+I | Invert top-level files and folders; preserve nested tree marks |
 | Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens Move confirmation |
@@ -400,12 +399,12 @@ preserves nested marks. The synthetic parent and context-only ancestors remain
 unselectable.
 
 Select files only (`selection.files`, Ctrl+A) replaces selection with displayed
-top-level files, clearing folder and nested marks. Deselect files only
-(`selection.clear-files`, Ctrl+D) clears displayed file marks, including nested
-files, while preserving selected folders and directory links. Deselect files and
-folders (`selection.clear`, Ctrl+Shift+D) clears every mark. All four actions are
-available in F10 → Selection and Options → Keyboard, including filtered lists
-and archives. Directory
+top-level files, clearing folder and nested marks. Deselect files and folders
+(`selection.clear`, Ctrl+D) clears every mark, including nested rows. Ctrl+Shift+D
+has no default assignment. These selection actions appear in F10 → Selection and
+Options → Keyboard, including filtered lists and archives. The optional files-only
+clear action (`selection.clear-files`) remains configurable without a default key
+for compatibility with saved custom mappings. Directory
 links/junctions count as folders; archive containers in native listings count as
 files. Explicitly selecting nested rows by click or range remains available.
 Existing user-assigned shortcuts take precedence over new default bindings.

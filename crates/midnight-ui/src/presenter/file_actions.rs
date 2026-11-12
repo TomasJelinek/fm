@@ -66,7 +66,11 @@ impl Presenter {
         self.read_file_clipboard(self.panes[pane.index()].display_path().to_owned(), send);
     }
 
-    fn read_file_clipboard(&mut self, destination: PathBuf, send: &dyn Fn(Command) -> bool) {
+    pub(super) fn read_file_clipboard(
+        &mut self,
+        destination: PathBuf,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         if self.file_actions.clipboard_read.is_some() {
             return;
         }
@@ -89,8 +93,9 @@ impl Presenter {
         }
     }
 
-    fn menu_pending(&self) -> bool {
-        self.file_actions.menu.is_some()
+    pub(super) fn menu_pending(&self) -> bool {
+        self.tree_menu_pending()
+            || self.file_actions.menu.is_some()
             || self.selection_actions.iter().flatten().any(|pending| {
                 matches!(pending.intent, selection_actions::SelectionIntent::Menu(_))
             })
@@ -103,6 +108,10 @@ impl Presenter {
         anchor: MenuAnchor,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_entry_menu(pane, row, anchor, send);
+            return;
+        }
         if !self.tree_action_allowed(pane) {
             return;
         }
@@ -251,6 +260,9 @@ impl Presenter {
     }
 
     pub(crate) fn file_menu_token(&self) -> String {
+        if let Some(token) = self.tree_menu_token() {
+            return token;
+        }
         self.file_actions
             .menu
             .as_ref()
@@ -259,6 +271,9 @@ impl Presenter {
     }
 
     pub(crate) fn file_menu_anchor(&self) -> (f32, f32, bool) {
+        if let Some(anchor) = self.tree_menu_anchor() {
+            return anchor;
+        }
         self.file_actions
             .menu
             .as_ref()
@@ -273,6 +288,9 @@ impl Presenter {
     }
 
     pub(crate) fn dismiss_file_menu(&mut self, token: &str) {
+        if self.dismiss_tree_menu(token) {
+            return;
+        }
         if !token.is_empty() && token == self.file_menu_token() {
             self.retired.push(Box::new(self.file_actions.menu.take()));
         }
@@ -284,6 +302,9 @@ impl Presenter {
         action: i32,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.try_tree_menu_action(token, action, send) {
+            return;
+        }
         if token.is_empty() || token != self.file_menu_token() || !(0..=5).contains(&action) {
             return;
         }
@@ -382,6 +403,10 @@ impl Presenter {
                 destination,
                 result,
             } => {
+                if self.is_tree_paste_request(request) {
+                    self.tree_paste_finished(request, destination, result, send);
+                    return None;
+                }
                 let matches = self
                     .file_actions
                     .clipboard_read
@@ -412,6 +437,10 @@ impl Presenter {
                 None
             }
             Event::ShellMenuFinished { request, result } => {
+                if self.is_tree_menu_request(request) {
+                    self.tree_menu_finished(request, result, send);
+                    return None;
+                }
                 if self
                     .file_actions
                     .menu

@@ -341,13 +341,13 @@ fn build() -> Vec<ShortcutDefinition> {
         "selection.clear-files",
         "Deselect files only",
         FilesAny,
-        &["Ctrl+D"],
+        &[],
     );
     add(
         "selection.clear",
         "Deselect files and folders",
         FilesAny,
-        &["Ctrl+Shift+D"],
+        &["Ctrl+D"],
     );
     add(
         "selection.invert",

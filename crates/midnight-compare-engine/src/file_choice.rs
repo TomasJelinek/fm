@@ -97,15 +97,29 @@ pub(crate) fn resolve(
         }
     }
     for (side, source) in launch.sources.iter().enumerate() {
-        if let FileCompareSource::SameName {
-            directory,
-            entries,
-            view,
-        } = source
-            && launch.sources.len() == 2
-            && sides[1 - side].len() == 1
-        {
-            match same_name(directory, entries, view, &sides[1 - side][0], cancel) {
+        let (directory, entries, view, visible) = match source {
+            FileCompareSource::SameName {
+                directory,
+                entries,
+                view,
+            } => (directory, entries, view, None),
+            FileCompareSource::RootSameName {
+                directory,
+                entries,
+                view,
+                visible,
+            } => (directory, entries, view, Some(visible.as_ref())),
+            _ => continue,
+        };
+        if launch.sources.len() == 2 && sides[1 - side].len() == 1 {
+            match same_name(
+                directory,
+                entries,
+                view,
+                visible,
+                &sides[1 - side][0],
+                cancel,
+            ) {
                 Ok(path) => sides[side].push(path),
                 Err(message) => {
                     error.get_or_insert(message);
@@ -140,7 +154,9 @@ pub(crate) fn resolve(
 fn resolve_side(source: &FileCompareSource, cancel: &AtomicBool) -> Result<Vec<PathBuf>, String> {
     check_cancel(cancel)?;
     match source {
-        FileCompareSource::Unspecified | FileCompareSource::SameName { .. } => Ok(Vec::new()),
+        FileCompareSource::Unspecified
+        | FileCompareSource::SameName { .. }
+        | FileCompareSource::RootSameName { .. } => Ok(Vec::new()),
         FileCompareSource::Focused(path) => Ok(vec![path.clone()]),
         FileCompareSource::Selected {
             entries,
@@ -179,6 +195,7 @@ fn same_name(
     directory: &std::path::Path,
     entries: &[midnight_core::Entry],
     view: &midnight_core::DirectoryIndex,
+    visible: Option<&[midnight_core::EntryId]>,
     source: &std::path::Path,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, String> {
@@ -188,7 +205,10 @@ fn same_name(
     let mut found = None;
     for entry in entries {
         check_cancel(cancel)?;
-        if entry.name != name || !view.by_id.contains_key(&entry.id) {
+        if entry.name != name
+            || !view.by_id.contains_key(&entry.id)
+            || visible.is_some_and(|ids| ids.binary_search_by_key(&entry.id.0, |id| id.0).is_err())
+        {
             continue;
         }
         if entry.kind != EntryKind::File || entry.virtual_node.is_some() {

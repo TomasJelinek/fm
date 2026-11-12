@@ -17,6 +17,9 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "desktop_captured.rs"]
+mod captured;
+
 #[path = "desktop_command_icons.rs"]
 mod command_icons;
 #[path = "desktop_editor.rs"]
@@ -28,7 +31,7 @@ const ICON_CAPACITY: usize = 256;
 const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;
 const MAX_OPEN_HELPERS: usize = crate::user_command_runtime::MAX_OPEN_PROCESSES;
 const MAX_OPEN_LAUNCHES: usize = 4;
-pub(crate) const EDITOR_RETIREMENT_CAPACITY: usize = MAX_OPEN_LAUNCHES + 1;
+pub(crate) const EDITOR_RETIREMENT_CAPACITY: usize = MAX_OPEN_LAUNCHES + 2;
 pub(crate) struct Retirement {
     pub(crate) intake: RetirementWaiter,
 }
@@ -330,42 +333,19 @@ impl Desktop {
             }))
             .await;
             let result = match result {
-                Ok(Ok(OpenEntryResult::Directory)) => Ok(DesktopActionResult::OpenDirectory {
-                    pane,
-                    navigation,
-                    path,
-                }),
-                Ok(Ok(OpenEntryResult::DirectoryTarget { path: target })) => {
-                    Ok(DesktopActionResult::OpenDirectoryTarget {
-                        pane,
-                        navigation,
-                        path,
-                        target,
-                    })
-                }
-                Ok(Ok(OpenEntryResult::File { process: None })) => {
-                    Ok(DesktopActionResult::FileOpened)
-                }
-                Ok(Ok(OpenEntryResult::File {
-                    process: Some(child),
-                })) => {
-                    // Helpers such as xdg-open may report association errors on
-                    // exit. Reap them off the UI thread and report that result.
-                    let _ = children
-                        .send(TrackedChild {
-                            child,
-                            _slot: tracking_slot,
-                            completion: Some((request, path)),
-                        })
-                        .await;
-                    return;
-                }
-                Ok(Err(error)) => Err(error),
+                Ok(result) => result.map(|result| (path, result)),
                 Err(error) => Err(worker_error("open entry", &path, error)),
             };
-            outbox
-                .send(Event::DesktopActionFinished { request, result })
-                .await;
+            OpenCompletion {
+                request,
+                pane,
+                navigation,
+                children,
+                outbox,
+                slot: tracking_slot,
+            }
+            .finish(result)
+            .await;
         }));
     }
 
@@ -390,16 +370,13 @@ impl Desktop {
         tasks.spawn(self.scope.future(async move {
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = permit;
-                if let Some(services) = services
-                    && services.show_properties(&paths)?
-                {
-                    return Ok(DesktopActionResult::PropertiesOpened);
-                }
-                let locale = locale.map_or_else(
-                    || Ok(NumberLocale::default()),
-                    |service| service.number_locale(),
-                )?;
-                metadata_properties(filesystem.as_ref(), &paths, &locale)
+                show_properties(
+                    filesystem.as_ref(),
+                    services.as_deref(),
+                    locale.as_deref(),
+                    &paths,
+                    &Cancellation::default(),
+                )
             }))
             .await;
             let result = match result {
@@ -512,16 +489,93 @@ fn editor_error(message: &str) -> FsError {
     )
 }
 
+struct OpenCompletion {
+    request: DesktopRequestId,
+    pane: PaneId,
+    navigation: NavigationId,
+    children: mpsc::Sender<TrackedChild>,
+    outbox: Outbox,
+    slot: Arc<OwnedSemaphorePermit>,
+}
+impl OpenCompletion {
+    async fn finish(self, result: Result<(PathBuf, OpenEntryResult), FsError>) {
+        let result = match result {
+            Ok((path, OpenEntryResult::Directory)) => Ok(DesktopActionResult::OpenDirectory {
+                pane: self.pane,
+                navigation: self.navigation,
+                path,
+            }),
+            Ok((path, OpenEntryResult::DirectoryTarget { path: target })) => {
+                Ok(DesktopActionResult::OpenDirectoryTarget {
+                    pane: self.pane,
+                    navigation: self.navigation,
+                    path,
+                    target,
+                })
+            }
+            Ok((_, OpenEntryResult::File { process: None })) => Ok(DesktopActionResult::FileOpened),
+            Ok((
+                path,
+                OpenEntryResult::File {
+                    process: Some(child),
+                },
+            )) => {
+                let _ = self
+                    .children
+                    .send(TrackedChild {
+                        child,
+                        _slot: self.slot,
+                        completion: Some((self.request, path)),
+                    })
+                    .await;
+                return;
+            }
+            Err(error) => Err(error),
+        };
+        self.outbox
+            .send(Event::DesktopActionFinished {
+                request: self.request,
+                result,
+            })
+            .await;
+    }
+}
+
+fn show_properties(
+    filesystem: &dyn FileSystem,
+    services: Option<&dyn DesktopServices>,
+    locale: Option<&dyn LocaleService>,
+    paths: &[PathBuf],
+    cancel: &Cancellation,
+) -> Result<DesktopActionResult, FsError> {
+    crate::captured_native::check_cancel(cancel)?;
+    if let Some(services) = services
+        && services.show_properties(paths)?
+    {
+        return Ok(DesktopActionResult::PropertiesOpened);
+    }
+    crate::captured_native::check_cancel(cancel)?;
+    let locale = locale.map_or_else(
+        || Ok(NumberLocale::default()),
+        |service| service.number_locale(),
+    )?;
+    metadata_properties(filesystem, paths, &locale, cancel)
+}
+
 fn metadata_properties(
     filesystem: &dyn FileSystem,
     paths: &[PathBuf],
     locale: &NumberLocale,
+    cancel: &Cancellation,
 ) -> Result<DesktopActionResult, FsError> {
     let mut bytes = 0u64;
     let mut files = 0u64;
     let mut unknown = 0usize;
     for path in paths {
-        match filesystem.entry_metadata(path) {
+        crate::captured_native::check_cancel(cancel)?;
+        let metadata = filesystem.entry_metadata(path);
+        crate::captured_native::check_cancel(cancel)?;
+        match metadata {
             Ok(metadata) => match metadata.size {
                 Some(size) => {
                     bytes = bytes.checked_add(size).ok_or_else(|| {

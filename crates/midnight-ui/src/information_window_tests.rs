@@ -26,6 +26,10 @@ fn stale_notice_callbacks_cannot_copy_or_close_a_new_generation() {
         let copies = Rc::new(Cell::new(0));
         let observed = copies.clone();
         main.on_copy_message(move || observed.set(observed.get() + 1));
+        let authorizations = Rc::new(Cell::new(0));
+        let observed = authorizations.clone();
+        main.on_authorize_message(move |_| observed.set(observed.get() + 1));
+        main.set_message_can_authorize(true);
 
         main.set_message_title("First notice".into());
         main.set_message_body("First diagnostics".into());
@@ -55,14 +59,23 @@ fn stale_notice_callbacks_cannot_copy_or_close_a_new_generation() {
         assert!(new.window().is_visible());
 
         old.invoke_copy_details();
+        old.invoke_authorize_retry();
         old.invoke_request_dismiss();
+        assert_eq!(authorizations.get(), 0);
         assert_eq!(copies.get(), 0);
         assert!(new.window().is_visible());
         assert!(blocked.get());
         new.invoke_copy_details();
         assert_eq!(copies.get(), 1);
         assert_eq!(new.get_body(), "New diagnostics: C:\\文档\\second.txt");
-        new.invoke_request_dismiss();
+        new.invoke_authorize_retry();
+        assert_eq!(authorizations.get(), 1);
+        new.invoke_authorize_retry();
+        assert_eq!(
+            authorizations.get(),
+            1,
+            "a closed dialog cannot authorize twice"
+        );
         assert!(!new.window().is_visible());
         assert!(!blocked.get());
         assert!(windows.borrow().notice.is_none());

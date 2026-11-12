@@ -29,6 +29,8 @@ impl Default for CompareOptions {
 #[derive(Clone, Debug)]
 pub struct CompareSide {
     pub source: VisibleDirectory,
+    /// Optional exact displayed tree; comparison includes selectable root rows only.
+    pub tree: Option<Arc<crate::TreeProjection>>,
     pub view: Arc<DirectoryIndex>,
     pub view_revision: u64,
     pub selection_revision: SelectionRevision,
@@ -45,6 +47,8 @@ pub struct CompareRequest {
 pub struct CompareResult {
     pub request: Arc<CompareRequest>,
     pub selections: [Arc<SelectionSnapshot>; 2],
+    /// Worker-built occurrence selections; these never authorize native operations.
+    pub tree_replacements: [Option<Arc<crate::TreeSelectionReplacement>>; 2],
     /// Pairs/items whose requested metadata is unavailable; these are selected.
     pub unknown: usize,
     /// Case-insensitive name groups that cannot be paired uniquely.

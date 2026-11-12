@@ -99,6 +99,9 @@ information_window!(
     fn initialize(&self, main: &MainWindow) {
         self.set_message_title(main.get_message_title());
         self.set_body(main.get_message_body());
+        self.set_folder_path(main.get_message_path());
+        self.set_details(main.get_message_details());
+        self.set_can_authorize(main.get_message_can_authorize());
         self.set_error(main.get_message_error());
         self.set_generation(main.get_message_generation());
     },
@@ -114,6 +117,8 @@ information_window!(
         main.invoke_diagnostic_notice_closed(self.get_generation());
     },
     fn bind_actions(&self, main: &MainWindow, windows: &Windows, session: DialogSession) {
+        let retry_main = main.as_weak();
+        let retry_windows = Rc::downgrade(windows);
         let weak = main.as_weak();
         let windows = Rc::downgrade(windows);
         let generation = main.get_message_generation();
@@ -128,6 +133,25 @@ information_window!(
             });
             if current && main.get_message_generation() == generation {
                 main.invoke_copy_message();
+            }
+        });
+        self.on_authorize_retry(move || {
+            let (Some(main), Some(windows)) = (retry_main.upgrade(), retry_windows.upgrade())
+            else {
+                return;
+            };
+            let current = windows.borrow().notice.as_ref().is_some_and(|record| {
+                record.session == session
+                    && record.host.is_current(session)
+                    && record.generation == Some(generation)
+            });
+            if current
+                && main.get_message_generation() == generation
+                && main.get_message_can_authorize()
+            {
+                main.invoke_authorize_message(generation);
+                main.invoke_diagnostic_notice_closed(generation);
+                dismiss::<NoticeWindow>(&windows, session);
             }
         });
     }

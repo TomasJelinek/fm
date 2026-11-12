@@ -290,3 +290,110 @@ fn error_notice_keeps_themed_compact_icons_and_close_at_large_client_font() {
     modeless::click(&native, "Close");
     assert!(!child.window().is_visible());
 }
+
+#[test]
+fn folder_notice_hides_reports_and_requires_an_explicit_authorization_action() {
+    let windows = platform();
+    for scheme in [0, 17] {
+        let child = NoticeWindow::new().unwrap();
+        child.invoke_apply_preferences(scheme, 0, "Segoe UI".into(), 14, 18);
+        child.set_message_title("Cannot open folder".into());
+        child.set_error(true);
+        child.set_body("Access to this folder was denied.".into());
+        child.set_folder_path(r"C:\Windows\CSC".into());
+        let details = "Observed issues: 1\nStored details: 1\nNative diagnostics remain available.";
+        child.set_details(details.into());
+        let retries = Rc::new(Cell::new(0));
+        let observed = retries.clone();
+        child.on_authorize_retry(move || observed.set(observed.get() + 1));
+        child.show().unwrap();
+        let native = windows.borrow().last().unwrap().clone();
+        modeless::draw(
+            &native,
+            640,
+            220,
+            &format!("folder-notice-before-offer-{scheme}"),
+        );
+        child.set_can_authorize(true);
+        slint::platform::update_timers_and_animations();
+        // MinimalSoftwareWindow does not apply WindowItem size requests. Inspect the
+        // same requested height that the native winit adapter applies, then render it.
+        let offered_height = WindowInner::from_pub(child.window())
+            .window_item()
+            .unwrap()
+            .as_pin_ref()
+            .height()
+            .get()
+            .ceil() as u32;
+        assert!(offered_height >= 250, "a late offer expands the notice");
+        modeless::draw(
+            &native,
+            640,
+            offered_height,
+            &format!("folder-notice-compact-{scheme}"),
+        );
+        let root = ItemRc::new_root(WindowInner::from_pub(child.window()).component());
+        assert_eq!(visible_label_count(root.clone(), "Cannot open folder"), 1);
+        assert_eq!(visible_label_count(root.clone(), "Error"), 1);
+        assert_eq!(visible_label_count(root.clone(), r"C:\Windows\CSC"), 1);
+        assert_eq!(visible_label_count(root, details), 0);
+        assert!(!child.get_details_expanded());
+        assert_eq!(
+            retries.get(),
+            0,
+            "opening an error never requests authorization"
+        );
+        modeless::click(&native, "Details");
+        modeless::draw(
+            &native,
+            640,
+            480,
+            &format!("folder-notice-details-{scheme}"),
+        );
+        assert!(child.get_details_expanded());
+        let root = ItemRc::new_root(WindowInner::from_pub(child.window()).component());
+        assert_eq!(visible_label_count(root, details), 1);
+        assert_eq!(
+            retries.get(),
+            0,
+            "inspecting details never requests authorization"
+        );
+        modeless::click(&native, "Hide details");
+        modeless::draw(
+            &native,
+            640,
+            280,
+            &format!("folder-notice-collapsed-{scheme}"),
+        );
+        modeless::click(&native, "Retry with authorization");
+        assert_eq!(retries.get(), 1);
+        modeless::draw(&native, 320, 360, &format!("folder-notice-narrow-{scheme}"));
+        for label in ["Retry with authorization", "Close"] {
+            let button = modeless::accessible_item(&native, AccessibleRole::Button, label).unwrap();
+            let bounds = button.geometry();
+            let at = button.map_to_native_window(bounds.origin);
+            assert!(
+                at.x >= 0.0 && at.x + bounds.width() <= 320.0,
+                "{label} fits horizontally"
+            );
+            assert!(
+                at.y >= 0.0 && at.y + bounds.height() <= 360.0,
+                "{label} fits vertically"
+            );
+        }
+        modeless::click(&native, "Retry with authorization");
+        assert_eq!(retries.get(), 2);
+        child.set_can_authorize(false);
+        modeless::draw(
+            &native,
+            640,
+            280,
+            &format!("folder-notice-unavailable-{scheme}"),
+        );
+        assert!(
+            modeless::accessible_item(&native, AccessibleRole::Button, "Retry with authorization")
+                .is_none()
+        );
+        child.hide().unwrap();
+    }
+}

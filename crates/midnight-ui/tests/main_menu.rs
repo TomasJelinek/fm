@@ -35,7 +35,6 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
         "Delete permanently…",
         "Select files and folders",
         "Select files only",
-        "Deselect files only",
         "Deselect files and folders",
         "Invert files only",
         "Invert files and folders",
@@ -217,8 +216,7 @@ fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_sco
     for (label, shortcut, operation) in [
         ("Select files and folders", "Ctrl+Shift+A", 0),
         ("Select files only", "Ctrl+A", 3),
-        ("Deselect files only", "Ctrl+D", 5),
-        ("Deselect files and folders", "Ctrl+Shift+D", 1),
+        ("Deselect files and folders", "Ctrl+D", 1),
     ] {
         test.window.invoke_show_app_menu(2);
         test.draw();
@@ -230,7 +228,7 @@ fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_sco
         assert!(!ui::has_popup(&test.window));
         assert_eq!(selections.borrow().last(), Some(&(1, operation)), "{label}");
     }
-    assert_eq!(*selections.borrow(), [(1, 0), (1, 3), (1, 5), (1, 1)]);
+    assert_eq!(*selections.borrow(), [(1, 0), (1, 3), (1, 1)]);
 }
 
 #[test]
@@ -267,13 +265,13 @@ fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_i
     let mut test = shortcut_menu(&[]);
     assert_eq!(
         menu_shortcut(&test, "Deselect files and folders"),
-        ["Ctrl+Shift+D"]
+        ["Ctrl+D"]
     );
     assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
     // A newly introduced default yields to an explicit user assignment. Existing
     // defaults such as Edit/F4 still require their conflicting binding to be removed.
     test.window
-        .invoke_keyboard_apply("files.rename".into(), "Ctrl+Shift+D".into());
+        .invoke_keyboard_apply("files.rename".into(), "Ctrl+D".into());
     test.draw();
     assert!(
         test.window.get_keyboard_error().is_empty(),
@@ -281,7 +279,7 @@ fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_i
         test.window.get_keyboard_error()
     );
     assert!(ui::has_popup(&test.window));
-    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Shift+D"]);
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+D"]);
     assert!(
         menu_shortcut(&test, "Deselect files and folders").is_empty(),
         "the suppressed default must not advertise a chord now assigned to Rename"
@@ -292,7 +290,7 @@ fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_i
     assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
     assert_eq!(
         menu_shortcut(&test, "Deselect files and folders"),
-        ["Ctrl+Shift+D"]
+        ["Ctrl+D"]
     );
     ui::key(&test.window, Key::Escape);
 }

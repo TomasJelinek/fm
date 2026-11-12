@@ -43,8 +43,8 @@ export component FileEntry inherits Rectangle {
     // while scrolling; Slint invalidates it when row data or theme changes.
     cache-rendering-hint: true;
     clip: true;
-    private property <color> row-color: item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
-        : item.selected ? Theme.selected-background
+    private property <color> row-color: item.selected ? Theme.selected-background
+        : item.cursor ? (root.active ? Theme.cursor-background : Theme.inactive-cursor)
         : (mod(root.source-index, 2) == 0 ? Theme.pane-background : Theme.alternate-row);
     // Reserve one shared gutter even for links/files without a disclosure button.
     private property <length> tree-slot: Theme.touch ? 26px : 20px;
@@ -293,8 +293,9 @@ export component FileEntry inherits Rectangle {
             : item.cursor && root.active ? Theme.cursor-edge : transparent;
     }
     if item.selected && item.cursor : Rectangle {
-        x: 4px; y: 0px; width: parent.width - 4px; height: 1px;
-        background: Theme.selected-edge;
+        x: 4px; y: 0px; width: parent.width - 4px; height: parent.height;
+        background: transparent; border-width: 1px;
+        border-color: root.active ? Theme.cursor-edge : Theme.selected-edge;
     }
     if item.tree-disclosure != 0 && item.tree-disclosure != 5 : TreeDisclosure {
         x: (root.view-mode == 2 ? 6px : 12px) + root.tree-indent;

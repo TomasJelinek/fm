@@ -13,6 +13,48 @@ pub(crate) fn append_path(text: &mut String, path: &Path) {
     }
 }
 
+/// Compact presentation only: retain the original diagnostic separately and never decode escapes.
+pub(crate) fn folder_reason(message: &str, path: &Path) -> String {
+    let (reason, _, _) = folder_context(message, path);
+    let reason = reason.lines().next().unwrap_or_default().trim();
+    if reason.is_empty() {
+        "The folder could not be read.".into()
+    } else {
+        reason.into()
+    }
+}
+
+/// Show original bounded diagnostic lines, not the report log's escaped record encoding.
+pub(crate) fn folder_details(message: &str, path: &Path) -> String {
+    let (reason, operation, native) = folder_context(message, path);
+    let mut lines: Vec<String> = reason.lines().skip(1).map(str::to_owned).collect();
+    if let Some(operation) = operation {
+        lines.push(format!("Operation: {operation}"));
+    }
+    if let Some(native) = native {
+        // The first line is the debug-formatted native path, already shown separately.
+        lines.extend(native.lines().skip(1).map(str::to_owned));
+    }
+    lines.join("\n").trim().to_owned()
+}
+
+fn folder_context<'a>(
+    message: &'a str,
+    path: &Path,
+) -> (&'a str, Option<&'a str>, Option<&'a str>) {
+    let (context, native) = message
+        .split_once("\nNative path: ")
+        .map_or((message, None), |(context, native)| (context, Some(native)));
+    let suffix = format!(" ({})", path.display());
+    let (reason, operation) = context
+        .strip_suffix(&suffix)
+        .and_then(|context| context.split_once(": "))
+        .map_or((context, None), |(operation, reason)| {
+            (reason, Some(operation))
+        });
+    (reason, operation, native)
+}
+
 pub(crate) fn describe(error: &FsError) -> String {
     let mut text = error.message.clone();
     if !error.path.as_os_str().is_empty() {
@@ -52,6 +94,26 @@ pub(crate) fn issues(errors: &[FsError], partial_changes: bool) -> String {
 mod tests {
     use super::*;
     use std::{io, path::Path};
+
+    #[test]
+    fn folder_reason_removes_repeated_native_context_without_decoding_path_escapes() {
+        let path = Path::new(r"C:\new\names");
+        let message = format!(
+            "read_directory: Access denied (os error 5) ({})\nNative path: {:?}\nError kind: PermissionDenied",
+            path.display(),
+            path,
+        );
+        assert_eq!(folder_reason(&message, path), "Access denied (os error 5)");
+        let mut display = String::new();
+        append_path(&mut display, path);
+        assert_eq!(display, r"C:\new\names");
+        assert!(message.contains("Native path:"));
+        assert_eq!(
+            folder_details(&message, path),
+            "Operation: read_directory\nError kind: PermissionDenied"
+        );
+        assert!(!folder_details(&message, path).contains(r"\n"));
+    }
 
     #[test]
     fn long_unicode_path_has_its_own_line_and_no_display_truncation() {

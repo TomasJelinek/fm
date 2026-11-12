@@ -25,7 +25,7 @@ pub(super) struct State {
     pub(super) search_cursor: Option<TreeRowId>,
     pub(super) search_insert: Option<tree_search::Insert>,
     pub(super) preview: Vec<(SelectionRevision, TreeSelectionAction)>,
-    replay: std::collections::VecDeque<(SelectionRevision, TreeSelectionAction)>,
+    pub(super) replay: std::collections::VecDeque<(SelectionRevision, TreeSelectionAction)>,
     pub(super) anchor: Option<TreeRowId>,
     pub(super) viewport: (usize, usize),
     viewport_sent: Option<(TreeRevision, usize, usize)>,
@@ -684,7 +684,10 @@ impl Presenter {
                 let p = &mut self.panes[pane.index()];
                 let valid = p.generation == stamp.navigation.0
                     && p.tree.navigation == Some((stamp, request, row, navigation))
-                    && p.tree_view().is_some_and(|view| view.stamp == stamp)
+                    && p.tree_view().is_some_and(|view| {
+                        view.stamp.session == stamp.session
+                            && view.index.row_positions.contains_key(&row)
+                    })
                     && p.generation.checked_add(1) == Some(navigation.0);
                 if valid {
                     p.tree.navigation = None;
@@ -734,7 +737,14 @@ impl Presenter {
                 ..
             } => {
                 let p = &mut self.panes[stamp.pane.index()];
-                if p.tree_view().is_some_and(|view| view.stamp == stamp) {
+                let navigation_rejected =
+                    p.tree
+                        .navigation
+                        .as_ref()
+                        .is_some_and(|(pending_stamp, pending, _, _)| {
+                            *pending_stamp == stamp && *pending == request
+                        });
+                if navigation_rejected || p.tree_view().is_some_and(|view| view.stamp == stamp) {
                     if request == TreeRequestId(0) {
                         p.tree.commit_pending = true;
                         p.tree.viewport_sent = None;
@@ -855,7 +865,17 @@ impl Presenter {
         // Surviving intents remain fenced by preview until their replay settles.
         p.tree.resolved = p.tree.revision;
         p.tree.commit_pending = true;
-        p.tree.navigation = None;
+        // A newer background publication does not cancel an already dispatched
+        // navigation to the same retained occurrence. Its exact request owns the reply.
+        if p.tree
+            .navigation
+            .as_ref()
+            .is_some_and(|(stamp, _, row, _)| {
+                stamp.session != view.stamp.session || !view.index.row_positions.contains_key(row)
+            })
+        {
+            p.tree.navigation = None;
+        }
         self.retired.push(Box::new(p.tree.pending.take()));
         self.retired
             .push(Box::new(p.tree.publication.replace(publication)));

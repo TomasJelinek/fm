@@ -1,8 +1,8 @@
 # Panel diagnostic details
 
 Every red/yellow diagnostic icon in a panel is a separate accessible control.
-Hover shows the specific reason. Click, Enter or Space opens its full details
-without selecting, opening, expanding or retrying the row. The containing panel
+Hover shows the specific reason. Click, Enter or Space on the diagnostic control
+opens its message box without selecting, opening, expanding or retrying the row. The containing panel
 becomes active. A failed tree branch keeps a separate Retry/Collapse control.
 
 ## Size reports
@@ -53,11 +53,43 @@ ordinary filename tooltips remain disabled.
 
 Yellow size-warning reports use the ordinary asynchronous basic text viewer,
 including search, selection/copy and Escape to close. Red listing and panel errors
-open the themed error dialog, including retained full diagnostic sources; they do
-not launch a viewer. The backend loads dialog details asynchronously, and the
-presenter accepts only the matching request and notice generation. Copy details
-retains the full captured source even when the visible text is bounded. Closing
-or replacing the notice cancels pending presentation and cannot revive it later.
+open the themed owner-modal error dialog; they do not launch a viewer. A folder
+error shows one concise reason and a separate folder path. Diagnostic reports and
+technical context are collapsed behind **Details** by default, so report counters,
+repeated paths and debug formatting do not become the main message. Path display
+preserves native units and control-character escaping; literal backslash sequences
+are never decoded or interpreted as a navigation target.
+
+Folder Details uses the original bounded diagnostic lines, omitting the reason
+and native path already displayed above. It does not decode escaped log records;
+ordinary backslashes in paths retain their exact meaning. Copy details retains the
+complete generated report. Other panel diagnostics can load bounded report previews
+asynchronously; the presenter accepts only the matching request and notice generation. Closing or replacing the
+notice cancels pending presentation and cannot revive it later.
+
+## Explicit folder opening and authorization
+
+Enter or a double click on a folder is ordinary explicit navigation, including a
+folder whose background presence probe already reported an error. A failed native
+navigation retains the last usable listing and opens **Cannot open folder**. Its
+exact error occurrence is presented in the message box instead of a duplicate
+panel banner. Background probes and same-directory refresh failures do not open
+this modal or request authorization.
+
+**Retry with authorization** appears only after the backend offers a denied
+navigation receipt for that exact pane, generation and destination. Showing or
+expanding the message never invokes authorization. The button sends only the
+retained receipt IDs through the existing directory-listing service; no displayed
+path grants authority. Closing/replacing the message, a new error occurrence or
+navigation prevents an obsolete dialog callback from authorizing anything.
+
+The existing Windows helper uses the OS UAC prompt; Linux uses the desktop polkit
+agent through `pkexec`. Unsupported/unavailable services do not advertise the
+button. Denial, cancellation and queue failure remain explicit errors and preserve
+the existing listing; no silent retry, ACL change or privileged host launch is
+introduced. The helper grants one read-only directory listing and does not grant
+file content or mutation permissions. See the
+[directory authorization contract](../verification/2026-11-11-directory-authorization.md).
 
 A generated report title is only a display label and never authority to reopen a
 native path. Missing size-report viewer support and diagnostic read failures are

@@ -92,6 +92,13 @@ fn apply_action(
             .copied()
             .ok_or(ProviderError::StaleReference)
     };
+    if let TreeSelectionAction::Replace(selection) = action {
+        if !selection.matches_view(view) {
+            return Err(ProviderError::StaleReference);
+        }
+        bits.copy_from_slice(selection.bits());
+        return Ok(());
+    }
     if let TreeSelectionAction::Remove(rows) = action {
         if rows.len() > 64
             || rows.len() != rows.iter().collect::<std::collections::HashSet<_>>().len()
@@ -142,7 +149,8 @@ fn apply_action(
                 mode.selected(ranges.contains(index), selected)
             }
             TreeSelectionAction::Bulk(operation) => row.bulk_selected(*operation, selected),
-            TreeSelectionAction::Rebase
+            TreeSelectionAction::Replace(_)
+            | TreeSelectionAction::Rebase
             | TreeSelectionAction::Toggle(_)
             | TreeSelectionAction::Remove(_) => selected,
         };

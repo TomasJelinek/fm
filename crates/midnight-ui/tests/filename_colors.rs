@@ -120,6 +120,15 @@ fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selec
                             contrast(ink, background) >= 4.5,
                             "{name}: theme {theme}, state {state}, active {active}, alternate {alternate}"
                         );
+                        if matches!(index, 2 | 9)
+                            && state == 0
+                            && !window.global::<Theme>().get_light()
+                        {
+                            assert!(
+                                contrast(ink, background) >= 7.0,
+                                "ordinary document names must stay bright in dark theme {theme}"
+                            );
+                        }
                         // Check every category against both stripes, then inspect
                         // the ink on the stripe used by its rendered fixture row.
                         if alternate != (index % 2 != 0) {
@@ -278,7 +287,7 @@ fn all_themes_states_and_views_render_readable_filename_colors_with_preserved_cu
             let combined = ui::root_item(&test.window, "Color file3.txt", AccessibleRole::ListItem);
             let geometry = combined.geometry();
             let point = combined.map_to_native_window(geometry.origin);
-            let edge = test.window.global::<Theme>().get_selected_edge();
+            let edge = test.window.global::<Theme>().get_cursor_edge();
             let pixel = test.pixel(point.x + geometry.size.width / 2.0, point.y + 0.5);
             assert_eq!(
                 (pixel.r, pixel.g, pixel.b),

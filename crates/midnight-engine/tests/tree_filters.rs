@@ -301,8 +301,8 @@ impl Harness {
             let TreeEvent::Published(p) = event else {
                 panic!("expansion: {event:?}")
             };
+            self.send(TreeCommand::Commit(p.view.clone())).await;
             if p.view.rows.iter().any(|r| r.depth == 1) {
-                self.send(TreeCommand::Commit(p.view.clone())).await;
                 return p;
             }
         }

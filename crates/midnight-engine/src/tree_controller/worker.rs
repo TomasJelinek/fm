@@ -47,6 +47,10 @@ pub(super) struct Worker {
     completed: Option<NavigationId>,
     pending: Option<Pending>,
     session: Option<Session>,
+    // A published view remains admissible until the UI acknowledges its exact Arc.
+    // One newer projection can coalesce on this model worker while delivery waits.
+    awaiting_commit: Option<Arc<midnight_core::TreeProjection>>,
+    pending_publication: Option<midnight_core::TreePublication>,
     inflight: bool,
     maintenance_inflight: bool,
     sizes: crate::tree_sizes::State,
@@ -93,6 +97,8 @@ impl Worker {
             completed: None,
             pending: None,
             session: None,
+            awaiting_commit: None,
+            pending_publication: None,
             inflight: false,
             maintenance_inflight: false,
         }
@@ -141,6 +147,7 @@ impl Worker {
                     self.pump();
                 }
             } else if !self.inflight
+                && self.pending_publication.is_none()
                 && self
                     .session
                     .as_ref()
@@ -187,6 +194,8 @@ impl Worker {
         match result {
             Some(Ok(Some(publication))) => Some(TreeEvent::Published(publication)),
             Some(Err(error)) => {
+                self.awaiting_commit = None;
+                self.pending_publication = None;
                 self.finish_watch_ticket(false);
                 self.retire_watch();
                 self.session.take().map(|session| TreeEvent::Unavailable {
@@ -203,6 +212,8 @@ impl Worker {
             Input::Reset(generation) => {
                 self.refresh_ticket = None;
                 self.sizes.reset();
+                self.awaiting_commit = None;
+                self.pending_publication = None;
                 self.session = None;
                 self.pending = None;
                 self.completed = None;
@@ -234,9 +245,13 @@ impl Worker {
     fn command(&mut self, command: TreeCommand) {
         // A completion can overtake a command already admitted by the mailbox.
         // Retire obsolete observations here as well, on the model worker.
-        if self.session.as_ref().is_some_and(|session| {
-            super::superseded_observation(&command, session.projection().stamp)
-        }) {
+        let emitted_commit = matches!(&command, TreeCommand::Commit(view)
+            if self.awaiting_commit.as_ref().is_some_and(|emitted| Arc::ptr_eq(emitted, view)));
+        if !emitted_commit
+            && self.session.as_ref().is_some_and(|session| {
+                super::superseded_observation(&command, session.projection().stamp)
+            })
+        {
             return;
         }
         if let TreeCommand::Sizes(command) = command {
@@ -381,8 +396,15 @@ impl Worker {
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Commit(view) => {
-                if session.commit(view) {
-                    if let Some(watch) = &self.watch {
+                if session.commit(view) || (emitted_commit && session.acknowledge_emitted(view)) {
+                    if emitted_commit {
+                        self.awaiting_commit = None;
+                    }
+                    // Watches and selection captures still require the latest
+                    // projection, even when a visible row gesture can survive it.
+                    if Arc::ptr_eq(session.projection(), view)
+                        && let Some(watch) = &self.watch
+                    {
                         match session.watch_scope() {
                             Ok(Some(scope)) => {
                                 watch.set_tree_scope(scope);
@@ -513,6 +535,11 @@ impl Worker {
             }
             Ok(None) => {}
         }
+        if self.awaiting_commit.is_none()
+            && let Some(publication) = self.pending_publication.take()
+        {
+            self.emit(TreeEvent::Published(publication));
+        }
         self.emit_size_selection();
     }
     fn admit(&mut self) {
@@ -600,7 +627,7 @@ impl Worker {
         }
     }
     fn pump(&mut self) {
-        if self.inflight || !self.active() {
+        if self.inflight || !self.active() || self.pending_publication.is_some() {
             return;
         }
         let Some(session) = &mut self.session else {
@@ -665,6 +692,8 @@ impl Worker {
         }
     }
     fn fail_session(&mut self, error: ProviderError) {
+        self.awaiting_commit = None;
+        self.pending_publication = None;
         self.finish_watch_ticket(false);
         self.retire_watch();
         if let Some(session) = self.session.take() {

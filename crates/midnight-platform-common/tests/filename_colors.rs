@@ -176,7 +176,7 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
             "#3b82f6",
         ),
         (&["movie.MP4", "clip.mkv"][..], "#8b5cf6"),
-        (&["report.pdf", "letter.docx", "book.epub"][..], "#64748b"),
+        (&["report.pdf", "letter.docx", "book.epub"][..], "#c4cfe0"),
         (&["photo.jpg", "vector.svg", "image.avif"][..], "#ec4899"),
         (
             &["app.exe", "installer.msi", "program.AppImage"][..],
@@ -200,7 +200,7 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
                 "README.release",
                 "notes.rst",
             ][..],
-            "#64748b",
+            "#c4cfe0",
         ),
         (&["type.ttf", "font.otf", "web.woff2"][..], "#92400e"),
     ] {

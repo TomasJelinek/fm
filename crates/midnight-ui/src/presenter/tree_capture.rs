@@ -59,6 +59,29 @@ impl Capture {
         })
     }
 
+    /// Menu receipts keep their original target even after the capture request finished.
+    pub fn matches_current(&self, pane: &Pane) -> bool {
+        !pane.loading
+            && !self.cancel.is_cancelled()
+            && pane.tree_input_ready()
+            && pane.tree.preview.is_empty()
+            && pane.tree.applied == self.revision
+            && pane
+                .tree_view()
+                .is_some_and(|view| Arc::ptr_eq(view, &self.view))
+    }
+
+    /// A chosen menu action owns independent cancellation and a fresh request identity.
+    pub fn fork_if_current(&self, pane: &Pane) -> Option<Self> {
+        self.matches_current(pane).then(|| Self {
+            view: self.view.clone(),
+            request: None,
+            fallback: self.fallback,
+            cancel: Cancellation::default(),
+            revision: self.revision,
+        })
+    }
+
     pub fn status(&self, pane: &Pane, closing: bool) -> Status {
         if closing
             || pane.loading

@@ -664,11 +664,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
                 format_size(space.total, &presenter.number_locale)
             ));
         }
-        let error = if p.error.is_empty() {
-            &presenter.volumes_error
-        } else {
-            &p.error
-        };
+        let error = presenter.panel_error_text(if index == 0 { PaneId::Left } else { PaneId::Right });
         if index == 0 {
             window.set_left_path(location.into());
             window.set_left_volume(volume);
@@ -760,6 +756,9 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     if let Some((title, body)) = &presenter.desktop.notice {
         window.set_message_title(title.clone().into());
         window.set_message_body(body.clone().into());
+        window.set_message_path(presenter.desktop.notice_path.clone().into());
+        window.set_message_details(presenter.desktop.notice_details.clone().into());
+        window.set_message_can_authorize(presenter.notice_can_authorize());
         window.set_message_error(presenter.desktop.notice_error);
         window.set_message_generation(presenter.desktop.notice_generation);
     }
@@ -937,6 +936,9 @@ pub fn install(
     callback!(on_activate, false, |w, p, _s, id| {
         p.active = pane(id);
         let _ = w;
+    });
+    callback!(on_authorize_message, false, |_w, p, s, generation| {
+        p.retry_notice_authorized(generation, s);
     });
     callback!(on_copy_message, false, |_w, p, s| {
         p.copy_notice_details(s);

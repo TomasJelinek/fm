@@ -39,6 +39,7 @@ async fn native_sweep_publishes_actual_additions_and_removals_before_correlated_
     .await;
     let expanded = loop {
         let publication = published(&mut events).await;
+        tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
         if publication
             .view
             .rows
@@ -63,6 +64,7 @@ async fn native_sweep_publishes_actual_additions_and_removals_before_correlated_
     loop {
         match next_tree(&mut events).await {
             TreeEvent::Published(publication) => {
+                tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
                 latest = publication.view;
                 publications += 1;
             }

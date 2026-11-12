@@ -10,6 +10,9 @@ mod refresh_tests;
 #[path = "tree_refresh/housekeeping.rs"]
 mod housekeeping_tests;
 
+#[path = "tree_refresh/installed_navigation.rs"]
+mod installed_navigation_tests;
+
 #[path = "tree_refresh/retained_archives.rs"]
 mod retained_archive_tests;
 
@@ -157,6 +160,7 @@ async fn first_native_level_with_many_visible_children_does_not_exhaust_the_queu
             panic!("first expansion failed: {event:?}");
         };
         assert!(publication.view.rows.iter().all(|row| row.error.is_none()));
+        tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
         if publication.view.rows.len() == 41 {
             break publication.view;
         }
@@ -310,6 +314,7 @@ async fn rejected_refresh_keeps_calculated_sizes_and_frozen_size_order() {
     loop {
         match next_tree(&mut events).await {
             TreeEvent::Published(publication) => {
+                tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
                 assert_eq!(
                     publication.view.rows[0].entry.name, "z-large",
                     "rejected refresh must preserve frozen size order"
@@ -750,6 +755,7 @@ async fn navigation_preserves_branch_budget_until_the_old_provider_actually_retu
     );
     gate.release();
     let loading = published(&mut events).await;
+    tree(&commands, TreeCommand::Commit(loading.view.clone())).await;
     let expanded = published(&mut events).await;
     assert_eq!(loading.view.stamp.navigation, NavigationId(2));
     assert_eq!(expanded.view.stamp.navigation, NavigationId(2));
@@ -1294,6 +1300,7 @@ async fn viewport_probes_only_directories_and_unsupported_file_requests_keep_the
     .await;
     let loading = published(&mut events).await;
     assert_eq!(loading.view.rows[0].disclosure, TreeDisclosure::Loading);
+    tree(&commands, TreeCommand::Commit(loading.view.clone())).await;
     let probed = published(&mut events).await;
     assert_eq!(probed.view.rows.len(), 2);
     assert_eq!(probed.view.rows[0].disclosure, TreeDisclosure::Collapsed);

@@ -328,3 +328,47 @@ fn unresolved_pair_keeps_session_available_for_manual_file_selection() {
     );
     session.close();
 }
+
+#[test]
+fn root_same_name_uses_only_visible_native_aliases_and_preserves_opposite_file() {
+    for visible in [false, true] {
+        let FileCompareSource::SameName {
+            directory,
+            entries,
+            view,
+        } = counterpart("right", &["文档.txt", "other"])
+        else {
+            unreachable!()
+        };
+        let launch = FileCompareLaunch {
+            disabled_plugins: Arc::from([]),
+            sources: vec![
+                FileCompareSource::Focused("left/文档.txt".into()),
+                FileCompareSource::RootSameName {
+                    directory,
+                    entries,
+                    view,
+                    visible: if visible {
+                        Arc::from([EntryId(0)])
+                    } else {
+                        Arc::from([EntryId(1)])
+                    },
+                },
+            ],
+        };
+        let result = resolve(&launch, &AtomicBool::new(false));
+        if visible {
+            assert_eq!(
+                result.unwrap(),
+                [
+                    PathBuf::from("left/文档.txt"),
+                    PathBuf::from("right/文档.txt")
+                ]
+            );
+        } else {
+            let choice = result.unwrap_err();
+            assert_eq!(choice.paths[0], PathBuf::from("left/文档.txt"));
+            assert!(choice.paths[1].as_os_str().is_empty());
+        }
+    }
+}

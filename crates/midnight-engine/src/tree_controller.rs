@@ -1,7 +1,8 @@
 //! Production tree lifecycle. Two bounded model lanes own all sessions on workers.
 //!
 //! Each pane retains eight commands, one completion, one coalesced root notification
-//! and one navigation reset. Shared views keep the existing 10,000-row/16 MiB tree
+//! and one navigation reset. Publication delivery retains one emitted view awaiting
+//! its exact acknowledgement and one coalesced pending publication. Shared views keep the existing 10,000-row/16 MiB tree
 //! limits; enable requests exceeding that row bound never enter the queue. Only one
 //! provider branch per pane can run, using the pane's persistent/common I/O budget.
 //! A closed lane drains its payloads on its model worker. A blocked provider keeps
@@ -150,17 +151,25 @@ impl Controller {
             }
         }
         match self.lanes[pane.index()].push(command) {
-            Ok(()) => None,
-            Err(mailbox::PushError::Superseded(command)) => {
+            Ok(None) => None,
+            Ok(Some(command)) | Err(mailbox::PushError::Superseded(command)) => {
                 // Releasing the last old projection can be expensive. Keep it
                 // off dispatch and await disposal so retired views cannot pile up.
                 let _ = tokio::task::spawn_blocking(move || drop(command)).await;
                 None
             }
+            Err(mailbox::PushError::Full(command)) => {
+                reject_off_thread(
+                    command,
+                    "Tree command queue is full. Wait for pending actions to finish.",
+                    true,
+                )
+                .await
+            }
             Err(mailbox::PushError::Rejected(command)) => {
                 reject_off_thread(
                     command,
-                    "Tree command queue is full or its view/generation changed.",
+                    "Tree view or navigation changed before the command was accepted.",
                     true,
                 )
                 .await

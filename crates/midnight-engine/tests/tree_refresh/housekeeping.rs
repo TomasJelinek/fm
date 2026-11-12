@@ -73,6 +73,7 @@ async fn assert_leaf_expansion(filesystem: Arc<dyn FileSystem>, parent: &Path, c
         loading.view.rows[position].disclosure,
         TreeDisclosure::Loading
     );
+    tree(&commands, TreeCommand::Commit(loading.view.clone())).await;
     let empty = published(&mut events).await;
     assert_eq!(empty.view.rows.len(), initial.view.rows.len());
     assert_eq!(empty.view.rows[position].disclosure, TreeDisclosure::Empty);

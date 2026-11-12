@@ -50,9 +50,6 @@ impl Presenter {
         kind: MutationKind,
         send: &dyn Fn(Command) -> bool,
     ) {
-        self.cancel_tree_metadata(None);
-        self.cancel_tree_rename(None);
-        self.cancel_tree_delete(None);
         if kind == MutationKind::Rename && self.panes[pane.index()].tree_view().is_some() {
             self.request_tree_rename(pane, send);
             return;
@@ -63,6 +60,9 @@ impl Presenter {
             self.request_tree_delete(pane, mode, send);
             return;
         }
+        self.cancel_tree_metadata(None);
+        self.cancel_tree_rename(None);
+        self.cancel_tree_delete(None);
         if !matches!(
             kind,
             MutationKind::CreateDirectory | MutationKind::CreateFile

@@ -48,6 +48,7 @@ fn result(request: Arc<CompareRequest>) -> Event {
         result: Ok(Arc::new(CompareResult {
             request,
             selections,
+            tree_replacements: [None, None],
             unknown: 0,
             ambiguous: 0,
         })),

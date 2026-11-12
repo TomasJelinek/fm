@@ -197,3 +197,183 @@ fn network_discovery_never_supplies_native_counterpart_directory_or_old_selectio
         assert!(matches!(launch.sources[1], FileCompareSource::Unspecified));
     }
 }
+
+fn tree_files(presenter: &mut Presenter, id: PaneId, bits: u64) -> Arc<TreeProjection> {
+    let pane = &mut presenter.panes[id.index()];
+    pane.path = std::env::temp_dir().join(if id == PaneId::Left { "left" } else { "right" });
+    let entries: Arc<[Entry]> = ["one", "two", "three", "folder"]
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            Entry::new(
+                EntryId(index as u64),
+                pane.path.join(name),
+                if index == 3 {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .into();
+    let root = TreeRootSnapshot {
+        pane: id,
+        navigation: NavigationId(pane.generation),
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    };
+    let mut rows: Vec<_> = root
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let mut displayed = entry.clone();
+            displayed.id = EntryId(index as u64 + 100);
+            TreeDisplayRow {
+                id: TreeRowId(index as u64 + 10),
+                entry: displayed,
+                parent: None,
+                depth: 0,
+                disclosure: if index == 3 {
+                    TreeDisclosure::Expanded
+                } else {
+                    TreeDisclosure::None
+                },
+                expanded: index == 3,
+                selectable: true,
+                navigable: index == 3,
+                context_only: false,
+                error: None,
+                error_details: None,
+                original_root_entry: Some(entry.id),
+                prefix_end: 0,
+                search_match: false,
+            }
+        })
+        .collect();
+    rows.push(TreeDisplayRow {
+        id: TreeRowId(14),
+        entry: Entry::new(
+            EntryId(104),
+            pane.path.join("folder/child"),
+            EntryKind::Directory,
+        ),
+        parent: Some(TreeRowId(13)),
+        depth: 1,
+        disclosure: TreeDisclosure::Collapsed,
+        expanded: false,
+        selectable: true,
+        navigable: true,
+        context_only: false,
+        error: None,
+        error_details: None,
+        original_root_entry: None,
+        prefix_end: 0,
+        search_match: false,
+    });
+    let view = Arc::new(
+        TreeProjection::new(
+            root,
+            TreeViewStamp {
+                pane: id,
+                navigation: NavigationId(pane.generation),
+                session: TreeSessionId(1),
+                revision: TreeRevision(1),
+            },
+            TreeLayoutRevision(1),
+            rows,
+        )
+        .unwrap(),
+    );
+    pane.tree.publication = Some(
+        TreePublication::new(
+            view.clone(),
+            SelectionRevision(0),
+            Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![bits]).unwrap()),
+        )
+        .unwrap(),
+    );
+    pane.cursor = Some(EntryId(100));
+    pane.parent_cursor = false;
+    view
+}
+
+#[test]
+fn adopted_tree_file_comparison_uses_exact_root_aliases_and_two_selected_order() {
+    let mut presenter = loaded();
+    let view = tree_files(&mut presenter, PaneId::Left, 3);
+    // The old flat identities deliberately differ from the current backend root actions.
+    let launch = presenter.file_compare_launch(PaneId::Left).unwrap();
+    assert!(
+        matches!(&launch.sources[..], [FileCompareSource::Focused(a), FileCompareSource::Focused(b)]
+        if a == &view.root_actions.entries[0].path && b == &view.root_actions.entries[1].path)
+    );
+    let view = tree_files(&mut presenter, PaneId::Left, 0);
+    let other = tree_files(&mut presenter, PaneId::Right, 0);
+    let launch = presenter.file_compare_launch(PaneId::Left).unwrap();
+    assert!(
+        matches!(&launch.sources[0], FileCompareSource::Focused(path) if path == &view.root_actions.entries[0].path)
+    );
+    assert!(
+        matches!(&launch.sources[1], FileCompareSource::RootSameName { entries, visible, .. }
+        if Arc::ptr_eq(entries, &other.root_actions.entries) && Arc::ptr_eq(visible, &other.index.native_root_files))
+    );
+}
+
+#[test]
+fn adopted_tree_comparison_refuses_marked_folders_ambiguous_or_unsettled_selection() {
+    let mut presenter = loaded();
+    for bits in [8, 16, 17, 7] {
+        tree_files(&mut presenter, PaneId::Left, bits);
+        assert!(matches!(
+            presenter.file_compare_launch(PaneId::Left).unwrap().sources[0],
+            FileCompareSource::Unspecified
+        ));
+    }
+    tree_files(&mut presenter, PaneId::Left, 1);
+    presenter.panes[0].tree.revision = SelectionRevision(1);
+    assert!(matches!(
+        presenter.file_compare_launch(PaneId::Left).unwrap().sources[0],
+        FileCompareSource::Unspecified
+    ));
+    presenter.panes[0].tree.resolved = SelectionRevision(1);
+    presenter.panes[0].tree.preview.push((
+        SelectionRevision(1),
+        TreeSelectionAction::Toggle(TreeRowId(10)),
+    ));
+    assert!(matches!(
+        presenter.file_compare_launch(PaneId::Left).unwrap().sources[0],
+        FileCompareSource::Unspecified
+    ));
+}
+
+#[test]
+fn adopted_tree_comparison_refuses_errored_root_file_and_parent_focus() {
+    let mut presenter = loaded();
+    let old = tree_files(&mut presenter, PaneId::Left, 0);
+    presenter.panes[0].parent_cursor = true;
+    assert!(matches!(
+        presenter.file_compare_launch(PaneId::Left).unwrap().sources[0],
+        FileCompareSource::Unspecified
+    ));
+    presenter.panes[0].parent_cursor = false;
+    let mut rows = old.rows.to_vec();
+    rows[0].error = Some("unavailable".into());
+    let view = Arc::new(
+        TreeProjection::new(old.root.clone(), old.stamp, old.layout_revision, rows).unwrap(),
+    );
+    presenter.panes[0].tree.publication = Some(
+        TreePublication::new(
+            view.clone(),
+            SelectionRevision(0),
+            Arc::new(TreeSelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap()),
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        presenter.file_compare_launch(PaneId::Left).unwrap().sources[0],
+        FileCompareSource::Unspecified
+    ));
+    assert!(!view.index.native_root_files.contains(&EntryId(0)));
+}

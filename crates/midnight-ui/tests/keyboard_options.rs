@@ -944,10 +944,8 @@ fn remapped_clear_files_uses_effective_binding_and_preserves_editor_focus() {
     let h = Harness::new(&[("selection.clear-files", &["Ctrl+Alt+Y"])]);
     ui::chord(&h.ui.window, &[Key::Control], "d");
     assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .all(|command| !matches!(command, Command::Selection(_)))
+        matches!(h.commands.borrow().last(), Some(Command::Selection(request))
+        if matches!(request.action, SelectionAction::Bulk(SelectionOperation::Clear)))
     );
     h.commands.borrow_mut().clear();
     ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "y");
@@ -957,6 +955,7 @@ fn remapped_clear_files_uses_effective_binding_and_preserves_editor_focus() {
     );
     h.commands.borrow_mut().clear();
     h.ui.window.invoke_set_command("editable text".into(), 13);
+    ui::chord(&h.ui.window, &[Key::Control], "d");
     ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
     ui::chord(&h.ui.window, &[Key::Control, Key::Alt], "y");
     assert!(

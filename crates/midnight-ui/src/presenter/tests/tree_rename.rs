@@ -163,3 +163,31 @@ fn rename_completion_reconciles_expanded_parent_without_flat_navigation() {
         if matches!(command.as_ref(), TreeCommand::RefreshLoaded(_))))
     );
 }
+
+#[test]
+fn menu_rename_uses_frozen_clicked_root_without_changing_child_marks_or_caret() {
+    let (mut p, root) = fixture();
+    let mut publication = publication(root, 1, true, false);
+    publication.selection =
+        Arc::new(TreeSelectionSnapshot::from_bits(publication.view.clone(), vec![2]).unwrap());
+    let view = publication.view.clone();
+    let selection = publication.selection.clone();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication))),
+        &|_| true,
+    );
+    p.focus_display_row(PaneId::Left, 2);
+    let caret = p.panes[0].cursor;
+    let sent = RefCell::new(Vec::new());
+    p.request_tree_rename_target(PaneId::Left, view.clone(), TreeRowId(7), &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(sent.borrow().iter().any(|command| matches!(command, Command::Tree(command)
+        if matches!(command.as_ref(), TreeCommand::Rename(request) if request.row == TreeRowId(7) && Arc::ptr_eq(&request.view, &view)))));
+    assert_eq!(p.panes[0].cursor, caret);
+    assert!(Arc::ptr_eq(
+        &p.panes[0].tree.publication.as_ref().unwrap().selection,
+        &selection
+    ));
+}

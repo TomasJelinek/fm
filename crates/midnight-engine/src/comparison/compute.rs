@@ -61,7 +61,18 @@ pub(super) fn compare(
         SelectionSnapshot::from_bits(capture.view.clone(), bits[side].clone())
             .map_err(|error| failure(&request, error))?;
         entries[side].resize(count, None);
-        for (source_row, entry) in capture.source.entries.iter().enumerate() {
+        let source_count = capture
+            .tree
+            .as_ref()
+            .map_or(capture.source.entries.len(), |tree| tree.rows.len());
+        for source_row in 0..source_count {
+            let entry = source_entry(capture, source_row);
+            if entry.virtual_node.is_some() {
+                return Err(failure(
+                    &request,
+                    "Directory comparison requires native entries.",
+                ));
+            }
             if source_row.is_multiple_of(256) {
                 checkpoint(&request, cancelled)?;
             }
@@ -86,6 +97,12 @@ pub(super) fn compare(
                     &request,
                     "A displayed path refers to multiple source entries.",
                 ));
+            }
+            if capture.tree.as_ref().is_some_and(|tree| {
+                let row = &tree.rows[source_row];
+                row.depth != 0 || !row.selectable || row.context_only
+            }) {
+                continue;
             }
             let directory = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
             if directory && !request.options.unmatched_directories {
@@ -136,8 +153,8 @@ pub(super) fn compare(
         if directory {
             continue;
         }
-        let a = &request.sides[0].source.entries[entries[0][*left].unwrap()];
-        let b = &request.sides[1].source.entries[entries[1][*right].unwrap()];
+        let a = source_entry(&request.sides[0], entries[0][*left].unwrap());
+        let b = source_entry(&request.sides[1], entries[1][*right].unwrap());
         let mut missing = a.kind != EntryKind::File || b.kind != EntryKind::File;
         if request.options.by_size {
             match (a.metadata.size, b.metadata.size) {
@@ -181,10 +198,31 @@ pub(super) fn compare(
         .collect::<Result<Vec<_>, _>>()?;
     checkpoint(&request, cancelled)?;
     let [left, right]: [Arc<SelectionSnapshot>; 2] = selections.try_into().unwrap();
+    let selections = [left, right];
+    let mut tree_replacements = [None, None];
+    for (slot, side) in request.sides.iter().enumerate() {
+        if let Some(tree) = &side.tree {
+            let selection =
+                TreeSelectionSnapshot::from_bits(tree.clone(), selections[slot].bits().to_vec())
+                    .map_err(|error| failure(&request, error))?;
+            tree_replacements[slot] = Some(Arc::new(
+                TreeSelectionReplacement::from_snapshot(&selection)
+                    .map_err(|error| failure(&request, error))?,
+            ));
+        }
+    }
     Ok(CompareResult {
         request,
-        selections: [left, right],
+        selections,
+        tree_replacements,
         unknown,
         ambiguous,
     })
+}
+
+fn source_entry(side: &CompareSide, position: usize) -> &Entry {
+    side.tree.as_ref().map_or_else(
+        || &side.source.entries[position],
+        |tree| &tree.rows[position].entry,
+    )
 }

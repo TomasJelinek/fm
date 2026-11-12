@@ -25,6 +25,7 @@ fn request(left: Vec<Entry>, mut right: Vec<Entry>) -> Arc<CompareRequest> {
     let sides = [(PaneId::Left, left), (PaneId::Right, right)].map(|(pane, entries)| {
         let view = Arc::new(DirectoryIndex::from_entries(&entries));
         CompareSide {
+            tree: None,
             source: VisibleDirectory {
                 pane,
                 navigation: NavigationId(1),
@@ -132,7 +133,7 @@ fn directory_option_is_unmatched_only_and_missing_requested_times_are_selected()
     assert_eq!(compute(capture, &|| false).unwrap().selections[0].len(), 2);
 }
 
-fn sources(request: &CompareRequest) -> Snapshots {
+pub(super) fn sources(request: &CompareRequest) -> Snapshots {
     use crate::{CommittedSnapshot, SnapshotState};
     use std::sync::Mutex;
     crate::test_snapshots(request.sides.each_ref().map(|side| {

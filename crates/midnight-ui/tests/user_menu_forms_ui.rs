@@ -295,11 +295,19 @@ fn user_menu_has_selected_command_fields_argument_rows_and_per_field_browse() {
     no_json(&h);
     ui::popup_item(&h.window, "Command name", AccessibleRole::TextInput);
     ui::popup_item(&h.window, "Command argument 1", AccessibleRole::TextInput);
+    for label in ["Browse command executable", "Browse working directory"] {
+        ui::popup_item(&h.window, label, AccessibleRole::Button);
+    }
+    assert!(ui::try_popup_item(&h.window, "Browse command icon", AccessibleRole::Button).is_none());
+    reveal_option(&mut h, "Toolbar appearance", AccessibleRole::Button);
+    ui::click_popup(&h.window, "Toolbar appearance", AccessibleRole::Button);
+    h.draw();
     for label in [
-        "Browse command executable",
-        "Browse working directory",
+        "Change command icon",
         "Browse command icon",
+        "Clear command icon",
     ] {
+        reveal_option(&mut h, label, AccessibleRole::Button);
         ui::popup_item(&h.window, label, AccessibleRole::Button);
     }
 }

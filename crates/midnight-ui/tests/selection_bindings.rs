@@ -128,17 +128,12 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
     for (key, shift, operation, expected) in [
         ("a", false, SelectionOperation::FilesOnly, [true, false]),
         ("A", true, SelectionOperation::All, [true, true]),
-        (
-            "d",
-            false,
-            SelectionOperation::ClearFilesOnly,
-            [false, true],
-        ),
+        ("d", false, SelectionOperation::Clear, [false, false]),
         ("a", false, SelectionOperation::FilesOnly, [true, false]),
         ("A", true, SelectionOperation::All, [true, true]),
         ("i", true, SelectionOperation::InvertAll, [false, false]),
         ("i", true, SelectionOperation::InvertAll, [true, true]),
-        ("d", true, SelectionOperation::Clear, [false, false]),
+        ("d", false, SelectionOperation::Clear, [false, false]),
         ("i", false, SelectionOperation::Invert, [true, false]),
         ("i", false, SelectionOperation::Invert, [false, false]),
     ] {

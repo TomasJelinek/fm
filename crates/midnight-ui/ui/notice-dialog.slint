@@ -5,16 +5,26 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollView } from "std-widgets.slint";
 import { FallbackIcons } from "action-icons.slint";
 
+component AuthorizationButton inherits HintedActionButton {
+    text: "Retry with authorization"; fallback-icon: FallbackIcons.refresh;
+    hint: "Request operating-system permission for one folder listing.";
+}
+
 export component NoticeDialog inherits Rectangle {
     in property <string> title;
     in property <string> body;
+    in property <string> folder-path;
+    in property <string> details;
+    in property <bool> can-authorize;
+    in-out property <bool> details-expanded;
     in property <bool> error;
     in property <int> generation;
     callback copy-details();
+    callback authorize-retry();
     callback close();
     callback move-dialog(length, length);
     init => { close-button.focus(); }
-    changed generation => { close-button.focus(); }
+    changed generation => { root.details-expanded = false; close-button.focus(); }
     background: Theme.surface; border-color: Theme.active-frame;
     border-width: 1px; border-radius: 6px;
     FocusScope {
@@ -23,7 +33,8 @@ export component NoticeDialog inherits Rectangle {
             reject
         }
         VerticalLayout {
-            padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 16px;
+            padding: root.height < 280px ? 12px : 20px;
+            spacing: root.height < 280px ? 8px : 12px;
             DialogHeader {
                 title: root.title; foreground: root.error ? Theme.error-text : Theme.strong-text;
                 error: root.error;
@@ -33,18 +44,55 @@ export component NoticeDialog inherits Rectangle {
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             DialogText { text: root.body; vertical-stretch: 1; min-height: 0px; }
+            if root.folder-path != "": Rectangle {
+                background: Theme.secondary-surface; border-color: Theme.frame;
+                border-width: 1px; border-radius: 3px;
+                height: min(88px, Theme.font-size * 3 + 18px);
+                VerticalLayout {
+                    padding: 8px; spacing: 3px;
+                    Text { text: "Folder"; color: Theme.secondary-text; font-size: Theme.small-font; }
+                    DialogText { text: root.folder-path; vertical-stretch: 1; min-height: 0px; }
+                }
+            }
+            if root.can-authorize: Text {
+                text: "Your operating system will ask for permission to read this folder.";
+                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+            }
+            if root.details-expanded && root.details != "": Rectangle {
+                background: Theme.secondary-surface; border-color: Theme.frame;
+                border-width: 1px; border-radius: 3px;
+                height: max(60px, root.height * 0.42);
+                VerticalLayout {
+                    padding: 8px;
+                    DialogText { text: root.details; vertical-stretch: 1; min-height: 0px; }
+                }
+            }
+            if root.can-authorize && root.width < 500px: AuthorizationButton {
+                clicked => { root.authorize-retry(); }
+            }
             HorizontalLayout {
                 spacing: 8px;
                 ScrollView {
                     horizontal-stretch: 1; min-width: 0px;
-                    height: max(32px, Theme.control-height, copy-button.preferred-height) + (root.width < 500px ? 14px : 0px);
+                    height: max(32px, Theme.control-height, copy-button.preferred-height)
+                        + (root.width < 500px ? 14px : 0px);
                     horizontal-scrollbar-policy: as-needed; vertical-scrollbar-policy: always-off;
                     HorizontalLayout {
-                        alignment: start;
-                copy-button := HintedActionButton {
-                    text: "Copy details"; fallback-icon: FallbackIcons.copy; hint: "Copy the complete message, including paths, to the clipboard.";
-                    clicked => { root.copy-details(); }
-                }
+                        alignment: start; spacing: 8px;
+                        if root.details != "": HintedActionButton {
+                            text: root.details-expanded ? "Hide details" : "Details";
+                            fallback-icon: FallbackIcons.properties;
+                            hint: "Show or hide diagnostic details.";
+                            clicked => { root.details-expanded = !root.details-expanded; }
+                        }
+                        copy-button := HintedActionButton {
+                            text: "Copy details"; fallback-icon: FallbackIcons.copy;
+                            hint: "Copy the complete message and diagnostic report to the clipboard.";
+                            clicked => { root.copy-details(); }
+                        }
+                        if root.can-authorize && root.width >= 500px: AuthorizationButton {
+                            clicked => { root.authorize-retry(); }
+                        }
                     }
                 }
                 close-button := HintedActionButton {

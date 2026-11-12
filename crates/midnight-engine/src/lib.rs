@@ -4,6 +4,7 @@ mod archive_selection;
 mod archive_sizes;
 mod archives;
 pub use archives::ArchiveCapture;
+mod captured_native;
 mod checksum;
 mod checksum_actor;
 mod clipboard;
@@ -407,8 +408,12 @@ impl EngineServices {
             self.outbox.clone(),
         );
         let mut size_warning_requests = size_warning_requests::Controller::new(self.outbox.clone());
-        let shell_menu =
-            shell_menu::Controller::new(scope.clone(), self.shell_menu, self.outbox.clone());
+        let shell_menu = shell_menu::Controller::new(
+            scope.clone(),
+            resources.shell_menu,
+            self.shell_menu,
+            self.outbox.clone(),
+        );
         let mut path_picker =
             path_picker::Controller::new(scope.clone(), self.path_picker, self.outbox.clone());
         let snapshots: Snapshots =
@@ -871,6 +876,18 @@ impl EngineServices {
                         Some(Command::ReadFileClipboard { request, destination }) => clipboard.read_files(request, destination, &mut tasks).await,
                         Some(Command::ShowShellMenu { request, files, owner, position, modifiers, target }) => {
                             shell_menu.show(shell_menu::Input { request, files, owner, position, modifiers, target }, &mut tasks).await;
+                        }
+                        Some(Command::ShowCapturedShellMenu { request, source, cancel, owner, position, modifiers }) => {
+                            shell_menu.show_captured(shell_menu::CapturedInput { request, source, cancel, owner, position, modifiers }, &mut tasks).await;
+                        }
+                        Some(Command::ShowCapturedProperties { request, source, cancel }) => {
+                            desktop.properties_captured(self.filesystem.clone(), request, source, cancel, &mut tasks).await;
+                        }
+                        Some(Command::OpenCapturedEntry { request, pane, navigation, row, source, cancel }) => {
+                            desktop.open_captured_entry(request, pane, navigation, source, cancel, row, &mut tasks).await;
+                        }
+                        Some(Command::ReadCapturedFileClipboard { request, source, cancel }) => {
+                            clipboard.read_captured_files(request, source, cancel, &mut tasks).await;
                         }
                         Some(Command::ShowProperties { request, paths }) => desktop.properties(self.filesystem.clone(), request, paths, &mut tasks),
                         Some(Command::ShowSelectionProperties { request, selection, view, fallback }) => {

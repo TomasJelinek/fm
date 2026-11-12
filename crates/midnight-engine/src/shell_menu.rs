@@ -4,6 +4,25 @@ use midnight_core::*;
 use std::{io, path::Path, sync::Arc};
 use tokio::{sync::Semaphore, task::JoinSet};
 
+mod captured;
+pub(crate) use captured::CapturedInput;
+
+// One admitted native worker and one serial dispatch/rejection owner.
+pub(crate) const RETIREMENT_CAPACITY: usize = 2;
+pub(crate) struct Retirement {
+    pub(crate) intake: crate::retirement::RetirementWaiter,
+}
+#[cfg(test)]
+impl Retirement {
+    pub(crate) fn testing() -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 1).unwrap();
+        Self {
+            intake: domain.new_waiter().unwrap(),
+        }
+    }
+}
+
 pub(crate) struct Input {
     pub request: DesktopRequestId,
     pub files: SelectedFiles,
@@ -18,10 +37,12 @@ pub(crate) struct Controller {
     cancel: Cancellation,
     outbox: Outbox,
     scope: TaskLifetime,
+    intake: tokio::sync::Mutex<crate::retirement::RetirementWaiter>,
 }
 impl Controller {
     pub(crate) fn new(
         scope: TaskLifetime,
+        retirement: Retirement,
         service: Option<Arc<dyn ShellMenuService>>,
         outbox: Outbox,
     ) -> Self {
@@ -31,11 +52,17 @@ impl Controller {
             budget: Arc::new(Semaphore::new(1)),
             cancel: Cancellation::default(),
             scope,
+            intake: tokio::sync::Mutex::new(retirement.intake),
         }
     }
     #[cfg(test)]
     fn testing(service: Option<Arc<dyn ShellMenuService>>, outbox: Outbox) -> Self {
-        Self::new(TaskLifetime::testing(service.clone()), service, outbox)
+        Self::new(
+            TaskLifetime::testing(service.clone()),
+            Retirement::testing(),
+            service,
+            outbox,
+        )
     }
     pub(crate) async fn show(&self, input: Input, tasks: &mut JoinSet<()>) {
         let Ok(permit) = self.budget.clone().try_acquire_owned() else {

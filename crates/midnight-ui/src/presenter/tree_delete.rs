@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) struct Pending {
     mode: DeleteMode,
+    scope: TreeClipboardScope,
     capture: tree_capture::Capture,
 }
 
@@ -23,7 +24,57 @@ impl Presenter {
         let Some(capture) = tree_capture::Capture::new(p) else {
             return;
         };
-        self.operations.tree_delete = Some(Pending { mode, capture });
+        self.start_tree_delete_capture(
+            mode,
+            capture,
+            TreeClipboardScope::SelectionOrFallback,
+            send,
+        );
+    }
+
+    pub(super) fn start_tree_delete_capture(
+        &mut self,
+        mode: DeleteMode,
+        capture: tree_capture::Capture,
+        scope: TreeClipboardScope,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let pane = capture.view.stamp.pane;
+        let scoped_row_valid = match scope {
+            TreeClipboardScope::SelectionOrFallback => true,
+            TreeClipboardScope::Dragged(row) => capture
+                .view
+                .index
+                .row_positions
+                .get(&row)
+                .and_then(|position| capture.view.rows.get(*position))
+                .is_some_and(|row| row.selectable && !row.context_only),
+        };
+        let invalid = self.operations.closing
+            || !self.native_action_allowed(pane)
+            || capture.request.is_some()
+            || !scoped_row_valid
+            || !self.panes[pane.index()].search_allows_activation()
+            || !self.panes[pane.index()]
+                .tree_view()
+                .is_some_and(|view| Arc::ptr_eq(view, &capture.view))
+            || matches!(
+                capture.status(&self.panes[pane.index()], false),
+                tree_capture::Status::Gone | tree_capture::Status::SelectionChanged
+            );
+        if invalid {
+            capture.cancel.cancel();
+            self.retired.push(Box::new(capture));
+            return;
+        }
+        self.cancel_tree_metadata(None);
+        self.cancel_tree_rename(None);
+        self.cancel_tree_delete(None);
+        self.operations.tree_delete = Some(Pending {
+            mode,
+            scope,
+            capture,
+        });
         self.flush_tree_delete(send);
     }
 
@@ -67,6 +118,7 @@ impl Presenter {
                 if send(Command::Tree(Box::new(TreeCommand::Delete(
                     TreeDeleteRequest {
                         mode: pending.mode,
+                        scope: pending.scope,
                         view: pending.capture.view.clone(),
                         request,
                         selection_revision: publication.selection_revision,

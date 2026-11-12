@@ -43,28 +43,31 @@ base colors:
 | --- | --- |
 | Source code and structured configuration | Blue `#3B82F6` |
 | Videos | Purple `#8B5CF6` |
-| Documents, PDF, Word and ebooks | Slate `#64748B` |
+| Documents, PDF, Word and ebooks | Light cool neutral `#C4CFE0` |
 | Images | Pink `#EC4899` |
 | Executables and installers | Orange `#F97316` |
 | Spreadsheets and tabular data, including CSV | Green `#22C55E` |
 | Audio | Teal `#14B8A6` |
-| Archives | Amber `#D97706` |
+| Archives | Yellow `#EAB308` |
 | Presentations | Red `#EF4444` |
-| Plain text, Markdown and README files | Slate `#64748B` |
+| Plain text, Markdown and README files | Light cool neutral `#C4CFE0` |
 | Fonts | Brown `#92400E` |
 
 The shared contrast policy preserves a readable base color or mixes it toward
 black or white by the smallest RGB change that reaches 4.5:1 against the actual
 row background. This includes alternating rows, selection, focus and inactive
-focus in every theme. Existing selection backgrounds and focus edges remain in
-place. The displayed color can therefore differ from the stored base swatch.
+focus in every theme. A focused marked item keeps its selection fill and adds a
+visible cursor outline, so moving the cursor never makes its mark look cleared. The displayed color can therefore differ from the stored base swatch.
 The neutral [Slate themes](../THEME_PROVENANCE.md#slate-variants-11-november-2026)
 use the same policy: categories retain their semantic hues, with foregrounds
 adjusted for each actual row state rather than recolored to blue, teal or violet
 just because that is the active theme's accent.
 
-Loading a saved document upgrades only an exact match for the historical five-rule
-preset. Any customization preserves the whole list, including its order, disabled
+Loading a saved document upgrades only an exact match for a historical shipped
+preset: the original five-rule list, the eleven-category slate/amber list, or that
+list after archives became yellow. Documents and plain text now start noticeably
+brighter on dark themes; light themes adapt the same base color for contrast.
+Any customization preserves the whole list, including its order, disabled
 rules, matching options, background choices and explicit removal of all rules.
 New and legacy documents without a stored color list receive the new defaults.
 No preference schema or plugin API changes are needed.
