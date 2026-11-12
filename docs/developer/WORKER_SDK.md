@@ -1,6 +1,6 @@
 # Restricted worker SDK
 
-`midnight-worker-sdk` 0.1.0 is the public startup contract for independent
+`midnight-worker-sdk` 0.2.0 is the public startup contract for independent
 executable providers. `midnight-worker-platform` is the host-owned launcher;
 plugins never depend on it or application internals. Released viewer API/SDK
 0.1.0 package bytes and checksums are unchanged.
@@ -8,26 +8,37 @@ plugins never depend on it or application internals. Released viewer API/SDK
 ## Startup and containment
 
 The host launches an exact trusted executable with stdin/stdout pipes and
-discarded stderr. It sends `MWS1`, a little-endian u64 memory ceiling and u32
-process CPU ceiling. Accepted limits are 64 MiB through 1 GiB and 1 through
-60 seconds. Before reading content, the helper calls
-`midnight_worker_sdk::enter(input, output)`. It returns `MWR1` only after
-installing or checking every platform restriction. The provider-specific
-versioned protocol then begins. Host `read_ready` rejects other replies.
+discarded stderr. Version 0.2.0 supports both startup forms:
+
+| Host entry point | Wire and resource policy | Required ready acknowledgement |
+| --- | --- | --- |
+| `spawn(executable, Limits { memory_bytes, cpu_seconds })` | Legacy `MWS1`, little-endian u64 memory ceiling and u32 aggregate CPU seconds; memory 64 MiB–1 GiB, CPU 1–60 seconds | `MWR1`, checked by `read_ready` |
+| `spawn_with_policy(executable, ResourcePolicy { memory_bytes, cpu })` | Explicit `MWS2`, little-endian u64 memory ceiling and a CPU tag: 0 for `NoAdditionalLimit`, 1 followed by u32 seconds for `Seconds(1..=60)`; same memory bounds | `MWR2`, checked by `read_policy_ready` |
+
+Before reading content, the helper calls
+`midnight_worker_sdk::enter(input, output)`. It consumes the selected startup
+version and acknowledges that version only after installing/checking restrictions.
+The provider-specific protocol then begins. Legacy bytes remain unchanged;
+an explicit-policy host cannot accept the legacy acknowledgement in its place.
+`NoAdditionalLimit` adds no aggregate CPU ceiling; it does not raise inherited OS
+limits or disable memory/process isolation, host deadlines or cancellation. See
+the [startup implementation](../../worker-api/midnight-worker-sdk/src/startup.rs)
+and [policy types](../../worker-api/midnight-worker-sdk/src/policy.rs).
 
 This is a contract with trusted installed code, not attestation of arbitrary
 downloaded programs. Discovery checks installation ownership, write permissions
 and redirect-free paths. Unsupported containment fails closed. No untrusted
 decoder runs inline in the application.
 
-Host `spawn(executable, Limits { memory_bytes, cpu_seconds })` returns a process
-guard and pipes. Each service enforces its wall deadline, cancellation and wire
+Both launch forms return a process guard and pipes. Each service enforces its
+wall deadline, cancellation and wire
 bounds separately. Guards kill and reap unfinished children. CPU limits apply
 to a process lifetime; bounded scheduling controls concurrent processes.
 
 Windows uses the fixed `MidnightExplorer.RestrictedWorker.v1` AppContainer,
 without capabilities, and an explicit inherited-handle list. A suspended process
-is assigned to a Job Object with memory, CPU, single-process and kill-on-close
+is assigned to a Job Object with memory, the selected aggregate CPU policy,
+single-process and kill-on-close
 limits before resuming. Only required system loader environment survives.
 The SDK verifies AppContainer and job restrictions before ready.
 
@@ -39,7 +50,8 @@ and all ancestors still pass installation trust checks. Private deployment
 does not change checkout or ancestor permissions.
 
 Linux x86-64 and AArch64 startup closes descriptors above stderr, sets
-address-space/CPU/file-size/core/descriptor limits, enables `no_new_privs`, and
+address-space/file-size/core/descriptor limits and the selected additional CPU
+limit, enables `no_new_privs`, and
 installs a synchronized seccomp allowlist. Computation, allocation and existing
 pipe operations remain available. Filesystem opens, networking, new processes,
 threads and execution are denied. Libraries must load before SDK lockdown;
@@ -52,7 +64,7 @@ deadline termination. Cross-compilation alone does not qualify a platform.
 
 ## Thumbnail protocol and backend
 
-The separate `midnight-thumbnail-api` and `midnight-thumbnail-sdk` 0.1.0 crates
+The separate `midnight-thumbnail-api` 0.1.0 and `midnight-thumbnail-sdk` 0.2.0 crates
 define `MTH1` framed messages and a broker `Read + Seek` adapter. Helpers receive
 request ID, source byte length, requested dimensions and sample index, never a
 pathname, credentials or URL. Offset/length reads use a backend source lease

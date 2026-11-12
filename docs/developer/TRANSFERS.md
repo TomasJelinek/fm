@@ -105,7 +105,8 @@ Retry retains native identities and the original source/stage handles:
 - Source reads require an explicit retained-reader reposition capability. Partial
   writes retain their block, seek to the last fully committed offset and rewrite
   the block; progress and the source hash advance only after the complete write.
-- Flush/sync and readback preserve full length and SHA-256 validation. Readback
+- Flush/sync and readback preserve exact length and the frozen full-hash/sample
+  checks. Readback
   retry restores the verified offset, including after an error advances a cursor.
 - Publication retry is allowed only before namespace mutation. A late collision
   becomes a fresh name conflict. Integrity failures, changed identities and
@@ -237,6 +238,11 @@ UI; `CopyInput` unwraps/clones it only in blocking preparation. Ordinary Copy an
 archive Copy keep their existing routes. Native formats retain raw paths; no
 shell parses file names.
 
+Qualified native same-volume Move takes the rename route described above before
+content/proof preparation. The content-copy proofs and source-removal staging
+below apply to cross-volume fallback and explicitly merged children; they are not
+required for a successful native rename.
+
 Content-only Move accepts at most 64 ordinary native file or directory roots,
 with a conservative 4 MiB active source/capture/stage/proof/receipt path reservation.
 Duplicate identities, overlapping roots (including a selected file beneath a
@@ -267,9 +273,11 @@ Optional contracts default to Unsupported:
 
 Only completely successful Published/Replaced copies yield `VerifiedFileProof`.
 The user-requested Move order is per file: copy and independently verify one
-file, validate its retained source/destination SHA-256 and required metadata,
-capture that source, retain the platform's source-write guard, rehash both objects,
-then explicitly remove that source before starting the next copy. Each full
+file, validate its retained source/destination under the frozen policy and required
+metadata, capture that source, retain the platform's source-write guard, and repeat
+the selected proof before explicitly removing that source and starting the next
+copy. Full mode hashes both objects; quick mode compares exact length and the
+declared samples (all bytes up to 192 KiB). Each full
 proof pass uses one shared 256 KiB buffer; source and destination revisions from
 the final reads remain guarded through the removal gate. Earlier destination
 identities stay protected from later replacement, without retaining their files.
@@ -341,12 +349,16 @@ No destination rollback or batch rollback is attempted.
 
 Salamander `src/worker.cpp` cross-volume `DoMoveFile` calls `DoCopyFile`, then
 deletes that file's source on successful non-skipped copy (around lines6067–6080).
-FM follows this per-file interaction with additional mandatory SHA-256 readback,
-held-object deletion and no readonly/ACL weakening. Earlier retained-source
+FM follows this per-file interaction with independent destination readback under
+the selected policy (full SHA-256 by default), held-object deletion and no
+readonly/ACL weakening. Earlier retained-source
 Move verification reports are historical and superseded by this ordinary policy.
 
-Same-device Move still performs the full content proof instead of a rename-only
-shortcut. Recursive Move currently uses ContentOnly; required modified time still
+Qualified same-volume native Move renames without reading or hashing contents.
+Cross-volume Move and explicit directory merges use per-file verification under
+the job's immutable full/quick policy before source removal. Native permission
+errors do not authorize a cross-device fallback. Recursive Move uses ContentOnly;
+required modified time still
 accepts only distinct regular-file roots. Hardlinks, links, virtual providers and
 broader metadata remain separate unfinished scope. No phase promises an atomic
 snapshot or batch rollback under arbitrary concurrent mutation. See
@@ -371,8 +383,9 @@ errors propagate; continuously changing metadata is refused after bounded
 capture attempts. Existing stages and constructors retain their original rights;
 Windows requests WRITE_ATTRIBUTES only on newly owned required-metadata stages.
 
-The existing source SHA-256 and full independent destination readback complete
-first. The source metadata pin is revalidated; modified time is set on the exact
+For a copied file, source streaming and independent destination readback complete
+under the frozen full/quick policy first. The source metadata pin is revalidated;
+modified time is set on the exact
 unpublished stage, synchronized and read back exactly, then the source pin is
 checked again. Readback has no rounding tolerance. A metadata failure cannot
 publish that file or create a Move proof. Before publication, both the source pin
@@ -386,8 +399,10 @@ files may remain published; a failure at this stage prevents removal of that sou
 and stops subsequent Move work. There is no silent switch to content-only copying.
 
 Move proofs retain the metadata pin and expected modified time alongside their
-existing source/stage/digest/length. Full source/destination hashes, fresh native
-read guards and exact final-name checks remain mandatory. Expected source and
+existing source/stage/digest/length. The selected-policy source/destination proof,
+fresh native read guards and exact final-name checks remain mandatory. Full mode
+hashes both objects; quick mode retains its exact-length/sample guarantee. Expected
+source and
 destination times are checked during each proof and before captures. After our
 source rename, the old revision token is not compared to its changed ctime;
 fresh proof guards and the retained source-handle timestamp read are used.

@@ -1,6 +1,20 @@
 # Feature status for 0.2.0
 
 This is an early preview. A design document is not evidence that a feature is available.
+The resumed full-feature goal, role assignments, requirements/evidence backlog and
+corrections to stale stage references are tracked in [Active work](ACTIVE_WORK.md).
+Implementation presence, recorded targeted results and native/release qualification
+are separate states; the latter is not implied by a checked plan or green subset.
+
+The integrated 12 November panel batch adds bounded tree publication/command
+admission, captured native actions and root-level native directory comparison.
+Ctrl+D clears every mark, including folders and expanded descendants; Ctrl+Shift+D
+has no default assignment. The filename palette has twelve categories, including
+a separate coral PDF rule. The [panel qualification](verification/2026-11-12-panel-interaction-polish.md)
+records the final debug executable, targeted Windows/Linux checks and startup
+smokes; it does not establish full-workspace/remote CI, accepted elevation prompts
+or completion of the broader feature goal.
+
 The [pixel-scrolling contract](developer/SCROLLING.md) distinguishes fractional
 movement, native input routing and actual frame cadence. Native observations and
 known performance limits are recorded in the [scrolling investigation](NATIVE_SCROLL_VERIFICATION.md);
@@ -61,6 +75,13 @@ loading paths without removing plugin trust checks. Current timings and remainin
 high-DPI/GPU costs are recorded in the [scrolling](verification/2026-11-11-viewer-scrolling.md)
 and [image loading](verification/2026-11-11-image-loading.md) reports.
 
+The accepted 12 November Markdown allocation slice (`cc4857e`) borrows retained
+semantic context and clones only selected complete layout groups. Its independent
+plugin handoff records 62 passed tests, one ignored manual profile and identical
+saved response streams. The lower bounded allocation does not establish an
+end-to-end latency or native frame-pacing improvement; [Active work](ACTIVE_WORK.md)
+records the measured scope and remaining host/native qualification.
+
 The current transfer update is available in the qualified Windows debug build:
 whole-operation speed charts, native same-volume Move without
 content copying, and Options → General full SHA-256 verification (default on).
@@ -80,7 +101,8 @@ external dragging is unavailable. Integrated component checks and debug deployme
 are complete; an end-to-end drag from the final Slint app into a running Explorer
 window still needs separate native qualification.
 
-The 9 November follow-up adds [Make File List](MAKE_FILE_LIST.md) on Ctrl+M and
+The 9 November follow-up adds [Make File List](MAKE_FILE_LIST.md) on Ctrl+M,
+using captured native/archive/inline-tree metadata without member extraction, and
 [user viewer associations](VIEWER_ASSOCIATIONS.md) in Options > Plugins. Markdown
 scrolling now reuses semantic pages, fixes incorrect line/block limits and backward
 table overlap, and has a proper GitHub block layout. See the dated
@@ -107,7 +129,7 @@ Adopted inline trees now retain literal prefix search and optional quick-search
 filtering over their loaded rows, composed with persistent filters and sibling
 sorting. Archive extension sorting uses original UTF-8 member names and locale
 keys. See the [current scope and qualification](verification/2026-11-10-tree-prefix-search.md);
-remaining typed tree operation consumers stay open. Native manual refresh and
+captured native operation consumers are summarized below. Native manual refresh and
 batched watch notifications now reconcile the adopted tree in-session; see the
 [watch contract](developer/TREE_PANEL.md#native-watches-and-reconciliation) for
 scope and bounds. Archive watches and broader tree workflows remain separate.
@@ -129,7 +151,8 @@ Ctrl+Shift+A includes folders. Ctrl+D clears all selection, including folder
 and expanded-descendant marks; Ctrl+Shift+D has no default assignment. Ctrl+Shift+I inverts top-level
 files and folders. F10 reads effective shortcuts from current settings, including
 remaps, removed aliases and restored defaults while the menu is open. See the
-[current selection/menu verification](verification/2026-11-11-selection-and-live-menu.md)
+[current deselection/menu qualification](verification/2026-11-12-panel-interaction-polish.md),
+[earlier live-menu verification](verification/2026-11-11-selection-and-live-menu.md)
 and [settings qualification](verification/2026-11-10-settings-polish.md).
 
 Native, archive and expanded-tree size scans now retain clickable yellow warning
@@ -138,11 +161,14 @@ Tooltips show the actual reason; clicks and Copy preserve the captured occurrenc
 and complete diagnostic. See the [contract](developer/PANEL_DIAGNOSTICS.md) and
 [qualification](verification/2026-11-10-panel-warning-details.md).
 
-Default filename coloring now covers eleven categories with contrast adjustment
-for every theme and selection/focus state. Exact historical defaults migrate;
-custom rules remain unchanged. Readable sizes use KiB/MiB/GiB/TiB for the existing
-1,024-based conversion, and Reverse order is separated in the sort menu. See the
-[palette and units evidence](verification/2026-11-10-filename-palette-and-units.md).
+Default filename coloring now covers twelve categories with contrast adjustment
+for every theme and selection/focus state. PDF has its own coral base color;
+DOCX and Markdown retain the brighter neutral document base. Exact historical
+defaults migrate; custom rules remain unchanged. See the [current palette contract](developer/FILENAME_COLOR_OPTIONS.md)
+and [PDF/palette qualification](verification/2026-11-12-panel-interaction-polish.md).
+Readable sizes use KiB/MiB/GiB/TiB for the existing 1,024-based conversion, and
+Reverse order is separated in the sort menu; the [older palette/units report](verification/2026-11-10-filename-palette-and-units.md)
+records that earlier batch's scope.
 
 Copy and Move now deselect successfully completed roots progressively, including
 verified archive extraction. Skipped, failed and unfinished roots stay selected;
@@ -166,25 +192,31 @@ retries, keeps failed-cleanup paths in bounded history, and refuses a fresh
 metadata preparation attempt after cleanup failure. Ordinary recoverable errors
 still offer Retry; see the [regressions and limits](verification/2026-11-11-transfer-stage-retry.md).
 
-Reconciled on 10 November against the dated archive, Find and inline-tree evidence below.
 Native/archive inline trees also consume typed targets for directory sizes:
 selected folders or all displayed folders (including expanded descendants) without
 selection, exact-folder Space,
-coalesced progress, known selected totals and explicit size sorting. Other tree
-operation consumers remain unfinished. See the [size verification record](verification/2026-11-10-tree-folder-sizes.md)
+coalesced progress, known selected totals and explicit size sorting. See the [size verification record](verification/2026-11-10-tree-folder-sizes.md)
 and [expanded-folder correction](verification/2026-11-10-expanded-folder-sizes.md).
 F3/Alt+F3 also retain root-file viewing while branches are expanded. Viewer capture
 uses the exact root aliases and visible order, preserving native/archive source
-authority. Other descendant operation consumers remain fenced; see the
+authority; inserted branches contain folders, not descendant-file rows. See the
 [viewer integration contract](developer/TREE_PANEL.md#viewers-from-expanded-panels)
 and [Windows/Linux qualification](verification/2026-11-10-tree-viewers.md).
 F4 now also captures the focused native regular file after tree adoption, using
 acknowledged occurrence identity and backend-owned lifetime/cancellation. It does
 not enable directory/archive editing or remove guards from other tree actions;
 see the [external-editor evidence](verification/2026-11-11-tree-external-editor.md).
+Native tree Delete/Rename/metadata, checksums, Custom Commands, Properties/context
+menus, clipboard/drag and native comparisons also use captured targets; Make File
+List exports captured native/archive/tree metadata. Find retains the native pane
+root and its separate captured result actions. These do not enable archive writes,
+virtual clipboard/drag export, archive Find/watches or container attachment/nesting.
+Literal focused-name insertion into the command editor remains guarded after tree
+adoption. Complete installed/native qualification remains separate; see the
+[per-action contracts](developer/TREE_PANEL.md) and [active requirements/evidence backlog](ACTIVE_WORK.md#requirements-and-evidence-backlog).
 Network Neighborhood and viewer requests retain their separately recorded scope. The
 [current follow-up contract](superpowers/specs/2026-11-07-panel-viewer-followups.md)
-and [backlog](IMPLEMENTATION_BACKLOG.md#latest-accepted-follow-ups) track work in
+and current ledger track work in
 progress separately from released behavior, including archive Hot Paths qualification.
 
 Markdown now renders pipe tables with aligned, wrapping cells and borders,
@@ -195,9 +227,9 @@ preferences. See [verification and limits](verification/2026-11-08-markdown-tabl
 | Feature | Current implementation | Remaining work / design |
 | --- | --- | --- |
 | HTML viewer | Optional independent Chromium/CEF process plugin, captured native/archive assets, in-window rendering, find/zoom and explicit offline/online controls; default HTML/HTM/XHTML associations are configurable | Complete matching CEF package required. [Windows installed verification](verification/2026-11-10-html-viewer.md) and [Ubuntu 24.04 WSLg XWayland host/Slint qualification](verification/2026-11-10-html-linux.md) pass. Linux requires Chromium sandbox plus existing delegated aggregate resource limits; native Chromium Wayland and physical IME remain unqualified. [API and security contract](developer/WEB_VIEWER_API.md) |
-| Native panels | Windows and Linux browsing, tabs/bookmarks, multiselection, locale sorting, watches, selection-aware directory sizes, three view modes, themes and configurable shortcuts | macOS adapter remains pending |
+| Native panels | Windows and Linux browsing, tabs/bookmarks, multiselection, locale sorting, watches, selection-aware directory sizes, three view modes, themes and configurable shortcuts | macOS application integration/packaging remains pending; a separate read-only Darwin filesystem provider already exists |
 | Shared toolbar | One action row above both panels follows the active panel; includes navigation/history, Checksums, Folder Sizes, Properties, file/directory comparison, filtering and Hot Paths; View and Sort belong to each panel drive bar | Scrollable overflow preserves the 320×200 minimum; context changes and canceled input cannot retarget actions. Drives, paths and tabs remain per-panel. [Verification](verification/2026-11-08-shared-toolbar.md) |
-| Inline folder branches | Production native/archive panels lazily enable occurrence-based branches, selection, disclosure and typed directory navigation; prefix/quick search, persistent filters and sibling sorting share acknowledged backend reprojection | Search examines loaded visible rows without enumeration; filtering retains unselectable ancestor context and rebases selection atomically. Native manual/watch refresh retains the adopted tree; typed operation consumers, archive watches and container attachment/nesting remain pending. [Panel contract](developer/TREE_PANEL.md), [10 November prefix scope](verification/2026-11-10-tree-prefix-search.md), [controller verification](verification/2026-11-09-tree-controller-integration.md). These integrations do not establish full TREE-01 completion. |
+| Inline folder branches | Production native/archive panels lazily enable occurrence-based branches, selection, disclosure and typed navigation; prefix/quick search, persistent filters and sibling sorting share acknowledged backend reprojection. Captured native actions include transfers, clipboard/drag, F4, mutations/metadata, checksums, Custom Commands, Properties/context menus and comparisons; file lists also accept archive/tree metadata | Search examines loaded visible rows without enumeration; filtering retains unselectable ancestor context and rebases selection atomically. Native refresh retains the tree. Viewers/file comparison use root files; directory comparison is native/root-only. Virtual exports/writes, archive Find/watches, container attachment/nesting and focused-name command insertion remain separate gaps. [Panel contract](developer/TREE_PANEL.md), [latest qualification](verification/2026-11-12-panel-interaction-polish.md). These integrations do not establish full TREE-01 completion or native workflow parity. |
 | Panel status | Filename or selection summary takes space before secondary metadata; Windows attributes use compact characters such as A/C/R with a tooltip legend; clicks copy full captured values | Linux details include symbolic and octal permissions, including special mode bits. Narrow panels elide only after assigning the available width to the name. [Verification](verification/2026-11-07-status-and-viewer-readability.md) |
 | Compact main window | Exact 320×200 logical minimum at every density; active pane and other-pane rail, command editor and horizontally scrollable function keys; Options/Jobs stay visible | Regular two-pane controls return when space permits. See [small-window verification](verification/small-window.md) |
 | F10 main menu | Configured actions grouped by Files, Selection, Panels/navigation, Tools and Application; category picker, icons and configured key hints | Reuses existing action/confirmation paths and availability rules; [verification](verification/2026-11-08-main-menu.md) |
@@ -209,14 +241,14 @@ preferences. See [verification and limits](verification/2026-11-08-markdown-tabl
 | Plugin catalog | Options → Plugins lists Viewers, Filesystems and Thumbnailers; asynchronous Refresh includes installed image/video helper metadata and discovery errors | Thumbnailer overview is read-only; global controls stay on Previews. [Catalog contract](developer/VIEWER_PREFERENCES.md#plugin-catalogs-in-options) |
 | Media thumbnails | Independent image/video workers, private persistent cache, bounded decoding and selected-video animation; typed archive member captures share the same services. Protocol-3 cooperative staging cancellation is verified with installed ZIP/solid-7z workers, same-mount retry and preservation of cached members; all 11 archive format controls pass | Trusted helpers and stable archive member IDs are required. Images: PNG/JPEG/GIF/WebP/BMP/ICO/TIFF plus bounded static SVG and AVIF from the shared decoder; HEIC/HEIF is unavailable. [Image-format qualification](verification/2026-11-12-image-host-formats.md) records actual packaged-worker checks. Initial video codecs remain limited, with no MP4/H.264 promise. Actual container storage controls network opt-in. Native panel frame pacing, Linux desktop/archive-panel behavior, all-format persistent reopening and generic remote leases remain unqualified. Legacy protocol 1/2 drains admitted staging; protocol 3 waits for a bounded checkpoint/active native call, retaining real capacity until cleanup. [Verification](verification/2026-11-10-archive-thumbnails.md), [worker SDK](developer/WORKER_SDK.md) |
 | Panel search/filter | Unicode filename prefix search and optional quick-search filtering in flat and adopted tree panels; per-panel Masks/Regex/typed metadata Expression filters on Ctrl+F12 compose with the prefix and sibling sorting. Backend validation preserves the last valid view. The native filter window retains its opening pane/navigation and draft across resize/refresh; Cancel and Show all keep their captured-context semantics | [Native Filter/Hot Paths checks](verification/2026-11-11-native-tool-windows.md) cover stale callbacks, draft preservation, compact first-open Escape and injected host-creation failure recovery through a visible owned Notice. Trees search loaded raw names; opaque archive captions cannot invent a match. One latest desired query and one in-flight options request preserve typing under queue pressure. Insert waits for cleared search/settled selection; hidden/context rows and stale carets cannot authorize keyboard actions. Options commit only on matching publications; Cancel discards and clear retains the persistent expression. [Syntax](developer/METADATA_FILTERS.md), [prefix scope and qualification](verification/2026-11-10-tree-prefix-search.md), [earlier filter evidence](developer/TREE_PANEL.md#filter-and-sort-evidence). Full installed tree workflows remain separate. |
-| Filename colors | Ordered masks/regex rules, eleven semantic category presets, one base foreground and optional background; automatically derived focus/selection colors across all themes and a four-state preview | Matching runs on backend snapshots; invalid drafts do not replace active rules; explicitly removing all presets survives restart |
+| Filename colors | Ordered masks/regex rules, twelve semantic category presets including a separate coral PDF rule, one base foreground and optional background; automatically derived focus/selection colors across all themes and a four-state preview | Matching runs on backend snapshots; invalid drafts do not replace active rules; explicitly removing all presets survives restart |
 | Internal viewers and F4 | Independent basic text/binary, source highlighting, Markdown, image and PDF packages; text wrap/search/copy, default-on source line numbers and logical position, font controls and Markdown GitHub/Compact/Comfortable presets; image/PDF Fit/1:1/zoom/pan, captured-order Space navigation; configurable external editor | Requires installed, enabled viewer packages in a trusted installation. Text selection/copy is bounded to the loaded page; distant source positions index asynchronously. Images decode at most 128 MiB of pixels and present at most 4 megapixels; animated raster formats show the first frame. SVG uses an inert bounded static subset with bundled fonts; AVIF supports bounded still-image decode. [Codec scope](developer/IMAGE_VIEWER_API.md) documents format-specific limits and exclusions. See [presentation and native controls](verification/2026-11-08-viewer-controls.md), [viewer limits](verification/2026-11-07-viewer-controls.md) and [image API](developer/IMAGE_VIEWER_API.md) |
 | Copy | F5, clipboard and drag/drop share a bounded queue, full SHA-256 readback by default, explicit size plus three 64 KiB samples as a weaker option, folder merge and recoverable replacement; opt-in exact modified time for up to 64 native regular files | Provider capabilities govern replacement; strong identity-conditional overwrite is unavailable. Links/complete metadata preservation remain pending. [Transfer contract](developer/TRANSFERS.md) |
 | Move | Qualified same-volume native rename moves files/whole folders without content reads or hashes. Cross-volume Move copies and verifies each file before source removal; explicit directory merge processes children individually | Both OS backend gates pass; final integrated release qualification is pending. Linux identity/removal is live-validated, not atomic compare-and-unlink. Links, virtual providers and full metadata remain unsupported. [Current contract](superpowers/specs/2026-11-10-transfer-verification-and-native-move.md), [evidence](verification/2026-11-10-transfer-verification-and-native-move.md) |
 | Find files | Alt+F7 or the magnifier opens a modeless window with multiple roots, Masks/Regex/Expression, recursion, literal UTF-8/BOM-marked UTF-16 content, whole words, modified-within minutes/hours/days, exact-content duplicate groups, five sortable headers, phased progress, Stop, validated Go to file and explicit guarded View/Basic View/Edit/Open | Native Windows/Linux folders with explicit link/mount/encoding/budget exclusions. New relative-age/duplicate/content behavior has 10 November backend regression coverage; duplicate groups stay adjacent and publish atomically. Guarded native result actions retain exact session/generation/identity, revalidate on backend execution and use the installed native provider for viewers. [12 November action evidence](verification/2026-11-12-find-actions.md) records focused qualification. Installed native-desktop qualification and archive Find remain separate. [Find contract](developer/FIND.md), [earlier mode/sort evidence](verification/2026-11-08-find-refactor.md) |
 | Native mutations | Rename, empty-file creation, recursive F7, confirmed Trash/permanent deletion, attributes/timestamps/case changes. Native inline-tree Delete and focused F2 Rename use typed captures and the existing confirmation/overwrite/progress flow; native Properties and context menus retain exact branch occurrences | Native inline-tree metadata uses captured targets; virtual-provider writes remain guarded. [Delete contract](developer/TREE_PANEL.md#delete-from-expanded-native-panels), [Rename contract](developer/TREE_PANEL.md#rename-from-expanded-native-panels); capability limits and per-item failures remain explicit |
 | Directory comparison | Ctrl+F10 and the shared top toolbar compare displayed names, sizes and modification times; optional unmatched folders, case matching and time tolerance | Both panels must be native; adopted trees compare selectable root-level rows and retain exact occurrence-based selection. Virtual descendants are refused. Metadata only, no recursive/content/attribute comparison. [Tree contract](developer/TREE_PANEL.md#directory-comparison-with-expanded-branches) |
-| Checksums | Ctrl+F8 opens a modeless window with captured-selection calculation and explicit checksum-file verification; SHA-256 default and optional SHA-512/MD5/SHA-1/CRC32, streamed progress, Stop, per-hash/full-row copy and verified export to the five corresponding formats, including SFV | Partial export requires explicit consent; output choices match the captured run. Manifest paths are bounded and validated without following links; matching checksums do not authenticate sources. Windows/Linux focused checks are recorded; packaged release qualification remains separate. [Checksum contract](developer/CHECKSUMS.md), [file verification evidence](verification/2026-11-08-checksum-files.md) |
+| Checksums | Ctrl+F8 opens a modeless window with captured-selection calculation, including selected native files/folders in adopted trees, and explicit checksum-file verification; SHA-256 default and optional SHA-512/MD5/SHA-1/CRC32, streamed progress, Stop, per-hash/full-row copy and verified export to the five corresponding formats, including SFV | Tree fallback requires a native regular file; archive/link targets are refused. Partial export requires explicit consent; output choices match the captured run. Manifest paths are bounded and validated without following links; matching checksums do not authenticate sources. Windows/Linux focused checks are recorded; packaged release qualification remains separate. [Checksum contract](developer/CHECKSUMS.md), [tree capture](developer/TREE_PANEL.md#checksums-from-expanded-panels), [file verification evidence](verification/2026-11-08-checksum-files.md) |
 | Archive providers | Independent workers browse ZIP/7z/GZIP/TAR and TAR.GZ/TAR.XZ/TAR.BZ2/TAR.ZST plus raw compressed streams; F5 uses verified copying. Protocol 2 streams captured source ranges and verified members through private disk storage without artificial source/member/decoded-disk/ratio byte ceilings | Protocol 1 retains legacy limits. Protocol 2 retains two mounts, 512 MiB worker memory, 20-second progress watchdog, 256 KiB I/O, 100,000 entries, 8 MiB names and decoder/header bounds; available private TEMP storage can limit content. Installed Windows/Linux worker checks passed 9 November; complete application/UI qualification remains separate. No writing, passwords, nested mounts, RAR or external member launch; unavailable saved tabs remain explicit. [API and limits](developer/FILESYSTEM_API.md), [streaming verification](verification/2026-11-09-archive-streaming.md) |
 | PDF | Independent isolated PDF plugin with page controls, zoom and pan; new PDFs open Fit window, including enlargement of small pages; Ctrl+PageUp/Down preserves manual zoom, while Fit adapts to each page size | Hayro rendering; unsupported/encrypted documents report an error. No scripts/network/link activation; bounded source/pages/rendering. See [opening/zoom verification](verification/2026-11-08-viewer-opening-toolbar.md) |
 | File comparison | Ctrl+Shift+C or the shared top toolbar opens text differences or image comparison with Side-by-Side, Swipe and Onion Skin; two active-panel selections take priority, otherwise an opposite selection or exact same-name counterpart is used. An unresolved pair opens File A / File B with native Browse and editable paths. | Native regular files only, including visible root files in an expanded native panel; automatic matching uses visible native names with exact case, never an unrelated opposite cursor; bounded text diff and raster sizes. [Automatic pairing](verification/2026-11-08-comparison-same-name.md), [manual choice contract](developer/FILE_COMPARISON.md) |
@@ -225,10 +257,12 @@ preferences. See [verification and limits](verification/2026-11-08-markdown-tabl
 | Network Neighborhood | Independent Windows WNet/MPR and Linux GIO/GVfs plugin; Network entry after drives in the dropdown and each panel drive bar, incremental discovery, cache, manual targets, explicit native-share handoff, parent/back context, persisted typed tabs and discovery Hot Paths with configurable numbered shortcuts | Requires OS discovery/runtime services. Discovery bookmarks retain opaque provider identity even when unavailable; [schema/shortcut evidence](verification/2026-11-11-network-hot-paths.md). Controlled live SMB/FUSE interoperability and interactive Linux credentials remain separate qualification/implementation work; native share Hot Paths also work. macOS is a later adapter. [Contract](developer/NETWORK_FILESYSTEM.md), [qualification](verification/2026-11-09-network-neighborhood.md) |
 | Options | OK validates all pages, saves asynchronously and closes on success; Cancel/Escape/X discard the session and restore appearance previews; scrollable color-picker popup with fixed actions, native file choosers and editor argument rows | Automatic session saves exclude unaccepted previews; [transaction design](superpowers/specs/2026-11-08-options-transaction.md). Release qualification is separate. |
 | Archive Hot Paths | Typed provider/container/member/decoder addresses persist losslessly, display `archive.zip@member` and deduplicate; re-adding refreshes the source revision while preserving the shortcut slot. Source/settings/presenter checks passed 8 November; the native Hot Paths manager now captures its typed Add location at opening and preserves existing numbered-slot uniqueness | The 11 November [native manager checks](verification/2026-11-11-native-tool-windows.md) cover archive capture after navigation, deduplication, slot swaps, stale callbacks and visible creation-failure recovery without bookmark changes. Qualify the complete real-plugin menu/shortcut, restart/restore and unavailable-provider workflow before deployment. Display text, including literal `@`, never becomes a parsed locator. [Dated evidence and qualification gap](verification/2026-11-08-panel-viewer-followups.md) |
-| Latest panel/viewer follow-ups | Larger same-height icons, middle path elision and longer pixel wheel coast have focused checks; Markdown/source presentation controls have actual Windows input checks; Find modes and compact results have separate debug evidence above | Filter toolbar active state, useful drive information, removal of unknown-folder status, thumbnail retention and further viewer latency work remain tracked separately in the backlog |
+| Latest panel/viewer follow-ups | Larger same-height icons, middle path elision and longer pixel wheel coast have focused checks; Markdown/source presentation controls have actual Windows input checks. Filter icon/applied state, useful native drive information and omission of unmeasured folder totals exist in source | Current filter usability, thumbnail retention, remaining viewer latency and broader native/release qualification are tracked in [Active work](ACTIVE_WORK.md); existing controls are not wholly missing features |
 
-The [follow-up stages](superpowers/plans/2026-11-05-follow-up-stages.md) preserve
-the uncompleted requests. Native copy currently runs serially with a 256 KiB
+The older [follow-up stages](superpowers/plans/2026-11-05-follow-up-stages.md)
+retain historical requests; later accepted per-file Move, verification and dialog
+refinements supersede conflicting stage text. Current assignments and remaining
+acceptance are in [Active work](ACTIVE_WORK.md). Native copy runs serially with a 256 KiB
 buffer. Future concurrent copying is permitted only when both source and
 destination are positively classified as local SSD storage. HDD, network and
 unknown storage retain serial copying. Details are in the repository's security

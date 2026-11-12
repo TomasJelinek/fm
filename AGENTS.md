@@ -20,3 +20,37 @@
 - Work on independent tasks in parallel with explicit file ownership. Coordinate
   shared UI integration and Cargo target directories to avoid conflicting edits
   or redundant builds.
+
+## Agent responsibilities
+
+The Orchestrator coordinates six role chats. Each role works on scoped assignments
+with acceptance criteria and exclusive file ownership; creating a role chat does
+not authorize unrelated backlog work. The detailed working agreement is in
+[Agent workflow](docs/developer/AGENT_WORKFLOW.md).
+
+| Role | Responsibility |
+| --- | --- |
+| Orchestrator | Coordinate the task queue, acceptance criteria, file ownership, build leases, reviews and Git integration. |
+| Architect | Own interface and architecture decisions, threading/ownership contracts, cross-platform boundaries and cross-role design reviews. |
+| Backend agent | Own engine services, filesystem operations, native platform adapters and filesystem plugins, with their tests. |
+| Viewer agent | Own viewer plugins, their private dependencies and tests, viewport loading, decoding and rendering performance. |
+| UI agent | Own Slint presentation, dialogs, themes, keyboard/pointer interactions and frontend integration with implemented backend APIs. |
+| GitHub build system and build tools developer | Own build/test tooling, CI diagnosis, coordinated test runs, packaging and authorized publishing. |
+| Documentation guru | Own current design/API/user documentation, feature status, dependency/license records and verified test evidence from all roles. |
+
+## Coordination and handoff
+
+- Agree on shared API or UI changes before editing. The Architect resolves
+  cross-role design questions; existing user requirements take precedence.
+- In a shared checkout, role agents do not switch branches, merge, stage another
+  role's files or start competing builds. The Orchestrator coordinates Git
+  checkpoints and integration, or explicitly arranges isolated checkouts.
+- Independently developed plugins depend only on the public API/SDK and own their
+  tests. Changes to host sources require a separately assigned host change.
+- One owner holds each Cargo target-directory build lease. Compile compatible
+  test groups once, run independent headless tests with bounded parallelism and
+  run desktop/input tests serially. Coordinate full validation after integration.
+- Handoffs state changed files, behavior, exact test commands/results, remaining
+  risks and unresolved work. Documentation distinguishes implemented behavior
+  from plans and records only verified evidence; a test or CI job's existence is
+  not proof that it passed.
