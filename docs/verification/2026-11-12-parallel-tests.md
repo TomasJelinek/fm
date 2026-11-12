@@ -94,3 +94,18 @@ skips, including creation and rejection of a real directory symlink. Evidence:
 `_build/qa/retained-seek-20261112/runner-nested-linux.log`. Independent review
 confirmed metadata/workspace matching, manifest confinement, common build/log
 ownership and workspace-local Rust runtime lookup.
+
+## Follow-up CI shortcut regression
+
+Run `43206519259` on commit `c16e99a` passes the earlier archive-retirement
+regression on Linux, then fails `salamander_shortcuts` because its unsupported
+modifier matrix still includes Alt+Down. That chord is now the requested
+next-selected-item action. The test explicitly verifies Alt+Up/Down and retains
+negative Alt+Shift+Up/Down coverage; no production mapping is changed.
+The corrected Windows shortcut target and selected-navigation target each pass,
+alongside 77 viewer regressions in three concurrent headless processes with a
+six-thread budget. Evidence is in
+`_build/qa/retained-seek-20261112/rounded-cargo-and-shortcuts/summary.json`.
+The downloaded CI log is
+`_build/qa/ci-test-batching-20261112/run-43206519259-linux.log`.
+These local results do not claim a green subsequent full CI run.

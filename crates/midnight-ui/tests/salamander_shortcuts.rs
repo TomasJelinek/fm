@@ -109,6 +109,13 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     window.on_key(move |pane, key| captured.borrow_mut().push((pane, key)));
     chord(&window, &[Key::Control], Key::PageDown);
     assert_eq!(*pane_keys.borrow(), vec![(1, 10)]);
+    chord(&window, &[Key::Alt], Key::UpArrow);
+    chord(&window, &[Key::Alt], Key::DownArrow);
+    assert_eq!(
+        *pane_keys.borrow(),
+        vec![(1, 10), (1, 13), (1, 14)],
+        "Alt+Up/Down navigate to the previous/next selected panel item"
+    );
     let sizes = Rc::new(Cell::new(0));
     let captured = sizes.clone();
     window.on_folder_sizes(move |pane| {
@@ -176,7 +183,8 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
         (vec![Key::Alt], Key::Space),
         (vec![Key::Alt], Key::F10),
         (vec![Key::Control, Key::Shift], Key::PageDown),
-        (vec![Key::Alt], Key::DownArrow),
+        (vec![Key::Alt, Key::Shift], Key::UpArrow),
+        (vec![Key::Alt, Key::Shift], Key::DownArrow),
         (vec![Key::Meta], Key::End),
     ] {
         chord(&window, &modifiers, shortcut);
@@ -186,7 +194,7 @@ fn salamander_shortcuts_respect_actual_focus_and_modifiers() {
     assert_eq!(actions.borrow().len(), action_count);
     assert_eq!(
         *pane_keys.borrow(),
-        vec![(1, 10)],
+        vec![(1, 10), (1, 13), (1, 14)],
         "unsupported modifiers must not fall through to navigation, open or selection"
     );
     assert_eq!(sizes.get(), 2, "selected-size shortcuts are reserved");

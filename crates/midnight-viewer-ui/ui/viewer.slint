@@ -295,13 +295,13 @@ export component ViewerWindow inherits Window {
                     drag-ended => { root.position-drag-ended(true); } }
             }
             if root.compact && (root.image-mode || root.source-mode): Text {
-                height: max(18px, root.status-size + 6px); text: root.status; color: root.foreground;
+                height: max(18px, root.status-size + 6px); text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: root.foreground;
                 font-size: root.status-size; overflow: elide; vertical-alignment: center;
             }
             HorizontalLayout {
                 height: root.stacked-image-footer
                     ? 2 * root.control-height + 3px : root.control-height;
-                Text { visible: !(root.image-mode || root.source-mode) || !root.compact; min-width: 0px; max-width: (root.image-mode || root.source-mode) && root.compact ? 0px : 1000000px; text: root.status; color: root.foreground; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                Text { visible: !(root.image-mode || root.source-mode) || !root.compact; min-width: 0px; max-width: (root.image-mode || root.source-mode) && root.compact ? 0px : 1000000px; text: root.position-pending ? "Loading requested position… · " + root.status : root.status; color: root.foreground; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                 if root.image-mode: GridLayout {
                     spacing: 3px;
                     // Long PDF page counts must not crowd the zoom actions at

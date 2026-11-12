@@ -18,6 +18,7 @@ pub(super) struct Camera {
     retry_pending: bool,
     resume: bool,
     seeking: bool,
+    pending_seek: Option<[f64; 2]>,
 }
 
 impl Camera {
@@ -33,20 +34,28 @@ impl Camera {
             .info
             .as_ref()
             .is_none_or(|old| old.surface != info.surface);
-        let mut origin = if changed {
-            info.origin
-        } else {
-            clamp(info, self.origin)
-        };
+        let desired = self.pending_seek.unwrap_or(self.origin);
+        // An older pan reply may already cover the newest target. Reuse those
+        // pixels at the latest coordinates rather than displaying its old origin
+        // or starving a continuous drag while newer requests keep arriving.
+        let seek_ack = !changed
+            && self.pending_seek.is_some()
+            && info.pan_sequence <= self.sequence
+            && covered(info, desired)
+            && clamp(info, desired) == desired;
         let exact_ack = !changed
             && info.settled
             && !self.motion.active()
             && info.pan_sequence == self.sequence
-            && self.last_request == Some((self.origin, true))
-            && (0..2).all(|axis| (info.origin[axis] - self.origin[axis]).abs() < 0.25);
-        if exact_ack {
-            origin = info.origin;
-        }
+            && self.last_request == Some((desired, true))
+            && (0..2).all(|axis| (info.origin[axis] - desired[axis]).abs() < 0.25);
+        let origin = if changed || exact_ack {
+            info.origin
+        } else if seek_ack {
+            desired
+        } else {
+            clamp(info, self.origin)
+        };
         if (!changed && self.suspended) || !covered(info, origin) {
             return false;
         }
@@ -69,6 +78,9 @@ impl Camera {
                 })
             });
         }
+        if seek_ack || exact_ack {
+            self.pending_seek = None;
+        }
         if exact_ack {
             self.last_request = Some((origin, true));
         }
@@ -85,7 +97,12 @@ impl Camera {
         (!self.suspended).then_some(self.info.as_ref()).flatten()
     }
 
-    /// Invert this frame's normalized mapping only where existing pixels cover it.
+    pub fn pending_seek(&self) -> Option<[f64; 2]> {
+        self.pending_seek
+    }
+
+    /// Invert this frame's mapping within known bounds. Uncovered complete-page
+    /// intent waits for matching pixels; a partial page never invents coordinates.
     pub fn seek(
         &mut self,
         axis: usize,
@@ -103,15 +120,15 @@ impl Camera {
         let Some(info) = self.info() else {
             return false;
         };
-        let mut target = self.origin;
+        let mut target = self.pending_seek.unwrap_or(self.origin);
         target[axis] = if axis == 1
             && let Some(map) = &info.scroll_map
         {
             let Some(origin) = map.inverse_near(
                 position,
                 f64::from(info.viewport[1]),
-                info.coverage_min[1].max(info.limit_min[1].unwrap_or(f64::NEG_INFINITY)),
-                info.coverage_max[1].min(info.limit_max[1].unwrap_or(f64::INFINITY)),
+                seek_bounds(info, 1).0,
+                seek_bounds(info, 1).1,
                 self.origin[1],
             ) else {
                 return false;
@@ -124,14 +141,26 @@ impl Camera {
             }
             info.origin[axis] + (position - frame_position) / slope
         };
-        if !target[axis].is_finite() || !covered(info, target) || clamp(info, target) != target {
+        if !target[axis].is_finite()
+            || clamp(info, target) != target
+            || (0..2).any(|axis| {
+                let (low, high) = seek_bounds(info, axis);
+                target[axis] < low || target[axis] > high
+            })
+        {
             return false;
         }
+        let target_covered = covered(info, target);
         self.motion.cancel();
         self.resume = false;
         self.direct = true;
         self.seeking = dragging;
-        self.origin = target;
+        if target_covered {
+            self.origin = target;
+            self.pending_seek = None;
+        } else {
+            self.pending_seek = Some(target);
+        }
         self.retry_pending = self.last_request != Some((target, !dragging));
         true
     }
@@ -140,6 +169,7 @@ impl Camera {
             return false;
         }
         self.motion.cancel();
+        self.pending_seek = None;
         self.resume = false;
         self.seeking = true;
         self.retry_pending = self.last_request != Some((self.origin, false));
@@ -150,8 +180,8 @@ impl Camera {
             return false;
         }
         self.seeking = false;
-        self.retry_pending =
-            self.info().is_some() && self.last_request != Some((self.origin, true));
+        self.retry_pending = self.info().is_some()
+            && self.last_request != Some((self.pending_seek.unwrap_or(self.origin), true));
         true
     }
     pub fn push(&mut self, x: f32, y: f32, now: Duration, direct: bool) -> bool {
@@ -162,6 +192,7 @@ impl Camera {
             self.motion.cancel();
         }
         self.direct = direct;
+        self.pending_seek = None;
         self.seeking = false;
         self.resume = false;
         if direct {
@@ -235,7 +266,7 @@ impl Camera {
                 // Keep overlap even when a byte-limited page has very little spare height.
                 let lookahead =
                     PREFETCH.min((info.coverage_max[axis] - info.coverage_min[axis]) / 2.0);
-                self.origin[axis]
+                self.pending_seek.unwrap_or(self.origin)[axis]
                     + (self.motion.pending()[axis] * self.scale[axis]).clamp(-lookahead, lookahead)
             }),
         );
@@ -257,6 +288,7 @@ impl Camera {
     }
     pub fn cancel(&mut self) {
         self.motion.cancel();
+        self.pending_seek = None;
         self.seeking = false;
         self.retry_pending =
             self.info().is_some() && self.last_request != Some((self.origin, true));
@@ -271,6 +303,21 @@ impl Camera {
     pub fn suspend(&mut self) {
         self.cancel();
         self.suspended = true;
+    }
+}
+
+/// Expand only a complete page with both document ends known. A partial page
+/// can change its horizontal bounds on refill too, so both axes keep the old
+/// covered-only rule until the complete mapping is available.
+fn seek_bounds(info: &ViewerRasterInfo, axis: usize) -> (f64, f64) {
+    match (info.limit_min[axis], info.limit_max[axis]) {
+        (Some(low), Some(high)) if info.limit_min[1].is_some() && info.limit_max[1].is_some() => {
+            (low, high)
+        }
+        _ => (
+            info.coverage_min[axis].max(info.limit_min[axis].unwrap_or(f64::NEG_INFINITY)),
+            info.coverage_max[axis].min(info.limit_max[axis].unwrap_or(f64::INFINITY)),
+        ),
     }
 }
 

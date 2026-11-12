@@ -581,3 +581,80 @@ fn source_map_refill_keeps_thumb_geometry_and_allows_immediate_reverse_motion() 
     assert!((open.window.get_position() - old.0).abs() < 1e-7);
     manager.close_all();
 }
+
+#[test]
+fn complete_page_drag_keeps_retained_authority_and_marks_old_pixels_until_covered() {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    let received = scrollbar_capture(&open);
+    let ViewerOutput::Frame(mut original) = frame(10) else {
+        unreachable!()
+    };
+    original.raster.as_mut().unwrap().limit_max = [Some(2000.0); 2];
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(original.clone())],
+    );
+    let uploads = open.window.get_raster_upload_count();
+    let displayed = open.window.get_displayed_position();
+    let offset = open.window.get_raster_offset_y();
+    open.window.invoke_position_drag_began(false);
+    open.window.invoke_drag_seek(false, 0.3);
+    assert!(open.window.get_position_pending());
+    assert!((open.window.get_position() - 0.3).abs() < 0.00001);
+    assert_eq!(open.window.get_displayed_position(), displayed);
+    assert_eq!(open.window.get_raster_offset_y(), offset);
+    assert_eq!(open.window.get_raster_upload_count(), uploads);
+    assert!(!open.text_position.borrow().has_pending());
+    let (sequence, origin) = received
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|input| match input {
+            ViewerInput::Raster {
+                input:
+                    ViewerRasterInput::PanTo {
+                        sequence,
+                        origin,
+                        settled: false,
+                    },
+                ..
+            } => Some((*sequence, *origin)),
+            _ => None,
+        })
+        .expect("retained pending camera request");
+    assert!((origin[1] - 1200.0).abs() < 0.001);
+    original.revision = 11;
+    original.position = 0.3;
+    let info = original.raster.as_mut().unwrap();
+    info.pixel_id += 1;
+    info.pan_sequence = sequence;
+    info.origin = origin;
+    info.raster_origin[1] = 1000.0;
+    info.coverage_min[1] = 1000.0;
+    info.coverage_max[1] = 1360.0;
+    info.settled = false;
+    present_outputs(
+        &open,
+        &service,
+        &|_| {},
+        vec![ViewerOutput::Frame(original)],
+    );
+    assert!(!open.window.get_position_pending());
+    assert!((open.window.get_displayed_position() - 0.3).abs() < 0.00001);
+    open.window.invoke_drag_seek(false, 0.305);
+    assert!((open.retained_raster.borrow().camera.origin[1] - 1250.0).abs() < 0.001);
+    assert_eq!(open.window.get_raster_upload_count(), uploads + 1);
+    open.window.invoke_position_drag_ended(false);
+    assert!(
+        received
+            .borrow()
+            .iter()
+            .all(|input| matches!(input, ViewerInput::Raster { .. }))
+    );
+    assert!(received.borrow().iter().any(|input| matches!(input,
+        ViewerInput::Raster { input: ViewerRasterInput::PanTo { origin, settled: true, .. }, .. }
+        if (origin[1] - 1250.0).abs() < 0.001)));
+    manager.close_all();
+}

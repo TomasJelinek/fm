@@ -442,3 +442,236 @@ fn unchanged_thumb_seek_on_generated_visual_space_preserves_the_camera() {
     assert!(camera.seek(1, f64::from(0.2_f32), 0.2, true));
     assert_eq!(camera.origin, frame.origin);
 }
+
+#[test]
+fn complete_page_seek_waits_for_coverage_without_resetting_its_surface() {
+    let mut camera = Camera::default();
+    let mut full = info();
+    full.limit_max[1] = Some(2000.0);
+    full.scroll_per_pixel[1] = 0.0005;
+    assert!(camera.receive(&full, [2.25; 2]));
+    assert!(
+        camera.seek(1, 0.6, 0.2, true),
+        "known complete-page intent must stay retained"
+    );
+    assert_eq!(
+        camera.origin, full.origin,
+        "uncovered pixels cannot be displayed"
+    );
+    let (surface, sequence, target, settled) = camera.request().unwrap();
+    assert_eq!(surface, full.surface);
+    assert!((target[1] - 1200.0).abs() < 1e-9);
+    assert!(!settled);
+    full.origin = target;
+    full.raster_origin[1] = 944.0;
+    full.coverage_min[1] = 944.0;
+    full.coverage_max[1] = 1456.0;
+    full.pixel_id += 1;
+    full.pan_sequence = sequence;
+    full.settled = false;
+    assert!(camera.receive(&full, [2.25; 2]));
+    assert_eq!(camera.origin, target);
+    assert!(camera.seek(1, 0.62, 0.6, true));
+    assert!((camera.origin[1] - 1240.0).abs() < 1e-9);
+    assert_eq!(
+        camera.info().unwrap().pixel_id,
+        full.pixel_id,
+        "covered follow-up reuses pixels"
+    );
+}
+
+#[test]
+fn pending_complete_page_seek_rejects_superseded_coverage_and_settles_latest_target() {
+    let mut camera = Camera::default();
+    let mut full = info();
+    full.limit_max[1] = Some(2000.0);
+    full.scroll_per_pixel[1] = 0.0005;
+    assert!(camera.receive(&full, [1.0; 2]));
+    assert!(camera.seek(1, 0.6, 0.2, true));
+    let first = camera.request().unwrap();
+    assert!(camera.seek(1, 0.8, 0.2, true));
+    let latest = camera.request().unwrap();
+    full.origin = first.2;
+    full.raster_origin[1] = 900.0;
+    full.coverage_min[1] = 900.0;
+    full.coverage_max[1] = 1456.0;
+    full.pixel_id += 1;
+    full.pan_sequence = first.1;
+    assert!(
+        !camera.receive(&full, [1.0; 2]),
+        "stale acknowledgment cannot commit a newer intent"
+    );
+    assert_eq!(camera.origin[1], 400.0);
+    assert!(camera.end_seek());
+    let final_request = camera.request().unwrap();
+    assert_eq!(final_request.2, latest.2);
+    assert!(
+        final_request.3,
+        "release requests the exact latest phase, not old displayed pixels"
+    );
+    full.origin = final_request.2;
+    full.coverage_max[1] = 1800.0;
+    full.pan_sequence = final_request.1;
+    full.settled = true;
+    assert!(camera.receive(&full, [1.0; 2]));
+    assert_eq!(camera.origin, final_request.2);
+    assert!(camera.request().is_none());
+}
+
+#[test]
+fn cancelled_pending_seek_cannot_jump_to_a_late_frame_and_unknown_page_stays_fallback() {
+    let mut camera = Camera::default();
+    let mut full = info();
+    assert!(camera.receive(&full, [1.0; 2]));
+    assert!(
+        !camera.seek(0, 0.5, 0.05, true),
+        "a partial page may change width on refill"
+    );
+    assert!(
+        !camera.seek(1, 0.6, 0.2, true),
+        "partial-page mapping stays bounded by covered pixels"
+    );
+    full.limit_max[1] = Some(2000.0);
+    full.scroll_per_pixel[1] = 0.0005;
+    assert!(camera.receive(&full, [1.0; 2]));
+    assert!(camera.seek(1, 0.6, 0.2, true));
+    let pending = camera.request().unwrap();
+    camera.cancel();
+    let cancel = camera.request().unwrap();
+    assert_eq!(cancel.2, camera.origin);
+    assert!(cancel.3);
+    full.origin = pending.2;
+    full.raster_origin[1] = 944.0;
+    full.coverage_min[1] = 944.0;
+    full.coverage_max[1] = 1456.0;
+    full.pan_sequence = pending.1;
+    assert!(!camera.receive(&full, [1.0; 2]));
+    assert_eq!(camera.origin[1], 400.0);
+}
+
+#[test]
+fn older_complete_page_reply_can_cover_the_latest_drag_without_presenting_its_old_origin() {
+    let mut camera = Camera::default();
+    let mut full = info();
+    full.limit_max[1] = Some(2000.0);
+    full.scroll_per_pixel[1] = 0.0005;
+    camera.receive(&full, [1.0; 2]);
+    assert!(camera.seek(1, 0.6, 0.2, true));
+    let first = camera.request().unwrap();
+    assert!(camera.seek(1, 0.65, 0.2, true));
+    let latest = camera.request().unwrap();
+    full.origin = first.2;
+    full.raster_origin[1] = 944.0;
+    full.coverage_min[1] = 944.0;
+    full.coverage_max[1] = 1456.0;
+    full.pan_sequence = first.1;
+    full.settled = false;
+    assert!(camera.receive(&full, [1.0; 2]));
+    assert_eq!(
+        camera.origin, latest.2,
+        "never flash the superseded requested origin"
+    );
+    assert!(camera.pending_seek().is_none());
+}
+
+#[test]
+fn mapped_complete_page_and_other_axis_keep_only_the_latest_pending_coordinates() {
+    use midnight_core::{ViewerScrollAnchor, ViewerScrollMap};
+    let mut camera = Camera::default();
+    let mut full = info();
+    full.limit_max[1] = Some(2000.0);
+    full.scroll_map = Some(
+        ViewerScrollMap::new(
+            [(0.0, 0.0), (400.0, 0.1), (650.0, 0.3), (2600.0, 1.0)]
+                .into_iter()
+                .map(|(y, fraction)| ViewerScrollAnchor { y, fraction })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    camera.receive(&full, [2.25; 2]);
+    let position = full
+        .scroll_map
+        .as_ref()
+        .unwrap()
+        .metrics(1200.0, 600.0)
+        .unwrap()
+        .0;
+    assert!(camera.seek(1, position, 0.99, true));
+    assert!(camera.seek(0, 0.5, 0.05, true));
+    let request = camera.request().unwrap();
+    assert!((request.2[0] - 1000.0).abs() < 1e-9);
+    assert!((request.2[1] - 1200.0).abs() < 1e-9);
+    assert_eq!(camera.origin, full.origin);
+    camera.push(-10.0, -20.0, Duration::ZERO, true);
+    camera.tick(Duration::ZERO);
+    assert_eq!(
+        camera.origin,
+        [77.5, 355.0],
+        "new wheel input starts at the displayed pixels"
+    );
+    assert!(camera.pending_seek().is_none());
+}
+
+#[test]
+fn pending_two_axis_seek_cancels_and_a_new_surface_cannot_inherit_the_old_target() {
+    let mut camera = Camera::default();
+    let mut full = info();
+    full.limit_max[1] = Some(2000.0);
+    full.scroll_per_pixel[1] = 0.0005;
+    camera.receive(&full, [1.0; 2]);
+    for change_surface in [false, true] {
+        assert!(camera.seek(1, 0.6, 0.2, true));
+        assert!(camera.seek(0, 0.5, 0.05, true));
+        let pending = camera.request().unwrap();
+        assert!((pending.2[0] - 1000.0).abs() < 1e-9);
+        assert!((pending.2[1] - 1200.0).abs() < 1e-9);
+        if change_surface {
+            full.surface = ViewerSurfaceId(8);
+            full.origin = [5.0, 10.0];
+            full.raster_origin = [0.0; 2];
+            full.coverage_min = [0.0; 2];
+            assert!(camera.receive(&full, [1.0; 2]));
+            assert_eq!(camera.origin, [5.0, 10.0]);
+            assert!(camera.request().is_none());
+        } else {
+            camera.cancel();
+            let cancelled = camera.request().unwrap();
+            assert_eq!(cancelled.2, [100.0, 400.0]);
+            assert!(cancelled.3);
+        }
+        assert!(camera.pending_seek().is_none());
+        assert!(!camera.end_seek());
+    }
+}
+
+#[test]
+fn rounded_final_pending_seek_clears_loading_at_either_coverage_boundary() {
+    for rounding in [-0.125, 0.125] {
+        let mut camera = Camera::default();
+        let mut ack = info();
+        ack.limit_max[1] = Some(2000.0);
+        ack.scroll_per_pixel[1] = 0.0005;
+        assert!(camera.receive(&ack, [1.0; 2]));
+        assert!(camera.seek(1, 0.6, 0.2, false));
+        let (_, sequence, target, settled) = camera.request().unwrap();
+        assert!(settled);
+        assert!(camera.pending_seek().is_some());
+        ack.origin = [target[0], target[1] + rounding];
+        ack.coverage_min[1] = ack.origin[1] - if rounding < 0.0 { 512.0 } else { 0.0 };
+        ack.coverage_max[1] = ack.origin[1] + if rounding > 0.0 { 512.0 } else { 0.0 };
+        ack.raster_origin[1] = ack.coverage_min[1];
+        ack.pan_sequence = sequence;
+        ack.pixel_id += 1;
+        assert!(camera.receive(&ack, [1.0; 2]));
+        assert_eq!(camera.origin, ack.origin);
+        assert!(
+            camera.pending_seek().is_none(),
+            "settled pixels must clear loading"
+        );
+        assert!(
+            camera.request().is_none(),
+            "rounding must not resend the seek"
+        );
+    }
+}

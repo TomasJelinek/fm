@@ -134,12 +134,27 @@ pub(super) fn present(open: &OpenWindow) {
             positions[1] = position;
             open.window.set_vertical_extent(extent as f32);
         }
+        open.window.set_displayed_position(positions[1] as f32);
         if !open.text_position.borrow().has_pending() {
+            let pending = state.camera.pending_seek();
+            if let Some(target) = pending {
+                positions = std::array::from_fn(|axis| {
+                    (state.positions[axis]
+                        + (target[axis] - info.origin[axis]) * info.scroll_per_pixel[axis])
+                        .clamp(0.0, 1.0)
+                });
+                if let Some((position, _)) = info
+                    .scroll_map
+                    .as_ref()
+                    .and_then(|map| map.metrics(target[1], f64::from(info.viewport[1])))
+                {
+                    positions[1] = position;
+                }
+            }
             open.window.set_position(positions[1] as f32);
             open.window.set_horizontal_position(positions[0] as f32);
-            open.window.set_position_pending(false);
+            open.window.set_position_pending(pending.is_some());
         }
-        open.window.set_displayed_position(positions[1] as f32);
     }
     request(open);
 }
@@ -169,8 +184,17 @@ pub(super) fn seek(open: &OpenWindow, horizontal: bool, position: f64, dragging:
     {
         return false;
     }
-    // This absolute intent owns motion even when its target requires fallback.
-    raster_motion::cancel(open);
+    // The first absolute intent owns wheel motion. Subsequent coordinates must
+    // retain an already pending other-axis seek until matching pixels arrive.
+    if open
+        .retained_raster
+        .borrow()
+        .camera
+        .pending_seek()
+        .is_none()
+    {
+        raster_motion::cancel(open);
+    }
     let accepted = {
         let mut state = open.retained_raster.borrow_mut();
         let axis = usize::from(!horizontal);
