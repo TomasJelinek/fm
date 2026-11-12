@@ -1,5 +1,7 @@
 //! Streaming diagnostic records with retained, immutable text snapshots.
-//! All construction, recording, reads and final destruction belong on backend workers.
+//! Construction, recording and reads belong on backend workers; retained owners retire native
+//! storage independently of the final caller or its executor lifetime.
+use crate::report_arena::{ReportArena, Retained, Retention};
 use midnight_core::{
     Cancellation, FsError, GeneratedTextSource, SizeWarningReport, SizeWarningSource,
     SizeWarningSummary,
@@ -43,7 +45,8 @@ struct Boundary {
 struct State {
     directory: PathBuf,
     title: &'static str,
-    storage: Option<Box<dyn Storage>>,
+    storage: Option<Retained<Mutex<Box<dyn Storage>>>>,
+    arena: ReportArena,
     failure: Option<io::Error>,
     boundary: Boundary,
     first_issues: Vec<Weak<OnceLock<Arc<str>>>>,
@@ -78,17 +81,21 @@ impl fmt::Debug for ReportRange {
 }
 
 impl ReportLog {
-    pub(crate) fn for_scan() -> Self {
-        Self::new(std::env::temp_dir().join("MidnightExplorer-size-warnings"))
+    pub(crate) fn for_scan(arena: &ReportArena) -> Self {
+        Self::new(
+            arena,
+            std::env::temp_dir().join("MidnightExplorer-size-warnings"),
+        )
     }
-    pub(crate) fn new(directory: PathBuf) -> Self {
-        Self::with_title(directory, DEFAULT_TITLE)
+    pub(crate) fn new(arena: &ReportArena, directory: PathBuf) -> Self {
+        Self::with_title(arena, directory, DEFAULT_TITLE)
     }
-    pub(crate) fn with_title(directory: PathBuf, title: &'static str) -> Self {
+    pub(crate) fn with_title(arena: &ReportArena, directory: PathBuf, title: &'static str) -> Self {
         Self(Arc::new(Mutex::new(State {
             directory,
             title,
             storage: None,
+            arena: arena.clone(),
             failure: None,
             boundary: Boundary::default(),
             first_issues: Vec::new(),
@@ -139,10 +146,13 @@ impl ReportLog {
         }
         let result = (|| {
             if state.storage.is_none() {
+                let reservation = state.arena.reserve()?;
                 let directory = PrivateSpoolDirectory::open(&state.directory)?;
-                state.storage = Some(Box::new(directory.create_append_only()?));
+                let storage: Box<dyn Storage> = Box::new(directory.create_append_only()?);
+                state.storage = Some(reservation.retain(Mutex::new(storage)));
             }
-            let storage = state.storage.as_mut().expect("created private report");
+            let storage = state.storage.as_ref().expect("created private report");
+            let mut storage = storage.lock().unwrap_or_else(|error| error.into_inner());
             let mut writer = RecordWriter::new(storage.as_mut());
             write!(
                 writer,
@@ -295,11 +305,16 @@ fn snapshot_at(
     );
     let body = if boundary.bytes > mark.start.bytes {
         let storage = state.storage.as_ref().expect("committed report storage");
-        Some(
-            storage
-                .prefix(mark.start.bytes, boundary.bytes)
-                .map_err(failure)?,
-        )
+        let retention = storage.retention();
+        let prefix = storage
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .prefix(mark.start.bytes, boundary.bytes)
+            .map_err(failure)?;
+        Some(Body {
+            prefix,
+            _retention: retention,
+        })
     } else {
         None
     };
@@ -410,9 +425,14 @@ impl fmt::Write for Escaping<'_, '_> {
     }
 }
 
+// The raw prefix must be released before the token can queue the actual file owner.
+struct Body {
+    prefix: SpoolPrefix,
+    _retention: Retention,
+}
 struct Text {
     header: String,
-    body: Option<SpoolPrefix>,
+    body: Option<Body>,
     footer: String,
 }
 impl fmt::Debug for Text {
@@ -425,7 +445,7 @@ impl fmt::Debug for Text {
 impl GeneratedTextSource for Text {
     fn length(&self) -> u64 {
         self.header.len() as u64
-            + self.body.as_ref().map_or(0, SpoolPrefix::length)
+            + self.body.as_ref().map_or(0, |body| body.prefix.length())
             + self.footer.len() as u64
     }
     fn read_at(&self, mut offset: u64, output: &mut [u8]) -> io::Result<usize> {
@@ -437,10 +457,10 @@ impl GeneratedTextSource for Text {
         }
         offset -= self.header.len() as u64;
         if let Some(body) = &self.body {
-            if offset < body.length() {
-                return body.read_at(offset, output);
+            if offset < body.prefix.length() {
+                return body.prefix.read_at(offset, output);
             }
-            offset -= body.length();
+            offset -= body.prefix.length();
         }
         Ok(copy_text(&self.footer, offset, output))
     }
@@ -468,3 +488,7 @@ fn failure(error: io::Error) -> FsError {
 #[cfg(test)]
 #[path = "size_warnings_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "size_warning_retirement_tests.rs"]
+mod report_ownership_tests;

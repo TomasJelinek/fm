@@ -28,6 +28,7 @@ fn scope(files: &Arc<Files>, path: &str) -> (Session, tree::TreeScope) {
         WorkerBudget::new(Arc::new(tokio::sync::Semaphore::new(1))),
         ProjectionOptions::default(),
         &cancel,
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let view = session.projection().clone();

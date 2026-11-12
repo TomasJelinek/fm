@@ -63,6 +63,7 @@ impl Presenter {
     }
     pub fn clear_thumbnail_images(&mut self) {
         self.thumbnails.clear();
+        self.command_toolbar.native.borrow_mut().invalidate();
         self.command_toolbar
             .image_revision
             .set(self.command_toolbar.image_revision.get().wrapping_add(1));

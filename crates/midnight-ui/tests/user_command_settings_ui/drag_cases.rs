@@ -440,10 +440,11 @@ fn long_form_wheel_scroll_reveals_apply_for_a_real_pointer_click() {
         apply.1 >= clip.1 && apply.3 <= clip.3,
         "wheel scrolling must reveal the last form action"
     );
-    // The pinned Fluent horizontal scrollbar overlays 14 logical pixels.
+    // Horizontal scrolling is disabled. The pinned Fluent vertical scrollbar
+    // overlays the rightmost 14 logical pixels of the reported viewport.
     assert!(
-        apply.3 <= clip.3 - 14.0,
-        "the form action must also clear the scrollbar overlay"
+        apply.0 >= clip.0 && apply.2 <= clip.2 - 14.0,
+        "the form action must clear the vertical scrollbar: action={apply:?}, viewport={clip:?}"
     );
     ui::click_popup(&h.ui.window, "OK", AccessibleRole::Button);
     slint::platform::update_timers_and_animations();

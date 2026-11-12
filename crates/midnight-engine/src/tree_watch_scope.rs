@@ -25,7 +25,7 @@ impl Session {
     ) -> midnight_core::TreeDiagnostic {
         match &self.watch_failure {
             Some(failure) if &failure.error == error => failure.diagnostic.clone(),
-            _ => crate::tree_diagnostics::diagnostic(error),
+            _ => crate::tree_diagnostics::diagnostic(&self.reports, error),
         }
     }
 
@@ -67,7 +67,7 @@ impl Session {
         self.watch_failure = result.as_ref().err().map(|error| Failure {
             listings,
             error: error.clone(),
-            diagnostic: crate::tree_diagnostics::diagnostic(error),
+            diagnostic: crate::tree_diagnostics::diagnostic(&self.reports, error),
             retry_at: Instant::now() + Duration::from_secs(15),
         });
         result

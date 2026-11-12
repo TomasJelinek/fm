@@ -38,7 +38,19 @@ use windows_sys::Win32::{
     },
 };
 
+#[path = "icons_executable.rs"]
+mod executable;
+
 impl IconService for WindowsFileSystem {
+    fn load_executable_icon(
+        &self,
+        path: &Path,
+        size: u16,
+        cancel: &midnight_core::Cancellation,
+    ) -> Result<Option<IconPixels>, FsError> {
+        Ok(executable::load(path, size, cancel))
+    }
+
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError> {
         if !(1..=64).contains(&key.size) {
             return Ok(None);

@@ -115,6 +115,7 @@ fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePerm
         budget.clone(),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let view = session.projection().clone();
@@ -130,8 +131,11 @@ fn fixture_with_gate(hold_mutation: bool) -> (Fixture, Option<OwnedSemaphorePerm
     let mut worker = Worker::new(
         lane.clone(),
         crate::test_snapshots(Default::default()),
-        native,
-        None,
+        Services {
+            native,
+            locale: None,
+            reports: crate::ReportArena::testing(),
+        },
         budget,
         Outbox {
             sender,

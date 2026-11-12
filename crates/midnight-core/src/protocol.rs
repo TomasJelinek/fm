@@ -42,6 +42,10 @@ pub struct SelectedFiles {
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    SetCommandIconView {
+        generation: u64,
+        targets: Vec<crate::CommandIconTarget>,
+    },
     EnqueueCapturedTransfer(crate::CapturedTransferRequest),
     RunFileList(Box<crate::FileListRequest>),
     ConfirmFileList {
@@ -523,6 +527,11 @@ pub enum Event {
         network_position: usize,
     },
     DesktopContextFailed(FsError),
+    CommandIconLoaded {
+        generation: u64,
+        identity: String,
+        pixels: Arc<IconPixels>,
+    },
     IconLoaded {
         key: IconKey,
         pixels: Arc<IconPixels>,

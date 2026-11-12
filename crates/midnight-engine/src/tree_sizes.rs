@@ -33,6 +33,7 @@ struct Active {
 }
 
 pub(crate) struct State {
+    reports: crate::ReportArena,
     filesystem: Arc<dyn FileSystem>,
     budget: Arc<IoBudget>,
     wake: Arc<Notify>,
@@ -47,8 +48,13 @@ pub(crate) struct State {
     enabled: bool,
 }
 impl State {
-    pub fn new(filesystem: Arc<dyn FileSystem>, wake: Arc<Notify>) -> Self {
+    pub fn new(
+        filesystem: Arc<dyn FileSystem>,
+        wake: Arc<Notify>,
+        reports: crate::ReportArena,
+    ) -> Self {
         Self {
+            reports,
             filesystem,
             wake,
             budget: Arc::new(IoBudget::new()),
@@ -242,6 +248,7 @@ impl State {
                 cancel: pending.cancel.clone(),
             });
             let filesystem = self.filesystem.clone();
+            let reports = self.reports.clone();
             let budget = self.budget.clone();
             let wake = self.wake.clone();
             tokio::task::spawn_blocking(move || {
@@ -252,6 +259,7 @@ impl State {
                     &pending.cancel,
                     &progress,
                     &wake,
+                    &reports,
                 );
                 // Captured provider leases retire here before completion admission.
                 drop(pending);
@@ -310,6 +318,7 @@ fn scan(
     cancel: &Cancellation,
     progress: &Mutex<Progress>,
     wake: &Notify,
+    reports: &crate::ReportArena,
 ) {
     let mut native = Vec::new();
     for occurrence in &captured.targets {
@@ -360,9 +369,11 @@ fn scan(
                     }
                     let ok = crate::archive_sizes::scan::compute_checked(
                         mount.as_ref(),
-                        &parent_address,
-                        &ancestors,
-                        &[],
+                        crate::archive_sizes::scan::ScanScope {
+                            address: &parent_address,
+                            ancestors: &ancestors,
+                            reserved: &[],
+                        },
                         std::slice::from_ref(root),
                         cancel,
                         &mut |id, size| {
@@ -377,6 +388,7 @@ fn scan(
                             }
                             !cancel.is_cancelled()
                         },
+                        reports,
                     )
                     .map_err(|error| ProviderError::Failed(error.to_string()))?;
                     if ok {
@@ -397,6 +409,7 @@ fn scan(
                         latest,
                         format_args!("Captured archive address {:?}", target.location.address),
                         &error.to_string(),
+                        reports,
                     );
                 }
             }
@@ -411,6 +424,7 @@ fn scan(
                         occurrence.row, captured.view.stamp
                     ),
                     &error.to_string(),
+                    reports,
                 );
             }
             Err(_) => {}
@@ -431,6 +445,7 @@ fn scan(
                 !cancel.is_cancelled()
             },
             budget,
+            reports,
         );
     }
 }
@@ -441,11 +456,12 @@ fn partial(
     mut size: FolderSize,
     location: impl std::fmt::Display,
     reason: &str,
+    reports: &crate::ReportArena,
 ) {
     // Build storage and diagnostic authority before taking the progress mutex.
     // Existing scanner diagnostics already describe the failed partial result.
     if size.errors == 0 {
-        let log = crate::size_warnings::ReportLog::for_scan();
+        let log = crate::size_warnings::ReportLog::for_scan(reports);
         let range = log.mark().report();
         log.record(
             location,

@@ -35,7 +35,12 @@ fn expand(tree: &mut DirectoryTree, branch: crate::providers::tree::BranchId) {
 fn tree_entry_targets_keep_nested_paths_with_repeated_listing_ids_and_names() {
     let root = path().join("東京 Žluťoučký");
     let (_registry, location) = mount(&root);
-    let mut tree = DirectoryTree::new(location, TreeLimits::default()).unwrap();
+    let mut tree = DirectoryTree::new(
+        location,
+        TreeLimits::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap();
     let root_id = tree.root();
     expand(&mut tree, root_id);
     let folder = tree
@@ -57,7 +62,12 @@ fn tree_entry_targets_keep_nested_paths_with_repeated_listing_ids_and_names() {
 fn container_source_and_entered_root_are_distinct_even_after_container_revocation() {
     let root = path().join("source");
     let (_registry, location) = mount(&root);
-    let mut tree = DirectoryTree::new(location, TreeLimits::default()).unwrap();
+    let mut tree = DirectoryTree::new(
+        location,
+        TreeLimits::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap();
     let root_id = tree.root();
     expand(&mut tree, root_id);
     let file = tree
@@ -117,7 +127,12 @@ fn container_source_and_entered_root_are_distinct_even_after_container_revocatio
 #[test]
 fn hidden_root_and_collapsed_descendants_never_resolve_as_action_entries() {
     let (_registry, location) = mount(&path());
-    let mut tree = DirectoryTree::new(location, TreeLimits::default()).unwrap();
+    let mut tree = DirectoryTree::new(
+        location,
+        TreeLimits::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap();
     let root_id = tree.root();
     expand(&mut tree, root_id);
     assert!(matches!(
@@ -145,11 +160,21 @@ fn hidden_root_and_collapsed_descendants_never_resolve_as_action_entries() {
 #[test]
 fn foreign_and_cancelled_tree_entry_targets_are_rejected() {
     let (_registry, location) = mount(&path());
-    let mut tree = DirectoryTree::new(location.clone(), TreeLimits::default()).unwrap();
+    let mut tree = DirectoryTree::new(
+        location.clone(),
+        TreeLimits::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap();
     let root_id = tree.root();
     expand(&mut tree, root_id);
     let entry = tree.rows().remove(0);
-    let other_tree = DirectoryTree::new(location, TreeLimits::default()).unwrap();
+    let other_tree = DirectoryTree::new(
+        location,
+        TreeLimits::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap();
     assert!(matches!(
         other_tree.resolve_entry_target(entry.id, &Cancellation::default()),
         Err(ProviderError::StaleReference)
@@ -165,7 +190,12 @@ fn foreign_and_cancelled_tree_entry_targets_are_rejected() {
 #[test]
 fn retained_descendant_target_rejects_loss_of_its_enclosing_provider() {
     let (registry, location) = mount(&path().join("source"));
-    let mut tree = DirectoryTree::new(location, TreeLimits::default()).unwrap();
+    let mut tree = DirectoryTree::new(
+        location,
+        TreeLimits::default(),
+        crate::ReportArena::testing(),
+    )
+    .unwrap();
     let root_id = tree.root();
     expand(&mut tree, root_id);
     let file = tree

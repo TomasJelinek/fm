@@ -83,7 +83,9 @@ fn archive_capture_is_deferred_and_never_uses_a_display_or_member_native_path() 
             StorageKind::LocalSsd
         }),
     };
-    let prepared = factory.target(&target(mount.clone(), false), 10, 96);
+    let prepared = factory
+        .target(&target(mount.clone(), false), 10, 96)
+        .unwrap();
     assert_eq!(queries.load(Ordering::Relaxed), 0);
     assert_eq!(mount.calls.load(Ordering::Relaxed), 0);
     assert_eq!(prepared.extension, "png", "route by raw provider name");
@@ -101,7 +103,9 @@ fn archive_network_and_unknown_storage_require_explicit_opt_in() {
             native: Arc::new(|_, _| panic!("archive native fallback")),
             storage: Arc::new(move |_| kind),
         };
-        let prepared = factory.target(&target(mount.clone(), false), 10, 96);
+        let prepared = factory
+            .target(&target(mount.clone(), false), 10, 96)
+            .unwrap();
         let result = (prepared.capture)(&AtomicBool::new(false));
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
         assert_eq!(
@@ -109,7 +113,9 @@ fn archive_network_and_unknown_storage_require_explicit_opt_in() {
             1,
             "only container validation"
         );
-        let prepared = factory.target(&target(mount.clone(), true), 11, 96);
+        let prepared = factory
+            .target(&target(mount.clone(), true), 11, 96)
+            .unwrap();
         assert!((prepared.capture)(&AtomicBool::new(false)).is_ok());
     }
 }
@@ -121,7 +127,9 @@ fn canceled_archive_capture_does_not_query_or_read_storage() {
         storage: Arc::new(|_| panic!("canceled query")),
     };
     let mount = Arc::new(Mount::default());
-    let prepared = factory.target(&target(mount.clone(), false), 10, 96);
+    let prepared = factory
+        .target(&target(mount.clone(), false), 10, 96)
+        .unwrap();
     let result = (prepared.capture)(&AtomicBool::new(true));
     assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Interrupted));
     assert_eq!(mount.calls.load(Ordering::Relaxed), 0);
@@ -149,7 +157,9 @@ fn cancellation_during_storage_query_prevents_member_capture() {
             StorageKind::LocalSsd
         }),
     };
-    let prepared = factory.target(&target(mount.clone(), false), 10, 96);
+    let prepared = factory
+        .target(&target(mount.clone(), false), 10, 96)
+        .unwrap();
     let result = (prepared.capture)(&cancelled);
     assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Interrupted));
     assert_eq!(
@@ -157,4 +167,23 @@ fn cancellation_during_storage_query_prevents_member_capture() {
         1,
         "only initial mount validation"
     );
+}
+
+#[test]
+fn executable_artwork_never_creates_an_image_decoder_capture() {
+    let factory = Factory {
+        native: Arc::new(|_, _| panic!("executable artwork reached image capture")),
+        storage: Arc::new(|_| panic!("executable artwork reached thumbnail storage lookup")),
+    };
+    let executable = ThumbnailTarget {
+        identity: "command-icon:1:editor".into(),
+        content: ThumbnailContent::ExecutableIcon(
+            std::env::current_dir().unwrap().join("editor.exe"),
+        ),
+        selected: false,
+        hovered: false,
+        confirmed_ssd: false,
+        edge: 64,
+    };
+    assert!(factory.target(&executable, 1, 64).is_none());
 }

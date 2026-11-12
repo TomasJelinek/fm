@@ -1,4 +1,5 @@
 //! Composition bridge: copy bounded visible identities, and present completed RGBA buffers.
+use midnight_core::Command;
 use midnight_thumbnail_host::scheduler::Work;
 use midnight_thumbnail_host::service::{Service, View};
 use midnight_ui::{MainWindow, Presenter, ThumbnailTarget};
@@ -71,12 +72,14 @@ pub(crate) fn install(
     window: &MainWindow,
     presenter: Rc<RefCell<Presenter>>,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
+    commands: tokio::sync::mpsc::Sender<Command>,
 ) -> Controller {
     install_service(
         window,
         presenter,
         Rc::new(Service::installed()),
         content::Factory::installed(filesystem),
+        Rc::new(move |command| commands.try_send(command).is_ok()),
     )
 }
 
@@ -85,6 +88,7 @@ fn install_service(
     presenter: Rc<RefCell<Presenter>>,
     service: Rc<Service>,
     capture: content::Factory,
+    send: Rc<dyn Fn(Command) -> bool>,
 ) -> Controller {
     let control = service.clone();
     let epoch = Rc::new(Cell::new(1u64));
@@ -131,6 +135,9 @@ fn install_service(
             ];
             let mut state = presenter.borrow_mut();
             let rows = state.thumbnail_targets(ranges, [left_hover.as_str(), right_hover.as_str()]);
+            // Native command artwork shares visible admission, but never enters an image decoder.
+            // Retry a rejected send on the next pulse, even when the visible rows are unchanged.
+            state.refresh_command_icons(&rows, send.as_ref());
             let scale = window.window().scale_factor();
             let mut refresh_all = false;
             let mut changed = Vec::new();
@@ -165,6 +172,12 @@ fn install_service(
                 let targets = rows
                     .iter()
                     .filter_map(|row| {
+                        if matches!(
+                            row.content,
+                            midnight_ui::ThumbnailContent::ExecutableIcon(_)
+                        ) {
+                            return None;
+                        }
                         let token = if let Some(token) = tokens.get(&row.identity) {
                             *token
                         } else {
@@ -173,7 +186,7 @@ fn install_service(
                             tokens.insert(row.identity.clone(), token);
                             token
                         };
-                        Some(capture.target(row, token, physical_edge(row, scale)))
+                        capture.target(row, token, physical_edge(row, scale))
                     })
                     .collect();
                 service.set_view(View {
@@ -273,6 +286,12 @@ fn retain_source_tokens(
 }
 
 fn physical_edge(target: &ThumbnailTarget, scale: f32) -> u32 {
+    if matches!(
+        target.content,
+        midnight_ui::ThumbnailContent::ExecutableIcon(_)
+    ) {
+        return 64;
+    }
     if target.identity.starts_with("command-icon:") {
         return 96;
     }
@@ -291,3 +310,7 @@ mod tests;
 #[cfg(test)]
 #[path = "thumbnails_delivery_tests.rs"]
 mod delivery_tests;
+
+#[cfg(test)]
+#[path = "command_icon_bridge_tests.rs"]
+mod command_icon_bridge_tests;

@@ -43,6 +43,7 @@ fn branch() -> (
         WorkerBudget::new(listing.clone()),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let view = session.projection().clone();

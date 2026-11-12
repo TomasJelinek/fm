@@ -20,7 +20,7 @@ destructor joins the cleanup thread. The application shutdown grace remains boun
 
 ## Capacity and ownership
 
-One engine reserves a domain with 303 payload slots and seven reusable waiter tokens:
+One engine reserves a domain with 304 payload slots and seven reusable waiter tokens:
 
 | Owners | Slots |
 | --- | ---: |
@@ -41,6 +41,7 @@ One engine reserves a domain with 303 payload slots and seven reusable waiter to
 | Dynamically discovered network provider | 1 |
 | Archive navigation: 132 retained mounts, two requests and one intake | 135 |
 | Archive-size pending state, one per pane | 2 |
+| Shared diagnostic report arena | 1 |
 
 Native drag admission uses Copy's existing 32 permits. It does not add another queue.
 A reservation is acquired before accepting owned payloads and remains occupied until
@@ -116,9 +117,34 @@ independent. A future provider retry/replacement would need its own admission de
 PathPicker Drop cancels its native chooser/reply token, including a full live output
 queue. Original service anchors cover both task layers in volume discovery/details,
 listing, storage/size queries, shell menus, locale/network settings and folder probes.
-This does not make newly created warning-report spools metadata-only or guarantee
-that every platform chooser can be forcibly interrupted. Folder-size/presence report
-egress remains a separately recorded audit boundary.
+Platform choosers still cannot always be forcibly interrupted. Newly created report
+spools use a separate shared arena rather than relying on original service anchors.
+
+## Diagnostic report storage
+
+Startup reserves one additional retirement slot and starts one fallible plain report
+cleanup worker before any report file can be created. Folder-size, presence and tree
+diagnostics share that arena explicitly. Standalone `DirectoryTree` callers clone
+`EngineLifetime::report_arena()` before handing the lifetime to an engine and pass it
+to `DirectoryTree::new`. No global or thread-local fallback creates hidden workers.
+
+Each report keeps its own append file and failure state. Creation reserves a reusable
+registry node before opening native storage. Writers and immutable text prefixes
+share that node's retention token and release raw references before the token. Its
+last drop only links the already allocated node into a queue and wakes the worker;
+it does not close a file, join a thread, allocate a queue node or require Tokio.
+Unused reservations return their metadata-only nodes immediately, so repeated file
+creation failures cannot grow an empty queue behind blocked native cleanup.
+Actual native destruction occurs outside the registry lock. A node becomes reusable
+only after cleanup finishes. Registry memory follows the concurrent report high-water
+mark; there is no arbitrary report-count quota or shared append-file failure scope.
+
+A stopped report worker rejects new reservations before native creation. Existing
+tokens keep the guarded registry alive; after its final owner disappears, the normal
+retirement worker destroys remaining storage. This exceptional fallback can delay
+cleanup while other reports remain retained, but never transfers final native cleanup
+to the UI or executor. Individual destructor unwinds are isolated; Rust process-abort
+and double-panic behavior still apply.
 
 ## Archive navigation and queued size work
 

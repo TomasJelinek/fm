@@ -145,6 +145,7 @@ pub(super) fn one_root(kind: EntryKind) -> Fixture {
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     Fixture {

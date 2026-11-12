@@ -205,7 +205,7 @@ impl Session {
             .state(branch)
             .and_then(|row| row.error_details)
             .map_or_else(
-                || crate::tree_diagnostics::diagnostic(&error),
+                || crate::tree_diagnostics::diagnostic(&self.reports, &error),
                 |source| TreeDiagnostic::with_details(&error.to_string(), source),
             );
         if let Some(maintenance) = &mut self.maintenance {
@@ -247,7 +247,7 @@ impl Session {
 
     pub(crate) fn abort_refresh(&mut self, error: &ProviderError) -> Option<TreeEvent> {
         let mut maintenance = self.maintenance.take()?;
-        let error = crate::tree_diagnostics::diagnostic(&error);
+        let error = crate::tree_diagnostics::diagnostic(&self.reports, &error);
         if let Some(source) = error.details() {
             maintenance.details.push(source.clone());
         }

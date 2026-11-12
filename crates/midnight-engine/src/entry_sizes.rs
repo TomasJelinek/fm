@@ -39,6 +39,7 @@ impl Request {
 pub(crate) struct Services {
     pub(crate) filesystem: Arc<dyn FileSystem>,
     pub(crate) scope: TaskLifetime,
+    pub(crate) reports: crate::ReportArena,
 }
 
 pub(crate) struct Controller {
@@ -51,6 +52,7 @@ pub(crate) struct Controller {
     size_observer: crate::selection_sizes::Observer,
     pending: [Vec<Request>; 2],
     scope: TaskLifetime,
+    reports: crate::ReportArena,
 }
 
 impl Controller {
@@ -63,7 +65,11 @@ impl Controller {
         io_budget: Arc<folder_sizes::IoBudget>,
         size_observer: crate::selection_sizes::Observer,
     ) -> Self {
-        let Services { filesystem, scope } = services;
+        let Services {
+            filesystem,
+            scope,
+            reports,
+        } = services;
         Self {
             filesystem,
             outbox,
@@ -74,6 +80,7 @@ impl Controller {
             size_observer,
             pending: Default::default(),
             scope,
+            reports,
         }
     }
 
@@ -125,6 +132,7 @@ impl Controller {
         let finished = Arc::new(AtomicBool::new(false));
         let done = finished.clone();
         let filesystem = self.filesystem.clone();
+        let reports = self.reports.clone();
         let outbox = self.outbox.clone();
         let snapshots = self.snapshots.clone();
         let budget = self.budget.clone();
@@ -180,6 +188,7 @@ impl Controller {
                         )
                     },
                     &io_budget,
+                    &reports,
                 );
                 !worker_cancel.is_cancelled()
             }))

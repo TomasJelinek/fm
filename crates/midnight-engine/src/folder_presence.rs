@@ -27,6 +27,7 @@ pub(crate) struct Controller {
 impl Controller {
     pub(crate) fn new(
         scope: TaskLifetime,
+        reports: crate::ReportArena,
         filesystem: Arc<dyn FileSystem>,
         snapshots: Snapshots,
         listings: [Arc<Semaphore>; 2],
@@ -41,11 +42,21 @@ impl Controller {
             let stopping = stop.clone();
             let snapshots = snapshots.clone();
             let filesystem = filesystem.clone();
+            let reports = reports.clone();
             let listing = listings[side].clone();
             let outbox = outbox.clone();
             tasks.spawn_blocking(scope.blocking(move || {
                 worker(
-                    pending, receiver, stopping, snapshots, filesystem, listing, outbox,
+                    pending,
+                    receiver,
+                    stopping,
+                    WorkerContext {
+                        snapshots,
+                        filesystem,
+                        listing,
+                        outbox,
+                        reports,
+                    },
                 )
             }));
             (lane, wake)
@@ -92,15 +103,22 @@ impl Drop for Controller {
     }
 }
 
-fn worker(
-    lane: Mailbox,
-    wake: mpsc::Receiver<()>,
-    stop: Cancellation,
+struct WorkerContext {
     snapshots: Snapshots,
     filesystem: Arc<dyn FileSystem>,
     listing: Arc<Semaphore>,
     outbox: Outbox,
-) {
+    reports: crate::ReportArena,
+}
+
+fn worker(lane: Mailbox, wake: mpsc::Receiver<()>, stop: Cancellation, context: WorkerContext) {
+    let WorkerContext {
+        snapshots,
+        filesystem,
+        listing,
+        outbox,
+        reports,
+    } = context;
     let native = NativeProvider::new(filesystem);
     loop {
         let (request, retired) = {
@@ -125,7 +143,7 @@ fn worker(
             continue;
         };
         let cancel = request.cancel.linked(&stop);
-        let result = run(&request, &cancel, &snapshots, &native, &listing);
+        let result = run(&request, &cancel, &snapshots, &native, &listing, &reports);
         if cancel.is_cancelled() {
             continue;
         }
@@ -151,6 +169,7 @@ fn run(
     snapshots: &Snapshots,
     native: &NativeProvider,
     listing: &Arc<Semaphore>,
+    reports: &crate::ReportArena,
 ) -> Option<Vec<(EntryId, FolderPresence)>> {
     if request.revision.0 == 0
         || request.visible.len() > FolderPresenceRequest::MAX_VISIBLE
@@ -177,7 +196,7 @@ fn run(
         }
     }
     let mut values = Vec::with_capacity(request.visible.len());
-    let report = crate::tree_diagnostics::log();
+    let report = crate::tree_diagnostics::log(reports);
     for id in &request.visible {
         let entry = &request.root.entries[request.root.index.by_id[id]];
         let _listing = loop {

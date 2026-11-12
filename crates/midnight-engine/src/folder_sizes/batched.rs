@@ -60,6 +60,7 @@ pub(crate) fn compute_batched(
     cancel: &Cancellation,
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
     budget: &Arc<IoBudget>,
+    reports: &crate::ReportArena,
 ) {
     if cancel.is_cancelled() {
         return;
@@ -74,7 +75,7 @@ pub(crate) fn compute_batched(
             let local_cancel = &local_cancel;
             scope.spawn(move || {
                 // Sequential roots on a lane share one lazily created private report.
-                let report = ReportLog::for_scan();
+                let report = ReportLog::for_scan(reports);
                 let source = BudgetedSource {
                     filesystem,
                     budget,

@@ -97,14 +97,20 @@ pub(crate) struct Controller {
     outbox: Outbox,
 }
 impl Controller {
-    pub(crate) fn new(retirement: Retirement, snapshots: Snapshots, outbox: Outbox) -> Self {
+    pub(crate) fn new(
+        retirement: Retirement,
+        reports: crate::ReportArena,
+        snapshots: Snapshots,
+        outbox: Outbox,
+    ) -> Self {
         let lanes = retirement.panes.map(|lease| Arc::new(Lane::new(lease)));
         let workers = std::array::from_fn(|index| {
             let lane = lanes[index].clone();
+            let reports = reports.clone();
             let outbox = outbox.clone();
             let snapshots = snapshots.clone();
             Some(tokio::task::spawn_blocking(move || {
-                worker::Worker::new(lane, outbox, snapshots).run()
+                worker::Worker::new(lane, outbox, snapshots, reports).run()
             }))
         });
         Self {

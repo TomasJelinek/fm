@@ -18,6 +18,8 @@ mod elevation;
 mod engine_commands;
 mod engine_lifetime;
 mod engine_run;
+mod report_arena;
+pub use report_arena::ReportArena;
 mod retirement;
 mod task_lifetime;
 pub use engine_lifetime::EngineLifetime;
@@ -484,8 +486,11 @@ impl EngineServices {
                 terminals: resources.user_command_processes,
                 openers: resources.desktop_openers,
             },
-            self.desktop,
-            self.locale.clone(),
+            desktop::Services {
+                desktop: self.desktop,
+                locale: self.locale.clone(),
+                capture: self.archive_capture.clone(),
+            },
             self.outbox.clone(),
             &mut tasks,
         );
@@ -504,8 +509,11 @@ impl EngineServices {
             Arc::new(resources.snapshots.own(Mutex::new(Default::default())));
         let mutation_gate = Arc::new(Semaphore::new(1));
         let trees = tree_controller::Controller::new(
-            self.filesystem.clone(),
-            self.locale.clone(),
+            tree_controller::Services {
+                filesystem: self.filesystem.clone(),
+                locale: self.locale.clone(),
+                reports: resources.reports.clone(),
+            },
             listing_budgets.clone(),
             mutation_gate.clone(),
             snapshots.clone(),
@@ -514,6 +522,7 @@ impl EngineServices {
         );
         let folder_presence = folder_presence::Controller::new(
             scope.clone(),
+            resources.reports.clone(),
             self.filesystem.clone(),
             snapshots.clone(),
             listing_budgets.clone(),
@@ -598,6 +607,7 @@ impl EngineServices {
             selection_sizes::Controller::new(self.outbox.clone(), snapshots.clone(), &mut tasks);
         let archive_sizes = archive_sizes::Controller::new(
             resources.archive_sizes,
+            resources.reports.clone(),
             snapshots.clone(),
             self.outbox.clone(),
         );
@@ -608,6 +618,7 @@ impl EngineServices {
             entry_sizes::Services {
                 filesystem: self.filesystem.clone(),
                 scope: scope.clone(),
+                reports: resources.reports.clone(),
             },
             self.outbox.clone(),
             snapshots.clone(),
@@ -900,6 +911,7 @@ impl EngineServices {
                         Some(Command::ProbeFolderPresence(request)) => folder_presence.submit(request).await,
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
+                        Some(Command::SetCommandIconView { generation, targets }) => desktop.command_icons(generation, targets),
                         Some(Command::ListViewerPlugins) => viewer_plugins.refresh(),
                         Some(Command::ResolveDefaultEditor) => desktop.resolve_editor(self.editor.clone(), &mut tasks).await,
                         Some(Command::EditFile { request, path, editor }) => desktop.edit_file(self.editor.clone(), request, path, editor, &mut tasks).await,
@@ -986,6 +998,7 @@ impl EngineServices {
                             let budget = size_budget.clone();
                             let delivery_cancel = size_delivery_cancel.clone();
                             let io_budget = size_io_budget.clone();
+                            let reports = resources.reports.clone();
                             let size_observer = selected_sizes.observer.clone();
                             let scan_path = entries.as_ref().map(|snapshot| snapshot.path.clone());
                             let scan_sizes = entries.as_ref().map(|snapshot| snapshot.sizes.clone());
@@ -1019,7 +1032,7 @@ impl EngineServices {
                                         // Cancellation freezes and publishes the last partial report.
                                         // Engine shutdown still interrupts a saturated UI queue.
                                         outbox.blocking_send(Event::FolderSizeUpdated { pane, navigation, scan, entry, size }, &delivery_cancel)
-                                    }, &io_budget);
+                                    }, &io_budget, &reports);
                                 })).await;
                                 if !final_cancel.is_cancelled() {
                                     final_outbox.send(Event::FolderSizesFinished { pane, navigation, scan, cancelled: result.is_err() }).await;

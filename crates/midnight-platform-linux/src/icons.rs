@@ -1,6 +1,7 @@
 use crate::{LinuxFileSystem, desktop::read_bounded};
 use midnight_core::{
-    ActionIcon, FsError, IconKey, IconKind, IconPixels, IconService, LocationKind, StorageKind,
+    ActionIcon, Cancellation, FsError, IconKey, IconKind, IconPixels, IconService, LocationKind,
+    StorageKind,
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -8,6 +9,9 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::{Component, Path, PathBuf},
 };
+
+#[path = "icons_executable.rs"]
+mod executable;
 
 const ICON_ROOTS: &[&str] = &["/usr/share/icons", "/usr/local/share/icons"];
 const PNG_LIMIT: usize = 1024 * 1024;
@@ -17,67 +21,100 @@ impl IconService for LinuxFileSystem {
         if !(1..=64).contains(&key.size) {
             return Ok(None);
         }
-        let names = icon_names(key);
-        let mut themes = VecDeque::new();
-        if let Some(theme) = configured_theme(self.home.as_deref()) {
-            themes.push_back(theme);
-        }
-        themes.extend(["Adwaita".into(), "breeze".into(), "hicolor".into()]);
-        let mut seen = HashSet::new();
-        let mut attempts = 0;
-        // A malformed installed inheritance graph cannot recurse indefinitely.
-        while let Some(theme) = themes.pop_front() {
-            if seen.len() >= 16 || attempts >= 1024 {
-                break;
-            }
-            if !safe_theme_name(&theme) || !seen.insert(theme.clone()) {
-                continue;
-            }
-            for root in ICON_ROOTS {
-                let theme_root = Path::new(root).join(&theme);
-                let manifest = trusted_path(&theme_root.join("index.theme"))
-                    .and_then(|path| read_bounded(&path, 256 * 1024))
-                    .and_then(|bytes| String::from_utf8(bytes).ok());
-                let Some(manifest) = manifest else {
-                    continue;
-                };
-                for inherited in manifest_field(&manifest, "Inherits")
-                    .unwrap_or("")
-                    .split(',')
-                    .take(16)
-                {
-                    if safe_theme_name(inherited) && !seen.contains(inherited) {
-                        themes.push_back(inherited.into());
-                    }
-                }
-                let directories = theme_directories(&manifest, key.size);
-                // Specific MIME names are preferred across all sizes within this theme.
-                for name in &names {
-                    for directory in &directories {
-                        attempts += 1;
-                        if attempts > 1024 {
-                            return Ok(None);
-                        }
-                        let path = theme_root.join(directory).join(format!("{name}.png"));
-                        if let Some(mut icon) = load_png(&path, key.size) {
-                            icon.generic = *name == "text-x-generic";
-                            return Ok(Some(icon));
-                        }
-                    }
-                }
-            }
-        }
-        for name in names {
-            if let Some(mut icon) = load_png(
-                &Path::new("/usr/share/pixmaps").join(format!("{name}.png")),
-                key.size,
-            ) {
-                icon.generic = name == "text-x-generic";
-                return Ok(Some(icon));
-            }
-        }
-        Ok(None)
+        Ok(load_named_icon(
+            self.home.as_deref(),
+            &icon_names(key),
+            key.size,
+            &Cancellation::default(),
+        ))
     }
+    fn load_executable_icon(
+        &self,
+        path: &Path,
+        size: u16,
+        cancel: &Cancellation,
+    ) -> Result<Option<IconPixels>, FsError> {
+        Ok(executable::load(self.home.as_deref(), path, size, cancel))
+    }
+}
+
+fn load_named_icon(
+    home: Option<&Path>,
+    names: &[&str],
+    size: u16,
+    cancel: &Cancellation,
+) -> Option<IconPixels> {
+    if cancel.is_cancelled()
+        || !(1..=64).contains(&size)
+        || names.iter().any(|name| !safe_theme_name(name))
+    {
+        return None;
+    }
+    let mut themes = VecDeque::new();
+    if let Some(theme) = configured_theme(home) {
+        themes.push_back(theme);
+    }
+    themes.extend(["Adwaita".into(), "breeze".into(), "hicolor".into()]);
+    let mut seen = HashSet::new();
+    let mut attempts = 0;
+    // A malformed installed inheritance graph cannot recurse indefinitely.
+    while let Some(theme) = themes.pop_front() {
+        if cancel.is_cancelled() || seen.len() >= 16 || attempts >= 1024 {
+            break;
+        }
+        if !safe_theme_name(&theme) || !seen.insert(theme.clone()) {
+            continue;
+        }
+        for root in ICON_ROOTS {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let theme_root = Path::new(root).join(&theme);
+            let manifest = trusted_path(&theme_root.join("index.theme"))
+                .and_then(|path| read_bounded(&path, 256 * 1024))
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let Some(manifest) = manifest else {
+                continue;
+            };
+            for inherited in manifest_field(&manifest, "Inherits")
+                .unwrap_or("")
+                .split(',')
+                .take(16)
+            {
+                if safe_theme_name(inherited) && !seen.contains(inherited) {
+                    themes.push_back(inherited.into());
+                }
+            }
+            let directories = theme_directories(&manifest, size);
+            // Specific MIME names are preferred across all sizes within this theme.
+            for name in names {
+                for directory in &directories {
+                    attempts += 1;
+                    if cancel.is_cancelled() || attempts > 1024 {
+                        return None;
+                    }
+                    let path = theme_root.join(directory).join(format!("{name}.png"));
+                    if let Some(mut icon) = load_png(&path, size) {
+                        icon.generic = *name == "text-x-generic";
+                        return Some(icon);
+                    }
+                }
+            }
+        }
+    }
+    for name in names {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        if let Some(mut icon) = load_png(
+            &Path::new("/usr/share/pixmaps").join(format!("{name}.png")),
+            size,
+        ) {
+            icon.generic = *name == "text-x-generic";
+            return Some(icon);
+        }
+    }
+    None
 }
 
 fn icon_names(key: &IconKey) -> Vec<&'static str> {

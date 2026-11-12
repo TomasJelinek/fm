@@ -311,15 +311,25 @@ impl Scan<'_> {
     }
 }
 
+pub(crate) struct ScanScope<'a> {
+    pub address: &'a ArchiveAddress,
+    pub ancestors: &'a [u64],
+    pub reserved: &'a [u64],
+}
+
 pub(crate) fn compute_checked(
     mount: &dyn ArchiveMount,
-    address: &ArchiveAddress,
-    ancestors: &[u64],
-    reserved: &[u64],
+    scope: ScanScope<'_>,
     roots: &[ArchiveNode],
     cancel: &Cancellation,
     emit: &mut dyn FnMut(VirtualEntryId, FolderSize) -> bool,
+    reports: &crate::ReportArena,
 ) -> Result<bool, FsError> {
+    let ScanScope {
+        address,
+        ancestors,
+        reserved,
+    } = scope;
     let Some(parent) = ancestors.last().copied() else {
         return Ok(false);
     };
@@ -358,7 +368,7 @@ pub(crate) fn compute_checked(
         mount,
         address,
         cancel,
-        log: ReportLog::for_scan(),
+        log: ReportLog::for_scan(reports),
         seen,
         names: 0,
         path: Vec::new(),
@@ -445,7 +455,19 @@ pub(crate) fn compute(
     cancel: &Cancellation,
     emit: &mut dyn FnMut(VirtualEntryId, FolderSize) -> bool,
 ) -> bool {
-    compute_checked(mount, address, ancestors, reserved, roots, cancel, emit).unwrap_or(false)
+    compute_checked(
+        mount,
+        ScanScope {
+            address,
+            ancestors,
+            reserved,
+        },
+        roots,
+        cancel,
+        emit,
+        &crate::ReportArena::testing(),
+    )
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

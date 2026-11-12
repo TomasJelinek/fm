@@ -17,6 +17,8 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "desktop_command_icons.rs"]
+mod command_icons;
 #[path = "desktop_editor.rs"]
 mod editor;
 
@@ -33,6 +35,12 @@ pub(crate) struct Processes {
     pub(crate) openers: ProcessTracker,
 }
 
+pub(crate) struct Services {
+    pub(crate) desktop: Option<Arc<dyn DesktopServices>>,
+    pub(crate) locale: Option<Arc<dyn LocaleService>>,
+    pub(crate) capture: Option<crate::archives::ArchiveCapture>,
+}
+
 pub(crate) struct Desktop {
     locale: Option<Arc<dyn LocaleService>>,
     services: Option<Arc<dyn DesktopServices>>,
@@ -40,6 +48,7 @@ pub(crate) struct Desktop {
     editor_intake: tokio::sync::Mutex<RetirementWaiter>,
     processes: Processes,
     icons: mpsc::Sender<IconKey>,
+    command_icons: watch::Sender<command_icons::View>,
     volume_icons: watch::Sender<Vec<IconKey>>,
     children: mpsc::Sender<TrackedChild>,
     property_budget: Arc<Semaphore>,
@@ -62,17 +71,24 @@ impl Desktop {
         scope: TaskLifetime,
         retirement: Retirement,
         processes: Processes,
-        services: Option<Arc<dyn DesktopServices>>,
-        locale: Option<Arc<dyn LocaleService>>,
+        services: Services,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
+        let Services {
+            desktop: services,
+            locale,
+            capture,
+        } = services;
         let (icons, receiver) = mpsc::channel(64);
-        tasks.spawn(scope.future(icon_worker(
+        let (command_icons, command_view) = watch::channel(command_icons::View::default());
+        tasks.spawn(scope.future(command_icons::worker(
             scope.clone(),
             services.clone(),
+            capture,
             outbox.clone(),
             receiver,
+            command_view,
         )));
         let (volume_icons, roots) = watch::channel(Vec::new());
         tasks.spawn(forward_icons(roots, icons.clone()));
@@ -96,6 +112,7 @@ impl Desktop {
             editor_intake: tokio::sync::Mutex::new(retirement.intake),
             processes,
             icons,
+            command_icons,
             volume_icons,
             children,
             property_budget: Arc::new(Semaphore::new(1)),
@@ -122,6 +139,25 @@ impl Desktop {
             let _ = result.icons.try_send(key);
         }
         result
+    }
+
+    pub(crate) fn command_icons(&self, generation: u64, targets: Vec<CommandIconTarget>) {
+        if targets.capacity() > MAX_USER_COMMANDS || !command_icons::valid_targets(&targets) {
+            return;
+        }
+        let mut targets = Some(targets);
+        self.command_icons.send_if_modified(|view| {
+            if generation <= view.generation {
+                return false;
+            }
+            view.cancel.cancel();
+            *view = command_icons::View {
+                generation,
+                targets: targets.take().unwrap_or_default(),
+                cancel: Cancellation::default(),
+            };
+            true
+        });
     }
 
     pub(crate) fn icon_sender(&self) -> mpsc::Sender<IconKey> {
@@ -455,8 +491,11 @@ impl Desktop {
                 terminals: ProcessTracker::try_start().unwrap(),
                 openers: ProcessTracker::try_start_openers().unwrap(),
             },
-            services,
-            locale,
+            Services {
+                desktop: services,
+                locale,
+                capture: None,
+            },
             outbox,
             tasks,
         )
@@ -586,53 +625,16 @@ async fn context_worker(
     }
 }
 
+#[cfg(test)]
 async fn icon_worker(
     scope: TaskLifetime,
     services: Option<Arc<dyn DesktopServices>>,
     outbox: Outbox,
-    mut receiver: mpsc::Receiver<IconKey>,
+    receiver: mpsc::Receiver<IconKey>,
 ) {
-    let mut cached = HashSet::new();
-    while let Some(key) = receiver.recv().await {
-        if cached.contains(&key) || cached.len() == ICON_CAPACITY {
-            continue;
-        }
-        cached.insert(key.clone());
-        let service = services.clone();
-        let worker_key = key.clone();
-        let kind = key.kind;
-        let result = tokio::task::spawn_blocking(scope.blocking(move || {
-            service
-                .and_then(|service| service.load_icon(&worker_key).ok().flatten())
-                .filter(|pixels| {
-                    (1..=64).contains(&pixels.width)
-                        && (1..=64).contains(&pixels.height)
-                        && pixels.rgba.len() == pixels.width as usize * pixels.height as usize * 4
-                        && pixels
-                            .rgba
-                            .as_chunks::<4>()
-                            .0
-                            .iter()
-                            .any(|pixel| pixel[3] != 0)
-                })
-                .or_else(|| fallback_icon(worker_key.kind))
-        }))
-        .await;
-        let Some(pixels) = result.unwrap_or_else(|_| fallback_icon(kind)) else {
-            // Missing semantic roles keep the UI's appropriate vector fallback.
-            // The key remains cached so an unsupported role is never queried again.
-            continue;
-        };
-        if !outbox
-            .send(Event::IconLoaded {
-                key,
-                pixels: Arc::new(pixels),
-            })
-            .await
-        {
-            break;
-        }
-    }
+    let (sender, commands) = watch::channel(command_icons::View::default());
+    drop(sender);
+    command_icons::worker(scope, services, None, outbox, receiver, commands).await;
 }
 
 fn fallback_icon(kind: IconKind) -> Option<IconPixels> {
@@ -1244,3 +1246,9 @@ mod tests {
 #[cfg(test)]
 #[path = "desktop_lifetime_tests.rs"]
 mod lifetime_tests;
+
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        self.command_icons.borrow().cancel.cancel();
+    }
+}

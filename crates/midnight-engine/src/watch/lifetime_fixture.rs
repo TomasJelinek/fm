@@ -102,6 +102,7 @@ pub(super) fn captured_scope(files: Arc<dyn FileSystem>) -> tree::TreeScope {
         WorkerBudget::new(Arc::new(tokio::sync::Semaphore::new(1))),
         ProjectionOptions::default(),
         &cancel,
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let view = session.projection().clone();

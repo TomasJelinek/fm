@@ -80,7 +80,7 @@ fn discovery_does_not_follow_symlinks_or_require_regular_file_content_access() {
     fs::create_dir(&root).unwrap();
     let secret = root.join("metadata-only");
     fs::write(&secret, b"1234").unwrap();
-    fs::set_permissions(&secret, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o0)).unwrap();
     let outside = fixture.path().join("outside");
     fs::create_dir(&outside).unwrap();
     fs::write(outside.join("never-visited"), b"outside").unwrap();

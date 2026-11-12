@@ -126,6 +126,7 @@ fn flat_presence_checks_only_requested_folders_and_stops_at_first_subfolder() {
         &snapshots,
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
+        &crate::ReportArena::testing(),
     )
     .unwrap();
     assert_eq!(
@@ -173,7 +174,8 @@ fn foreign_snapshot_navigation_side_link_roots_and_oversized_requests_do_no_io()
                 &request.cancel,
                 &snapshots,
                 &NativeProvider::new(files.clone()),
-                &Arc::new(Semaphore::new(1))
+                &Arc::new(Semaphore::new(1)),
+                &crate::ReportArena::testing()
             )
             .is_none()
         );
@@ -191,6 +193,7 @@ fn unavailable_directory_is_never_reported_empty_and_cancelled_requests_do_no_io
         &snapshots,
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
+        &crate::ReportArena::testing(),
     )
     .unwrap();
     assert!(
@@ -204,7 +207,8 @@ fn unavailable_directory_is_never_reported_empty_and_cancelled_requests_do_no_io
             &request.cancel,
             &snapshots,
             &NativeProvider::new(files.clone()),
-            &Arc::new(Semaphore::new(1))
+            &Arc::new(Semaphore::new(1)),
+            &crate::ReportArena::testing()
         )
         .is_none()
     );
@@ -288,6 +292,7 @@ fn archive_presence_uses_captured_member_identity_without_native_fallback() {
         &snapshots,
         &NativeProvider::new(files.clone()),
         &Arc::new(Semaphore::new(1)),
+        &crate::ReportArena::testing(),
     )
     .unwrap();
     assert_eq!(result, [(EntryId(2), FolderPresence::HasFolders)]);

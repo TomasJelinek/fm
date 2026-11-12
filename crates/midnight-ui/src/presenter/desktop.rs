@@ -133,6 +133,14 @@ impl Presenter {
             Event::DesktopContextFailed(error) => {
                 self.desktop.error = crate::error_presentation::describe(&error);
             }
+            Event::CommandIconLoaded {
+                generation,
+                identity,
+                pixels,
+            } => {
+                self.receive_command_icon(generation, &identity, &pixels);
+                self.retired.push(Box::new(pixels));
+            }
             Event::IconLoaded { key, pixels } => {
                 self.desktop.receive_image(key, &pixels);
                 self.retired.push(Box::new(pixels));

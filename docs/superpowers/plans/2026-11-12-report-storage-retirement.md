@@ -19,3 +19,18 @@ arbitrary report-count cap, silent truncation, per-drop thread or runtime-depend
 Reproduction completed: two intended native ownership failures on Linux, exact source restoration
 verified. See `docs/verification/2026-11-12-report-storage-retirement.md`. The implementation remains
 an explicit next ownership batch; current production source and startup capacity are unchanged.
+
+## Implementation batch after 280c49a
+
+The preserved two-case native RED is the baseline for this batch. Implement one startup-guarded
+report arena with a fallible standard cleanup worker, reusable per-file nodes and intrusive queues.
+Reserve the node before opening any native report. Retain registry ownership until all raw writer
+and prefix references have released their shared final token. Perform actual cleanup outside the
+registry mutex, contain destructor panics, and reject new admission after worker exit.
+
+Root owns startup ledger/module integration; the producer owner migrates all explicit factory
+callers. This task owns `report_arena`, `size_warnings`, their focused tests and this evidence.
+Restore both existing real-spool regressions as permanent tests, then cover startup failure,
+reservation cancellation, clone retention, blocked cleanup, node reuse, destructor panic and
+unexpected worker exit. Run targeted tests only after coherent signatures and a coordinated Cargo
+lease. Preserve independent files, report completeness, immutable ranges and filesystem security.

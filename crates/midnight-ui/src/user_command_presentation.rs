@@ -10,6 +10,9 @@ use std::{
 #[path = "user_command_presentation_tests.rs"]
 mod tests;
 
+#[path = "user_command_icons.rs"]
+mod icons;
+
 #[derive(Default)]
 pub(crate) struct ToolbarState {
     configuration: RefCell<SyncWeak<Vec<UserCommand>>>,
@@ -17,6 +20,7 @@ pub(crate) struct ToolbarState {
     pub(crate) image_revision: Cell<u64>,
     visible: Rc<RefCell<HashSet<(String, String)>>>,
     pending_preview: Rc<Cell<u64>>,
+    pub(crate) native: RefCell<icons::State>,
 }
 impl ToolbarState {
     pub(crate) fn invalidate_preview(&self) {
@@ -34,6 +38,7 @@ impl ToolbarState {
         self.revision.set(self.revision.get().saturating_add(1));
         *self.configuration.borrow_mut() = Arc::downgrade(configuration);
         self.visible.borrow_mut().clear();
+        self.native.borrow_mut().invalidate();
         true
     }
 }
@@ -205,17 +210,28 @@ impl Presenter {
             .user_commands
             .iter()
             .filter_map(|command| {
-                let path = command.icon.as_ref()?;
                 if !visible.contains(&(revision.clone(), command.id.as_str().to_owned())) {
                     return None;
                 }
+                let (content, edge) = if let Some(path) = &command.icon {
+                    (crate::ThumbnailContent::Native(path.clone()), 96)
+                } else if let UserCommandInvocation::Program { executable, .. } =
+                    &command.invocation
+                {
+                    (
+                        crate::ThumbnailContent::ExecutableIcon(executable.clone()),
+                        64,
+                    )
+                } else {
+                    return None;
+                };
                 Some(ThumbnailTarget {
                     identity: command_icon_identity(&revision, command.id.as_str()),
-                    content: crate::ThumbnailContent::Native(path.clone()),
+                    content,
                     selected: false,
                     hovered: false,
                     confirmed_ssd: false,
-                    edge: 96,
+                    edge,
                 })
             })
             .take(MAX_USER_COMMANDS)

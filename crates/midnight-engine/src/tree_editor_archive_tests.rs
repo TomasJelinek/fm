@@ -39,6 +39,7 @@ fn tree_editor_capture_rejects_readable_regular_archive_file() {
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let view = session.publication().unwrap().view;

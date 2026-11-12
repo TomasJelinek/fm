@@ -79,6 +79,41 @@ fn only_visible_current_command_icons_enter_the_bounded_decoder_request() {
 }
 
 #[test]
+fn visible_program_without_explicit_artwork_requests_its_executable_icon() {
+    let mut p = configured(3);
+    let commands = Arc::make_mut(&mut p.preferences.values.user_commands);
+    commands[1].icon = None;
+    commands[2].icon = None;
+    commands[2].invocation = UserCommandInvocation::Terminal {
+        shell: ShellFlavor::Posix,
+        script: "printf never-run-for-icons".into(),
+        variables: vec![],
+    };
+    p.command_toolbar.sync(&p.preferences.values.user_commands);
+    let revision = p.command_toolbar.revision.get().to_string();
+    for index in 0..3 {
+        p.command_toolbar
+            .visible
+            .borrow_mut()
+            .insert((revision.clone(), format!("command-{index}")));
+    }
+    let targets = p.thumbnail_targets([(0, 0); 2], [""; 2]);
+    assert_eq!(
+        targets.len(),
+        2,
+        "explicit image and Program artwork must both be requested"
+    );
+    assert_eq!(
+        targets[0].identity,
+        command_icon_identity(&revision, "command-0")
+    );
+    assert_eq!(
+        targets[1].identity,
+        command_icon_identity(&revision, "command-1")
+    );
+}
+
+#[test]
 fn hidden_artwork_is_evicted_and_cache_clear_invalidates_toolbar_images() {
     let mut p = configured(2);
     let revision = p.command_toolbar.revision.get().to_string();
@@ -155,4 +190,63 @@ fn tooltip_bounds_unicode_folder_templates_and_omits_script_and_argument_values(
     assert!(hint.contains("PowerShell · Once per selected item"));
     assert!(!hint.contains("private-script"));
     assert!(!hint.contains("\n\n"));
+}
+
+#[test]
+fn executable_icon_views_retry_admission_and_fence_hidden_edited_and_cleared_results() {
+    let mut p = configured(1);
+    Arc::make_mut(&mut p.preferences.values.user_commands)[0].icon = None;
+    p.command_toolbar.sync(&p.preferences.values.user_commands);
+    let revision = p.command_toolbar.revision.get().to_string();
+    p.command_toolbar
+        .visible
+        .borrow_mut()
+        .insert((revision.clone(), "command-0".into()));
+    let rows = p.thumbnail_targets([(0, 0); 2], [""; 2]);
+    let requests = RefCell::new(Vec::new());
+    let send = |command| {
+        requests.borrow_mut().push(command);
+        true
+    };
+    p.refresh_command_icons(&rows, &|_| false);
+    p.refresh_command_icons(&rows, &send);
+    p.refresh_command_icons(&rows, &send);
+    assert_eq!(
+        requests.borrow().len(),
+        1,
+        "unchanged views must not reload native art"
+    );
+    let generation = match requests.borrow().first().unwrap() {
+        Command::SetCommandIconView {
+            generation,
+            targets,
+        } => {
+            assert_eq!(targets.len(), 1);
+            *generation
+        }
+        event => panic!("unexpected {event:?}"),
+    };
+    let identity = &rows[0].identity;
+    let pixels = IconPixels::new(1, 1, vec![1, 2, 3, 255]).unwrap();
+    p.receive_command_icon(generation + 1, identity, &pixels);
+    assert_eq!(p.thumbnail_coverage(identity, 0), 0);
+    p.receive_command_icon(generation, identity, &pixels);
+    assert_eq!(p.thumbnail_coverage(identity, 0), 64);
+    p.clear_thumbnail_images();
+    p.receive_command_icon(generation, identity, &pixels);
+    assert_eq!(p.thumbnail_coverage(identity, 0), 0);
+    p.refresh_command_icons(&rows, &send);
+    p.command_toolbar.visible.borrow_mut().clear();
+    p.receive_command_icon(generation + 2, identity, &pixels);
+    assert_eq!(p.thumbnail_coverage(identity, 0), 0);
+    let hidden = p.thumbnail_targets([(0, 0); 2], [""; 2]);
+    p.refresh_command_icons(&hidden, &send);
+    assert!(
+        matches!(requests.borrow().last(), Some(Command::SetCommandIconView { targets, .. }) if targets.is_empty())
+    );
+    Arc::make_mut(&mut p.preferences.values.user_commands)[0].icon =
+        Some(PathBuf::from("explicit.png"));
+    p.command_toolbar.sync(&p.preferences.values.user_commands);
+    p.receive_command_icon(generation + 2, identity, &pixels);
+    assert_eq!(p.thumbnail_coverage(identity, 0), 0);
 }

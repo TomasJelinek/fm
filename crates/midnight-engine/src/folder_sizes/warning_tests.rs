@@ -90,7 +90,7 @@ fn unavailable_report_storage_never_stops_counting_or_hides_missing_details() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("occupied");
     std::fs::write(&path, b"occupied").unwrap();
-    let log = ReportLog::new(path);
+    let log = ReportLog::new(&crate::ReportArena::testing(), path);
     let mut tree = Tree::default();
     let mut entries = (0..300)
         .map(|id| item(id + 2, &format!("outside-{id}"), EntryKind::File))
@@ -144,6 +144,7 @@ fn batched_cancel_drains_the_final_partial_report() {
             true
         },
         &std::sync::Arc::new(IoBudget::new()),
+        &crate::ReportArena::testing(),
     );
     assert!(!last.finished);
     assert_eq!(last.errors, 1);

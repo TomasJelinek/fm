@@ -363,6 +363,7 @@ fn batch_fixture(count: usize) -> (Session, Arc<BatchMount>, tempfile::TempDir) 
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     (session, mount, directory)

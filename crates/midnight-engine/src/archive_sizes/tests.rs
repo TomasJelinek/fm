@@ -134,6 +134,7 @@ fn setup() -> (
     let (sender, events) = tokio::sync::mpsc::channel(64);
     let controller = Controller::new(
         Retirement::testing(),
+        crate::ReportArena::testing(),
         snapshots.clone(),
         Outbox {
             sender,

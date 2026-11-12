@@ -29,8 +29,14 @@ impl Factory {
     }
 
     /// Copies bounded metadata only. Every filesystem query is deferred to the capture closure.
-    pub(super) fn target(&self, row: &ThumbnailTarget, token: u64, edge: u32) -> service::Target {
+    pub(super) fn target(
+        &self,
+        row: &ThumbnailTarget,
+        token: u64,
+        edge: u32,
+    ) -> Option<service::Target> {
         let (identity, extension, capture) = match &row.content {
+            ThumbnailContent::ExecutableIcon(_) => return None,
             ThumbnailContent::Native(path) => (
                 path.as_os_str().as_encoded_bytes().to_vec(),
                 path.extension()
@@ -88,7 +94,7 @@ impl Factory {
                 )
             }
         };
-        service::Target {
+        Some(service::Target {
             token,
             edge,
             identity,
@@ -96,7 +102,7 @@ impl Factory {
             selected: row.selected,
             hovered: row.hovered,
             capture,
-        }
+        })
     }
 }
 

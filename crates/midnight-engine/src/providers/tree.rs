@@ -366,7 +366,12 @@ impl DirectoryTree {
         })
     }
 
-    pub fn new(location: MountedLocation, limits: TreeLimits) -> Result<Self, ProviderError> {
+    /// Uses the caller's startup arena for reports retained beyond this tree.
+    pub fn new(
+        location: MountedLocation,
+        limits: TreeLimits,
+        reports: crate::ReportArena,
+    ) -> Result<Self, ProviderError> {
         if limits.nodes == 0
             || limits.nodes > 10_000
             || limits.bytes == 0
@@ -402,7 +407,7 @@ impl DirectoryTree {
             next_request: 1,
             limits,
             active: Arc::default(),
-            reports: crate::tree_diagnostics::log(),
+            reports: crate::tree_diagnostics::log(&reports),
             nodes: HashMap::from([(
                 root,
                 Node {

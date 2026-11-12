@@ -78,7 +78,7 @@ fn compute_with_budget(
     emit: &mut dyn FnMut(EntryId, FolderSize) -> bool,
     pending_path_budget: usize,
 ) {
-    let report = ReportLog::for_scan();
+    let report = ReportLog::for_scan(&crate::ReportArena::testing());
     for root in roots {
         if cancel.is_cancelled() {
             return;

@@ -418,6 +418,24 @@ pub trait OpenService: Send + Sync + 'static {
 /// All native icon extraction and file decoding happen on a backend worker.
 pub trait IconService: Send + Sync + 'static {
     fn load_icon(&self, key: &IconKey) -> Result<Option<IconPixels>, FsError>;
+
+    /// Explicitly configured Program artwork only. The caller captures and revalidates
+    /// the native executable around this backend-only lookup; no program is launched.
+    fn load_executable_icon(
+        &self,
+        _path: &Path,
+        _size: u16,
+        _cancel: &crate::Cancellation,
+    ) -> Result<Option<IconPixels>, FsError> {
+        Ok(None)
+    }
+}
+
+/// Bounded presentation metadata, never a captured native owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandIconTarget {
+    pub identity: String,
+    pub executable: PathBuf,
 }
 
 pub trait TerminalService: Send + Sync + 'static {

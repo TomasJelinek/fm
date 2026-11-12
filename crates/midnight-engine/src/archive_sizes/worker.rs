@@ -67,6 +67,7 @@ fn queue_snapshot(
     }
 }
 pub(super) struct Worker {
+    reports: crate::ReportArena,
     lane: Arc<Lane>,
     outbox: Outbox,
     snapshots: Snapshots,
@@ -79,8 +80,14 @@ pub(super) struct Worker {
     deferred: Option<Publication>,
 }
 impl Worker {
-    pub fn new(lane: Arc<Lane>, outbox: Outbox, snapshots: Snapshots) -> Self {
+    pub fn new(
+        lane: Arc<Lane>,
+        outbox: Outbox,
+        snapshots: Snapshots,
+        reports: crate::ReportArena,
+    ) -> Self {
         Self {
+            reports,
             lane,
             outbox,
             snapshots,
@@ -390,11 +397,14 @@ impl Worker {
             .iter()
             .map(|entry| entry.id.0)
             .collect();
+        let reports = self.reports.clone();
         let scanned = scan::compute_checked(
             mount.as_ref(),
-            &location.address,
-            &ancestors,
-            &reserved,
+            scan::ScanScope {
+                address: &location.address,
+                ancestors: &ancestors,
+                reserved: &reserved,
+            },
             &roots,
             cancel,
             &mut |id, size| {
@@ -409,6 +419,7 @@ impl Worker {
                 }
                 !cancel.is_cancelled()
             },
+            &reports,
         );
         let ok = match scanned {
             Ok(ok) => ok,
@@ -510,6 +521,7 @@ mod tests {
                 }),
             },
             snapshots,
+            crate::ReportArena::testing(),
         );
         assert!(worker.snapshot(
             &mount,
@@ -549,6 +561,7 @@ mod tests {
                 wakeup: Arc::new(|| {}),
             },
             snapshots.clone(),
+            crate::ReportArena::testing(),
         );
         let mount: Arc<dyn ArchiveMount> = Arc::new(Source);
         assert!(worker.snapshot(&mount, PaneId::Left, None, NavigationId(1), &lane.stop));

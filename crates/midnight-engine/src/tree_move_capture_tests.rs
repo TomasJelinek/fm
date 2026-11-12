@@ -138,6 +138,7 @@ fn fixture(
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let p = session.publication().unwrap();

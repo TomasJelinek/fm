@@ -96,6 +96,7 @@ fn archive_fixture_names(
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     (session, mount, directory)
@@ -250,8 +251,11 @@ async fn archive_size_result(
     row: TreeRowId,
 ) -> midnight_core::FolderSize {
     let stamp = captured.view.stamp;
-    let mut state =
-        crate::tree_sizes::State::new(Arc::new(NoNativeIo), Arc::new(tokio::sync::Notify::new()));
+    let mut state = crate::tree_sizes::State::new(
+        Arc::new(NoNativeIo),
+        Arc::new(tokio::sync::Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(request, captured, &Cancellation::default());
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {

@@ -87,6 +87,7 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
             native: std::sync::Arc::new(|_, _| panic!("no content is requested during discovery")),
             storage: std::sync::Arc::new(|_| panic!("no storage is queried during discovery")),
         },
+        Rc::new(|_| true),
     );
     // Startup waits hidden for preferences. A timer pulse in that interval must
     // not permanently stop thumbnail workers before the first visible frame.

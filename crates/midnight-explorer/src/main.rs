@@ -525,7 +525,12 @@ fn run_window(
         filesystem.clone(),
         local.clone(),
     );
-    let thumbnail_timer = thumbnails::install(&window, presenter.clone(), filesystem.clone());
+    let thumbnail_timer = thumbnails::install(
+        &window,
+        presenter.clone(),
+        filesystem.clone(),
+        commands.clone(),
+    );
     let comparators = comparator::install(
         &window,
         presenter.clone(),

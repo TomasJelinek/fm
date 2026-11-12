@@ -160,6 +160,7 @@ pub(super) fn fixture_with_directory_kind(extra: usize, kind: EntryKind) -> Fixt
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     Fixture {
@@ -608,6 +609,7 @@ fn tree_limit_rejection_preserves_the_complete_flat_listing_before_provider_work
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     );
     assert!(matches!(result, Err(ProviderError::ResourceLimited)));
     assert_eq!(fixture.graph.lists.load(Ordering::Relaxed), 1);

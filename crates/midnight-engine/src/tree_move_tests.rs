@@ -47,6 +47,7 @@ fn capture_paths(
         WorkerBudget::new(Arc::new(Semaphore::new(2))),
         ProjectionOptions::default(),
         &cancel,
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let publication = session.publication().unwrap();

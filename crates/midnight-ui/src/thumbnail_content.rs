@@ -5,6 +5,8 @@ use std::{path::PathBuf, sync::Arc};
 #[derive(Clone, Debug)]
 pub enum ThumbnailContent {
     Native(PathBuf),
+    /// System artwork for an executable, handled by the desktop actor, never the image decoder.
+    ExecutableIcon(PathBuf),
     Archive {
         mount: Arc<dyn ArchiveMount>,
         node: ArchiveNode,
@@ -17,7 +19,8 @@ pub enum ThumbnailContent {
 impl PartialEq for ThumbnailContent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Native(left), Self::Native(right)) => left == right,
+            (Self::Native(left), Self::Native(right))
+            | (Self::ExecutableIcon(left), Self::ExecutableIcon(right)) => left == right,
             (
                 Self::Archive {
                     node: left,

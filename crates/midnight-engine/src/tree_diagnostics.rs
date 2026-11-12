@@ -3,8 +3,9 @@ use crate::size_warnings::ReportLog;
 use midnight_core::{Cancellation, GeneratedTextSource, TreeDiagnostic};
 use std::{fmt, io, sync::Arc};
 
-pub(crate) fn log() -> ReportLog {
+pub(crate) fn log(arena: &crate::ReportArena) -> ReportLog {
     ReportLog::with_title(
+        arena,
         std::env::temp_dir().join("MidnightExplorer-size-warnings"),
         "Folder listing error",
     )
@@ -31,9 +32,12 @@ pub(crate) fn report(
 
 /// Terminal errors have bounded admission/retention through their existing
 /// command/event owner. No live tree is required for construction failures.
-pub(crate) fn diagnostic(error: &(impl fmt::Display + ?Sized)) -> TreeDiagnostic {
+pub(crate) fn diagnostic(
+    arena: &crate::ReportArena,
+    error: &(impl fmt::Display + ?Sized),
+) -> TreeDiagnostic {
     let message = error.to_string();
-    let source = report(&log(), "Captured tree operation", &message);
+    let source = report(&log(arena), "Captured tree operation", &message);
     TreeDiagnostic::with_details(&message, source)
 }
 
@@ -112,7 +116,7 @@ mod tests {
     #[test]
     fn terminal_diagnostic_preserves_long_unicode_tail_and_snapshot_identity() {
         let reason = format!("{} unique terminal tail", "東京 failure ".repeat(20_000));
-        let diagnostic = diagnostic(&reason);
+        let diagnostic = diagnostic(&crate::ReportArena::testing(), &reason);
         assert!(diagnostic.as_str().len() <= TreeDiagnostic::MAX_BYTES);
         assert!(!diagnostic.as_str().contains("unique terminal tail"));
         let source = diagnostic.details().unwrap().clone();
@@ -126,7 +130,11 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let blocked = temporary.path().join("not-a-directory");
         std::fs::write(&blocked, b"occupied").unwrap();
-        let log = ReportLog::with_title(blocked.join("report"), "Folder listing error");
+        let log = ReportLog::with_title(
+            &crate::ReportArena::testing(),
+            blocked.join("report"),
+            "Folder listing error",
+        );
         let source = report(&log, "東京 folder", "Permission denied by provider");
         let diagnostic = TreeDiagnostic::with_details("Permission denied by provider", source);
         assert_eq!(diagnostic.as_str(), "Permission denied by provider");

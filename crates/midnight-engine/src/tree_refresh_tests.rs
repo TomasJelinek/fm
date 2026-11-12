@@ -48,7 +48,12 @@ fn refresh_reports_all_branch_failure_details_in_one_retained_source() {
     assert!(error.as_str().contains("2 refresh failures"));
     let source = error
         .details()
-        .expect("refresh failure details are retained");
+        .expect("refresh failure details are retained")
+        .clone();
+    // The published composite must own every report after its tree session and
+    // terminal diagnostic disappear, including the session's factory clone.
+    drop(error);
+    drop(fixture);
     let mut bytes = vec![0; source.length().try_into().unwrap()];
     let mut offset = 0;
     while offset < bytes.len() {
@@ -705,6 +710,7 @@ fn empty_native_admission_can_publish_new_file_action_authority() {
         WorkerBudget::new(Arc::new(Semaphore::new(1))),
         ProjectionOptions::default(),
         &Cancellation::default(),
+        crate::ReportArena::testing(),
     )
     .unwrap();
     let mut added = directory(5, "new.txt");

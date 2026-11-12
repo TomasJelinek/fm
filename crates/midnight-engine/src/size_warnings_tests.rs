@@ -2,7 +2,7 @@ use super::*;
 
 fn log() -> (tempfile::TempDir, ReportLog) {
     let temporary = tempfile::tempdir().unwrap();
-    let log = ReportLog::new(temporary.path().join("warnings"));
+    let log = ReportLog::new(&ReportArena::testing(), temporary.path().join("warnings"));
     (temporary, log)
 }
 
@@ -77,7 +77,11 @@ fn first_reason_is_per_range_and_finished_empty_ranges_release_summary_slots() {
 #[test]
 fn custom_diagnostic_title_does_not_describe_a_size_scan() {
     let temporary = tempfile::tempdir().unwrap();
-    let log = ReportLog::with_title(temporary.path().join("details"), "Folder listing error");
+    let log = ReportLog::with_title(
+        &ReportArena::testing(),
+        temporary.path().join("details"),
+        "Folder listing error",
+    );
     let report = log.mark().report();
     record(&log, "unreadable");
     report.finish(false);
@@ -145,7 +149,7 @@ fn unavailable_report_storage_keeps_observing_and_reports_missing_details() {
     let temporary = tempfile::tempdir().unwrap();
     let unavailable = temporary.path().join("occupied");
     std::fs::write(&unavailable, b"not a directory").unwrap();
-    let log = ReportLog::new(unavailable);
+    let log = ReportLog::new(&ReportArena::testing(), unavailable);
     let report = log.mark().report();
     for name in ["a", "b", "c"] {
         record(&log, name);
@@ -194,14 +198,16 @@ impl Storage for StorageFull {
 #[test]
 fn storage_failure_in_a_multichunk_record_never_exposes_its_incomplete_text() {
     let (temporary, log) = log();
+    let reservation = log.0.lock().unwrap().arena.reserve().unwrap();
     let spool = PrivateSpoolDirectory::open(&temporary.path().join("private"))
         .unwrap()
         .create_append_only()
         .unwrap();
-    log.0.lock().unwrap().storage = Some(Box::new(StorageFull {
+    log.0.lock().unwrap().storage = Some(reservation.retain(Mutex::new(Box::new(StorageFull {
         spool,
         remaining: BUFFER_BYTES + 1_024,
-    }));
+    })
+        as Box<dyn Storage>)));
     let report = log.mark().report();
     record(&log, "saved before storage failure");
     record(
@@ -222,14 +228,16 @@ fn storage_failure_in_a_multichunk_record_never_exposes_its_incomplete_text() {
 #[test]
 fn completed_subtree_does_not_inherit_a_later_siblings_storage_failure() {
     let (temporary, log) = log();
+    let reservation = log.0.lock().unwrap().arena.reserve().unwrap();
     let spool = PrivateSpoolDirectory::open(&temporary.path().join("private"))
         .unwrap()
         .create_append_only()
         .unwrap();
-    log.0.lock().unwrap().storage = Some(Box::new(StorageFull {
+    log.0.lock().unwrap().storage = Some(reservation.retain(Mutex::new(Box::new(StorageFull {
         spool,
         remaining: 1_024,
-    }));
+    })
+        as Box<dyn Storage>)));
     let child = log.mark().report();
     record(&log, "completed child issue");
     child.finish(false);
@@ -308,4 +316,41 @@ fn concurrent_snapshot_counts_only_complete_records_and_keeps_its_own_length() {
             assert_eq!(first, text(source.as_ref()));
         }
     });
+}
+
+#[test]
+fn a_failed_report_does_not_poison_another_file_in_the_same_arena() {
+    let temporary = tempfile::tempdir().unwrap();
+    let occupied = temporary.path().join("occupied");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+    let arena = ReportArena::testing();
+    let bad = ReportLog::new(&arena, occupied);
+    let good = ReportLog::new(&arena, temporary.path().join("good"));
+    let bad_range = bad.mark().report();
+    let good_range = good.mark().report();
+    record(&bad, "first unavailable details");
+    record(&good, "first complete 東京 record");
+    record(&bad, "second unavailable details");
+    record(&good, "second complete 資料 record");
+    bad_range.finish(false);
+    good_range.finish(false);
+    let bad_text = text(
+        bad_range
+            .snapshot(&Cancellation::default())
+            .unwrap()
+            .as_ref(),
+    );
+    assert!(bad_text.contains("Observed issues: 2"));
+    assert!(bad_text.contains("Stored details: 0"));
+    assert!(bad_text.contains("Report storage failed"));
+    let good_text = text(
+        good_range
+            .snapshot(&Cancellation::default())
+            .unwrap()
+            .as_ref(),
+    );
+    assert!(good_text.contains("first complete 東京 record"));
+    assert!(good_text.contains("second complete 資料 record"));
+    assert!(good_text.contains("Stored details: 2"));
+    assert!(!good_text.contains("Report storage failed"));
 }

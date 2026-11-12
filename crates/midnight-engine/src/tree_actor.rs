@@ -56,6 +56,7 @@ const QUEUE_CAPACITY: usize = 8;
 const VIEWPORT_CAPACITY: usize = 256;
 
 pub(crate) struct Session {
+    reports: crate::ReportArena,
     tree: DirectoryTree,
     registration: Arc<RootRegistrationLease>,
     budget: WorkerBudget,
@@ -288,6 +289,7 @@ impl Session {
         budget: WorkerBudget,
         options: ProjectionOptions,
         cancel: &Cancellation,
+        reports: crate::ReportArena,
     ) -> Result<Self, ProviderError> {
         preflight_root(&root, cancel)?;
         let session = next_session(&NEXT_SESSION)?;
@@ -311,7 +313,7 @@ impl Session {
             instance,
         });
         let location = registry.resolve(&address, cancel)?;
-        let mut tree = DirectoryTree::new(location, TreeLimits::default())?;
+        let mut tree = DirectoryTree::new(location, TreeLimits::default(), reports.clone())?;
         let work = tree
             .request(tree.root(), TreeRequest::Expand)?
             .with_cancellation(cancel);
@@ -330,6 +332,7 @@ impl Session {
             &TreeRootSelection::Empty,
         )?;
         Ok(Self {
+            reports,
             tree,
             registration,
             budget,

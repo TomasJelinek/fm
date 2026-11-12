@@ -21,6 +21,7 @@ pub(crate) struct Resources {
     pub(crate) network: crate::network_neighborhood::Retirement,
     pub(crate) file_lists: crate::file_list_actor::Retirement,
     pub(crate) archive_sizes: crate::archive_sizes::Retirement,
+    pub(crate) reports: crate::report_arena::ReportArena,
     pub(crate) archives: crate::archives::Retirement,
     pub(crate) watch: crate::watch::Retirement,
     pub(crate) checksums: crate::checksum_actor::Retirement,
@@ -35,6 +36,14 @@ pub(crate) struct DragRetirement {
     pub(crate) backlog: RetirementWaiter,
 }
 impl EngineLifetime {
+    /// Shared cleanup for diagnostic reports retained by standalone directory trees.
+    ///
+    /// Clone this before transferring the lifetime to an engine. Retained reports may
+    /// outlive both the engine and Tokio; their native files still retire on workers.
+    pub fn report_arena(&self) -> crate::ReportArena {
+        self.resources.reports.clone()
+    }
+
     pub(crate) fn new() -> io::Result<Self> {
         // Copy and mutation each retain 32 jobs, one intake and one service context.
         // Drag retains state, pending drops and one serial backlog drain.
@@ -51,7 +60,8 @@ impl EngineLifetime {
             + crate::network_neighborhood::RETIREMENT_CAPACITY
             + crate::file_list_actor::RETIREMENT_CAPACITY
             + crate::archive_sizes::RETIREMENT_CAPACITY
-            + crate::archives::RETIREMENT_CAPACITY;
+            + crate::archives::RETIREMENT_CAPACITY
+            + crate::report_arena::RETIREMENT_CAPACITY;
         let domain = RetirementDomain::try_start(capacity, 7)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
@@ -86,6 +96,9 @@ impl EngineLifetime {
                     domain: domain.clone(),
                     intake: domain.new_waiter().map_err(io::Error::other)?,
                 },
+                reports: crate::report_arena::ReportArena::try_start(
+                    domain.try_reserve().map_err(io::Error::other)?,
+                )?,
                 archive_sizes: crate::archive_sizes::Retirement {
                     panes: [
                         domain.try_reserve().map_err(io::Error::other)?,

@@ -115,7 +115,7 @@ fn fixture(limits: TreeLimits) -> (ProviderRegistry, Arc<Graph>, DirectoryTree) 
     let location = registry
         .resolve(&address, &Cancellation::default())
         .unwrap();
-    let mut tree = DirectoryTree::new(location, limits).unwrap();
+    let mut tree = DirectoryTree::new(location, limits, crate::ReportArena::testing()).unwrap();
     run(&mut tree, None, TreeRequest::Expand);
     (registry, graph, tree)
 }
@@ -280,7 +280,8 @@ fn an_unavailable_container_can_be_replaced_without_replacing_its_live_parent_tr
 fn failed_root_loading_is_distinct_from_a_confirmed_empty_root() {
     let (_registry, graph, tree) = fixture(TreeLimits::default());
     let (mount, _) = tree.navigation_target(tree.root()).unwrap();
-    let mut tree = DirectoryTree::new(mount, TreeLimits::default()).unwrap();
+    let mut tree =
+        DirectoryTree::new(mount, TreeLimits::default(), crate::ReportArena::testing()).unwrap();
     graph
         .0
         .lock()

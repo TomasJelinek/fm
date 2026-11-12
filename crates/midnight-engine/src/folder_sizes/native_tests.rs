@@ -25,6 +25,7 @@ fn measured(path: &Path, kind: EntryKind) -> FolderSize {
                 true
             },
             &Arc::new(IoBudget::new()),
+            &crate::ReportArena::testing(),
         );
         sender.send(last).unwrap();
     });

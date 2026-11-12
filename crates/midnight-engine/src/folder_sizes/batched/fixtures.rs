@@ -224,6 +224,7 @@ fn start(
                 true
             },
             &budget,
+            &crate::ReportArena::testing(),
         );
         results
     })
@@ -267,6 +268,7 @@ fn a_small_ssd_root_finishes_while_another_root_is_blocked_in_io() {
                 true
             },
             &budget,
+            &crate::ReportArena::testing(),
         );
     });
     block.wait(1);
@@ -408,6 +410,7 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_io_f
                 true
             },
             &big_budget,
+            &crate::ReportArena::testing(),
         );
     });
     block.wait(1);
@@ -430,6 +433,7 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_io_f
                 true
             },
             &small_budget,
+            &crate::ReportArena::testing(),
         );
     });
     queued(&budget, 1);
@@ -515,6 +519,7 @@ fn rejected_progress_cancels_queued_and_running_workers_without_leaking_io_slots
             false
         },
         &budget,
+        &crate::ReportArena::testing(),
     );
     assert_eq!(budget.io.snapshot().available, 4);
     assert_eq!(budget.io.snapshot().queued, 0);
@@ -634,6 +639,7 @@ fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_
             &worker_cancel,
             &mut |_, _| true,
             &worker_budget,
+            &crate::ReportArena::testing(),
         );
         finished.send(()).unwrap();
     });

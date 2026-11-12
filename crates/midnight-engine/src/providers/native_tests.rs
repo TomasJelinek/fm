@@ -138,7 +138,8 @@ fn native_tree_navigation_retains_exact_provider_parent_and_root_files() {
     let mount = registry
         .resolve(&address, &Cancellation::default())
         .unwrap();
-    let mut tree = DirectoryTree::new(mount, TreeLimits::default()).unwrap();
+    let mut tree =
+        DirectoryTree::new(mount, TreeLimits::default(), crate::ReportArena::testing()).unwrap();
     let result = tree
         .request(tree.root(), TreeRequest::Expand)
         .unwrap()

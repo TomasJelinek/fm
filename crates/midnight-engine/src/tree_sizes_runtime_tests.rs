@@ -194,7 +194,11 @@ async fn cancelled_partial_scan(fail_metadata: bool) {
     let fixture = Arc::get_mut(&mut files).unwrap();
     fixture.partial_root = true;
     fixture.fail_metadata = fail_metadata;
-    let mut state = State::new(files, Arc::new(Notify::new()));
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(TreeRequestId(1), captured, &Cancellation::default());
     let first = state.tick(Some(stamp));
     acknowledge(&mut state, &first);
@@ -327,7 +331,11 @@ async fn final_snapshot_waits_for_ack_then_timer_without_more_input() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(files, Arc::new(Notify::new()));
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -370,7 +378,11 @@ async fn cancel_and_reset_keep_blocked_scan_capacity_until_real_return() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, entered, release) = filesystem(true);
-    let mut state = State::new(files.clone(), Arc::new(Notify::new()));
+    let mut state = State::new(
+        files.clone(),
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -417,7 +429,11 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, entered, release) = filesystem(true);
-    let mut state = State::new(files, Arc::new(Notify::new()));
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -481,7 +497,11 @@ async fn repeated_fast_scans_respect_one_map_per_quarter_second() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(files, Arc::new(Notify::new()));
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     for id in 1..=8 {
         state.enqueue(
             TreeRequestId(id),
@@ -516,7 +536,11 @@ async fn selected_totals_use_exact_current_arcs_and_known_completed_bytes() {
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(files, Arc::new(Notify::new()));
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),
@@ -567,7 +591,11 @@ async fn refresh_invalidation_preserves_ack_slot_and_increasing_snapshot_version
     let row = f.session.projection().rows[0].id;
     let stamp = f.session.projection().stamp;
     let (files, _, _) = filesystem(false);
-    let mut state = State::new(files, Arc::new(Notify::new()));
+    let mut state = State::new(
+        files,
+        Arc::new(Notify::new()),
+        crate::ReportArena::testing(),
+    );
     state.enqueue(
         TreeRequestId(1),
         capture(&mut f.session, 1, row),

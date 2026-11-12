@@ -26,7 +26,13 @@ struct Pending {
     selected: TreeRootSelection,
     ready: Option<Arc<ReadyRoot>>,
 }
+pub(super) struct Services {
+    pub native: NativeProvider,
+    pub locale: Option<Arc<dyn LocaleService>>,
+    pub reports: crate::ReportArena,
+}
 pub(super) struct Worker {
+    reports: crate::ReportArena,
     inbox: Arc<Mailbox>,
     snapshots: Snapshots,
     native: NativeProvider,
@@ -50,18 +56,27 @@ impl Worker {
     pub fn new(
         inbox: Arc<Mailbox>,
         snapshots: Snapshots,
-        native: NativeProvider,
-        locale: Option<Arc<dyn LocaleService>>,
+        services: Services,
         budget: WorkerBudget,
         outbox: Outbox,
         copy_capacity: Arc<Semaphore>,
     ) -> Self {
+        let Services {
+            native,
+            locale,
+            reports,
+        } = services;
         let listing = budget.listing();
         Self {
             watch: None,
             refresh_ticket: None,
             copy_capacity,
-            sizes: crate::tree_sizes::State::new(native.filesystem(), inbox.wake.clone()),
+            sizes: crate::tree_sizes::State::new(
+                native.filesystem(),
+                inbox.wake.clone(),
+                reports.clone(),
+            ),
+            reports,
             inbox,
             snapshots,
             native,
@@ -172,7 +187,7 @@ impl Worker {
                 self.retire_watch();
                 self.session.take().map(|session| TreeEvent::Unavailable {
                     root: session.projection().root.clone(),
-                    error: crate::tree_diagnostics::diagnostic(&error),
+                    error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
                 })
             }
             _ => None,
@@ -240,7 +255,7 @@ impl Worker {
                     Ok(publication) => self.emit(TreeEvent::Published(publication)),
                     Err(error) => self.emit(TreeEvent::Unavailable {
                         root,
-                        error: crate::tree_diagnostics::diagnostic(&error),
+                        error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
                     }),
                 }
             } else {
@@ -287,42 +302,42 @@ impl Worker {
                 request: *request,
                 result: session
                     .capture_drop_directory(view, *row, *request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Edit(request) => Ok(Some(TreeEvent::EditorCaptured {
                 stamp: request.view.stamp,
                 request: request.request,
                 result: session
                     .capture_editor(request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Checksums(request) => Ok(Some(TreeEvent::ChecksumsCaptured {
                 stamp: request.view.stamp,
                 request: request.request,
                 result: session
                     .capture_checksums(request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Clipboard(request) => Ok(Some(TreeEvent::Clipboard {
                 stamp: request.view.stamp,
                 request: request.request,
                 result: session
                     .capture_clipboard(request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Delete(request) => Ok(Some(TreeEvent::DeleteCaptured {
                 stamp: request.view.stamp,
                 request: request.request,
                 result: session
                     .capture_delete(request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Transfer(request) => Ok(Some(TreeEvent::Transfer {
                 stamp: request.view.stamp,
                 request: request.request,
                 result: session
                     .capture_transfer(request, &self.copy_capacity, cancel)
-                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
             TreeCommand::Commit(view) => {
                 if session.commit(view) {
@@ -451,7 +466,7 @@ impl Worker {
                     );
                 self.emit(diagnostic_rejection(
                     command,
-                    crate::tree_diagnostics::diagnostic(&error),
+                    crate::tree_diagnostics::diagnostic(&self.reports, &error),
                     retryable,
                 ));
             }
@@ -495,7 +510,7 @@ impl Worker {
                 let pending = self.pending.take().expect("pending root");
                 self.emit(TreeEvent::Unavailable {
                     root: pending.root,
-                    error: crate::tree_diagnostics::diagnostic(&error),
+                    error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
                 });
             }
         }
@@ -525,6 +540,7 @@ impl Worker {
                         ..Default::default()
                     },
                     &generation.cancel,
+                    self.reports.clone(),
                 )?;
                 session.seed_selection(pending.revision, &pending.selected)?;
                 let publication = session.publication()?;
@@ -538,7 +554,7 @@ impl Worker {
             Ok(_) => {}
             Err(error) => self.emit(TreeEvent::Unavailable {
                 root: pending.root,
-                error: crate::tree_diagnostics::diagnostic(&error),
+                error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
             }),
         }
     }
@@ -613,7 +629,7 @@ impl Worker {
         if let Some(session) = self.session.take() {
             self.emit(TreeEvent::Unavailable {
                 root: session.projection().root.clone(),
-                error: crate::tree_diagnostics::diagnostic(&error),
+                error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
             });
         }
     }
@@ -651,7 +667,7 @@ impl Worker {
                     Err(error) => self.emit(TreeEvent::Sizes(TreeSizeEvent::Rejected {
                         stamp: request.view.stamp,
                         request: request.request,
-                        error: crate::tree_diagnostics::diagnostic(&error),
+                        error: crate::tree_diagnostics::diagnostic(&self.reports, &error),
                     })),
                 }
             }

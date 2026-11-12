@@ -155,9 +155,11 @@ fn final_archive_revision_diagnostic_retains_error_and_never_finishes_a_clean_ro
     let mut last = FolderSize::default();
     let result = compute_checked(
         &mount,
-        &tests::address(),
-        &[1],
-        &[],
+        ScanScope {
+            address: &tests::address(),
+            ancestors: &[1],
+            reserved: &[],
+        },
         &[named(2, 1, EntryKind::Directory, b"root")],
         &Cancellation::default(),
         &mut |id, size| {
@@ -167,6 +169,7 @@ fn final_archive_revision_diagnostic_retains_error_and_never_finishes_a_clean_ro
             last = size;
             true
         },
+        &crate::ReportArena::testing(),
     );
     let error = result.expect_err("the final revision error must survive without revalidation");
     mount.changed.store(false, Ordering::Relaxed);
@@ -234,15 +237,18 @@ fn concurrent_failure(kind: io::ErrorKind, validation: usize) -> FolderSize {
     let mut last = FolderSize::default();
     let result = compute_checked(
         &mount,
-        &tests::address(),
-        &[1],
-        &[],
+        ScanScope {
+            address: &tests::address(),
+            ancestors: &[1],
+            reserved: &[],
+        },
         &[named(2, 1, EntryKind::Directory, b"raw-root")],
         &mount.cancel,
         &mut |_, size| {
             last = size;
             true
         },
+        &crate::ReportArena::testing(),
     );
     assert!(!matches!(result, Ok(true)));
     assert!(!last.finished);

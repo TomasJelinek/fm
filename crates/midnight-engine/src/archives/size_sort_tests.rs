@@ -116,6 +116,7 @@ impl Harness {
                 crate::archive_sizes::Retirement {
                     panes: std::array::from_fn(|_| size_domain.try_reserve().unwrap()),
                 },
+                crate::ReportArena::testing(),
                 snapshots.clone(),
                 outbox,
             ),

@@ -140,6 +140,7 @@ fn cancelled_actor_retires_service(actor: Actor) {
             )),
             Actor::FolderPresence => Box::new(crate::folder_presence::Controller::new(
                 scope.clone(),
+                crate::ReportArena::testing(),
                 service.clone(),
                 crate::test_snapshots(Default::default()),
                 std::array::from_fn(|_| Arc::new(tokio::sync::Semaphore::new(1))),
@@ -148,6 +149,7 @@ fn cancelled_actor_retires_service(actor: Actor) {
             )),
             Actor::EntrySizes => Box::new(crate::entry_sizes::Controller::new(
                 crate::entry_sizes::Services {
+                    reports: crate::ReportArena::testing(),
                     filesystem: service.clone(),
                     scope: scope.clone(),
                 },

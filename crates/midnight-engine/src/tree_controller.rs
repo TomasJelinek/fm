@@ -19,6 +19,12 @@ mod mailbox;
 mod worker;
 use mailbox::{Generation, Mailbox};
 
+pub(crate) struct Services {
+    pub(crate) filesystem: Arc<dyn FileSystem>,
+    pub(crate) locale: Option<Arc<dyn LocaleService>>,
+    pub(crate) reports: crate::ReportArena,
+}
+
 pub(crate) struct Controller {
     lanes: [Arc<Mailbox>; 2],
     workers: [Option<JoinHandle<()>>; 2],
@@ -38,14 +44,18 @@ impl RootReady {
 
 impl Controller {
     pub(crate) fn new(
-        filesystem: Arc<dyn FileSystem>,
-        locale: Option<Arc<dyn LocaleService>>,
+        services: Services,
         listings: [Arc<Semaphore>; 2],
         mutation_gate: Arc<Semaphore>,
         snapshots: Snapshots,
         outbox: Outbox,
         watch: Option<crate::watch::Handle>,
     ) -> Self {
+        let Services {
+            filesystem,
+            locale,
+            reports,
+        } = services;
         let lanes = std::array::from_fn(|_| Arc::new(Mailbox::default()));
         {
             let mut states = snapshots.lock().unwrap_or_else(|e| e.into_inner());
@@ -62,8 +72,11 @@ impl Controller {
             let mut worker = worker::Worker::new(
                 lanes[pane].clone(),
                 snapshots.clone(),
-                native,
-                locale.clone(),
+                worker::Services {
+                    native,
+                    locale: locale.clone(),
+                    reports: reports.clone(),
+                },
                 WorkerBudget::new(listings[pane].clone()).with_mutation_gate(mutation_gate.clone()),
                 outbox.clone(),
                 copy_capacity.clone(),
