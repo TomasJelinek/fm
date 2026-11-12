@@ -6,6 +6,30 @@ use std::ops::Range;
 /// Paragraph wrapping and table widths must not depend on scroll direction.
 /// The line count is a demand hint; the byte/block limits remain hard bounds.
 pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPage, DocumentPage> {
+    let Some(selected) = select(&page, window) else {
+        return Err(page);
+    };
+    let source = source(&page, &selected);
+    page.has_before |= selected.start != 0;
+    page.has_after |= selected.end != page.blocks.len();
+    page.blocks = page.blocks.drain(selected).collect();
+    page.source = source;
+    Ok(page)
+}
+
+/// Borrow retained context and copy only the complete layout groups being returned.
+pub(crate) fn crop_ref(page: &DocumentPage, window: &Window) -> Option<DocumentPage> {
+    let selected = select(page, window)?;
+    Some(DocumentPage {
+        revision: page.revision,
+        source: source(page, &selected),
+        blocks: page.blocks[selected.clone()].to_vec(),
+        has_before: page.has_before || selected.start != 0,
+        has_after: page.has_after || selected.end != page.blocks.len(),
+    })
+}
+
+fn select(page: &DocumentPage, window: &Window) -> Option<Range<usize>> {
     let mut groups: Vec<Range<usize>> = Vec::new();
     for (index, block) in page.blocks.iter().enumerate() {
         if block.table.as_ref().is_some_and(|row| !row.header)
@@ -29,10 +53,7 @@ pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPa
             .rposition(|range| page.blocks[range.start].text.source.offset < window.anchor)
     } else {
         first
-    };
-    let Some(pivot) = pivot else {
-        return Err(page);
-    };
+    }?;
     let order: Box<dyn Iterator<Item = usize>> = if window.backwards {
         Box::new((0..=pivot).rev())
     } else {
@@ -58,7 +79,7 @@ pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPa
                 // Retaining all preceding/following context would return the
                 // same full-budget unit forever for an overlapping wheel anchor.
                 // Use bounded scalar paging for this oversized layout context.
-                return Err(page);
+                return None;
             }
             break;
         }
@@ -91,8 +112,12 @@ pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPa
     }
     if selected.is_empty() {
         // Oversized individual blocks retain the bounded scalar-safe fallback.
-        return Err(page);
+        return None;
     }
+    Some(selected)
+}
+
+fn source(page: &DocumentPage, selected: &Range<usize>) -> SourceRange {
     let old_end = page.source.offset + page.source.length;
     let start = if selected.start == 0 {
         page.source.offset
@@ -104,12 +129,8 @@ pub(crate) fn crop(mut page: DocumentPage, window: &Window) -> Result<DocumentPa
     } else {
         page.blocks[selected.end].text.source.offset
     };
-    page.has_before |= selected.start != 0;
-    page.has_after |= selected.end != page.blocks.len();
-    page.blocks = page.blocks.drain(selected).collect();
-    page.source = SourceRange {
+    SourceRange {
         offset: start,
         length: end - start,
-    };
-    Ok(page)
+    }
 }

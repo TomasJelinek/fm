@@ -45,7 +45,7 @@ pub fn cached(session: &Session, request: &Viewport) -> Option<(Arc<DocumentPage
     {
         return None;
     }
-    let mut page = markdown::crop_context((**context).clone(), &window(request))?;
+    let mut page = markdown::crop_context(context.as_ref(), &window(request))?;
     page.has_before = page.source.offset > bom;
     hints.cache.insert(request, &page);
     let page = hints.cache.get(request)?;
@@ -157,7 +157,7 @@ pub fn viewport(
         };
         let mut window = window(&request);
         window.anchor = if request.backwards { upper } else { anchor };
-        let page = markdown::crop_context(raw.clone(), &window).unwrap_or_else(|| {
+        let page = markdown::crop_context(&raw, &window).unwrap_or_else(|| {
             let plain = markdown::plain(&decoded, session.revision, page_eof);
             if request.backwards {
                 markdown::crop_backward(plain, upper, window.max_bytes.min(8192), window.max_lines)
@@ -170,6 +170,7 @@ pub fn viewport(
         // It is revision-local and was already read on demand. Nearby anchors
         // can now reuse both bytes and parse structure while scrolling back.
         if !context.is_cancelled() && page_cache::size(&raw) <= 1024 * 1024 {
+            // Compact parser scratch capacities for the length-based byte budget.
             hints.context = Some(Arc::new(raw.clone()));
         }
         hints.checkpoints.extend(checkpoints);

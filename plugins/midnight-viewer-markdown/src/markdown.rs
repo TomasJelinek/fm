@@ -101,8 +101,9 @@ pub(crate) fn render_context(
     Some((raw, checkpoints))
 }
 
-pub(crate) fn crop_context(raw: DocumentPage, window: &Window) -> Option<DocumentPage> {
-    let mut page = crate::semantic_window::crop(raw, window).unwrap_or_else(|raw| window.crop(raw));
+pub(crate) fn crop_context(raw: &DocumentPage, window: &Window) -> Option<DocumentPage> {
+    let mut page =
+        crate::semantic_window::crop_ref(raw, window).unwrap_or_else(|| window.crop(raw.clone()));
     if !fits_wire(&mut page) {
         // A complete layout unit can fit the read budget while exceeding the
         // public exact-anchor/item budget. Preserve exact selection boundaries
