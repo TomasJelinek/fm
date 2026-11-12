@@ -288,3 +288,111 @@ fn hashing_and_registration_reads_deny_concurrent_writes_and_replacement() {
         assert!(std::fs::rename(path, path.with_extension("renamed")).is_err());
     }
 }
+
+#[test]
+fn executable_snapshot_diagnostics_identifies_role_and_actual_path() {
+    let before = crate::native::test_support::snapshot(3, 7, [0; 16], 11, 13);
+    for (role, path, expected_context) in [
+        (
+            ExecutableRole::Launch,
+            Path::new(r"\\?\D:\český build\me.exe"),
+            r#"role=launch_executable; path="\\\\?\\D:\\český build\\me.exe""#,
+        ),
+        (
+            ExecutableRole::RegisteredTarget,
+            Path::new(r"\\?\C:\private runtime\me.exe"),
+            r#"role=registered_target; path="\\\\?\\C:\\private runtime\\me.exe""#,
+        ),
+    ] {
+        let error = validate_executable_snapshot(path, role, &before, &before, 2).unwrap_err();
+        assert!(
+            error
+                .0
+                .starts_with("Plugin runtime executable changed while hashing")
+        );
+        assert!(error.0.contains(expected_context), "{}", error.0);
+    }
+}
+
+#[test]
+fn executable_snapshot_diagnostics_reports_changed_fields_and_exact_values() {
+    let before = crate::native::test_support::snapshot(3, 7, [0; 16], 11, 13);
+    for (after, expected_fields) in [
+        (
+            crate::native::test_support::snapshot(4, 7, [0; 16], 11, 13),
+            "changed_fields=[length(before=3, after=4)]",
+        ),
+        (
+            crate::native::test_support::snapshot(3, 8, [0; 16], 11, 13),
+            "changed_fields=[volume(before=7, after=8)]",
+        ),
+        (
+            crate::native::test_support::snapshot(3, 7, [0xab; 16], 11, 13),
+            "changed_fields=[file_id(before=00000000000000000000000000000000, \
+             after=abababababababababababababababab)]",
+        ),
+        (
+            crate::native::test_support::snapshot(3, 7, [0; 16], 12, 13),
+            "changed_fields=[LastWriteTime(before=11, after=12)]",
+        ),
+        (
+            crate::native::test_support::snapshot(3, 7, [0; 16], 11, 14),
+            "changed_fields=[ChangeTime(before=13, after=14)]",
+        ),
+        (
+            crate::native::test_support::snapshot(4, 8, [0xab; 16], 12, 14),
+            "changed_fields=[length(before=3, after=4), volume(before=7, after=8), \
+             file_id(before=00000000000000000000000000000000, \
+             after=abababababababababababababababab), LastWriteTime(before=11, after=12), \
+             ChangeTime(before=13, after=14)]",
+        ),
+    ] {
+        let error = validate_executable_snapshot(
+            Path::new(r"D:\launch\me.exe"),
+            ExecutableRole::Launch,
+            &before,
+            &after,
+            3,
+        )
+        .unwrap_err();
+        assert!(error.0.contains(expected_fields), "{}", error.0);
+    }
+}
+
+#[test]
+fn executable_snapshot_diagnostics_reports_actual_bytes_when_metadata_is_unchanged() {
+    let before = crate::native::test_support::snapshot(3, 7, [0; 16], 11, 13);
+    for (bytes_read, expected_counts) in [
+        (2, "changed_fields=[]; bytes_read=2; expected_length=3"),
+        (4, "changed_fields=[]; bytes_read=4; expected_length=3"),
+    ] {
+        let error = validate_executable_snapshot(
+            Path::new(r"D:\launch\me.exe"),
+            ExecutableRole::Launch,
+            &before,
+            &before,
+            bytes_read,
+        )
+        .unwrap_err();
+        assert!(error.0.contains(expected_counts), "{}", error.0);
+    }
+}
+
+#[test]
+fn executable_snapshot_diagnostics_accepts_identical_snapshots_and_expected_byte_counts() {
+    for length in [0, 3] {
+        let before = crate::native::test_support::snapshot(length, 7, [0; 16], 11, 13);
+        for role in [ExecutableRole::Launch, ExecutableRole::RegisteredTarget] {
+            assert!(
+                validate_executable_snapshot(
+                    Path::new(r"D:\launch\me.exe"),
+                    role,
+                    &before,
+                    &before,
+                    length,
+                )
+                .is_ok()
+            );
+        }
+    }
+}

@@ -1,6 +1,7 @@
 //! Windows native boundary: raw UTF-16 paths, handle identity and restricted DLL search.
 use crate::{Error, api::abi};
 use std::{
+    fmt,
     fs::{File, OpenOptions},
     io,
     os::windows::{
@@ -36,6 +37,54 @@ impl Snapshot {
         bytes.extend(self.write.to_le_bytes());
         bytes.extend(self.change.to_le_bytes());
         bytes
+    }
+
+    /// Format only the differing values from already captured handle snapshots.
+    pub(crate) fn changed_fields(&self, after: &Self) -> String {
+        let mut fields = Vec::new();
+        if self.length != after.length {
+            fields.push(format!(
+                "length(before={}, after={})",
+                self.length, after.length,
+            ));
+        }
+        if self.volume != after.volume {
+            fields.push(format!(
+                "volume(before={}, after={})",
+                self.volume, after.volume,
+            ));
+        }
+        if self.id != after.id {
+            fields.push(format!(
+                "file_id(before={}, after={})",
+                DiagnosticFileId(&self.id),
+                DiagnosticFileId(&after.id),
+            ));
+        }
+        if self.write != after.write {
+            fields.push(format!(
+                "LastWriteTime(before={}, after={})",
+                self.write, after.write,
+            ));
+        }
+        if self.change != after.change {
+            fields.push(format!(
+                "ChangeTime(before={}, after={})",
+                self.change, after.change,
+            ));
+        }
+        fields.join(", ")
+    }
+}
+
+struct DiagnosticFileId<'a>(&'a [u8; 16]);
+
+impl fmt::Display for DiagnosticFileId<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
     }
 }
 
@@ -147,6 +196,27 @@ impl Drop for Library {
         // SAFETY: unique owned loader reference, all callbacks quiesce before last Arc drop.
         unsafe {
             FreeLibrary(self.0);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::Snapshot;
+
+    pub(crate) fn snapshot(
+        length: u64,
+        volume: u64,
+        id: [u8; 16],
+        write: i64,
+        change: i64,
+    ) -> Snapshot {
+        Snapshot {
+            length,
+            volume,
+            id,
+            write,
+            change,
         }
     }
 }
