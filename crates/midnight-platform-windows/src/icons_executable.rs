@@ -1,10 +1,24 @@
 //! Resource extraction only; no executable is loaded as code or started.
 use super::*;
 use midnight_core::Cancellation;
+use midnight_platform_common::icon_snapshot::SnapshotPixels;
 use windows_sys::Win32::UI::Shell::SHDefExtractIconW;
 
 pub(super) fn load(path: &Path, size: u16, cancel: &Cancellation) -> Option<IconPixels> {
-    if !path.is_absolute() || !(1..=64).contains(&size) || cancel.is_cancelled() {
+    if !(1..=64).contains(&size) {
+        return None;
+    }
+    let pixels = load_index(path, 0, size, cancel)?;
+    IconPixels::new(pixels.width, pixels.height, pixels.rgba).ok()
+}
+
+pub(super) fn load_index(
+    path: &Path,
+    index: i32,
+    size: u16,
+    cancel: &Cancellation,
+) -> Option<SnapshotPixels> {
+    if index < 0 || !path.is_absolute() || !(1..=128).contains(&size) || cancel.is_cancelled() {
         return None;
     }
     let mut wide: Vec<_> = path.as_os_str().encode_wide().collect();
@@ -16,11 +30,11 @@ pub(super) fn load(path: &Path, size: u16, cancel: &Cancellation) -> Option<Icon
     let _com = ComGuard::initialize(COINIT_MULTITHREADED as u32)?;
     let mut handle = ptr::null_mut();
     // SAFETY: the native path is terminated and the output points to a writable HICON.
-    // Index zero selects the executable's default resource; LOWORD requests this size.
+    // The nonnegative index selects a resource; LOWORD requests this size.
     let result = unsafe {
         SHDefExtractIconW(
             wide.as_ptr(),
-            0,
+            index,
             0,
             &mut handle,
             ptr::null_mut(),
@@ -38,7 +52,7 @@ pub(super) fn load(path: &Path, size: u16, cancel: &Cancellation) -> Option<Icon
     if cancel.is_cancelled() || !rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0) {
         return None;
     }
-    IconPixels::new(u32::from(size), u32::from(size), rgba).ok()
+    SnapshotPixels::new(u32::from(size), u32::from(size), rgba).ok()
 }
 
 #[cfg(test)]

@@ -111,6 +111,13 @@ pub enum Command {
     },
     CloseFind(crate::FindSessionId),
     ValidateFindResult(crate::FindValidationRequest),
+    CaptureFindFile(crate::FindValidationRequest),
+    ExecuteFindFile {
+        request: crate::DesktopRequestId,
+        source: Arc<dyn crate::CapturedFindFile>,
+        action: crate::FindFileOperation,
+        cancel: crate::Cancellation,
+    },
     ArchiveSelect {
         pane: PaneId,
         navigation: NavigationId,
@@ -134,6 +141,7 @@ pub enum Command {
     PrepareOperation(crate::PrepareOperation),
     PrepareCapturedDelete(crate::PrepareCapturedDelete),
     PrepareCapturedRename(crate::PrepareCapturedRename),
+    PrepareCapturedMetadata(crate::PrepareCapturedMetadata),
     ConfirmOperation {
         id: crate::OperationId,
         /// Basename for Rename/CreateFile, relative path for CreateDirectory, absent for Delete.
@@ -397,6 +405,7 @@ pub enum Event {
     Find(Box<crate::FindEvent>),
     FindRejected(Box<crate::FindRejected>),
     FindResultValidated(Box<crate::FindValidationResult>),
+    FindFileCaptured(Box<crate::FindFileCaptureResult>),
     ArchiveSelection {
         pane: PaneId,
         navigation: NavigationId,

@@ -13,6 +13,12 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Protocol version; existing semantic and image protocols are unrelated.
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// Explicit host launch opt-in for the physical-key extension. Never inherit this value.
+/// Providers must emit only baseline tags unless the launching host supplies the exact value.
+pub const HOST_SHORTCUTS_ENV: &str = "MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS";
+/// Enables Backspace/AltLeft/AltRight after the browser's live editable-focus arbitration.
+pub const HOST_SHORTCUTS_PHYSICAL_V1: &str = "physical-v1";
+
 /// Identities are scoped to one process; zero is reserved and invalid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -222,6 +228,12 @@ pub enum HostShortcut {
     ZoomOut,
     ZoomReset,
     Copy,
+    /// Plain Backspace; requires the explicit physical-v1 host launch opt-in.
+    Backspace,
+    /// Alt+Left; requires the explicit physical-v1 host launch opt-in.
+    AltLeft,
+    /// Alt+Right; requires the explicit physical-v1 host launch opt-in.
+    AltRight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

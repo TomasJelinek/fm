@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|(i, path)| Entry::new(EntryId(i as u64), path.clone(), EntryKind::File))
         .collect();
     let launch = ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: None,
@@ -51,14 +52,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         basic: false,
         disabled_plugins: Arc::from([]),
     };
-    let keys = Rc::new(|chord: &ShortcutChord, search: bool| {
-        if chord.key == "Escape" {
-            Some("viewer.close".into())
-        } else if !search && chord.key == "Space" {
-            Some("viewer.next-file".into())
-        } else {
-            None
-        }
+    let shortcuts = ShortcutMap::new(&[])?;
+    let keys = Rc::new(move |chord: &ShortcutChord, search: bool| {
+        shortcuts
+            .resolve(
+                chord,
+                if search {
+                    ShortcutContext::ViewerSearch
+                } else {
+                    ShortcutContext::Viewer
+                },
+            )
+            .map(|action| action.id.clone())
     });
     let window = manager.open(
         launch,

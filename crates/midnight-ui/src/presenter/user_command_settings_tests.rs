@@ -656,3 +656,36 @@ fn settings_waiting_status_survives_cancelled_older_or_unrelated_selection_actio
         assert!(p.desktop.notice.is_none());
     }
 }
+
+#[test]
+fn separator_settings_apply_preserves_identity_and_refuses_preview_without_dispatch() {
+    let mut p = setup();
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    form.kind = 2;
+    form.working_directory.clear();
+    p.validate_user_command_setting(&token, &form);
+    assert!(p.user_command_settings.can_apply);
+    assert!(!p.user_command_settings.can_preview);
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    assert!(!p.preview_user_command_setting(&token, &form, &send));
+    assert!(sent.borrow().is_empty());
+    assert!(p.apply_user_command_setting(&token, &form, &send));
+    assert_eq!(p.preferences.values.user_commands[0].id.as_str(), "first");
+    assert!(matches!(
+        p.preferences.values.user_commands[0].invocation,
+        UserCommandInvocation::Separator
+    ));
+    assert!(!p.user_command_settings.can_preview);
+    let token = p.user_command_settings.token();
+    assert!(p.move_user_command_setting(&token, 1, &send));
+    assert_eq!(p.preferences.values.user_commands[1].id.as_str(), "first");
+    assert!(sent.borrow().iter().all(|c| !matches!(
+        c,
+        Command::ExecuteUserCommand(_) | Command::PreviewUserCommand(_)
+    )));
+}

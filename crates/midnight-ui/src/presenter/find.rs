@@ -1,5 +1,8 @@
 //! Modeless Find presentation state; native work is dispatched through commands.
 use super::*;
+#[path = "find_actions.rs"]
+mod actions;
+pub(crate) use actions::FileAction;
 
 pub(crate) struct FindForm {
     pub masks: String,
@@ -51,6 +54,9 @@ pub(crate) struct FindSession {
     pub summary: Option<FindSummary>,
     pub error: String,
     pending: Option<FindValidationRequest>,
+    pending_file: Option<actions::PendingFile>,
+    file_cancel: Cancellation,
+    viewer: Option<ViewerLaunch>,
 }
 
 impl FindState {
@@ -102,6 +108,9 @@ impl Presenter {
                 summary: None,
                 error: String::new(),
                 pending: None,
+                pending_file: None,
+                file_cancel: Cancellation::default(),
+                viewer: None,
             },
         );
         Some(id)
@@ -170,6 +179,10 @@ impl Presenter {
             s.error = "Search queue is busy. Try again.".into();
             return false;
         }
+        s.file_cancel.cancel();
+        s.file_cancel = Cancellation::default();
+        self.retired.push(Box::new(s.pending_file.take()));
+        self.retired.push(Box::new(s.viewer.take()));
         s.generation = generation;
         s.running = true;
         s.duplicates = form.duplicates;
@@ -241,6 +254,7 @@ impl Presenter {
             s.error = "Request queue is busy. Try closing again.".into();
             return false;
         }
+        s.file_cancel.cancel();
         self.retired.push(Box::new(self.finds.sessions.remove(&id)));
         true
     }

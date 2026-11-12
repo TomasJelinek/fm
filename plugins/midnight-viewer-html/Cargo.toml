@@ -1,6 +1,6 @@
 [package]
 name = "midnight-viewer-html"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -19,7 +19,7 @@ diagnostic-timing = []
 
 [dependencies]
 cef = { version = "=156.4.0+156.0.26", default-features = false, features = ["sandbox"], optional = true }
-midnight-web-viewer-api = { version = "=0.1.0", registry = "midnight" }
+midnight-web-viewer-api = { version = "=0.2.0", registry = "midnight" }
 
 [[bin]]
 name = "midnight-html-linux-launcher"

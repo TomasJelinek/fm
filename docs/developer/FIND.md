@@ -8,8 +8,9 @@ content query remains literal. See the current
 
 `midnight-core::FindService` is an internal Rust backend capability, not a stable
 external plugin ABI. Windows and Linux implementations live in separate native
-modules. The engine accepts `StartFind`, `SortFind`, `CancelFind`, `CloseFind` and
-`ValidateFindResult`; the UI only captures input and displays shared results.
+modules. The engine accepts `StartFind`, `SortFind`, `CancelFind`, `CloseFind`,
+`ValidateFindResult`, `CaptureFindFile` and explicit `ExecuteFindFile`; the UI only
+captures input and displays shared results.
 
 Each of at most four modeless windows owns a monotonic session ID. Every accepted
 search increments its generation. Up to two workers stream ordinary batches of at
@@ -67,8 +68,9 @@ limited to 1 GiB. All limits can be lowered. A group that exceeds remaining resu
 capacity is omitted as a whole with an explicit limit. Group size describes the
 eligible identities discovered by this search, whose incomplete status remains
 visible when traversal or resource limits omit part of the requested scope.
-Duplicate results provide read-only navigation, with no original/redundant-file
-or reclaimable-space designation and no automatic deletion.
+Duplicate results use the same explicit navigation, View, Edit and Open actions as
+ordinary results, with no original/redundant-file or reclaimable-space designation
+and no automatic deletion.
 
 `files.find` defaults to Alt+F7 and appears in the configurable command catalogue.
 An existing explicit Alt+F7 assignment takes precedence over this new default;
@@ -115,12 +117,44 @@ Go to file sends retained session/generation/result IDs, not authority reconstru
 from displayed paths. The backend reopens and validates identity/revision. The UI
 checks the pending token/generation again and navigates the originating panel to
 the containing directory with a wanted cursor. This is read-only navigation; it
-does not execute or edit the found file. A future Open/Edit/Delete needs validation
-integrated into its backend execution, not a bare path forwarded after this event.
+does not execute or edit the found file. The separate View, Edit and Open controls
+request `CaptureFindFile` with the retained session/generation/result IDs. The
+capture preserves the exact native result and provider, and rejects directories,
+changed identity/revision and obsolete sessions. A navigation validation receipt
+never authorizes one of these actions.
+
+View uses the configured `files.view` binding (F3 by default), with
+`files.view-basic` (Alt+F3) selecting the ordinary plain-text viewer. Edit uses the
+configured `files.edit` binding (F4). Hints and keyboard resolution use the current
+shortcut settings. These shortcuts operate while the result list has focus.
+Open is an explicit button and may execute a program through its system association.
+Enter and double-click retain Go to file behavior. Folder actions use Go to file;
+View/Edit buttons require a regular file. No Find action automatically deletes a
+file or interprets a displayed path as native authority.
+
+The viewer backend validates the capability before and after capture through the
+installed native filesystem provider and matches its captured stable identity and
+revision. Only the selected result enters the viewer; no panel path or unrelated
+panel ordering is substituted. The ordinary bounded viewer pipelines handle
+content; Find does not read an arbitrary file into memory. Native Open/Edit
+validate immediately before launch on the existing desktop workers, reuse the
+ordinary launch/process limits and pass the captured raw path as a literal target.
+External applications still consume a live native pathname: validation is not an
+atomic filesystem snapshot and cannot prevent namespace substitution after that
+check or edits by another writer. The existing platform launch limits remain.
+
+Sixteen retained action captures share the startup-reserved engine retirement
+domain. Each capture holds its admission permit until actual worker disposal,
+including stale replies, failed launches and runtime shutdown. The existing
+16-request validation queue and single worker admit capture requests too. Stop
+retains file action availability; accepted restart, Close and shutdown invalidate
+obsolete generations. UI generation/token checks and cancellation prevent a late
+capture from opening a different search result. Queue rejection leaves a visible
+retryable error. See the [action verification](../verification/2026-11-12-find-actions.md).
 
 Current scope is native Windows/Linux. Archives and other providers, legacy
 content encodings, BOM-less UTF-16, hex/regex content queries and automatic file
-execution are not enabled. Unsupported content, access errors and reached budgets produce
+execution are not enabled. System file activation requires the explicit Open action. Unsupported content, access errors and reached budgets produce
 an explicit incomplete result, counts and Details; no silent complete claim.
 
 The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry

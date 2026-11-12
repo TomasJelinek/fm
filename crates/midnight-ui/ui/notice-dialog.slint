@@ -1,7 +1,6 @@
 import { Theme } from "theme.slint";
 import { DialogText } from "dialog-text.slint";
-import { DialogHeader, DialogWindowStyle } from "dialog-frame.slint";
-import { ErrorGlyph } from "error-notice.slint";
+import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { ScrollView } from "std-widgets.slint";
 import { FallbackIcons } from "action-icons.slint";
@@ -33,13 +32,6 @@ export component NoticeDialog inherits Rectangle {
                 close-label: "Close dialog"; close => { root.close(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            if root.error && DialogWindowStyle.native-titlebar: HorizontalLayout {
-                spacing: 8px; cross-axis-alignment: center;
-                ErrorGlyph {}
-                Text { text: root.title; color: Theme.error-text; font-weight: 600;
-                    overflow: elide; horizontal-stretch: 1; min-width: 0px; }
-            }
-            Rectangle { height: 1px; background: Theme.frame; }
             DialogText { text: root.body; vertical-stretch: 1; min-height: 0px; }
             HorizontalLayout {
                 spacing: 8px;

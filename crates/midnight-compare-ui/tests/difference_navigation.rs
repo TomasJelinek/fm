@@ -65,9 +65,9 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
                     .resolve(
                         chord,
                         if control {
-                            ShortcutContext::ViewerSearch
+                            ShortcutContext::ComparisonSearch
                         } else {
-                            ShortcutContext::Viewer
+                            ShortcutContext::Comparison
                         },
                     )
                     .map(|action| action.id.clone())

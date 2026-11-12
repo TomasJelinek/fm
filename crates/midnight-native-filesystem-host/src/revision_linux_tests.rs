@@ -47,3 +47,52 @@ fn malformed_or_unknown_linux_revisions_never_match() {
     }
     assert!(!matches(&current, &token(b"linux-file-v1")));
 }
+
+#[test]
+fn find_capture_requires_exact_native_identity_and_content_revision() {
+    let mut object = [0u8; 16];
+    object[..8].copy_from_slice(&23u64.to_le_bytes());
+    let entry = midnight_core::FindEntry {
+        path: "unused.txt".into(),
+        kind: midnight_core::EntryKind::File,
+        identity: midnight_core::TransferIdentity { device: 17, object },
+        revision: midnight_core::FindRevision([31, 37, 41, 43, 47, 0o100644]),
+        metadata: Default::default(),
+    };
+    let payload: Vec<u8> = [17u64, 23, 31, 37, 41, 43, 47]
+        .into_iter()
+        .flat_map(u64::to_le_bytes)
+        .collect();
+
+    for prefix in [b"native.linux.read.v1".as_slice(), b"linux-file-v1"] {
+        let valid = [prefix, payload.as_slice()].concat();
+        assert!(super::matches_find_entry(&entry, &valid));
+        for byte in prefix.len()..valid.len() {
+            let mut substituted = valid.clone();
+            substituted[byte] ^= 1;
+            assert!(
+                !super::matches_find_entry(&entry, &substituted),
+                "byte {byte}"
+            );
+        }
+        for length in 0..valid.len() {
+            assert!(!super::matches_find_entry(&entry, &valid[..length]));
+        }
+        assert!(!super::matches_find_entry(
+            &entry,
+            &[valid.as_slice(), &[0]].concat()
+        ));
+        for kind in [
+            midnight_core::EntryKind::Directory,
+            midnight_core::EntryKind::Symlink,
+        ] {
+            let mut changed = entry.clone();
+            changed.kind = kind;
+            assert!(!super::matches_find_entry(&changed, &valid));
+        }
+    }
+    assert!(!super::matches_find_entry(
+        &entry,
+        &[b"unknown.v1".as_slice(), &payload].concat()
+    ));
+}

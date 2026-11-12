@@ -727,6 +727,13 @@ pub fn decode_preferences(bytes: &[u8]) -> io::Result<UserPreferences> {
             _ => return Err(invalid("missing or unexpected panel filter history")),
         },
     };
+    // A separator has no action. Retire only its known stale bindings, preserving
+    // unrelated overrides instead of rejecting the entire saved preferences file.
+    midnight_core::remove_deleted_user_command_shortcuts(
+        &preferences.user_commands,
+        &preferences.user_commands,
+        &mut preferences.shortcuts,
+    );
     preferences.deduplicate_bookmarks();
     preferences.validate().map_err(invalid)?;
     crate::editor_rules::validate(&preferences.editor).map_err(invalid)?;

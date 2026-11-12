@@ -208,9 +208,11 @@ wrap_keyboard_handler! {
             let Some(event) = event else { return 0; };
             // Chromium supplies the current focused editable state for this key, rather than
             // relying on a delayed host/UI state flag. Suppress both raw key and subsequent CHAR.
-            if event.windows_key_code == 32 && event.focus_on_editable_field == 0 && event.modifiers & (4 | 8 | 128) == 0 {
-                if event.type_ == KeyEventType::RAWKEYDOWN || event.type_ == KeyEventType::KEYDOWN {
-                    self.doc.emit(api::EventKind::HostShortcut(if event.modifiers & 2 != 0 { api::HostShortcut::CyclePrevious } else { api::HostShortcut::CycleNext }));
+            if let Some(shortcut) = crate::host_keys::shortcut(event.windows_key_code,
+                event.modifiers, event.focus_on_editable_field != 0, self.doc.host_shortcuts) {
+                let down = event.type_ == KeyEventType::RAWKEYDOWN || event.type_ == KeyEventType::KEYDOWN;
+                if crate::host_keys::emit(shortcut, event.modifiers, down) {
+                    self.doc.emit(api::EventKind::HostShortcut(shortcut));
                 }
                 return 1;
             }

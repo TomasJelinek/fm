@@ -260,6 +260,7 @@ mod tests {
             .collect::<Vec<_>>()
             .into();
         let launch = ViewerLaunch {
+            find: None,
             associations: Default::default(),
             tree: None,
             generated: None,
@@ -375,6 +376,7 @@ mod tree_tests {
             .unwrap(),
         );
         let mut launch = ViewerLaunch {
+            find: None,
             associations: Default::default(),
             generated: None,
             preferences: Default::default(),

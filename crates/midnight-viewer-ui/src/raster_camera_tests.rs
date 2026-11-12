@@ -162,6 +162,51 @@ fn delayed_frontier_resumes_with_small_frames_instead_of_spending_unseen_animati
 }
 
 #[test]
+fn first_redraw_after_refill_advances_a_bounded_step_without_waiting_an_extra_frame() {
+    for direction in [-1.0_f32, 1.0] {
+        for scale in [1.0, 2.25] {
+            for (pause_ms, redraw_during_wait) in [(32, true), (960, true), (960, false)] {
+                let mut camera = Camera::default();
+                let mut next = info();
+                let boundary = 400.0 + f64::from(direction) * 5.0 * scale;
+                if direction > 0.0 {
+                    next.coverage_max[1] = boundary;
+                } else {
+                    next.coverage_min[1] = boundary;
+                }
+                assert!(camera.receive(&next, [scale; 2]));
+                assert!(camera.push(0.0, direction * 60.0, Duration::ZERO, false));
+                if redraw_during_wait {
+                    for millis in (16..=pause_ms).step_by(16) {
+                        camera.tick(Duration::from_millis(millis));
+                    }
+                } else {
+                    camera.tick(Duration::from_millis(16));
+                }
+                assert_eq!(camera.origin[1], boundary);
+                next.coverage_min[1] = 0.0;
+                next.coverage_max[1] = 1000.0;
+                assert!(camera.receive(&next, [scale; 2]));
+                let now = Duration::from_millis(pause_ms + 16);
+                assert!(camera.tick(now), "the first covered redraw must move");
+                let step = (camera.origin[1] - boundary) * f64::from(direction) / scale;
+                assert!(step > 0.0 && step < 10.0, "unbounded resume step: {step}");
+                assert!(
+                    !camera.tick(now),
+                    "the same timestamp must not replay movement"
+                );
+                for frame in 1..=20 {
+                    camera.tick(now + Duration::from_millis(frame * 16));
+                }
+                let target = 400.0 + f64::from(direction) * 60.0 * scale;
+                assert!((camera.origin[1] - target).abs() < 0.001);
+                assert!(!camera.active());
+            }
+        }
+    }
+}
+
+#[test]
 fn cancelling_a_moving_camera_keeps_an_exact_settle_request_alive_until_submission() {
     let mut camera = Camera::default();
     camera.receive(&info(), [1.0; 2]);

@@ -96,7 +96,7 @@ One Git repository contains **separate Cargo workspaces**:
 | `plugins/midnight-fs-archive/` | ZIP, 7z, TAR and GZIP/XZ/BZIP2/Zstandard streams and TAR wrappers | Released filesystem API and worker SDK plus plugin-owned parsers |
 | `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs and plugin-owned tests/codecs |
 | `plugins/midnight-viewer-basic/` | Text/Binary decoding and search | Released public SDK plus plugin-owned dependencies |
-| `plugins/midnight-viewer-source/` | Source scanning and styles | Its own workspace, lockfile, dependencies and tests |
+| `plugins/midnight-viewer-source/` | 19 lexical profiles, including XML/XAML/MSBuild; bounded scanning and styles | Its own workspace, lockfile, dependencies and [syntax/viewport tests](../../plugins/midnight-viewer-source/README.md) |
 | `plugins/midnight-viewer-markdown/` | Semantic Markdown | Its own workspace, lockfile, dependencies and tests |
 | `plugins/viewer-conformance/` | Independent native C ABI fixture | Released public SDK; not a user-facing viewer |
 

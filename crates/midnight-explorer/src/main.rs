@@ -1,11 +1,13 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod command_artwork;
 mod comparator;
 mod native_content;
 mod shutdown_preferences;
 mod size_refresh;
 mod smoke_settings;
+mod smoke_timing;
 mod startup;
 mod startup_gate;
 mod startup_recovery;
@@ -338,7 +340,10 @@ fn run_window(
     engine
         .configure_path_picker()
         .map_err(|error| error.to_string())?
-        .install(local.clone());
+        .install(command_artwork::installed(
+            local.clone(),
+            filesystem.clone(),
+        ));
     engine
         .configure_transfers()
         .map_err(|error| error.to_string())?
@@ -514,7 +519,10 @@ fn run_window(
             let output = output.clone();
             let errors = error_state.clone();
             let shutdown_commands = ui_commands.clone();
-            slint::Timer::single_shot(Duration::from_millis(350), move || {
+            let dwell = smoke_timing::dwell_duration(
+                std::env::var("MIDNIGHT_UI_SMOKE_DWELL_MS").ok().as_deref(),
+            );
+            slint::Timer::single_shot(dwell, move || {
                 if state.borrow().has_errors() {
                     *errors.borrow_mut() =
                         Some("UI smoke test encountered a listing/volume error".into());

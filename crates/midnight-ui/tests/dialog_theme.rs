@@ -6,6 +6,7 @@ mod input;
 mod modeless;
 
 use i_slint_core::{
+    accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
     items::{AccessibleRole, ImageItem, WindowItem},
     window::WindowInner,
@@ -232,6 +233,21 @@ fn icon_in(item: ItemRc) -> Option<ItemRc> {
     None
 }
 
+fn visible_label_count(item: ItemRc, label: &str) -> usize {
+    let mut count = usize::from(
+        item.is_visible()
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value == label),
+    );
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        count += visible_label_count(item, label);
+    }
+    count
+}
+
 #[test]
 fn error_notice_keeps_themed_compact_icons_and_close_at_large_client_font() {
     let windows = platform();
@@ -246,6 +262,17 @@ fn error_notice_keeps_themed_compact_icons_and_close_at_large_client_font() {
     let native = windows.borrow()[0].clone();
     modeless::draw(&native, 520, 300, "notice-themed-font-icons");
     assert_eq!(client_font(child.window()), ("Segoe UI".to_owned(), 24.0));
+    let root = ItemRc::new_root(WindowInner::from_pub(child.window()).component());
+    assert_eq!(
+        visible_label_count(root.clone(), "File operation failed"),
+        1,
+        "native error dialogs have one themed heading"
+    );
+    assert_eq!(
+        visible_label_count(root, "Error"),
+        1,
+        "the shared header owns the single error icon"
+    );
     for label in ["Copy details", "Close"] {
         let button = modeless::accessible_item(&native, AccessibleRole::Button, label).unwrap();
         let icon = icon_in(button.clone()).expect("dialog actions have meaningful compact icons");

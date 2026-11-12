@@ -461,3 +461,165 @@ fn ancestor_clipped_horizontal_drop_cancels_outside_the_actual_window() {
         "a drop outside the actual window must not reorder ancestor-clipped content"
     );
 }
+
+#[test]
+fn command_priority_list_is_single_line_with_compact_actions_above_it() {
+    let mut h = Harness::with_count(8);
+    h.open();
+    let row = ui::popup_item(
+        &h.ui.window,
+        "First command · Program · program.exe · Single",
+        AccessibleRole::ListItem,
+    );
+    let input = ui::popup_item(&h.ui.window, "Command name", AccessibleRole::TextInput);
+    assert!(
+        row.geometry().height() <= input.geometry().height() + 2.0,
+        "Command priority rows must fit one control line, without a second summary line"
+    );
+    let list = ui::popup_item(
+        &h.ui.window,
+        "Configured Custom Commands",
+        AccessibleRole::List,
+    );
+    let list_top = list.map_to_native_window(list.geometry().origin).y;
+    for label in [
+        "New Custom Command",
+        "Delete Custom Command",
+        "Move Custom Command up",
+        "Move Custom Command down",
+    ] {
+        let button = ui::popup_item(&h.ui.window, label, AccessibleRole::Button);
+        let origin = button.map_to_native_window(button.geometry().origin);
+        assert!(
+            origin.y + button.geometry().height() <= list_top + 1.0,
+            "Priority actions belong in the list header: {label}"
+        );
+        assert!(
+            button.geometry().width() <= 48.0,
+            "Priority actions must be compact"
+        );
+    }
+    bitmap::snapshot(
+        &h.ui.pixels,
+        h.ui.width,
+        h.ui.height,
+        "command-settings-compact-priority",
+    );
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|c| !matches!(c, Command::ExecuteUserCommand(_)))
+    );
+}
+
+#[test]
+fn separator_details_keep_mode_drafts_and_never_preview_or_execute() {
+    let mut h = Harness::new();
+    h.open();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    let mut form = view.get_draft();
+    let original_executable = form.executable.clone();
+    form.arguments = r#"["two words", "", "a \"quote\""]"#.into();
+    form.script = "echo preserved".into();
+    form.kind = 1;
+    view.set_draft(form.clone());
+    view.invoke_draft_edited(view.get_token(), form.clone());
+    h.ui.draw();
+    assert!(
+        ui::popup_item(
+            &h.ui.window,
+            "Custom Command script",
+            AccessibleRole::TextInput
+        )
+        .is_visible()
+    );
+    form.kind = 0;
+    view.set_draft(form.clone());
+    view.invoke_draft_edited(view.get_token(), form.clone());
+    h.ui.draw();
+    assert_eq!(view.get_draft().executable, original_executable);
+    assert_eq!(view.get_draft().script, "echo preserved");
+    assert_eq!(view.get_argument_rows().row_count(), 3);
+    form.kind = 2;
+    view.set_draft(form.clone());
+    view.invoke_draft_edited(view.get_token(), form.clone());
+    view.invoke_validate(view.get_token(), form.clone());
+    h.ui.draw();
+    assert!(view.get_can_apply());
+    assert!(!view.get_can_preview());
+    assert!(!view.invoke_preview(view.get_token(), form.clone()));
+    assert!(h.commands.borrow().iter().all(|c| !matches!(
+        c,
+        Command::ExecuteUserCommand(_) | Command::PreviewUserCommand(_)
+    )));
+    h.action("Apply Custom Command");
+    h.ui.draw();
+    assert!(h.rows()[0].separator);
+    bitmap::snapshot(
+        &h.ui.pixels,
+        h.ui.width,
+        h.ui.height,
+        "command-settings-separator",
+    );
+    h.action("Cancel");
+    h.open();
+    assert!(
+        !h.rows()[0].separator,
+        "Options Cancel restores the original command"
+    );
+}
+
+#[test]
+fn icon_artwork_uses_managed_picker_and_valid_completion_enables_update() {
+    let mut h = Harness::new();
+    h.open();
+    h.action("Toolbar appearance");
+    h.ui.draw();
+    assert!(
+        ui::try_popup_item(
+            &h.ui.window,
+            "Icon image (optional absolute path)",
+            AccessibleRole::TextInput
+        )
+        .is_none(),
+        "Icon imports must not be bypassed by editing a path"
+    );
+    h.action("Browse command icon");
+    let request = h
+        .commands
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::PickPath { request, input } => {
+                assert_eq!(input.kind, PathPickerKind::CommandIconImage);
+                Some(*request)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let image = std::env::temp_dir().join("managed-command-artwork.png");
+    h.state.borrow_mut().apply(Event::PathPicked {
+        request,
+        result: Ok(Some(image.clone())),
+    });
+    refresh(&h.ui.window, &h.state.borrow());
+    h.ui.draw();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    assert!(
+        view.get_can_apply(),
+        "Choosing valid icon artwork must enable Update without an extra edit"
+    );
+    h.action("Apply Custom Command");
+    assert_eq!(view.get_draft().icon, image.to_string_lossy().as_ref());
+    h.action("Cancel");
+    assert!(
+        h.commands
+            .borrow()
+            .iter()
+            .all(|c| !matches!(c, Command::ExecuteUserCommand(_)))
+    );
+}

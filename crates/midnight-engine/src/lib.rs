@@ -85,6 +85,7 @@ mod tree_copy;
 mod tree_delete;
 mod tree_diagnostics;
 mod tree_editor;
+mod tree_metadata;
 mod tree_projection;
 mod tree_rename;
 mod tree_roots;
@@ -353,6 +354,7 @@ impl EngineServices {
         let mut tasks = JoinSet::new();
         let mut find = find::Controller::new(
             scope.clone(),
+            resources.find,
             self.find,
             self.locale.clone(),
             self.outbox.clone(),
@@ -667,6 +669,12 @@ impl EngineServices {
                                 self.outbox.send(Event::FindRejected(Box::new(midnight_core::FindRejected { session, generation, error }))).await;
                             }
                         }
+                        Some(Command::CaptureFindFile(request)) => {
+                            if let Err(error) = find.capture(request) {
+                                self.outbox.send(Event::FindFileCaptured(Box::new(midnight_core::FindFileCaptureResult { request, result: Err(error) }))).await;
+                            }
+                        }
+                        Some(Command::ExecuteFindFile { request, source, action, cancel }) => desktop.execute_find_file(self.editor.clone(), request, source, action, cancel, &mut tasks).await,
                         Some(Command::SortFind(request)) => find.sort(request),
                         Some(Command::CancelFind { session, generation }) => find.cancel(session, generation),
                         Some(Command::CloseFind(session)) => find.close(session),
@@ -759,6 +767,7 @@ impl EngineServices {
                         Some(Command::PrepareOperation(request)) => operations.prepare(request).await,
                         Some(Command::PrepareCapturedDelete(request)) => operations.prepare_captured_delete(request).await,
                         Some(Command::PrepareCapturedRename(request)) => operations.prepare_captured_rename(request).await,
+                        Some(Command::PrepareCapturedMetadata(request)) => operations.prepare_captured_metadata(request).await,
                         Some(Command::ConfirmOperation { id, new_name }) => operations.confirm(id, new_name).await,
                         Some(Command::CancelOperation(id)) => operations.cancel(id),
                         Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,

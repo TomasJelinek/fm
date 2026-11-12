@@ -42,9 +42,10 @@ export component PanelViewControls inherits Rectangle {
         CompactPicker {
             width: root.picker-width; minimum-control-width: 0px;
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
-            popup-width: 190px; popup-align-right: true;
+            popup-width: 190px; popup-align-right: true; fit-popup-to-content: true;
             icon-only: root.compact; icon: FallbackIcons.view; native-icon: root.action-icons.view;
             model: ["Detailed", "Brief", "Thumbnails"]; current-index: root.view-mode;
+            shortcuts: [ShortcutHints.keys("view.detailed"), ShortcutHints.keys("view.brief"), ShortcutHints.keys("view.thumbnails")];
             label: self.model[root.view-mode]; accessible-name: root.view-label;
             hint: "View: " + self.model[root.view-mode];
             opening => { root.activate(); }
@@ -54,10 +55,13 @@ export component PanelViewControls inherits Rectangle {
         CompactPicker {
             width: root.picker-width; minimum-control-width: 0px;
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
-            popup-width: 190px; popup-align-right: true; icon-only: root.compact;
+            popup-width: 190px; popup-align-right: true; fit-popup-to-content: true; icon-only: root.compact;
             native-icon: root.descending ? root.action-icons.sort-descending : root.action-icons.sort-ascending;
             icon: root.descending ? FallbackIcons.sort-descending : FallbackIcons.sort-ascending;
             model: ["Name", "Size", "Modified", "Extension", "Reverse order"];
+            shortcuts: [ShortcutHints.keys("sort.name"), ShortcutHints.keys("sort.size"),
+                ShortcutHints.keys("sort.modified"), ShortcutHints.keys("sort.extension"),
+                ShortcutHints.keys(root.sort-column == 1 ? "sort.size" : root.sort-column == 2 ? "sort.modified" : root.sort-column == 3 ? "sort.extension" : "sort.name")];
             separator-before-index: 4;
             current-index: root.sort-column; label: self.model[root.sort-column] + (root.descending ? " ↓" : " ↑");
             accessible-name: root.sort-label;

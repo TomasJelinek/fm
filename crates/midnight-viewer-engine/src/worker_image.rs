@@ -37,7 +37,10 @@ impl Worker {
             }
         } else {
             let Some(view) = &mut image.geometry else {
-                return !matches!(input, ViewerInput::NextFile | ViewerInput::Close);
+                return !matches!(
+                    input,
+                    ViewerInput::NextFile | ViewerInput::PreviousFile | ViewerInput::Close
+                );
             };
             match input {
                 ViewerInput::DocumentPage { frame, delta } => {
@@ -64,7 +67,9 @@ impl Worker {
                         return true;
                     }
                 }
-                ViewerInput::NextFile | ViewerInput::Close => return false,
+                ViewerInput::NextFile | ViewerInput::PreviousFile | ViewerInput::Close => {
+                    return false;
+                }
                 _ => return true,
             }
         }

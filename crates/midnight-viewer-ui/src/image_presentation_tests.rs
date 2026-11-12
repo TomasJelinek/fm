@@ -128,6 +128,7 @@ pub(super) fn open() -> (
     manager
         .open(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,
@@ -602,6 +603,15 @@ fn accepted_zoom_intent_cannot_cross_pdf_page_or_source_identity() {
 
 #[test]
 fn replaced_file_frame_and_resized_coordinates_cannot_enqueue_or_save_a_zoom() {
+    file_navigation_rejects_old_zoom("viewer.next-file");
+}
+
+#[test]
+fn previous_file_frame_and_resized_coordinates_cannot_enqueue_or_save_a_zoom() {
+    file_navigation_rejects_old_zoom("viewer.previous-file");
+}
+
+fn file_navigation_rejects_old_zoom(action: &str) {
     let (_runtime, manager, open, service) = open();
     match_fixture_viewport(&open);
     let submitted = Rc::new(RefCell::new(Vec::new()));
@@ -617,7 +627,12 @@ fn replaced_file_frame_and_resized_coordinates_cannot_enqueue_or_save_a_zoom() {
     open.window.invoke_image_zoom(1.0, 100.0, 80.0);
     assert!(submitted.borrow().is_empty());
     assert_eq!(open.session.preferences(), before);
-    assert!(dispatch_key(&open, "viewer.next-file"));
+    assert!(dispatch_key(&open, action));
+    assert!(matches!(
+        (action, submitted.borrow().last()),
+        ("viewer.next-file", Some(ViewerInput::NextFile))
+            | ("viewer.previous-file", Some(ViewerInput::PreviousFile))
+    ));
     submitted.borrow_mut().clear();
     let mut old = frame();
     old.revision = 2;
@@ -862,6 +877,7 @@ fn rejected_open_does_not_leave_a_visible_native_window() {
     preferences.text_font.size = 0;
     let result = manager.open(
         ViewerLaunch {
+            find: None,
             associations: Default::default(),
             tree: None,
             generated: None,

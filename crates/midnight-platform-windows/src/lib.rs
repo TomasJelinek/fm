@@ -24,6 +24,8 @@ pub use clipboard::NativeClipboard;
 mod discovery_tests;
 mod find;
 mod fonts;
+mod icon_picker;
+mod icon_storage;
 mod icons;
 mod listing;
 mod locale;

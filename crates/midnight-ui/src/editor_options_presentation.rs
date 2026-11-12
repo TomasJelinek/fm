@@ -50,11 +50,7 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
         .iter()
         .enumerate()
         .map(|(index, rule)| {
-            let program = if rule.use_default {
-                "System editor"
-            } else {
-                rule.executable.as_str()
-            };
+            let program = program_label(rule.use_default, &rule.executable);
             format!(
                 "{}. {}{} → {}",
                 index + 1,
@@ -66,11 +62,7 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
         .collect::<Vec<_>>();
     labels.push(format!(
         "Fallback → {}",
-        if draft.use_default {
-            "System editor"
-        } else {
-            draft.executable.as_str()
-        }
+        program_label(draft.use_default, &draft.executable)
     ));
     view.set_labels(crate::argument_rows::sync(view.get_labels(), &labels));
     view.set_draft(EditorOptionsDraft {
@@ -179,4 +171,14 @@ pub(crate) fn install(
             crate::refresh(&w, &state.borrow());
         }
     });
+}
+
+fn program_label(use_default: bool, executable: &str) -> &str {
+    if use_default {
+        "System editor"
+    } else if executable.is_empty() {
+        "Custom editor (choose executable)"
+    } else {
+        executable
+    }
 }

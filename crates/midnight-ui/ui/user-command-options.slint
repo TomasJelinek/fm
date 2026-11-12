@@ -1,4 +1,5 @@
-import { ActionButton } from "action-icons.slint";
+import { ListHeader } from "list-header.slint";
+import { TipBody } from "controls.slint";
 import { ListView } from "std-widgets.slint";
 import { UserCommandSettingsView, UserCommandSettingsForm, UserCommandSettingsRow } from "user-command-models.slint";
 import { UserCommandForm } from "user-command-form.slint";
@@ -19,7 +20,7 @@ export component UserCommandOptions inherits VerticalLayout {
     private property <length> press-x;
     private property <length> press-y;
     private property <int> drop-boundary: -1;
-    private property <length> command-row-height: max(42px, Theme.font-size * 2.5 + 8px);
+    private property <length> command-row-height: Theme.control-height;
     private property <string> configuration-revision: UserCommandSettingsView.configuration-revision;
     private property <bool> drag-active: UserCommandSettingsView.drag-active;
     private property <length> clip-left: max(drag-input.absolute-position.x, root.viewport-left);
@@ -104,13 +105,33 @@ export component UserCommandOptions inherits VerticalLayout {
             }
         }
     }
-    Text { text: "Menu contents"; color: Theme.strong-text; font-size: Theme.font-size; }
-    Text { text: UserCommandSettingsView.ready ? "Configure commands here. Run them explicitly from the command toolbar or an assigned shortcut." : "Loading saved options…";
-        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
+    ListHeader {
+        title: "Menu contents";
+        hint: "Select a command to edit it. Drag items or use the arrows to change their order.";
+        enabled: UserCommandSettingsView.ready && !UserCommandSettingsView.dirty && !UserCommandSettingsView.busy;
+        can-add: UserCommandSettingsView.rows.length < 128;
+        can-remove: UserCommandSettingsView.can-delete;
+        can-move-up: UserCommandSettingsView.can-up;
+        can-move-down: UserCommandSettingsView.can-down;
+        action-labels: ["New Custom Command", "Delete Custom Command", "Move Custom Command up", "Move Custom Command down"];
+        action-hints: ["Add a command or separator (Insert)", "Delete the selected item (Delete)", "Move the selected item up (Alt+Up)", "Move the selected item down (Alt+Down)"];
+        action(index) => {
+            if index == 0 { UserCommandSettingsView.new-command(); }
+            else if index == 1 { UserCommandSettingsView.delete(UserCommandSettingsView.token); }
+            else { UserCommandSettingsView.move(UserCommandSettingsView.token, index == 2 ? -1 : 1); }
+        }
+    }
+    if !UserCommandSettingsView.ready : Text { text: "Loading saved options…"; color: Theme.secondary-text; font-size: Theme.small-font; }
     list-focus := FocusScope {
-        height: root.command-row-height * clamp(UserCommandSettingsView.rows.length, 1, 3) + 2px;
+        height: root.command-row-height * clamp(UserCommandSettingsView.rows.length, 1, 6) + 2px;
         key-pressed(event) => {
-            if UserCommandSettingsView.dirty || UserCommandSettingsView.rows.length == 0 { return reject; }
+            if UserCommandSettingsView.dirty || !UserCommandSettingsView.ready || UserCommandSettingsView.busy { return reject; }
+            if event.text == Key.Insert { UserCommandSettingsView.new-command(); return accept; }
+            if event.text == Key.Delete && UserCommandSettingsView.can-delete { UserCommandSettingsView.delete(UserCommandSettingsView.token); return accept; }
+            if UserCommandSettingsView.rows.length == 0 { return reject; }
+            if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                UserCommandSettingsView.move(UserCommandSettingsView.token, event.text == Key.UpArrow ? -1 : 1); return accept;
+            }
             if event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End {
                 let next = event.text == Key.Home ? 0 : event.text == Key.End ? UserCommandSettingsView.rows.length - 1
                     : clamp(UserCommandSettingsView.selected-index + (event.text == Key.DownArrow ? 1 : -1), 0, UserCommandSettingsView.rows.length - 1);
@@ -120,6 +141,7 @@ export component UserCommandOptions inherits VerticalLayout {
         }
       Rectangle {
        width: parent.width; height: parent.height; clip: true;
+       border-width: 1px; border-color: list-focus.has-focus ? Theme.active-frame : Theme.frame;
        drag-input := TouchArea {
         width: parent.width; height: parent.height;
         pointer-event(event) => {
@@ -155,11 +177,14 @@ export component UserCommandOptions inherits VerticalLayout {
             accessible-role: list-item; accessible-label: row.name + " · " + row.summary + (row.enabled ? "" : " · disabled");
             accessible-item-index: index; accessible-item-selectable: true; accessible-item-selected: row.selected;
             accessible-action-default => { if !UserCommandSettingsView.dirty { UserCommandSettingsView.select(row.id); } }
-            VerticalLayout {
-                padding: 4px; spacing: 2px;
-                Text { text: row.name + (row.enabled ? "" : " · disabled"); color: row.selected ? Theme.selected-text : Theme.text; font-size: Theme.font-size; overflow: elide; }
-                Text { text: row.summary; color: row.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide; }
+            Text {
+                x: 8px; width: max(0px, root.list-usable-width - 16px); height: parent.height;
+                text: row.separator ? "────────  " + row.name + "  ────────" : row.name + (row.enabled ? "" : " · disabled");
+                color: row.selected ? Theme.selected-text : row.separator ? Theme.secondary-text : Theme.text;
+                font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
             }
+            Tooltip { TipBody { text: row.summary; } }
+
         }
       }
        Rectangle {
@@ -173,25 +198,6 @@ export component UserCommandOptions inherits VerticalLayout {
     }
     if UserCommandSettingsView.rows.length == 0 : Text { text: "No Custom Commands configured."; color: Theme.secondary-text; font-size: Theme.small-font; }
     if UserCommandSettingsView.dirty : Text { text: "Save or discard the draft before reordering commands."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }
-    GridLayout {
-        spacing: 6px;
-        ActionButton { text: "New"; accessible-label: "New Custom Command";
-            row: 0; col: 0;
-            enabled: UserCommandSettingsView.ready && !UserCommandSettingsView.dirty && UserCommandSettingsView.rows.length < 128;
-            clicked => { UserCommandSettingsView.new-command(); } }
-        ActionButton { text: "Delete"; destructive: true; accessible-label: "Delete Custom Command";
-            row: 0; col: 1;
-            enabled: UserCommandSettingsView.ready && UserCommandSettingsView.can-delete && !UserCommandSettingsView.dirty;
-            clicked => { UserCommandSettingsView.delete(UserCommandSettingsView.token); } }
-        ActionButton { text: "Up"; accessible-label: "Move Custom Command up";
-            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 2;
-            enabled: UserCommandSettingsView.can-up && !UserCommandSettingsView.dirty;
-            clicked => { UserCommandSettingsView.move(UserCommandSettingsView.token, -1); } }
-        ActionButton { text: "Down"; accessible-label: "Move Custom Command down";
-            row: root.narrow ? 1 : 0; col: root.narrow ? 1 : 3;
-            enabled: UserCommandSettingsView.can-down && !UserCommandSettingsView.dirty;
-            clicked => { UserCommandSettingsView.move(UserCommandSettingsView.token, 1); } }
-    }
     if UserCommandSettingsView.has-draft : UserCommandForm { narrow: root.narrow; edited => { root.edited(); } }
     if UserCommandSettingsView.error != "" : ErrorNotice { text: UserCommandSettingsView.error; }
     if UserCommandSettingsView.status != "" : Text { text: UserCommandSettingsView.status; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; }

@@ -50,6 +50,7 @@ pub(crate) mod path_paste;
 mod preferences;
 mod rename_decisions;
 mod search;
+mod selected_navigation;
 mod selection;
 mod selection_actions;
 mod selection_preview;
@@ -67,6 +68,7 @@ mod tree_copy;
 mod tree_delete;
 mod tree_drag;
 mod tree_editor;
+mod tree_metadata;
 mod tree_options;
 #[cfg(test)]
 mod tree_options_tests;
@@ -354,6 +356,7 @@ impl Presenter {
     pub fn retire_all(&mut self) {
         self.cancel_tree_editor(None);
         self.cancel_tree_rename(None);
+        self.cancel_tree_metadata(None);
         self.cancel_tree_delete(None);
         self.retired
             .push(Box::new(mem::take(&mut self.operations.metadata_results)));
@@ -730,6 +733,10 @@ impl Presenter {
             self.apply_navigation_fallback(pane, navigation, path, error, send);
             return;
         }
+        if let Event::FindFileCaptured(result) = event {
+            self.find_file_captured(*result, send);
+            return;
+        }
         if let Event::FindResultValidated(result) = event {
             self.find_validated(*result, send);
             return;
@@ -885,7 +892,10 @@ impl Presenter {
             self.reject_find(*rejection);
             return;
         }
-        if matches!(&event, Event::FindResultValidated(_)) {
+        if matches!(
+            &event,
+            Event::FindResultValidated(_) | Event::FindFileCaptured(_)
+        ) {
             // A validated navigation needs the sender; retire unhandled payloads.
             self.retired.push(Box::new(event));
             return;
@@ -1415,6 +1425,10 @@ impl Presenter {
         self.select_row_modified(pane, row, toggle, false, send);
     }
     pub(crate) fn move_cursor(&mut self, pane: PaneId, key: i32, send: &dyn Fn(Command) -> bool) {
+        if matches!(key, 13 | 14) {
+            self.move_to_selected(pane, key == 13);
+            return;
+        }
         if key == 9 && self.defer_tree_search_insert(pane) {
             return;
         }

@@ -717,6 +717,13 @@ cargo run -p midnight-explorer -- --smoke-test
 cargo run -p midnight-explorer -- --ui-smoke-test --software
 ```
 
+During implementation, build the affected test targets once and use the
+[targeted parallel runner](docs/developer/TEST_EXECUTION.md) for independent
+headless suites. It shares a CPU thread budget across up to four processes,
+coalesces filters of the same executable and retains separate logs. Keep
+desktop/input and performance checks serial; run full gates after the
+implementation batch is coherent.
+
 The application also supports `--snapshot FILE.png` for a native-window smoke
 check which saves a screenshot after both real directories have finished loading.
 UI smoke checks use fresh in-memory preferences and never load or save the user's

@@ -86,6 +86,7 @@ pub(crate) fn install(
         });
     }
     install_warning_reports(window, &presenter, &commands, &viewers);
+    install_find_results(window, &presenter, &commands, &viewers);
     let manager = viewers.clone();
     let weak = window.as_weak();
     window.on_view_file(move |pane, basic| {
@@ -157,9 +158,10 @@ fn service(
     runtime: &tokio::runtime::Handle,
     filesystem: std::sync::Arc<midnight_native_filesystem_host::InstalledProvider>,
 ) -> midnight_viewer_engine::Service {
+    let capture = crate::native_content::factory(filesystem);
     midnight_viewer_engine::Service::with_native_capture(
         runtime.clone(),
-        crate::native_content::factory(filesystem),
+        std::sync::Arc::new(move |path, closed| capture(path, closed)),
     )
 }
 
@@ -173,12 +175,43 @@ fn install_warning_reports(
     commands: &mpsc::Sender<Command>,
     viewers: &Rc<ViewerWindows>,
 ) {
+    window.on_refresh_warning_viewer(pending_viewers_callback(
+        window,
+        presenter,
+        commands,
+        viewers,
+        Presenter::take_warning_viewer,
+    ));
+}
+
+fn install_find_results(
+    window: &MainWindow,
+    presenter: &Rc<RefCell<Presenter>>,
+    commands: &mpsc::Sender<Command>,
+    viewers: &Rc<ViewerWindows>,
+) {
+    window.on_refresh_find_viewer(pending_viewers_callback(
+        window,
+        presenter,
+        commands,
+        viewers,
+        Presenter::take_find_viewer,
+    ));
+}
+
+fn pending_viewers_callback(
+    window: &MainWindow,
+    presenter: &Rc<RefCell<Presenter>>,
+    commands: &mpsc::Sender<Command>,
+    viewers: &Rc<ViewerWindows>,
+    take: fn(&mut Presenter) -> Option<ViewerLaunch>,
+) -> impl Fn() + use<> {
     let scheduled = Rc::new(Cell::new(false));
     let state = presenter.clone();
     let sender = commands.clone();
     let manager = viewers.clone();
     let weak = window.as_weak();
-    window.on_refresh_warning_viewer(move || {
+    move || {
         if scheduled.replace(true) {
             return;
         }
@@ -192,13 +225,14 @@ fn install_warning_reports(
         slint::Timer::single_shot(Duration::ZERO, move || {
             scheduled.set(false);
             let Some(window) = weak.upgrade() else { return };
-            let launch = state.borrow_mut().take_warning_viewer();
-            if let Some(launch) = launch
-                && let Err(error) = open(&window, &state, &sender, &manager, launch, None)
-            {
-                state.borrow_mut().report_viewer_error(error);
-                midnight_ui::refresh(&window, &state.borrow());
+            loop {
+                let launch = take(&mut state.borrow_mut());
+                let Some(launch) = launch else { break };
+                if let Err(error) = open(&window, &state, &sender, &manager, launch, None) {
+                    state.borrow_mut().report_viewer_error(error);
+                    midnight_ui::refresh(&window, &state.borrow());
+                }
             }
         });
-    });
+    }
 }

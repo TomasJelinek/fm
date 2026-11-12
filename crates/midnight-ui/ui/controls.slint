@@ -9,8 +9,9 @@ export { TooltipPlacement }
 // Dynamic paths and volume labels remain plain text, including Markdown punctuation.
 export component TipBody inherits Rectangle {
     in property <string> text;
+    in property <length> width-limit: 560px;
     x: 0px; y: 0px;
-    width: min(560px, max(120px, content.preferred-width + 20px),
+    width: min(root.width-limit, max(120px, content.preferred-width + 20px),
         TooltipPlacement.max-room(TooltipPlacement.cursor-x, TooltipPlacement.surface-width, 14px));
     height: min(content.preferred-height + 16px,
         TooltipPlacement.max-room(TooltipPlacement.cursor-y, TooltipPlacement.surface-height, 18px));
@@ -31,6 +32,7 @@ export component TipBody inherits Rectangle {
 // Only selected() commits: keyboard browsing never overwrites the host's index.
 export component CompactPicker inherits Rectangle {
     in property <[string]> model;
+    in property <[string]> shortcuts;
     in property <[NavigationChoiceRow]> choices;
     in property <[image]> icons;
     in property <int> model-revision;
@@ -87,7 +89,7 @@ export component CompactPicker inherits Rectangle {
         preferred-width: measured-labels.preferred-width;
         measured-labels := VerticalLayout {
             for index in (root.fit-popup-to-content ? root.item-count : 0): Text {
-                text: root.row-label(index);
+                text: root.row-label(index) + (root.row-shortcut(index) == "" ? "" : "    " + root.row-shortcut(index));
                 font-size: Theme.font-size;
             }
         }
@@ -114,6 +116,9 @@ export component CompactPicker inherits Rectangle {
         if index < 0 || index >= root.item-count { return ""; }
         return root.choices.length > 0 ? root.choices[index].label : root.model[index];
     }
+    pure function row-shortcut(index: int) -> string {
+        return index >= 0 && index < root.shortcuts.length ? root.shortcuts[index] : "";
+    }
     public function activate-shortcut() { root.commit(root.shortcut-index); }
     // Return only an identity captured when this popup opened, then close it
     // before the host dispatches the shortcut to either panel.
@@ -132,7 +137,8 @@ export component CompactPicker inherits Rectangle {
         return index >= 0 && index < root.choices.length ? root.choices[index].identity : "";
     }
     pure function row-hint(index: int) -> string {
-        return root.choices.length > 0 ? root.choices[index].tooltip : root.row-label(index);
+        return root.choices.length > 0 ? root.choices[index].tooltip
+            : root.row-label(index) + (root.row-shortcut(index) == "" ? "" : " (" + root.row-shortcut(index) + ")");
     }
     pure function row-icon(index: int) -> image {
         return root.choices.length > 0 ? root.choices[index].icon : root.icons[index];
@@ -367,11 +373,17 @@ export component CompactPicker inherits Rectangle {
                             }
                             if !root.path-labels: Text {
                                 text: root.row-label(index); color: root.row-enabled(index) ? Theme.text : Theme.muted-text; font-size: Theme.font-size;
-                                vertical-alignment: center; overflow: elide;
+                                vertical-alignment: center; overflow: elide; min-width: 0px; horizontal-stretch: 1;
                             }
                             if root.path-labels: PathText {
                                 text: root.row-label(index); foreground: root.row-enabled(index) ? Theme.text : Theme.muted-text; font-size: Theme.font-size;
                                 horizontal-stretch: 1;
+                            }
+                            if root.row-shortcut(index) != "": Text {
+                                text: root.row-shortcut(index); font-size: Theme.small-font;
+                                color: root.row-enabled(index) ? Theme.secondary-text : Theme.muted-text;
+                                min-width: 0px; max-width: parent.width * 0.55; horizontal-stretch: 0;
+                                vertical-alignment: center; horizontal-alignment: right; overflow: elide;
                             }
                         }
                         row-area := TouchArea {

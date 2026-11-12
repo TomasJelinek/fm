@@ -107,6 +107,15 @@ impl Controller {
         request
             .validate()
             .map_err(|message| failure(io::ErrorKind::InvalidInput, message))?;
+        if request.configuration.iter().any(|command| {
+            command.id == request.command
+                && matches!(command.invocation, UserCommandInvocation::Separator)
+        }) {
+            return Err(failure(
+                io::ErrorKind::InvalidInput,
+                "Separators cannot be previewed or executed.",
+            ));
+        }
         if !self.available {
             return Err(failure(
                 io::ErrorKind::Unsupported,

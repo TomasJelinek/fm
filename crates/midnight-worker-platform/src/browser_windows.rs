@@ -27,7 +27,11 @@ pub(super) fn profile_parent() -> io::Result<std::path::PathBuf> {
     Ok(base.join("MidnightExplorer").join("web-viewer-sessions"))
 }
 
-pub(super) fn spawn(executable: &Path, profile: super::profile::Profile) -> io::Result<Browser> {
+pub(super) fn spawn(
+    executable: &Path,
+    profile: super::profile::Profile,
+    host_shortcuts: bool,
+) -> io::Result<Browser> {
     let wide: Vec<u16> = executable.as_os_str().encode_wide().chain([0]).collect();
     if wide[..wide.len() - 1].contains(&0) {
         return Err(io::Error::other("NUL in browser path"));
@@ -92,12 +96,16 @@ pub(super) fn spawn(executable: &Path, profile: super::profile::Profile) -> io::
     let mut environment = Vec::<u16>::new();
     for key in [
         "LOCALAPPDATA",
+        super::HOST_SHORTCUTS_ENV,
         "MIDNIGHT_WEB_VIEWER_PROFILE",
         "SystemRoot",
         "TEMP",
         "TMP",
     ] {
         let value = match key {
+            super::HOST_SHORTCUTS_ENV => {
+                host_shortcuts.then(|| super::HOST_SHORTCUTS_PHYSICAL_V1.into())
+            }
             "MIDNIGHT_WEB_VIEWER_PROFILE" | "TEMP" | "TMP" => {
                 Some(profile.path().as_os_str().to_owned())
             }

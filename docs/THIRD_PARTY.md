@@ -1,5 +1,21 @@
 # Third-party libraries and licenses
 
+Managed command artwork reuses the pinned `image` 0.25.10 (`MIT OR Apache-2.0`)
+for PNG encoding and pixel resizing only in `midnight-platform-common`; its new
+direct declaration enables only `png` with default features disabled. Arbitrary
+binary image imports continue through the existing restricted image thumbnailer.
+The Linux native icon selector now directly uses `resvg`/`usvg` 0.48.1
+(`Apache-2.0 OR MIT`) and their existing `tiny-skia` 0.12.0 (`BSD-3-Clause`)
+renderer. The direct `resvg` declaration disables default features. Other UI
+consumers may unify features, so the icon renderer explicitly supplies empty font
+state and disables both external and embedded-image resolvers; SVG icon rasterization
+uses no font-file, network, or compressed-SVG loading.
+The exact cached license texts were inspected; MIT is selected for `image`,
+`resvg` and `usvg`, and the full BSD-3-Clause notice remains for `tiny-skia`.
+The existing release notice collector retains all their upstream license and
+copyright files under `licenses/<crate>-<version>/`. No new package version,
+mandatory fee, subscription or royalty is introduced.
+
 The directory authorization helper adds a project-owned crate and reuses the pinned
 `getrandom` 0.3.4 (MIT OR Apache-2.0), `windows-sys` 0.61.2 (MIT OR Apache-2.0),
 and `libc` 0.2 (MIT OR Apache-2.0) dependencies already present in the inventory.
@@ -16,11 +32,11 @@ references use Apache-2.0 (Tokyo Night) and MIT (One Dark, Rosé Pine and Catppu
 [pinned provenance, adaptation notes and retained license texts](THEME_PROVENANCE.md).
 Release packages carry that record and `licenses/themes/` alongside library notices.
 
-Inventory updated on 11 November 2026 from the checked-in lockfiles and actual
+Inventory updated on 12 November 2026 from the checked-in lockfiles and actual
 Cargo selections for Windows x64 and Linux x86-64, plus Darwin x86-64/arm64
 captures for the independent native macOS filesystem package only:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **63**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **64**
   package/version records declared by project crates, including build/test tools.
 - [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **625**
   package/version/source records, **512** distinct crate names, including transitives.

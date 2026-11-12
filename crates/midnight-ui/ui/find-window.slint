@@ -1,5 +1,5 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
-import { HintedLineEdit } from "hinted-inputs.slint";
+import { HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { CompactPicker } from "controls.slint";
@@ -59,6 +59,17 @@ export component FindWindow inherits ToolWindow {
     callback add-root(string);
     callback remove-root(int);
     callback reveal(string);
+    callback file-action(string, int);
+    callback action-key(KeyEvent, string) -> bool;
+    in property <string> view-hint;
+    in property <string> edit-hint;
+    private property <bool> selected-file: root.selected-row >= 0
+        && root.selected-row < root.rows.length && !root.rows[root.selected-row].directory;
+    public function act-selected(action: int) {
+        if root.selected-row >= 0 && root.selected-row < root.rows.length {
+            root.file-action(root.rows[root.selected-row].token, action);
+        }
+    }
     public function reveal-selected() {
         if root.selected-row >= 0 && root.selected-row < root.rows.length {
             root.reveal(root.rows[root.selected-row].token);
@@ -251,6 +262,12 @@ export component FindWindow inherits ToolWindow {
                     sort-column: root.sort-column; descending: root.sort-descending;
                     sort(column) => { root.sort(column); }
                     reveal(token) => { root.reveal(token); }
+                    action-key(event) => {
+                        if root.selected-row >= 0 && root.selected-row < root.rows.length {
+                            return root.action-key(event, root.rows[root.selected-row].token);
+                        }
+                        false
+                    }
                 }
                 if root.rows.length == 0: Text {
                     x: 1px; y: results.header-height + 1px;
@@ -286,6 +303,16 @@ export component FindWindow inherits ToolWindow {
                 ActionButton { text: root.show-details ? "Copy" : "Go to file";
                     fallback-icon: root.show-details ? FallbackIcons.copy : FallbackIcons.open-path; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
                     clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
+                if !root.show-details: HintedActionButton { text: "View"; fallback-icon: FallbackIcons.view;
+                    enabled: root.selected-file; hint: root.view-hint;
+                    clicked => { root.act-selected(0); } }
+                if !root.show-details: HintedActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
+                    enabled: root.selected-file; hint: root.edit-hint;
+                    clicked => { root.act-selected(2); } }
+                if !root.show-details: HintedActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
+                    enabled: root.selected-row >= 0 && root.selected-row < root.rows.length;
+                    hint: "Open the selected file with its system association. This may run a program. Folders use Go to file.";
+                    clicked => { root.act-selected(3); } }
                 ActionButton { text: root.show-details ? "Query" : "Details"; fallback-icon: FallbackIcons.properties; clicked => { root.show-details = !root.show-details; } }
                 if root.width >= 600px: ActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
             }

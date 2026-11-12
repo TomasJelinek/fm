@@ -53,10 +53,33 @@ fn only_visible_current_command_icons_enter_the_bounded_decoder_request() {
     assert!(!p.receive_thumbnail(identity, 6, 1, 1, &[10, 20, 30, 255]));
     assert!(!p.receive_thumbnail(identity, 0, 97, 1, &[0; 388]));
     assert_eq!(
-        targets[0].edge, 96,
-        "command artwork keeps its small request"
+        targets[0].edge, 128,
+        "saved command artwork retains touch-mode resolution"
     );
-    assert!(p.receive_thumbnail_at_resolution(identity, 0, 192, 96, 256, &vec![128; 192 * 96 * 4]));
+    assert!(p.receive_thumbnail_at_resolution(
+        identity,
+        0,
+        128,
+        128,
+        128,
+        &vec![128; 128 * 128 * 4]
+    ));
+    assert_eq!(
+        p.custom_command_icon(&revision, "command-0")
+            .unwrap()
+            .size()
+            .width,
+        128,
+        "the toolbar must retain the managed icon pixels without downsampling to 96px"
+    );
+    assert!(p.receive_thumbnail_at_resolution(
+        identity,
+        0,
+        192,
+        192,
+        256,
+        &vec![128; 192 * 192 * 4]
+    ));
     assert_eq!(
         p.custom_command_icon(&revision, "command-0")
             .unwrap()
@@ -249,4 +272,41 @@ fn executable_icon_views_retry_admission_and_fence_hidden_edited_and_cleared_res
     p.command_toolbar.sync(&p.preferences.values.user_commands);
     p.receive_command_icon(generation + 2, identity, &pixels);
     assert_eq!(p.thumbnail_coverage(identity, 0), 0);
+}
+
+#[test]
+fn separators_group_commands_without_toolbar_edges_icons_or_shortcuts() {
+    let mut p = configured(8);
+    let commands = Arc::make_mut(&mut p.preferences.values.user_commands);
+    for index in [0, 2, 3, 5, 7] {
+        commands[index].invocation = UserCommandInvocation::Separator;
+    }
+    commands[5].enabled = false;
+    let ids = toolbar_commands(commands)
+        .map(|command| command.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["command-1", "command-2", "command-4", "command-6"]);
+    let keys = ShortcutMap::with_user_commands(&[], commands).unwrap();
+    assert!(keys.bindings("user-command.command-1").is_some());
+    assert!(keys.bindings("user-command.command-2").is_none());
+    p.command_toolbar.sync(&p.preferences.values.user_commands);
+    let revision = p.command_toolbar.revision.get().to_string();
+    for index in 0..8 {
+        p.command_toolbar
+            .visible
+            .borrow_mut()
+            .insert((revision.clone(), format!("command-{index}")));
+    }
+    assert_eq!(
+        p.command_icon_targets().len(),
+        3,
+        "even a stale visible notification cannot request artwork for a separator"
+    );
+    for command in Arc::make_mut(&mut p.preferences.values.user_commands) {
+        command.invocation = UserCommandInvocation::Separator;
+    }
+    assert_eq!(
+        toolbar_commands(&p.preferences.values.user_commands).count(),
+        0
+    );
 }

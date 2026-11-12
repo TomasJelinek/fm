@@ -69,7 +69,7 @@ pub(super) fn command(instance: &BrowserInstance, command: api::Command) {
         api::CommandKind::Key(key) => {
             let code = crate::platform::key_code(&key);
             host.send_key_event(Some(&KeyEvent { type_: if key.pressed { KeyEventType::RAWKEYDOWN } else { KeyEventType::KEYUP },
-                modifiers: modifiers(key.modifiers), windows_key_code: code,
+                modifiers: modifiers(key.modifiers) | if key.repeat { crate::host_keys::REPEAT } else { 0 }, windows_key_code: code,
                 native_key_code: crate::platform::native_key_code(&key),
                 is_system_key: i32::from(key.modifiers.alt), ..Default::default() }));
         }

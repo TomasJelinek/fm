@@ -68,6 +68,7 @@ impl GeneratedTextSource for Source {
 
 fn launch(source: Arc<dyn GeneratedTextSource>) -> ViewerLaunch {
     ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: Some(source),

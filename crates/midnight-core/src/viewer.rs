@@ -29,6 +29,8 @@ pub struct ViewerLaunch {
     pub archive: Option<ArchiveViewer>,
     /// Exact adopted inline tree; normalized only by the viewer backend.
     pub tree: Option<TreeViewer>,
+    /// Guarded native Find result. Backend validates generation and native revision before capture.
+    pub find: Option<Arc<dyn crate::CapturedFindFile>>,
     pub entries: Arc<[Entry]>,
     pub view: Arc<DirectoryIndex>,
     pub focused: PathBuf,
@@ -224,7 +226,10 @@ pub enum ViewerInput {
         horizontal: bool,
         position: f64,
     },
+    /// Advance within the captured regular-file order, wrapping at the end.
     NextFile,
+    /// Move backwards within the same captured order, wrapping at the beginning.
+    PreviousFile,
     Mode(u16),
     /// Reflow Text/Source within the viewport; ignored by fixed-column modes.
     Wrap(bool),

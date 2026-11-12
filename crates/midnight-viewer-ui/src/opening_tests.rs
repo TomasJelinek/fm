@@ -32,6 +32,7 @@ pub(super) fn opening(
     manager
         .open_with_ready(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,

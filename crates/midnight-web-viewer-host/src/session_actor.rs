@@ -50,8 +50,9 @@ pub(super) fn run(
     wake: &Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<(), String> {
     provider.validate().map_err(|error| error.to_string())?;
-    let browser = midnight_worker_platform::browser::spawn(&provider.executable)
-        .map_err(|error| format!("Chromium startup: {error}"))?;
+    let browser =
+        midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
+            .map_err(|error| format!("Chromium startup: {error}"))?;
     let mut store = Store::new(source, resources);
     let mut wire = Wire {
         input: browser.input,
@@ -224,4 +225,16 @@ pub(super) fn run(
         let _ = reader.join();
         result
     })
+}
+
+#[test]
+fn physical_key_launch_contract_matches_the_public_api() {
+    assert_eq!(
+        midnight_worker_platform::browser::HOST_SHORTCUTS_ENV,
+        api::HOST_SHORTCUTS_ENV
+    );
+    assert_eq!(
+        midnight_worker_platform::browser::HOST_SHORTCUTS_PHYSICAL_V1,
+        api::HOST_SHORTCUTS_PHYSICAL_V1
+    );
 }

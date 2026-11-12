@@ -403,3 +403,18 @@ fn completed_command_history_survives_active_admission_until_explicit_clear() {
     assert_eq!(p.command_launches.jobs.len(), 32);
     assert!(p.command_launches.jobs.iter().all(|job| job.started == 0));
 }
+
+#[test]
+fn separator_never_captures_selection_or_creates_a_launch_or_preview_job() {
+    let (mut p, _) = loaded(true);
+    Arc::make_mut(&mut p.preferences.values.user_commands)[0].invocation =
+        UserCommandInvocation::Separator;
+    for preview in [false, true] {
+        assert!(
+            !p.request_user_command(PaneId::Left, "test-command", preview, &|_| {
+                panic!("separator must not reach the backend")
+            })
+        );
+    }
+    assert!(p.command_launches.jobs.is_empty());
+}

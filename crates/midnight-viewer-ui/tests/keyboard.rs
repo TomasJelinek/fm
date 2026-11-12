@@ -143,6 +143,7 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     let window = manager
         .open(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,
@@ -205,6 +206,14 @@ fn viewer_manager_routes_canonical_chords_and_preserves_search_context() {
     key(&window, " ");
     assert_eq!(window.get_query(), " ", "search keeps ordinary space input");
     assert_eq!(seen.borrow().last(), Some(&("Space".into(), true)));
+    key(&window, "ab");
+    key(&window, Key::Backspace);
+    assert_eq!(
+        window.get_query(),
+        " a",
+        "Backspace edits the search field instead of cycling files"
+    );
+    assert_eq!(seen.borrow().last(), Some(&("Backspace".into(), true)));
     *bindings.borrow_mut() = ShortcutMap::new(&[]).unwrap();
     let searches = Rc::new(RefCell::new(Vec::new()));
     let searched = searches.clone();

@@ -32,7 +32,7 @@ fn browser_temporary_is_short_private_and_retained_until_tree_reaping() {
     )
     .unwrap();
     fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut browser = super::spawn(&launcher, profile).unwrap();
+    let mut browser = super::spawn(&launcher, profile, false).unwrap();
     let mut temporary = String::new();
     BufReader::new(&mut browser.output)
         .read_line(&mut temporary)

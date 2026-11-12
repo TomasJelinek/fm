@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) enum Input {
     Flat(PrepareOperation),
+    Metadata(PrepareCapturedMetadata, MetadataScope),
     Rename(PrepareCapturedRename, RenameScope),
     Delete(PrepareCapturedDelete, DeleteScope),
 }
@@ -51,10 +52,45 @@ impl RenameScope {
             && self.row.0 != 0
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct MetadataScope {
+    stamp: TreeViewStamp,
+    request: TreeRequestId,
+    pub(super) count: usize,
+    pub(super) covered: Vec<bool>,
+}
+impl MetadataScope {
+    pub(super) fn capture(sources: &dyn CapturedMetadataSources) -> Self {
+        Self {
+            stamp: sources.stamp(),
+            request: sources.request(),
+            count: sources.root_count(),
+            covered: sources
+                .covered_roots()
+                .iter()
+                .take(MAX_METADATA_TARGETS + 1)
+                .copied()
+                .collect(),
+        }
+    }
+    pub(super) fn valid(&self) -> bool {
+        self.stamp.session.0 != 0
+            && self.stamp.revision.0 != 0
+            && self.request.0 != 0
+            && (1..=MAX_METADATA_TARGETS).contains(&self.count)
+            && self.covered.len() == self.count
+            && self.covered.iter().any(|covered| !covered)
+    }
+}
 impl Input {
     pub(super) fn initial(&self) -> OperationProgress {
         match self {
             Self::Flat(request) => worker::initial(request),
+            Self::Metadata(request, _) => worker::initial_for(
+                request.id,
+                MutationKind::EditMetadata,
+                request.source_directory.clone(),
+            ),
             Self::Rename(request, _) => worker::initial_for(
                 request.id,
                 MutationKind::Rename,
@@ -78,6 +114,14 @@ impl Input {
             Self::Flat(request) => {
                 worker::prepare(request, service, cancel, status, metadata_budget)
             }
+            Self::Metadata(request, scope) => worker::prepare_captured_metadata(
+                request,
+                scope,
+                service,
+                cancel,
+                status,
+                metadata_budget,
+            ),
             Self::Rename(request, scope) => worker::prepare_captured_rename(
                 request,
                 scope,

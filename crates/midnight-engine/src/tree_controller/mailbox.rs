@@ -231,6 +231,12 @@ fn known_view(command: &TreeCommand, published: &Weak<TreeProjection>) -> bool {
             }
             &request.view
         }
+        TreeCommand::Metadata(request) => {
+            if !Arc::ptr_eq(request.selection.basis(), &request.view) {
+                return false;
+            }
+            &request.view
+        }
         TreeCommand::Delete(request) => {
             if !Arc::ptr_eq(request.selection.basis(), &request.view) {
                 return false;

@@ -8,6 +8,8 @@ pub struct TabSummary {
     pub id: TabId,
     pub title: String,
     pub path: PathBuf,
+    /// Complete displayed location, including archive members or network addresses.
+    pub display_path: String,
     pub active: bool,
 }
 
@@ -198,10 +200,20 @@ impl Presenter {
                 } else {
                     title
                 };
+                let display_path = if active {
+                    self.panes[pane.index()].display_location_text()
+                } else if let Some(network) = network {
+                    network.address.display.clone()
+                } else if let Some(archive) = archive {
+                    archive.location.display_text()
+                } else {
+                    path.to_string_lossy().into_owned()
+                };
                 TabSummary {
                     id: tab.id,
                     title,
                     path: path.to_owned(),
+                    display_path,
                     active,
                 }
             })

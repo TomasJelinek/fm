@@ -110,10 +110,11 @@ impl Presenter {
         if self.operations.closing || !self.preferences.loaded {
             return false;
         }
-        let Some(command) = configuration
-            .iter()
-            .find(|c| c.id.as_str() == id && (preview_only || c.enabled))
-        else {
+        let Some(command) = configuration.iter().find(|c| {
+            c.id.as_str() == id
+                && (preview_only || c.enabled)
+                && !matches!(c.invocation, UserCommandInvocation::Separator)
+        }) else {
             return false;
         };
         if self

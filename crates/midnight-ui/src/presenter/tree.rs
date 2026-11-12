@@ -111,6 +111,7 @@ impl Presenter {
         self.cancel_tree_clipboard(Some(pane));
         self.cancel_tree_editor(Some(pane));
         self.cancel_tree_checksums(Some(pane));
+        self.cancel_tree_metadata(Some(pane));
         self.cancel_tree_rename(Some(pane));
         self.cancel_tree_delete(Some(pane));
         self.cancel_tree_drag(Some(pane));
@@ -378,6 +379,7 @@ impl Presenter {
         self.flush_tree_clipboard(send);
         self.flush_tree_editor(send);
         self.flush_tree_checksums(send);
+        self.flush_tree_metadata(send);
         self.flush_tree_rename(send);
         self.flush_tree_delete(send);
         self.flush_tree_drag(send);
@@ -477,6 +479,9 @@ impl Presenter {
             | TreeEvent::ChecksumsCaptured {
                 result: Err(error), ..
             }
+            | TreeEvent::MetadataCaptured {
+                result: Err(error), ..
+            }
             | TreeEvent::RenameCaptured {
                 result: Err(error), ..
             }
@@ -492,6 +497,14 @@ impl Presenter {
             self.retired.push(Box::new(content.clone()));
         }
         match event {
+            TreeEvent::MetadataCaptured {
+                stamp,
+                request,
+                retryable,
+                result,
+            } => {
+                self.tree_metadata_captured(stamp, request, retryable, result, send);
+            }
             TreeEvent::RenameCaptured {
                 stamp,
                 request,

@@ -7,6 +7,7 @@ pub(crate) struct OperationsState {
     pub(crate) pending: Option<OperationId>,
     pub(super) tree_delete: Option<tree_delete::Pending>,
     pub(super) tree_rename: Option<tree_rename::Pending>,
+    pub(super) tree_metadata: Option<tree_metadata::Pending>,
     pub(crate) preview: Option<Arc<OperationPreview>>,
     pub(crate) progress: Vec<Arc<OperationProgress>>,
     pub(crate) rename_conflicts: Vec<Arc<CopyConflict>>,
@@ -49,6 +50,7 @@ impl Presenter {
         kind: MutationKind,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.cancel_tree_metadata(None);
         self.cancel_tree_rename(None);
         self.cancel_tree_delete(None);
         if kind == MutationKind::Rename && self.panes[pane.index()].tree_view().is_some() {
@@ -136,6 +138,7 @@ impl Presenter {
         {
             return;
         }
+        self.cancel_tree_metadata(None);
         self.cancel_tree_rename(None);
         self.cancel_tree_delete(None);
         let Some(id) = self.next_operation_id(send) else {
@@ -279,6 +282,7 @@ impl Presenter {
         self.operations.closing = true;
         self.cancel_tree_editor(None);
         self.cancel_tree_checksums(None);
+        self.cancel_tree_metadata(None);
         self.cancel_tree_rename(None);
         self.cancel_tree_delete(None);
         self.retire_warning_viewer();

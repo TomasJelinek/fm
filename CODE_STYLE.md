@@ -43,6 +43,12 @@ the formatting authority; strict Clippy checks run in CI.
 - **Tests:** test observable behavior and real boundaries; cover errors, races,
   cancellation, Unicode and long paths. Keep large and OS-specific test groups
   in separate files. Do not copy implementation logic into expected results.
+- **Test execution:** compile targeted test artifacts once and run independent
+  headless suites concurrently with a bounded process/thread budget. Give each
+  process its own temporary files, render output and log; preserve package
+  working directories. Run desktop/input tests and performance measurements
+  serially. Do not run competing Cargo builds against the same target directory.
+  See [targeted parallel execution](docs/developer/TEST_EXECUTION.md).
 - **Dependencies:** all third-party libraries must permit the intended use and
   distribution without mandatory fees; prefer maintained open source. Follow the
   [dependency policy](docs/DEPENDENCY_POLICY.md) and update the

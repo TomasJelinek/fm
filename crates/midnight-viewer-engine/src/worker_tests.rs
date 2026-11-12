@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "worker_file_navigation_tests.rs"]
+mod file_navigation;
+
 #[path = "worker_position_tests.rs"]
 mod position;
 

@@ -295,7 +295,7 @@ fn held_drag_autoscrolls_virtualized_rows_and_keyboard_selection_reveals_its_row
 
 #[test]
 fn ancestor_clipped_vertical_drop_cancels_over_footer() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_count(8);
     h.open();
     h.ui.resize(320, 200);
     slint::platform::update_timers_and_animations();
@@ -326,17 +326,17 @@ fn ancestor_clipped_vertical_drop_cancels_over_footer() {
         "a real visible row must receive the press"
     );
     let start = slint::LogicalPosition::new(row.0 + 20.0, (visible_top + visible_bottom) / 2.0);
-    let second = ui::popup_item(
-        &h.ui.window,
-        "Second command · Program · program.exe · Single",
-        AccessibleRole::ListItem,
-    );
-    let second = bounds(&second);
-    let end = slint::LogicalPosition::new(start.x, (second.1 + second.3) / 2.0 + 1.0);
+    // Compact rows no longer put the second row behind the footer. Pick an actual
+    // overlap between the longer child list and the ancestor-clipped footer.
+    let list = h.list_bounds();
+    let overlap_bottom = list.3.min(h.ui.height as f32);
     assert!(
-        end.y > clip.3 && end.y < h.ui.height as f32,
-        "release is over the clipped footer, not visible body content"
+        overlap_bottom > clip.3 + 1.0,
+        "the child list must extend behind the footer"
     );
+    let end = slint::LogicalPosition::new(start.x, (clip.3 + overlap_bottom) / 2.0);
+    assert!(end.y > clip.3 && end.y < h.ui.height as f32);
+    let before: Vec<_> = h.rows().iter().map(|row| row.id.clone()).collect();
     h.press_drag(start);
     h.ui.draw();
     bitmap::snapshot(
@@ -355,6 +355,14 @@ fn ancestor_clipped_vertical_drop_cancels_over_footer() {
     h.move_drag(end);
     h.release_drag(end);
     assert_eq!(h.save_count(), 0, "the footer is not a command drop target");
+    assert_eq!(
+        h.rows()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>(),
+        before,
+        "a release over the footer must not change the staged command order"
+    );
 }
 
 #[test]

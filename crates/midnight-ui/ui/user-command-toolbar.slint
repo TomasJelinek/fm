@@ -6,7 +6,7 @@ import { HintedActionButton } from "hinted-inputs.slint";
 
 export struct UserCommandRow {
     identity: string, revision: string, name: string, label: string,
-    hint: string, icon: image, enabled: bool,
+    hint: string, icon: image, enabled: bool, separator: bool,
 }
 
 component CommandButton inherits Rectangle {
@@ -92,18 +92,30 @@ export component UserCommandToolbar inherits Rectangle {
             items := HorizontalLayout {
                 spacing: 3px; padding-left: 4px; padding-right: 4px;
                 alignment: start;
-                for command in root.commands: CommandButton {
-                    command: command;
-                    private property <bool> showing-icon: root.visible
-                        && self.absolute-position.x + self.width > bar.absolute-position.x
-                        && self.absolute-position.x < bar.absolute-position.x + bar.visible-width;
-                    // Revision changes must reannounce unchanged visible geometry.
-                    private property <string> visible-token: command.revision + ":" + command.identity;
-                    init => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
-                    changed showing-icon => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
-                    changed visible-token => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
-                    execute(id, revision) => { root.execute(id, revision); }
-                    settings(id) => { root.settings(id); }
+                for command in root.commands : HorizontalLayout {
+                    spacing: 0px; height: Theme.control-height; alignment: start;
+                    if command.separator : Rectangle {
+                        width: 12px; height: Theme.control-height;
+                        accessible-role: text; accessible-label: "Command group separator";
+                        Rectangle {
+                            x: (parent.width - 1px) / 2; y: 5px;
+                            width: 1px; height: max(0px, parent.height - 10px);
+                            background: Theme.frame;
+                        }
+                    }
+                    if !command.separator : CommandButton {
+                        command: command;
+                        private property <bool> showing-icon: root.visible
+                            && self.absolute-position.x + self.width > bar.absolute-position.x
+                            && self.absolute-position.x < bar.absolute-position.x + bar.visible-width;
+                        // Revision changes must reannounce unchanged visible geometry.
+                        private property <string> visible-token: command.revision + ":" + command.identity;
+                        init => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
+                        changed showing-icon => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
+                        changed visible-token => { root.icon-visible(command.identity, command.revision, self.showing-icon); }
+                        execute(id, revision) => { root.execute(id, revision); }
+                        settings(id) => { root.settings(id); }
+                    }
                 }
             }
         }

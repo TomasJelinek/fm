@@ -426,3 +426,34 @@ fn default_titles_follow_each_tabs_folder_while_callback_identities_remain_stabl
     assert!(tabs[0].active);
     assert_eq!(tabs[1].title, "Charlie");
 }
+
+#[test]
+fn tooltip_paths_include_archive_members_in_active_and_parked_tabs() {
+    let mut p = super::archives::archive_pane();
+    let archive = p.panes[0].archive.as_mut().unwrap();
+    archive.location.trail.push((8, "nested.7z".into()));
+    archive.location.trail.push((9, "文档".into()));
+    let expected = test_root()
+        .join("sample.zip")
+        .join("nested.7z")
+        .join("文档");
+    let original = p.tabs(PaneId::Left)[0].id;
+    assert_eq!(
+        p.tabs(PaneId::Left)[0].display_path,
+        expected.to_string_lossy()
+    );
+    assert_eq!(p.tabs(PaneId::Left)[0].title, "文档");
+    assert!(p.new_tab(PaneId::Left, &|_| true));
+    let parked = p
+        .tabs(PaneId::Left)
+        .into_iter()
+        .find(|tab| tab.id == original)
+        .unwrap();
+    assert!(!parked.active);
+    assert_eq!(parked.display_path, expected.to_string_lossy());
+    assert_eq!(
+        parked.path,
+        test_root(),
+        "native navigation authority is unchanged"
+    );
+}

@@ -172,7 +172,7 @@ fn assert_tip(
     quiet: &[slint::Rgb8Pixel],
     position: slint::LogicalPosition,
     expected: &str,
-) {
+) -> slint::LogicalSize {
     let inner = WindowInner::from_pub(window.window());
     let (origin, component) = {
         let popups = inner.active_popups();
@@ -225,6 +225,7 @@ fn assert_tip(
         changed > 100,
         "actual tooltip content must paint in its bounds"
     );
+    size
 }
 fn hover(
     window: &MainWindow,
@@ -233,11 +234,11 @@ fn hover(
     pixels: &mut [slint::Rgb8Pixel],
     position: slint::LogicalPosition,
     expected: &str,
-) {
+) -> slint::LogicalSize {
     let quiet = start_hover(window, native, pixels, position);
     time.set(time.get() + Duration::from_millis(600));
     draw(native, pixels);
-    assert_tip(window, pixels, &quiet, position, expected);
+    assert_tip(window, pixels, &quiet, position, expected)
 }
 fn rect(item: &ItemRc) -> (f32, f32, f32, f32) {
     let geometry = item.geometry();
@@ -596,4 +597,61 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         }
         window.hide().unwrap();
     }
+}
+
+#[test]
+fn folder_tab_tooltip_shows_only_the_complete_native_or_archive_path() {
+    let natives = Rc::new(RefCell::new(Vec::new()));
+    let time = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(natives.clone(), time.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.set_preferences_ready(true);
+    let native = natives.borrow().last().unwrap().clone();
+    native.set_size(slint::PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
+    window.show().unwrap();
+    window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(WIDTH as f32, HEIGHT as f32),
+    });
+    let mut pixels = vec![slint::Rgb8Pixel::default(); WIDTH * HEIGHT];
+    let mut single_line_height = None;
+    for (path, wide) in [
+        (r"C:\Temp", false),
+        (r"D:\文档\bundle.zip\inner.7z\folder", false),
+        (
+            concat!(
+                r"C:\Users\tjelinek\OneDrive - NVIDIA Corporation\Documents\",
+                r"Midnight Explorer\Design specifications\Panel navigation and keyboard shortcuts"
+            ),
+            true,
+        ),
+    ] {
+        window.set_left_tabs(slint::ModelRc::new(slint::VecModel::from(vec![
+            midnight_ui::TabRow {
+                identity: "tab-1".into(),
+                label: "Temp".into(),
+                path: path.into(),
+                active: true,
+            },
+        ])));
+        draw(&native, &mut pixels);
+        let tab = find(
+            root(&window),
+            &format!("Temp\n{path}"),
+            AccessibleRole::Button,
+        )
+        .remove(0);
+        let size = hover(&window, &native, &time, &mut pixels, center(&tab), path);
+        let line_height = *single_line_height.get_or_insert(size.height);
+        if wide {
+            assert!(
+                size.width > 560.0,
+                "path should use the available width: {size:?}"
+            );
+            assert!(
+                (size.height - line_height).abs() < 1.0,
+                "a typical long path should remain on one line: {size:?}"
+            );
+        }
+    }
+    window.hide().unwrap();
 }

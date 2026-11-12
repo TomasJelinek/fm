@@ -103,6 +103,7 @@ fn worker(
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let session = service.open(
         ViewerLaunch {
+            find: None,
             associations: Default::default(),
             tree: None,
             generated: None,

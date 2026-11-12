@@ -126,3 +126,62 @@ fn terminal_source_and_explicit_scalar_declarations_round_trip_without_template_
     assert!(matches!(&decoded.user_commands[0].invocation,
         UserCommandInvocation::Terminal { variables, .. } if variables.is_empty()));
 }
+#[test]
+fn separator_round_trips_order_and_stable_id_without_executable_or_directory_requirements() {
+    let encoded = encode_preferences(UserPreferences {
+        user_commands: vec![command()].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut stored: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    let mut separator = stored["user_commands"][0].clone();
+    separator["id"] = "group-break".into();
+    separator["name"] = "Tools".into();
+    separator["working_directory"] = "".into();
+    separator["invocation"] = serde_json::json!({"mode":"separator"});
+    stored["user_commands"]
+        .as_array_mut()
+        .unwrap()
+        .push(separator);
+    let decoded = decode_preferences(&serde_json::to_vec(&stored).unwrap())
+        .expect("a separator is a valid ordered configuration item without process fields");
+    assert_eq!(decoded.user_commands[1].id.as_str(), "group-break");
+    assert_eq!(decoded.user_commands[1].name, "Tools");
+    let round_trip: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(decoded).unwrap()).unwrap();
+    assert_eq!(round_trip["user_commands"], stored["user_commands"]);
+    // The separator variant is still strict; process data cannot silently accompany it.
+    stored["user_commands"][1]["invocation"]["executable"] = "ignored.exe".into();
+    assert!(decode_preferences(&serde_json::to_vec(&stored).unwrap()).is_err());
+}
+#[test]
+fn separator_stale_shortcut_is_pruned_on_load_without_losing_other_preferences() {
+    let mut second = command();
+    second.id = UserCommandId::new("other").unwrap();
+    let preferences = UserPreferences {
+        user_commands: vec![command(), second.clone()].into(),
+        shortcuts: vec![
+            ShortcutBinding {
+                action: command().id.action(),
+                keys: vec!["Ctrl+Alt+Shift+F11".into()],
+            },
+            ShortcutBinding {
+                action: second.id.action(),
+                keys: vec!["Ctrl+Alt+Shift+F12".into()],
+            },
+        ],
+        ..Default::default()
+    };
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&encode_preferences(preferences.clone()).unwrap()).unwrap();
+    stored["user_commands"][0]["invocation"] = serde_json::json!({"mode":"separator"});
+    stored["user_commands"][0]["working_directory"] = "".into();
+    let decoded = decode_preferences(&serde_json::to_vec(&stored).unwrap()).unwrap();
+    assert_eq!(decoded.shortcuts, vec![preferences.shortcuts[1].clone()]);
+    assert_eq!(decoded.user_commands[1], second);
+    assert_eq!(decoded.checksum_algorithms, preferences.checksum_algorithms);
+    assert_eq!(
+        decode_preferences(&encode_preferences(decoded.clone()).unwrap()).unwrap(),
+        decoded
+    );
+}

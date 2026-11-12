@@ -96,6 +96,9 @@ fn cancelled_actor_retires_service(actor: Actor) {
         match actor {
             Actor::Find => Box::new(find::Controller::new(
                 scope.clone(),
+                find::Retirement {
+                    domain: domain.clone(),
+                },
                 Some(service.clone()),
                 None,
                 outbox,

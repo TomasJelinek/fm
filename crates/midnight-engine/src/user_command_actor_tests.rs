@@ -229,3 +229,63 @@ async fn cancellation_and_shutdown_keep_native_launch_and_process_permits_until_
     assert_eq!(launches.available_permits(), 1);
     assert_eq!(processes.available_permits(), 1);
 }
+#[test]
+fn separator_preview_and_execution_never_enter_the_worker_queue() {
+    let (input, mut queued) = mpsc::channel(1);
+    let controller = Controller {
+        input,
+        retirement: RetirementDomain::try_start(MAX_JOBS, 0).unwrap(),
+        state: Arc::default(),
+        stop: Cancellation::default(),
+        available: true,
+        task: None,
+    };
+    for (id, preview) in [(1, true), (2, false)] {
+        let mut request = request(id, &std::env::current_dir().unwrap());
+        let command = &mut Arc::make_mut(&mut request.configuration)[0];
+        command.invocation = UserCommandInvocation::Separator;
+        command.working_directory.clear();
+        let error = controller.start(request, preview).unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("Separators"));
+        assert!(queued.try_recv().is_err());
+        assert!(controller.state.lock().unwrap().requests.is_empty());
+    }
+}
+
+#[test]
+fn separator_direct_preparation_refuses_before_native_capture_for_both_intents() {
+    struct NeverCapture;
+    impl TransferService for NeverCapture {
+        fn prepare_transfer_source(
+            &self,
+            _: &Path,
+            _: &Cancellation,
+        ) -> Result<Box<dyn TransferSource>, FsError> {
+            panic!("separator captured a source")
+        }
+        fn prepare_transfer_destination(
+            &self,
+            _: &Path,
+            _: &Cancellation,
+        ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+            panic!("separator captured a directory")
+        }
+    }
+    let mut request = request(1, &std::env::current_dir().unwrap());
+    let command = &mut Arc::make_mut(&mut request.configuration)[0];
+    command.invocation = UserCommandInvocation::Separator;
+    command.launch = UserCommandLaunch::PerItem;
+    // A leftover valid template would otherwise trigger native directory capture.
+    for prepare in [
+        user_command_prepare::prepare,
+        user_command_prepare::prepare_preview,
+    ] {
+        let error = match prepare(&request, &NeverCapture, &Cancellation::default()) {
+            Ok(_) => panic!("separator produced a native process plan"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("Separators"));
+    }
+}

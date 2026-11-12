@@ -56,6 +56,7 @@ impl Presenter {
             },
         );
         Some(ViewerLaunch {
+            find: None,
             associations: self.viewer_plugins.startup_associations.clone(),
             tree,
             generated: None,
@@ -91,6 +92,19 @@ impl Presenter {
         } else {
             ShortcutContext::Viewer
         };
+        self.tool_key(chord, context)
+    }
+
+    pub fn comparison_key(&self, chord: &ShortcutChord, search: bool) -> Option<String> {
+        let context = if search {
+            ShortcutContext::ComparisonSearch
+        } else {
+            ShortcutContext::Comparison
+        };
+        self.tool_key(chord, context)
+    }
+
+    fn tool_key(&self, chord: &ShortcutChord, context: ShortcutContext) -> Option<String> {
         self.keyboard
             .bindings
             .borrow()

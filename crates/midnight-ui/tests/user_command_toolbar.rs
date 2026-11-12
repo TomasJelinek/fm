@@ -199,3 +199,39 @@ fn overflowing_toolbar_keeps_minimum_window_and_reveals_later_command_icons() {
     );
     main.hide().unwrap();
 }
+
+#[test]
+fn separator_is_a_narrow_noninteractive_line_between_command_buttons() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let main = MainWindow::new().unwrap();
+    main.set_preferences_ready(true);
+    main.set_user_commands(
+        Rc::new(slint::VecModel::from(vec![
+            row(1),
+            UserCommandRow {
+                separator: true,
+                ..row(2)
+            },
+            row(3),
+        ]))
+        .into(),
+    );
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let captured = calls.clone();
+    main.on_execute_user_command(move |id, _| captured.borrow_mut().push(id.to_string()));
+    main.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    draw(&native, 860, 620, "command-toolbar-separator");
+    assert!(
+        modeless::accessible_item(&native, AccessibleRole::Button, "Custom command 2").is_none()
+    );
+    let separator =
+        modeless::accessible_item(&native, AccessibleRole::Text, "Command group separator")
+            .unwrap();
+    assert!(separator.geometry().width() <= 12.0);
+    separator.accessible_action(&i_slint_core::accessibility::AccessibilityAction::Default);
+    assert!(calls.borrow().is_empty());
+    click(&native, "Custom command 3");
+    assert_eq!(*calls.borrow(), ["command-3"]);
+}

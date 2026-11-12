@@ -201,6 +201,9 @@ pub(crate) fn event(b: &mut Encoder, kind: &EventKind) -> io::Result<u8> {
                 HostShortcut::ZoomOut => 7,
                 HostShortcut::ZoomReset => 8,
                 HostShortcut::Copy => 9,
+                HostShortcut::Backspace => 10,
+                HostShortcut::AltLeft => 11,
+                HostShortcut::AltRight => 12,
             });
             9
         }

@@ -38,6 +38,7 @@ mod tests {
             pending: Mutex::new(HashMap::new()),
             selection: Mutex::new(crate::selection::Selection::default()),
             mouse_buttons: AtomicU64::new(0),
+            host_shortcuts: false,
         });
         let stream = Arc::new(Mutex::new(Stream {
             resource: None,

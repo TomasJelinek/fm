@@ -1,4 +1,16 @@
 //! File positions stay exact even when a scrollbar cannot represent every byte.
+
+/// Both directions stay within the same admitted file order, including a single file.
+pub(crate) fn adjacent_file(index: usize, count: usize, backwards: bool) -> Option<usize> {
+    if count == 0 || index >= count {
+        return None;
+    }
+    Some(if backwards {
+        if index == 0 { count - 1 } else { index - 1 }
+    } else {
+        (index + 1) % count
+    })
+}
 pub(crate) fn anchor(position: f64, length: u64) -> u64 {
     if !position.is_finite() {
         return 0;

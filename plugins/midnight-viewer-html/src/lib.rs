@@ -1,5 +1,7 @@
 #[cfg(feature = "native-cef")]
 mod find;
+#[cfg(any(feature = "native-cef", test))]
+mod host_keys;
 #[cfg(feature = "native-cef")]
 mod native;
 #[cfg(any(feature = "native-cef", test))]

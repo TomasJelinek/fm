@@ -308,6 +308,19 @@ impl Worker {
                     .capture_drop_directory(view, *row, *request, &self.copy_capacity, cancel)
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
+            TreeCommand::Metadata(request) => {
+                let result =
+                    session.capture_metadata(request, &self.copy_capacity, &self.rename, cancel);
+                let retryable = matches!(&result, Err(ProviderError::ResourceLimited));
+                Ok(Some(TreeEvent::MetadataCaptured {
+                    stamp: request.view.stamp,
+                    request: request.request,
+                    retryable,
+                    result: result.map_err(|error| {
+                        crate::tree_diagnostics::diagnostic(&self.reports, &error)
+                    }),
+                }))
+            }
             TreeCommand::Rename(request) => Ok(Some(TreeEvent::RenameCaptured {
                 stamp: request.view.stamp,
                 request: request.request,

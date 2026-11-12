@@ -27,7 +27,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui, midnight-ui-input, midnight-viewer-ui |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
-| [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-linux, midnight-thumbnail-image, midnight-viewer-image |
+| [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-common, midnight-platform-linux, midnight-thumbnail-image, midnight-viewer-image |
 | [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-linux, midnight-filesystem-native-macos, midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | midnight-filesystem-network |
 | [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
@@ -40,6 +40,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [prettyplease](https://crates.io/crates/prettyplease/0.2.37) | 0.2.37 | MIT OR Apache-2.0 | midnight-ui-bindings |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark/0.13.6) | 0.13.6 | MIT | midnight-viewer-markdown |
 | [regex](https://crates.io/crates/regex/1.13.1) | 1.13.1 | MIT OR Apache-2.0 | midnight-platform-common, midnight-viewer-source |
+| [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | midnight-platform-linux |
 | [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | midnight-platform-linux, midnight-worker-platform |
 | [ruzstd](https://crates.io/crates/ruzstd/0.9.1) | 0.9.1 | MIT | midnight-fs-archive |
 | [serde](https://crates.io/crates/serde/1.0.229) | 1.0.229 | MIT OR Apache-2.0 | midnight-filesystem-host, midnight-image-viewer-host, midnight-native-filesystem-host, midnight-platform-common, midnight-plugin-host, midnight-thumbnail-host, midnight-web-viewer-host |

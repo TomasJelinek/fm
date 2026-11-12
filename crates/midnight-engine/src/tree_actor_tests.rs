@@ -680,3 +680,6 @@ fn filtering_retains_unselectable_ancestor_context_and_rebases_selection_by_occu
         Err(ProviderError::Unsupported)
     ));
 }
+
+#[path = "tree_metadata_capture_tests.rs"]
+mod metadata_capture_tests;

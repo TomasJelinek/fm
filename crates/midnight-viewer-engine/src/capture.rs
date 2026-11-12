@@ -37,6 +37,9 @@ pub(crate) fn prepare_with(
     closed: &Arc<AtomicBool>,
     capture: crate::NativeCapture,
 ) -> Result<Order, String> {
+    if launch.find.is_some() {
+        return crate::capture_find::prepare(launch, closed, capture);
+    }
     let normalized;
     let launch = if launch.tree.is_some() {
         normalized = crate::capture_tree::normalize(launch, closed)?;

@@ -63,8 +63,26 @@ pub fn decode(
     cancel: &AtomicBool,
     timeout: Duration,
 ) -> io::Result<Frame> {
-    if cancel.load(Ordering::Acquire) {
-        return Err(cancelled());
+    decode_cooperative(
+        helper,
+        source,
+        request,
+        &|| cancel.load(Ordering::Acquire),
+        timeout,
+    )
+}
+
+/// The same restricted decoder with caller-owned cooperative cancellation, including
+/// linked lifetimes. No polling thread or replacement worker is created for cancellation.
+pub fn decode_cooperative(
+    helper: &Path,
+    source: &dyn Source,
+    request: Request,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    timeout: Duration,
+) -> io::Result<Frame> {
+    if cancelled() {
+        return Err(cancellation_error());
     }
     if request.source_length != source.length() {
         return Err(io::Error::other("Source length changed"));
@@ -96,8 +114,8 @@ pub fn decode(
                 api::write_message(&mut input, &Message::Request(request.clone()))?;
                 let mut total = 0u64;
                 for _ in 0..8192 {
-                    if cancel.load(Ordering::Acquire) || broker_stop.load(Ordering::Acquire) {
-                        return Err(cancelled());
+                    if cancelled() || broker_stop.load(Ordering::Acquire) {
+                        return Err(cancellation_error());
                     }
                     match api::read_message(&mut output)? {
                         Message::Read { offset, length } => {
@@ -118,15 +136,11 @@ pub fn decode(
                                         midnight_work_budget::storage_cost(
                                             source.confirmed_local_ssd(),
                                         ),
-                                        || {
-                                            cancel.load(Ordering::Acquire)
-                                                || broker_stop.load(Ordering::Acquire)
-                                        },
+                                        || cancelled() || broker_stop.load(Ordering::Acquire),
                                     )
-                                    .ok_or_else(cancelled)?;
+                                    .ok_or_else(cancellation_error)?;
                                 source.read_at_cooperative(offset, length, &|| {
-                                    cancel.load(Ordering::Acquire)
-                                        || broker_stop.load(Ordering::Acquire)
+                                    cancelled() || broker_stop.load(Ordering::Acquire)
                                 })?
                             };
                             if bytes.len() as u64 != end - offset {
@@ -156,8 +170,8 @@ pub fn decode(
             let _ = sender.send(result);
         });
         let result = loop {
-            if cancel.load(Ordering::Acquire) {
-                break Err(cancelled());
+            if cancelled() {
+                break Err(cancellation_error());
             }
             if start.elapsed() >= timeout {
                 break Err(io::Error::new(
@@ -195,6 +209,47 @@ pub fn decode(
     Ok(result)
 }
 
-fn cancelled() -> io::Error {
+fn cancellation_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "Thumbnail request cancelled")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Untouched;
+    impl Source for Untouched {
+        fn length(&self) -> u64 {
+            panic!("cancelled decode inspected source")
+        }
+        fn version(&self) -> Vec<u8> {
+            panic!("cancelled decode inspected source")
+        }
+        fn validate(&self) -> io::Result<()> {
+            panic!("cancelled decode inspected source")
+        }
+        fn read_at(&self, _: u64, _: u32) -> io::Result<Vec<u8>> {
+            panic!("cancelled decode read source")
+        }
+    }
+    #[test]
+    fn linked_cancellation_is_checked_before_provider_or_source_access() {
+        let parent = midnight_core::Cancellation::default();
+        let child = parent.child();
+        parent.cancel();
+        let error = decode_cooperative(
+            Path::new("missing-helper"),
+            &Untouched,
+            Request {
+                id: 1,
+                source_length: 0,
+                width: 128,
+                height: 128,
+                frame: 0,
+            },
+            &|| child.is_cancelled(),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
 }

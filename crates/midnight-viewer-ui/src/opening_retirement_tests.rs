@@ -28,6 +28,7 @@ fn reject(manager: &ViewerWindows) {
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let result = manager.open(
         ViewerLaunch {
+            find: None,
             associations: Default::default(),
             tree: None,
             archive: None,

@@ -144,3 +144,48 @@ fn shortcut_codec_rejects_invalid_data_without_partially_applying() {
     assert!(invalid.validate().is_err());
     assert!(encode_preferences(invalid).is_err());
 }
+
+#[test]
+fn panel_view_salamander_defaults_preserve_saved_chords_during_preferences_roundtrip() {
+    for (id, previous, added) in [
+        ("view.brief", "Ctrl+Shift+B", "Alt+2"),
+        ("view.detailed", "Ctrl+Shift+L", "Alt+3"),
+        ("view.thumbnails", "Ctrl+Shift+T", "Alt+5"),
+    ] {
+        for explicit_view in [false, true] {
+            let mut preferences = UserPreferences::default();
+            preferences.shortcuts.push(ShortcutBinding {
+                action: "files.rename".into(),
+                keys: vec![added.into()],
+            });
+            if explicit_view {
+                preferences.shortcuts.push(ShortcutBinding {
+                    action: id.into(),
+                    keys: vec![previous.into()],
+                });
+            }
+            let restored =
+                decode_preferences(&encode_preferences(preferences.clone()).unwrap()).unwrap();
+            assert_eq!(restored, preferences);
+            let map = ShortcutMap::new(&restored.shortcuts).unwrap();
+            assert_eq!(
+                map.resolve(
+                    &ShortcutChord::parse(added).unwrap(),
+                    ShortcutContext::Files
+                )
+                .unwrap()
+                .id,
+                "files.rename"
+            );
+            assert_eq!(
+                map.resolve(
+                    &ShortcutChord::parse(previous).unwrap(),
+                    ShortcutContext::Files
+                )
+                .map(|definition| definition.id.as_str()),
+                explicit_view.then_some(id)
+            );
+            assert_eq!(map.bindings(id).unwrap().len(), usize::from(explicit_view));
+        }
+    }
+}

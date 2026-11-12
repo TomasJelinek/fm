@@ -132,7 +132,7 @@ fn invalid_delegation_denies_browser_before_exec() {
         let temporary = tempfile::tempdir().unwrap();
         std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let profile = super::super::super::profile::Profile::new(temporary.path()).unwrap();
-        let result = super::super::spawn(Path::new("/bin/true"), profile);
+        let result = super::super::spawn(Path::new("/bin/true"), profile, false);
         let error = match result {
             Err(error) => error,
             Ok(_) => panic!("Browser started without an actual cgroup-v2 delegation"),

@@ -49,13 +49,18 @@ pub(super) fn route_key(
             return true;
         }
     }
-    // Space reaches Chromium before the configured action can run. Chromium's key event
-    // reports live editable focus and requests host arbitration only outside an editor.
+    // These physical keys reach Chromium before any configured action. Its key event
+    // supplies live editable focus; only a non-editable key returns for host arbitration.
     let space = input.key == " "
         && !input.modifiers.control
         && !input.modifiers.alt
         && !input.modifiers.meta;
-    if shortcuts && !space && input.pressed && !input.repeat {
+    let physical_navigation = !input.modifiers.control
+        && !input.modifiers.shift
+        && !input.modifiers.meta
+        && ((input.key == "Backspace" && !input.modifiers.alt)
+            || (matches!(input.key.as_str(), "ArrowLeft" | "ArrowRight") && input.modifiers.alt));
+    if shortcuts && !space && !physical_navigation && input.pressed && !input.repeat {
         let key = if input.code.starts_with("Digit") {
             input.code.as_str()
         } else if input.key == "+" {
@@ -70,7 +75,7 @@ pub(super) fn route_key(
             chord.meta = input.modifiers.meta;
             let action = (open.key_resolver.borrow())(&chord, false);
             if let Some(action) = action
-                && dispatch_key(open, &action)
+                && dispatch_keyboard_shortcut(open, &action)
             {
                 open.web_native
                     .borrow_mut()
@@ -160,10 +165,34 @@ fn shortcut(open: &OpenWindow, shortcut: api::HostShortcut) -> bool {
 }
 
 pub(super) fn received(open: &OpenWindow, value: api::HostShortcut) {
+    let physical = match value {
+        api::HostShortcut::Backspace => Some(("Backspace", false)),
+        api::HostShortcut::AltLeft => Some(("Left", true)),
+        api::HostShortcut::AltRight => Some(("Right", true)),
+        _ => None,
+    };
+    if let Some((key, alt)) = physical {
+        if !open.closed.get() && open.window.get_web_mode() && open.window.get_content_focused() {
+            let chord = ShortcutChord {
+                key: key.into(),
+                alt,
+                ..Default::default()
+            };
+            let action = (open.key_resolver.borrow())(&chord, false);
+            if let Some(action) = action {
+                dispatch_key(open, &action);
+            }
+        }
+        // An unbound key has no file action. Replaying it would re-enter arbitration.
+        return;
+    }
     if matches!(
         value,
         api::HostShortcut::CycleNext | api::HostShortcut::CyclePrevious
     ) {
+        if open.closed.get() || !open.window.get_web_mode() || !open.window.get_content_focused() {
+            return;
+        }
         let backwards = value == api::HostShortcut::CyclePrevious;
         let chord = ShortcutChord {
             key: "Space".into(),

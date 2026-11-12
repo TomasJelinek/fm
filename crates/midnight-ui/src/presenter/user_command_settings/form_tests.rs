@@ -219,3 +219,56 @@ fn cmd_picker_declares_raw_scalar_and_inserts_complete_native_argument_companion
             .is_err()
     );
 }
+
+#[test]
+fn separator_mode_is_inert_and_switching_back_keeps_structured_program_data() {
+    let original = command();
+    let mut form = Form::from_command(&original);
+    form.kind = 2;
+    form.script = "echo preserved terminal draft".into();
+    let separator = form.command(Some(&original)).unwrap();
+    assert_eq!(separator.id, original.id);
+    assert!(matches!(
+        separator.invocation,
+        UserCommandInvocation::Separator
+    ));
+    assert_eq!(Form::from_command(&separator).kind, 2);
+    form.kind = 0;
+    assert_eq!(form.command(Some(&original)).unwrap(), original);
+    form.kind = 1;
+    assert!(matches!(form.command(Some(&original)).unwrap().invocation,
+        UserCommandInvocation::Terminal { script, .. } if script == "echo preserved terminal draft"));
+    let mut blank = Form::new("separator-new".into());
+    blank.kind = 2;
+    blank.working_directory.clear();
+    assert!(
+        blank.command(None).is_ok(),
+        "A separator requires no executable or directory"
+    );
+}
+
+#[test]
+fn newly_chosen_icon_requires_imported_native_result_and_legacy_unchanged_path_survives() {
+    let mut original = command();
+    original.icon = Some(absolute("legacy-original.png"));
+    let mut draft = Form::from_command(&original);
+    assert_eq!(draft.command(Some(&original)).unwrap(), original);
+    let imported = absolute("managed-copy.png");
+    draft.icon = imported.to_string_lossy().into_owned();
+    draft.icon_edited = true;
+    assert!(
+        draft
+            .command(Some(&original))
+            .unwrap_err()
+            .contains("independent copy")
+    );
+    assert_eq!(
+        draft
+            .command_with_native(Some(&original), None, Some(&imported))
+            .unwrap()
+            .icon,
+        Some(imported)
+    );
+    draft.icon.clear();
+    assert!(draft.command(Some(&original)).unwrap().icon.is_none());
+}

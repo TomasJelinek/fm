@@ -61,13 +61,13 @@ fn new_defaults_preserve_existing_overrides_but_explicit_conflicts_fail() {
             "compare.next-difference",
             "viewer.wrap",
             "F7",
-            ShortcutContext::Viewer,
+            ShortcutContext::Comparison,
         ),
         (
             "compare.previous-difference",
             "viewer.wrap",
             "Shift+F7",
-            ShortcutContext::Viewer,
+            ShortcutContext::Comparison,
         ),
     ] {
         let original = ShortcutBinding {

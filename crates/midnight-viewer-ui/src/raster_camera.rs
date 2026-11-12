@@ -176,9 +176,7 @@ impl Camera {
             return false;
         }
         if self.resume {
-            let [x, y] = self.motion.pending();
-            self.motion.cancel();
-            self.motion.push(x as f32, y as f32, now);
+            self.motion.restart_remaining();
             self.resume = false;
         }
         let Some(info) = &self.info else {

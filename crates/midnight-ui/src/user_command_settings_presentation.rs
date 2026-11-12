@@ -71,6 +71,7 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
             .iter()
             .map(|command| {
                 let kind = match &command.invocation {
+                    UserCommandInvocation::Separator => "Separator".into(),
                     UserCommandInvocation::Program { executable, .. } => format!(
                         "Program · {}",
                         executable
@@ -81,21 +82,26 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
                     UserCommandInvocation::Terminal { shell, .. } => match shell {
                         ShellFlavor::PowerShell => "PowerShell".into(),
                         ShellFlavor::Posix => "POSIX terminal".into(),
-                        ShellFlavor::Cmd => "Command Prompt · unavailable".into(),
+                        ShellFlavor::Cmd => "Command Prompt".into(),
                     },
                 };
                 UserCommandSettingsRow {
                     id: command.id.as_str().into(),
                     name: command.name.as_str().into(),
-                    summary: format!(
-                        "{kind} · {}",
-                        if command.launch == UserCommandLaunch::Single {
-                            "Single"
-                        } else {
-                            "Per item"
-                        }
-                    )
+                    summary: if matches!(command.invocation, UserCommandInvocation::Separator) {
+                        kind
+                    } else {
+                        format!(
+                            "{kind} · {}",
+                            if command.launch == UserCommandLaunch::Single {
+                                "Single"
+                            } else {
+                                "Per item"
+                            }
+                        )
+                    }
                     .into(),
+                    separator: matches!(command.invocation, UserCommandInvocation::Separator),
                     enabled: command.enabled,
                     selected: state.selected.as_ref() == Some(&command.id),
                 }
@@ -295,6 +301,7 @@ pub(crate) fn install(
                 0 => Target::CommandProgram,
                 1 => Target::WorkingDirectory,
                 2 => Target::CommandIcon,
+                3 => Target::CommandIconResource,
                 _ => return,
             };
             let owner = crate::picker_window::owner(&window);

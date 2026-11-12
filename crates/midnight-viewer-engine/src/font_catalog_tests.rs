@@ -16,6 +16,7 @@ fn installed_font_catalog_arrives_without_content_and_is_shared_between_windows(
     )]
     .into();
     let launch = ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: None,

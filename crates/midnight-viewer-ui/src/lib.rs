@@ -130,6 +130,7 @@ impl OpenWindow {
             input,
             ViewerInput::Mode(_)
                 | ViewerInput::NextFile
+                | ViewerInput::PreviousFile
                 | ViewerInput::Resize(_)
                 | ViewerInput::Search { .. }
                 | ViewerInput::Seek(_)
@@ -902,7 +903,7 @@ fn bind(open: &Rc<OpenWindow>) {
         }
         let consumed = native_state.borrow_mut().handle(event, |chord| {
             let action = (open.key_resolver.borrow())(&chord, !open.window.get_content_focused());
-            action.is_some_and(|action| dispatch_key(&open, &action))
+            action.is_some_and(|action| dispatch_keyboard_shortcut(&open, &action))
         });
         if consumed {
             ancillary_scroll.cancel();
@@ -932,7 +933,7 @@ fn bind(open: &Rc<OpenWindow>) {
             return false;
         };
         let action = (open.key_resolver.borrow())(&chord, search);
-        action.is_some_and(|action| dispatch_key(&open, &action))
+        action.is_some_and(|action| dispatch_keyboard_shortcut(&open, &action))
     });
     bind_pointer(open);
     let weak = Rc::downgrade(open);
@@ -954,6 +955,15 @@ fn bind(open: &Rc<OpenWindow>) {
         }
         slint::CloseRequestResponse::HideWindow
     });
+}
+
+fn dispatch_keyboard_shortcut(open: &OpenWindow, action: &str) -> bool {
+    if open.window.get_web_mode() && matches!(action, "viewer.next-file" | "viewer.previous-file") {
+        // Only Chromium-arbitrated physical keys may cycle files from browser content.
+        // Other custom chords stay page input until generic live-focus arbitration exists.
+        return false;
+    }
+    dispatch_key(open, action)
 }
 
 fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
@@ -978,6 +988,7 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
             return true;
         }
         "viewer.next-file" => ViewerInput::NextFile,
+        "viewer.previous-file" => ViewerInput::PreviousFile,
         "viewer.document-previous" | "viewer.document-next" => {
             if open.window.get_document_page() == 0 {
                 return false;
@@ -1098,9 +1109,9 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
     }
     let changing = matches!(
         input,
-        ViewerInput::NextFile | ViewerInput::DocumentPage { .. }
+        ViewerInput::NextFile | ViewerInput::PreviousFile | ViewerInput::DocumentPage { .. }
     );
-    let new_file = matches!(input, ViewerInput::NextFile);
+    let new_file = matches!(input, ViewerInput::NextFile | ViewerInput::PreviousFile);
     let navigation = matches!(
         input,
         ViewerInput::Scroll { .. }

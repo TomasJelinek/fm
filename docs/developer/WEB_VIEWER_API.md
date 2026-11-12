@@ -61,14 +61,24 @@ Physical IME, native Chromium Wayland and other display/system policies still ne
 their own qualification. Windows measurements do not establish Linux frame pacing.
 
 Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Pointer, keyboard
-and IME input target the displayed content generation. Space cycling is arbitrated
-inside Chromium using its actual editable focus, so typing into an HTML input does
-not change the viewed file. Clipboard text returns through the host's explicit
+and IME input target the displayed content generation. Space, Backspace and
+Alt+Left/Right are arbitrated inside Chromium using its actual editable focus, so
+typing into an HTML input does not change the viewed file. Clipboard text returns through the host's explicit
 clipboard command.
 
-Viewer shortcuts use the existing user key resolver before browser forwarding.
-Browser-arbitrated Space is resolved again against the configured action; an
-unbound Space scrolls instead of cycling files. Copy preserves an explicit
+Find, Copy and zoom use the existing user key resolver before browser forwarding.
+HTML file cycling is restricted to browser-arbitrated Space/Shift+Space, Backspace
+and Alt+Left/Right. Assigning Previous/Next file to another chord (for example Q
+or Ctrl+J) works in other viewer modes; in HTML that chord remains page input.
+This includes native digit/bracket shortcuts and the software keyboard fallback.
+Supporting arbitrary HTML file-navigation remaps requires a separate negotiated,
+bounded generic-key candidate/receipt contract; cached editable state is unsafe.
+Browser-arbitrated keys are resolved again against the current configured action;
+an unbound Space scrolls instead of cycling files. Backspace/Alt arrows require
+the explicit `physical-v1` host launch opt-in from public API/SDK 0.2. The host
+adds it to a cleared environment, and the provider never emits new tags without
+it. Existing MWV1 packets and manifests remain compatible. New physical-key
+replies are ignored after viewer content loses focus; unbound keys are not replayed. Copy preserves an explicit
 overflow state: a selection exceeding 48 KiB of UTF-8 reports a budget error
 without publishing a partial or empty clipboard replacement. A later smaller
 selection remains copyable.

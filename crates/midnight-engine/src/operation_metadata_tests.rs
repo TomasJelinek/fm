@@ -682,3 +682,6 @@ async fn metadata_preview_captures_native_locale_on_worker_for_current_and_propo
     assert_eq!(reviewed.sample[0].proposed.modified, Some(proposed));
     assert_eq!(reviewed.id, initial.id);
 }
+
+#[path = "tree_metadata_operation_tests.rs"]
+mod tree_metadata;

@@ -29,6 +29,7 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
         .map(|(index, name)| Entry::new(EntryId(index as u64), root.join(name), EntryKind::File))
         .collect();
     ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: None,
@@ -133,6 +134,7 @@ fn enormous_panel_capture_is_rejected_before_native_identity_work() {
         })
         .collect();
     let launch = ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: None,
@@ -302,6 +304,22 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     });
     frame(&session, |f| {
         f.revision > source.revision && f.accessible_text.contains("Second")
+    });
+    session.send(ViewerInput::PreviousFile);
+    frame(&session, |f| {
+        f.caption.contains("first.txt") && f.accessible_text.starts_with("FIRST")
+    });
+    session.send(ViewerInput::PreviousFile);
+    frame(&session, |f| {
+        f.caption.contains("third.md") && f.accessible_text.contains("Hello world!")
+    });
+    session.send(ViewerInput::NextFile);
+    frame(&session, |f| {
+        f.caption.contains("first.txt") && f.accessible_text.starts_with("FIRST")
+    });
+    session.send(ViewerInput::NextFile);
+    frame(&session, |f| {
+        f.caption.contains("second.rs") && f.mode == midnight_plugin_host::api::viewer::MODE_SOURCE
     });
     session.send(ViewerInput::NextFile);
     let markdown = frame(&session, |f| f.caption.contains("third.md"));

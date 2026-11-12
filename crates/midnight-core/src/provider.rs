@@ -20,6 +20,15 @@ pub struct Cancellation {
 }
 
 impl Cancellation {
+    /// Observe an existing external close flag without granting authority to cancel it.
+    /// Cancelling this token never changes the supplied flag.
+    pub fn observing(flag: Arc<AtomicBool>) -> Self {
+        Self {
+            parents: Arc::from([flag]),
+            ..Self::default()
+        }
+    }
+
     pub fn cancel(&self) {
         self.local.store(true, Ordering::Release);
     }

@@ -2797,6 +2797,7 @@ dependencies = [
  "fs2",
  "icu_casemap",
  "icu_locale_core",
+ "image",
  "midnight-core",
  "midnight-work-budget",
  "regex",
@@ -2819,6 +2820,7 @@ dependencies = [
  "midnight-core",
  "midnight-platform-common",
  "notify",
+ "resvg",
  "rustix 1.1.6",
  "tempfile",
  "tokio",
@@ -2929,6 +2931,7 @@ version = "0.2.0"
 dependencies = [
  "midnight-core",
  "midnight-image-viewer-host",
+ "midnight-native-filesystem-host",
  "midnight-plugin-host",
  "midnight-viewer-render",
  "midnight-web-viewer-host",
@@ -2965,7 +2968,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-web-viewer-api"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "midnight-web-viewer-host"
@@ -2982,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-web-viewer-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "midnight-web-viewer-api",
 ]

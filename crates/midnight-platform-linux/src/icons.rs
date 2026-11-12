@@ -38,6 +38,21 @@ impl IconService for LinuxFileSystem {
     }
 }
 
+pub(crate) fn theme_directory(home: Option<&Path>) -> Option<PathBuf> {
+    let themes = configured_theme(home)
+        .into_iter()
+        .chain(["Adwaita".into(), "hicolor".into()]);
+    for theme in themes {
+        for root in ICON_ROOTS {
+            if let Some(path) = trusted_path(&Path::new(root).join(&theme))
+                && path.is_dir()
+            {
+                return Some(path);
+            }
+        }
+    }
+    trusted_path(Path::new("/usr/share/icons")).filter(|path| path.is_dir())
+}
 fn load_named_icon(
     home: Option<&Path>,
     names: &[&str],
@@ -314,7 +329,7 @@ fn load_png(path: &Path, size: u16) -> Option<IconPixels> {
     decode_png(read_bounded(&trusted_path(path)?, PNG_LIMIT)?, size)
 }
 
-fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
+pub(crate) fn decode_png(bytes: Vec<u8>, size: u16) -> Option<IconPixels> {
     if bytes.len() > PNG_LIMIT || !(1..=64).contains(&size) {
         return None;
     }

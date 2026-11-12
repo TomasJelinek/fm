@@ -29,6 +29,7 @@ mod preferences_load;
 mod reclamation;
 mod search;
 mod selected_folder_sizes;
+mod selected_navigation;
 mod selected_size_status;
 mod selection;
 mod selection_rectangle;

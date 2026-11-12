@@ -41,6 +41,15 @@ use windows_sys::Win32::{
 #[path = "icons_executable.rs"]
 mod executable;
 
+pub(crate) fn load_resource(
+    path: &Path,
+    index: i32,
+    size: u16,
+    cancel: &midnight_core::Cancellation,
+) -> Option<midnight_platform_common::icon_snapshot::SnapshotPixels> {
+    executable::load_index(path, index, size, cancel)
+}
+
 impl IconService for WindowsFileSystem {
     fn load_executable_icon(
         &self,

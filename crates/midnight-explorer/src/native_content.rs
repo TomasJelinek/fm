@@ -9,7 +9,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub(crate) type Capture = midnight_viewer_engine::NativeCapture;
+// Thumbnails and comparison need only the borrowed main-content cancellation flag.
+pub(crate) type Capture = midnight_compare_engine::NativeCapture;
 
 pub(crate) fn archive(filesystem: Arc<InstalledProvider>) -> midnight_engine::ArchiveCapture {
     Arc::new(move |path, expected, cancel| {
@@ -39,7 +40,7 @@ pub(crate) fn factory(filesystem: Arc<InstalledProvider>) -> Capture {
 pub(crate) fn factory_with_resources(
     filesystem: Arc<InstalledProvider>,
     directories: Arc<dyn midnight_core::TransferService>,
-) -> Capture {
+) -> midnight_viewer_engine::NativeCapture {
     type Directory = Arc<dyn midnight_core::TransferDirectory>;
     let cache = Mutex::new(VecDeque::<(PathBuf, Directory)>::new());
     Arc::new(move |path, cancel| {
@@ -59,7 +60,7 @@ pub(crate) fn factory_with_resources(
                 .find(|(key, _)| key == parent)
                 .map(|(_, directory)| directory.clone())
         });
-        let cancelled = midnight_core::Cancellation::default();
+        let cancelled = midnight_core::Cancellation::observing(cancel.clone());
         let directory = if let Some(directory) = cached
             && directory.revalidate(&cancelled).is_ok()
         {

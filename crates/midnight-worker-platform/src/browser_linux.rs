@@ -51,7 +51,11 @@ pub(super) fn profile_parent() -> io::Result<std::path::PathBuf> {
     }
     Ok(base.join("midnight-explorer").join("web-viewer-sessions"))
 }
-pub(super) fn spawn(executable: &Path, profile: super::profile::Profile) -> io::Result<Browser> {
+pub(super) fn spawn(
+    executable: &Path,
+    profile: super::profile::Profile,
+    host_shortcuts: bool,
+) -> io::Result<Browser> {
     let cgroup = cgroup::Session::new()?;
     let mut temporary = temporary::Directory::new()?;
     let mut command = Command::new(executable);
@@ -64,6 +68,9 @@ pub(super) fn spawn(executable: &Path, profile: super::profile::Profile) -> io::
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if host_shortcuts {
+        command.env(super::HOST_SHORTCUTS_ENV, super::HOST_SHORTCUTS_PHYSICAL_V1);
+    }
     for key in [
         "DISPLAY",
         "WAYLAND_DISPLAY",

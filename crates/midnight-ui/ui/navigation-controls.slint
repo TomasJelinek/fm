@@ -225,7 +225,7 @@ export component TabStrip inherits Rectangle {
                             reject
                         }
                         tab-area := TouchArea {
-                            Tooltip { TipBody { text: tab.label + "\n" + tab.path + "\nSelect this folder tab. Middle-click closes it; the last tab stays open."; } }
+                            Tooltip { TipBody { text: tab.path; width-limit: 1040px; } }
                             private property <string> pressed-id;
                             private property <int> pressed-revision;
                             private property <bool> middle-pressed;

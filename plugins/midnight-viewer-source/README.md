@@ -27,15 +27,23 @@ no host-source, other-plugin, Slint, filesystem-open or network dependency.
 | Ruby | rb |
 | SQL | sql |
 | YAML | yaml, yml |
+| XML / XAML / MSBuild projects and resources | xml, xsd, xsl, xslt, xaml, csproj, fsproj, vbproj, vcxproj, props, targets, resx |
 
 Extension recognition is ASCII case insensitive. Extensionless Python, shell
 and Node scripts are recognized from their first shebang line after Open.
 Host routing must choose this package before a shebang can be inspected; the
-manifest does not claim every extensionless file. Every listed profile has a
-fixture checking actual keyword, string, number and comment output (JSON has
-no comments). These are lexical profiles, not compiler grammars: interpolation,
+manifest does not claim every extensionless file. The 19 profiles have fixtures
+checking their actual lexical styles (JSON has no comments). These are lexical profiles, not compiler grammars: interpolation,
 heredocs, JSX markup, macro expansion and language-specific semantic analysis
 are not promised. Unknown names remain plain text.
+
+XML highlights element/processing-instruction names, attribute names and quoted
+values, comments, CDATA, declaration markup and entity/character references.
+Unicode names follow XML 1.0 lexical ranges. Multiline lexical state survives
+complete-line checkpoints; ordinary mixed content stays plain. This is colouring,
+not XML validation: DTDs are inert text, references are never expanded, and no
+external resources are read. Declaration nesting is bounded to 16. XML defaults
+do not claim HTML or SVG. Saved per-plugin extension overrides remain in control.
 
 Multiline strings and C-style block comments retain explicit state. Rust nested
 block comments support depth 16; Python/TOML triple quotes and Rust raw strings
@@ -117,6 +125,9 @@ manifest. It only installs its own package directory; it never edits the host
 or another plugin. Removing the package removes the capability at host startup.
 Run CI on both Windows and Linux; exported builds also contain their ABI
 host-service fixture, delayed/cancelled reads, large offsets and parser tests.
+XML coverage includes tags/attributes, comments, CDATA, processing instructions,
+multiline/Unicode state, UTF-16 projects, short reads, cancellation, token/depth
+limits, huge logical lines and bounded seeks in a virtual 10 GB source.
 
 ## Dependency review and licensing
 

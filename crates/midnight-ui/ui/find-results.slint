@@ -60,6 +60,7 @@ export component FindResults inherits FocusScope {
     in-out property <int> selected-row: -1;
     callback sort(int);
     callback reveal(string);
+    callback action-key(KeyEvent) -> bool;
     private property <length> table-width: Theme.small-font * (root.duplicates ? 92 : 76) + (root.duplicates ? 62px : 52px);
     private property <length> row-height: Theme.row-height;
     private property <bool> reveal-active;
@@ -68,6 +69,7 @@ export component FindResults inherits FocusScope {
     private property <length> content-y: list.content-y;
     private property <int> page-size: max(1, floor(list.visible-height / root.row-height) - 1);
     key-pressed(event) => {
+        if root.action-key(event) { return accept; }
         if event.text == Key.DownArrow { root.selected-row = min(root.rows.length - 1, root.selected-row + 1); return accept; }
         if event.text == Key.UpArrow { root.selected-row = root.rows.length > 0 ? max(0, root.selected-row - 1) : -1; return accept; }
         if event.text == Key.PageDown { root.selected-row = min(root.rows.length - 1, max(0, root.selected-row) + root.page-size); return accept; }

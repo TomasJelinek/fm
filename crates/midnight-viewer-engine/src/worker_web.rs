@@ -102,7 +102,7 @@ impl Worker {
             }
         }
         let command = match input {
-            ViewerInput::NextFile | ViewerInput::Close => return false,
+            ViewerInput::NextFile | ViewerInput::PreviousFile | ViewerInput::Close => return false,
             ViewerInput::Resize(geometry) => {
                 self.frames.invalidate();
                 self.geometry = bounded_geometry(*geometry);

@@ -16,6 +16,13 @@ pub(crate) struct RuleDraft {
 }
 
 impl RuleDraft {
+    // A new custom editor may be incomplete in the draft, never in accepted preferences.
+    fn new_custom() -> Self {
+        Self {
+            use_default: false,
+            ..Self::from_rule(&EditorRule::default())
+        }
+    }
     fn from_rule(rule: &EditorRule) -> Self {
         Self {
             enabled: rule.enabled,
@@ -31,6 +38,12 @@ impl RuleDraft {
         }
     }
     fn candidate(&self) -> Result<EditorRule, String> {
+        if !self.use_default && self.executable.is_empty() {
+            return Err(
+                "Choose an editor executable, or explicitly select the system default editor."
+                    .into(),
+            );
+        }
         let rule = EditorRule {
             enabled: self.enabled,
             mode: self.mode,
@@ -204,10 +217,7 @@ impl Presenter {
         let mut draft = self.editor_draft();
         match action {
             0 if draft.rules.len() < MAX_EDITOR_RULES => {
-                // An immediately useful system-editor rule; no empty program or argv is introduced.
-                draft
-                    .rules
-                    .push(RuleDraft::from_rule(&EditorRule::default()));
+                draft.rules.push(RuleDraft::new_custom());
                 draft.selected = Some(draft.rules.len() - 1);
             }
             1 => {
@@ -353,6 +363,8 @@ mod tests {
         p.editor_rule_action(0);
         let mut draft = p.editor_draft();
         draft.rules[0].expression = "*.txt".into();
+        draft.rules[0].use_default = true;
+        draft.rules[1].use_default = true;
         draft.rules[1].expression = "*.rs".into();
         draft.rules[1].enabled = false;
         p.remember_editor(draft);
@@ -370,5 +382,60 @@ mod tests {
         p.editor_rule_action(0);
         p.discard_editor_draft();
         assert_eq!(p.editor_draft().rules.len(), 2);
+    }
+    #[test]
+    fn add_starts_custom_draft_and_never_saves_a_blank_executable() {
+        let root = std::env::current_dir().unwrap();
+        let mut p = Presenter::new(root.clone(), root);
+        let original = EditorPreferences {
+            executable: Some(std::env::current_exe().unwrap()),
+            rules: vec![EditorRule::default(), EditorRule::default()],
+            ..Default::default()
+        };
+        p.apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+            editor: original.clone(),
+            ..Default::default()
+        }))));
+        p.editor_rule_action(0);
+        let draft = p.editor_draft();
+        assert_eq!(draft.selected, Some(2));
+        let form = draft.selected_form();
+        assert!(
+            !form.use_default,
+            "Add must expose the custom editor controls"
+        );
+        assert!(form.executable.is_empty());
+        assert_eq!(form.arguments, ["{file}"]);
+        p.save_editor_draft(&|_| panic!("an incomplete rule must never be accepted"));
+        assert!(p.editor.error.contains("Choose an editor executable"));
+        assert_eq!(p.preferences.values.editor, original);
+        let mut draft = p.editor_draft();
+        draft.picked(std::env::current_exe().unwrap(), false);
+        p.remember_editor(draft);
+        p.save_editor_draft(&|_| true);
+        assert!(!p.editor.dirty);
+        assert_eq!(
+            &p.preferences.values.editor.rules[..2],
+            original.rules.as_slice()
+        );
+        assert_eq!(p.preferences.values.editor.executable, original.executable);
+        assert_eq!(
+            p.preferences.values.editor.rules[2].executable,
+            Some(std::env::current_exe().unwrap())
+        );
+    }
+
+    #[test]
+    fn a_new_rule_uses_system_editor_only_after_explicit_choice() {
+        let root = std::env::current_dir().unwrap();
+        let mut p = Presenter::new(root.clone(), root);
+        p.apply(Event::PreferencesLoaded(Ok(Box::default())));
+        p.editor_rule_action(0);
+        let mut draft = p.editor_draft();
+        assert!(!draft.rules[0].use_default);
+        draft.rules[0].use_default = true;
+        p.remember_editor(draft);
+        p.save_editor_draft(&|_| true);
+        assert_eq!(p.preferences.values.editor.rules, [EditorRule::default()]);
     }
 }

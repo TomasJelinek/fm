@@ -45,9 +45,9 @@ fn actual_comparator_window_exposes_three_modes_and_always_closes_on_escape() {
                     .resolve(
                         chord,
                         if control {
-                            midnight_core::ShortcutContext::ViewerSearch
+                            midnight_core::ShortcutContext::ComparisonSearch
                         } else {
-                            midnight_core::ShortcutContext::Viewer
+                            midnight_core::ShortcutContext::Comparison
                         },
                     )
                     .map(|action| action.id.clone())

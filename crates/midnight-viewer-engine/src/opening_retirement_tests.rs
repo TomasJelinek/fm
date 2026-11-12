@@ -32,6 +32,7 @@ fn rejected(invalid_preferences: bool) {
     }
     let result = service.open(
         ViewerLaunch {
+            find: None,
             associations: Default::default(),
             tree: None,
             archive: None,

@@ -547,6 +547,7 @@ impl Presenter {
                         return;
                     };
                     self.file_list.viewer = Some(ViewerLaunch {
+                        find: None,
                         associations: self.viewer_plugins.startup_associations.clone(),
                         tree: None,
                         generated: Some(content),

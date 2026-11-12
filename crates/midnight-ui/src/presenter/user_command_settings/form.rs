@@ -62,6 +62,7 @@ impl Form {
         form.working_directory = command.working_directory.clone();
         form.launch = i32::from(command.launch == UserCommandLaunch::PerItem);
         match &command.invocation {
+            UserCommandInvocation::Separator => form.kind = 2,
             UserCommandInvocation::Program {
                 executable,
                 arguments,
@@ -113,8 +114,10 @@ impl Form {
         .fold(0usize, |total, text| total.saturating_add(text.len()));
         let active = if self.kind == 0 {
             self.executable.len().saturating_add(self.arguments.len())
-        } else {
+        } else if self.kind == 1 {
             self.script.len()
+        } else {
+            0
         };
         // Raw native display replacement and JSON escaping can expand stored data.
         if bytes.saturating_add(active) > MAX_USER_COMMAND_CONFIG_BYTES * 8 {
@@ -145,7 +148,8 @@ impl Form {
                 script: self.script.clone(),
                 variables: self.variables(),
             },
-            _ => return Err("Choose Program or Terminal command type.".into()),
+            2 => UserCommandInvocation::Separator,
+            _ => return Err("Choose direct execution, a terminal script, or a separator.".into()),
         };
         let command = UserCommand {
             id,
@@ -159,11 +163,10 @@ impl Form {
                     if let Some(path) = icon.filter(|p| p.to_string_lossy() == self.icon) {
                         path.to_path_buf()
                     } else {
-                        literal(
-                            &self.icon,
-                            self.icon_edited,
-                            original.and_then(|c| c.icon.as_deref()),
-                        )?
+                        original.and_then(|command| command.icon.as_ref())
+                            .filter(|path| !self.icon_edited && path.to_string_lossy() == self.icon)
+                            .cloned()
+                            .ok_or("Choose icon artwork with Change icon or Browse image so an independent copy can be saved.")?
                     },
                 )
             },

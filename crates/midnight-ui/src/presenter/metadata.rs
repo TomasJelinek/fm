@@ -56,6 +56,10 @@ impl Presenter {
         case: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.panes[pane.index()].tree_view().is_some() {
+            self.request_tree_metadata(pane, case, send);
+            return;
+        }
         self.request_selection_action(
             pane,
             selection_actions::SelectionIntent::Metadata { pane, case },

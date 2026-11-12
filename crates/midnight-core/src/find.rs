@@ -341,3 +341,24 @@ pub struct FindRejected {
 pub fn find_error(path: &Path, kind: io::ErrorKind, message: &str) -> FsError {
     FsError::from_io("find files", path, io::Error::new(kind, message))
 }
+
+/// A separately captured file capability, never a navigation validation receipt.
+/// Cached accessors are UI-safe. Validation and final provider destruction belong
+/// to backend workers. Restart/Close revoke the originating generation; Stop does not.
+pub trait CapturedFindFile: std::fmt::Debug + Send + Sync {
+    fn request(&self) -> FindValidationRequest;
+    fn entry(&self) -> &FindEntry;
+    fn validate(&self, cancel: &Cancellation) -> Result<(), FsError>;
+}
+
+#[derive(Clone, Debug)]
+pub struct FindFileCaptureResult {
+    pub request: FindValidationRequest,
+    pub result: Result<Arc<dyn CapturedFindFile>, FsError>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FindFileOperation {
+    Open,
+    Edit(crate::EditorPreferences),
+}

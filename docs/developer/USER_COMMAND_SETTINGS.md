@@ -8,10 +8,10 @@ The toolbar's Settings action selects the corresponding ID on this page.
 
 Drag a list row to change command order; the insertion line shows its destination.
 Dropping stages the new order within Options and keeps the dragged command
-selected. OK persists it; Cancel restores the original order. Up/Down remain available for keyboard
-and accessibility use. The list scrolls at its edges while dragging, and keyboard
-navigation reveals the selected row. Dirty drafts require Update command or Discard before
-reordering. Escape, right-click, pointer cancellation, closing Options, stale
+selected. OK persists it; Cancel restores the original order. Up/Down remain
+available for keyboard and accessibility use. The list scrolls at its edges while dragging, and keyboard
+navigation reveals the selected row. Dirty drafts require Update command or
+Discard before reordering. Escape, right-click, pointer cancellation, closing Options, stale
 configuration and releases outside the actually visible list cancel the drag.
 
 The gesture captures the command ID and immutable configuration revision, rather
@@ -23,10 +23,11 @@ Salamander's `src/edtlbwnd.cpp::MoveItem` and mouse/timer/cancel handling, with 
 Menu's `EDTLBN_MOVEITEM2` integration in `src/dialogs4.cpp`; no reference source or
 assets are copied.
 
-The page follows Salamander's User Menu: Menu Contents and its New/Delete/Up/Down
-controls appear above the selected item's Command, Arguments and Initial
-directory fields. The reference layout is `src/lang/lang.rc:247`; field-specific
-menus and local editing are in `src/dialogs4.cpp:1980–2341` and
+The page follows Salamander's User Menu: Menu contents uses compact single-line
+rows with +/−/↑/↓ header controls and room for six entries before scrolling.
+The selected item's Command, Arguments and Initial directory fields appear below.
+Row summaries remain available to accessibility and tooltips. The reference
+layout is `src/lang/lang.rc:247`; field-specific menus and local editing are in `src/dialogs4.cpp:1980–2341` and
 `src/execute.cpp:223/321/407/1965`. No reference assets or source are copied.
 
 Program mode has an absolute native executable path and editable argument rows.
@@ -34,8 +35,16 @@ Each row is one argument, including empty rows; spaces and quotes are literal,
 and no shell splitting is applied. Add/Remove and Up/Down edit those boundaries.
 The argument value menu inserts captured file/folder values as complete arguments.
 `${selected.paths}` is a whole Program argument in Single mode; the core rejects
-invalid combinations. Terminal script is an explicit advanced choice with a shell
-and required captured context declarations. Its script runs literally.
+invalid combinations. The Execution selector explicitly offers Run directly,
+Run in terminal and Separator. Terminal mode edits a literal script with a shell;
+it does not join the program's argument list into shell source. Switching modes
+preserves uncommitted program and script fields. Captured-value declarations and
+optional toolbar appearance are collapsible. An empty toolbar label remains an
+icon-only button.
+
+A separator keeps its stable ID and position but has no execution fields or
+preview. Converting a command to a separator removes its shortcut bindings;
+the backend independently rejects forged Preview/Execute requests for it.
 
 Update command validates and stages one command, allowing another command to be
 edited. The common OK footer also validates any remaining draft, saves the complete
@@ -46,33 +55,45 @@ Changing the selected command while a draft is dirty requires Update command or
 Discard. A configuration replacement invalidates stale
 draft callbacks; no displayed path is used as an existing native identity.
 
-Executable and icon fields remember whether the user edited that path. Renaming
+The executable field remembers whether the user edited that path. Renaming
 another field preserves the original native bytes or UTF-16, including paths that
-cannot be represented as ordinary Unicode. A path edit creates a new native
-literal only when it is unambiguous. Editing within a lossy parent while the
-entered path still contains U+FFFD is refused; it never silently rewrites that
-native parent. Keep the original path or enter a fully representable replacement.
-Images are requested by the toolbar's
-backend image service; this editor performs no filesystem or image loading.
+cannot be represented as ordinary Unicode. An executable path edit creates a new
+native literal only when it is unambiguous; edits within a lossy parent are refused.
+
+Custom icon paths are read-only. Change icon and Browse image both import an
+independent managed 128 × 128 PNG before returning a native result; Clear restores
+the default icon. Form validation refuses a new typed path that lacks the captured
+picker result, so it cannot bypass import. Existing unchanged legacy icon paths remain until artwork is reselected; there
+is no background migration job. Every new choice uses managed storage.
+The toolbar backend loads images;
+this editor performs no filesystem or image loading.
 
 Browse buttons use the backend's native program, directory and image pickers.
+Change icon uses the CommandIconResource native chooser; Browse image uses
+CommandIconImage, leaving unrelated Image pickers unchanged. Both return the
+managed PNG path to the same guarded icon draft.
 Requests capture the target field, draft revision and configuration identity;
 typing, changing pages or closing Options invalidates the result. Cancel leaves
-the draft unchanged. Program and image picks retain the original native path,
-including values whose displayed Unicode caption is lossy. Initial directory is
+the draft unchanged. Program picks retain the original native path, including
+values whose displayed Unicode caption is lossy. Command image picks retain the imported native PNG path.
+Valid completion revalidates the draft, enabling Update without an extra text edit.
+Initial directory is
 currently a template string: unrepresentable native directory picks are refused,
 and dollar signs in a picked literal are escaped for that template. The Active
 folder button remains available without converting a native folder to text.
 
 Options → Editors shares the argument-row control and a Browse button. Its draft
 also survives page switches; Cancel discards it. Use the system default editor
-or choose a program and include a complete File argument for F4. OK validates
-the editor configuration once; editing or browsing never launches the editor.
+or choose a program and include a complete File argument for F4. The + action
+starts an incomplete custom-editor draft with visible executable/argument fields;
+choosing the system default is explicit. A missing executable cannot be accepted.
+OK validates the editor configuration once; editing or browsing never launches the editor.
 
 Preview validates an immutable transient configuration and invokes the backend's
 Preview command only. It neither applies settings nor executes processes. Once
-accepted, Jobs displays the captured preparation result while Options remains
-open with its draft. Disabled commands can be previewed;
+accepted, the originating command form displays the captured preparation result
+inline while Options remains open with its draft. The preview remains read-only
+and does not launch a process. Disabled commands can be previewed;
 execution remains disabled. Availability and native-shell errors are backend
 results. See [the backend contract](USER_COMMANDS.md) for provider and shell limits.
 
@@ -100,3 +121,7 @@ See [the refactor verification](../verification/2026-11-07-user-menu-refactor.md
 for the fresh 510 Windows / 506 Linux functional scope and remaining strict gate.
 The checks exercise pointer, keyboard and widget accessibility actions;
 real-desktop acceptance is qualified separately.
+
+The 2026-11-12 compact list, inert separator, explicit execution choice and native
+icon routing changes are covered in
+[the current settings verification](../verification/2026-11-12-compact-custom-commands.md).

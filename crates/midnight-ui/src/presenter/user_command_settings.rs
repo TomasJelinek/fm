@@ -205,7 +205,11 @@ impl Presenter {
         state.error.clear();
         state.validation.clear();
         state.can_apply = false;
-        state.can_preview = state.selected.is_some();
+        state.can_preview = state.selected.as_ref().is_some_and(|id| {
+            commands.iter().any(|command| {
+                command.id == *id && !matches!(command.invocation, UserCommandInvocation::Separator)
+            })
+        });
         state.changed(true);
     }
     pub(crate) fn user_command_settings_form(&self) -> Option<Form> {
@@ -264,7 +268,11 @@ impl Presenter {
         self.user_command_settings.picked_executable = None;
         self.user_command_settings.picked_icon = None;
         self.user_command_settings.can_apply = false;
-        self.user_command_settings.can_preview = true;
+        self.user_command_settings.can_preview =
+            self.preferences.values.user_commands.iter().any(|command| {
+                self.user_command_settings.selected.as_ref() == Some(&command.id)
+                    && !matches!(command.invocation, UserCommandInvocation::Separator)
+            });
         self.user_command_settings.error.clear();
         self.user_command_settings.validation.clear();
         self.user_command_settings.changed(true);
@@ -315,7 +323,7 @@ impl Presenter {
             state.can_preview = false;
             state.error.clear();
             state.validation =
-                "Enter an absolute executable path, or choose Terminal and enter a script.".into();
+                "Choose a program, write a terminal script, or choose Separator.".into();
             state.status.clear();
             state.changed(true);
             return;
@@ -396,7 +404,7 @@ impl Presenter {
                 }
                 state.dirty = dirty;
                 state.can_apply = dirty;
-                state.can_preview = true;
+                state.can_preview = form.kind != 2;
                 state.validation.clear();
                 state.error.clear();
                 state.changed(false);
@@ -550,6 +558,12 @@ impl Presenter {
                 return false;
             }
         };
+        if form.kind == 2 {
+            self.retired.push(Box::new(values));
+            self.user_command_settings
+                .fail("Separators cannot be previewed or executed.");
+            return false;
+        }
         let accepted = self.preview_user_command_configuration(
             self.active,
             values.user_commands.clone(),

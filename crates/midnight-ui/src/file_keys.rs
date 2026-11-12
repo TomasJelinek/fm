@@ -141,6 +141,8 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "panel.enter-folder" => FileKey::Panel(10),
         "panel.left" => FileKey::Panel(11),
         "panel.right" => FileKey::Panel(12),
+        "panel.previous-selected" => FileKey::Panel(13),
+        "panel.next-selected" => FileKey::Panel(14),
         "panel.back" => FileKey::Action(0),
         "panel.forward" => FileKey::Action(1),
         "panel.parent" => FileKey::Action(2),
@@ -259,6 +261,28 @@ mod tests {
         event.modifiers.alt = alt;
         event
     }
+    #[test]
+    fn selected_navigation_routes_only_from_idle_file_focus() {
+        for (key, code) in [(Key::UpArrow, 13), (Key::DownArrow, 14)] {
+            assert_eq!(
+                route(&event(key, false, false, true), false, false),
+                FileKey::Panel(code)
+            );
+            assert_eq!(
+                route(&event(key, false, false, true), true, false),
+                FileKey::Native
+            );
+            assert_ne!(
+                route(&event(key, true, false, true), false, false),
+                FileKey::Panel(code)
+            );
+            assert_ne!(
+                route(&event(key, false, true, true), false, false),
+                FileKey::Panel(code)
+            );
+        }
+    }
+
     #[test]
     fn mutations_use_file_focus_only_and_preserve_modifier_semantics() {
         for (key, shift, action) in [
@@ -420,6 +444,8 @@ mod tests {
                 action.scope,
                 midnight_core::ShortcutScope::ViewerAny
                     | midnight_core::ShortcutScope::ViewerContent
+                    | midnight_core::ShortcutScope::ViewerOnlyContent
+                    | midnight_core::ShortcutScope::ComparisonContent
             ) {
                 continue;
             }

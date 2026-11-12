@@ -304,7 +304,7 @@ struct Frame {
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
-pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
+pub(super) fn execute(mut job: worker::Job, outbox: Outbox) -> OperationProgress {
     let edit = job.metadata.as_ref().expect("metadata job");
     let patch = &edit.preview.patch;
     let mut progress = job.progress();
@@ -318,7 +318,25 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
     };
     let mut last = Instant::now();
     let mut conflict_policy = edit.conflicts;
-    for (root_index, root) in job.targets.iter().enumerate() {
+    if patch.recursive {
+        progress.total = progress.total.saturating_sub(
+            job.metadata_covered
+                .iter()
+                .filter(|covered| **covered)
+                .count() as u64,
+        );
+    }
+    // Completed descendant pins must close before a selected ancestor is renamed.
+    // Windows can refuse parent rename while a completed child still has open handles.
+    // The retained capture stays in job until every root/descendant pin has closed.
+    let root_count = job.targets.len();
+    let roots = std::mem::take(&mut job.targets);
+    for (root_index, root) in roots.into_iter().enumerate() {
+        // Typed occurrence ancestry, captured before preview, handles selected overlaps.
+        // The covering root walks this subtree once; nonrecursive edits keep every root.
+        if patch.recursive && job.metadata_covered.get(root_index) == Some(&true) {
+            continue;
+        }
         if job.cancel.is_cancelled() {
             break;
         }
@@ -366,7 +384,7 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
                 match children {
                     Ok(children)
                         if children.len() <= permits.num_permits()
-                            && children.len() + stack.len() + job.targets.len()
+                            && children.len() + stack.len() + root_count
                                 <= MAX_METADATA_TARGETS =>
                     {
                         let mut child_edit =
@@ -424,7 +442,7 @@ pub(super) fn execute(job: worker::Job, outbox: Outbox) -> OperationProgress {
             };
             result.processed += 1;
             result.changed += u64::from(outcome.changes.any());
-            if frame.depth == 0 && job.targets.len() == 1 && outcome.changes.renamed {
+            if frame.depth == 0 && root_count == 1 && outcome.changes.renamed {
                 progress.renamed_to = Some(outcome.current_path.clone());
             }
             progress.current_path = Some(outcome.current_path.clone());

@@ -8,6 +8,7 @@ pub(crate) enum Target {
     CommandProgram,
     WorkingDirectory,
     CommandIcon,
+    CommandIconResource,
 }
 struct Pending {
     id: DesktopRequestId,
@@ -122,11 +123,16 @@ impl Presenter {
                             .as_deref()
                             .or_else(|| original.and_then(|c| c.icon.as_deref()));
                         (
-                            PathPickerKind::Image,
+                            PathPickerKind::CommandIconImage,
                             "Choose toolbar image",
                             path.and_then(Path::parent).map(Path::to_path_buf),
                         )
                     }
+                    Target::CommandIconResource => (
+                        PathPickerKind::CommandIconResource,
+                        "Choose toolbar icon",
+                        None,
+                    ),
                     Target::WorkingDirectory => (
                         PathPickerKind::Directory,
                         "Choose initial directory",
@@ -276,7 +282,7 @@ impl Presenter {
                 draft.executable_edited = true;
                 self.user_command_settings.picked_executable = Some(path);
             }
-            Target::CommandIcon => {
+            Target::CommandIcon | Target::CommandIconResource => {
                 draft.icon = path.to_string_lossy().into_owned();
                 draft.icon_edited = true;
                 self.user_command_settings.picked_icon = Some(path);
@@ -294,5 +300,9 @@ impl Presenter {
         self.remember_user_command_form(&pending.token, draft);
         self.user_command_settings.draft_revision =
             self.user_command_settings.draft_revision.saturating_add(1);
+        if let Some(form) = self.user_command_settings_form() {
+            let token = self.user_command_settings.token();
+            self.validate_user_command_setting(&token, &form);
+        }
     }
 }

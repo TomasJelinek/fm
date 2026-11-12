@@ -334,3 +334,29 @@ fn finalizer_and_cleanup_ticket_independently_keep_provider_and_capture_permit()
         assert_eq!(capacity.available_permits(), 4);
     }
 }
+
+#[test]
+fn tree_metadata_mixed_selection_refuses_entire_batch_without_archive_extraction() {
+    let (_directory, mut session, _registry) = fixture(true);
+    let publication = session.publication().unwrap();
+    session.commit(&publication.view);
+    let request = TreeMetadataRequest {
+        view: publication.view,
+        request: TreeRequestId(session.last_request.0 + 1),
+        selection_revision: publication.selection_revision,
+        selection: publication.selection,
+        fallback: None,
+        cancel: Cancellation::default(),
+    };
+    let capacity = Arc::new(Semaphore::new(1));
+    assert!(matches!(
+        session.capture_metadata(
+            &request,
+            &capacity,
+            &crate::tree_rename::Retirement::testing(),
+            &Cancellation::default()
+        ),
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(capacity.available_permits(), 1);
+}

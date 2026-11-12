@@ -24,6 +24,7 @@ fn open(manager: &ViewerWindows, preferences: ViewerPreferences) -> ViewerWindow
     manager
         .open(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,

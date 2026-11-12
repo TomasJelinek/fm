@@ -23,6 +23,7 @@ fn launch(root: &Path, names: &[&str], basic: bool) -> ViewerLaunch {
         .map(|(index, name)| Entry::new(EntryId(index as u64), root.join(name), EntryKind::File))
         .collect();
     ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: None,
@@ -500,4 +501,100 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
         assert!(!pdf.image.as_ref().unwrap().fitted);
     }
     session.close();
+}
+
+#[derive(Debug)]
+struct FindFile {
+    entry: midnight_core::FindEntry,
+    closed: std::sync::atomic::AtomicBool,
+}
+impl midnight_core::CapturedFindFile for FindFile {
+    fn request(&self) -> midnight_core::FindValidationRequest {
+        midnight_core::FindValidationRequest {
+            session: midnight_core::FindSessionId(1),
+            generation: midnight_core::FindGeneration(1),
+            result: midnight_core::FindResultId(1),
+            token: 1,
+        }
+    }
+    fn entry(&self) -> &midnight_core::FindEntry {
+        &self.entry
+    }
+    fn validate(&self, cancel: &midnight_core::Cancellation) -> Result<(), midnight_core::FsError> {
+        use midnight_core::FindService;
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(midnight_core::find_error(
+                &self.entry.path,
+                std::io::ErrorKind::Interrupted,
+                "Find closed",
+            ));
+        }
+        let native = midnight_platform::LocalFileSystem::new(None);
+        let source = native.open_find_source(&self.entry.path, cancel)?;
+        if !source.entry().matches_capture(&self.entry) {
+            return Err(midnight_core::find_error(
+                &self.entry.path,
+                std::io::ErrorKind::InvalidData,
+                "Find result changed",
+            ));
+        }
+        source.revalidate(cancel)
+    }
+}
+
+#[test]
+#[ignore = "run inside protected runtime with native/viewer packages and fixtures"]
+fn find_viewer_reads_exact_native_result_and_rejects_replacement() {
+    use midnight_core::FindService;
+    let root = PathBuf::from(std::env::var_os("MIDNIGHT_FIND_TEST_FILES").unwrap());
+    let path = root.join("Find 文档.txt");
+    std::fs::write(&path, "Exact native Find content").unwrap();
+    let native = midnight_platform::LocalFileSystem::new(None);
+    let source = native.open_find_source(&path, &Default::default()).unwrap();
+    let capture = Arc::new(FindFile {
+        entry: source.entry().clone(),
+        closed: Default::default(),
+    });
+    drop(source);
+    let mut request = launch(&root, &["Find 文档.txt"], true);
+    // Neither the flat listing nor this deliberately foreign display focus is authority.
+    request.entries = Arc::from([]);
+    request.view = Arc::new(DirectoryIndex::from_entries(&[]));
+    request.focused = root.join("unrelated.txt");
+    request.find = Some(capture.clone());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let native = Arc::new(InstalledProvider::from_installation(installation(), None));
+    let service = super::service(runtime.handle(), native);
+    let session = open(&service, request.clone());
+    wait_text(&session, "Exact native Find content");
+    session.close();
+    std::fs::rename(&path, root.join("original.txt")).unwrap();
+    std::fs::write(&path, "Different replacement content").unwrap();
+    let session = open(&service, request);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        for message in session.mailbox.take() {
+            match message {
+                ViewerOutput::Status(text) if text.contains("Find result changed") => {
+                    session.close();
+                    return;
+                }
+                ViewerOutput::Frame(frame) => assert!(
+                    !frame
+                        .accessible_text
+                        .contains("Different replacement content")
+                ),
+                _ => {}
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Missing changed-result diagnostic"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

@@ -35,6 +35,7 @@ enum Launch {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 enum Invocation {
+    Separator {},
     Program {
         executable: NativePath,
         arguments: Vec<String>,
@@ -60,6 +61,7 @@ impl StoredUserCommand {
                 Launch::PerItem => UserCommandLaunch::PerItem,
             },
             invocation: match self.invocation {
+                Invocation::Separator {} => UserCommandInvocation::Separator,
                 Invocation::Program {
                     executable,
                     arguments,
@@ -104,6 +106,7 @@ impl From<UserCommand> for StoredUserCommand {
                 UserCommandLaunch::PerItem => Launch::PerItem,
             },
             invocation: match command.invocation {
+                UserCommandInvocation::Separator => Invocation::Separator {},
                 UserCommandInvocation::Program {
                     executable,
                     arguments,

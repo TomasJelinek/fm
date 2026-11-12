@@ -202,3 +202,90 @@ fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
     }
     service.stop();
 }
+
+struct GatedResourceDirectories {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl midnight_core::TransferService for GatedResourceDirectories {
+    fn prepare_checksum_directory(
+        &self,
+        path: &std::path::Path,
+        cancel: &midnight_core::Cancellation,
+    ) -> Result<Arc<dyn midnight_core::TransferDirectory>, midnight_core::FsError> {
+        self.entered.send(()).unwrap();
+        loop {
+            if cancel.is_cancelled() {
+                return Err(midnight_core::FsError::from_io(
+                    "resource directory",
+                    path,
+                    io::ErrorKind::Interrupted.into(),
+                ));
+            }
+            if !matches!(
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_millis(5)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                return Err(midnight_core::FsError::from_io(
+                    "resource directory",
+                    path,
+                    io::ErrorKind::Unsupported.into(),
+                ));
+            }
+        }
+    }
+    fn prepare_transfer_source(
+        &self,
+        _: &std::path::Path,
+        _: &midnight_core::Cancellation,
+    ) -> Result<Box<dyn midnight_core::TransferSource>, midnight_core::FsError> {
+        panic!("resource capture must not prepare transfer sources")
+    }
+    fn prepare_transfer_destination(
+        &self,
+        _: &std::path::Path,
+        _: &midnight_core::Cancellation,
+    ) -> Result<Arc<dyn midnight_core::TransferDirectory>, midnight_core::FsError> {
+        panic!("resource capture must not prepare writable destinations")
+    }
+}
+
+#[test]
+#[ignore = "requires protected native installation and MIDNIGHT_APP_NATIVE_TEST_FILES"]
+fn viewer_close_interrupts_a_blocked_resource_directory_capture() {
+    let root = PathBuf::from(std::env::var_os("MIDNIGHT_APP_NATIVE_TEST_FILES").unwrap());
+    let path = root.join("first 文档.txt");
+    let (entered, arrived) = std::sync::mpsc::sync_channel(1);
+    let (release, released) = std::sync::mpsc::sync_channel(1);
+    let directories = Arc::new(GatedResourceDirectories {
+        entered,
+        release: Mutex::new(released),
+    });
+    let capture = factory_with_resources(provider(), directories);
+    let closed = Arc::new(AtomicBool::new(false));
+    let worker_closed = closed.clone();
+    let (finished, completion) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        finished
+            .send(capture(&path, &worker_closed).is_err())
+            .unwrap();
+    });
+    let ready = arrived.recv_timeout(Duration::from_secs(10));
+    closed.store(true, Ordering::Release);
+    let cancelled = completion.recv_timeout(Duration::from_secs(2));
+    // Always release/join before asserting, including the original broken path.
+    let _ = release.send(());
+    worker.join().unwrap();
+    assert!(
+        ready.is_ok(),
+        "native capture never reached the resource directory service"
+    );
+    assert_eq!(
+        cancelled,
+        Ok(true),
+        "closing must interrupt resource capture before its external gate is released"
+    );
+}

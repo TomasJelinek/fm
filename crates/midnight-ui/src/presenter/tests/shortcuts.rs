@@ -255,3 +255,19 @@ fn full_path_insertion_rejects_relative_native_row_text() {
     p.panes[0].entries = entries.into();
     assert_eq!(p.focused_full_path(PaneId::Left), None);
 }
+
+#[test]
+fn viewer_and_comparison_resolvers_keep_file_and_difference_navigation_separate() {
+    let presenter = Presenter::new(test_root(), test_root());
+    let previous = ShortcutChord::parse("Alt+Left").unwrap();
+    assert_eq!(
+        presenter.viewer_key(&previous, false).as_deref(),
+        Some("viewer.previous-file")
+    );
+    assert_eq!(
+        presenter.comparison_key(&previous, false).as_deref(),
+        Some("compare.previous-difference")
+    );
+    assert_eq!(presenter.viewer_key(&previous, true), None);
+    assert_eq!(presenter.comparison_key(&previous, true), None);
+}

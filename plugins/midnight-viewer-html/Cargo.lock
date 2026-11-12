@@ -638,7 +638,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "midnight-viewer-html"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cef",
  "midnight-web-viewer-api",
@@ -646,9 +646,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-web-viewer-api"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "498a9a337998405da3579af731e24f4c8cc550595027c753f3da230852c0b451"
+checksum = "211d32fff822b0f32f081954572e979c75fbcdec54ae978144db450f3aeac4e7"
 
 [[package]]
 name = "miniz_oxide"

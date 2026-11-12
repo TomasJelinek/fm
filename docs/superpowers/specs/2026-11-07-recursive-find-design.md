@@ -131,10 +131,12 @@ explicit failures. This is a live search, not a filesystem snapshot.
 Result validation takes the retained session/generation/result ID, reopens the
 native object without following links, compares identity and the captured revision,
 and revalidates immediately before returning a target. Unknown, stale, changed or
-missing results fail. No executable command or destructive operation is accepted
-by this milestone. A future Open/Reveal action must call this backend validation
-again at execution and preserve the platform's stated namespace-race limits;
-an earlier UI path callback is not authority to activate a replacement file.
+missing results fail. Explicit View, Basic View, Edit and Open now capture this
+retained authority separately from panel reveal. View validates before and after
+installed-provider capture and compares the native content identity/revision;
+Edit/Open validate immediately before the platform launch. External programs still
+consume live paths, with the stated native namespace-race limits. No destructive
+Find result action is enabled. An earlier UI path callback is never authority.
 
 ## Verification and remaining integration
 
@@ -155,7 +157,8 @@ The [Find service/UI guide](../../developer/FIND.md) and
 [Find window plan](../plans/2026-11-07-find-window.md) describe the implemented native
 modeless window, configurable Alt+F7 action, lazy result models and guarded read-only
 panel reveal. Final tooltip/compact/native qualification is tracked there. Actual
-program execution from a Find result remains unsupported; a future action must
-validate at its own backend execution boundary. Archives and other dynamic
+View/Edit/Open integration and its current qualification are recorded in the
+[12 November evidence](../../verification/2026-11-12-find-actions.md). Current
+shortcut settings supply View/Edit bindings and hints. Archives and other dynamic
 providers remain unsupported until they expose equivalent read-only enumeration,
 identity, revision and content capabilities.

@@ -36,6 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bindings = ShortcutMap::new(&[])?;
     let window = manager.open(
         ViewerLaunch {
+            find: None,
             associations: Default::default(),
             tree: None,
             generated: None,

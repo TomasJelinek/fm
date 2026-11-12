@@ -142,6 +142,9 @@ pub(crate) fn event(b: &mut Decoder<'_>, tag: u8) -> io::Result<EventKind> {
             7 => HostShortcut::ZoomOut,
             8 => HostShortcut::ZoomReset,
             9 => HostShortcut::Copy,
+            10 => HostShortcut::Backspace,
+            11 => HostShortcut::AltLeft,
+            12 => HostShortcut::AltRight,
             _ => return Err(invalid()),
         }),
         10 => EventKind::Error {

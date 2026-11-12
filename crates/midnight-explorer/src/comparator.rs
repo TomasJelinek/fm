@@ -54,7 +54,8 @@ pub(crate) fn install(
             };
             let placement = WindowPlacement::capture(window.window());
             let state = presenter.clone();
-            let keys = Rc::new(move |chord: &_, control| state.borrow().viewer_key(chord, control));
+            let keys =
+                Rc::new(move |chord: &_, control| state.borrow().comparison_key(chord, control));
             manager
                 .open(launch, appearance, placement, keys)
                 .map(|_| ())

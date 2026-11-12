@@ -280,6 +280,7 @@ impl Presenter {
             return;
         };
         self.panel_warnings.ready = Some(ViewerLaunch {
+            find: None,
             associations: self.viewer_plugins.startup_associations.clone(),
             tree: None,
             generated: Some(content),

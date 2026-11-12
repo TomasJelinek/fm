@@ -31,7 +31,7 @@ fn panel_decode_edges_follow_dpi_while_custom_command_icons_keep_their_physical_
     assert_eq!(physical_edge(&target, 4.0), 512);
     assert_eq!(physical_edge(&target, f32::NAN), 256);
     target.identity = "command-icon:fixture".into();
-    assert_eq!(physical_edge(&target, 4.0), 96);
+    assert_eq!(physical_edge(&target, 4.0), 128);
 }
 
 #[test]

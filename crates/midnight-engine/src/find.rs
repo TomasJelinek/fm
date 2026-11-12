@@ -1,5 +1,7 @@
 //! Fixed-slot modeless Find sessions. Native work and retained results stay bounded.
 use crate::{Outbox, find_worker, task_lifetime::TaskLifetime};
+#[path = "find_capture.rs"]
+mod capture;
 #[path = "find_order_task.rs"]
 mod sorting;
 use midnight_core::*;
@@ -14,6 +16,10 @@ use tokio::{
     task::JoinSet,
 };
 
+pub(crate) const RETIREMENT_CAPACITY: usize = 16;
+pub(crate) struct Retirement {
+    pub(crate) domain: crate::retirement::RetirementDomain,
+}
 pub(crate) struct Controller {
     slots: Vec<Slot>,
     validations: mpsc::Sender<Validation>,
@@ -43,6 +49,7 @@ struct State {
 }
 struct Validation {
     request: FindValidationRequest,
+    capture: bool,
     result: Arc<FindResult>,
     state: Arc<Mutex<State>>,
 }
@@ -50,12 +57,15 @@ struct Validation {
 #[derive(Clone)]
 struct Services {
     native: Option<Arc<dyn FindService>>,
+    captures: crate::retirement::RetirementDomain,
+    capture_slots: Arc<Semaphore>,
     scope: TaskLifetime,
 }
 
 impl Controller {
     pub(crate) fn new(
         scope: TaskLifetime,
+        retirement: Retirement,
         service: Option<Arc<dyn FindService>>,
         locale: Option<Arc<dyn LocaleService>>,
         outbox: Outbox,
@@ -63,6 +73,8 @@ impl Controller {
     ) -> Self {
         let services = Services {
             native: service.clone(),
+            captures: retirement.domain,
+            capture_slots: Arc::new(Semaphore::new(RETIREMENT_CAPACITY)),
             scope: scope.clone(),
         };
         let lifetime = Cancellation::default();
@@ -229,7 +241,17 @@ impl Controller {
             }
         }
     }
+    pub(crate) fn capture(&self, request: FindValidationRequest) -> Result<(), FsError> {
+        self.enqueue_validation(request, true)
+    }
     pub(crate) fn validate(&self, request: FindValidationRequest) -> Result<(), FsError> {
+        self.enqueue_validation(request, false)
+    }
+    fn enqueue_validation(
+        &self,
+        request: FindValidationRequest,
+        capture: bool,
+    ) -> Result<(), FsError> {
         for slot in &self.slots {
             let state = slot.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.owner != Some((request.session, request.generation)) {
@@ -254,6 +276,7 @@ impl Controller {
                 .validations
                 .try_send(Validation {
                     request,
+                    capture,
                     result,
                     state: slot.state.clone(),
                 })
@@ -494,6 +517,7 @@ async fn run_validations(
         };
         let outbox = outbox.clone();
         let cancel = lifetime.clone();
+        let capture_services = services.clone();
         let _ = tokio::task::spawn_blocking(services.scope.blocking(move || {
             let request = validation.request;
             let current = || {
@@ -521,6 +545,20 @@ async fn run_validations(
                             &cancel,
                         )
                         .map(Box::new);
+                        let event = if validation.capture {
+                            let result = result.and_then(|_| {
+                                capture::capture(&capture_services, &validation, &cancel)
+                            });
+                            Event::FindFileCaptured(Box::new(FindFileCaptureResult {
+                                request,
+                                result,
+                            }))
+                        } else {
+                            Event::FindResultValidated(Box::new(FindValidationResult {
+                                request,
+                                result,
+                            }))
+                        };
                         let state = validation
                             .state
                             .lock()
@@ -530,10 +568,7 @@ async fn run_validations(
                         {
                             return;
                         }
-                        permit.send(Event::FindResultValidated(Box::new(FindValidationResult {
-                            request,
-                            result,
-                        })));
+                        permit.send(event);
                         drop(state);
                         (outbox.wakeup)();
                         return;

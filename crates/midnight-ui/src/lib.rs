@@ -381,6 +381,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.invoke_refresh_file_list_window();
     window.invoke_refresh_file_list_viewer();
     window.invoke_refresh_warning_viewer();
+    window.invoke_refresh_find_viewer();
     archive_options::refresh(window, presenter);
     color_options::refresh(window, presenter);
     plugin_options::refresh(window, presenter);
@@ -454,7 +455,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             .map(|tab| TabRow {
                 identity: tab.id.0.to_string().into(),
                 label: tab.title.into(),
-                path: tab.path.to_string_lossy().into_owned().into(),
+                path: tab.display_path.into(),
                 active: tab.active,
             })
             .collect::<Vec<_>>()

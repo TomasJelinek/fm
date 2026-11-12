@@ -3,6 +3,9 @@ use midnight_plugin_sdk::api::viewer::*;
 use regex::{Regex, RegexBuilder};
 use std::sync::OnceLock;
 
+#[path = "syntax_xml.rs"]
+mod xml;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     Rust,
@@ -23,6 +26,7 @@ pub enum Language {
     Ruby,
     Sql,
     Yaml,
+    Xml,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,6 +45,7 @@ enum Mode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct State {
     mode: Mode,
+    xml: xml::State,
 }
 
 pub fn detect(name: &str, prefix: &str) -> Option<Language> {
@@ -65,6 +70,8 @@ pub fn detect(name: &str, prefix: &str) -> Option<Language> {
         "rb" => Some(Ruby),
         "sql" => Some(Sql),
         "yaml" | "yml" => Some(Yaml),
+        "xml" | "xsd" | "xsl" | "xslt" | "xaml" | "csproj" | "fsproj" | "vbproj" | "vcxproj"
+        | "props" | "targets" | "resx" => Some(Xml),
         _ => None,
     };
     if found.is_some() {
@@ -107,6 +114,9 @@ pub fn highlight(
 ) -> Option<Vec<Span>> {
     if text.len() > 64 * 1024 || cancelled() {
         return None;
+    }
+    if language == Language::Xml {
+        return xml::highlight(text, &mut state.xml, cancelled);
     }
     let mut current = *state;
     let mut spans = Vec::<Span>::new();
@@ -373,6 +383,7 @@ fn keyword(language: Language, token: &str) -> bool {
             "SELECT FROM WHERE AS JOIN LEFT RIGHT INNER OUTER ON GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE DROP ALTER INDEX VIEW DISTINCT UNION ALL NULL TRUE FALSE AND OR NOT IS LIKE IN EXISTS CASE WHEN THEN ELSE END BEGIN COMMIT ROLLBACK"
         }
         Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
+        Language::Xml => "",
     };
     words.split_ascii_whitespace().any(|word| {
         if matches!(language, Language::Sql | Language::Batch) {

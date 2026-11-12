@@ -21,6 +21,8 @@ use tokio::{
 mod command_icons;
 #[path = "desktop_editor.rs"]
 mod editor;
+#[path = "desktop_find.rs"]
+mod find;
 
 const ICON_CAPACITY: usize = 256;
 const MAX_TERMINALS: usize = crate::user_command_runtime::MAX_PROCESSES;

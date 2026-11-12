@@ -227,6 +227,9 @@ fn prepare_inner(
                 "The configured command no longer exists.",
             )
         })?;
+    if matches!(command.invocation, UserCommandInvocation::Separator) {
+        return Err(invalid("Separators cannot be previewed or executed."));
+    }
     if execute && !command.enabled {
         return Err(fail(
             Path::new(""),
@@ -375,6 +378,9 @@ fn prepare_inner(
             );
         }
         let invocation = match &command.invocation {
+            UserCommandInvocation::Separator => {
+                return Err(invalid("Separators cannot be previewed or executed."));
+            }
             UserCommandInvocation::Program { executable, .. } => {
                 let mut argv = Vec::new();
                 for argument in &arguments {

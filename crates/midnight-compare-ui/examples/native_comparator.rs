@@ -47,9 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .resolve(
                     chord,
                     if control {
-                        midnight_core::ShortcutContext::ViewerSearch
+                        midnight_core::ShortcutContext::ComparisonSearch
                     } else {
-                        midnight_core::ShortcutContext::Viewer
+                        midnight_core::ShortcutContext::Comparison
                     },
                 )
                 .map(|action| action.id.clone())

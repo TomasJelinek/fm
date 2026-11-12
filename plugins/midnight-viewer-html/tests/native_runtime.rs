@@ -36,6 +36,7 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
         std::env::var_os("MIDNIGHT_WEB_VIEWER_PROFILE").expect("set owned private profile");
     let mut child = Process::new(executable)
         .env("MIDNIGHT_WEB_VIEWER_PROFILE", profile)
+        .env(HOST_SHORTCUTS_ENV, HOST_SHORTCUTS_PHYSICAL_V1)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -88,6 +89,7 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
     let mut popup_visible = false;
     let mut popup_hidden = false;
     let mut cycle_shortcut = false;
+    let mut physical_shortcuts = Vec::new();
     let mut edit_started = false;
     let mut editable_space = false;
     let mut repeat_find_sequence = 0;
@@ -167,6 +169,25 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
                     if frame.rgba[pixel..pixel + 4] == [0x12, 0x34, 0x56, 255] {
                         popup_hidden = true;
                         popup_stage = 3;
+                        send_key(
+                            &mut stdin,
+                            &mut sequence,
+                            "Backspace",
+                            "Backspace",
+                            Modifiers::default(),
+                        );
+                        for key in ["ArrowLeft", "ArrowRight"] {
+                            send_key(
+                                &mut stdin,
+                                &mut sequence,
+                                key,
+                                key,
+                                Modifiers {
+                                    alt: true,
+                                    ..Default::default()
+                                },
+                            );
+                        }
                         send(
                             &mut stdin,
                             &mut sequence,
@@ -236,6 +257,15 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
                 found |= result.complete && result.matches == 1;
             }
             EventKind::State(state) => assert_ne!(state.title, "SCRIPT EXECUTED"),
+            EventKind::HostShortcut(
+                value @ (HostShortcut::Backspace | HostShortcut::AltLeft | HostShortcut::AltRight),
+            ) => {
+                assert!(
+                    !edit_started,
+                    "editable focus escaped to physical host navigation"
+                );
+                physical_shortcuts.push(value);
+            }
             EventKind::HostShortcut(HostShortcut::CycleNext) => {
                 assert!(
                     !edit_started,
@@ -253,7 +283,7 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
             click(&mut stdin, &mut sequence, 200.0, 110.0);
             popup_stage = 1;
         }
-        if cycle_shortcut && !edit_started {
+        if cycle_shortcut && physical_shortcuts.len() == 3 && !edit_started {
             edit_started = true;
             click(&mut stdin, &mut sequence, 20.0, 75.0);
             std::thread::sleep(Duration::from_millis(100));
@@ -315,6 +345,14 @@ fn chromium_renders_captured_html_and_denies_default_scripts() {
             && cycle_shortcut,
         "browser ready={ready}, rendered={rendered}, asset={asset_resolved}, find={found}, zoom={zoomed}, fractionalDPI={resized}, popup={popup_visible}/{popup_hidden}, space={cycle_shortcut}"
     );
+    assert_eq!(
+        physical_shortcuts,
+        vec![
+            HostShortcut::Backspace,
+            HostShortcut::AltLeft,
+            HostShortcut::AltRight
+        ]
+    );
     assert!(
         status.is_some_and(|s| s.success()),
         "CEF did not close cleanly: {status:?}"
@@ -359,6 +397,7 @@ fn textarea_enter_and_shift_enter_preserve_newlines_through_key_text_and_copy() 
     .join("textarea-newlines");
     let mut child = Process::new(executable)
         .env("MIDNIGHT_WEB_VIEWER_PROFILE", profile)
+        .env(HOST_SHORTCUTS_ENV, HOST_SHORTCUTS_PHYSICAL_V1)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -460,6 +499,26 @@ fn textarea_enter_and_shift_enter_preserve_newlines_through_key_text_and_copy() 
             );
             enter(&mut stdin, &mut sequence, true);
             send(&mut stdin, &mut sequence, CommandKind::Text("third".into()));
+            send_key(
+                &mut stdin,
+                &mut sequence,
+                "Backspace",
+                "Backspace",
+                Modifiers::default(),
+            );
+            send(&mut stdin, &mut sequence, CommandKind::Text("d".into()));
+            for key in ["ArrowLeft", "ArrowRight"] {
+                send_key(
+                    &mut stdin,
+                    &mut sequence,
+                    key,
+                    key,
+                    Modifiers {
+                        alt: true,
+                        ..Default::default()
+                    },
+                );
+            }
             std::thread::sleep(Duration::from_millis(100));
             send_key(
                 &mut stdin,

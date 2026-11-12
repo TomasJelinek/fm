@@ -321,3 +321,30 @@ fn public_validation_rejects_aggregate_control_budget() {
         io::ErrorKind::InvalidData
     );
 }
+
+#[test]
+fn host_shortcut_extension_preserves_every_v1_tag_and_round_trips_new_keys() {
+    let shortcuts = [
+        HostShortcut::Close,
+        HostShortcut::Find,
+        HostShortcut::FindNext,
+        HostShortcut::FindPrevious,
+        HostShortcut::CycleNext,
+        HostShortcut::CyclePrevious,
+        HostShortcut::ZoomIn,
+        HostShortcut::ZoomOut,
+        HostShortcut::ZoomReset,
+        HostShortcut::Copy,
+        HostShortcut::Backspace,
+        HostShortcut::AltLeft,
+        HostShortcut::AltRight,
+    ];
+    for (tag, shortcut) in shortcuts.into_iter().enumerate() {
+        let message = event(EventKind::HostShortcut(shortcut));
+        let bytes = encode(&message);
+        assert_eq!(&bytes[..8], &[b'M', b'W', b'V', b'1', 1, 0, 1, 9]);
+        assert_eq!(bytes.len(), 41);
+        assert_eq!(bytes[40], tag as u8);
+        assert_eq!(read_message(&mut bytes.as_slice()).unwrap(), message);
+    }
+}

@@ -151,6 +151,19 @@ fn native_owner(owner: PathPickerOwner) -> Option<HWND> {
 }
 
 impl PathPickerService for WindowsFileSystem {
+    fn store_command_icon(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        cancel: &Cancellation,
+    ) -> Result<PathBuf, FsError> {
+        let result =
+            midnight_platform_common::icon_snapshot::SnapshotPixels::from_rgba(width, height, rgba)
+                .and_then(|pixels| crate::icon_storage::save(&pixels, cancel));
+        result.map_err(|cause| FsError::from_io("store command icon", Path::new(""), cause))
+    }
+
     fn pick_path(
         &self,
         request: &PathPickerRequest,
@@ -159,6 +172,10 @@ impl PathPickerService for WindowsFileSystem {
         request.validate()?;
         if cancel.is_cancelled() {
             return Ok(None);
+        }
+        if request.kind == PathPickerKind::CommandIconResource {
+            return crate::icon_picker::choose(request, cancel)
+                .map_err(|cause| FsError::from_io("choose command icon", Path::new(""), cause));
         }
         choose(request, cancel).map_err(|cause| {
             FsError::from_io(
@@ -173,7 +190,7 @@ impl PathPickerService for WindowsFileSystem {
 fn specific_filter(kind: PathPickerKind) -> Option<(&'static str, String)> {
     match kind {
         PathPickerKind::Program => Some(("Programs", "*.exe;*.com;*.bat;*.cmd".into())),
-        PathPickerKind::Image => Some((
+        PathPickerKind::Image | PathPickerKind::CommandIconImage => Some((
             "Images",
             "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.ico;*.gif".into(),
         )),

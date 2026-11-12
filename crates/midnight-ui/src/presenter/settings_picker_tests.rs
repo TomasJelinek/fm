@@ -178,3 +178,40 @@ fn selected_rule_program_and_directory_keep_raw_paths_and_reject_late_selection(
         Some(path)
     );
 }
+
+#[test]
+fn command_icon_resource_uses_native_picker_and_keeps_original_draft_guards() {
+    let mut p = loaded();
+    p.new_user_command_setting();
+    let sent = RefCell::new(Vec::new());
+    p.request_settings_picker(
+        Target::CommandIconResource,
+        PathPickerOwner::None,
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    let id = match &sent.borrow()[0] {
+        Command::PickPath { request, input } => {
+            assert_eq!(input.kind, PathPickerKind::CommandIconResource);
+            assert!(input.initial_directory.is_none());
+            *request
+        }
+        _ => panic!(),
+    };
+    let path = raw_path();
+    p.settings_path_picked(id, Ok(Some(path.clone())));
+    assert_eq!(p.user_command_settings.picked_icon, Some(path));
+    let id = request(&mut p, Target::CommandIconResource);
+    let token = p.user_command_settings.token();
+    let mut form = p.user_command_settings_form().unwrap();
+    form.icon = "changed while chooser is open".into();
+    form.icon_edited = true;
+    p.remember_user_command_form(&token, form);
+    p.settings_path_picked(id, Ok(Some(raw_path())));
+    assert_eq!(
+        p.user_command_settings_form().unwrap().icon,
+        "changed while chooser is open"
+    );
+}

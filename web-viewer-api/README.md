@@ -1,7 +1,7 @@
-# Interactive web viewer API and SDK 0.1.0
+# Interactive web viewer API and SDK 0.2.0
 
 This independent Rust 2024 / Rust 1.99 workspace has no third-party dependencies.
-The SDK depends only on `midnight-web-viewer-api =0.1.0`. Providers consume released
+The SDK depends only on `midnight-web-viewer-api =0.2.0`. Providers consume released
 registry packages; this workspace never depends on the application, Slint, Tokio,
 CEF or a private host crate. Existing semantic and raster protocols are unchanged.
 
@@ -50,7 +50,7 @@ struct State { title: String, url: String, loading: bool, editable: bool, zoom: 
 struct FindResult { request_sequence: u64, matches: u32, active: u32, complete: bool }
 enum HostShortcut {
     Close, Find, FindNext, FindPrevious, CycleNext, CyclePrevious,
-    ZoomIn, ZoomOut, ZoomReset, Copy,
+    ZoomIn, ZoomOut, ZoomReset, Copy, Backspace, AltLeft, AltRight,
 }
 enum ErrorCode {
     InvalidRequest, Denied, MissingResource, ResourceChanged, Unsupported, Runtime, BudgetExceeded,
@@ -110,6 +110,30 @@ without network. Switching offline must disable scripts in the same policy.
 Permissions reset for each different file. No native paths, handles, UI objects,
 CEF values or executable callbacks cross this API. This protocol is not a process
 sandbox: the provider/host must enforce browser sandboxing and request policy.
+
+## Optional physical-key host arbitration (API/SDK 0.2)
+
+The Rust package version is 0.2 because adding enum variants changes exhaustive
+source matches. The wire remains MWV1 version 1, and every pre-existing command,
+event and shortcut encoding is unchanged. New HostShortcut discriminants are
+Backspace=10, AltLeft=11 and AltRight=12.
+
+A host that can decode these tags explicitly launches the provider with
+`MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS=physical-v1` in its cleared process environment.
+The API exposes `HOST_SHORTCUTS_ENV` and `HOST_SHORTCUTS_PHYSICAL_V1` for that
+contract. This value must never be copied from an ambient parent environment.
+Providers emit the new tags only for this exact opt-in; absence or an unknown
+value keeps baseline v1 traffic. Thus old hosts can run new providers, and old
+providers can run under new hosts, with their existing keyboard behavior.
+Manifest schema/protocol 1 remains unchanged and needs no extra field.
+
+The signals describe physical keys, not authorized file operations. Chromium
+arbitrates its live editable focus first. The host resolves the current configured
+binding only while viewer content still owns focus; delayed replies cannot escape
+into search editing. Unbound new keys perform no file action and are not replayed
+into the browser arbitration loop. Plain/Shift+Space retain their existing tags
+and unbound page-scroll behavior. Repeated new navigation keys are consumed
+without repeating file changes; editable fields retain normal browser key repeat.
 
 ## MWV1 version 1 wire
 
@@ -175,7 +199,7 @@ build is required. `pwsh web-viewer-api/scripts/package.ps1` on Windows or
 `python web-viewer-api/scripts/package.py` on Linux creates a fresh
 immutable `_build/html-viewer/sdk/release-*/` registry bundle. It prints its Cargo
 config path; pass that path as `cargo --config PATH` when building an independent
-provider that declares `version = "=0.1.0", registry = "midnight"`. The bundle
+provider that declares `version = "=0.2.0", registry = "midnight"`. The bundle
 contains normalized Cargo packages, SHA-256 index entries and artifacts.json.
 Source path dependencies never enter the released manifests. This only packages
 the public API/SDK and is not evidence of native Chromium execution.

@@ -23,6 +23,8 @@ pub(super) struct Job {
     // Native target pins must close before the retained provider capture/permit.
     _captured_sources: Option<Arc<dyn CapturedDeleteSources>>,
     _captured_rename: Option<Arc<dyn CapturedRenameTarget>>,
+    _captured_metadata: Option<Arc<dyn CapturedMetadataSources>>,
+    pub(super) metadata_covered: Vec<bool>,
     // Release serialization only after all native pins and provider owners close.
     mutation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -205,6 +207,8 @@ fn new_job(
         metadata_permits: vec![],
         _captured_sources: None,
         _captured_rename: None,
+        _captured_metadata: None,
+        metadata_covered: vec![],
         mutation_permit: None,
         preview: OperationPreview {
             id,
@@ -533,5 +537,71 @@ pub(super) fn prepare_captured_rename(
         ));
     }
     job.status.lock().unwrap_or_else(|e| e.into_inner()).total = 1;
+    Ok(job)
+}
+
+pub(super) fn prepare_captured_metadata(
+    request: PrepareCapturedMetadata,
+    scope: super::input::MetadataScope,
+    service: Option<Arc<dyn MutationService>>,
+    cancel: Cancellation,
+    status: Status,
+    metadata_budget: Arc<Semaphore>,
+) -> Result<Job, FsError> {
+    let source = &request.source_directory;
+    let service =
+        service.ok_or_else(|| error(source, "This filesystem does not support mutations."))?;
+    let mut job = new_job(
+        request.id,
+        MutationKind::EditMetadata,
+        cancel,
+        status,
+        metadata_budget,
+    );
+    job._captured_metadata = Some(request.sources.clone());
+    if !scope.valid() || super::input::MetadataScope::capture(request.sources.as_ref()) != scope {
+        return Err(error(
+            source,
+            "The captured metadata scope changed before preparation.",
+        ));
+    }
+    if !job.cancel.wait_if_paused() {
+        return Err(FsError::from_io(
+            "prepare",
+            source,
+            io::ErrorKind::Interrupted.into(),
+        ));
+    }
+    // Reserve the complete batch before the capture opens any native target.
+    let permits = job.metadata_budget.clone().try_acquire_many_owned(scope.count as u32)
+        .map_err(|_| error(source,
+            "The shared metadata handle budget is in use. Close another preview or wait for its job."))?;
+    job.metadata_permits.push(permits);
+    let targets = request.sources.prepare(service.as_ref(), &job.cancel)?;
+    if targets.len() != scope.count
+        || super::input::MetadataScope::capture(request.sources.as_ref()) != scope
+    {
+        return Err(error(
+            source,
+            "Provider returned a different captured metadata scope.",
+        ));
+    }
+    for target in targets {
+        job.append_target(target);
+    }
+    if job.cancel.is_cancelled() {
+        return Err(FsError::from_io(
+            "prepare",
+            source,
+            io::ErrorKind::Interrupted.into(),
+        ));
+    }
+    job.metadata_covered = scope.covered;
+    job.metadata = Some(super::metadata::Edit::prepare(
+        request.id,
+        &job.targets,
+        &job.cancel,
+    )?);
+    job.status.lock().unwrap_or_else(|e| e.into_inner()).total = scope.count as u64;
     Ok(job)
 }

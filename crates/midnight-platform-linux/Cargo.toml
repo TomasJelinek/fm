@@ -11,6 +11,7 @@ midnight-platform-common.workspace = true
 libc = "0.2"
 fontdb = { version = "=0.24.0", default-features = false, features = ["std", "fs"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+resvg = { version = "=0.48.1", default-features = false }
 rustix = { version = "1.1.6", features = ["fs", "process", "event"] }
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 notify = { version = "=8.2.1", default-features = false }

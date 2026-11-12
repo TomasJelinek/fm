@@ -293,7 +293,7 @@ fn physical_edge(target: &ThumbnailTarget, scale: f32) -> u32 {
         return 64;
     }
     if target.identity.starts_with("command-icon:") {
-        return 96;
+        return 128;
     }
     let scale = if scale.is_finite() && scale > 0.0 {
         scale

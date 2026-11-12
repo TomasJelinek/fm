@@ -355,6 +355,15 @@ fn raster_wheel_retries_a_full_queue_without_losing_its_last_pixels() {
 
 #[test]
 fn raster_next_file_cancels_motion_even_when_the_new_file_keeps_text_mode() {
+    file_navigation_cancels_motion("viewer.next-file");
+}
+
+#[test]
+fn raster_previous_file_cancels_motion_even_when_the_new_file_keeps_text_mode() {
+    file_navigation_cancels_motion("viewer.previous-file");
+}
+
+fn file_navigation_cancels_motion(action: &str) {
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     open.timer.stop();
     present_outputs(&open, &service, &|_| {}, vec![frame(10, 0, 0.2)]);
@@ -366,7 +375,12 @@ fn raster_next_file_cancels_motion_even_when_the_new_file_keeps_text_mode() {
     });
     assert!(native_raster_notch(&open, -1.0));
     raster_ticks(&open, 2);
-    assert!(dispatch_key(&open, "viewer.next-file"));
+    assert!(dispatch_key(&open, action));
+    assert!(matches!(
+        (action, submitted.borrow().last()),
+        ("viewer.next-file", Some(ViewerInput::NextFile))
+            | ("viewer.previous-file", Some(ViewerInput::PreviousFile))
+    ));
     let count = submitted.borrow().len();
     assert!(
         !native_raster_notch(&open, -1.0),

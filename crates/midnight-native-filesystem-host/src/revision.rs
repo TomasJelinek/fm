@@ -8,8 +8,12 @@ mod windows;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::matches;
+#[cfg(target_os = "linux")]
+pub use linux::matches_find_entry;
 #[cfg(windows)]
 pub(crate) use windows::matches;
+#[cfg(windows)]
+pub use windows::matches_find_entry;
 #[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) fn matches(_expected: &[u8], _current: &[u8]) -> bool {
     false
@@ -33,4 +37,14 @@ fn matches_payload(
         return false;
     };
     current.len() == payload_bytes && expected == current
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn matches_find_entry(_expected: &midnight_core::FindEntry, _current: &[u8]) -> bool {
+    false
+}
+
+fn word(payload: &[u8], offset: usize) -> Option<u64> {
+    let bytes = payload.get(offset..offset.checked_add(8)?)?;
+    Some(u64::from_le_bytes(bytes.try_into().ok()?))
 }

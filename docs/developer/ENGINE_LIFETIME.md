@@ -40,7 +40,7 @@ comparator builders are separate APIs and are unchanged by this migration.
 
 ## Capacity and ownership
 
-One engine reserves a domain with 308 payload slots and seven reusable waiter tokens:
+One engine reserves a domain with 324 payload slots and seven reusable waiter tokens:
 
 | Owners | Slots |
 | --- | ---: |
@@ -62,7 +62,8 @@ One engine reserves a domain with 308 payload slots and seven reusable waiter to
 | Archive navigation: 132 retained mounts, two requests and one intake | 135 |
 | Archive-size pending state, one per pane | 2 |
 | Shared diagnostic report arena | 1 |
-| Native tree Rename captures, sharing the four tree-action permits | 4 |
+| Native tree Rename/Metadata captures, sharing the four tree-action permits | 4 |
+| Retained Find View/Edit/Open captures | 16 |
 
 Native drag admission uses Copy's existing 32 permits. It does not add another queue.
 A reservation is acquired before accepting owned payloads and remains occupied until

@@ -131,6 +131,12 @@ impl Controller {
         .await;
     }
 
+    pub(crate) async fn prepare_captured_metadata(&self, request: PrepareCapturedMetadata) {
+        let scope = input::MetadataScope::capture(request.sources.as_ref());
+        let rejection = (!scope.valid()).then_some("The captured metadata scope is invalid.");
+        self.admit(Input::Metadata(request, scope), rejection).await;
+    }
+
     pub(crate) async fn prepare_captured_rename(&self, request: PrepareCapturedRename) {
         let scope = input::RenameScope::capture(request.source.as_ref());
         self.admit(

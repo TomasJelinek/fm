@@ -164,9 +164,11 @@ pub enum ShortcutContext {
     Volume,
     Viewer,
     ViewerSearch,
+    Comparison,
+    ComparisonSearch,
 }
 
-const CONTEXTS: [ShortcutContext; 7] = [
+const CONTEXTS: [ShortcutContext; 9] = [
     ShortcutContext::Files,
     ShortcutContext::Search,
     ShortcutContext::Command,
@@ -174,6 +176,8 @@ const CONTEXTS: [ShortcutContext; 7] = [
     ShortcutContext::Volume,
     ShortcutContext::Viewer,
     ShortcutContext::ViewerSearch,
+    ShortcutContext::Comparison,
+    ShortcutContext::ComparisonSearch,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +190,8 @@ pub enum ShortcutScope {
     Global,
     Volume,
     ViewerContent,
+    ViewerOnlyContent,
+    ComparisonContent,
     ViewerAny,
 }
 
@@ -198,10 +204,18 @@ impl ShortcutScope {
             Self::FilesAny => matches!(context, Files | Search),
             Self::FilesOrCommand => matches!(context, Files | Search | Command),
             Self::Command => context == Command,
-            Self::Global => !matches!(context, Viewer | ViewerSearch),
+            Self::Global => !matches!(
+                context,
+                Viewer | ViewerSearch | Comparison | ComparisonSearch
+            ),
             Self::Volume => context == Volume,
-            Self::ViewerContent => context == Viewer,
-            Self::ViewerAny => matches!(context, Viewer | ViewerSearch),
+            Self::ViewerContent => matches!(context, Viewer | Comparison),
+            Self::ViewerOnlyContent => context == Viewer,
+            Self::ComparisonContent => context == Comparison,
+            Self::ViewerAny => matches!(
+                context,
+                Viewer | ViewerSearch | Comparison | ComparisonSearch
+            ),
         }
     }
 
@@ -214,8 +228,10 @@ impl ShortcutScope {
             Self::Command => "Command editor",
             Self::Global => "Application window",
             Self::Volume => "Volume choices popup",
-            Self::ViewerContent => "Viewer content",
-            Self::ViewerAny => "Viewer window and search",
+            Self::ViewerContent => "Viewer and comparison content",
+            Self::ViewerOnlyContent => "Viewer content",
+            Self::ComparisonContent => "Comparison content",
+            Self::ViewerAny => "Viewer and comparison windows, including search",
         }
     }
 }
@@ -284,6 +300,7 @@ impl ShortcutDefinition {
         if !scope.includes(ShortcutContext::Command)
             && !scope.includes(ShortcutContext::Other)
             && !scope.includes(ShortcutContext::ViewerSearch)
+            && !scope.includes(ShortcutContext::ComparisonSearch)
         {
             return Ok(());
         }
@@ -362,7 +379,7 @@ impl ShortcutDefinition {
 #[derive(Clone, Debug)]
 pub struct ShortcutMap {
     definitions: Arc<[ShortcutDefinition]>,
-    resolved: HashMap<ShortcutChord, [Option<usize>; 7]>,
+    resolved: HashMap<ShortcutChord, [Option<usize>; CONTEXTS.len()]>,
     bindings: HashMap<String, Vec<ShortcutChord>>,
 }
 
@@ -381,15 +398,22 @@ impl ShortcutMap {
             return Err("At most 256 shortcut overrides can be saved.".into());
         }
         let mut definitions = shortcut_catalog().to_vec();
-        definitions.extend(commands.iter().map(|command| ShortcutDefinition {
-            id: command.id.action(),
-            label: command.name.clone(),
-            defaults: Vec::new(),
-            scope: ShortcutScope::FilesIdle,
-        }));
+        definitions.extend(
+            commands
+                .iter()
+                .filter(|command| {
+                    !matches!(command.invocation, crate::UserCommandInvocation::Separator)
+                })
+                .map(|command| ShortcutDefinition {
+                    id: command.id.action(),
+                    label: command.name.clone(),
+                    defaults: Vec::new(),
+                    scope: ShortcutScope::FilesIdle,
+                }),
+        );
         let definitions: Arc<[ShortcutDefinition]> = definitions.into();
         let mut replacements = HashMap::new();
-        let mut explicit_keys: HashMap<ShortcutChord, [bool; 7]> = HashMap::new();
+        let mut explicit_keys: HashMap<ShortcutChord, [bool; CONTEXTS.len()]> = HashMap::new();
         for binding in overrides {
             if binding.action.len() > MAX_SHORTCUT_ACTION_BYTES {
                 return Err("A shortcut action identity exceeds 96 bytes.".into());
@@ -453,21 +477,30 @@ impl ShortcutMap {
                         | "selection.clear"
                         | "selection.invert-all"
                         | "files.make-list"
+                        | "panel.previous-selected"
+                        | "panel.next-selected"
                         | "view.brief"
                         | "view.detailed"
                         | "view.thumbnails"
+                        | "viewer.previous-file"
                         | "viewer.document-next"
                         | "viewer.document-previous"
                         | "compare.next-difference"
                         | "compare.previous-difference"
                         | "compare.first-difference"
                         | "compare.last-difference"
-                ) || (definition.id == "selection.all"
-                    && chord.control
-                    && chord.shift
-                    && !chord.alt
+                ) || (definition.id == "viewer.next-file"
+                    && chord.alt
+                    && !chord.control
+                    && !chord.shift
                     && !chord.meta
-                    && chord.key == "A")
+                    && chord.key == "Right")
+                    || (definition.id == "selection.all"
+                        && chord.control
+                        && chord.shift
+                        && !chord.alt
+                        && !chord.meta
+                        && chord.key == "A")
                     || (definition.id.starts_with("bookmark.open.")
                         && !chord.control
                         && !chord.alt
@@ -527,6 +560,8 @@ impl ShortcutMap {
             ShortcutContext::Volume => 4,
             ShortcutContext::Viewer => 5,
             ShortcutContext::ViewerSearch => 6,
+            ShortcutContext::Comparison => 7,
+            ShortcutContext::ComparisonSearch => 8,
         };
         self.resolved.get(chord)?[position].map(|index| &self.definitions[index])
     }

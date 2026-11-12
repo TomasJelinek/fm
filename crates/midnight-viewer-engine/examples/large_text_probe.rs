@@ -172,6 +172,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let opening = Instant::now();
     let session = service.open(
         ViewerLaunch {
+            find: None,
             associations: Default::default(),
             preferences: Arc::default(),
             focused: path,

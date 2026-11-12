@@ -1,4 +1,5 @@
-//! Explicit native path selection. Picking never launches or modifies a file.
+//! Explicit native selection never launches or changes the selected source.
+//! Command artwork selection may create a separate app-managed PNG snapshot.
 use crate::{Cancellation, ChecksumAlgorithm, FsError};
 use std::{
     io,
@@ -11,6 +12,10 @@ pub enum PathPickerKind {
     Directory,
     Program,
     Image,
+    /// Select platform artwork and return an app-managed PNG snapshot.
+    CommandIconResource,
+    /// Pick image data for a restricted importer that saves a managed artwork copy.
+    CommandIconImage,
     /// Open an existing SFV, MD5, SHA-1, SHA-256 or SHA-512 checksum file.
     ChecksumOpen,
     /// Choose an export destination; selection does not create or replace a file.
@@ -96,6 +101,30 @@ fn invalid(message: &str) -> FsError {
 }
 
 pub trait PathPickerService: Send + Sync + 'static {
+    /// Native theme selectors may delegate binary artwork to the restricted importer.
+    fn command_icon_resource_requires_import(&self) -> bool {
+        false
+    }
+
+    /// Persist already-decoded straight-alpha artwork in platform-owned configuration.
+    /// Implementations validate at most 128 × 128 pixels and return a managed PNG path.
+    fn store_command_icon(
+        &self,
+        _width: u32,
+        _height: u32,
+        _rgba: &[u8],
+        _cancel: &Cancellation,
+    ) -> Result<PathBuf, FsError> {
+        Err(FsError::from_io(
+            "store command icon",
+            Path::new(""),
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This platform cannot store command artwork.",
+            ),
+        ))
+    }
+
     /// Runs on a dedicated bounded backend worker. None is ordinary cancellation.
     /// Cancellation requests native closure and retains ownership until it exits.
     /// A platform's modal Shell/extension UI may defer that request; implementations

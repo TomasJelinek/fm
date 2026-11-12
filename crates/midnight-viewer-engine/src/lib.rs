@@ -3,6 +3,9 @@
 
 mod capture;
 mod capture_archive;
+mod capture_find;
+#[cfg(test)]
+mod capture_find_tests;
 mod capture_generated;
 mod capture_tree;
 mod catalog_startup;
@@ -48,9 +51,9 @@ use std::sync::{
 };
 
 /// Backend-only native source capture. Failure never invokes a fallback opener.
-/// The borrowed cancellation flag remains valid for the duration of this call.
+/// Nested backend services can observe the same shared close flag for the whole capture.
 pub type NativeCapture = Arc<
-    dyn Fn(&std::path::Path, &AtomicBool) -> Result<midnight_plugin_host::CapturedFile, String>
+    dyn Fn(&std::path::Path, &Arc<AtomicBool>) -> Result<midnight_plugin_host::CapturedFile, String>
         + Send
         + Sync,
 >;

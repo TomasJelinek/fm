@@ -87,6 +87,14 @@ impl WheelMotion {
         (delta != [0.0; 2]).then_some((delta[0], delta[1]))
     }
 
+    /// Restart the remaining coast after new coverage arrives. Retain the last
+    /// real redraw timestamp so the first covered frame can advance; tick still
+    /// caps elapsed time and cannot spend an unseen pause in one large step.
+    pub fn restart_remaining(&mut self) {
+        self.distance = self.pending();
+        self.delivered = [0.0; 2];
+        self.elapsed = Duration::ZERO;
+    }
     pub fn active(&self) -> bool {
         self.updated.is_some()
     }

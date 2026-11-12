@@ -47,71 +47,76 @@ export component JobProgressWindow inherits DialogWindow {
                     : root.job.active ? "Cancel operation" : "Close progress";
                 close => { root.request-dismiss(); }
             }
-            ScrollView {
+            progress-scroll := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
-                if root.cancel-confirmation : VerticalLayout {
-                    padding-right: 8px; spacing: 10px; alignment: start;
-                    Text {
-                        text: "Cancel this operation?"; color: Theme.strong-text;
-                        font-size: Theme.font-size * 1.2; font-weight: 600; wrap: word-wrap;
-                    }
-                    Text {
-                        text: "This does not undo completed changes.";
-                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
-                    }
-                    if root.job.current-path != "" : Text {
-                        text: root.job.current-path; color: Theme.secondary-text;
-                        font-size: Theme.small-font; wrap: char-wrap; min-width: 0px;
-                    }
-                }
-                if !root.cancel-confirmation : VerticalLayout {
-                    padding-right: 8px; spacing: 10px; alignment: start;
-                    Text {
-                        text: root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
-                        color: root.job.failed ? Theme.error-text : Theme.strong-text;
-                        font-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
-                        overflow: elide;
-                    }
-                    if root.job.active && !root.job.determinate : ProgressIndicator {
-                        accessible-label: "Discovering operation items";
-                        indeterminate: !root.job.paused; progress: 0; height: 4px;
-                    }
-                    if root.job.kind == 0 || root.job.kind == 1 : OperationSpeedChart {
-                        chart: root.job.speed-chart; deletion: root.job.kind == 1;
-                        overall-progress: true; determinate: root.job.determinate;
-                        progress: root.job.progress; progress-label: root.job.progress-label;
-                        waiting-label: root.job.discovering ? "Discovering items..."
-                            : root.job.paused ? "Paused" : "Waiting for activity";
-                        height: max(130px, Theme.font-size * 7.5);
-                    }
-                    if root.job.current-path != "" : Text {
-                        text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
-                        wrap: char-wrap; min-width: 0px;
-                    }
-                    if root.job.file-determinate : VerticalLayout {
-                        spacing: 4px;
+                content-height: max(self.visible-height, content.preferred-height);
+                content := VerticalLayout {
+                    x: 0px; y: 0px; width: progress-scroll.visible-width;
+                    height: self.preferred-height; spacing: 0px;
+                    if root.cancel-confirmation : VerticalLayout {
+                        padding-right: 8px; spacing: 10px; alignment: start;
                         Text {
-                            text: root.job.file-progress-label; color: Theme.secondary-text;
-                            font-size: Theme.small-font; wrap: word-wrap;
+                            text: "Cancel this operation?"; color: Theme.strong-text;
+                            font-size: Theme.font-size * 1.2; font-weight: 600; wrap: word-wrap;
                         }
-                        ProgressIndicator {
-                            accessible-label: "Current file written";
-                            progress: root.job.file-progress; height: 8px;
+                        Text {
+                            text: "This does not undo completed changes.";
+                            color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                        }
+                        if root.job.current-path != "" : Text {
+                            text: root.job.current-path; color: Theme.secondary-text;
+                            font-size: Theme.small-font; wrap: char-wrap; min-width: 0px;
                         }
                     }
-                    if root.job.active : Text {
-                        text: "Time remaining: " + (root.job.paused ? "Paused"
-                            : root.job.eta != "" ? root.job.eta : "Calculating...");
-                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
-                    }
-                    if root.job.remaining != "" : Text {
-                        text: root.job.remaining; color: Theme.text;
-                        font-size: Theme.font-size; wrap: word-wrap;
-                    }
-                    if root.details-visible || root.job.failed : Text {
-                        text: root.job.detail; color: root.job.failed ? Theme.error-text : Theme.text;
-                        font-size: Theme.small-font; min-width: 0px; wrap: char-wrap;
+                    if !root.cancel-confirmation : VerticalLayout {
+                        padding-right: 8px; spacing: 10px; alignment: start;
+                        Text {
+                            text: root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
+                            color: root.job.failed ? Theme.error-text : Theme.strong-text;
+                            font-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
+                            overflow: elide;
+                        }
+                        if root.job.active && !root.job.determinate : ProgressIndicator {
+                            accessible-label: "Discovering operation items";
+                            indeterminate: !root.job.paused; progress: 0; height: 4px;
+                        }
+                        if root.job.kind == 0 || root.job.kind == 1 : OperationSpeedChart {
+                            chart: root.job.speed-chart; deletion: root.job.kind == 1;
+                            overall-progress: true; determinate: root.job.determinate;
+                            progress: root.job.progress; progress-label: root.job.progress-label;
+                            waiting-label: root.job.discovering ? "Discovering items..."
+                                : root.job.paused ? "Paused" : "Waiting for activity";
+                            height: max(130px, Theme.font-size * 7.5);
+                        }
+                        if root.job.current-path != "" : Text {
+                            text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
+                            wrap: char-wrap; min-width: 0px;
+                        }
+                        if root.job.file-determinate : VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: root.job.file-progress-label; color: Theme.secondary-text;
+                                font-size: Theme.small-font; wrap: word-wrap;
+                            }
+                            ProgressIndicator {
+                                accessible-label: "Current file written";
+                                progress: root.job.file-progress; height: 8px;
+                            }
+                        }
+                        if root.job.active : Text {
+                            text: "Time remaining: " + (root.job.paused ? "Paused"
+                                : root.job.eta != "" ? root.job.eta : "Calculating...");
+                            color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                        }
+                        if root.job.remaining != "" : Text {
+                            text: root.job.remaining; color: Theme.text;
+                            font-size: Theme.font-size; wrap: word-wrap;
+                        }
+                        if root.details-visible || root.job.failed : Text {
+                            text: root.job.detail; color: root.job.failed ? Theme.error-text : Theme.text;
+                            font-size: Theme.small-font; min-width: 0px; wrap: char-wrap;
+                        }
                     }
                 }
             }

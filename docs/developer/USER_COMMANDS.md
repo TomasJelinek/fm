@@ -11,7 +11,7 @@ ABI or additional dependency is used.
 `UserPreferences.user_commands` is an ordered `Arc<Vec<UserCommand>>`, empty by
 default. Each command has a stable ASCII ID, name, enabled flag, optional toolbar
 label/icon path, working-directory template, Single/PerItem launch policy, and a
-Program or Terminal invocation. Duplicate labels are allowed; duplicate IDs are
+Program, Terminal or inert Separator invocation. Duplicate labels are allowed; duplicate IDs are
 invalid. Executable/icon literals remain native `PathBuf` values.
 
 Program mode stores an explicit absolute executable plus at most 64 argument
@@ -21,17 +21,28 @@ variable declaration in the same accepted edit as its script reference. Manual
 script authors declare required context too; the backend never scans or rewrites
 shell source to infer requirements.
 
+Separators retain stable ID, name, order and the same configuration count/byte
+budgets. They require no executable or working-directory template, register no
+action, and cannot be previewed or executed. Runtime admission and preparation
+both reject them before native capture or launch, including stale shortcut requests.
+They never become `UserCommandProcessInvocation` values.
+
 Schema 17 uses the existing strict, bounded, atomic settings service and native
 path codec. Older settings default to an empty command list. A schema17 payload
 includes checksum algorithms even when SHA-256 is the default, preserving the
 schema16 contract. Default preferences still encode as version10. Invalid/null/
 unknown fields, duplicates and malformed templates fail validation instead of
-being silently dropped. No real user preference file is used by backend tests.
+being silently dropped. Separators serialize as an invocation with only
+`mode: "separator"`; existing Program/Terminal records remain readable. On load,
+stale shortcuts pointing to known separators are pruned before final preference
+validation without removing unrelated overrides. No real user preference file is
+used by backend tests.
 
 Apply a list edit through `UserPreferences::replace_user_commands`. It validates
-the entire candidate and removes shortcut overrides for exactly the deleted IDs
+the entire candidate and removes shortcut overrides for deleted IDs and IDs
+converted to separators
 before replacing the accepted value. A failed edit preserves the previous value.
-`ShortcutMap::with_user_commands` adds only configured `user-command.<id>` actions
+`ShortcutMap::with_user_commands` adds only executable configured `user-command.<id>` actions
 in file-idle scope; `definitions()` exposes that exact catalog. Dynamic actions
 have no defaults. `ShortcutMap::new` continues to provide the static catalog.
 

@@ -116,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.borrow_mut().start = Instant::now();
         let window = manager_for_open.open_with_ready(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,

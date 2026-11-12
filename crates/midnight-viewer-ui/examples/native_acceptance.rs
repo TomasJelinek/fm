@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut open = Some(move |parent: &ViewerWindow| {
         opening_manager.open(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,

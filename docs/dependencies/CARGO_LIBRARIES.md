@@ -72,7 +72,7 @@ captures and does not prove that old captures match today's source files.
 | [anstyle](https://crates.io/crates/anstyle/1.0.14) | 1.0.14 | MIT OR Apache-2.0 | app, html-viewer | Linux, Windows | — |
 | [anstyle-parse](https://crates.io/crates/anstyle-parse/1.0.0) | 1.0.0 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [anstyle-query](https://crates.io/crates/anstyle-query/1.1.5) | 1.1.5 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
-| [anstyle-wincon](https://crates.io/crates/anstyle-wincon/3.0.11) | 3.0.11 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
+| [anstyle-wincon](https://crates.io/crates/anstyle-wincon/3.0.11) | 3.0.11 | MIT OR Apache-2.0 | html-viewer | Windows | — |
 | [anyhow](https://crates.io/crates/anyhow/1.0.104) | 1.0.104 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [arboard](https://crates.io/crates/arboard/3.7.0) | 3.7.0 | MIT OR Apache-2.0 | app | Linux, Windows | yes |
 | [arrayref](https://crates.io/crates/arrayref/0.3.9) | 0.3.9 | BSD-2-Clause | app, renderer-tests | Linux, Windows | — |
@@ -97,7 +97,7 @@ captures and does not prove that old captures match today's source files.
 | [bit-set](https://crates.io/crates/bit-set/0.10.0) | 0.10.0 | Apache-2.0 OR MIT | app, renderer-tests | Linux, Windows | — |
 | [bit-vec](https://crates.io/crates/bit-vec/0.9.1) | 0.9.1 | Apache-2.0 OR MIT | app, renderer-tests | Linux, Windows | — |
 | [bitflags](https://crates.io/crates/bitflags/2.11.1) | 2.11.1 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
-| [bitflags](https://crates.io/crates/bitflags/2.13.2) | 2.13.2 | MIT OR Apache-2.0 | api, app, image-viewer, markdown, pdf-viewer, thumbnail-image, thumbnail-video | Linux, Windows | — |
+| [bitflags](https://crates.io/crates/bitflags/2.13.2) | 2.13.2 | MIT OR Apache-2.0 | api, app, html-viewer, image-viewer, markdown, pdf-viewer, thumbnail-image, thumbnail-video | Linux, Windows | — |
 | [blake3](https://crates.io/crates/blake3/1.8.7) | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | app | Linux, Windows | yes |
 | [block-buffer](https://crates.io/crates/block-buffer/0.10.4) | 0.10.4 | MIT OR Apache-2.0 | api, app | Linux, Windows | — |
 | [block-buffer](https://crates.io/crates/block-buffer/0.12.1) | 0.12.1 | MIT OR Apache-2.0 | archive | Linux, Windows | — |
@@ -174,7 +174,7 @@ captures and does not prove that old captures match today's source files.
 | [dpi](https://crates.io/crates/dpi/0.1.2) | 0.1.2 | Apache-2.0 AND MIT | app, renderer-tests | Linux, Windows | — |
 | [either](https://crates.io/crates/either/1.16.0) | 1.16.0 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [either](https://crates.io/crates/either/1.19.0) | 1.19.0 | MIT OR Apache-2.0 | app | Linux, Windows | — |
-| [encode_unicode](https://crates.io/crates/encode_unicode/1.0.0) | 1.0.0 | Apache-2.0 OR MIT | html-viewer | Linux, Windows | — |
+| [encode_unicode](https://crates.io/crates/encode_unicode/1.0.0) | 1.0.0 | Apache-2.0 OR MIT | html-viewer | Windows | — |
 | [endi](https://crates.io/crates/endi/1.1.1) | 1.1.1 | MIT | app | Linux | — |
 | [enumflags2](https://crates.io/crates/enumflags2/0.7.12) | 0.7.12 | MIT OR Apache-2.0 | app | Linux | — |
 | [enumflags2_derive](https://crates.io/crates/enumflags2_derive/0.7.12) | 0.7.12 | MIT OR Apache-2.0 | app | Linux | — |
@@ -329,7 +329,7 @@ captures and does not prove that old captures match today's source files.
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | app, network, renderer-tests, thumbnail-video | Linux, Windows | yes |
 | [libm](https://crates.io/crates/libm/0.2.16) | 0.2.16 | MIT | app, renderer-tests | Linux, Windows | — |
 | [linebender_resource_handle](https://crates.io/crates/linebender_resource_handle/0.1.1) | 0.1.1 | Apache-2.0 OR MIT | app, pdf-viewer, renderer-tests | Linux, Windows | — |
-| [linux-raw-sys](https://crates.io/crates/linux-raw-sys/0.12.1) | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | api, app, renderer-tests | Linux | — |
+| [linux-raw-sys](https://crates.io/crates/linux-raw-sys/0.12.1) | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | api, app, html-viewer, renderer-tests | Linux | — |
 | [linux-raw-sys](https://crates.io/crates/linux-raw-sys/0.4.15) | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | app, renderer-tests | Linux | — |
 | [litemap](https://crates.io/crates/litemap/0.8.3) | 0.8.3 | Unicode-3.0 | app, renderer-tests | Linux, Windows | — |
 | [litrs](https://crates.io/crates/litrs/1.0.0) | 1.0.0 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
@@ -370,7 +370,7 @@ captures and does not prove that old captures match today's source files.
 | [num_enum](https://crates.io/crates/num_enum/0.7.6) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [num_enum_derive](https://crates.io/crates/num_enum_derive/0.7.6) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [once_cell](https://crates.io/crates/once_cell/1.21.4) | 1.21.4 | MIT OR Apache-2.0 | api, app, html-viewer, pdf-viewer, renderer-tests | Linux, Windows | — |
-| [once_cell_polyfill](https://crates.io/crates/once_cell_polyfill/1.70.2) | 1.70.2 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
+| [once_cell_polyfill](https://crates.io/crates/once_cell_polyfill/1.70.2) | 1.70.2 | MIT OR Apache-2.0 | html-viewer | Windows | — |
 | [ordered-float](https://crates.io/crates/ordered-float/4.6.0) | 4.6.0 | MIT | renderer-tests | Linux, Windows | — |
 | [ordered-float](https://crates.io/crates/ordered-float/5.5.1) | 5.5.1 | MIT | app | Linux, Windows | — |
 | [ordered-stream](https://crates.io/crates/ordered-stream/0.2.0) | 0.2.0 | MIT OR Apache-2.0 | app | Linux | — |
@@ -436,7 +436,7 @@ captures and does not prove that old captures match today's source files.
 | [renderdoc-sys](https://crates.io/crates/renderdoc-sys/1.1.0) | 1.1.0 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [resource](https://crates.io/crates/resource/0.6.1) | 0.6.1 | CC0-1.0 | renderer-tests | Linux, Windows | — |
 | [resource_list_proc_macro](https://crates.io/crates/resource_list_proc_macro/0.6.1) | 0.6.1 | CC0-1.0 | renderer-tests | Linux, Windows | — |
-| [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | app | Linux, Windows | — |
+| [resvg](https://crates.io/crates/resvg/0.48.1) | 0.48.1 | Apache-2.0 OR MIT | app | Linux, Windows | yes |
 | [rgb](https://crates.io/crates/rgb/0.8.53) | 0.8.53 | MIT | app, renderer-tests | Linux, Windows | — |
 | [ring](https://crates.io/crates/ring/0.17.14) | 0.17.14 | Apache-2.0 AND ISC | html-viewer | Linux, Windows | — |
 | [rowan](https://crates.io/crates/rowan/0.17.0) | 0.17.0 | MIT OR Apache-2.0 | app | Linux, Windows | — |
@@ -449,7 +449,7 @@ captures and does not prove that old captures match today's source files.
 | [rustc_version](https://crates.io/crates/rustc_version/0.4.1) | 0.4.1 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [rustix](https://crates.io/crates/rustix/0.38.44) | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | app, renderer-tests | Linux | — |
 | [rustix](https://crates.io/crates/rustix/1.1.4) | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | renderer-tests | Linux | — |
-| [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | api, app | Linux | yes |
+| [rustix](https://crates.io/crates/rustix/1.1.6) | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | api, app, html-viewer | Linux | yes |
 | [rustls](https://crates.io/crates/rustls/0.23.46) | 0.23.46 | Apache-2.0 OR ISC OR MIT | html-viewer | Linux, Windows | — |
 | [rustls-pki-types](https://crates.io/crates/rustls-pki-types/1.15.1) | 1.15.1 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [rustls-webpki](https://crates.io/crates/rustls-webpki/0.103.16) | 0.103.16 | ISC | html-viewer | Linux, Windows | — |
@@ -624,12 +624,12 @@ captures and does not prove that old captures match today's source files.
 | [windows-future](https://crates.io/crates/windows-future/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-implement](https://crates.io/crates/windows-implement/0.60.2) | 0.60.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-interface](https://crates.io/crates/windows-interface/0.59.3) | 0.59.3 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-link](https://crates.io/crates/windows-link/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-viewer, image-viewer-api, native-windows, network, pdf-viewer, renderer-tests, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Linux, Windows | — |
+| [windows-link](https://crates.io/crates/windows-link/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-viewer, image-viewer-api, native-windows, network, pdf-viewer, renderer-tests, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | — |
 | [windows-numerics](https://crates.io/crates/windows-numerics/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-result](https://crates.io/crates/windows-result/0.4.1) | 0.4.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-strings](https://crates.io/crates/windows-strings/0.5.1) | 0.5.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-sys](https://crates.io/crates/windows-sys/0.52.0) | 0.52.0 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-viewer, image-viewer-api, native-windows, network, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Linux, Windows | yes |
+| [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-viewer, image-viewer-api, native-windows, network, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | yes |
 | [windows-targets](https://crates.io/crates/windows-targets/0.52.6) | 0.52.6 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-threading](https://crates.io/crates/windows-threading/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows_x86_64_msvc](https://crates.io/crates/windows_x86_64_msvc/0.52.6) | 0.52.6 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
@@ -642,7 +642,7 @@ captures and does not prove that old captures match today's source files.
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | app, renderer-tests | Linux | yes |
 | [x11rb](https://crates.io/crates/x11rb/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | app, renderer-tests | Linux | yes |
 | [x11rb-protocol](https://crates.io/crates/x11rb-protocol/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | app, renderer-tests | Linux | — |
-| [xattr](https://crates.io/crates/xattr/1.7.0) | 1.7.0 | MIT OR Apache-2.0 | api | Linux | — |
+| [xattr](https://crates.io/crates/xattr/1.7.0) | 1.7.0 | MIT OR Apache-2.0 | api, html-viewer | Linux | — |
 | [xcursor](https://crates.io/crates/xcursor/0.3.10) | 0.3.10 | MIT | renderer-tests | Linux | — |
 | [xcursor](https://crates.io/crates/xcursor/0.3.11) | 0.3.11 | MIT | app | Linux | — |
 | [xkbcommon-dl](https://crates.io/crates/xkbcommon-dl/0.4.2) | 0.4.2 | MIT | app, renderer-tests | Linux | — |

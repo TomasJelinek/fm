@@ -43,8 +43,11 @@ fn snapshot_inner(
     // CreateProcess does not propagate per-drive cwd records with a custom block.
     // GetFullPathNameW("X:") is the documented non-mutating way to retrieve them.
     for letter in b'A'..=b'Z' {
-        let key = OsString::from(format!("={}:", letter as char));
-        if inherited.iter().any(|(name, _)| *name == key) {
+        let key = format!("={}:", letter as char);
+        if inherited.iter().any(|(name, _)| {
+            name.to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&key))
+        }) {
             continue;
         }
         let query = [letter as u16, b':' as u16, 0];
@@ -66,7 +69,7 @@ fn snapshot_inner(
         if count == 0 || count as usize >= path.len() {
             return Err(io::Error::last_os_error());
         }
-        inherited.push((key, OsString::from_wide(&path[..count as usize])));
+        inherited.push((key.into(), OsString::from_wide(&path[..count as usize])));
     }
     if cmd_arguments {
         build_inner(inherited, overrides, true)
@@ -166,13 +169,23 @@ fn build_inner(
     if comparison_failed {
         return Err(io::Error::last_os_error());
     }
-    if records
-        .windows(2)
-        .any(|pair| compare(&pair[0].0, &pair[1].0) == Some(Ordering::Equal))
-    {
-        return Err(invalid(
-            "Inherited environment contains ambiguous case-insensitive duplicate names.",
-        ));
+    // Windows names are ordinal case-insensitive. Identical native values carry
+    // one unambiguous authority; differing values must never become first/last-wins.
+    let mut conflict = None;
+    records.dedup_by(|right, left| {
+        if compare(&left.0, &right.0) != Some(Ordering::Equal) {
+            return false;
+        }
+        if left.1 != right.1 && conflict.is_none() {
+            conflict = Some(format!(
+                "Inherited environment contains conflicting values for case-insensitive names {} and {}.",
+                diagnostic_name(&left.0), diagnostic_name(&right.0),
+            ));
+        }
+        true
+    });
+    if let Some(message) = conflict {
+        return Err(invalid(&message));
     }
     let mut block = Vec::with_capacity(total.max(2));
     for (name, value) in records {
@@ -186,6 +199,13 @@ fn build_inner(
     }
     block.push(0);
     Ok(block)
+}
+fn diagnostic_name(name: &[u16]) -> String {
+    // Error text shows only escaped names, never inherited values. Bound hostile
+    // names before formatting; this display label is never used as authority.
+    let shown = OsString::from_wide(&name[..name.len().min(128)]);
+    let suffix = if name.len() > 128 { "…" } else { "" };
+    format!("{shown:?}{suffix}")
 }
 fn compare(left: &[u16], right: &[u16]) -> Option<Ordering> {
     // SAFETY: bounded UTF16 buffers with explicit lengths; ordinal case folding is locale-free.

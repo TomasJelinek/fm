@@ -102,11 +102,12 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Escape during search | Leave search and restore the complete listing |
 | Backspace during search | Remove one extended grapheme; an empty query exits |
 | Enter | Enter a folder or open the focused file through its host association |
-| F3 / Alt+F3 in files | Open the applicable installed viewer / force basic Text mode. Also works for root files while inline folder branches are expanded; Space follows the captured visible file order. |
+| F3 / Alt+F3 in files | Open the applicable installed viewer / force basic Text mode. Also works for root files while inline folder branches are expanded; Space / Alt+Right advances through the captured visible file order; Backspace / Alt+Left reverses it. |
 | F4 in files | Open the focused regular local file with the configured external editor |
 | Ctrl+M in files | Make File List: captured selection to clipboard, viewer or UTF-8 file |
 | Backspace / Ctrl+PageUp | Parent folder |
 | Alt+← / Alt+→ | Back / forward history |
+| Alt+↑ / Alt+↓ in files | Previous / next selected file or folder in displayed order, including expanded tree rows. Skip the current row, preserve all marks, and stop at the boundary without wrapping; inactive during filename search. Configurable as `panel.previous-selected` / `panel.next-selected`. |
 | Ctrl+Backspace / Shift+Backspace / Ctrl+Backslash | Native filesystem root |
 | Ctrl+PageDown | Enter a known folder; never launch a regular file |
 | Ctrl+G | Focus the path editor |
@@ -115,9 +116,9 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Shift+drive letter | Switch volume on Windows, using its remembered path |
 | Ctrl+F1 / Ctrl+L | Read-only cached drive information; detailed backend-provided volume information is the requested replacement |
 | Ctrl+F2 | Attributes, times and filename-case editor for the captured selection |
-| Ctrl+Shift+B | Switch the active pane to Brief view |
-| Ctrl+Shift+L | Switch the active pane to Detailed list view |
-| Ctrl+Shift+T | Switch the active pane to Thumbnails view |
+| Alt+2 | Switch the active pane to Brief view |
+| Alt+3 | Switch the active pane to Detailed list view |
+| Alt+5 | Switch the active pane to Thumbnails view |
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
 | Ctrl+A | Select displayed top-level files only; deselect folders and nested rows |
@@ -341,7 +342,8 @@ Viewer windows have their own configurable shortcut context:
 | Keys | Viewer action |
 | --- | --- |
 | Escape | Close the viewer, including when search has focus |
-| Space in content | Next regular file in captured panel order, wrapping at the end |
+| Space / Alt+Right in content | Next regular file in captured panel order, wrapping at the end |
+| Backspace / Alt+Left in content | Previous regular file in the same captured order, wrapping at the beginning |
 | Ctrl+F | Focus search |
 | Enter in search / F3 | Next match |
 | Shift+F3 | Previous match |
@@ -360,20 +362,27 @@ Viewer windows have their own configurable shortcut context:
 | Alt+Home / Alt+End in file comparison | First / last text difference; configurable as `compare.first-difference` / `compare.last-difference`. Difference navigation stops at either end and aligns the changed rows in both panes. Editing controls retain their own keys. |
 
 In image mode, Ctrl+wheel zooms around the pointer and dragging pans the image.
-Text search/wrap controls are hidden for images. The same Escape/Space window
-actions apply. Images exceeding the host's four-megapixel display surface are
+Text search/wrap controls are hidden for images. The same Close and previous/next
+file actions apply to images and PDF documents. Images exceeding the host's four-megapixel display surface are
 resampled to that bounded surface; 1:1 retains the physical size, with reduced
 display detail on larger canvases.
 
 The optional Chromium HTML viewer uses the same configurable Find, Copy, zoom,
-navigation and next-file actions. Escape always closes it. Plain Space first
-reaches Chromium: it types into an editable HTML field, and outside a field it
-uses the configured Space action. If that shortcut was removed, Space scrolls
+navigation and previous/next-file actions. Escape always closes it. Space,
+Backspace and Alt+Left/Right first reach Chromium, which keeps editable-field keys
+inside the page. Outside an editable field the host resolves the current configured
+action; delayed replies are ignored after viewer content loses focus. If that shortcut was removed, Space scrolls
 the page; Shift+Space does the same in reverse when unassigned. AltGr input stays
 with the page instead of triggering application shortcuts. Ctrl+0 resets HTML
-layout zoom to 100%; the image viewer's fit behavior is unchanged.
+layout zoom to 100%; the image viewer's fit behavior is unchanged. HTML file
+cycling uses only the browser-arbitrated chords above. Other Previous/Next-file
+remaps, such as Q or Ctrl+J, remain page input in HTML; they still work in the
+other viewer modes.
 
-Search retains ordinary text editing, clipboard keys and spaces. Main-window actions
+Search retains ordinary text editing, clipboard keys, spaces and Backspace. Previous/next
+file actions apply only to viewer content; every alias can be remapped or removed in
+Options → Keyboard. Comparison windows have a separate content context, so their
+Alt+Left / Alt+Right aliases continue to navigate differences. Main-window actions
 do not dispatch inside viewer windows. Viewer mode is selected using the bottom
 dropdown; Markdown search/copy uses rendered text, while Text mode uses literal source.
 
@@ -418,3 +427,21 @@ Panel warning/error icons are independent detail controls. With an icon focused,
 Enter or Space opens its diagnostic report; Escape closes the report viewer.
 This does not change file selection or retry/expand a folder. A failed tree
 branch has separate Retry/Collapse controls. No new global shortcut is reserved.
+
+## Find result actions
+
+Within the focused Find result list, View (**F3**), Basic View (**Alt+F3**) and
+Edit (**F4**) use the current configured file-action bindings. Their button hints
+update from the same map. **Enter** and double-click retain Go to file; **Open** is
+an explicit button because the system association may execute the file.
+Actions require a regular native result and fresh identity validation; a stopped
+search retains its results, while a closed or restarted search revokes pending
+actions. See the [Find contract](developer/FIND.md).
+
+### Panel view and sort menus
+
+Both panels show the current configured bindings beside Detailed, Brief,
+Thumbnails, Name, Size, Modified and Extension in their dropdown menus. Reverse
+order shows the binding of the current sort column, which toggles its direction.
+Rebinding or disabling a shortcut updates these hints immediately, including an
+already open menu. The compact closed buttons keep their short labels.

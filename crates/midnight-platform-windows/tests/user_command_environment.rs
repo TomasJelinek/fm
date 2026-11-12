@@ -115,3 +115,97 @@ fn shell_capture_keeps_nul_name_and_ordinal_duplicate_rejection() {
         .is_err()
     );
 }
+#[test]
+fn identical_case_aliases_are_coalesced_without_changing_native_values() {
+    let value = OsString::from_wide(&[0xd800, b'&' as u16, 0xdcff]);
+    let block = environment::build(
+        vec![
+            ("Path".into(), value.clone()),
+            ("PATH".into(), value.clone()),
+            ("path".into(), value.clone()),
+            ("Öppna".into(), "Unicode case alias".into()),
+            ("öPPNA".into(), "Unicode case alias".into()),
+        ],
+        &[],
+    )
+    .unwrap();
+    let records = block[..block.len() - 1]
+        .split(|unit| *unit == 0)
+        .filter(|record| !record.is_empty())
+        .map(OsString::from_wide)
+        .collect::<Vec<_>>();
+    let mut native_record = OsString::from("Path=");
+    native_record.push(value);
+    assert_eq!(records, [native_record, "Öppna=Unicode case alias".into()]);
+    for values in [("same", "SAME"), ("first", "second")] {
+        assert!(
+            environment::build(
+                vec![
+                    ("Path".into(), values.0.into()),
+                    ("PATH".into(), values.1.into())
+                ],
+                &[],
+            )
+            .is_err(),
+            "conflicting values must never be selected by order"
+        );
+    }
+}
+
+#[test]
+fn inherited_lowercase_drive_cwd_is_not_synthesized_again() {
+    let block =
+        environment::snapshot_with_inherited(vec![("=c:".into(), r"C:\captured 文档".into())], &[])
+            .unwrap();
+    let drive_records = block[..block.len() - 1]
+        .split(|unit| *unit == 0)
+        .filter(|record| {
+            record.len() >= 4
+                && record[0] == b'=' as u16
+                && (record[1] == b'C' as u16 || record[1] == b'c' as u16)
+                && record[2] == b':' as u16
+                && record[3] == b'=' as u16
+        })
+        .map(OsString::from_wide)
+        .collect::<Vec<_>>();
+    assert_eq!(drive_records, [OsString::from(r"=c:=C:\captured 文档")]);
+}
+#[test]
+fn conflicting_alias_error_names_the_keys_without_disclosing_values() {
+    let error = environment::build(
+        vec![
+            ("Path".into(), "private first value".into()),
+            ("PATH".into(), "private second value".into()),
+        ],
+        &[],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("\"Path\"") && error.contains("\"PATH\""));
+    assert!(error.contains("conflicting values"));
+    assert!(!error.contains("private"));
+    let long = "N".repeat(4096);
+    let error = environment::build(
+        vec![
+            (long.clone().into(), "first".into()),
+            (long.to_ascii_lowercase().into(), "second".into()),
+        ],
+        &[],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.len() < 400, "diagnostics must remain bounded");
+    let error = environment::build(
+        vec![
+            ("name\n".into(), "first".into()),
+            ("NAME\n".into(), "second".into()),
+        ],
+        &[],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        !error.contains('\n'),
+        "names must not inject diagnostic lines"
+    );
+}

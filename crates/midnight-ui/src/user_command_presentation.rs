@@ -43,6 +43,35 @@ impl ToolbarState {
     }
 }
 
+fn toolbar_commands(commands: &[UserCommand]) -> impl Iterator<Item = &UserCommand> {
+    let last_command = commands.iter().rposition(|command| !is_separator(command));
+    let mut has_command = false;
+    let mut separated = false;
+    commands
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, command)| {
+            if !is_separator(command) {
+                has_command = true;
+                separated = false;
+                Some(command)
+            } else if command.enabled
+                && has_command
+                && !separated
+                && last_command.is_some_and(|last| index < last)
+            {
+                separated = true;
+                Some(command)
+            } else {
+                None
+            }
+        })
+}
+
+fn is_separator(command: &UserCommand) -> bool {
+    matches!(command.invocation, UserCommandInvocation::Separator)
+}
+
 struct Rows {
     state: Weak<RefCell<Presenter>>,
     notify: ModelNotify,
@@ -59,7 +88,7 @@ impl Rows {
         if old.0 != current.0 {
             self.notify.reset();
         } else if old.1 != current.1 || old.2 != current.2 {
-            for index in 0..p.preferences.values.user_commands.len() {
+            for index in 0..toolbar_commands(&p.preferences.values.user_commands).count() {
                 self.notify.row_changed(index);
             }
         }
@@ -68,21 +97,22 @@ impl Rows {
 impl Model for Rows {
     type Data = UserCommandRow;
     fn row_count(&self) -> usize {
-        self.state
-            .upgrade()
-            .map_or(0, |p| p.borrow().preferences.values.user_commands.len())
+        self.state.upgrade().map_or(0, |p| {
+            toolbar_commands(&p.borrow().preferences.values.user_commands).count()
+        })
     }
     fn row_data(&self, index: usize) -> Option<Self::Data> {
         let state = self.state.upgrade()?;
         let p = state.borrow();
-        let command = p.preferences.values.user_commands.get(index)?;
+        let command = toolbar_commands(&p.preferences.values.user_commands).nth(index)?;
         let revision = p.command_toolbar.revision.get().to_string();
         Some(UserCommandRow {
             identity: command.id.as_str().into(),
             revision: revision.clone().into(),
             name: command.name.as_str().into(),
             label: command.toolbar_label.as_deref().unwrap_or("").into(),
-            enabled: command.enabled,
+            enabled: command.enabled && !is_separator(command),
+            separator: is_separator(command),
             hint: command_hint(command, p.shortcut_hint(&command.id.action())).into(),
             icon: p
                 .custom_command_icon(&revision, command.id.as_str())
@@ -99,6 +129,7 @@ impl Model for Rows {
 
 fn command_hint(command: &UserCommand, shortcut: &str) -> String {
     let mode = match &command.invocation {
+        UserCommandInvocation::Separator => return "Separator".into(),
         UserCommandInvocation::Program { .. } => "Program",
         UserCommandInvocation::Terminal { shell, .. } => match shell {
             ShellFlavor::PowerShell => "PowerShell",
@@ -210,11 +241,13 @@ impl Presenter {
             .user_commands
             .iter()
             .filter_map(|command| {
-                if !visible.contains(&(revision.clone(), command.id.as_str().to_owned())) {
+                if is_separator(command)
+                    || !visible.contains(&(revision.clone(), command.id.as_str().to_owned()))
+                {
                     return None;
                 }
                 let (content, edge) = if let Some(path) = &command.icon {
-                    (crate::ThumbnailContent::Native(path.clone()), 96)
+                    (crate::ThumbnailContent::Native(path.clone()), 128)
                 } else if let UserCommandInvocation::Program { executable, .. } =
                     &command.invocation
                 {

@@ -30,6 +30,7 @@ pub(super) struct Document {
     pending: Mutex<HashMap<u64, Arc<Mutex<resources::Stream>>>>,
     selection: Mutex<crate::selection::Selection>,
     mouse_buttons: AtomicU64,
+    host_shortcuts: bool,
 }
 
 impl Document {
@@ -124,6 +125,9 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         selection: Mutex::new(crate::selection::Selection::default()),
         layers: Mutex::new(crate::surface::Layers::default()),
         mouse_buttons: AtomicU64::new(0),
+        host_shortcuts: crate::host_keys::enabled(
+            std::env::var(api::HOST_SHORTCUTS_ENV).ok().as_deref(),
+        ),
     });
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(

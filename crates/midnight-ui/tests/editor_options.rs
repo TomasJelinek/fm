@@ -155,6 +155,7 @@ fn ordered_rule_form_retains_fallback_and_cancel_restores_all_associations() {
     let mut form = view.get_draft();
     form.mode = 1;
     form.expression = r"\.rs$".into();
+    form.use_default = true;
     form.enabled = false;
     view.invoke_edit(form);
     view.invoke_action(2);
@@ -208,4 +209,84 @@ fn ordered_rule_form_retains_fallback_and_cancel_restores_all_associations() {
         command,
         Command::EditFile { .. } | Command::ExecuteUserCommand(_)
     )));
+}
+
+#[test]
+fn plus_opens_custom_editor_fields_and_keeps_incomplete_rule_out_of_preferences() {
+    let mut h = ui::TestUi::new();
+    let root = std::env::current_dir().unwrap();
+    let p = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let sent = commands.clone();
+    install(
+        &h.window,
+        p.clone(),
+        Rc::new(move |command| {
+            sent.borrow_mut().push(command);
+            true
+        }),
+    );
+    let original = EditorPreferences {
+        executable: Some(std::env::current_exe().unwrap()),
+        rules: vec![EditorRule::default(), EditorRule::default()],
+        ..Default::default()
+    };
+    p.borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::new(UserPreferences {
+            editor: original.clone(),
+            ..Default::default()
+        }))));
+    refresh(&h.window, &p.borrow());
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(4);
+    h.draw();
+    ui::click_popup(&h.window, "Add editor rule", AccessibleRole::Button);
+    h.draw();
+    let window = h.window.clone_strong();
+    let view = window.global::<EditorOptionsView>();
+    assert!(
+        !view.get_draft().use_default,
+        "Plus must start a custom editor draft"
+    );
+    assert!(ui::popup_item(&h.window, "Editor executable", AccessibleRole::TextInput).is_visible());
+    assert!(
+        ui::popup_item(
+            &h.window,
+            "Browse editor executable",
+            AccessibleRole::Button
+        )
+        .is_visible()
+    );
+    assert!(ui::popup_item(&h.window, "Editor argument 1", AccessibleRole::ListItem).is_visible());
+    view.invoke_save();
+    assert!(view.get_error().contains("Choose an editor executable"));
+    assert!(
+        commands
+            .borrow()
+            .iter()
+            .all(|c| !matches!(c, Command::SavePreferences { .. }))
+    );
+    render::snapshot(&h, "editor-new-custom-incomplete");
+    let mut form = view.get_draft();
+    form.executable = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .as_ref()
+        .into();
+    view.invoke_edit(form);
+    view.invoke_save();
+    assert!(view.get_error().is_empty());
+    ui::click_popup(&h.window, "OK", AccessibleRole::Button);
+    h.draw();
+    let saved = commands
+        .borrow()
+        .iter()
+        .find_map(|c| match c {
+            Command::SavePreferences { preferences, .. } => Some(preferences.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(&saved.editor.rules[..2], original.rules.as_slice());
+    assert_eq!(saved.editor.executable, original.executable);
+    assert!(saved.editor.rules[2].executable.is_some());
 }

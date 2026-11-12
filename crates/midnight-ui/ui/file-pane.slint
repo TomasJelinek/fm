@@ -4,6 +4,7 @@ import { ShortcutHints } from "shortcut-hints.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { TipBody, CompactPicker } from "controls.slint";
 import { CompactLocationButton } from "location-controls.slint";
+import { OverflowToolbar } from "overflow-toolbar.slint";
 import { PanelList } from "panel-list.slint";
 import { SelectionRectangle } from "selection-rectangle.slint";
 import { FileEntry } from "file-entry.slint";
@@ -479,32 +480,27 @@ export component FilePane inherits Rectangle {
                     }
                     dismissed => { root.focus-list(); }
                 }
-                ScrollView {
-                    min-width: 0px;
-                    height: Theme.control-height;
-                    horizontal-stretch: 1;
-                    vertical-scrollbar-policy: always-off;
-                    horizontal-scrollbar-policy: always-off;
-                    HorizontalLayout {
-                        spacing: 2px; alignment: start;
-                        for location-index[index] in root.locations.length : CompactLocationButton {
-                            private property <LocationRow> item: root.locations[index];
-                            label: self.item.label;
-                            compact-label: self.item.compact-label;
-                            is-drive: self.item.is-drive;
-                            icon: self.item.icon;
-                            kind: self.item.kind; identity: self.item.identity;
-                            model-revision: root.choice-revision;
-                            selected: self.item.selected;
-                            hint: self.item.tooltip;
-                            enabled: self.item.kind != LocationRole.network || root.network-discovery-available;
-                            accessible-name: self.item.kind == LocationRole.network
-                                ? root.pane-id == 0 ? "Left panel Network Neighborhood" : "Right panel Network Neighborhood"
-                                : self.item.tooltip;
-                            clicked => { root.activate(); if self.item.identity != "" { root.navigation-choice(self.item.identity); } else { root.location(index); } root.focus-list(); }
-                            context-menu(x, y, control, shift) => {
-                                root.drive-context-menu(self.item.identity, x, y, control, shift);
-                            }
+                OverflowToolbar {
+                    left-hint: root.pane-id == 0 ? "Scroll left panel drives left" : "Scroll right panel drives left";
+                    right-hint: root.pane-id == 0 ? "Scroll left panel drives right" : "Scroll right panel drives right";
+                    activated => { root.activate(); root.focus-list(); }
+                    for location-index[index] in root.locations.length : CompactLocationButton {
+                        private property <LocationRow> item: root.locations[index];
+                        label: self.item.label;
+                        compact-label: self.item.compact-label;
+                        is-drive: self.item.is-drive;
+                        icon: self.item.icon;
+                        kind: self.item.kind; identity: self.item.identity;
+                        model-revision: root.choice-revision;
+                        selected: self.item.selected;
+                        hint: self.item.tooltip;
+                        enabled: self.item.kind != LocationRole.network || root.network-discovery-available;
+                        accessible-name: self.item.kind == LocationRole.network
+                            ? root.pane-id == 0 ? "Left panel Network Neighborhood" : "Right panel Network Neighborhood"
+                            : self.item.tooltip;
+                        clicked => { root.activate(); if self.item.identity != "" { root.navigation-choice(self.item.identity); } else { root.location(index); } root.focus-list(); }
+                        context-menu(x, y, control, shift) => {
+                            root.drive-context-menu(self.item.identity, x, y, control, shift);
                         }
                     }
                 }

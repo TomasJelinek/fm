@@ -267,6 +267,24 @@ fn refresh(
             theme.get_desktop_font_size(),
             theme.get_touch_font_size(),
         );
+        let view_keys = p.shortcut_hint("files.view");
+        let basic_keys = p.shortcut_hint("files.view-basic");
+        let edit_keys = p.shortcut_hint("files.edit");
+        w.set_view_hint(
+            format!(
+                "View internally{}; plain text{}.",
+                shortcut_suffix(view_keys),
+                shortcut_suffix(basic_keys)
+            )
+            .into(),
+        );
+        w.set_edit_hint(
+            format!(
+                "Edit with the configured external editor{}.",
+                shortcut_suffix(edit_keys)
+            )
+            .into(),
+        );
         if record.revision == Some(s.revision) {
             crate::tooltip::synchronize_find(w);
             continue;
@@ -424,6 +442,36 @@ fn create(
     callback!(on_reveal, |p, send, row| {
         p.reveal_find(id, &row, send);
     });
+    callback!(on_file_action, |p, send, row, action| {
+        if let Some(action) = file_action(action) {
+            p.find_file_action(id, &row, action, send);
+        }
+    });
+    {
+        let host = host.clone();
+        let state = state.clone();
+        let send = send.clone();
+        let main = main.as_weak();
+        window.on_action_key(move |event, token| {
+            if !host.is_current(session) {
+                return false;
+            }
+            let Some(chord) = crate::shortcut_input::chord(&event) else {
+                return false;
+            };
+            let action = state.borrow().find_action_key(&chord);
+            let Some(action) = action else {
+                return false;
+            };
+            state
+                .borrow_mut()
+                .find_file_action(id, &token, action, send.as_ref());
+            if let Some(main) = main.upgrade() {
+                crate::refresh(&main, &state.borrow());
+            }
+            true
+        });
+    }
     callback!(on_copy_details, |p, send| {
         if let Some(s) = p.finds.sessions.get(&id) {
             let text = format!("{}\n\n{}\n{}", progress(s), s.error, details(s));
@@ -554,4 +602,22 @@ fn details(s: &crate::presenter::find::FindSession) -> String {
         }
     }
     text
+}
+
+fn file_action(action: i32) -> Option<crate::presenter::find::FileAction> {
+    use crate::presenter::find::FileAction;
+    Some(match action {
+        0 => FileAction::View(false),
+        1 => FileAction::View(true),
+        2 => FileAction::Edit,
+        3 => FileAction::Open,
+        _ => return None,
+    })
+}
+fn shortcut_suffix(keys: &str) -> String {
+    if keys.is_empty() {
+        String::new()
+    } else {
+        format!(" ({keys})")
+    }
 }

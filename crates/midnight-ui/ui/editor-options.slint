@@ -129,7 +129,7 @@ export component EditorOptions inherits VerticalLayout {
         can-move-up: root.rule-selected && EditorOptionsView.selected > 0;
         can-move-down: root.rule-selected && EditorOptionsView.selected + 1 < EditorOptionsView.rule-count;
         action-labels: ["Add editor rule", "Remove editor rule", "Move editor rule up", "Move editor rule down"];
-        action-hints: ["Add a filename rule (Insert)", "Remove the selected rule (Delete)",
+        action-hints: ["Add a custom editor rule (Insert)", "Remove the selected rule (Delete)",
             "Increase priority (Alt+Up)", "Decrease priority (Alt+Down)"];
         action(index) => { EditorOptionsView.action(index); }
     }
@@ -175,7 +175,7 @@ export component EditorOptions inherits VerticalLayout {
     }
     WrappingCheckBox {
         text: "Use the system default editor"; checked <=> EditorOptionsView.draft.use-default;
-        hint: "Open matching files in the system's graphical editor.";
+        hint: "Use the system editor instead of choosing your own executable.";
         toggled => { EditorOptionsView.edit(EditorOptionsView.draft); }
     }
     if EditorOptionsView.draft.use-default : Text {
@@ -185,6 +185,10 @@ export component EditorOptions inherits VerticalLayout {
     if !EditorOptionsView.draft.use-default : VerticalLayout {
         spacing: 6px; alignment: start;
         Text { text: "Editor executable"; color: Theme.text; font-size: Theme.font-size; }
+        if EditorOptionsView.draft.executable == "" : Text {
+            text: "Choose an editor executable to complete this rule, or select the system default editor.";
+            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
         GridLayout {
             spacing: 6px;
             HintedLineEdit {

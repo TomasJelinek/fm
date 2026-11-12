@@ -114,17 +114,17 @@ fn comparison_navigation_defaults_are_configurable_and_leave_editors_and_search_
         ("Alt+End", "compare.last-difference"),
     ] {
         assert_eq!(
-            action(&map, chord, ShortcutContext::Viewer).as_deref(),
+            action(&map, chord, ShortcutContext::Comparison).as_deref(),
             Some(expected)
         );
-        assert_eq!(action(&map, chord, ShortcutContext::ViewerSearch), None);
+        assert_eq!(action(&map, chord, ShortcutContext::ComparisonSearch), None);
     }
     assert_eq!(
-        action(&map, "F3", ShortcutContext::Viewer).as_deref(),
+        action(&map, "F3", ShortcutContext::Comparison).as_deref(),
         Some("viewer.find-next")
     );
     assert_eq!(
-        action(&map, "Down", ShortcutContext::Viewer).as_deref(),
+        action(&map, "Down", ShortcutContext::Comparison).as_deref(),
         Some("viewer.down")
     );
     let map = ShortcutMap::new(&[
@@ -139,10 +139,10 @@ fn comparison_navigation_defaults_are_configurable_and_leave_editors_and_search_
     ])
     .unwrap();
     for chord in ["F7", "Alt+Down", "Alt+Right", "N", "Alt+Home"] {
-        assert_eq!(action(&map, chord, ShortcutContext::Viewer), None);
+        assert_eq!(action(&map, chord, ShortcutContext::Comparison), None);
     }
     assert_eq!(
-        action(&map, "Ctrl+J", ShortcutContext::Viewer).as_deref(),
+        action(&map, "Ctrl+J", ShortcutContext::Comparison).as_deref(),
         Some("compare.next-difference")
     );
 }
@@ -296,15 +296,19 @@ fn commander_tools_and_history_have_configurable_context_bound_defaults() {
             None
         );
     }
-    for (key, id) in [
-        ("Alt+Up", "command.history-older"),
-        ("Alt+Down", "command.history-newer"),
+    for (key, history, selected) in [
+        ("Alt+Up", "command.history-older", "panel.previous-selected"),
+        ("Alt+Down", "command.history-newer", "panel.next-selected"),
     ] {
         assert_eq!(
             action(&map, key, ShortcutContext::Command).as_deref(),
-            Some(id)
+            Some(history)
         );
-        assert_eq!(action(&map, key, ShortcutContext::Files), None);
+        assert_eq!(
+            action(&map, key, ShortcutContext::Files).as_deref(),
+            Some(selected)
+        );
+        assert_eq!(action(&map, key, ShortcutContext::Search), None);
         assert_eq!(action(&map, key, ShortcutContext::Other), None);
     }
 }
@@ -890,9 +894,9 @@ fn clear_files_only_never_changes_directory_selection() {
 }
 
 const PANEL_VIEW_KEYS: [(&str, &str); 3] = [
-    ("view.brief", "Ctrl+Shift+B"),
-    ("view.detailed", "Ctrl+Shift+L"),
-    ("view.thumbnails", "Ctrl+Shift+T"),
+    ("view.brief", "Alt+Digit2"),
+    ("view.detailed", "Alt+Digit3"),
+    ("view.thumbnails", "Alt+Digit5"),
 ];
 
 #[test]
@@ -955,5 +959,27 @@ fn panel_view_defaults_preserve_saved_assignments_and_support_remapping_or_remov
         .unwrap();
         assert_eq!(action(&removed, key, ShortcutContext::Files), None);
         assert!(removed.bindings(id).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn panel_view_previous_defaults_only_remain_when_explicitly_saved() {
+    let defaults = ShortcutMap::new(&[]).unwrap();
+    for ((id, salamander), previous) in
+        PANEL_VIEW_KEYS
+            .into_iter()
+            .zip(["Ctrl+Shift+B", "Ctrl+Shift+L", "Ctrl+Shift+T"])
+    {
+        assert_eq!(action(&defaults, previous, ShortcutContext::Files), None);
+        let saved = ShortcutMap::new(&[ShortcutBinding {
+            action: id.into(),
+            keys: vec![previous.into()],
+        }])
+        .unwrap();
+        assert_eq!(
+            action(&saved, previous, ShortcutContext::Files).as_deref(),
+            Some(id)
+        );
+        assert_eq!(action(&saved, salamander, ShortcutContext::Files), None);
     }
 }

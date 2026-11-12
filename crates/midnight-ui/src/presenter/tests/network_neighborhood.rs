@@ -55,6 +55,10 @@ fn accepted_network_root_immediately_replaces_native_presentation_without_native
         NETWORK_NEIGHBORHOOD_LABEL
     );
     assert_eq!(p.tabs(PaneId::Left)[0].title, NETWORK_NEIGHBORHOOD_LABEL);
+    assert_eq!(
+        p.tabs(PaneId::Left)[0].display_path,
+        NETWORK_NEIGHBORHOOD_LABEL
+    );
     assert!(p.panes[0].loading);
     assert_eq!(p.panes[0].display_len(), 0);
     assert!(!p.panes[0].has_parent());

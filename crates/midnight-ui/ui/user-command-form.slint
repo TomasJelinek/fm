@@ -1,6 +1,6 @@
 import { ActionButton } from "action-icons.slint";
 import { TextEdit } from "std-widgets.slint";
-import { HintedCheckBox, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
+import { HintedCheckBox, HintedComboBox, HintedLineEdit, HintedActionButton } from "hinted-inputs.slint";
 import { ArgumentEditor } from "argument-editor.slint";
 import { UserCommandSettingsView } from "user-command-models.slint";
 import { Theme } from "theme.slint";
@@ -8,13 +8,15 @@ import { ErrorNotice } from "error-notice.slint";
 import { DialogText } from "dialog-text.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 
-component Field inherits VerticalLayout {
+component Field inherits GridLayout {
+    in property <bool> narrow;
     in property <string> label;
     in-out property <string> value;
     callback edited();
-    spacing: 3px;
-    Text { text: root.label; color: Theme.text; font-size: Theme.font-size; }
-    HintedLineEdit { text <=> root.value; accessible-label: root.label;
+    spacing: 6px;
+    Text { row: 0; col: 0; text: root.label; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; }
+    HintedLineEdit { row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; min-width: 0px; horizontal-stretch: 1;
+        text <=> root.value; accessible-label: root.label;
         hint: root.label; edited => { root.edited(); } }
 }
 
@@ -22,17 +24,30 @@ export component UserCommandForm inherits VerticalLayout {
     in property <bool> narrow;
     callback edited();
     private property <int> script-value;
-    spacing: 8px; alignment: start;
+    private property <bool> show-appearance;
+    private property <bool> show-variables;
+    private property <string> selected-id: UserCommandSettingsView.draft.id;
+    changed selected-id => { root.show-appearance = false; root.show-variables = false; }
+
+    spacing: 6px; alignment: start;
     Text { text: "Selected menu item"; color: Theme.strong-text; font-size: Theme.font-size; }
-    Field { label: "Command name"; value <=> UserCommandSettingsView.draft.name; edited => { root.edited(); } }
+    Field { narrow: root.narrow; label: "Command name"; value <=> UserCommandSettingsView.draft.name; edited => { root.edited(); } }
     GridLayout {
-        spacing: 8px;
-        WrappingCheckBox { row: 0; col: 0; text: "Enabled"; checked <=> UserCommandSettingsView.draft.enabled;
-            hint: "Disabled commands stay in the menu settings but cannot run."; toggled => { root.edited(); } }
-        HintedComboBox { model: ["Program", "Terminal script (advanced)"]; current-index <=> UserCommandSettingsView.draft.kind;
-            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; min-width: 0px;
-            accessible-label: "Custom Command type"; hint: "Programs receive separate arguments. A terminal runs a script you write.";
+        spacing: 6px;
+        Text { row: 0; col: 0; text: "Execution"; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; }
+        HintedComboBox { model: ["Run directly", "Run in terminal", "Separator"]; current-index <=> UserCommandSettingsView.draft.kind;
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; min-width: 0px; horizontal-stretch: 1;
+            accessible-label: "Custom Command type"; hint: "Run a program with separate arguments, write a terminal script, or add a non-executable separator.";
             selected(value) => { root.edited(); } }
+        if UserCommandSettingsView.draft.kind != 2 : WrappingCheckBox {
+            row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
+            text: "Enabled"; checked <=> UserCommandSettingsView.draft.enabled;
+            hint: "Disabled commands stay in the menu settings but cannot run."; toggled => { root.edited(); }
+        }
+    }
+    if UserCommandSettingsView.draft.kind == 2 : Text {
+        text: "A separator divides the command toolbar into groups. It does not run a command.";
+        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
     }
     if UserCommandSettingsView.draft.kind == 0 : VerticalLayout {
         spacing: 6px; alignment: start;
@@ -83,7 +98,17 @@ export component UserCommandForm inherits VerticalLayout {
                 row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                 clicked => { if UserCommandSettingsView.insert-variable(UserCommandSettingsView.token, UserCommandSettingsView.draft, 2, root.script-value) { root.edited(); } } }
         }
-        for label[index] in ["Active folder", "Other folder", "File path", "File name", "Name without extension", "Extension"] : HintedCheckBox {
+        HorizontalLayout {
+            alignment: start;
+            HintedActionButton { text: (root.show-variables ? "▾ " : "▸ ") + "Required captured values";
+                accessible-label: "Required terminal values"; compact: true;
+                hint: "Review which captured values the script requires. Inserting a value declares it automatically.";
+                clicked => { root.show-variables = !root.show-variables; } }
+        }
+        if root.show-variables : GridLayout {
+            spacing: 4px;
+            for label[index] in ["Active folder", "Other folder", "File path", "File name", "Name without extension", "Extension"] : HintedCheckBox {
+            row: root.narrow ? index : floor(index / 2); col: root.narrow ? 0 : mod(index, 2);
             text: label;
             checked: index == 0 ? UserCommandSettingsView.draft.active-path : index == 1 ? UserCommandSettingsView.draft.other-path
                 : index == 2 ? UserCommandSettingsView.draft.file-path : index == 3 ? UserCommandSettingsView.draft.file-name
@@ -99,7 +124,11 @@ export component UserCommandForm inherits VerticalLayout {
                 root.edited();
             }
         }
+        }
+
     }
+    if UserCommandSettingsView.draft.kind != 2 : VerticalLayout {
+        spacing: 6px; alignment: start;
     Text { text: "Initial directory"; color: Theme.text; font-size: Theme.font-size; }
     GridLayout {
         spacing: 6px;
@@ -119,18 +148,40 @@ export component UserCommandForm inherits VerticalLayout {
     HintedComboBox { model: ["Run once", "Run for each selected item"]; current-index <=> UserCommandSettingsView.draft.launch;
         accessible-label: "Custom Command execution mode"; hint: "Choose whether to run once or once for every captured selected item.";
         selected(value) => { root.edited(); } }
-    Text { text: "Toolbar appearance"; color: Theme.strong-text; font-size: Theme.font-size; }
-    Field { label: "Toolbar label (optional)"; value <=> UserCommandSettingsView.draft.toolbar-label; edited => { root.edited(); } }
-    GridLayout {
+    }
+    if UserCommandSettingsView.draft.kind != 2 : HorizontalLayout {
+        alignment: start;
+        HintedActionButton { text: (root.show-appearance ? "▾ " : "▸ ") + "Toolbar appearance";
+            accessible-label: "Toolbar appearance"; compact: true;
+            hint: "Optional toolbar label and icon. Leave the label empty for an icon-only button.";
+            clicked => { root.show-appearance = !root.show-appearance; } }
+    }
+    if root.show-appearance && UserCommandSettingsView.draft.kind != 2 : VerticalLayout {
         spacing: 6px;
-        HintedLineEdit { text <=> UserCommandSettingsView.draft.icon; accessible-label: "Icon image (optional absolute path)";
-            row: 0; col: 0;
-            hint: "Choose a PNG or JPEG image. A missing or unsupported image uses the Run icon.";
-            min-width: 0px; horizontal-stretch: 1;
-            edited => { UserCommandSettingsView.draft.icon-edited = true; root.edited(); } }
-        ActionButton { text: "Browse…"; accessible-label: "Browse command icon";
-            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
-            enabled: !UserCommandSettingsView.busy; clicked => { UserCommandSettingsView.browse(2); } }
+        Field { narrow: root.narrow; label: "Toolbar label (optional)"; value <=> UserCommandSettingsView.draft.toolbar-label; edited => { root.edited(); } }
+        Text {
+            text: UserCommandSettingsView.draft.icon == "" ? "Default command icon" : "Custom icon selected";
+            accessible-label: "Selected command icon"; accessible-description: UserCommandSettingsView.draft.icon;
+            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+        }
+        GridLayout {
+            spacing: 6px;
+            HintedActionButton { text: "Change icon…"; accessible-label: "Change command icon";
+                row: 0; col: 0;
+                hint: "Choose a system or application icon. An independent 128 × 128 PNG copy is kept for this command.";
+                enabled: !UserCommandSettingsView.busy;
+                clicked => { UserCommandSettingsView.browse(3); } }
+            HintedActionButton { text: "Browse image…"; accessible-label: "Browse command icon";
+                row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+                hint: "Choose image artwork. An independent 128 × 128 PNG copy is kept, so the original can be moved or deleted.";
+                enabled: !UserCommandSettingsView.busy;
+                clicked => { UserCommandSettingsView.browse(2); } }
+            HintedActionButton { text: "Clear"; accessible-label: "Clear command icon";
+                row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
+                hint: "Return to the default command icon.";
+                enabled: !UserCommandSettingsView.busy && UserCommandSettingsView.draft.icon != "";
+                clicked => { UserCommandSettingsView.draft.icon = ""; UserCommandSettingsView.draft.icon-edited = true; root.edited(); } }
+        }
     }
     if UserCommandSettingsView.validation != "" : ErrorNotice { text: UserCommandSettingsView.validation; }
     GridLayout {
@@ -144,7 +195,7 @@ export component UserCommandForm inherits VerticalLayout {
             enabled: UserCommandSettingsView.dirty; clicked => { UserCommandSettingsView.cancel(); } }
         ActionButton { text: "Preview"; accessible-label: "Preview Custom Command";
             row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
-            enabled: UserCommandSettingsView.ready && UserCommandSettingsView.can-preview && !UserCommandSettingsView.busy;
+            enabled: UserCommandSettingsView.ready && UserCommandSettingsView.draft.kind != 2 && UserCommandSettingsView.can-preview && !UserCommandSettingsView.busy;
             clicked => { UserCommandSettingsView.preview(UserCommandSettingsView.token, UserCommandSettingsView.draft); } }
     }
     if UserCommandSettingsView.preview-text != "" : VerticalLayout {

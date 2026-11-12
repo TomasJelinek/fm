@@ -23,6 +23,8 @@ pub use file_drag_drop::NativeFileDragDrop;
 mod discovery_tests;
 mod find;
 mod fonts;
+mod icon_picker;
+mod icon_storage;
 mod icons;
 #[allow(unsafe_code)]
 mod locale;

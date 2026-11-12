@@ -48,6 +48,18 @@ fn build() -> Vec<ShortcutDefinition> {
         FilesAny,
         &["Down"],
     );
+    add(
+        "panel.previous-selected",
+        "Previous selected file or folder",
+        FilesIdle,
+        &["Alt+Up"],
+    );
+    add(
+        "panel.next-selected",
+        "Next selected file or folder",
+        FilesIdle,
+        &["Alt+Down"],
+    );
     add("panel.page-up", "Move one page up", FilesAny, &["PageUp"]);
     add(
         "panel.page-down",
@@ -149,32 +161,38 @@ fn build() -> Vec<ShortcutDefinition> {
     add(
         "compare.next-difference",
         "Next comparison difference",
-        ViewerContent,
+        ComparisonContent,
         &["F7", "Alt+Down", "Alt+Right", "N"],
     );
     add(
         "compare.previous-difference",
         "Previous comparison difference",
-        ViewerContent,
+        ComparisonContent,
         &["Shift+F7", "Alt+Up", "Alt+Left", "P"],
     );
     add(
         "compare.first-difference",
         "First comparison difference",
-        ViewerContent,
+        ComparisonContent,
         &["Alt+Home"],
     );
     add(
         "compare.last-difference",
         "Last comparison difference",
-        ViewerContent,
+        ComparisonContent,
         &["Alt+End"],
     );
     add(
         "viewer.next-file",
         "View next captured file",
-        ViewerContent,
-        &["Space"],
+        ViewerOnlyContent,
+        &["Space", "Alt+Right"],
+    );
+    add(
+        "viewer.previous-file",
+        "View previous captured file",
+        ViewerOnlyContent,
+        &["Backspace", "Alt+Left"],
     );
     add("viewer.find", "Find in viewed file", ViewerAny, &["Ctrl+F"]);
     add("viewer.wrap", "Wrap viewer text", ViewerAny, &["Ctrl+W"]);
@@ -537,23 +555,18 @@ fn build() -> Vec<ShortcutDefinition> {
         &[],
     );
     add("bookmark.manage", "Manage Hot Paths", FilesAny, &[]);
-    add(
-        "view.brief",
-        "Brief panel view",
-        FilesAny,
-        &["Ctrl+Shift+B"],
-    );
+    add("view.brief", "Brief panel view", FilesAny, &["Alt+Digit2"]);
     add(
         "view.detailed",
         "Detailed panel view",
         FilesAny,
-        &["Ctrl+Shift+L"],
+        &["Alt+Digit3"],
     );
     add(
         "view.thumbnails",
         "Thumbnail panel view",
         FilesAny,
-        &["Ctrl+Shift+T"],
+        &["Alt+Digit5"],
     );
     add("app.exit", "Exit application", Global, &["Alt+F4"]);
     add("network.connect", "Connect network drive", Global, &["F11"]);

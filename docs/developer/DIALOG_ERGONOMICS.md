@@ -210,3 +210,17 @@ paths themselves are never rewritten by sorting.
 Ctrl+Shift+P appends the focused native item's full path to the command draft,
 without quoting or added spacing. Virtual providers never expose backing temp
 files through this action.
+
+Folder tab body tooltips show only the complete displayed location path, including
+archive members and nested archive paths. They omit the repeated tab caption and
+gesture instructions. The tab caption remains compact, and the separate close
+button retains its action/shortcut hint.
+
+Tab path tooltips allow up to 1,040 logical pixels, constrained by the space
+available beside the cursor. Ordinary action tooltips retain their compact width.
+
+Viewer file navigation and comparison differences use distinct shortcut contexts.
+Shared controls such as Find and Close apply to both windows, including their search
+fields; file cycling and difference navigation apply only to their respective content.
+This permits Alt+Left/Right to cycle files in viewers while retaining difference
+navigation in comparators, with separate user overrides and conflict checks.

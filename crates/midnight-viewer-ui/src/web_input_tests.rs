@@ -181,10 +181,14 @@ fn remapped_html_shortcuts_use_the_live_resolver_and_space_waits_for_browser() {
         Some(ViewerInput::Copy { .. })
     ));
     assert!(web_input::route_key(&open, control("n"), None, true));
-    assert!(matches!(
-        inputs.borrow().last(),
-        Some(ViewerInput::NextFile)
-    ));
+    assert!(matches!(inputs.borrow().last(), Some(ViewerInput::Web {
+        input: viewer_web::CommandKind::Key(key), .. }) if key.key == "n"));
+    assert!(
+        inputs
+            .borrow()
+            .iter()
+            .all(|input| !matches!(input, ViewerInput::NextFile))
+    );
     inputs.borrow_mut().clear();
     assert!(web_input::route_key(&open, control("f"), None, true));
     assert!(
@@ -219,6 +223,8 @@ fn browser_arbitrated_space_dispatches_its_configured_action() {
     open.timer.stop();
     open.window.set_web_mode(true);
     open.window.set_image_mode(false);
+    open.window.invoke_focus_content();
+    assert!(open.window.get_content_focused());
     *open.key_resolver.borrow_mut() = Rc::new(|chord, search| {
         (!search && chord.key == "Space").then(|| "viewer.next-file".into())
     });
@@ -329,5 +335,189 @@ fn html_surface_keeps_search_zoom_and_policy_in_normal_viewer() {
         !open.window.get_web_scripts(),
         "offline always disables scripts"
     );
+    close(&open);
+}
+
+#[test]
+fn physical_navigation_keys_reach_browser_before_host_dispatch() {
+    use super::*;
+    let (_runtime, _manager, open, _service) = image_presentation_tests::open();
+    open.timer.stop();
+    open.window.set_web_mode(true);
+    open.window.set_image_mode(false);
+    open.window.invoke_focus_content();
+    *open.key_resolver.borrow_mut() = Rc::new(|_, _| Some("viewer.previous-file".into()));
+    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let capture = inputs.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        capture.borrow_mut().push(input);
+        true
+    });
+    for (key, alt) in [
+        ("Backspace", false),
+        ("ArrowLeft", true),
+        ("ArrowRight", true),
+    ] {
+        inputs.borrow_mut().clear();
+        web_input::route_key(
+            &open,
+            viewer_web::Key {
+                key: key.into(),
+                code: key.into(),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers {
+                    alt,
+                    ..Default::default()
+                },
+            },
+            None,
+            true,
+        );
+        assert!(
+            inputs
+                .borrow()
+                .iter()
+                .all(|input| !matches!(input, ViewerInput::PreviousFile | ViewerInput::NextFile))
+        );
+        assert!(matches!(inputs.borrow().last(), Some(ViewerInput::Web {
+            input: viewer_web::CommandKind::Key(value), .. }) if value.key == key));
+    }
+    close(&open);
+}
+
+#[test]
+fn arbitrated_physical_keys_resolve_live_bindings_and_ignore_lost_content_focus() {
+    use super::*;
+    let (_runtime, _manager, open, _service) = image_presentation_tests::open();
+    open.timer.stop();
+    open.window.set_web_mode(true);
+    open.window.set_image_mode(false);
+    open.window.invoke_focus_content();
+    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let capture = inputs.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        capture.borrow_mut().push(input);
+        true
+    });
+    for (signal, key, alt) in [
+        (HostShortcut::Backspace, "Backspace", false),
+        (HostShortcut::AltLeft, "Left", true),
+        (HostShortcut::AltRight, "Right", true),
+    ] {
+        *open.key_resolver.borrow_mut() = Rc::new(move |chord, search| {
+            assert!(!search);
+            assert_eq!(chord.key, key);
+            assert_eq!(chord.alt, alt);
+            assert!(!chord.shift && !chord.control && !chord.meta);
+            Some("viewer.previous-file".into())
+        });
+        web_input::received(&open, signal);
+        assert!(matches!(
+            inputs.borrow().last(),
+            Some(ViewerInput::PreviousFile)
+        ));
+        *open.key_resolver.borrow_mut() = Rc::new(|_, _| Some("viewer.next-file".into()));
+        web_input::received(&open, signal);
+        assert!(matches!(
+            inputs.borrow().last(),
+            Some(ViewerInput::NextFile)
+        ));
+    }
+    inputs.borrow_mut().clear();
+    *open.key_resolver.borrow_mut() = Rc::new(|_, _| None);
+    web_input::received(&open, HostShortcut::Backspace);
+    web_input::received(&open, HostShortcut::AltLeft);
+    assert!(
+        inputs.borrow().is_empty(),
+        "unbound keys must not replay into arbitration"
+    );
+    *open.key_resolver.borrow_mut() = Rc::new(|_, _| Some("viewer.previous-file".into()));
+    focus_search(&open);
+    inputs.borrow_mut().clear();
+    for signal in [
+        HostShortcut::Backspace,
+        HostShortcut::AltLeft,
+        HostShortcut::AltRight,
+        HostShortcut::CycleNext,
+        HostShortcut::CyclePrevious,
+    ] {
+        web_input::received(&open, signal);
+    }
+    assert!(
+        inputs.borrow().is_empty(),
+        "a delayed browser key must not escape search focus"
+    );
+    close(&open);
+}
+
+#[test]
+fn arbitrary_html_file_navigation_remaps_keep_browser_input_for_both_directions() {
+    use super::*;
+    let (_runtime, _manager, open, _service) = image_presentation_tests::open();
+    open.timer.stop();
+    open.window.set_web_mode(true);
+    open.window.set_image_mode(false);
+    open.window.invoke_focus_content();
+    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let capture = inputs.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        capture.borrow_mut().push(input);
+        true
+    });
+    for action in ["viewer.previous-file", "viewer.next-file"] {
+        *open.key_resolver.borrow_mut() = Rc::new(move |_, _| Some(action.into()));
+        for (key, code, control, text) in [
+            ("q", "KeyQ", false, Some("q")),
+            ("j", "KeyJ", true, None),
+            ("5", "Digit5", false, Some("5")),
+            ("[", "BracketLeft", true, None),
+        ] {
+            inputs.borrow_mut().clear();
+            assert!(web_input::route_key(
+                &open,
+                viewer_web::Key {
+                    key: key.into(),
+                    code: code.into(),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        control,
+                        ..Default::default()
+                    },
+                },
+                text,
+                true
+            ));
+            assert!(
+                inputs.borrow().iter().all(|input| !matches!(
+                    input,
+                    ViewerInput::NextFile | ViewerInput::PreviousFile
+                ))
+            );
+            assert!(inputs.borrow().iter().any(|input| matches!(input,
+                ViewerInput::Web { input: viewer_web::CommandKind::Key(value), .. }
+                    if value.key == key)));
+            if let Some(text) = text {
+                assert!(matches!(inputs.borrow().last(), Some(ViewerInput::Web {
+                    input: viewer_web::CommandKind::Text(value), .. }) if value == text));
+            }
+        }
+        inputs.borrow_mut().clear();
+        // Both the native digit/bracket path and the software fallback use this guard.
+        assert!(!dispatch_keyboard_shortcut(&open, action));
+        open.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "q".into() });
+        open.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "q".into() });
+        assert!(
+            inputs
+                .borrow()
+                .iter()
+                .all(|input| !matches!(input, ViewerInput::NextFile | ViewerInput::PreviousFile))
+        );
+    }
     close(&open);
 }

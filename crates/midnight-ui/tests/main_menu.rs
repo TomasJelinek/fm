@@ -350,25 +350,43 @@ fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() 
         test.window.invoke_activate(pane);
         test.window.invoke_focus_files();
         assert_eq!(test.window.get_focused_pane(), pane);
-        for (key, mode) in [("b", 1), ("l", 0), ("t", 2)] {
+        for (key, mode) in [("2", 1), ("3", 0), ("5", 2)] {
             let before = [
                 test.window.get_left_view_mode(),
                 test.window.get_right_view_mode(),
             ];
-            ui::chord(&test.window, &[Key::Control, Key::Shift], key);
+            ui::chord(&test.window, &[Key::Alt], key);
             test.draw();
             let after = [
                 test.window.get_left_view_mode(),
                 test.window.get_right_view_mode(),
             ];
-            assert_eq!(after[pane as usize], mode, "pane {pane}: Ctrl+Shift+{key}");
+            assert_eq!(after[pane as usize], mode, "pane {pane}: Alt+{key}");
             assert_eq!(after[1 - pane as usize], before[1 - pane as usize]);
             assert_eq!(test.window.get_active_pane(), pane);
         }
     }
-    for (key, mode) in [("b", 1), ("l", 0), ("t", 2)] {
-        // Start from a different mode so an accidentally dispatched shortcut
-        // cannot pass merely because that view was already selected.
+    for (key, mode, action) in [
+        ("2", 1, "view.brief"),
+        ("3", 0, "view.detailed"),
+        ("5", 2, "view.thumbnails"),
+    ] {
+        // The test backend supplies a text-bearing Alt key event. Native editors
+        // may accept that text (including Alt/Option layout input), so compare
+        // against the same widget with this application binding disabled.
+        test.window.invoke_keyboard_apply(action.into(), "".into());
+        test.draw();
+        assert!(test.window.get_keyboard_error().is_empty());
+        test.window.invoke_set_command("kept view draft".into(), 15);
+        ui::chord(&test.window, &[Key::Alt], key);
+        test.draw();
+        let native_text = test.window.get_command_text();
+        assert_eq!(test.window.get_focused_pane(), -1);
+        test.window.invoke_keyboard_restore(action.into());
+        test.draw();
+        assert!(test.window.get_keyboard_error().is_empty());
+
+        // A different mode makes accidental panel dispatch observable.
         test.window.invoke_view_mode(1, (mode + 1) % 3);
         test.window.invoke_set_command("kept view draft".into(), 15);
         assert_eq!(test.window.get_focused_pane(), -1);
@@ -376,7 +394,7 @@ fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() 
             test.window.get_left_view_mode(),
             test.window.get_right_view_mode(),
         ];
-        ui::chord(&test.window, &[Key::Control, Key::Shift], key);
+        ui::chord(&test.window, &[Key::Alt], key);
         test.draw();
         assert_eq!(
             [
@@ -385,7 +403,7 @@ fn view_shortcuts_change_only_the_active_pane_and_leave_command_editing_alone() 
             ],
             before
         );
-        assert_eq!(test.window.get_command_text(), "kept view draft");
+        assert_eq!(test.window.get_command_text(), native_text);
         assert_eq!(test.window.get_focused_pane(), -1);
     }
 }
@@ -395,9 +413,9 @@ fn view_menu_hints_and_key_dispatch_follow_live_remapping() {
     let mut test = shortcut_menu(&[]);
     category(&mut test, 3);
     for (label, key) in [
-        ("Brief view", "Ctrl+Shift+B"),
-        ("Detailed view", "Ctrl+Shift+L"),
-        ("Thumbnail view", "Ctrl+Shift+T"),
+        ("Brief view", "Alt+2"),
+        ("Detailed view", "Alt+3"),
+        ("Thumbnail view", "Alt+5"),
     ] {
         assert_eq!(menu_shortcut(&test, label), [key]);
     }
@@ -411,14 +429,14 @@ fn view_menu_hints_and_key_dispatch_follow_live_remapping() {
     );
     assert!(ui::has_popup(&test.window));
     assert_eq!(menu_shortcut(&test, "Brief view"), ["Ctrl+Shift+R"]);
-    assert_eq!(menu_shortcut(&test, "Detailed view"), ["Ctrl+Shift+L"]);
-    assert_eq!(menu_shortcut(&test, "Thumbnail view"), ["Ctrl+Shift+T"]);
+    assert_eq!(menu_shortcut(&test, "Detailed view"), ["Alt+3"]);
+    assert_eq!(menu_shortcut(&test, "Thumbnail view"), ["Alt+5"]);
     render::snapshot(&test, "main-menu-view-shortcuts-remapped");
     ui::key(&test.window, Key::Escape);
     test.window.invoke_activate(0);
     test.window.invoke_focus_files();
     assert_eq!(test.window.get_left_view_mode(), 0);
-    ui::chord(&test.window, &[Key::Control, Key::Shift], "b");
+    ui::chord(&test.window, &[Key::Alt], "2");
     test.draw();
     assert_eq!(
         test.window.get_left_view_mode(),
@@ -451,4 +469,97 @@ fn window_commands_route_navigation_and_panel_view_modes() {
         assert_eq!(test.window.get_right_view_mode(), expected);
         assert_eq!(test.window.get_left_view_mode(), 0);
     }
+}
+
+#[test]
+fn panel_view_and_sort_dropdowns_show_live_shortcuts_without_changing_labels() {
+    let mut test = shortcut_menu(&[]);
+    ui::key(&test.window, Key::Escape);
+    for pane in ["Left", "Right"] {
+        ui::click_root(
+            &test.window,
+            &format!("{pane} panel view mode"),
+            AccessibleRole::Combobox,
+        );
+        test.draw();
+        for (label, keys) in [
+            ("Detailed", "Alt+3"),
+            ("Brief", "Alt+2"),
+            ("Thumbnails", "Alt+5"),
+        ] {
+            let text = ui::visible_text_values(ui::popup_item(
+                &test.window,
+                label,
+                AccessibleRole::Button,
+            ));
+            assert!(
+                text.iter().any(|value| value == keys),
+                "{pane} {label}: {text:?}"
+            );
+        }
+        ui::key(&test.window, Key::Escape);
+        ui::click_root(
+            &test.window,
+            &format!("{pane} panel sort"),
+            AccessibleRole::Combobox,
+        );
+        test.draw();
+        for (label, keys) in [
+            ("Name", "Ctrl+F3"),
+            ("Size", "Ctrl+F6"),
+            ("Modified", "Ctrl+F5"),
+            ("Extension", "Ctrl+F4"),
+            ("Reverse order", "Ctrl+F3"),
+        ] {
+            let text = ui::visible_text_values(ui::popup_item(
+                &test.window,
+                label,
+                AccessibleRole::Button,
+            ));
+            assert!(
+                text.iter().any(|value| value == keys),
+                "{pane} {label}: {text:?}"
+            );
+        }
+        ui::key(&test.window, Key::Escape);
+    }
+    ui::click_root(
+        &test.window,
+        "Left panel view mode",
+        AccessibleRole::Combobox,
+    );
+    test.window
+        .invoke_keyboard_apply("view.brief".into(), "Ctrl+Shift+R".into());
+    test.draw();
+    assert!(test.window.get_keyboard_error().is_empty());
+    assert!(ui::has_popup(&test.window));
+    let text = ui::visible_text_values(ui::popup_item(
+        &test.window,
+        "Brief",
+        AccessibleRole::Button,
+    ));
+    assert!(text.iter().any(|value| value == "Ctrl+Shift+R"));
+    assert!(!text.iter().any(|value| value == "Alt+2"));
+    ui::click_popup(&test.window, "Brief", AccessibleRole::Button);
+    test.draw();
+    assert_eq!(test.window.get_left_view_mode(), 1);
+    ui::click_root(
+        &test.window,
+        "Left panel view mode",
+        AccessibleRole::Combobox,
+    );
+    test.window
+        .invoke_keyboard_apply("view.brief".into(), "".into());
+    test.draw();
+    let text = ui::visible_text_values(ui::popup_item(
+        &test.window,
+        "Brief",
+        AccessibleRole::Button,
+    ));
+    assert!(
+        !text
+            .iter()
+            .any(|value| value.contains("Alt+") || value.contains("Ctrl+"))
+    );
+    render::snapshot(&test, "panel-view-dropdown-shortcuts");
 }

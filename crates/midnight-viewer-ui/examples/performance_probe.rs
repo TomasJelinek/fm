@@ -355,6 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = capture_started.set(start);
         let window = manager.open_with_ready(
             ViewerLaunch {
+                find: None,
                 associations: Default::default(),
                 tree: None,
                 generated: None,
@@ -383,9 +384,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 accent: [133, 185, 244, 255],
             },
             placement,
-            Rc::new(|chord, search| {
-                (!search && chord.key == "Space").then(|| "viewer.next-file".to_owned())
-            }),
+            {
+                let shortcuts = ShortcutMap::new(&[])?;
+                Rc::new(move |chord, search| {
+                    shortcuts
+                        .resolve(
+                            chord,
+                            if search {
+                                ShortcutContext::ViewerSearch
+                            } else {
+                                ShortcutContext::Viewer
+                            },
+                        )
+                        .map(|action| action.id.clone())
+                })
+            },
             Rc::new(|_| {}),
             Box::new(|result| eprintln!("opening_result={result:?}")),
         )?;

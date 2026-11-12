@@ -23,6 +23,7 @@ pub(crate) struct Resources {
     pub(crate) archive_sizes: crate::archive_sizes::Retirement,
     pub(crate) reports: crate::report_arena::ReportArena,
     pub(crate) tree_rename: crate::tree_rename::Retirement,
+    pub(crate) find: crate::find::Retirement,
     pub(crate) archives: crate::archives::Retirement,
     pub(crate) watch: crate::watch::Retirement,
     pub(crate) checksums: crate::checksum_actor::Retirement,
@@ -63,7 +64,8 @@ impl EngineLifetime {
             + crate::archive_sizes::RETIREMENT_CAPACITY
             + crate::archives::RETIREMENT_CAPACITY
             + crate::report_arena::RETIREMENT_CAPACITY
-            + crate::tree_rename::RETIREMENT_CAPACITY;
+            + crate::tree_rename::RETIREMENT_CAPACITY
+            + crate::find::RETIREMENT_CAPACITY;
         let domain = RetirementDomain::try_start(capacity, 7)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
@@ -101,6 +103,9 @@ impl EngineLifetime {
                 reports: crate::report_arena::ReportArena::try_start(
                     domain.try_reserve().map_err(io::Error::other)?,
                 )?,
+                find: crate::find::Retirement {
+                    domain: domain.clone(),
+                },
                 tree_rename: crate::tree_rename::Retirement {
                     domain: domain.clone(),
                 },

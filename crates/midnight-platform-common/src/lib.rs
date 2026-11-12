@@ -5,6 +5,7 @@ pub mod filename_colors;
 pub mod filter;
 pub mod filter_expression;
 pub mod fonts;
+pub mod icon_snapshot;
 pub mod metadata;
 pub mod settings;
 pub mod transfer;

@@ -245,6 +245,7 @@ fn command_pane(command: &TreeCommand) -> PaneId {
         TreeCommand::Delete(request) => request.view.stamp.pane,
         TreeCommand::Clipboard(request) => request.view.stamp.pane,
         TreeCommand::Edit(request) => request.view.stamp.pane,
+        TreeCommand::Metadata(request) => request.view.stamp.pane,
         TreeCommand::Rename(request) => request.view.stamp.pane,
         TreeCommand::Checksums(request) => request.view.stamp.pane,
         TreeCommand::Select(request) => request.view.stamp.pane,
@@ -265,6 +266,7 @@ fn command_navigation(command: &TreeCommand) -> NavigationId {
         TreeCommand::Delete(request) => request.view.stamp.navigation,
         TreeCommand::Clipboard(request) => request.view.stamp.navigation,
         TreeCommand::Edit(request) => request.view.stamp.navigation,
+        TreeCommand::Metadata(request) => request.view.stamp.navigation,
         TreeCommand::Rename(request) => request.view.stamp.navigation,
         TreeCommand::Checksums(request) => request.view.stamp.navigation,
         TreeCommand::Select(request) => request.view.stamp.navigation,
@@ -315,6 +317,12 @@ fn diagnostic_rejection(command: TreeCommand, error: TreeDiagnostic, retryable: 
         TreeCommand::Transfer(request) => TreeEvent::Transfer {
             stamp: request.view.stamp,
             request: request.request,
+            result: Err(error),
+        },
+        TreeCommand::Metadata(request) => TreeEvent::MetadataCaptured {
+            stamp: request.view.stamp,
+            request: request.request,
+            retryable,
             result: Err(error),
         },
         TreeCommand::Rename(request) => TreeEvent::RenameCaptured {

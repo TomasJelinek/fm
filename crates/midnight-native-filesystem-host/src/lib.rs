@@ -15,6 +15,7 @@ mod installed;
 mod network;
 pub use network::NetworkProvider;
 mod revision;
+pub use revision::matches_find_entry;
 mod services;
 mod volumes;
 pub use discovery::{Catalog, Package, PackageKind};

@@ -23,6 +23,25 @@ const REQUEST: &str = "org.freedesktop.portal.Request";
 const CALL_LIMIT: Duration = Duration::from_secs(15);
 
 impl PathPickerService for LinuxFileSystem {
+    fn command_icon_resource_requires_import(&self) -> bool {
+        true
+    }
+
+    fn store_command_icon(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        cancel: &Cancellation,
+    ) -> Result<PathBuf, FsError> {
+        let result =
+            midnight_platform_common::icon_snapshot::SnapshotPixels::from_rgba(width, height, rgba)
+                .and_then(|pixels| {
+                    crate::icon_storage::save(self.home.as_deref(), &pixels, cancel)
+                });
+        result.map_err(|cause| FsError::from_io("store command icon", Path::new(""), cause))
+    }
+
     fn pick_path(
         &self,
         request: &PathPickerRequest,
@@ -33,6 +52,15 @@ impl PathPickerService for LinuxFileSystem {
             return Ok(None);
         }
         let runtime = tokio::runtime::Handle::try_current().map_err(error)?;
+        if request.kind == PathPickerKind::CommandIconResource {
+            let mut artwork = request.clone();
+            artwork.initial_directory = crate::icons::theme_directory(self.home.as_deref());
+            let Some(path) = runtime.block_on(choose(&artwork, cancel))? else {
+                return Ok(None);
+            };
+            return crate::icon_picker::snapshot(&path, self.home.as_deref(), cancel)
+                .map_err(error);
+        }
         runtime.block_on(choose(request, cancel))
     }
 }
@@ -80,7 +108,16 @@ fn picker_options<'a>(
         options.insert("current_folder", Value::from(bytes));
     }
     let specific = match input.kind {
-        PathPickerKind::Image => Some(("Images", vec![(1u32, "image/*".to_owned())])),
+        PathPickerKind::Image | PathPickerKind::CommandIconImage => {
+            Some(("Images", vec![(1u32, "image/*".to_owned())]))
+        }
+        PathPickerKind::CommandIconResource => Some((
+            "PNG or SVG icons",
+            vec![
+                (1u32, "image/png".to_owned()),
+                (1u32, "image/svg+xml".to_owned()),
+            ],
+        )),
         PathPickerKind::ChecksumOpen => Some((
             "Checksum files",
             ["*.sfv", "*.md5", "*.sha1", "*.sha256", "*.sha512"]

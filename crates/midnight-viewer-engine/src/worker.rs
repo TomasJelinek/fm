@@ -427,7 +427,7 @@ impl Worker {
         self.closing = None;
         if self.files[self.current].1.is_none() {
             self.pending_open = true;
-            self.status("Preparing next file identity…".into(), output);
+            self.status("Preparing file identity…".into(), output);
             return;
         }
         self.pending_open = false;
@@ -788,9 +788,16 @@ impl Worker {
                 self.origin[0] = position.clamp(0.0, 1.0) as f32 * maximum;
                 self.dirty = true;
             }
-            ViewerInput::NextFile => {
+            ViewerInput::NextFile | ViewerInput::PreviousFile => {
+                let Some(current) = navigation::adjacent_file(
+                    self.current,
+                    self.files.len(),
+                    matches!(input, ViewerInput::PreviousFile),
+                ) else {
+                    return;
+                };
                 self.selected_mode = None;
-                self.current = (self.current + 1) % self.files.len();
+                self.current = current;
                 self.open(output);
             }
             ViewerInput::Mode(mode) if self.modes.contains(&mode) && mode != self.mode => {

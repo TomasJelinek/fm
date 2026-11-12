@@ -108,6 +108,8 @@ impl Presenter {
             ShortcutContext::Volume,
             ShortcutContext::Viewer,
             ShortcutContext::ViewerSearch,
+            ShortcutContext::Comparison,
+            ShortcutContext::ComparisonSearch,
         ];
         let mut seen = HashSet::new();
         let mut owners = Vec::new();

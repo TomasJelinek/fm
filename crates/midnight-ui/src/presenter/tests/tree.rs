@@ -1200,3 +1200,6 @@ fn retiring_presenter_reclaims_saturated_tree_editor_capture_on_worker() {
 
 #[path = "tree_rename.rs"]
 mod rename;
+
+#[path = "tree_metadata.rs"]
+mod metadata;

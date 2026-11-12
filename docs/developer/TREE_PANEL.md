@@ -470,12 +470,52 @@ focused expanded descendant. Flat immediate-parent checks remain unchanged. See 
 [Rename verification](../verification/2026-11-12-native-tree-rename.md) for the exact
 qualified cases and remaining limitations.
 
+## Metadata from expanded native panels
+
+Attributes, timestamps and filename case use the existing metadata editor after an
+exact acknowledged tree capture. Marked real occurrences win over focus; with no
+marks, the focused selectable occurrence is captured. Parent/context-only rows,
+archives and mixed native/virtual selections never receive native mutation
+authority. No displayed path or extracted temporary file becomes a target.
+
+`CapturedMetadataSources` retains native provider registrations through the same
+four-slot capture pool and runtime-independent retirement domain as Rename. The
+ordinary operation controller reserves the complete batch from its shared
+256-target metadata pin budget before opening native targets, then checks the
+captured scope and returned target count again. Native pins close before retained
+provider ownership. Preparation, traversal, mutation and final resource cleanup
+remain on backend workers.
+
+All selected roots remain in the preview. Nonrecursive edits process selected
+descendants before selected ancestors and close each completed root's native
+pins before the next root. This prevents a parent case conversion from
+invalidating pending child names or being blocked by completed child handles. Recursive edits suppress independently
+executing selected descendants already covered by another selected ordinary
+directory; that ancestor's ordinary metadata traversal reaches them once.
+Coverage comes from exact occurrence ancestry, never path-prefix or inode equality.
+An overlap crossing a link/non-directory is rejected, and covering directory
+kinds are checked again during preparation. Separate hard-link names remain
+separate selected entries. This is live subtree traversal, not a snapshot or a
+promise to chase descendants moved elsewhere after capture.
+
+The existing explicit patch preview, exact revision confirmation, conflict tokens,
+cancellation and partial-result behavior apply. Outer command refusal and transient
+tree-capture admission refusal retain the original intent for a later input pump,
+with one-pump deferral to prevent receipt loops. Provider/target resource limits
+require explicit review or a smaller selection. Navigation,
+reprojection, replacement or shutdown cancels pending captures. After admission,
+navigation cannot retarget the pinned job. Terminal metadata jobs reconcile loaded
+native branches through tree maintenance and preserve the expanded panel.
+
+See [metadata verification](../verification/2026-11-12-native-tree-metadata.md)
+for the actual test scope and remaining platform/desktop limits.
+
 ## Remaining integration
 
-TREE-01 remains partially integrated. Native Delete and Rename join the typed capture
+TREE-01 remains partially integrated. Native Delete, Rename and metadata editing join the typed capture
 consumers described above: viewers, external editor, checksums, Copy/Move and native
-clipboard/drag operations. This is not generic provider write support. Metadata
-editing, comparison, Custom Commands, context menus and virtual clipboard
+clipboard/drag operations. This is not generic provider write support. Directory
+comparison, Custom Commands, context menus and virtual clipboard
 export still require their own typed consumer integration and remain guarded.
 Original flat panels remain available; opening a folder returns to the ordinary
 operation path. Pane-directory actions such as terminal, bookmarks, creation and

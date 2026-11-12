@@ -44,6 +44,7 @@ fn launch(root: &Path) -> ViewerLaunch {
     view.by_id.insert(EntryId(0), 1);
     view.by_id.insert(EntryId(1), 0);
     ViewerLaunch {
+        find: None,
         associations: Default::default(),
         tree: None,
         generated: None,
