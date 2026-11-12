@@ -192,15 +192,9 @@ impl Presenter {
         })
     }
 
-    /// Return only a captured native item path, never a provider's temporary backing file.
+    /// Return the current raw native item path for literal command-draft insertion.
     pub(crate) fn focused_full_path(&self, pane: PaneId) -> Option<PathBuf> {
-        let p = &self.panes[pane.index()];
-        if !p.native_capabilities() || p.parent_cursor || p.loading {
-            return None;
-        }
-        p.cursor
-            .and_then(|id| p.entry_by_id(id))
-            .and_then(Entry::native_path)
+        focused_native_path(&self.panes[pane.index()])
             .filter(|path| path.is_absolute())
             .map(Path::to_path_buf)
     }
@@ -208,16 +202,32 @@ impl Presenter {
     /// Return the focused raw native basename for literal command-line insertion.
     pub(crate) fn focused_name(&self, pane: PaneId) -> Option<PathBuf> {
         let p = &self.panes[pane.index()];
-        if p.tree_view().is_some() || !p.native_capabilities() {
+        if p.loading || !p.native_capabilities() {
             return None;
         }
         if p.parent_cursor && p.has_parent() {
-            return Some(PathBuf::from(".."));
+            return (p.tree_view().is_none() || p.search_allows_activation())
+                .then(|| PathBuf::from(".."));
         }
-        p.cursor_index()
-            .and_then(|row| row.checked_sub(p.parent_offset()))
-            .and_then(|row| p.display_entry(row))
-            .and_then(|entry| entry.path.file_name())
+        focused_native_path(p)
+            .and_then(Path::file_name)
             .map(PathBuf::from)
     }
+}
+
+/// Borrow only a ready visible native occurrence; insertion performs no provider work.
+fn focused_native_path(pane: &Pane) -> Option<&Path> {
+    if pane.loading
+        || !pane.native_capabilities()
+        || pane.parent_cursor
+        || !pane.search_allows_activation()
+    {
+        return None;
+    }
+    let entry = if pane.tree_view().is_some() {
+        &pane.tree_cursor_row()?.entry
+    } else {
+        pane.entry_by_id(pane.cursor?)?
+    };
+    entry.native_path()
 }
