@@ -430,7 +430,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} native_parent={native_parent} timing=input_to_redraw_completed exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} image_proof={image_proof} snapshot_run_excluded_from_timing_comparison={snapshot_run}",
                 if load { 2 } else { 0 },
                 exact_file,
-                snapshot_run = gpu_proof || image_proof || opening_proof
+                snapshot_run = gpu_proof
+                    || image_proof
+                    || opening_proof
+                    || std::env::var_os("MIDNIGHT_VIEWER_PROBE_SPATIAL_PROOF").is_some()
             )],
             error: None,
             last_status: "viewer constructed; no timer status yet".into(),

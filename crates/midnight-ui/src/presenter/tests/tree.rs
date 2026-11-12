@@ -587,7 +587,12 @@ fn tree_rows_cannot_become_flat_mutation_or_clipboard_authority() {
     p.start_operation(
         PaneId::Left,
         MutationKind::Delete(DeleteMode::Permanent),
-        &send,
+        &|command| {
+            assert!(matches!(command, Command::Tree(command)
+                if matches!(command.as_ref(), TreeCommand::Delete(request)
+                    if request.fallback == Some(TreeRowId(11)))));
+            true
+        },
     );
     p.copy_files(PaneId::Left, &|command| {
         assert!(matches!(command, Command::Tree(command)

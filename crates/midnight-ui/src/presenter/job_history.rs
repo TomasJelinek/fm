@@ -22,9 +22,15 @@ impl Presenter {
         self.operations
             .unconfirmed
             .retain(|id| !removed.contains(id));
-        self.operations
+        let results: Vec<_> = self
+            .operations
             .metadata_results
-            .retain(|p| !removed.contains(&p.id));
+            .extract_if(|id, _| removed.contains(id))
+            .map(|(_, result)| result)
+            .collect();
+        if !results.is_empty() {
+            self.retired.push(Box::new(results));
+        }
         self.operations
             .metadata_conflicts
             .retain(|p| !removed.contains(&p.id));
@@ -100,6 +106,141 @@ mod tests {
             renamed_to: None,
         }
     }
+    #[test]
+    fn metadata_job_history_keeps_details_until_explicit_clear() {
+        let mut p = Presenter::new("left".into(), "right".into());
+        for id in 1..=20 {
+            let mut progress = mutation(id, OperationState::Completed);
+            progress.kind = MutationKind::EditMetadata;
+            if id == 2 {
+                progress.state = OperationState::Failed;
+                progress.failed = 1;
+            }
+            if id == 3 {
+                progress.state = OperationState::Running;
+            }
+            p.apply(Event::Operation(OperationEvent::Progress(Arc::new(
+                progress,
+            ))));
+            p.apply(Event::Operation(OperationEvent::MetadataResult(Arc::new(
+                MetadataResult {
+                    id: OperationId(id),
+                    processed: id,
+                    changed: id,
+                    skipped: 0,
+                    failed: u64::from(id == 2),
+                    sample: vec![],
+                },
+            ))));
+        }
+        let rows = crate::job_presentation::rows(&p);
+        assert_eq!(rows.len(), 20);
+        for id in 1..=20 {
+            let row = rows
+                .iter()
+                .find(|row| row.identity.as_str() == format!("metadata-job:{id}"))
+                .unwrap();
+            assert!(
+                row.detail
+                    .contains(&format!("{id} examined · {id} changed")),
+                "details of metadata operation {id} must survive later operations"
+            );
+        }
+        let replacement = Arc::new(MetadataResult {
+            id: OperationId(1),
+            processed: 2,
+            changed: 2,
+            skipped: 0,
+            failed: 0,
+            sample: vec![],
+        });
+        p.apply(Event::Operation(OperationEvent::MetadataResult(
+            replacement.clone(),
+        )));
+        assert_eq!(p.operations.metadata_results.len(), 20);
+        assert!(
+            crate::job_presentation::rows(&p)
+                .iter()
+                .find(|row| row.identity.as_str() == "metadata-job:1")
+                .unwrap()
+                .detail
+                .contains("2 examined · 2 changed")
+        );
+        p.clear_finished_jobs(true);
+        assert_eq!(p.operations.metadata_results.len(), 2);
+        let rows = crate::job_presentation::rows(&p);
+        assert!(
+            rows.iter()
+                .any(|row| row.identity.as_str() == "metadata-job:2")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.identity.as_str() == "metadata-job:3")
+        );
+        p.apply(Event::Operation(OperationEvent::MetadataResult(
+            replacement,
+        )));
+        assert_eq!(
+            p.operations.metadata_results.len(),
+            2,
+            "late cleared result stays retired"
+        );
+        p.clear_finished_jobs(false);
+        assert_eq!(p.operations.metadata_results.len(), 1);
+        assert_eq!(
+            crate::job_presentation::rows(&p)[0].identity.as_str(),
+            "metadata-job:3"
+        );
+    }
+
+    #[test]
+    fn metadata_job_payloads_are_reclaimed_off_ui_after_replace_clear_shutdown_or_late_delivery() {
+        for cause in 0..4 {
+            let mut p = Presenter::new("left".into(), "right".into());
+            let mut progress = mutation(1, OperationState::Completed);
+            progress.kind = MutationKind::EditMetadata;
+            p.operations.progress.push(Arc::new(progress));
+            if cause == 3 {
+                p.clear_finished_jobs(false);
+            }
+            let result = Arc::new(MetadataResult {
+                id: OperationId(1),
+                processed: 1,
+                changed: 1,
+                skipped: 0,
+                failed: 0,
+                sample: vec![MetadataOutcome::unchanged("retained-details".into())],
+            });
+            let weak = Arc::downgrade(&result);
+            p.apply(Event::Operation(OperationEvent::MetadataResult(result)));
+            match cause {
+                0 => p.apply(Event::Operation(OperationEvent::MetadataResult(Arc::new(
+                    MetadataResult {
+                        id: OperationId(1),
+                        processed: 2,
+                        changed: 2,
+                        skipped: 0,
+                        failed: 0,
+                        sample: vec![],
+                    },
+                )))),
+                1 => p.clear_finished_jobs(false),
+                2 => p.retire_all(),
+                _ => {}
+            }
+            assert!(
+                weak.upgrade().is_some(),
+                "metadata payload dropped on UI for case {cause}"
+            );
+            let retired = p.take_retired();
+            std::thread::spawn(move || drop(retired)).join().unwrap();
+            assert!(
+                weak.upgrade().is_none(),
+                "retired metadata is no longer cached"
+            );
+        }
+    }
+
     #[test]
     fn jobs_clear_finished_without_errors_keeps_failures_and_every_unfinished_state() {
         let mut p = Presenter::new("left".into(), "right".into());
@@ -217,14 +358,17 @@ mod tests {
         p.metadata.id = Some(OperationId(1));
         p.metadata.error = "retained editor".into();
         for id in [OperationId(1), OperationId(100)] {
-            p.operations.metadata_results.push(Arc::new(MetadataResult {
+            p.operations.metadata_results.insert(
                 id,
-                processed: 1,
-                changed: 1,
-                skipped: 0,
-                failed: 0,
-                sample: vec![],
-            }));
+                Arc::new(MetadataResult {
+                    id,
+                    processed: 1,
+                    changed: 1,
+                    skipped: 0,
+                    failed: 0,
+                    sample: vec![],
+                }),
+            );
             p.operations
                 .metadata_conflicts
                 .push(Arc::new(MetadataConflict {
@@ -273,7 +417,7 @@ mod tests {
         assert_eq!(
             p.operations
                 .metadata_results
-                .iter()
+                .values()
                 .map(|r| r.id.0)
                 .collect::<Vec<_>>(),
             [1]

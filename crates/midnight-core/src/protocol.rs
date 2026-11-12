@@ -128,6 +128,7 @@ pub enum Command {
         disconnect: bool,
     },
     PrepareOperation(crate::PrepareOperation),
+    PrepareCapturedDelete(crate::PrepareCapturedDelete),
     ConfirmOperation {
         id: crate::OperationId,
         /// Basename for Rename/CreateFile, relative path for CreateDirectory, absent for Delete.

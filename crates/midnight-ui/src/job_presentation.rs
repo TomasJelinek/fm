@@ -85,11 +85,7 @@ fn cached_copy(p: &Presenter, progress: &std::sync::Arc<CopyProgress>) -> Operat
     row
 }
 fn cached_mutation(p: &Presenter, progress: &std::sync::Arc<OperationProgress>) -> OperationRow {
-    let metadata = p
-        .operations
-        .metadata_results
-        .iter()
-        .find(|result| result.id == progress.id);
+    let metadata = p.operations.metadata_results.get(&progress.id);
     let mut row = p.job_rows.get(
         crate::job_row_cache::Snapshot::Mutation(progress, metadata),
         &p.number_locale,
@@ -149,8 +145,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
     let metadata = p
         .operations
         .metadata_results
-        .iter()
-        .find(|result| result.id == progress.id)
+        .get(&progress.id)
         .map(|result| metadata_presentation::result_detail(result))
         .unwrap_or_default();
     let mut detail = format!(

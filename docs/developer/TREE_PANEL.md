@@ -398,16 +398,57 @@ The [verification record](../verification/2026-11-10-tree-watch.md) gives the ac
 tested scope; this does not add archive watches,
 generic watch providers, or the remaining tree operation consumers.
 
+## Delete from expanded native panels
+
+F8/Delete and Shift+F8/Shift+Delete capture the exact acknowledged selection, or
+one focused real occurrence if the selection is empty. Parent/context-only rows
+are never mutation targets. `TreeDeleteRequest` retains its projection, selection
+revision, request ID and Trash/permanent mode. UI queue pressure waits for a safe
+capture opportunity; navigation, reprojection, replacement and shutdown retire it.
+
+`CapturedDeleteSources` keeps provider registrations and backend native authority.
+The entire original selection must be native before overlap suppression. Selecting
+an ordinary directory and its descendants deletes the covering directory once,
+based on captured occurrence ancestry rather than displayed path prefixes or inode
+identity. Separate hard-link names remain separate entries. Overlapping selected
+ancestors and descendants whose captured ancestry crosses a junction or symbolic
+link are rejected before preparation; they must be deleted separately. Current
+inline-tree validation already forbids expanding directory links, so this check
+is defensive for future provider integration, not a reproduced current UI path. A covering
+directory that has changed into a file or link is rejected before confirmation.
+
+This is a mutable-subtree operation, not a snapshot of every displayed descendant.
+Native preparation pins the selected topmost roots. Descendants moved away before
+execution are not chased, and destructive traversal never follows a child that
+has become a junction/link. Captured ancestry only removes duplicate selection
+roots; it is not a retained proof of every intermediate filesystem identity.
+
+Preparation pins every remaining target through the existing platform mutation
+service; returned paths, count and immutable capture scope are checked. Display
+`source_directory` is only presentation/refresh context and is never authorization.
+Flat mutation snapshot and immediate-parent checks are not relaxed. Junctions and
+links use the existing link-removal semantics; destructive traversal does not follow
+their targets. Unsupported archive/mixed selections never fall back to extracted
+files or permanent deletion.
+
+The ordinary Preview/Confirm pipeline admits work only after explicit confirmation,
+then uses the same `JobProgressWindow` as Copy/Move. Cancelled confirmation creates
+no visible job. Rejected, stale and duplicate captures retain a backend reclamation
+owner. Terminal mutations queue loaded native-tree reconciliation, preserving the
+expanded view instead of replacing it with a flat listing. Capture and operation
+budgets remain the existing bounded backend limits; this is not archive write support.
+
 ## Remaining integration
 
-TREE-01 remains partially integrated. Captured tree targets
-are not yet consumed by native mutation, virtual clipboard export, external editor,
-comparison, checksums, Custom Commands, context menus or file drag.
-Their entry/selection paths explicitly refuse tree scopes through the common
-tree action guard. Original flat panels remain available; opening a folder
-returns to the ordinary operation path. Pane-directory actions such as terminal,
-bookmarks, creation and paste destinations keep their existing location authority.
-The native immediate-parent checks and `SelectedFiles` contract are unchanged.
+TREE-01 remains partially integrated. Native Delete now joins the typed capture
+consumers described above: viewers, external editor, checksums, Copy/Move and native
+clipboard/drag operations. This is not generic provider write support. Rename,
+metadata editing, comparison, Custom Commands, context menus and virtual clipboard
+export still require their own typed consumer integration and remain guarded.
+Original flat panels remain available; opening a folder returns to the ordinary
+operation path. Pane-directory actions such as terminal, bookmarks, creation and
+paste destinations keep their existing location authority. Native immediate-parent
+checks and the flat `SelectedFiles` contract are unchanged.
 
 Browsable container discovery/attachment and true archive-inside-archive targets
 remain pending. Navigation retires the tree and establishes a new flat selection

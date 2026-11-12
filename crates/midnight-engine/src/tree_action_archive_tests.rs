@@ -454,3 +454,28 @@ fn archive_move_capture_rejects_before_transfer_preparation() {
 
 #[path = "tree_editor_archive_tests.rs"]
 mod editor_tests;
+
+#[test]
+fn tree_delete_rejects_selected_archive_descendants_before_native_preparation() {
+    let (mut session, _mount, _directory) = archive_fixture();
+    let parent = session.projection().rows[0].id;
+    let expanded = expand(&mut session, parent);
+    let descendant = expanded.view.rows[1].id;
+    let selected = select(&mut session, TreeSelectionAction::Toggle(descendant));
+    assert!(session.commit(&selected.view));
+    let request = midnight_core::TreeDeleteRequest {
+        mode: midnight_core::DeleteMode::Permanent,
+        view: selected.view,
+        request: TreeRequestId(session.last_request.0 + 1),
+        selection_revision: selected.selection_revision,
+        selection: selected.selection,
+        fallback: None,
+        cancel: Cancellation::default(),
+    };
+    let capacity = Arc::new(Semaphore::new(4));
+    assert!(matches!(
+        session.capture_delete(&request, &capacity, &Cancellation::default()),
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(capacity.available_permits(), 4);
+}

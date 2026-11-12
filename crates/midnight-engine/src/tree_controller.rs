@@ -224,6 +224,7 @@ fn command_pane(command: &TreeCommand) -> PaneId {
         | TreeCommand::Viewport { view, .. }
         | TreeCommand::Navigate { view, .. } => view.stamp.pane,
         TreeCommand::Transfer(request) => request.view.stamp.pane,
+        TreeCommand::Delete(request) => request.view.stamp.pane,
         TreeCommand::Clipboard(request) => request.view.stamp.pane,
         TreeCommand::Edit(request) => request.view.stamp.pane,
         TreeCommand::Checksums(request) => request.view.stamp.pane,
@@ -242,6 +243,7 @@ fn command_navigation(command: &TreeCommand) -> NavigationId {
         | TreeCommand::Viewport { view, .. }
         | TreeCommand::Navigate { view, .. } => view.stamp.navigation,
         TreeCommand::Transfer(request) => request.view.stamp.navigation,
+        TreeCommand::Delete(request) => request.view.stamp.navigation,
         TreeCommand::Clipboard(request) => request.view.stamp.navigation,
         TreeCommand::Edit(request) => request.view.stamp.navigation,
         TreeCommand::Checksums(request) => request.view.stamp.navigation,
@@ -284,6 +286,11 @@ fn diagnostic_rejection(command: TreeCommand, error: TreeDiagnostic, retryable: 
             request: request.request,
             retryable,
             error,
+        },
+        TreeCommand::Delete(request) => TreeEvent::DeleteCaptured {
+            stamp: request.view.stamp,
+            request: request.request,
+            result: Err(error),
         },
         TreeCommand::Transfer(request) => TreeEvent::Transfer {
             stamp: request.view.stamp,

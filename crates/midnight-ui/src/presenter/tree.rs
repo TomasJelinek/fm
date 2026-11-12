@@ -111,6 +111,7 @@ impl Presenter {
         self.cancel_tree_clipboard(Some(pane));
         self.cancel_tree_editor(Some(pane));
         self.cancel_tree_checksums(Some(pane));
+        self.cancel_tree_delete(Some(pane));
         self.cancel_tree_drag(Some(pane));
         if self.filter_dialog.open && self.filter_dialog.pane == pane {
             self.cancel_panel_filter();
@@ -376,6 +377,7 @@ impl Presenter {
         self.flush_tree_clipboard(send);
         self.flush_tree_editor(send);
         self.flush_tree_checksums(send);
+        self.flush_tree_delete(send);
         self.flush_tree_drag(send);
     }
 
@@ -473,6 +475,9 @@ impl Presenter {
             | TreeEvent::ChecksumsCaptured {
                 result: Err(error), ..
             }
+            | TreeEvent::DeleteCaptured {
+                result: Err(error), ..
+            }
             | TreeEvent::DropDirectoryCaptured {
                 result: Err(error), ..
             } => Some(error),
@@ -482,6 +487,13 @@ impl Presenter {
             self.retired.push(Box::new(content.clone()));
         }
         match event {
+            TreeEvent::DeleteCaptured {
+                stamp,
+                request,
+                result,
+            } => {
+                self.tree_delete_captured(stamp, request, result, send);
+            }
             TreeEvent::ChecksumsCaptured {
                 stamp,
                 request,

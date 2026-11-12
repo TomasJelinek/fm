@@ -7,12 +7,7 @@ use std::{
     thread,
 };
 
-#[cfg(windows)]
-#[path = "../../tests/support/checksum_verify_links_windows.rs"]
-mod links;
-#[cfg(target_os = "linux")]
-#[path = "../../tests/support/checksum_verify_links_linux.rs"]
-mod links;
+use crate::native_test_links as links;
 
 fn measured(path: &Path, kind: EntryKind) -> FolderSize {
     let root = Entry::new(EntryId(1), path.into(), kind);

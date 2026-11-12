@@ -1,9 +1,11 @@
 use crate::glyph_cache::{GlyphCache, GlyphKey};
 #[path = "outline_cache.rs"]
 mod outlines;
+#[path = "glyph_timing.rs"]
+mod timing;
 use crate::{
     LayoutError, Raster, TextPage, Viewport,
-    raster::{premultiply, stable_pixel},
+    raster::{blend_pixel, premultiply, stable_pixel},
 };
 use parley::PositionedLayoutItem;
 use std::collections::HashMap;
@@ -35,6 +37,16 @@ impl GlyphPainter {
         view: Viewport,
         raster: &mut Raster,
     ) -> Result<(), LayoutError> {
+        self.paint_traced(page, view, raster, &mut timing::Trace::new())
+    }
+
+    fn paint_traced(
+        &mut self,
+        page: &TextPage,
+        view: Viewport,
+        raster: &mut Raster,
+        trace: &mut timing::Trace,
+    ) -> Result<(), LayoutError> {
         if let Some(grid) = &page.composite {
             for rect in &grid.borders {
                 raster.fill(*rect, view.origin, grid.border_color);
@@ -45,7 +57,7 @@ impl GlyphPainter {
                 {
                     continue;
                 }
-                self.paint(&part.page, view.translated(part.origin), raster)?;
+                self.paint_traced(&part.page, view.translated(part.origin), raster, trace)?;
             }
             return Ok(());
         }
@@ -127,17 +139,18 @@ impl GlyphPainter {
                     let y = y.floor();
                     if let Some(image) = self.cache.get(&key) {
                         if let Some(image) = image {
-                            paint_image(raster, image, x, y, key.color);
+                            trace.compose(|| paint_image(raster, image, x, y, key.color));
                         }
                         continue;
                     }
                     if outlines_enabled
-                        && let Some(image) =
+                        && let Some(image) = trace.generate(|| {
                             self.outlines
                                 .get(&key, [x, y], [raster.width, raster.height])
+                        })
                     {
                         if let Some(image) = image {
-                            paint_image(raster, &image, x, y, key.color);
+                            trace.compose(|| paint_image(raster, &image, x, y, key.color));
                             self.cache.insert(key, Some(image));
                         }
                         // Offscreen paths must not poison the phase image cache:
@@ -165,15 +178,17 @@ impl GlyphPainter {
                         );
                     }
                     if outlines_enabled
-                        && let Some(image) = self.outlines.build(
-                            &key,
-                            scaler.as_mut().ok_or(LayoutError::InvalidFont)?,
-                            [x, y],
-                            [raster.width, raster.height],
-                        )
+                        && let Some(image) = trace.generate(|| {
+                            Ok::<_, LayoutError>(self.outlines.build(
+                                &key,
+                                scaler.as_mut().ok_or(LayoutError::InvalidFont)?,
+                                [x, y],
+                                [raster.width, raster.height],
+                            ))
+                        })?
                     {
                         if let Some(image) = image {
-                            paint_image(raster, &image, x, y, key.color);
+                            trace.compose(|| paint_image(raster, &image, x, y, key.color));
                             self.cache.insert(key, Some(image));
                         }
                         continue;
@@ -199,9 +214,10 @@ impl GlyphPainter {
                             0.0,
                         )));
                     }
-                    let image = render.render(scaler.as_mut().ok_or(LayoutError::InvalidFont)?, id);
+                    let font_scaler = scaler.as_mut().ok_or(LayoutError::InvalidFont)?;
+                    let image = trace.generate(|| render.render(font_scaler, id));
                     if let Some(image) = &image {
-                        paint_image(raster, image, x, y, key.color);
+                        trace.compose(|| paint_image(raster, image, x, y, key.color));
                     }
                     self.cache.insert(key, image);
                 }
@@ -230,17 +246,14 @@ fn paint_image(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4
     let y0 = (-top).max(0) as usize;
     let x1 = (i64::from(raster.width) - left).min(i64::from(image.placement.width)) as usize;
     let y1 = (i64::from(raster.height) - top).min(i64::from(image.placement.height)) as usize;
-    let channels = if image.content == Content::Mask { 1 } else { 4 };
+    if image.content == Content::Mask {
+        paint_mask(raster, image, [left, top], [x0, y0], [x1, y1], brush);
+        return;
+    }
     for y in y0..y1 {
         for x in x0..x1 {
-            let source = (y * image.placement.width as usize + x) * channels;
+            let source = (y * image.placement.width as usize + x) * 4;
             let color = match image.content {
-                Content::Mask => premultiply([
-                    brush[0],
-                    brush[1],
-                    brush[2],
-                    ((u16::from(image.data[source]) * u16::from(brush[3]) + 127) / 255) as u8,
-                ]),
                 Content::Color => {
                     let color = [
                         image.data[source],
@@ -255,9 +268,42 @@ fn paint_image(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4
                     }
                 }
                 // Alpha rendering above never requests LCD subpixel masks.
-                Content::SubpixelMask => continue,
+                Content::SubpixelMask | Content::Mask => continue,
             };
             raster.blend((left + x as i64) as usize, (top + y as i64) as usize, color);
+        }
+    }
+}
+
+// Bounds are the same clipped image intersection used by the color path above.
+// Each row pairs contiguous coverage and RGBA pixels, avoiding per-pixel indexing.
+fn paint_mask(
+    raster: &mut Raster,
+    image: &Image,
+    origin: [i64; 2],
+    start: [usize; 2],
+    end: [usize; 2],
+    brush: [u8; 4],
+) {
+    if brush[3] == 0 {
+        return;
+    }
+    let count = end[0] - start[0];
+    let left = (origin[0] + start[0] as i64) as usize;
+    for y in start[1]..end[1] {
+        let source = y * image.placement.width as usize + start[0];
+        let target = ((origin[1] + y as i64) as usize * raster.width as usize + left) * 4;
+        let masks = &image.data[source..source + count];
+        let pixels = raster.rgba[target..target + count * 4]
+            .as_chunks_mut::<4>()
+            .0;
+        for (&coverage, pixel) in masks.iter().zip(pixels) {
+            let alpha = ((u16::from(coverage) * u16::from(brush[3]) + 127) / 255) as u8;
+            match alpha {
+                0 => {}
+                255 => *pixel = brush,
+                _ => blend_pixel(pixel, premultiply([brush[0], brush[1], brush[2], alpha])),
+            }
         }
     }
 }
@@ -265,3 +311,7 @@ fn paint_image(raster: &mut Raster, image: &Image, x: f64, y: f64, brush: [u8; 4
 #[cfg(test)]
 #[path = "outline_tests.rs"]
 mod outline_tests;
+
+#[cfg(test)]
+#[path = "glyph_pixel_tests.rs"]
+mod pixel_tests;

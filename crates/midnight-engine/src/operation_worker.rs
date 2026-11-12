@@ -20,12 +20,21 @@ pub(super) struct Job {
     pub(super) predecessors: Arc<crate::copy_fence::Predecessors>,
     // Declared after targets so native resources close before permits are returned.
     metadata_permits: Vec<tokio::sync::OwnedSemaphorePermit>,
+    // Native target pins must close before the retained provider capture/permit.
+    _captured_sources: Option<Arc<dyn CapturedDeleteSources>>,
 }
 
 pub(super) fn initial(request: &PrepareOperation) -> OperationProgress {
+    initial_for(request.id, request.kind, request.source.path.clone())
+}
+pub(super) fn initial_for(
+    id: OperationId,
+    kind: MutationKind,
+    source_directory: std::path::PathBuf,
+) -> OperationProgress {
     OperationProgress {
-        id: request.id,
-        kind: request.kind,
+        id,
+        kind,
         state: OperationState::Preparing,
         pause_requested: false,
         paused: false,
@@ -38,7 +47,7 @@ pub(super) fn initial(request: &PrepareOperation) -> OperationProgress {
         current_path: None,
         message: String::new(),
         errors: vec![],
-        source_directory: request.source.path.clone(),
+        source_directory,
         renamed_to: None,
     }
 }
@@ -85,26 +94,7 @@ pub(super) fn prepare(
     let source = &request.source.path;
     let service =
         service.ok_or_else(|| error(source, "This filesystem does not support mutations."))?;
-    let mut job = Job {
-        cancel,
-        status,
-        targets: vec![],
-        directory: None,
-        name: None,
-        rename_conflicts: Arc::default(),
-        metadata: None,
-        metadata_budget,
-        predecessors: Default::default(),
-        metadata_permits: vec![],
-        preview: OperationPreview {
-            id: request.id,
-            kind: request.kind,
-            files: 0,
-            folders: 0,
-            file_bytes: Some(0),
-            sample: vec![],
-        },
-    };
+    let mut job = new_job(request.id, request.kind, cancel, status, metadata_budget);
     if job.cancel.is_cancelled() {
         return Err(FsError::from_io(
             "prepare",
@@ -168,27 +158,7 @@ pub(super) fn prepare(
             if prepared.item().path != entry.path {
                 return Err(error(&entry.path, "Provider returned a different target."));
             }
-            if matches!(
-                prepared.item().kind,
-                EntryKind::Directory | EntryKind::DirectoryLink
-            ) {
-                job.preview.folders += 1;
-            } else {
-                job.preview.files += 1;
-                let item = prepared.item();
-                let size = (item.kind == EntryKind::File)
-                    .then_some(item.metadata.size)
-                    .flatten();
-                job.preview.file_bytes = job
-                    .preview
-                    .file_bytes
-                    .zip(size)
-                    .and_then(|(total, size)| total.checked_add(size));
-            }
-            if job.preview.sample.len() < 32 {
-                job.preview.sample.push(prepared.item().clone());
-            }
-            job.targets.push(prepared);
+            job.append_target(prepared);
         }
         if job.targets.is_empty() || (selected && job.targets.len() != request.selection.len()) {
             return Err(error(
@@ -212,7 +182,109 @@ pub(super) fn prepare(
     Ok(job)
 }
 
+fn new_job(
+    id: OperationId,
+    kind: MutationKind,
+    cancel: Cancellation,
+    status: Status,
+    metadata_budget: Arc<Semaphore>,
+) -> Job {
+    Job {
+        cancel,
+        status,
+        targets: vec![],
+        directory: None,
+        name: None,
+        rename_conflicts: Arc::default(),
+        metadata: None,
+        metadata_budget,
+        predecessors: Default::default(),
+        metadata_permits: vec![],
+        _captured_sources: None,
+        preview: OperationPreview {
+            id,
+            kind,
+            files: 0,
+            folders: 0,
+            file_bytes: Some(0),
+            sample: vec![],
+        },
+    }
+}
+
+pub(super) fn prepare_captured_delete(
+    request: PrepareCapturedDelete,
+    scope: super::input::DeleteScope,
+    service: Option<Arc<dyn MutationService>>,
+    cancel: Cancellation,
+    status: Status,
+    metadata_budget: Arc<Semaphore>,
+) -> Result<Job, FsError> {
+    let source = &request.source_directory;
+    let service =
+        service.ok_or_else(|| error(source, "This filesystem does not support mutations."))?;
+    let mut job = new_job(
+        request.id,
+        MutationKind::Delete(scope.mode),
+        cancel,
+        status,
+        metadata_budget,
+    );
+    job._captured_sources = Some(request.sources.clone());
+    if !scope.valid() || super::input::DeleteScope::capture(request.sources.as_ref()) != scope {
+        return Err(error(
+            source,
+            "The captured Delete scope changed before preparation.",
+        ));
+    }
+    if !job.cancel.wait_if_paused() {
+        return Err(FsError::from_io(
+            "prepare",
+            source,
+            io::ErrorKind::Interrupted.into(),
+        ));
+    }
+    let targets = request.sources.prepare(service.as_ref(), &job.cancel)?;
+    if targets.len() != scope.count
+        || super::input::DeleteScope::capture(request.sources.as_ref()) != scope
+    {
+        return Err(error(
+            source,
+            "Provider returned a different captured Delete scope.",
+        ));
+    }
+    for prepared in targets {
+        job.append_target(prepared);
+    }
+    job.status.lock().unwrap_or_else(|e| e.into_inner()).total = scope.count as u64;
+    Ok(job)
+}
+
 impl Job {
+    fn append_target(&mut self, prepared: Arc<dyn PreparedMutation>) {
+        if matches!(
+            prepared.item().kind,
+            EntryKind::Directory | EntryKind::DirectoryLink
+        ) {
+            self.preview.folders += 1;
+        } else {
+            self.preview.files += 1;
+            let item = prepared.item();
+            let size = (item.kind == EntryKind::File)
+                .then_some(item.metadata.size)
+                .flatten();
+            self.preview.file_bytes = self
+                .preview
+                .file_bytes
+                .zip(size)
+                .and_then(|(total, size)| total.checked_add(size));
+        }
+        if self.preview.sample.len() < 32 {
+            self.preview.sample.push(prepared.item().clone());
+        }
+        self.targets.push(prepared);
+    }
+
     pub(super) fn progress(&self) -> OperationProgress {
         self.status
             .lock()

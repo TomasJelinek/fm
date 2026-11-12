@@ -310,6 +310,13 @@ impl Worker {
                     .capture_clipboard(request, &self.copy_capacity, cancel)
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
             })),
+            TreeCommand::Delete(request) => Ok(Some(TreeEvent::DeleteCaptured {
+                stamp: request.view.stamp,
+                request: request.request,
+                result: session
+                    .capture_delete(request, &self.copy_capacity, cancel)
+                    .map_err(|error| crate::tree_diagnostics::diagnostic(&error)),
+            })),
             TreeCommand::Transfer(request) => Ok(Some(TreeEvent::Transfer {
                 stamp: request.view.stamp,
                 request: request.request,

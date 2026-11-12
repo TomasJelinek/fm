@@ -174,20 +174,29 @@ fn late_metadata_results_and_clear_invalidate_derived_history_without_retaining_
         discovery: Default::default(),
     }));
     assert!(!job_presentation::rows(&p)[0].detail.contains("examined"));
-    p.operations.metadata_results.push(Arc::new(MetadataResult {
-        id: OperationId(2),
-        processed: 2,
-        changed: 1,
-        skipped: 1,
-        failed: 0,
-        sample: vec![],
-    }));
+    p.operations.metadata_results.insert(
+        OperationId(2),
+        Arc::new(MetadataResult {
+            id: OperationId(2),
+            processed: 2,
+            changed: 1,
+            skipped: 1,
+            failed: 0,
+            sample: vec![],
+        }),
+    );
     assert!(
         job_presentation::rows(&p)[0]
             .detail
             .contains("2 examined · 1 changed")
     );
-    Arc::make_mut(&mut p.operations.metadata_results[0]).changed = 2;
+    Arc::make_mut(
+        p.operations
+            .metadata_results
+            .get_mut(&OperationId(2))
+            .unwrap(),
+    )
+    .changed = 2;
     assert!(
         job_presentation::rows(&p)[0]
             .detail
@@ -202,7 +211,7 @@ fn late_metadata_results_and_clear_invalidate_derived_history_without_retaining_
             destination: "target".into(),
         }));
     assert!(job_presentation::rows(&p)[0].attention);
-    let result = Arc::downgrade(&p.operations.metadata_results[0]);
+    let result = Arc::downgrade(&p.operations.metadata_results[&OperationId(2)]);
     p.operations.metadata_results.clear();
     assert!(
         result.upgrade().is_none(),

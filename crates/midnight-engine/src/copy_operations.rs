@@ -30,10 +30,8 @@ mod decisions;
 mod input;
 #[path = "copy_preparation.rs"]
 mod preparation;
-#[path = "copy_retirement.rs"]
-mod retirement;
+use crate::worker_retirement::{WorkerOwned, retire};
 use decisions::{DecisionWaiter, prepare_job, retryable_error};
-use retirement::{WorkerOwned, retire};
 #[path = "copy_worker.rs"]
 mod worker;
 pub(crate) use admission::{Admission, Reservation};

@@ -5,6 +5,8 @@ use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicUsize};
 
 #[path = "tree_checksum_capture_tests.rs"]
 mod checksum_capture_tests;
+#[path = "tree_delete_capture_tests.rs"]
+mod delete_capture_tests;
 #[path = "tree_editor_capture_tests.rs"]
 mod editor_capture_tests;
 

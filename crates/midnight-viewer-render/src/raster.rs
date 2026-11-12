@@ -201,13 +201,16 @@ impl Raster {
     }
 
     pub(crate) fn blend(&mut self, x: usize, y: usize, color: [u8; 4]) {
-        let offset = (y * self.width as usize + x) * 4;
-        let target = &mut self.rgba[offset..offset + 4];
-        let remaining = 255 - u16::from(color[3]);
-        for (target, source) in target.iter_mut().zip(color) {
-            *target =
-                (u16::from(source) + (u16::from(*target) * remaining + 127) / 255).min(255) as u8;
-        }
+        let target = &mut self.rgba.as_chunks_mut::<4>().0[y * self.width as usize + x];
+        blend_pixel(target, color);
+    }
+}
+
+#[inline]
+pub(crate) fn blend_pixel(target: &mut [u8; 4], color: [u8; 4]) {
+    let remaining = 255 - u16::from(color[3]);
+    for (target, source) in target.iter_mut().zip(color) {
+        *target = (u16::from(source) + (u16::from(*target) * remaining + 127) / 255).min(255) as u8;
     }
 }
 

@@ -17,6 +17,8 @@ mod pause;
 mod summary;
 #[path = "delete_throughput_tests.rs"]
 mod throughput;
+#[path = "tree_delete_operation_tests.rs"]
+mod tree_delete;
 
 #[derive(Default)]
 struct Calls {
@@ -157,6 +159,9 @@ struct Harness {
 }
 impl Harness {
     fn new(kind: MutationKind) -> Self {
+        Self::using(kind, None)
+    }
+    fn using(kind: MutationKind, service: Option<Arc<dyn MutationService>>) -> Self {
         let path = std::env::temp_dir().join("midnight-operation-worker-fixture");
         let entries: Arc<[Entry]> = vec![Entry::new(
             EntryId(7),
@@ -191,7 +196,7 @@ impl Harness {
         let calls = Arc::new(Calls::default());
         let mut tasks = JoinSet::new();
         let controller = Controller::new(
-            Some(Arc::new(FakeService(calls.clone()))),
+            Some(service.unwrap_or_else(|| Arc::new(FakeService(calls.clone())))),
             None,
             snapshots,
             Outbox {

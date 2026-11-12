@@ -135,6 +135,77 @@ fn real_delete_confirmation_cancel_and_shift_f8_permanently_delete_only_the_sele
     h.assert_sentinel();
 }
 
+#[test]
+fn real_inline_delete_uses_confirmation_and_reconciles_only_the_selected_branch() {
+    let mut h = native::Harness::new();
+    let deleted = h.left.join("nested/empty");
+    fs::create_dir(h.left.join("nested/retained")).unwrap();
+    fs::create_dir(deleted.join("část 文档")).unwrap();
+    fs::write(
+        deleted.join("část 文档/payload.txt"),
+        b"Owned branch payload",
+    )
+    .unwrap();
+    h.until(|h| {
+        h.rows(PaneId::Left)
+            .iter()
+            .any(|row| row.name == "nested" && matches!(row.tree_disclosure, 1 | 3))
+    });
+    let parent = h
+        .rows(PaneId::Left)
+        .iter()
+        .find(|row| row.name == "nested")
+        .unwrap()
+        .identity
+        .clone();
+    h.ui.window.invoke_tree_disclosure(0, parent);
+    h.until(|h| {
+        h.rows(PaneId::Left)
+            .iter()
+            .any(|row| row.name == "empty" && row.tree_depth == 1)
+    });
+    h.focus(PaneId::Left, "empty", false);
+    // Exercise the actual key dispatcher and normal confirmation. The raw target
+    // must be the nested occurrence, not source/empty or the expanded parent.
+    ui::chord(&h.ui.window, &[Key::Shift], Key::F8);
+    h.until(|h| !h.ui.window.get_operation_token().is_empty());
+    assert!(h.ui.window.get_operation_dangerous());
+    assert!(h.ui.window.get_operation_body().contains("empty"));
+    assert!(deleted.join("část 文档/payload.txt").is_file());
+    let token = OperationId(h.ui.window.get_operation_token().parse().unwrap());
+    input::key(&h.dialog(), Key::Return);
+    h.until(|h| {
+        h.operations
+            .iter()
+            .any(|p| p.id == token && p.state.is_terminal())
+    });
+    let result = h
+        .operations
+        .iter()
+        .find(|p| p.id == token && p.state.is_terminal())
+        .unwrap();
+    assert_eq!(result.state, OperationState::Completed, "{result:?}");
+    assert_eq!(result.kind, MutationKind::Delete(DeleteMode::Permanent));
+    assert!(!deleted.exists());
+    assert_eq!(
+        fs::read(h.left.join("nested/child.txt")).unwrap(),
+        b"Owned nested source"
+    );
+    assert!(h.left.join("file-00.bin").is_file());
+    assert!(h.left.join("inside").is_dir());
+    h.until(|h| {
+        let rows = h.rows(PaneId::Left);
+        !rows.iter().any(|row| row.name == "empty")
+            && rows
+                .iter()
+                .any(|row| row.name == "nested" && row.tree_expanded)
+            && rows
+                .iter()
+                .any(|row| row.name == "retained" && row.tree_depth == 1)
+    });
+    h.assert_sentinel();
+}
+
 fn drag(
     h: &mut native::Harness,
     source: &str,

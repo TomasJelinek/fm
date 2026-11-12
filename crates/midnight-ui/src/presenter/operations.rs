@@ -5,6 +5,7 @@ use super::*;
 pub(crate) struct OperationsState {
     pub(super) next_id: u64,
     pub(crate) pending: Option<OperationId>,
+    pub(super) tree_delete: Option<tree_delete::Pending>,
     pub(crate) preview: Option<Arc<OperationPreview>>,
     pub(crate) progress: Vec<Arc<OperationProgress>>,
     pub(crate) rename_conflicts: Vec<Arc<CopyConflict>>,
@@ -14,7 +15,7 @@ pub(crate) struct OperationsState {
     pub(crate) unconfirmed: std::collections::HashSet<OperationId>,
     pub(super) forgotten_through: u64,
     pub(crate) metadata_conflicts: Vec<Arc<MetadataConflict>>,
-    pub(crate) metadata_results: Vec<Arc<MetadataResult>>,
+    pub(crate) metadata_results: HashMap<OperationId, Arc<MetadataResult>>,
     pub(crate) closing: bool,
     pub(super) refresh: Vec<(PaneId, PathBuf, Option<PathBuf>)>,
 }
@@ -47,6 +48,13 @@ impl Presenter {
         kind: MutationKind,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.cancel_tree_delete(None);
+        if let MutationKind::Delete(mode) = kind
+            && self.panes[pane.index()].tree_view().is_some()
+        {
+            self.request_tree_delete(pane, mode, send);
+            return;
+        }
         if !matches!(
             kind,
             MutationKind::CreateDirectory | MutationKind::CreateFile
@@ -122,15 +130,10 @@ impl Presenter {
         {
             return;
         }
-        if let Some(id) = self.operations.pending
-            && !send(Command::CancelOperation(id))
-        {
-            return;
-        }
-        let Some(next) = self.operations.next_id.checked_add(1) else {
+        self.cancel_tree_delete(None);
+        let Some(id) = self.next_operation_id(send) else {
             return;
         };
-        let id = OperationId(next);
         let request = PrepareOperation {
             id,
             kind,
@@ -140,33 +143,57 @@ impl Presenter {
             focused,
         };
         if send(Command::PrepareOperation(request)) {
-            self.operations.next_id = next;
-            self.operations.pending = Some(id);
-            self.operations.preview = None;
-            self.operations.unconfirmed.insert(id);
-            // Register immediately: closing before Preparing arrives must not abandon a job.
-            self.operations.progress.push(Arc::new(OperationProgress {
-                pause_requested: false,
-                paused: false,
-                discovery: Default::default(),
-                id,
-                throughput: Arc::default(),
-                kind,
-                state: OperationState::Preparing,
-                total: 0,
-                completed: 0,
-                failed: 0,
-                processed_entries: 0,
-                current_path: None,
-                message: String::new(),
-                errors: vec![],
-                source_directory: self.panes[pane.index()].path.clone(),
-                renamed_to: None,
-            }));
+            self.register_preparing_operation(id, kind, self.panes[pane.index()].path.clone());
         } else {
             self.desktop
                 .report("Operation queue busy", "Try again.".into());
         }
+    }
+
+    pub(super) fn next_operation_id(
+        &mut self,
+        send: &dyn Fn(Command) -> bool,
+    ) -> Option<OperationId> {
+        if self.operations.closing {
+            return None;
+        }
+        if let Some(id) = self.operations.pending
+            && !send(Command::CancelOperation(id))
+        {
+            return None;
+        }
+        self.operations.next_id.checked_add(1).map(OperationId)
+    }
+
+    pub(super) fn register_preparing_operation(
+        &mut self,
+        id: OperationId,
+        kind: MutationKind,
+        source_directory: PathBuf,
+    ) {
+        self.operations.next_id = id.0;
+        self.operations.pending = Some(id);
+        self.operations.preview = None;
+        self.operations.unconfirmed.insert(id);
+        // Register immediately: closing before Preparing arrives must not abandon a job.
+        self.operations.progress.push(Arc::new(OperationProgress {
+            pause_requested: false,
+            paused: false,
+            discovery: Default::default(),
+            id,
+            throughput: Arc::default(),
+            kind,
+            state: OperationState::Preparing,
+            total: 0,
+            completed: 0,
+            failed: 0,
+            processed_entries: 0,
+            current_path: None,
+            message: String::new(),
+            errors: vec![],
+            source_directory,
+            renamed_to: None,
+        }));
     }
 
     pub(crate) fn confirm_operation(
@@ -245,6 +272,7 @@ impl Presenter {
         self.operations.closing = true;
         self.cancel_tree_editor(None);
         self.cancel_tree_checksums(None);
+        self.cancel_tree_delete(None);
         self.retire_warning_viewer();
         self.operations.pending = None;
         self.operations.preview = None;
@@ -287,14 +315,11 @@ impl Presenter {
             OperationEvent::MetadataPreview(preview) => self.apply_metadata_preview(preview),
             OperationEvent::MetadataResult(result) => {
                 if self.forgotten_operation(result.id) {
+                    self.retired.push(Box::new(result));
                     return None;
                 }
-                self.operations
-                    .metadata_results
-                    .retain(|old| old.id != result.id);
-                self.operations.metadata_results.push(result);
-                if self.operations.metadata_results.len() > 16 {
-                    self.operations.metadata_results.remove(0);
+                if let Some(old) = self.operations.metadata_results.insert(result.id, result) {
+                    self.retired.push(Box::new(old));
                 }
             }
             OperationEvent::MetadataConflict(conflict) => self.apply_metadata_conflict(conflict),
@@ -346,6 +371,9 @@ impl Presenter {
                         self.operations.preview = None;
                     }
                     for pane in [PaneId::Left, PaneId::Right] {
+                        if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
+                            continue;
+                        }
                         if self.panes[pane.index()].display_path() != progress.source_directory {
                             continue;
                         }

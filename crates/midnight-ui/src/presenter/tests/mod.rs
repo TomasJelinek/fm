@@ -39,6 +39,7 @@ mod tree;
 mod tree_checksums;
 mod tree_clipboard;
 mod tree_copy;
+mod tree_delete;
 mod tree_drag;
 mod tree_editor;
 mod tree_refresh;

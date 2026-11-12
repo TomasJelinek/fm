@@ -41,6 +41,7 @@ pub fn installed_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
     Some(INSTALLED.get_or_init(|| names).clone())
 }
 
+/// Code fonts with fixed-pitch metrics and glyphs for every printable ASCII character.
 /// Cancellation never publishes a partial catalog. Names are literal family names.
 pub fn monospace_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>> {
     if cancelled() {
@@ -73,9 +74,14 @@ pub fn monospace_families(cancelled: impl Fn() -> bool) -> Option<Arc<[String]>>
         let Some(data) = face.load(Some(&mut fonts.source_cache)) else {
             continue;
         };
-        if swash::FontRef::from_index(data.as_ref(), face.index() as usize)
-            .is_some_and(|font| font.metrics(&[]).is_monospace)
-        {
+        if swash::FontRef::from_index(data.as_ref(), face.index() as usize).is_some_and(|font| {
+            if !font.metrics(&[]).is_monospace {
+                return false;
+            }
+            // Symbol/emoji faces may report fixed pitch but trigger proportional fallback.
+            let charmap = font.charmap();
+            (' '..='~').all(|character| charmap.map(character) != 0)
+        }) {
             names.push(name);
         }
     }

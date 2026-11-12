@@ -15,6 +15,11 @@ use tokio::{
     task::JoinSet,
 };
 
+#[path = "operation_input.rs"]
+mod input;
+use crate::worker_retirement::{WorkerOwned, retire};
+use input::{DeleteScope, Input};
+
 #[path = "operation_metadata.rs"]
 mod metadata;
 #[path = "operation_rename.rs"]
@@ -48,7 +53,7 @@ type Running = (
 const MAX_JOBS: usize = 32;
 
 enum Message {
-    Prepare(PrepareOperation, Cancellation, Status),
+    Prepare(WorkerOwned<Input>, Cancellation, Status),
     Confirm(OperationId, Option<String>, Arc<Predecessors>),
     PreviewMetadata(OperationId, u64, MetadataPatch),
     ConfirmMetadata(OperationId, u64, MetadataConflictPolicy, Arc<Predecessors>),
@@ -101,11 +106,6 @@ impl Controller {
     }
 
     pub(crate) async fn prepare(&self, request: PrepareOperation) {
-        // A process-wide high-water mark makes replay idempotent without an unbounded ID set.
-        if request.id.0 <= self.highest.fetch_max(request.id.0, Ordering::Relaxed) {
-            return;
-        }
-        let mut progress = worker::initial(&request);
         let valid = {
             let snapshots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
             let state = &snapshots[request.source.pane.index()];
@@ -117,28 +117,54 @@ impl Controller {
                         && Arc::ptr_eq(&visible.entries, &request.source.entries)
                 })
         };
-        let rejection = if !valid {
-            Some("The directory changed. Try the operation again.")
-        } else if self.cancel.is_cancelled() {
-            Some("The application is closing.")
-        } else if self
-            .registry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
-            >= MAX_JOBS
-        {
-            Some("The operation queue is full (32 jobs).")
-        } else {
-            None
-        };
+        self.admit(
+            Input::Flat(request),
+            (!valid).then_some("The directory changed. Try the operation again."),
+        )
+        .await;
+    }
+
+    pub(crate) async fn prepare_captured_delete(&self, request: PrepareCapturedDelete) {
+        let scope = DeleteScope::capture(request.sources.as_ref());
+        self.admit(
+            Input::Delete(request, scope),
+            (!scope.valid()).then_some("The captured Delete scope is invalid."),
+        )
+        .await;
+    }
+
+    async fn admit(&self, input: Input, rejection: Option<&str>) {
+        // Guard provider ownership before the first await, including admission rejection.
+        let input = WorkerOwned::new(input);
+        let mut progress = input.initial();
+        // A shared high-water mark makes flat/captured replay idempotent without an ID set.
+        if progress.id.0 <= self.highest.fetch_max(progress.id.0, Ordering::Relaxed) {
+            retire(input.into_inner()).await;
+            return;
+        }
+        let rejection = rejection.or_else(|| {
+            if self.cancel.is_cancelled() {
+                Some("The application is closing.")
+            } else if self
+                .registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len()
+                >= MAX_JOBS
+            {
+                Some("The operation queue is full (32 jobs).")
+            } else {
+                None
+            }
+        });
         if let Some(message) = rejection {
+            retire(input.into_inner()).await;
             progress.state = OperationState::Failed;
             progress.message = message.into();
             publish(&self.outbox, &progress).await;
             return;
         }
-        let cancel = if matches!(request.kind, MutationKind::Delete(_)) {
+        let cancel = if matches!(progress.kind, MutationKind::Delete(_)) {
             self.cancel.pausable_child()
         } else {
             self.cancel.child()
@@ -148,7 +174,7 @@ impl Controller {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(
-                request.id,
+                progress.id,
                 Registered {
                     cancel: cancel.clone(),
                     status: status.clone(),
@@ -156,11 +182,15 @@ impl Controller {
                 },
             );
         publish(&self.outbox, &progress).await;
-        if self
+        if let Err(rejected) = self
             .sender
-            .try_send(Message::Prepare(request, cancel, status))
-            .is_err()
+            .try_send(Message::Prepare(input, cancel, status))
         {
+            // A returned queued input still owns its capture; normal rejection awaits disposal.
+            let Message::Prepare(input, _, _) = rejected.into_inner() else {
+                unreachable!()
+            };
+            retire(input.into_inner()).await;
             self.registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -344,7 +374,7 @@ async fn run(
                         let permit = budget.acquire_owned().await.expect("operation semaphore stays open");
                         let result = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            worker::prepare(request, service, job_cancel, status, metadata_budget).map(|mut job| {
+                            request.into_inner().prepare(service, job_cancel, status, metadata_budget).map(|mut job| {
                                 if let Some(edit) = &mut job.metadata { edit.localize(locale.as_deref()); }
                                 job
                             })

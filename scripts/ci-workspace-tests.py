@@ -11,9 +11,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import tomllib
 
 LIB_KINDS = {'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}
+WINDOWS_SHARING_ERRORS = (32, 33) if os.name == 'nt' else ()
 
 
 def plan(metadata):
@@ -96,9 +98,43 @@ def retire(root, gate, artifacts):
     if selected != gate['packages']:
         raise ValueError('Successful Cargo gate did not report every selected integration artifact')
     # Validate the complete set before deleting anything. No globs or recursive removal.
+    identities = {path: artifact_identity(path) for path in paths}
     for path in sorted(paths):
-        path.unlink()
+        unlink_artifact(path, deps, identities[path])
     print(f'Retired {len(paths)} generated files for {gate["name"]}', flush=True)
+
+
+def artifact_identity(path):
+    metadata = path.lstat()
+    return metadata.st_dev, metadata.st_ino
+
+
+def unlink_artifact(path, deps, identity):
+    # A completed executable can still have a short native sharing lock. Retrying
+    # this one validated object keeps the per-gate disk bound without hiding errors.
+    first_error = None
+    deadline = 0.0
+    while True:
+        if first_error is not None and time.monotonic() >= deadline:
+            raise first_error
+        if (deps.is_symlink() or deps.resolve(strict=True) != deps
+                or path.parent != deps or path.is_symlink() or not path.is_file()
+                or path.resolve(strict=True) != path or artifact_identity(path) != identity):
+            raise ValueError(f'Unowned or changed generated artifact: {path}')
+        try:
+            path.unlink()
+            return
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in WINDOWS_SHARING_ERRORS:
+                raise
+            now = time.monotonic()
+            if first_error is None:
+                first_error = error
+                deadline = now + 2.0
+            remaining = deadline - now
+            if remaining <= 0:
+                raise first_error
+            time.sleep(min(0.1, remaining))
 
 
 def run_command(command, root, gate):

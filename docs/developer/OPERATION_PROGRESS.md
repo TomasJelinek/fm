@@ -21,7 +21,13 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   Pausing; it must not claim a native call has stopped. Resume and Cancel remain
   available while paused. Cancellation wakes paused waits and takes precedence.
 - Finished receipts stay for the session, with separate clear-finished and
-  clear-finished-without-errors actions. No queue persistence is implied.
+  clear-finished-without-errors actions. Metadata outcome details follow the same
+  lifetime: there is no last-16-jobs eviction. Results are keyed by operation ID
+  for constant-time lookup/replacement; each result still has at most 32 sampled
+  outcomes plus complete totals. Clearing also removes matching details, and late
+  receipts cannot resurrect cleared jobs. Replaced, cleared, late and shutdown
+  metadata payloads go through backend reclamation rather than being freed on the
+  UI thread. No queue persistence is implied.
 
 ## Discovery and truthful progress
 
@@ -83,3 +89,9 @@ cover unknown/partial totals, retries, verification and changes invalidating tot
 UI snapshots cover themes, small windows and enlarged fonts. Final integrated
 build/runtime qualification is recorded in the settings/UI follow-up report;
 source implementation alone is not evidence that the installed executable changed.
+
+Native Delete from expanded panel branches uses this same confirmation and progress
+component. Its immutable capture keeps provider identity in the backend; unsupported
+archive writes remain disabled. The [12 November integration record](../verification/2026-11-12-tree-delete-integration.md)
+covers real native tree deletion, the shared Delete window, full affected suites
+and the exact installed debug executable.

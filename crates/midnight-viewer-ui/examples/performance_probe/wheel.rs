@@ -42,6 +42,7 @@ pub(super) struct Probe {
     gestures: Vec<Gesture>,
     timeline: super::timeline::Trace,
     options: Options,
+    spatial_proof: bool,
 }
 #[derive(Clone, Copy)]
 struct Frame {
@@ -57,6 +58,7 @@ struct Frame {
 struct Gesture {
     sent: Instant,
     initial: f32,
+    initial_uploads: i32,
     delta: i16,
     frames: Vec<Frame>,
     redraws: usize,
@@ -70,7 +72,10 @@ fn percentile(values: &[f64], percent: usize) -> f64 {
     values.sort_by(f64::total_cmp);
     values[(values.len() * percent / 100).min(values.len() - 1)]
 }
-fn cpu_stripe(window: &ViewerWindow) -> Option<pixels::Stripe> {
+fn cpu_stripe(window: &ViewerWindow, spatial_proof: bool) -> Option<pixels::Stripe> {
+    if spatial_proof && window.get_retained_raster() {
+        return pixels::Stripe::capture_retained(window);
+    }
     // Retained textures do not change as the camera moves. Inspecting the CPU
     // surface would falsely report stationary content; use separate GPU proof.
     (!window.get_retained_raster() && !window.get_tiled())
@@ -97,6 +102,7 @@ impl Probe {
         Self {
             timeline,
             options,
+            spatial_proof: std::env::var_os("MIDNIGHT_VIEWER_PROBE_SPATIAL_PROOF").is_some(),
             ..Default::default()
         }
     }
@@ -112,7 +118,7 @@ impl Probe {
             .map_or(gesture.initial, |sample| sample.position);
         if position != previous && gesture.frames.len() < 256 {
             if !self.options.sustained && gesture.pixels.len() < 64 {
-                gesture.pixels.push(cpu_stripe(window));
+                gesture.pixels.push(cpu_stripe(window, self.spatial_proof));
             }
             gesture.frames.push(Frame {
                 time: gesture.sent.elapsed().as_secs_f64() * 1000.0,
@@ -127,10 +133,31 @@ impl Probe {
         }
     }
     pub fn trace(&self, stage: usize) -> Vec<String> {
-        self.gestures.iter().enumerate().flat_map(|(index, gesture)| {
-            std::iter::once(format!("wheel_trace stage={stage} notch={index} delta={} redraws={} initial={:.9} positions={}", gesture.delta, gesture.redraws, gesture.initial, gesture.frames.len()))
-                .chain(gesture.frames.iter().map(move |frame| frame.row(stage, index)))
-        }).collect()
+        let mut rows = Vec::new();
+        if self.spatial_proof {
+            rows.push("wheel_spatial_proof timing_excluded=true source_pixel_crop=true actual_gpu_readback=false".into());
+        }
+        for (index, gesture) in self.gestures.iter().enumerate() {
+            rows.push(format!("wheel_trace stage={stage} notch={index} delta={} redraws={} initial={:.9} positions={}", gesture.delta, gesture.redraws, gesture.initial, gesture.frames.len()));
+            rows.extend(gesture.frames.iter().map(|frame| frame.row(stage, index)));
+            if self.spatial_proof {
+                for (frame, pair) in gesture.pixels.windows(2).enumerate() {
+                    if let [Some(before), Some(after)] = pair
+                        && let Some((shift, ratio)) = before.displacement(after, 140)
+                    {
+                        let (previous_position, previous_uploads) = frame
+                            .checked_sub(1)
+                            .map(|index| gesture.frames[index])
+                            .map_or((gesture.initial, gesture.initial_uploads), |previous| {
+                                (previous.position, previous.raster_uploads)
+                            });
+                        let next = gesture.frames[frame];
+                        rows.push(format!("wheel_spatial stage={stage} notch={index} frame={frame} raster_shift={shift:.3} match_error_vs_unmoved={ratio:.5} uploads={previous_uploads}->{} normalized_delta={:.9}", next.raster_uploads, next.position - previous_position));
+                    }
+                }
+            }
+        }
+        rows
     }
     fn report(&self, window: &ViewerWindow, stage: usize) -> Result<Vec<String>, String> {
         let mut rows = vec![format!(
@@ -355,13 +382,14 @@ impl Probe {
         self.gestures.push(Gesture {
             sent: Instant::now(),
             initial: window.get_displayed_position(),
+            initial_uploads: window.get_raster_upload_count(),
             delta: direction,
             frames: Vec::new(),
             redraws: 0,
             pixels: if self.options.sustained {
                 Vec::new()
             } else {
-                vec![cpu_stripe(window)]
+                vec![cpu_stripe(window, self.spatial_proof)]
             },
         });
         self.timeline.record("initial_stripe_captured", 0.0);

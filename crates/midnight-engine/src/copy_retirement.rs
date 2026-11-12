@@ -1,6 +1,6 @@
 //! Async cancellation must not destroy provider owners on executor threads.
-//! Normal paths await retirement. Fallback Drop protects future aborts; only the
-//! one active job and the bounded 32 queued requests can own such guards.
+//! Normal paths await retirement. Fallback Drop protects future aborts; captured
+//! inputs retain their existing bounded queue slots and tree capture permits.
 use std::ops::{Deref, DerefMut};
 
 pub(super) struct WorkerOwned<T: Send + 'static>(Option<T>);
@@ -26,8 +26,8 @@ impl<T: Send + 'static> DerefMut for WorkerOwned<T> {
 impl<T: Send + 'static> Drop for WorkerOwned<T> {
     fn drop(&mut self) {
         if let Some(value) = self.0.take() {
-            // No detached work per user action: this fallback is for aborting the
-            // single copy consumer. Admission closes before its 32 slots drain.
+            // Normal rejection awaits retirement. This fallback protects aborted
+            // bounded consumers without admitting replacement work or resources.
             tokio::task::spawn_blocking(move || drop(value));
         }
     }

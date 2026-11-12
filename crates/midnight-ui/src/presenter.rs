@@ -64,6 +64,7 @@ mod tree_capture;
 mod tree_checksums;
 mod tree_clipboard;
 mod tree_copy;
+mod tree_delete;
 mod tree_drag;
 mod tree_editor;
 mod tree_options;
@@ -350,6 +351,9 @@ impl Presenter {
 
     /// Detach live state after the window closes; reclaim `take_retired()` on a worker.
     pub fn retire_all(&mut self) {
+        self.cancel_tree_delete(None);
+        self.retired
+            .push(Box::new(mem::take(&mut self.operations.metadata_results)));
         self.cancel_tree_checksums(None);
         self.retire_warning_viewer();
         self.cancel_panel_filter();

@@ -63,3 +63,25 @@ fn installed_monospace_catalog_is_cached_and_lays_out_equal_width_columns() {
         );
     }
 }
+
+#[test]
+fn installed_monospace_catalog_covers_basic_text_without_fallback() {
+    let families = monospace_families(|| false).unwrap();
+    assert!(!families.is_empty(), "the test host needs a code font");
+    let mut fonts = parley::FontContext::default();
+    for family_name in families.iter() {
+        let family = fonts.collection.family_by_name(family_name).unwrap();
+        let face = family.fonts().first().unwrap();
+        let data = face.load(Some(&mut fonts.source_cache)).unwrap();
+        let font = swash::FontRef::from_index(data.as_ref(), face.index() as usize).unwrap();
+        let charmap = font.charmap();
+        for character in ' '..='~' {
+            assert_ne!(
+                charmap.map(character),
+                0,
+                "{family_name} needs fallback for basic text {character:?}"
+            );
+        }
+    }
+    assert!(monospace_families(|| true).is_none());
+}

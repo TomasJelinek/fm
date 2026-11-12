@@ -30,6 +30,12 @@ mod folder_presence;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
+#[cfg(all(test, windows))]
+#[path = "../tests/support/checksum_verify_links_windows.rs"]
+mod native_test_links;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/checksum_verify_links_linux.rs"]
+mod native_test_links;
 mod navigation_fallback;
 #[cfg(test)]
 mod navigation_fallback_tests;
@@ -61,6 +67,7 @@ mod tree_actor;
 mod tree_clipboard;
 mod tree_controller;
 mod tree_copy;
+mod tree_delete;
 mod tree_diagnostics;
 mod tree_editor;
 mod tree_projection;
@@ -74,6 +81,8 @@ mod viewer_plugins;
 mod volume_information;
 mod volumes;
 mod watch;
+#[path = "copy_retirement.rs"]
+mod worker_retirement;
 
 use std::{
     collections::HashMap,
@@ -709,6 +718,7 @@ impl Engine {
                             }
                         }
                         Some(Command::PrepareOperation(request)) => operations.prepare(request).await,
+                        Some(Command::PrepareCapturedDelete(request)) => operations.prepare_captured_delete(request).await,
                         Some(Command::ConfirmOperation { id, new_name }) => operations.confirm(id, new_name).await,
                         Some(Command::CancelOperation(id)) => operations.cancel(id),
                         Some(Command::PreviewMetadata { id, revision, patch }) => operations.preview_metadata(id, revision, patch).await,

@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'ci-workspace-tests.py'
 spec = importlib.util.spec_from_file_location('ci_workspace_tests', SCRIPT)
@@ -89,6 +90,129 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(unrelated.exists())
         self.assertTrue(all('--workspace' in command and '--locked' in command for command in commands))
         self.assertTrue(all(command[command.index('--features') + 1] == 'a/enabled' for command in commands))
+
+    @contextlib.contextmanager
+    def retirement_clock(self, windows=True, on_sleep=None):
+        clock = {'now': 0.0, 'sleeps': []}
+        def sleep(seconds):
+            clock['sleeps'].append(seconds)
+            clock['now'] += seconds
+            if on_sleep is not None:
+                on_sleep()
+        with mock.patch.object(runner, 'WINDOWS_SHARING_ERRORS',
+                               (32, 33) if windows else (), create=True), \
+                mock.patch('time.monotonic', side_effect=lambda: clock['now']), \
+                mock.patch('time.sleep', side_effect=sleep):
+            yield clock
+
+    def retire_artifact(self, artifact):
+        gate = runner.plan(graph(self.root, [target('selection')]))[0]
+        runner.retire(self.root / '_build', gate, [artifact])
+
+    @staticmethod
+    def sharing_error(code):
+        failure = PermissionError(13, 'owned fixture native failure')
+        failure.winerror = code
+        return failure
+
+    def test_transient_windows_sharing_violations_retry_only_the_validated_artifact(self):
+        for code in (32, 33):
+            with self.subTest(code=code):
+                artifact = self.artifact()
+                executable = Path(artifact['executable'])
+                unrelated = self.deps / 'unrelated-0123456789abcdef.exe'
+                unrelated.write_bytes(b'keep')
+                unlink = Path.unlink
+                attempts = []
+                def locked(path):
+                    attempts.append(path)
+                    if len(attempts) < 3:
+                        raise self.sharing_error(code)
+                    return unlink(path)
+                with self.retirement_clock() as clock, \
+                        mock.patch.object(Path, 'unlink', locked):
+                    self.retire_artifact(artifact)
+                self.assertEqual(attempts, [executable] * 3)
+                self.assertEqual(clock['sleeps'], [0.1, 0.1])
+                self.assertFalse(executable.exists())
+                self.assertEqual(unrelated.read_bytes(), b'keep')
+
+    def test_persistent_sharing_stops_at_deadline_and_preserves_first_error(self):
+        artifact = self.artifact()
+        first = self.sharing_error(32)
+        later = self.sharing_error(33)
+        attempts = []
+        def locked(path):
+            attempts.append(path)
+            raise first if len(attempts) == 1 else later
+        with self.retirement_clock() as clock, mock.patch.object(Path, 'unlink', locked):
+            with self.assertRaises(OSError) as caught:
+                self.retire_artifact(artifact)
+        self.assertIs(caught.exception, first)
+        self.assertGreater(len(attempts), 1)
+        self.assertLessEqual(len(attempts), 21)
+        self.assertAlmostEqual(clock['now'], 2.0)
+        self.assertTrue(all(0 < delay <= 0.1 for delay in clock['sleeps']))
+        self.assertTrue(Path(artifact['executable']).exists())
+
+    def test_permission_errors_and_other_platforms_never_retry(self):
+        for code, windows in [(5, True), (None, True), (32, False), (33, False)]:
+            with self.subTest(code=code, windows=windows):
+                artifact = self.artifact()
+                failure = self.sharing_error(code)
+                with self.retirement_clock(windows=windows) as clock, \
+                        mock.patch.object(Path, 'unlink', side_effect=failure) as unlink:
+                    with self.assertRaises(OSError) as caught:
+                        self.retire_artifact(artifact)
+                self.assertIs(caught.exception, failure)
+                unlink.assert_called_once()
+                self.assertEqual(clock['sleeps'], [])
+                self.assertTrue(Path(artifact['executable']).exists())
+
+    def test_retry_refuses_a_substituted_regular_file(self):
+        artifact = self.artifact()
+        executable = Path(artifact['executable'])
+        replacement = self.deps / 'replacement'
+        replacement.write_bytes(b'preserve replacement')
+        with self.retirement_clock(on_sleep=lambda: replacement.replace(executable)), \
+                mock.patch.object(Path, 'unlink', side_effect=self.sharing_error(32)) as unlink:
+            with self.assertRaisesRegex(ValueError, 'changed|Unowned'):
+                self.retire_artifact(artifact)
+        unlink.assert_called_once()
+        self.assertEqual(executable.read_bytes(), b'preserve replacement')
+
+    def test_retry_refuses_a_directory_substitution(self):
+        artifact = self.artifact()
+        executable = Path(artifact['executable'])
+        saved = self.deps / 'saved'
+        def substitute():
+            executable.replace(saved)
+            executable.mkdir()
+        with self.retirement_clock(on_sleep=substitute), \
+                mock.patch.object(Path, 'unlink', side_effect=self.sharing_error(32)) as unlink:
+            with self.assertRaisesRegex(ValueError, 'changed|Unowned'):
+                self.retire_artifact(artifact)
+        unlink.assert_called_once()
+        self.assertTrue(executable.is_dir())
+        self.assertEqual(saved.read_bytes(), b'generated test executable')
+
+    def test_retry_refuses_a_symlink_substitution(self):
+        artifact = self.artifact()
+        executable = Path(artifact['executable'])
+        protected = self.root / 'protected'
+        protected.write_bytes(b'preserve target')
+        link = self.deps / 'replacement-link'
+        try:
+            link.symlink_to(protected)
+        except OSError:
+            self.skipTest('symlink creation requires platform privilege')
+        with self.retirement_clock(on_sleep=lambda: link.replace(executable)), \
+                mock.patch.object(Path, 'unlink', side_effect=self.sharing_error(32)) as unlink:
+            with self.assertRaisesRegex(ValueError, 'changed|Unowned'):
+                self.retire_artifact(artifact)
+        unlink.assert_called_once()
+        self.assertTrue(executable.is_symlink())
+        self.assertEqual(protected.read_bytes(), b'preserve target')
 
     def test_failed_gate_keeps_artifacts_and_stops_later_targets(self):
         metadata = graph(self.root, [target('selection'), target('z_later')])
