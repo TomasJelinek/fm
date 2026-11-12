@@ -15,6 +15,9 @@ use std::{
 static IDS: AtomicU64 = AtomicU64::new(1);
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 const MAX_INSTANCES: usize = 64;
+// First Rename admission reserves one call, one buffer and one maximum reply
+// within Config's existing hard ceilings. Legacy-only instances keep all capacity.
+const CONTROL_CAPACITY: u32 = 1;
 #[derive(Default)]
 struct Registry {
     instances: HashMap<u64, Arc<Instance>>,
@@ -46,15 +49,32 @@ pub(crate) struct Instance {
     state: Mutex<State>,
 }
 #[derive(Default)]
-struct State {
+struct Lane {
     active: u32,
     reservations: u32,
     bytes: u64,
     buffers: HashMap<u64, Vec<u8>>,
+}
+#[derive(Default)]
+struct State {
+    ordinary: Lane,
+    control: Lane,
+    controls_reserved: bool,
     closing: bool,
     panicked: bool,
     #[cfg(test)]
     fail_publish: bool,
+    #[cfg(test)]
+    fail_encode: bool,
+}
+impl State {
+    fn lane(&mut self, control: bool) -> &mut Lane {
+        if control {
+            &mut self.control
+        } else {
+            &mut self.ordinary
+        }
+    }
 }
 
 struct Creating;
@@ -90,8 +110,14 @@ pub(crate) fn create<F: Filesystem>(config: Config) -> Result<u64, Status> {
     })?;
     let mut state = State::default();
     state
+        .ordinary
         .buffers
         .try_reserve(config.max_buffers as usize)
+        .map_err(|_| RESOURCE_LIMIT)?;
+    state
+        .control
+        .buffers
+        .try_reserve(CONTROL_CAPACITY as usize)
         .map_err(|_| RESOURCE_LIMIT)?;
     let instance = Arc::new(Instance {
         config,
@@ -114,39 +140,100 @@ pub(crate) fn acquire<F: Filesystem>(id: u64) -> Result<Arc<Instance>, Status> {
 pub(crate) struct Permit {
     instance: Arc<Instance>,
     reserved: bool,
+    control: bool,
 }
 impl Permit {
-    pub fn acquire(instance: Arc<Instance>) -> Result<Self, Status> {
+    pub fn acquire(instance: Arc<Instance>, operation: u32) -> Result<Self, Status> {
+        let control = matches!(operation, 22 | 23);
         {
             let mut state = lock(&instance.state);
             if state.closing || state.panicked {
                 return Err(SHUTTING_DOWN);
             }
-            if state.active >= instance.config.max_calls {
+            let reserve = state.controls_reserved || operation == 20 || control;
+            if reserve {
+                // Old minima remain valid for Browse/Read. They cannot admit a
+                // Rename with independent result retrieval, so refuse before pins.
+                if instance.config.max_calls < 2
+                    || instance.config.max_buffers < 2
+                    || instance.config.retained_buffer_bytes < instance.config.reply_bytes * 2
+                {
+                    return Err(RESOURCE_LIMIT);
+                }
+                if state.ordinary.active > instance.config.max_calls - CONTROL_CAPACITY {
+                    return Err(BUSY);
+                }
+                if state.ordinary.buffers.len() + state.ordinary.reservations as usize
+                    > (instance.config.max_buffers - CONTROL_CAPACITY) as usize
+                {
+                    return Err(RESOURCE_LIMIT);
+                }
+                let used = state.ordinary.bytes
+                    + u64::from(state.ordinary.reservations) * instance.config.reply_bytes;
+                if used > instance.config.retained_buffer_bytes - instance.config.reply_bytes {
+                    return Err(RESOURCE_LIMIT);
+                }
+            }
+            let (calls, buffers, bytes) = if control {
+                (
+                    CONTROL_CAPACITY,
+                    CONTROL_CAPACITY,
+                    instance.config.reply_bytes,
+                )
+            } else if reserve {
+                (
+                    instance.config.max_calls - CONTROL_CAPACITY,
+                    instance.config.max_buffers - CONTROL_CAPACITY,
+                    instance.config.retained_buffer_bytes - instance.config.reply_bytes,
+                )
+            } else {
+                (
+                    instance.config.max_calls,
+                    instance.config.max_buffers,
+                    instance.config.retained_buffer_bytes,
+                )
+            };
+            let lane = state.lane(control);
+            if lane.active >= calls {
                 return Err(BUSY);
             }
-            if state.buffers.len() + state.reservations as usize
-                >= instance.config.max_buffers as usize
-            {
+            if lane.buffers.len() + lane.reservations as usize >= buffers as usize {
                 return Err(RESOURCE_LIMIT);
             }
-            let reserved = u64::from(state.reservations + 1)
+            let reserved = u64::from(lane.reservations + 1)
                 .checked_mul(instance.config.reply_bytes)
                 .ok_or(RESOURCE_LIMIT)?;
-            if state
+            if lane
                 .bytes
                 .checked_add(reserved)
-                .is_none_or(|bytes| bytes > instance.config.retained_buffer_bytes)
+                .is_none_or(|used| used > bytes)
             {
                 return Err(RESOURCE_LIMIT);
             }
-            state.active += 1;
-            state.reservations += 1;
+            lane.active += 1;
+            lane.reservations += 1;
+            state.controls_reserved = reserve;
         }
         Ok(Self {
             instance,
             reserved: true,
+            control,
         })
+    }
+    pub fn encode(&self, response: &Response) -> Result<Vec<u8>, Status> {
+        #[cfg(test)]
+        if std::mem::take(&mut lock(&self.instance.state).fail_encode) {
+            return Err(RESOURCE_LIMIT);
+        }
+        crate::api::encode_response(response, self.instance.config.reply_bytes as usize).map_err(
+            |error| {
+                if error == crate::api::WireError::Limit {
+                    RESOURCE_LIMIT
+                } else {
+                    INVALID
+                }
+            },
+        )
     }
     pub fn run(&self, request: Request, context: &CallContext<'_>) -> Result<Reply, Status> {
         match catch_unwind(AssertUnwindSafe(|| {
@@ -184,16 +271,21 @@ impl Permit {
             },
         };
         let mut state = lock(&self.instance.state);
-        state.reservations -= 1;
+        let lane = state.lane(self.control);
+        lane.bytes = lane.bytes.checked_add(capacity).ok_or(RESOURCE_LIMIT)?;
+        lane.reservations -= 1;
         self.reserved = false;
-        state.bytes = state.bytes.checked_add(capacity).ok_or(RESOURCE_LIMIT)?;
-        state.buffers.insert(id, bytes);
+        lane.buffers.insert(id, bytes);
         Ok(buffer)
     }
 }
 #[cfg(test)]
 pub(crate) fn fail_next_publish<F: Filesystem>(id: u64) {
     lock(&acquire::<F>(id).unwrap().state).fail_publish = true;
+}
+#[cfg(test)]
+pub(crate) fn fail_next_encode<F: Filesystem>(id: u64) {
+    lock(&acquire::<F>(id).unwrap().state).fail_encode = true;
 }
 pub(crate) struct Publication {
     instance: Arc<Instance>,
@@ -231,9 +323,10 @@ impl Drop for Publication {
 impl Drop for Permit {
     fn drop(&mut self) {
         let mut state = lock(&self.instance.state);
-        state.active -= 1;
+        let lane = state.lane(self.control);
+        lane.active -= 1;
         if self.reserved {
-            state.reservations -= 1;
+            lane.reservations -= 1;
         }
     }
 }
@@ -241,9 +334,14 @@ pub(crate) fn release<F: Filesystem>(instance: u64, id: u64) -> Result<(), Statu
     let instance = acquire::<F>(instance)?;
     let bytes = {
         let mut state = lock(&instance.state);
-        let bytes = state.buffers.remove(&id).ok_or(UNKNOWN_HANDLE)?;
-        state.bytes -= bytes.capacity() as u64;
-        bytes
+        if let Some(bytes) = state.ordinary.buffers.remove(&id) {
+            state.ordinary.bytes -= bytes.capacity() as u64;
+            bytes
+        } else {
+            let bytes = state.control.buffers.remove(&id).ok_or(UNKNOWN_HANDLE)?;
+            state.control.bytes -= bytes.capacity() as u64;
+            bytes
+        }
     };
     drop(bytes);
     Ok(())
@@ -252,7 +350,11 @@ pub(crate) fn destroy<F: Filesystem>(id: u64) -> Result<(), Status> {
     let instance = acquire::<F>(id)?;
     {
         let mut state = lock(&instance.state);
-        if state.active != 0 || !state.buffers.is_empty() {
+        if state.ordinary.active != 0
+            || state.control.active != 0
+            || !state.ordinary.buffers.is_empty()
+            || !state.control.buffers.is_empty()
+        {
             return Err(BUSY);
         }
         state.closing = true;

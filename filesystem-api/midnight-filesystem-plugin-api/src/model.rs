@@ -151,9 +151,30 @@ pub enum Operation {
     Activate = 17,
     Refresh = 18,
     ResolveText = 19,
+    PrepareRename = 20,
+    Rename = 21,
+    GetRenameState = 22,
+    CloseRename = 23,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Select the issued namespace locator; pin its current object before confirmation.
+    PrepareRename {
+        mount: u64,
+        node: u64,
+    },
+    Rename {
+        prepared: u64,
+        attempt: u64,
+        name: crate::NativeText,
+        policy: crate::RenamePolicy,
+    },
+    GetRenameState {
+        prepared: u64,
+    },
+    CloseRename {
+        prepared: u64,
+    },
     /// Explicit Enter/double-click only; never used while restoring or listing.
     Activate {
         mount: u64,
@@ -227,6 +248,10 @@ pub enum Request {
 impl Request {
     pub fn operation(&self) -> Operation {
         match self {
+            Self::PrepareRename { .. } => Operation::PrepareRename,
+            Self::Rename { .. } => Operation::Rename,
+            Self::GetRenameState { .. } => Operation::GetRenameState,
+            Self::CloseRename { .. } => Operation::CloseRename,
             Self::Activate { .. } => Operation::Activate,
             Self::Refresh { .. } => Operation::Refresh,
             Self::ResolveText { .. } => Operation::ResolveText,
@@ -251,6 +276,8 @@ impl Request {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
+    RenamePrepared(crate::PreparedRename),
+    RenameState(crate::RenameState),
     Activated(crate::ActivationTarget),
     Unit,
     Resolved {

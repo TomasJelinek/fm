@@ -4,6 +4,8 @@ pub mod abi;
 mod activation;
 pub use activation::ActivationTarget;
 mod model;
+mod rename;
+pub use rename::*;
 mod volume;
 mod wire;
 pub use model::*;

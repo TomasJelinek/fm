@@ -11,8 +11,8 @@ crate-type = ["cdylib", "rlib"]
 [workspace]
 
 [dependencies]
-midnight-filesystem-plugin-api = { version = "=0.1.0", path = "../../filesystem-api/midnight-filesystem-plugin-api" }
-midnight-filesystem-plugin-sdk = { version = "=0.1.0", path = "../../filesystem-api/midnight-filesystem-plugin-sdk" }
+midnight-filesystem-plugin-api = { version = "=0.2.0", path = "../../filesystem-api/midnight-filesystem-plugin-api" }
+midnight-filesystem-plugin-sdk = { version = "=0.2.0", path = "../../filesystem-api/midnight-filesystem-plugin-sdk" }
 
 [profile.release]
 overflow-checks = true

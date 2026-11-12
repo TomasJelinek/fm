@@ -58,7 +58,8 @@ pub(super) fn request(value: &Request) -> Result<(), WireError> {
         | Request::Activate { mount, node }
         | Request::Refresh { mount, node }
         | Request::Parent { mount, node }
-        | Request::OpenRead { mount, node } => require(*mount != 0 && *node != 0),
+        | Request::OpenRead { mount, node }
+        | Request::PrepareRename { mount, node } => require(*mount != 0 && *node != 0),
         Request::ListBegin {
             mount,
             directory,
@@ -81,12 +82,30 @@ pub(super) fn request(value: &Request) -> Result<(), WireError> {
                 && (1..=MAX_READ).contains(length)
                 && offset.checked_add(u64::from(*length)).is_some(),
         ),
+        Request::Rename {
+            prepared,
+            attempt,
+            name,
+            policy,
+        } => {
+            require(*prepared != 0 && *attempt != 0)?;
+            name.validate_rename_basename()?;
+            match policy {
+                RenamePolicy::NoReplace => Ok(()),
+                RenamePolicy::RecoverableCurrentEntry { conflict } => require(*conflict != 0),
+            }
+        }
+        Request::GetRenameState { prepared } | Request::CloseRename { prepared } => {
+            require(*prepared != 0)
+        }
         Request::Volumes => Ok(()),
         Request::ResolveText { text } => require(!text.is_empty() && !text.contains('\0')),
     }
 }
 pub(super) fn response(value: &Response) -> Result<(), WireError> {
     match value {
+        Response::RenamePrepared(value) => value.validate(),
+        Response::RenameState(value) => value.validate(),
         Response::Activated(target) => {
             let (ActivationTarget::WithinProvider(value) | ActivationTarget::Native(value)) =
                 target;
