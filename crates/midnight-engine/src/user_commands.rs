@@ -512,6 +512,10 @@ fn failure(kind: io::ErrorKind, message: &str) -> FsError {
 mod tests;
 
 #[cfg(test)]
+#[path = "user_command_capture_retirement_tests.rs"]
+mod capture_retirement_tests;
+
+#[cfg(test)]
 #[path = "user_command_pin_tests.rs"]
 mod pin_tests;
 

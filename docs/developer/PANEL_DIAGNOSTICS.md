@@ -51,10 +51,16 @@ Running or cancelled totals retain their estimate styling without an error icon.
 Red listing errors remain distinct. Both controls provide a specific tooltip;
 ordinary filename tooltips remain disabled.
 
-Full retained reports use the ordinary asynchronous basic text viewer, including
-search, selection/copy and Escape to close. Short errors use the existing error
-dialog. A generated document's title is only a display label and never authority
-to reopen a native path. Missing viewer support and report read failures are
+Yellow size-warning reports use the ordinary asynchronous basic text viewer,
+including search, selection/copy and Escape to close. Red listing and panel errors
+open the themed error dialog, including retained full diagnostic sources; they do
+not launch a viewer. The backend loads dialog details asynchronously, and the
+presenter accepts only the matching request and notice generation. Copy details
+retains the full captured source even when the visible text is bounded. Closing
+or replacing the notice cancels pending presentation and cannot revive it later.
+
+A generated report title is only a display label and never authority to reopen a
+native path. Missing size-report viewer support and diagnostic read failures are
 reported explicitly.
 
 See the [implementation plan](../superpowers/plans/2026-11-10-size-warning-reports.md)

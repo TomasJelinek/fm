@@ -36,6 +36,25 @@ pub(crate) struct CapturedOccurrence {
 }
 
 impl Session {
+    /// Shared exact-selection admission, including consumers with no file arguments.
+    pub(crate) fn check_selection(
+        &self,
+        view: &Arc<TreeProjection>,
+        revision: SelectionRevision,
+        selection: &Arc<TreeSelectionSnapshot>,
+        cancel: &Cancellation,
+    ) -> Result<(), ProviderError> {
+        check_cancel(cancel)?;
+        self.check_view(view)?;
+        if revision != self.selection.revision
+            || !Arc::ptr_eq(selection, &self.selection.snapshot)
+            || !Arc::ptr_eq(selection.basis(), view)
+        {
+            return Err(ProviderError::StaleReference);
+        }
+        Ok(())
+    }
+
     pub(crate) fn capture_sizes(
         &mut self,
         request: &midnight_core::TreeSizeRequest,
@@ -98,14 +117,7 @@ impl Session {
         fallback: Option<TreeRowId>,
         cancel: &Cancellation,
     ) -> Result<CapturedSelection, ProviderError> {
-        check_cancel(cancel)?;
-        self.check_view(view)?;
-        if revision != self.selection.revision
-            || !Arc::ptr_eq(selection, &self.selection.snapshot)
-            || !Arc::ptr_eq(selection.basis(), view)
-        {
-            return Err(ProviderError::StaleReference);
-        }
+        self.check_selection(view, revision, selection, cancel)?;
         let fallback = if selection.is_empty() {
             let row = fallback.ok_or(ProviderError::Unsupported)?;
             self.visible_branch(row)?;
@@ -138,14 +150,7 @@ impl Session {
         dragged: TreeRowId,
         cancel: &Cancellation,
     ) -> Result<CapturedSelection, ProviderError> {
-        check_cancel(cancel)?;
-        self.check_view(view)?;
-        if revision != self.selection.revision
-            || !Arc::ptr_eq(selection, &self.selection.snapshot)
-            || !Arc::ptr_eq(selection.basis(), view)
-        {
-            return Err(ProviderError::StaleReference);
-        }
+        self.check_selection(view, revision, selection, cancel)?;
         let position = view
             .index
             .row_positions

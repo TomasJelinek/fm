@@ -316,6 +316,18 @@ async fn source_changes_before_or_during_listing_reject_measured_sort() {
     }
 }
 
+struct RetirementGate {
+    entered: Option<tokio::sync::oneshot::Sender<()>>,
+    released: std::sync::mpsc::Receiver<()>,
+}
+impl Drop for RetirementGate {
+    fn drop(&mut self) {
+        let _ = self.entered.take().unwrap().send(());
+        // Dropping the sender also releases the worker if the test panics.
+        let _ = self.released.recv();
+    }
+}
+
 #[tokio::test]
 async fn published_sort_lookup_does_not_retain_retired_map_or_mount() {
     let mut harness = Harness::new();
@@ -327,6 +339,23 @@ async fn published_sort_lookup_does_not_retain_retired_map_or_mount() {
     let weak_snapshot = Arc::downgrade(&snapshot);
     drop(snapshot);
     assert!(weak_snapshot.upgrade().is_none());
+    // Task completion must not imply destruction of its queued native owner.
+    let (release_retirement, released) = std::sync::mpsc::channel();
+    let (entered, retirement_entered) = tokio::sync::oneshot::channel();
+    let gate_finished = harness
+        .navigation
+        .retirement
+        .domain
+        .try_reserve()
+        .unwrap()
+        .retire(RetirementGate {
+            entered: Some(entered),
+            released,
+        });
+    tokio::time::timeout(Duration::from_secs(5), retirement_entered)
+        .await
+        .expect("retirement worker must enter the fixture gate")
+        .unwrap();
     let listing = harness.sort(source.clone(), false).await.unwrap();
     assert_eq!(
         listing.entries[0].id,
@@ -337,12 +366,22 @@ async fn published_sort_lookup_does_not_retain_retired_map_or_mount() {
     drop(source);
     harness.sizes.shutdown().await;
     drop(harness.navigation);
-    let snapshots = Arc::try_unwrap(harness.snapshots)
-        .unwrap_or_else(|_| panic!("snapshot still has live actor owners"));
-    snapshots.retire().await.unwrap();
-    // The snapshot and guarded mount have different retirement workers. The
-    // snapshot acknowledgement only enqueues the final mount release; wait for
-    // that resource's own destruction instead of racing its worker scheduling.
+    // The joined navigation task can still own snapshots in its retirement queue.
+    // Drain the cached roots through the real shutdown contract without assuming
+    // that this test already owns the last snapshot reference.
+    crate::tree_roots::shutdown(harness.snapshots.clone()).await;
+    drop(harness.snapshots);
+    assert!(
+        weak_source.upgrade().is_some(),
+        "the guarded mount must still await the held retirement worker"
+    );
+    drop(release_retirement);
+    tokio::time::timeout(Duration::from_secs(5), gate_finished)
+        .await
+        .expect("retirement worker must leave the fixture gate")
+        .unwrap();
+    // The root drain only enqueues the guarded mount release; wait for the actual
+    // source destructor rather than assuming its worker has already finished.
     let retired_on = tokio::time::timeout(Duration::from_secs(5), completed)
         .await
         .expect("archive mount must retire after its final owner is released")

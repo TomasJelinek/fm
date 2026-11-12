@@ -14,8 +14,10 @@ pub(crate) struct Prepared {
     pub(crate) processes: Arc<Vec<UserCommandProcess>>,
     pins: Arc<Pins>,
     scopes: Arc<Vec<Scope>>,
+    sources: Option<Arc<dyn CapturedUserCommandSources>>,
 }
 struct Scope {
+    source_ids: Vec<EntryId>,
     directories: Vec<Arc<dyn TransferDirectory>>,
     entries: Vec<Arc<dyn TransferTarget>>,
 }
@@ -29,6 +31,9 @@ impl Prepared {
             .scopes
             .get(index)
             .ok_or_else(|| invalid("Command process index is unavailable."))?;
+        if let Some(sources) = &self.sources {
+            sources.revalidate_for(&scope.source_ids, cancel)?;
+        }
         for directory in &scope.directories {
             with_io(cancel, directory.path(), || directory.revalidate(cancel))?;
         }
@@ -47,9 +52,11 @@ impl Prepared {
             processes,
             pins,
             scopes,
+            sources,
         } = self;
         drop(scopes);
         drop(pins);
+        drop(sources);
         let processes = Arc::try_unwrap(processes)
             .map_err(|_| invalid("Preview process ownership changed unexpectedly."))?;
         let rows = processes
@@ -67,6 +74,9 @@ impl Prepared {
         }))
     }
     pub(crate) fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        if let Some(sources) = &self.sources {
+            sources.revalidate(cancel)?;
+        }
         for directory in self.pins.directories.values() {
             with_io(cancel, directory.path(), || directory.revalidate(cancel))?;
         }
@@ -162,18 +172,23 @@ impl Pins {
             .ok_or_else(|| fail(path, io::ErrorKind::Other, "Command pin was not retained."))?
             .entry();
         let link = |kind| matches!(kind, EntryKind::Symlink | EntryKind::DirectoryLink);
-        if size.is_some_and(|expected| captured.item.metadata.size != Some(expected))
+        // Directory listing size/mtime describe mutable contents and may be cached
+        // by enumeration. Native identity/revision authority starts at this pin;
+        // every later launch still revalidates that exact target and revision.
+        let directory = captured.item.kind == EntryKind::Directory;
+        if (!directory
+            && size.is_some_and(|expected| captured.item.metadata.size != Some(expected)))
             || expected.is_some_and(|expected| {
                 (expected.kind != captured.item.kind
                     && !(link(expected.kind) && link(captured.item.kind)))
-                    || expected
-                        .metadata
-                        .size
-                        .is_some_and(|size| captured.item.metadata.size != Some(size))
-                    || expected
-                        .metadata
-                        .modified
-                        .is_some_and(|modified| captured.item.metadata.modified != Some(modified))
+                    || (!directory
+                        && (expected
+                            .metadata
+                            .size
+                            .is_some_and(|size| captured.item.metadata.size != Some(size))
+                            || expected.metadata.modified.is_some_and(|modified| {
+                                captured.item.metadata.modified != Some(modified)
+                            })))
             })
         {
             return Err(fail(
@@ -237,6 +252,16 @@ fn prepare_inner(
             "This Custom Command is disabled.",
         ));
     }
+    let sources = request.captured.clone();
+    let resolved = sources
+        .as_ref()
+        .map(|source| source.resolve(cancel))
+        .transpose()?;
+    let materialized = resolved
+        .as_ref()
+        .map(|resolved| materialize_tree(request, resolved))
+        .transpose()?;
+    let request = materialized.as_ref().unwrap_or(request);
     let directory = UserCommandTemplate::parse(&command.working_directory).map_err(invalid)?;
     let arguments = match &command.invocation {
         UserCommandInvocation::Program { arguments, .. } => arguments
@@ -292,11 +317,20 @@ fn prepare_inner(
         );
     }
     for path in &selected {
-        let expected = request
-            .context
-            .focus
+        let expected = resolved
             .as_ref()
-            .filter(|entry| entry.path == *path);
+            .and_then(|resolved| {
+                let view = &request.context.files.as_ref()?.view;
+                let position = view.by_path.get(path).and_then(|id| view.by_id.get(id))?;
+                resolved.selected.get(*position)
+            })
+            .or_else(|| {
+                request
+                    .context
+                    .focus
+                    .as_ref()
+                    .filter(|entry| entry.path == *path)
+            });
         let size = request.context.files.as_ref().and_then(|files| {
             files
                 .view
@@ -332,6 +366,14 @@ fn prepare_inner(
         }
         vec![focus.map(|entry| entry.path.as_path())]
     };
+    let source_ids = resolved.as_ref().map(|resolved| {
+        resolved
+            .selected
+            .iter()
+            .chain(resolved.focus.iter())
+            .map(|entry| (entry.path.as_path(), entry.id))
+            .collect::<HashMap<_, _>>()
+    });
     let mut processes = Vec::with_capacity(files.len());
     let mut scopes = Vec::with_capacity(files.len());
     let mut bytes = 0usize;
@@ -347,6 +389,7 @@ fn prepare_inner(
         let cwd = PathBuf::from(directory.expand(lookup).map_err(invalid)?);
         let cwd_guard = pins.directory(&cwd, service, cancel)?;
         let mut scope = Scope {
+            source_ids: Vec::new(),
             directories: common_directories.clone(),
             entries: Vec::new(),
         };
@@ -376,6 +419,17 @@ fn prepare_inner(
                     .cloned()
                     .ok_or_else(|| invalid("Command source guard was not retained."))?,
             );
+        }
+        if let Some(ids) = &source_ids {
+            scope.source_ids = scope
+                .entries
+                .iter()
+                .map(|entry| {
+                    ids.get(entry.entry().item.path.as_path())
+                        .copied()
+                        .ok_or_else(|| invalid("Command pin has no captured tree identity."))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
         }
         let invocation = match &command.invocation {
             UserCommandInvocation::Separator => {
@@ -447,9 +501,44 @@ fn prepare_inner(
         processes: Arc::new(processes),
         pins: Arc::new(pins),
         scopes: Arc::new(scopes),
+        sources,
     };
     prepared.revalidate(cancel)?;
     Ok(prepared)
+}
+
+/// Adapt only worker-resolved native values to the existing flat template expansion contract.
+fn materialize_tree(
+    request: &UserCommandRequest,
+    resolved: &ResolvedUserCommandSources,
+) -> Result<UserCommandRequest, FsError> {
+    if request.context.active.as_ref() != Some(&resolved.directory) {
+        return Err(invalid(
+            "Captured command directory no longer matches its native panel location.",
+        ));
+    }
+    if resolved.selected.len() > 4096 {
+        return Err(invalid(
+            "Command activation exceeds the 4096 captured-target budget.",
+        ));
+    }
+    let view = Arc::new(DirectoryIndex::from_entries(&resolved.selected));
+    let count = resolved.selected.len();
+    let mut bits = vec![u64::MAX; count.div_ceil(64)];
+    if !count.is_multiple_of(64) {
+        *bits.last_mut().expect("nonempty selection") = (1 << (count % 64)) - 1;
+    }
+    let selection = Arc::new(SelectionSnapshot::from_bits(view.clone(), bits).map_err(invalid)?);
+    let mut materialized = request.clone();
+    materialized.captured = None;
+    materialized.context.focus = resolved.focus.clone();
+    materialized.context.files = Some(SelectedFiles {
+        selection,
+        view,
+        fallback: resolved.focus.as_ref().map(|entry| entry.path.clone()),
+    });
+    materialized.validate().map_err(invalid)?;
+    Ok(materialized)
 }
 
 fn selected(request: &UserCommandRequest, cancel: &Cancellation) -> Result<Vec<PathBuf>, FsError> {

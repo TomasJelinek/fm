@@ -109,3 +109,30 @@ six-thread budget. Evidence is in
 The downloaded CI log is
 `_build/qa/ci-test-batching-20261112/run-43206519259-linux.log`.
 These local results do not claim a green subsequent full CI run.
+
+## Follow-up archive request retirement ordering
+
+CI run `43212841993` on `758a16f` exposed a second teardown ordering assumption
+in the same archive test: `Arc::try_unwrap` expected the snapshot owner to be
+unique immediately after navigation joined. The joined task had only queued its
+`WorkerOwned<Request>` for cleanup; that request still retained the snapshots.
+The Linux log at `_build/qa/ci-43212841993/linux-check.log:2913` records the exact
+`size_sort_tests.rs:341` panic, “snapshot still has live actor owners”.
+
+A private retirement-worker gate now makes that ordering deterministic. The
+unchanged teardown failed one focused Linux test with the same panic (0.14 s).
+The test-only correction uses the existing root-shutdown drain after navigation
+has completed/cancelled, without requiring exclusive snapshot ownership. It
+proves the source remains alive while cleanup is held, releases the gate, then
+retains the actual source-destructor notification, off-caller-thread assertion
+and final weak-reference check. Sender destruction also releases the gate on
+panic. No sleeps, production ownership changes or serial-suite workaround were
+introduced; independent review found no remaining issue.
+
+All four `archives::size_sort_tests::` cases then passed on Linux (0.15 s test
+body, 0.773 s runner) and Windows (0.01 s body, 9.557 s runner), one process with
+two test threads each. Targeted engine rebuilds took 55.03 s and 23.06 s. Receipts,
+exact executable hashes, listed filters and raw logs are under
+`_build/qa/archive-teardown-20261112/{linux-red,linux-green,windows-green}/`;
+Cargo build receipts are alongside those directories. No full suite was run,
+and these local results do not claim a green later CI run.

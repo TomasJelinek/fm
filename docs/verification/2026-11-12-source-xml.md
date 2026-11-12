@@ -85,3 +85,14 @@ native desktop XML viewport/scroll qualification remains pending with the
 The feature is bounded lexical highlighting. It does not promise XML validation,
 schema resolution or highlighting at distant uncached positions beyond the existing
 context budget. No installed desktop XML workflow is claimed by Linux source tests.
+
+## Subsequent native desktop qualification
+
+The final `d5cf41d7` protected debug runtime was exercised with the exact
+`C:/Windows/System32/WwanFeatureTests.xml` file. F3 opened Source mode with visible
+XML coloring; wheel down/reverse captures show movement and return to the first
+line, and Escape closed the viewer. The application exited 0 with empty stderr
+and unchanged preferences. This supersedes the pending Windows desktop item above.
+The [foreground report](2026-11-12-foreground-scroll-resume.md) records file hashes,
+caption-guarded input, captures and the remaining refill/frame-pacing limits.
+Linux native desktop qualification remains separate.

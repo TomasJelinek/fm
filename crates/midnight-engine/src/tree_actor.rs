@@ -37,6 +37,8 @@ mod checksums;
 mod navigation;
 #[path = "tree_refresh.rs"]
 mod refresh;
+#[path = "tree_user_commands.rs"]
+mod user_command_capture;
 #[path = "tree_watch_scope.rs"]
 mod watch_scope;
 use refresh::Maintenance;

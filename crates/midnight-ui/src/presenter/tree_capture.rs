@@ -18,6 +18,15 @@ pub(super) enum Status {
 
 impl Capture {
     pub fn new(pane: &Pane) -> Option<Self> {
+        Self::with_empty(pane, false)
+    }
+
+    /// Location-only commands may capture a valid view with neither marks nor a file caret.
+    pub fn optional_targets(pane: &Pane) -> Option<Self> {
+        Self::with_empty(pane, true)
+    }
+
+    fn with_empty(pane: &Pane, allow_empty: bool) -> Option<Self> {
         if pane.loading || !pane.tree_input_ready() {
             return None;
         }
@@ -30,7 +39,11 @@ impl Capture {
             .and_then(|position| view.rows.get(*position))
             .filter(|row| row.selectable && !row.context_only)
             .map(|row| row.id);
-        if publication.selection.is_empty() && pane.tree.preview.is_empty() && fallback.is_none() {
+        if !allow_empty
+            && publication.selection.is_empty()
+            && pane.tree.preview.is_empty()
+            && fallback.is_none()
+        {
             return None;
         }
         Some(Self {

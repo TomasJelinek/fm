@@ -119,6 +119,27 @@ script variables remain subject to Cmd's own limits. The existing aggregate
 [native qualification](../verification/2026-11-12-cmd-custom-commands.md). Windows loader errors use a scoped thread error
 mode, restored on return, to report errors without blocking loader dialogs.
 
+## Inline-tree activation
+
+Native inline trees enter the same preparation, preview and launch pipeline using
+an opaque `CapturedUserCommandSources` owner. The tree worker captures selected
+occurrences separately from focus; only backend resolution creates native `Entry`
+values. Once, PerItem, grouped arguments and literal commands preserve their flat
+panel semantics. The original active/other directory contexts stay frozen and the
+captured native root must match the active directory. Archive/provider targets and
+context-only rows are refused without exporting or guessing native paths.
+
+The common preparer validates the entire capture and creates ordinary native pins.
+Provider leases establish registration/path context, not a historical filesystem
+snapshot. Directory listing size/mtime may be cached and describe mutable contents;
+they are not compared as identity before pinning. Exact kind is still required,
+regular-file size/mtime checks remain, and later launches revalidate the retained
+native identity and revision for directories as well as files.
+Per-process revalidation uses immutable captured entry IDs for that process's pin
+scope, including an unmarked focus when Once uses it. Provider ownership survives
+through the native launch call and uses the existing worker retirement domain.
+See [the tree contract](TREE_PANEL.md#native-custom-commands).
+
 ## Engine protocol and lifecycle
 
 - `PreviewUserCommand(Box<UserCommandRequest>)`

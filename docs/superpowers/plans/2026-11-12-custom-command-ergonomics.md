@@ -38,14 +38,14 @@ Confirm implementation capability before marking either platform available.
 
 ## Parallel tasks
 
-- [ ] UI: one-line list, compact header actions, retained drag reorder, selected
+- [x] UI: one-line list, compact header actions, retained drag reorder, selected
   item details; hide executable options for separators; explicit terminal mode;
   optional appearance/context sections; no preview side effects.
-- [ ] Core/persistence: Separator invocation, backward-compatible round trip,
+- [x] Core/persistence: Separator invocation, backward-compatible round trip,
   configuration bounds, fail-closed preview/execution, no shortcut registration.
-- [ ] Toolbar: render separators without buttons, preserve command identity,
+- [x] Toolbar: render separators without buttons, preserve command identity,
   suppress useless leading/trailing/repeated separator lines.
-- [ ] Icon backend: resource-only native selection/extraction, cancellable worker,
+- [x] Icon backend: resource-only native selection/extraction, cancellable worker,
   owned storage, Linux theme/file source and stale-response guards.
 - [ ] Verify: targeted configuration and actual Slint interaction tests, Windows
   and Linux affected boundaries, native smoke, final package build and documentation.
@@ -57,3 +57,14 @@ through a retained shortcut; filenames containing shell metacharacters; cancelli
 Options after selecting an icon; resource picker closed during shutdown; minimum
 window sizes and font/density changes. No checks should inspect or expose secret
 environment values.
+
+## Implementation checkpoint
+
+The four source workstreams above are implemented. The compact forms/separators,
+managed artwork and native snapshot verification reports dated 12 November record
+focused Windows/Linux and actual component checks. The final debug runtime passed
+startup and foreground viewer/navigation qualification. Interactive Windows icon
+picker acceptance/cancellation, Linux portal selection and a final distributable
+release remain unqualified; the final verification checkbox stays open for those
+workflow checks. Existing unchanged legacy icon references are preserved until
+reselected; every new choice requires a managed copy.

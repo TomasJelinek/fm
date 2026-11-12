@@ -510,12 +510,36 @@ native branches through tree maintenance and preserve the expanded panel.
 See [metadata verification](../verification/2026-11-12-native-tree-metadata.md)
 for the actual test scope and remaining platform/desktop limits.
 
+## Native Custom Commands
+
+Expanded native trees use the same configured Program/Terminal commands and
+preview workflow as flat panels. Activation captures the exact acknowledged view,
+marks and focused occurrence independently. Once binds file scalars to the captured
+focus; Per selected item and grouped arguments retain marked display order, with
+focused fallback only when no items are marked. A literal Once command can run at
+the parent row without turning `..` into an argument.
+
+The worker resolves only retained native provider targets and preserves each source
+kind. Context-only rows never supply file arguments. Mixed archive/provider
+arguments and revoked captures are refused; display paths and temporary exports never supply argument authority. The
+captured native root must match the original active-directory context. Existing
+native entry/directory pins, command preflight and process admission are reused.
+Whole-capture validation precedes preparation; each process then revalidates only
+its immutable source IDs and native pin scope. Provider owners and pins stay alive
+through the actual native launch call and retire on the existing worker domain.
+
+Pending marks settle before capture. Queue pressure retains the original command,
+focus and locations for retry; navigation, reprojection, settings-preview edits or
+shutdown cancel pending captures. Accepted launches survive later panel navigation.
+Marks and expanded branches remain unchanged. See
+[verification](../verification/2026-11-12-tree-custom-commands.md) for test scope.
+
 ## Remaining integration
 
 TREE-01 remains partially integrated. Native Delete, Rename and metadata editing join the typed capture
-consumers described above: viewers, external editor, checksums, Copy/Move and native
-clipboard/drag operations. This is not generic provider write support. Directory
-comparison, Custom Commands, context menus and virtual clipboard
+consumers described above: viewers, external editor, checksums, Custom Commands,
+Copy/Move and native clipboard/drag operations. This is not generic provider write support. Directory
+comparison, context menus and virtual clipboard
 export still require their own typed consumer integration and remain guarded.
 Original flat panels remain available; opening a folder returns to the ordinary
 operation path. Pane-directory actions such as terminal, bookmarks, creation and

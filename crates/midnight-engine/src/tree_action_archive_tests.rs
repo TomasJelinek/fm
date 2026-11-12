@@ -537,3 +537,33 @@ fn tree_metadata_archive_descendant_never_acquires_native_authority() {
     ));
     assert_eq!(capacity.available_permits(), 1);
 }
+
+#[test]
+fn tree_user_command_capture_rejects_archive_arguments_without_native_fallback() {
+    let (mut session, _mount, _directory) = archive_fixture();
+    let parent = session.projection().rows[0].id;
+    let expanded = expand(&mut session, parent);
+    let selected = select(
+        &mut session,
+        TreeSelectionAction::Toggle(expanded.view.rows[1].id),
+    );
+    let capacity = Arc::new(Semaphore::new(1));
+    let request = midnight_core::TreeUserCommandRequest {
+        view: selected.view,
+        request: TreeRequestId(session.last_request.0 + 1),
+        selection_revision: selected.selection_revision,
+        selection: selected.selection,
+        focus: None,
+        cancel: Cancellation::default(),
+    };
+    assert!(matches!(
+        session.capture_user_command(
+            &request,
+            &capacity,
+            &crate::tree_rename::Retirement::testing(),
+            &Cancellation::default()
+        ),
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(capacity.available_permits(), 1);
+}

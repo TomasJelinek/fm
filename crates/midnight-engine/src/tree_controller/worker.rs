@@ -335,6 +335,23 @@ impl Worker {
                     .capture_editor(request, &self.copy_capacity, cancel)
                     .map_err(|error| crate::tree_diagnostics::diagnostic(&self.reports, &error)),
             })),
+            TreeCommand::UserCommand(request) => {
+                let result = session.capture_user_command(
+                    request,
+                    &self.copy_capacity,
+                    &self.rename,
+                    cancel,
+                );
+                let retryable = matches!(&result, Err(ProviderError::ResourceLimited));
+                Ok(Some(TreeEvent::UserCommandCaptured {
+                    stamp: request.view.stamp,
+                    request: request.request,
+                    retryable,
+                    result: result.map_err(|error| {
+                        crate::tree_diagnostics::diagnostic(&self.reports, &error)
+                    }),
+                }))
+            }
             TreeCommand::Checksums(request) => Ok(Some(TreeEvent::ChecksumsCaptured {
                 stamp: request.view.stamp,
                 request: request.request,

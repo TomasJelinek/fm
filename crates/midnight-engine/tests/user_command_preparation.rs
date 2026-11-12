@@ -63,6 +63,7 @@ fn single_focus_and_group_selection_are_captured_literally_without_focus_substit
         fs::write(temp.path().join(name), b"data").unwrap();
     }
     let request = UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(1),
         command: UserCommandId::new("tool").unwrap(),
         configuration: configuration(
@@ -100,6 +101,7 @@ fn per_item_prepares_every_plan_and_refuses_a_later_missing_input_before_any_spa
         fs::write(temp.path().join(name), b"data").unwrap();
     }
     let mut request = UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(2),
         command: UserCommandId::new("tool").unwrap(),
         configuration: configuration(
@@ -141,6 +143,7 @@ fn terminal_source_is_literal_and_only_declared_captured_values_become_native_en
         variables: vec![UserCommandVariable::FilePath],
     };
     let mut request = UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(3),
         command: UserCommandId::new("tool").unwrap(),
         configuration: Arc::new(commands),
@@ -171,6 +174,7 @@ fn grouped_selection_can_exceed_stored_template_count_without_truncating_native_
     let selection =
         Arc::new(SelectionSnapshot::from_bits(view.clone(), vec![u64::MAX, 1]).unwrap());
     let request = UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(4),
         command: UserCommandId::new("tool").unwrap(),
         configuration: configuration(
@@ -216,6 +220,7 @@ fn disabled_command_preview_is_allowed_but_execution_remains_disabled() {
     .clone();
     commands[0].enabled = false;
     let request = UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(5),
         command: UserCommandId::new("tool").unwrap(),
         configuration: Arc::new(commands),

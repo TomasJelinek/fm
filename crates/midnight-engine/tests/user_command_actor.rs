@@ -39,6 +39,7 @@ impl UserCommandService for Native {
 }
 fn request(id: u64, directory: &Path) -> UserCommandRequest {
     UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(id),
         command: UserCommandId::new("test").unwrap(),
         configuration: Arc::new(vec![UserCommand {

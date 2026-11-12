@@ -180,6 +180,7 @@ fn dropping_prepared_command_awaiting_process_admission_retires_native_pins_off_
     };
     let work = Work {
         request: UserCommandRequest {
+            captured: None,
             id: UserCommandRequestId(1),
             command: configuration.id.clone(),
             configuration: Arc::new(vec![configuration]),

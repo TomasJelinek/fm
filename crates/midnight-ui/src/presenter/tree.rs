@@ -111,6 +111,7 @@ impl Presenter {
         self.cancel_tree_clipboard(Some(pane));
         self.cancel_tree_editor(Some(pane));
         self.cancel_tree_checksums(Some(pane));
+        self.cancel_tree_user_commands(Some(pane));
         self.cancel_tree_metadata(Some(pane));
         self.cancel_tree_rename(Some(pane));
         self.cancel_tree_delete(Some(pane));
@@ -379,6 +380,7 @@ impl Presenter {
         self.flush_tree_clipboard(send);
         self.flush_tree_editor(send);
         self.flush_tree_checksums(send);
+        self.flush_tree_user_commands(send);
         self.flush_tree_metadata(send);
         self.flush_tree_rename(send);
         self.flush_tree_delete(send);
@@ -479,6 +481,9 @@ impl Presenter {
             | TreeEvent::ChecksumsCaptured {
                 result: Err(error), ..
             }
+            | TreeEvent::UserCommandCaptured {
+                result: Err(error), ..
+            }
             | TreeEvent::MetadataCaptured {
                 result: Err(error), ..
             }
@@ -518,6 +523,14 @@ impl Presenter {
                 result,
             } => {
                 self.tree_delete_captured(stamp, request, result, send);
+            }
+            TreeEvent::UserCommandCaptured {
+                stamp,
+                request,
+                retryable,
+                result,
+            } => {
+                self.tree_user_command_captured(stamp, request, retryable, result, send);
             }
             TreeEvent::ChecksumsCaptured {
                 stamp,

@@ -265,6 +265,7 @@ struct NativeServices {
     directory: Arc<dyn FileSystem>,
     watch: Option<Arc<dyn WatchService>>,
     clipboard: Option<Arc<dyn ClipboardService>>,
+    commands: Option<(Arc<dyn UserCommandService>, Vec<UserCommand>)>,
 }
 
 impl Harness {
@@ -320,6 +321,7 @@ impl Harness {
                 directory,
                 watch: None,
                 clipboard: None,
+                commands: None,
             }),
         )
     }
@@ -342,6 +344,7 @@ impl Harness {
                 directory,
                 watch: Some(watch),
                 clipboard: None,
+                commands: None,
             }),
         )
     }
@@ -365,6 +368,30 @@ impl Harness {
                 directory,
                 watch: Some(watch),
                 clipboard: Some(clipboard),
+                commands: None,
+            }),
+        )
+    }
+
+    pub fn with_native_user_commands(
+        pane: PaneId,
+        path: PathBuf,
+        native: Arc<midnight_platform::LocalFileSystem>,
+        commands: Arc<dyn UserCommandService>,
+        configuration: Vec<UserCommand>,
+    ) -> Self {
+        Self::with_fixture(
+            pane,
+            false,
+            &["large", "small", "empty"],
+            true,
+            Some(native.clone()),
+            Some(NativeServices {
+                path,
+                directory: native,
+                watch: None,
+                clipboard: None,
+                commands: Some((commands, configuration)),
             }),
         )
     }
@@ -406,11 +433,13 @@ impl Harness {
             directory,
             watch,
             clipboard,
+            commands: user_commands,
         } = native.unwrap_or_else(|| NativeServices {
             path: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tree-filter-bridge"),
             directory: Arc::new(Files(calls.clone())),
             watch: None,
             clipboard: None,
+            commands: None,
         });
         let watching = watch.is_some();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -439,6 +468,12 @@ impl Harness {
         if let Some(clipboard) = clipboard {
             engine.configure_clipboard().unwrap().install(clipboard);
         }
+        let command_configuration = if let Some((service, configuration)) = user_commands {
+            engine.configure_user_commands().unwrap().install(service);
+            configuration
+        } else {
+            Vec::new()
+        };
         let engine = runtime.spawn(engine.run(receive));
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
         let requests = Rc::new(RefCell::new(Vec::new()));
@@ -506,7 +541,10 @@ impl Harness {
         // Streaming rows are visible before disclosure is available, so wait for
         // the completed listings rather than clicking an inert loading row.
         // A completed presence probe may already replace Unknown with HasFolders.
-        let mut preferences = UserPreferences::default();
+        let mut preferences = UserPreferences {
+            user_commands: Arc::new(command_configuration),
+            ..Default::default()
+        };
         preferences.tabs[0].paths = vec![path.clone()];
         preferences.tabs[1].paths = vec![path.clone()];
         if copying {

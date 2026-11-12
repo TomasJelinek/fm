@@ -248,6 +248,7 @@ fn command_pane(command: &TreeCommand) -> PaneId {
         TreeCommand::Metadata(request) => request.view.stamp.pane,
         TreeCommand::Rename(request) => request.view.stamp.pane,
         TreeCommand::Checksums(request) => request.view.stamp.pane,
+        TreeCommand::UserCommand(request) => request.view.stamp.pane,
         TreeCommand::Select(request) => request.view.stamp.pane,
         TreeCommand::Reproject(request) => request.view.stamp.pane,
         TreeCommand::RefreshLoaded(request) => request.view.stamp.pane,
@@ -269,6 +270,7 @@ fn command_navigation(command: &TreeCommand) -> NavigationId {
         TreeCommand::Metadata(request) => request.view.stamp.navigation,
         TreeCommand::Rename(request) => request.view.stamp.navigation,
         TreeCommand::Checksums(request) => request.view.stamp.navigation,
+        TreeCommand::UserCommand(request) => request.view.stamp.navigation,
         TreeCommand::Select(request) => request.view.stamp.navigation,
         TreeCommand::Reproject(request) => request.view.stamp.navigation,
         TreeCommand::RefreshLoaded(request) => request.view.stamp.navigation,
@@ -333,6 +335,12 @@ fn diagnostic_rejection(command: TreeCommand, error: TreeDiagnostic, retryable: 
         TreeCommand::Edit(request) => TreeEvent::EditorCaptured {
             stamp: request.view.stamp,
             request: request.request,
+            result: Err(error),
+        },
+        TreeCommand::UserCommand(request) => TreeEvent::UserCommandCaptured {
+            stamp: request.view.stamp,
+            request: request.request,
+            retryable,
             result: Err(error),
         },
         TreeCommand::Checksums(request) => TreeEvent::ChecksumsCaptured {

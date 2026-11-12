@@ -44,6 +44,7 @@ mod tree_delete;
 mod tree_drag;
 mod tree_editor;
 mod tree_refresh;
+mod tree_user_commands;
 mod user_commands;
 mod volumes;
 mod watch;

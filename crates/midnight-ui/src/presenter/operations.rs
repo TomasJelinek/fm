@@ -282,6 +282,7 @@ impl Presenter {
         self.operations.closing = true;
         self.cancel_tree_editor(None);
         self.cancel_tree_checksums(None);
+        self.cancel_tree_user_commands(None);
         self.cancel_tree_metadata(None);
         self.cancel_tree_rename(None);
         self.cancel_tree_delete(None);

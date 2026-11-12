@@ -18,6 +18,8 @@ pub struct UserCommandRequest {
     pub command: UserCommandId,
     pub configuration: Arc<Vec<UserCommand>>,
     pub context: UserCommandContext,
+    /// Typed tree arguments resolve only during backend preparation.
+    pub captured: Option<Arc<dyn crate::CapturedUserCommandSources>>,
 }
 impl UserCommandRequest {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -25,6 +27,13 @@ impl UserCommandRequest {
             return Err("Command request IDs must be nonzero.");
         }
         crate::validate_user_commands(&self.configuration)?;
+        if self.captured.is_some() && (self.context.files.is_some() || self.context.focus.is_some())
+        {
+            return Err(
+                "Typed command sources cannot be combined with caller-provided file arguments.",
+            );
+        }
+
         if self.context.active.is_none()
             && (self.context.files.is_some() || self.context.focus.is_some())
         {

@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::Condvar;
 
-fn request(id: u64, directory: &Path) -> UserCommandRequest {
+pub(super) fn request(id: u64, directory: &Path) -> UserCommandRequest {
     let command = UserCommand {
         id: UserCommandId::new("test").unwrap(),
         name: "Test".into(),
@@ -16,6 +16,7 @@ fn request(id: u64, directory: &Path) -> UserCommandRequest {
         },
     };
     UserCommandRequest {
+        captured: None,
         id: UserCommandRequestId(id),
         command: command.id.clone(),
         configuration: Arc::new(vec![command]),
@@ -180,6 +181,54 @@ impl UserCommandService for Native {
 
 #[tokio::test]
 async fn cancellation_and_shutdown_keep_native_launch_and_process_permits_until_the_call_returns() {
+    blocked_native_launch(false).await;
+}
+
+#[tokio::test]
+async fn tree_user_command_sources_live_through_blocked_launch_and_retire_off_caller() {
+    blocked_native_launch(true).await;
+}
+
+#[derive(Debug)]
+struct CapturedSources {
+    directory: std::path::PathBuf,
+    dropped: Arc<Mutex<Option<std::thread::ThreadId>>>,
+    retired: Arc<tokio::sync::Notify>,
+}
+impl Drop for CapturedSources {
+    fn drop(&mut self) {
+        *self.dropped.lock().unwrap() = Some(std::thread::current().id());
+        self.retired.notify_one();
+    }
+}
+impl CapturedUserCommandSources for CapturedSources {
+    fn stamp(&self) -> TreeViewStamp {
+        TreeViewStamp {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            session: TreeSessionId(1),
+            revision: TreeRevision(1),
+        }
+    }
+    fn request(&self) -> TreeRequestId {
+        TreeRequestId(1)
+    }
+    fn resolve(&self, _: &Cancellation) -> Result<ResolvedUserCommandSources, FsError> {
+        Ok(ResolvedUserCommandSources {
+            directory: self.directory.clone(),
+            selected: Arc::from([]),
+            focus: None,
+        })
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+
+async fn blocked_native_launch(captured: bool) {
+    let caller = std::thread::current().id();
+    let dropped = Arc::new(Mutex::new(None));
+    let retired = Arc::new(tokio::sync::Notify::new());
     let barrier = Arc::new(Barrier {
         entered: tokio::sync::Notify::new(),
         released: Mutex::new(false),
@@ -208,9 +257,15 @@ async fn cancellation_and_shutdown_keep_native_launch_and_process_permits_until_
         outbox,
     );
     let directory = tempfile::tempdir().unwrap();
-    controller
-        .start(request(1, directory.path()), false)
-        .unwrap();
+    let mut request = request(1, directory.path());
+    if captured {
+        request.captured = Some(Arc::new(CapturedSources {
+            directory: directory.path().to_owned(),
+            dropped: dropped.clone(),
+            retired: retired.clone(),
+        }));
+    }
+    controller.start(request, false).unwrap();
     tokio::time::timeout(Duration::from_secs(5), barrier.entered.notified())
         .await
         .unwrap();
@@ -221,6 +276,10 @@ async fn cancellation_and_shutdown_keep_native_launch_and_process_permits_until_
     tokio::task::yield_now().await;
     assert!(!shutdown.is_finished());
     assert_eq!(processes.available_permits(), 0);
+    assert!(
+        dropped.lock().unwrap().is_none(),
+        "captured provider cannot retire during launch"
+    );
     barrier.release();
     tokio::time::timeout(Duration::from_secs(5), shutdown)
         .await
@@ -228,6 +287,19 @@ async fn cancellation_and_shutdown_keep_native_launch_and_process_permits_until_
         .unwrap();
     assert_eq!(launches.available_permits(), 1);
     assert_eq!(processes.available_permits(), 1);
+    if captured {
+        tokio::time::timeout(Duration::from_secs(5), retired.notified())
+            .await
+            .unwrap();
+        let retired = dropped
+            .lock()
+            .unwrap()
+            .expect("captured source must be retired");
+        assert_ne!(
+            retired, caller,
+            "captured source dropped on the dispatcher/UI caller"
+        );
+    }
 }
 #[test]
 fn separator_preview_and_execution_never_enter_the_worker_queue() {

@@ -3,8 +3,9 @@ use super::*;
 
 #[derive(Default)]
 pub(crate) struct CommandLaunches {
+    pub(super) tree: [Option<tree_user_commands::Pending>; 2],
     next: u64,
-    next_submission: u64,
+    pub(super) next_submission: u64,
     pub(crate) jobs: Vec<LaunchJob>,
     pub(crate) preview_ready: Option<UserCommandRequestId>,
     preview_requested: Option<UserCommandRequestId>,
@@ -44,7 +45,7 @@ impl SettingsPreviewOrigin {
 
 #[derive(Clone)]
 pub(super) struct CommandCapture {
-    request: UserCommandRequest,
+    pub(super) request: UserCommandRequest,
     name: String,
     preview_only: bool,
     pub(super) settings_preview: Option<SettingsPreviewOrigin>,
@@ -153,13 +154,14 @@ impl Presenter {
                 .native_capabilities()
                 .then(|| other.display_path().to_owned()),
             files: None,
-            focus: (p.native_capabilities() && !p.parent_cursor)
+            focus: (p.tree_view().is_none() && p.native_capabilities() && !p.parent_cursor)
                 .then(|| p.cursor.and_then(|id| p.entry_by_id(id)).cloned())
                 .flatten(),
         };
         let capture = CommandCapture {
             name: command.name.clone(),
             request: UserCommandRequest {
+                captured: None,
                 id: UserCommandRequestId(next),
                 command: command.id.clone(),
                 configuration,
@@ -168,6 +170,9 @@ impl Presenter {
             preview_only,
             settings_preview,
         };
+        if p.tree_view().is_some() {
+            return self.request_tree_user_command(pane, capture, send);
+        }
         if p.native_capabilities() {
             self.request_selection_action(
                 pane,
@@ -190,8 +195,18 @@ impl Presenter {
 
     pub(super) fn submit_user_command(
         &mut self,
+        capture: CommandCapture,
+        files: Option<SelectedFiles>,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        self.submit_user_command_captured(capture, files, false, send)
+    }
+
+    pub(super) fn submit_user_command_captured(
+        &mut self,
         mut capture: CommandCapture,
         files: Option<SelectedFiles>,
+        retry_queue: bool,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
         if self.operations.closing
@@ -225,6 +240,9 @@ impl Presenter {
             // listing/selection allocations until backend reclamation drains them.
             self.retired
                 .push(Box::new((files.view.clone(), files.selection.clone())));
+        }
+        if let Some(sources) = &capture.request.captured {
+            self.retired.push(Box::new(sources.clone()));
         }
         capture.request.context.files = files;
         // Selection replies from two panes can arrive in reverse gesture order.
@@ -273,11 +291,13 @@ impl Presenter {
             self.command_launches.jobs.push(job);
             true
         } else {
-            self.report_user_command_error(
-                job.settings_preview.as_ref(),
-                "Custom Commands",
-                "Request queue is busy. The command was not submitted.".into(),
-            );
+            if !retry_queue {
+                self.report_user_command_error(
+                    job.settings_preview.as_ref(),
+                    "Custom Commands",
+                    "Request queue is busy. The command was not submitted.".into(),
+                );
+            }
             false
         }
     }

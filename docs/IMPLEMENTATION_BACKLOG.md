@@ -106,22 +106,28 @@ added. Actual BAT Text software and D3D traces show no opposite thumb steps thro
 refills; the original failed traces remain preserved. See the
 [coordinate verification](verification/2026-11-12-scroll-thumb-continuity.md).
 
-**SCROLL-02 — P1, investigate D3D pacing:** the final valid 12-case matrix has 10 original
-wheel/drag guard passes and two D3D sparse-frame failures. A preserved pre-change probe
-reproduces 230–652 ms D3D gaps on the same Markdown/runtime/geometry, so the observed
-large delay is not unique to the coordinate change. Fresh locked-desktop attribution
-places all 55 interior samples from nine slow moving redraws in the DX12 swapchain
-frame-latency wait, before Slint item rendering. Windows LockApp owned the foreground;
-valid foreground and actual-application qualification remain pending after unlock.
-See the [D3D attribution](verification/2026-11-12-d3d-scroll-pacing.md). No renderer
-policy or performance gate was changed.
-Qualify native input-to-presentation pacing without source scans, weakening the existing
-guards, or claiming CPU-source crop correspondence as GPU readback. Software at BAT0.1
-preserves approximately +135,+135,-135 pixel motion and returns to the same thumb
-position on reversal; that does not establish uniform D3D or universal 60 Hz scrolling.
-The [original glyph evidence](verification/2026-11-12-glyph-compositing.md) and
-[corrected native gate](verification/2026-11-12-scroll-thumb-continuity.md) retain the
-invalid first-batch seek cases and final performance limitations separately.
+**SCROLL-02 — P1, remaining refill/drag costs:** foreground qualification now
+passes all 11 original guards with 258 visible, foreground samples. The matched
+BAT refill's first covered redraw now moves rather than remaining stationary;
+its maximum first-notch gap improved from 73.177 to 56.804 ms. The following
+complete-page retained-seek change removes repeated raster resets during JSON/XML
+thumb dragging. A same-input foreground comparison reduces JSON's maximum content
+gap from 73.091 to 24.624 ms and XML's from 78.467 to 41.918 ms, while XML's p95
+slightly increases. Partial Markdown still has roughly 33 ms content intervals;
+uniform 60 Hz presentation is not established. The 76 focused viewer tests,
+strict Clippy, matched drag comparison and final BAT/Markdown guards are recorded
+in [retained-seek qualification](verification/2026-11-12-retained-complete-page-seek.md).
+This evidence uses staged probes; the latest combined app deployment remains separate.
+The fresh deployed application also passed the supplied BAT/XML viewing and
+wheel/reverse checks, three view modes and previous/next-file cycling with Unicode
+fixtures. See [foreground qualification](verification/2026-11-12-foreground-scroll-resume.md).
+
+The earlier [locked-desktop D3D attribution](verification/2026-11-12-d3d-scroll-pacing.md)
+remains historical evidence; its foreground prerequisite is no longer pending.
+It is not a substitute for the newer foreground results or proof of GPU readback.
+Further work must reduce measured refill/drag costs without whole-file loading,
+weaker Unicode/layout bounds or relaxed performance guards. Linux desktop pacing
+and universal 60 Hz remain unqualified.
 
 ## CI execution follow-up
 
@@ -134,6 +140,13 @@ artifacts. The [measured experiment](verification/2026-11-12-ci-test-batching.md
 the same 19 tests in eight targets: batch eight was 13.8% faster than serial in paired
 local runs. This representative result is not a measured full-CI speedup. Library,
 binary, example and doctest gates and active feature selection are unchanged.
+
+The independent headless targeted runner now executes explicit Cargo-reported
+artifacts concurrently, with CPU/thread limits, coalesced filters, per-process
+output and bounded cleanup. It supplements local verification; CI's Cargo-native
+coverage and retirement policy remain unchanged. The [runner qualification](verification/2026-11-12-parallel-tests.md)
+records real Windows Rust runs and Windows/Linux process regressions. Actual
+desktop input and performance measurements remain serial.
 
 ## Scope and completed baseline
 
@@ -170,6 +183,25 @@ The following are implemented baselines, not new backlog items:
 | Runtime, windows/dialogs | [Runtime discovery](developer/RUNTIME_DISCOVERY.md), [small window](verification/small-window.md), [geometry](verification/window-geometry.md), [UI follow-ups](verification/2026-11-07-ui-followups.md) | Protected SHA-256-bound Windows runtime registration; exact 320x200 minimum, compact layout, saved bounds, parent-sized viewers/comparator, movable bounded dialogs, navigation-only `..`. |
 | Commander tools | `crates/midnight-engine/src/{comparison,filters,filename_colors}.rs`; [feature status](FEATURE_STATUS.md) | Directory comparison, masks/regex, filename colors/presets, keyboard editor, locations/OneDrive, Jobs, command editor/history and terminal launch. |
 
+## Integrated 12 November follow-up
+
+Commit `1c1b0b6` includes native tree metadata, captured Find actions, compact
+Custom Commands/editor forms, inert separators and managed 128-pixel icon copies.
+It also adds the Source viewer's XML profile and configurable previous-file and
+selected-item navigation. Alt+2/3/5 select Brief/Detailed/Thumbnails; Backspace and
+Alt+Left reverse viewer file order, while Space and Alt+Right advance it. Saved
+shortcut overrides remain authoritative. Comparison has a separate key context.
+HTML physical navigation uses Chromium's live editable focus; arbitrary custom
+file-cycle chords still require generic browser arbitration and are explicitly
+pending. See [HTML key scope](verification/2026-11-12-html-physical-shortcuts.md).
+
+The final debug runtime is qualified for backend/native/software startup and the
+recorded foreground workflows. [Integration evidence](verification/2026-11-12-panel-controls-and-notices.md)
+links the targeted gates and remaining limitations. This does not close generic
+provider writes, all tree consumers, native icon-picker interaction, Linux desktop
+workflows or full release qualification. The new hosted CI run must finish before
+it is counted as green.
+
 ## Assigned functional requirements
 
 All rows target Windows x64 and Linux x86-64 unless a narrower platform is stated.
@@ -200,6 +232,18 @@ passed their recorded gates. Linux UI and native OS clipboard interoperability
 remain unqualified; bridge tests substitute the clipboard boundary. Archive/mixed
 exports and other guarded tree consumers are not enabled. See the
 [clipboard evidence](verification/2026-11-10-tree-clipboard.md).
+Native Custom Commands now also retain acknowledged tree selection and independent
+focus through the common preparation/launch path. Per-process validation uses
+indexed immutable entry identities, avoiding a full selection rescan for every
+launched process. The Windows targeted gate passes 63 cases. Linux targeted gates
+also pass, including actual Slint callbacks, native filesystem preparation and
+real external argv/cwd probe processes. Exact post-pin mutation/replacement,
+cancellation and retained-provider cleanup remain covered. See
+[tree command evidence](verification/2026-11-12-tree-custom-commands.md); arbitrary
+configured programs and interactive terminal behavior need their own qualification.
+Archive command exports, directory comparison and remaining provider consumers
+remain guarded; this is not full TREE-01 completion.
+
 Yellow size-warning reports are connected through native/archive/tree scanners,
 backend snapshots and all panel views. Red diagnostics and full-error Copy retain
 exact occurrence authority. Windows/Linux backend and Windows UI evidence,

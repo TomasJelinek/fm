@@ -77,6 +77,7 @@ mod tree_rename;
 mod tree_search;
 mod tree_selection;
 mod tree_sizes;
+mod tree_user_commands;
 pub(crate) mod user_command_settings;
 #[cfg(test)]
 mod user_command_settings_tests;
@@ -361,6 +362,7 @@ impl Presenter {
         self.retired
             .push(Box::new(mem::take(&mut self.operations.metadata_results)));
         self.cancel_tree_checksums(None);
+        self.cancel_tree_user_commands(None);
         self.retire_warning_viewer();
         self.cancel_panel_filter();
         self.retired.push(Box::new(mem::take(&mut self.file_list)));

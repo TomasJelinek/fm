@@ -235,3 +235,5 @@ Integration evidence is in [viewer implementation verification](../verification/
 and [public API/SDK verification](../verification/plugin-api-sdk.md). The latter
 records the earlier isolated SDK gate; its test counts are historical, not a
 replacement for current workspace checks.
+
+For coordinated local checks, see [targeted parallel test execution](TEST_EXECUTION.md).
