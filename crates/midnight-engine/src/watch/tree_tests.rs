@@ -186,6 +186,8 @@ async fn callback_between_admission_and_commit_survives_ack_and_unchanged_commit
     let (sender, mut events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
+        Retirement::testing(),
+        TaskLifetime::testing((files.clone(), native.clone())),
         files,
         Some(native.clone()),
         Outbox {
@@ -307,6 +309,8 @@ async fn stable_slots_cap_one_batch_and_poll_all_remaining() {
     let (sender, mut events) = mpsc::channel(16);
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
+        Retirement::testing(),
+        TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
         Some(native.clone()),
         Outbox {
@@ -449,6 +453,8 @@ async fn fatal_session_retirement_suppresses_callbacks_and_delayed_flat_ack() {
     let (sender, mut events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
+        Retirement::testing(),
+        TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
         Some(native.clone()),
         Outbox {

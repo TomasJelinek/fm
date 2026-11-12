@@ -37,9 +37,10 @@ these migrated boundaries.
 
 ## Limits
 
-This is not complete LIFE-01 closure. Desktop/watch/clipboard and other independently
-spawned work still need individual audits, and repeated builder replacement is an
-existing separate gap. The shared service guard does not protect raw newly captured
+This is not complete LIFE-01 closure. Desktop/watch/clipboard were open at this
+checkpoint and are subsequently covered by the
+[native-service batch](2026-11-12-native-service-retirement.md). Other independently
+spawned work and repeated builder replacement remain separate gaps. The shared service guard does not protect raw newly captured
 return values. Arbitrary native calls/destructors may still block; the application's
 outer shutdown grace bounds the wait, not the provider implementation itself.
 

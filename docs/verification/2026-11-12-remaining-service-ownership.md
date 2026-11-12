@@ -8,6 +8,14 @@ or new test results. Line references below identify that inspected source; they
 can move in later commits. LIFE-01 remains open. Existing normal-path tests do not
 establish cancellation-safe ownership at these remaining boundaries.
 
+## Follow-up
+
+The three migrations described below are implemented in the subsequent
+[native-service batch](2026-11-12-native-service-retirement.md). This note retains the
+original inspection and proposed tests; final results belong to that batch record.
+The [remaining inventory](2026-11-12-remaining-actor-ownership-inventory.md) keeps other
+actors and builder replacement open. No blanket LIFE-01 closure is implied.
+
 ## Desktop service tasks
 
 `crates/midnight-engine/src/desktop.rs:53` and `:59` spawn icon/context futures

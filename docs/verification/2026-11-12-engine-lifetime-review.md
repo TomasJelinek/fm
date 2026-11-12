@@ -17,8 +17,10 @@ This review describes the earlier 74-slot implementation. The later
 font service children, checksum payloads and Custom Command captures/processes.
 Its ledger is 144 payload slots plus four intake waiters and a separate eight-slot
 process tracker. These changes address the corresponding findings below; desktop,
-watch, clipboard and builder-replacement gaps remain separately open. Historical
-observations and original verification are retained rather than rewritten.
+watch and clipboard were still open at that checkpoint. The subsequent
+[native-service batch](2026-11-12-native-service-retirement.md) addresses those three
+boundaries; its ledger and remaining actor inventory are current. Builder replacement
+remains open. Historical observations and original verification are retained.
 
 ## Reviewed changed boundaries
 

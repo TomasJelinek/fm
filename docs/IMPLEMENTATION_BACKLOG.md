@@ -49,8 +49,9 @@ bugs were reproduced. Startup now reserves a plain cleanup worker and bounded sl
 before taking provider ownership. The synchronous Engine run wrapper owns suspended
 execution and the complete command inbox; Copy/Move/Delete handoffs, shared snapshots
 and drag state retain their cleanup reservations through actual destruction.
-The [engine contract](developer/ENGINE_LIFETIME.md) now describes 144 payload slots,
-four bounded intake waiters and a separate eight-slot native process tracker. The
+The [engine contract](developer/ENGINE_LIFETIME.md) now describes 153 payload slots,
+six bounded intake waiters, eight shared terminal/editor/Custom Command process
+slots and sixteen independent opener slots. The
 [initial integrated evidence](verification/2026-11-12-engine-lifetime-integration.md)
 remains historical; the [child-task verification](verification/2026-11-12-task-services.md)
 records the additional shared service guard for Find, preferences and fonts,
@@ -62,11 +63,17 @@ failure was reproduced. A single blocked native destructor or held send permit c
 stall its bounded cleanup domain; UI/executor Drop does not wait. Custom Command
 process quota remains occupied through observed exit and actual native destruction.
 
-This is not full LIFE-01 closure. Independently spawned desktop/watch/clipboard
-work and ordinary terminal/editor process returns need further protection; repeated
-Engine builder replacement also remains open. The
-[remaining boundary review](verification/2026-11-12-remaining-service-ownership.md)
-records the next audit findings. The
+The [native-service follow-up](verification/2026-11-12-native-service-retirement.md)
+adds guarded desktop/editor process outputs, both watch pane controls and clipboard
+inbox/rejection cleanup. Controller Drop now stops a clipboard pump even with a full
+result queue; native sessions/subscriptions remain on their original threads.
+
+This is not full LIFE-01 closure. The
+[remaining actor inventory](verification/2026-11-12-remaining-actor-ownership-inventory.md)
+identifies Make File List destination pins/generated files, dynamically discovered
+network providers, archive results/mailboxes and other independently spawned service
+tasks. Repeated Engine builder replacement also remains open. These are inspected
+follow-ups, not claimed reproduced failures or an exhaustive completion audit. The
 [runtime-independent retirement plan](superpowers/plans/2026-11-12-runtime-independent-retirement.md)
 tracks implementation and outstanding cross-actor qualification.
 

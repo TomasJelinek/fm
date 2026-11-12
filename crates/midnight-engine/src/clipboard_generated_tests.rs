@@ -98,7 +98,7 @@ fn cancelled_request_lease_rejects_even_empty_generated_output() {
 async fn queued_generated_copy_keeps_cancellable_lease_until_worker_preparation() {
     let (sender, mut queued) = mpsc::channel(1);
     let (events, _received) = mpsc::channel(1);
-    let mut controller = Controller::new(
+    let mut controller = Controller::testing(
         None,
         Outbox {
             sender: events,
@@ -148,7 +148,7 @@ async fn cancellation_during_native_open_is_checked_before_clipboard_mutation() 
     let (sender, mut events) = mpsc::channel(1);
     let lease = Cancellation::default();
     let writes = Arc::new(AtomicUsize::new(0));
-    let mut controller = Controller::new(
+    let mut controller = Controller::testing(
         Some(Arc::new(CancelOnOpen {
             lease: lease.clone(),
             writes: writes.clone(),

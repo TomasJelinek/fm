@@ -235,3 +235,25 @@ fn id_panic_preserves_the_child_and_quota_through_actual_native_destruction() {
     release.send(()).unwrap();
     returned(&quota);
 }
+
+#[test]
+fn opener_tracker_has_sixteen_independent_admissions() {
+    let terminals = ProcessTracker::try_start().unwrap();
+    let openers = ProcessTracker::try_start_openers().unwrap();
+    let terminal_tickets: Vec<_> = (0..MAX_PROCESSES)
+        .map(|_| terminals.try_reserve().unwrap())
+        .collect();
+    let opener_tickets: Vec<_> = (0..MAX_OPEN_PROCESSES)
+        .map(|_| openers.try_reserve().unwrap())
+        .collect();
+    assert_eq!(terminal_tickets.len(), 8);
+    assert_eq!(opener_tickets.len(), 16);
+    assert!(terminals.try_reserve().is_err());
+    assert!(openers.try_reserve().is_err());
+    drop(terminal_tickets);
+    assert!(
+        openers.try_reserve().is_err(),
+        "terminal retirement cannot free opener slots"
+    );
+    assert!(terminals.try_reserve().is_ok());
+}

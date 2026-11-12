@@ -81,7 +81,7 @@ async fn publish(
     let copies = Arc::new(Mutex::new(Vec::new()));
     let dropped = source.dropped.clone();
     let (sender, mut events) = mpsc::channel(1);
-    let mut controller = Controller::new(
+    let mut controller = Controller::testing(
         Some(Arc::new(Native {
             live: Arc::downgrade(&source),
             cancel_on_open: on_open,
@@ -168,7 +168,7 @@ async fn clipboard_queue_refusal_retires_provider_and_generated_sources_off_disp
                 .is_ok()
         );
         let (sender, mut events) = mpsc::channel(1);
-        let mut controller = Controller::new(
+        let mut controller = Controller::testing(
             None,
             Outbox {
                 sender,

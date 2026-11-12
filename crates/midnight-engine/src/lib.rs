@@ -469,6 +469,8 @@ impl EngineServices {
         });
         let watcher = self.watch.map(|native| {
             watch::Controller::new(
+                resources.watch,
+                scope.clone(),
                 self.filesystem.clone(),
                 Some(native),
                 self.outbox.clone(),
@@ -476,12 +478,23 @@ impl EngineServices {
             )
         });
         let desktop = desktop::Desktop::new(
+            scope.clone(),
+            resources.desktop,
+            desktop::Processes {
+                terminals: resources.user_command_processes,
+                openers: resources.desktop_openers,
+            },
             self.desktop,
             self.locale.clone(),
             self.outbox.clone(),
             &mut tasks,
         );
-        let mut clipboard = clipboard::Controller::new(self.clipboard, self.outbox.clone());
+        let mut clipboard = clipboard::Controller::new(
+            resources.clipboard,
+            scope.clone(),
+            self.clipboard,
+            self.outbox.clone(),
+        );
         let mut size_warning_requests = size_warning_requests::Controller::new(self.outbox.clone());
         let shell_menu = shell_menu::Controller::new(self.shell_menu, self.outbox.clone());
         let mut path_picker = path_picker::Controller::new(self.path_picker, self.outbox.clone());
@@ -531,7 +544,7 @@ impl EngineServices {
             resources.user_commands,
             self.user_commands,
             self.transfers.clone(),
-            desktop.command_runtime(resources.user_command_processes),
+            desktop.command_runtime(),
             self.outbox.clone(),
         );
         let checksums = checksum_actor::Controller::new(

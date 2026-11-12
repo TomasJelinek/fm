@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "lifetime_tests.rs"]
+mod lifetime_tests;
 #[path = "tree_tests.rs"]
 mod tree_tests;
 
@@ -285,6 +287,8 @@ fn controller(
     let (sender, events) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
+        Retirement::testing(),
+        TaskLifetime::testing((files.clone(), native.clone())),
         files,
         native.map(|native| native as Arc<dyn WatchService>),
         Outbox {
@@ -569,6 +573,8 @@ async fn shutdown_releases_full_output_queue_waiters_and_ignores_late_callbacks(
         .unwrap();
     let mut tasks = JoinSet::new();
     let controller = Controller::with_timing(
+        Retirement::testing(),
+        TaskLifetime::testing((files.clone(), native.clone())),
         files.clone(),
         Some(native.clone()),
         Outbox {

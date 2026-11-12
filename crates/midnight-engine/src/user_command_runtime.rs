@@ -6,8 +6,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 #[path = "user_command_process_tracker.rs"]
 mod tracker;
-pub(crate) use tracker::{MAX_PROCESSES, ProcessTracker};
-use tracker::{ProcessTicket, TrackedProcess};
+pub(crate) use tracker::{MAX_OPEN_PROCESSES, MAX_PROCESSES, ProcessTracker};
+pub(crate) use tracker::{ProcessTicket, TrackedProcess};
 
 #[derive(Clone)]
 pub(crate) struct Runtime {

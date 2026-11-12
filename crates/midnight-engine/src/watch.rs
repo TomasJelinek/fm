@@ -1,6 +1,10 @@
 //! Bounded native change hints and polling, owned entirely by backend workers.
 
-use crate::Outbox;
+use crate::{
+    Outbox,
+    retirement::{RetirementLease, WorkerOwned},
+    task_lifetime::TaskLifetime,
+};
 use midnight_core::{
     Cancellation, CompressionStatus, Entry, EntryKind, Event, FileSystem, NavigationId, PaneId,
     VisibleDirectory, WatchService, WatchSubscription,
@@ -21,15 +25,35 @@ pub(crate) mod signature;
 pub(crate) mod tree;
 pub(crate) use tree::RefreshTicket;
 
+/// One shared control owner per pane; reserve before accepting any captured scope.
+pub(crate) const RETIREMENT_CAPACITY: usize = 2;
+pub(crate) struct Retirement {
+    pub(crate) panes: [RetirementLease; RETIREMENT_CAPACITY],
+}
+#[cfg(test)]
+impl Retirement {
+    fn testing() -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 0).unwrap();
+        Self {
+            panes: std::array::from_fn(|_| domain.try_reserve().unwrap()),
+        }
+    }
+}
+
+// A cancelled outer task or a native panic can bypass run's final drain. The last
+// handle still retires captured mounts off the caller without moving subscriptions.
+type SharedOwner = Arc<WorkerOwned<Shared>>;
+
 /// Two independent blocking workers own native subscriptions and serial probes.
 /// There are no unbounded event/path queues and no worker per filesystem event.
 pub(crate) struct Controller {
-    panes: [Arc<Shared>; 2],
+    panes: [SharedOwner; RETIREMENT_CAPACITY],
 }
 
 #[derive(Clone)]
 pub(crate) struct Handle {
-    panes: [Arc<Shared>; 2],
+    panes: [SharedOwner; RETIREMENT_CAPACITY],
 }
 
 #[derive(Clone, Copy)]
@@ -76,12 +100,16 @@ impl Controller {
         }
     }
     pub(crate) fn new(
+        retirement: Retirement,
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
         native: Option<Arc<dyn WatchService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
         Self::with_timing(
+            retirement,
+            scope,
             filesystem,
             native,
             outbox,
@@ -95,14 +123,16 @@ impl Controller {
     }
 
     fn with_timing(
+        retirement: Retirement,
+        scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
         native: Option<Arc<dyn WatchService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
         timing: Timing,
     ) -> Self {
-        let panes = std::array::from_fn(|_| {
-            Arc::new(Shared {
+        let panes = retirement.panes.map(|lease| {
+            Arc::new(lease.own(Shared {
                 state: Mutex::new(Control {
                     visible: None,
                     revision: 0,
@@ -114,19 +144,20 @@ impl Controller {
                 }),
                 worker: OnceLock::new(),
                 timing,
-            })
+            }))
         });
         for shared in &panes {
             let shared = shared.clone();
             let filesystem = filesystem.clone();
             let native = native.clone();
             let outbox = outbox.clone();
-            tasks.spawn(async move {
-                let _ = tokio::task::spawn_blocking(move || {
+            let native_scope = scope.clone();
+            tasks.spawn(scope.future(async move {
+                let _ = tokio::task::spawn_blocking(native_scope.blocking(move || {
                     run(shared, filesystem, native, outbox, timing);
-                })
+                }))
                 .await;
-            });
+            }));
         }
         Self { panes }
     }
@@ -238,7 +269,7 @@ impl Drop for Target {
 }
 
 fn register(
-    shared: &Arc<Shared>,
+    shared: &SharedOwner,
     native: Option<&dyn WatchService>,
     visible: VisibleDirectory,
     revision: u64,
@@ -283,7 +314,7 @@ fn register(
 }
 
 fn run(
-    shared: Arc<Shared>,
+    shared: SharedOwner,
     filesystem: Arc<dyn FileSystem>,
     native: Option<Arc<dyn WatchService>>,
     outbox: Outbox,
@@ -409,8 +440,8 @@ fn run(
             .map_or(target.poll_at, |deadline| deadline.min(target.poll_at));
         thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
     }
-    // The controller can outlive these workers. Empty its resource-owning slots
-    // here so its eventual async/UI-side destruction cannot retire providers.
+    // Prefer normal scope destruction on this native worker. The startup-owned
+    // Shared guard also covers a cancelled task or a panic before this drain.
     let retired = {
         let mut state = shared
             .state

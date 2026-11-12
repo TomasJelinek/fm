@@ -1,5 +1,9 @@
 //! One bounded backend worker retains native ownership and pumps requests while idle.
-use crate::{Outbox, file_targets};
+use crate::{
+    Outbox, file_targets,
+    retirement::{RetirementLease, RetirementWaiter},
+    task_lifetime::TaskLifetime,
+};
 use midnight_core::{
     Cancellation, ClipboardService, ClipboardSession, DesktopActionResult, DesktopRequestId, Event,
     FileClipboard, FileClipboardIntent, FsError, SelectedFiles,
@@ -25,15 +29,15 @@ struct Request {
     action: Action,
 }
 impl Request {
-    fn failure(self, error: FsError) -> Event {
-        match self.action {
+    fn failure(&self, error: FsError) -> Event {
+        match &self.action {
             Action::ReadText => Event::PathClipboardTextRead {
                 request: self.id,
                 result: Err(error),
             },
             Action::Read(destination) => Event::ClipboardFilesRead {
                 request: self.id,
-                destination,
+                destination: destination.clone(),
                 result: Err(error),
             },
             _ => Event::DesktopActionFinished {
@@ -43,11 +47,29 @@ impl Request {
         }
     }
 }
+// One private inbox plus one serialized rejected request; existing queue bound stays 16.
+pub(crate) const RETIREMENT_CAPACITY: usize = 2;
+pub(crate) struct Retirement {
+    pub(crate) worker: RetirementLease,
+    pub(crate) rejected: RetirementWaiter,
+}
+struct NativeWorker {
+    receiver: mpsc::Receiver<Request>,
+    service: Option<Arc<dyn ClipboardService>>,
+    _scope: TaskLifetime,
+}
+struct Rejected {
+    request: Request,
+    _scope: TaskLifetime,
+}
 pub(crate) struct Controller {
     sender: Option<mpsc::Sender<Request>>,
     service: Option<Arc<dyn ClipboardService>>,
     cancel: Cancellation,
     outbox: Outbox,
+    worker: Option<RetirementLease>,
+    rejected: RetirementWaiter,
+    scope: TaskLifetime,
 }
 impl Controller {
     pub(crate) async fn copy_captured(
@@ -82,20 +104,47 @@ impl Controller {
         )
         .await;
     }
-    pub(crate) fn new(service: Option<Arc<dyn ClipboardService>>, outbox: Outbox) -> Self {
+    pub(crate) fn new(
+        retirement: Retirement,
+        scope: TaskLifetime,
+        service: Option<Arc<dyn ClipboardService>>,
+        outbox: Outbox,
+    ) -> Self {
         Self {
             sender: None,
             service,
             cancel: Cancellation::default(),
             outbox,
+            worker: Some(retirement.worker),
+            rejected: retirement.rejected,
+            scope,
         }
     }
+    #[cfg(test)]
+    fn testing(service: Option<Arc<dyn ClipboardService>>, outbox: Outbox) -> Self {
+        let domain =
+            crate::retirement::RetirementDomain::try_start(RETIREMENT_CAPACITY, 1).unwrap();
+        let retirement = Retirement {
+            worker: domain.try_reserve().unwrap(),
+            rejected: domain.new_waiter().unwrap(),
+        };
+        let scope = TaskLifetime::testing(service.clone());
+        Self::new(retirement, scope, service, outbox)
+    }
     fn start_worker(&mut self, tasks: &mut JoinSet<()>) -> mpsc::Sender<Request> {
-        let (sender, mut receiver) = mpsc::channel::<Request>(16);
-        let service = self.service.take();
+        let (sender, receiver) = mpsc::channel::<Request>(16);
+        let mut worker = self
+            .worker
+            .take()
+            .expect("clipboard worker starts once")
+            .own(NativeWorker {
+                receiver,
+                service: self.service.take(),
+                _scope: self.scope.clone(),
+            });
         let cancel = self.cancel.clone();
         let outbox = self.outbox.clone();
-        tasks.spawn_blocking(move || {
+        tasks.spawn_blocking(self.scope.blocking(move || {
             let mut session: Option<Box<dyn ClipboardSession>> = None;
             while !cancel.is_cancelled() {
                 // X11 owners and Windows clipboard windows must serve native messages
@@ -106,7 +155,7 @@ impl Controller {
                 {
                     session = None;
                 }
-                let request = match receiver.try_recv() {
+                let request = match worker.receiver.try_recv() {
                     Ok(request) => request,
                     Err(mpsc::error::TryRecvError::Empty) => {
                         std::thread::park_timeout(Duration::from_millis(10));
@@ -118,7 +167,8 @@ impl Controller {
                     Err(error) => request.failure(error),
                     Ok(action) => {
                         let opened = if session.is_none() {
-                            service
+                            worker
+                                .service
                                 .as_ref()
                                 .ok_or_else(|| {
                                     error(
@@ -144,12 +194,14 @@ impl Controller {
                         }
                     }
                 };
+                drop(request);
                 if !send_event(&outbox, event, &cancel, &mut session) {
                     break;
                 }
             }
-            // Native owners are created, serviced and destroyed on this same thread.
-        });
+            // Session never enters the transferable guard: create, pump and Drop stay here.
+            // The guarded inbox also covers cancellation before this closure ever starts.
+        }));
         sender
     }
     async fn submit(&mut self, request: Request, tasks: &mut JoinSet<()>) {
@@ -163,22 +215,23 @@ impl Controller {
                 io::ErrorKind::WouldBlock,
                 "Clipboard queue is busy; try again.",
             );
-            let event = if matches!(
-                &request.action,
-                Action::Captured(_, _) | Action::Generated(_, _)
-            ) {
-                tokio::task::spawn_blocking(move || request.failure(busy))
-                    .await
-                    .unwrap_or_else(|failure| Event::DesktopActionFinished {
-                        request: id,
-                        result: Err(error(
-                            io::ErrorKind::Other,
-                            &format!("Clipboard retirement failed: {failure}"),
-                        )),
-                    })
-            } else {
-                request.failure(busy)
-            };
+            // EngineRun retains raw dispatch ownership while this private, serial intake waits.
+            // Once adopted, cleanup survives cancellation of this acknowledgement or its runtime.
+            let lease = self.rejected.reserve().await;
+            let rejected = lease.own(Rejected {
+                request,
+                _scope: self.scope.clone(),
+            });
+            let mut event = rejected.request.failure(busy);
+            if let Err(failure) = rejected.retire().await {
+                event = Event::DesktopActionFinished {
+                    request: id,
+                    result: Err(error(
+                        io::ErrorKind::Other,
+                        &format!("Clipboard retirement failed: {failure}"),
+                    )),
+                };
+            }
             // Backpressure applies to rejected requests too; never spawn unbounded reply tasks.
             self.outbox.send(event).await;
         }
@@ -254,6 +307,12 @@ impl Controller {
         .await;
     }
     pub(crate) fn shutdown(self) {
+        drop(self);
+    }
+}
+impl Drop for Controller {
+    fn drop(&mut self) {
+        // A started blocking pump cannot be aborted by dropping its JoinSet.
         self.cancel.cancel();
     }
 }
@@ -458,6 +517,10 @@ fn error(kind: io::ErrorKind, message: &str) -> FsError {
 }
 
 #[cfg(test)]
+#[path = "clipboard_retirement_tests.rs"]
+mod retirement_tests;
+
+#[cfg(test)]
 #[path = "clipboard_capture_tests.rs"]
 mod capture_tests;
 #[cfg(test)]
@@ -533,7 +596,7 @@ mod tests {
         sender
             .try_send(Event::LocaleLoaded(Ok(Default::default())))
             .unwrap();
-        let mut controller = Controller::new(
+        let mut controller = Controller::testing(
             None,
             Outbox {
                 sender,

@@ -11,6 +11,7 @@ use std::{
 use tokio::sync::OwnedSemaphorePermit;
 
 pub(crate) const MAX_PROCESSES: usize = 8;
+pub(crate) const MAX_OPEN_PROCESSES: usize = 16;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 type Worker = Box<dyn FnOnce() + Send>;
 
@@ -26,8 +27,9 @@ struct Shared {
     changed: Condvar,
 }
 struct State {
-    reserved: [bool; MAX_PROCESSES],
-    queued: [Option<Queued>; MAX_PROCESSES],
+    capacity: usize,
+    reserved: [bool; MAX_OPEN_PROCESSES],
+    queued: [Option<Queued>; MAX_OPEN_PROCESSES],
     closing: bool,
 }
 struct Payload {
@@ -59,10 +61,24 @@ impl ProcessTracker {
                 .spawn(worker)
         })
     }
+    pub(crate) fn try_start_openers() -> io::Result<Self> {
+        Self::start_with_capacity(MAX_OPEN_PROCESSES, |worker| {
+            thread::Builder::new()
+                .name("fm-opener-processes".into())
+                .spawn(worker)
+        })
+    }
     fn start(spawn: impl FnOnce(Worker) -> io::Result<thread::JoinHandle<()>>) -> io::Result<Self> {
+        Self::start_with_capacity(MAX_PROCESSES, spawn)
+    }
+    fn start_with_capacity(
+        capacity: usize,
+        spawn: impl FnOnce(Worker) -> io::Result<thread::JoinHandle<()>>,
+    ) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                reserved: [false; MAX_PROCESSES],
+                capacity,
+                reserved: [false; MAX_OPEN_PROCESSES],
                 queued: std::array::from_fn(|_| None),
                 closing: false,
             }),
@@ -87,11 +103,12 @@ impl ProcessTracker {
         let slot = state
             .reserved
             .iter()
+            .take(state.capacity)
             .position(|reserved| !reserved)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::WouldBlock,
-                    "Custom Command process cleanup capacity is full (8).",
+                    format!("Process cleanup capacity is full ({}).", state.capacity),
                 )
             })?;
         state.reserved[slot] = true;
@@ -200,7 +217,7 @@ fn release(shared: &Shared, slot: usize) {
     shared.changed.notify_one();
 }
 fn run(shared: Arc<Shared>) {
-    let mut active: [Option<Queued>; MAX_PROCESSES] = std::array::from_fn(|_| None);
+    let mut active: [Option<Queued>; MAX_OPEN_PROCESSES] = std::array::from_fn(|_| None);
     loop {
         {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());

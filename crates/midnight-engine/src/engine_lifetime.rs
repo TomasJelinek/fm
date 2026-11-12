@@ -17,9 +17,13 @@ pub(crate) struct Resources {
     pub(crate) copies: ActorRetirement,
     pub(crate) drag: DragRetirement,
     pub(crate) snapshots: RetirementLease,
+    pub(crate) clipboard: crate::clipboard::Retirement,
+    pub(crate) watch: crate::watch::Retirement,
     pub(crate) checksums: crate::checksum_actor::Retirement,
     pub(crate) user_commands: crate::user_commands::Retirement,
     pub(crate) user_command_processes: crate::user_command_runtime::ProcessTracker,
+    pub(crate) desktop_openers: crate::user_command_runtime::ProcessTracker,
+    pub(crate) desktop: crate::desktop::Retirement,
 }
 pub(crate) struct DragRetirement {
     pub(crate) state: RetirementLease,
@@ -36,10 +40,14 @@ impl EngineLifetime {
             + 11
             + crate::checksum_actor::RETIREMENT_CAPACITY
             + crate::user_commands::MAX_JOBS
-            + 1;
-        let domain = RetirementDomain::try_start(capacity, 4)?;
+            + 1
+            + crate::clipboard::RETIREMENT_CAPACITY
+            + crate::desktop::EDITOR_RETIREMENT_CAPACITY
+            + crate::watch::RETIREMENT_CAPACITY;
+        let domain = RetirementDomain::try_start(capacity, 6)?;
         // No native child exists until this separate fixed process tracker is ready.
         let user_command_processes = crate::user_command_runtime::ProcessTracker::try_start()?;
+        let desktop_openers = crate::user_command_runtime::ProcessTracker::try_start_openers()?;
         let actor = || -> io::Result<ActorRetirement> {
             Ok(ActorRetirement {
                 domain: domain.clone(),
@@ -60,6 +68,16 @@ impl EngineLifetime {
                     backlog: domain.new_waiter().map_err(io::Error::other)?,
                 },
                 snapshots: domain.try_reserve().map_err(io::Error::other)?,
+                watch: crate::watch::Retirement {
+                    panes: [
+                        domain.try_reserve().map_err(io::Error::other)?,
+                        domain.try_reserve().map_err(io::Error::other)?,
+                    ],
+                },
+                clipboard: crate::clipboard::Retirement {
+                    worker: domain.try_reserve().map_err(io::Error::other)?,
+                    rejected: domain.new_waiter().map_err(io::Error::other)?,
+                },
                 checksums: crate::checksum_actor::Retirement {
                     domain: domain.clone(),
                     intake: domain.new_waiter().map_err(io::Error::other)?,
@@ -70,6 +88,10 @@ impl EngineLifetime {
                     service: domain.try_reserve().map_err(io::Error::other)?,
                 },
                 user_command_processes,
+                desktop_openers,
+                desktop: crate::desktop::Retirement {
+                    intake: domain.new_waiter().map_err(io::Error::other)?,
+                },
             },
         })
     }

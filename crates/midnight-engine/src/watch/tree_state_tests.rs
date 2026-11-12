@@ -3,8 +3,8 @@ use midnight_core::TreeSessionId;
 
 fn handle() -> Handle {
     Handle {
-        panes: std::array::from_fn(|_| {
-            Arc::new(Shared {
+        panes: Retirement::testing().panes.map(|lease| {
+            Arc::new(lease.own(Shared {
                 state: Mutex::new(Control {
                     visible: None,
                     revision: 0,
@@ -20,7 +20,7 @@ fn handle() -> Handle {
                     maximum: Duration::from_secs(3),
                     poll: Duration::from_secs(15),
                 },
-            })
+            }))
         }),
     }
 }

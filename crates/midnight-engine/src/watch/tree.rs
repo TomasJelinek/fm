@@ -315,7 +315,7 @@ impl Runtime {
     pub(super) fn update(
         &mut self,
         scope: Arc<TreeScope>,
-        shared: &Arc<Shared>,
+        shared: &SharedOwner,
         native: Option<&dyn WatchService>,
     ) {
         if Arc::ptr_eq(&self.scope, &scope) && !self.slots.is_empty() {
@@ -421,7 +421,7 @@ impl Runtime {
 
     pub(super) fn step(
         &mut self,
-        shared: &Arc<Shared>,
+        shared: &SharedOwner,
         filesystem: &dyn FileSystem,
         outbox: &Outbox,
         timing: Timing,
